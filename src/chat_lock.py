@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional, Protocol, runtime_checkable
 
 from src.config import get_settings
+from src.utils.env import is_test_environment
 from src.utils.lock_order import LockLevel, ordered_lock
 
 
@@ -109,7 +110,9 @@ class ChatLockManager:
     """
 
     # Card actions that are always exempt from chat-lock blocking.
-    # Keep in sync with action_registry.py lock-related registrations.
+    # Keep these as local string literals to avoid a core-layer dependency on
+    # ``src.card``.  tests/test_action_dispatch_mapping.py compares this set
+    # with the canonical card action IDs to prevent drift.
     CARD_EXEMPT_ACTIONS: frozenset[str] = frozenset({
         "force_release_repo_lock",
         "confirm_lock",
@@ -117,8 +120,6 @@ class ChatLockManager:
         "confirm_force_release",
         "cancel_force_release",
         "help_category",
-        "load_more",
-        "load_prev",
         "retry_command",
     })
 
@@ -399,6 +400,25 @@ def get_chat_lock_manager() -> ChatLockManager:
     return _instance
 
 
+def set_chat_lock_manager(
+    manager: ChatLockManager,
+    *,
+    is_test_env_check: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Set the global ChatLockManager singleton for dependency injection/testing."""
+    check_fn = is_test_env_check if is_test_env_check is not None else is_test_environment
+    if not check_fn():
+        raise RuntimeError(
+            "set_chat_lock_manager() is only allowed in test environments. "
+            "Modifying global singletons in production can cause race conditions."
+        )
+    global _instance
+    with _instance_lock:
+        if _instance is not None and _instance is not manager:
+            _instance.shutdown()
+        _instance = manager
+
+
 def shutdown_if_active() -> None:
     """Best-effort shutdown of the singleton if it was ever created.
 
@@ -412,8 +432,17 @@ def shutdown_if_active() -> None:
             logger.debug("ChatLockManager shutdown error", exc_info=True)
 
 
-def _reset_chat_lock_manager_for_testing() -> None:
+def _reset_chat_lock_manager_for_testing(
+    *,
+    is_test_env_check: Optional[Callable[[], bool]] = None,
+) -> None:
     """Reset the singleton. **Test-only.**"""
+    check_fn = is_test_env_check if is_test_env_check is not None else is_test_environment
+    if not check_fn():
+        raise RuntimeError(
+            "_reset_chat_lock_manager_for_testing() is only allowed in test environments. "
+            "Modifying global singletons in production can cause race conditions."
+        )
     global _instance
     with _instance_lock:
         if _instance is not None:

@@ -30,8 +30,11 @@ from .telemetry import (
     DefaultSessionTelemetryAdapter,
     IdleHealthConfig,
     build_idle_health_config_for_manager,
+    classify_manager_idle_health,
+    resolve_idle_health_collaborators_for_manager,
 )
 from .sync_adapter import SyncACPSession, build_startup_diagnostics
+from . import startup_utils as _startup_utils
 
 logger = logging.getLogger(__name__)
 
@@ -111,57 +114,6 @@ def _sanitize_startup_detail(text: str) -> str:
     return s
 
 
-def _coco_acp_args(model_name: Optional[str]) -> list[str]:
-    args: list[str] = ["acp", "serve"]
-    if model_name:
-        args.extend(["-c", f"model.name={model_name}"])
-    return args
-
-
-def _degrade_ttadk_to_coco_acp(
-    *,
-    agent_type: str,
-    cwd: str,
-    startup_timeout: float,
-    reason: Exception,
-) -> tuple[SyncSession, str]:
-    """TTADK 启动失败时的确定性降级：使用 coco ACP 作为 agent_cmd/args 覆盖。
-
-    注意：保留 session 的 _agent_type=ttadk_*，避免 ensure_session 因 agent_type 变化而反复重启。
-    """
-    from ..coco_model import get_coco_model_manager
-
-    fallback_model = get_coco_model_manager().get_current_model()
-    s = SyncACPSession(
-        agent_type=agent_type,
-        cwd=cwd or ".",
-        agent_cmd="coco",
-        agent_args=_coco_acp_args(fallback_model),
-    )
-    sid = s.start(startup_timeout=float(startup_timeout or 60))
-    s._degraded_to = "coco"
-    # Best-effort: keep a non-empty, user-facing reason summary.
-    # Prefer structured diagnostics (fail_reason + error_text/stderr_snippet), fall back to repr.
-    try:
-        d = build_startup_diagnostics(
-            agent_type=agent_type,
-            cwd=cwd or ".",
-            model_name=None,
-            session=None,
-            error=reason,
-            timeout_s=float(startup_timeout or 0),
-        )
-        fr = str((d or {}).get("fail_reason") or (d or {}).get("fail_phase") or "start_failed")
-        et = str((d or {}).get("error_text") or (d or {}).get("stderr_snippet") or (d or {}).get("error") or "")
-        fr = (fr or "").strip() or "start_failed"
-        et = (et or "").strip() or (repr(reason) if reason is not None else "<Exception> (empty)")
-        s._degraded_reason = f"{fr}: {et}"
-    except Exception as e:
-        logger.warning("Error while building TTADK degraded reason", exc_info=True)
-        s._degraded_reason = str(reason) or (repr(reason) if reason is not None else "")
-    return (s, sid)
-
-
 def _build_startup_diagnostics(
     session: Optional[SyncSession],
     agent_type: str,
@@ -205,8 +157,6 @@ _DEFAULT_PROJECT = SessionKeyCodec.DEFAULT_PROJECT_PLACEHOLDER
 # 标准化后的 session_key 解析结果类型：
 # (chat_id, project_id, thread_id)
 SessionKeyParts = tuple[str, Optional[str], Optional[str]]
-
-
 class ACPSessionManager:
     """Manages per-chat, per-project sessions for a specific agent type.
 
@@ -244,11 +194,11 @@ class ACPSessionManager:
           [DEPRECATED] 仅为兼容历史调用点保留的显式协作者注入参数。新代码不应
           直接依赖这些参数，而应通过 ``idle_health_config`` 进行配置收口；当同
           时给定 ``idle_health_config`` 与上述显式参数时，显式参数仍然具有更高
-          优先级，其行为由 :meth:`IdleHealthConfig.resolve_for_manager` 统一解析。
+          优先级，其行为由 :func:`resolve_idle_health_collaborators_for_manager` 统一解析。
 
         注意：本构造函数不自行推导 IdleHealth 默认行为，而是将「显式参数 /
         IdleHealthConfig / 默认工厂」的组合解析委托给 Telemetry 模块中的
-        :meth:`IdleHealthConfig.resolve_for_manager`，以确保 IdleHealth 相关配置的
+        :func:`resolve_idle_health_collaborators_for_manager`，以确保 IdleHealth 相关配置的
         单一事实来源（SSOT）位于 Telemetry 层。
         """
         self._agent_type = agent_type  # "coco" / "claude"
@@ -262,7 +212,7 @@ class ACPSessionManager:
         self._idle_healthcheck_s = idle_healthcheck_s
         self._keepalive_stop = threading.Event()
         self._keepalive_thread: threading.Thread | None = None
-        # Telemetry 与 IdleHealth 协作者：统一通过 IdleHealthConfig.resolve_for_manager
+        # Telemetry 与 IdleHealth 协作者：统一通过 Telemetry 公共 facade
         # + 显式参数解析，解析优先级为「显式参数 > IdleHealthConfig 字段 > 默认工厂/适配器」。
 
         cfg: IdleHealthConfig | None = idle_health_config
@@ -290,7 +240,7 @@ class ACPSessionManager:
             self._idle_health_telemetry,
             self._session_telemetry,
             self._idle_health_service,
-        ) = IdleHealthConfig._resolve_for_manager(
+        ) = resolve_idle_health_collaborators_for_manager(
             config=cfg,
             idle_health_telemetry=idle_health_telemetry,
             session_telemetry=session_telemetry,
@@ -334,16 +284,30 @@ class ACPSessionManager:
             if entry[1] <= 0:
                 self._key_locks.pop(key, None)
 
-    def _remove_key_lock(self, key: str) -> None:
-        """Remove per-session-key lock when session is ended.
+    def _build_startup_coordinator(self) -> _startup_utils.SessionStartupCoordinator:
+        return _startup_utils.SessionStartupCoordinator(
+            manager_agent_type=self._agent_type,
+            session_starter=self._session_starter,
+            session_telemetry=self._session_telemetry,
+            sync_acp_session_cls=SyncACPSession,
+            sync_claude_cli_session_cls=SyncClaudeCLISession,
+            sync_ttadk_cli_session_cls=SyncTTADKCLISession,
+            agent_session_module=_agent_session_mod,
+            original_ttadk_cli_session_cls=_ORIG_TTADK_CLI_SESSION,
+            get_settings_fn=get_settings,
+        )
 
-        Delegates to _release_key_lock which uses reference counting to safely
-        determine when no thread references the lock anymore.
+    def _remove_key_lock(self, key: str) -> None:
+        """Compatibility wrapper for historical callers.
+
+        Per-session-key locks are transient startup leases owned exclusively by
+        ``start_session()``.  Session ending, keepalive cleanup, and rebind flows
+        do not own that lease and must not decrement its reference count.
         """
         lock = getattr(self, "_key_locks_lock", None)
         if lock is None:
             return
-        self._release_key_lock(key)
+        return
 
     def _keepalive_loop(self) -> None:
         while not self._keepalive_stop.wait(timeout=self._keepalive_interval):
@@ -400,18 +364,16 @@ class ACPSessionManager:
         """基于 TimeAgoBucket 对会话 idle 状态做粗粒度健康分类（实例入口）。
 
         说明：
-        - 委托 Telemetry 模块的高层入口 `_classify_idle_health_for_manager`；
+        - 委托 Telemetry 模块的公共入口 `classify_manager_idle_health`；
         - 通过实例级 ``self._idle_health_telemetry`` 注入可观测性实现；
         - 保持 UNKNOWN 回退语义与历史实现等价。
         """
 
         # NOTE: 具体实现收敛在 Telemetry 模块内部，manager 仅负责提供 bucket/context
         # 与注入好的 telemetry 实例，避免在此处重复维护 UNKNOWN 回退策略。
-        from . import telemetry as _telemetry_mod
-
-        return _telemetry_mod._classify_idle_health_for_manager(  # type: ignore[attr-defined]
+        return classify_manager_idle_health(
             bucket,
-            context=context,  # type: ignore[arg-type]
+            context=context,
             telemetry=self._idle_health_telemetry,
         )
 
@@ -421,17 +383,15 @@ class ACPSessionManager:
 
         说明：
         - 静态入口统一委托 Telemetry 模块的
-          `_classify_idle_health_for_manager`；
+          `classify_manager_idle_health`；
         - Telemetry 实例的选择与 UNKNOWN 回退策略完全收敛在 Telemetry
           模块内部，manager 只负责提供 bucket/context；
         - 调用方签名与返回语义保持不变，兼容历史测试与调用点。
         """
 
-        from . import telemetry as _telemetry_mod
-
-        return _telemetry_mod._classify_idle_health_for_manager(  # type: ignore[attr-defined]
+        return classify_manager_idle_health(
             bucket,
-            context=context,  # type: ignore[arg-type]
+            context=context,
         )
 
     @staticmethod
@@ -479,8 +439,9 @@ class ACPSessionManager:
         # preventing TOCTOU race where two threads both create sessions and one leaks.
         key_lock = self._get_key_lock(key)
         if not key_lock.acquire(timeout=startup_timeout):
+            self._release_key_lock(key)
             raise TimeoutError(
-                "会话启动超时，当前有其他操作正在进行，请稍后重试"
+                "会话启动超时：当前会话正忙，请稍后重试"
             )
         try:
             return self._start_session_inner(
@@ -489,6 +450,7 @@ class ACPSessionManager:
             )
         finally:
             key_lock.release()
+            self._release_key_lock(key)
 
     def _start_session_inner(
         self,
@@ -506,271 +468,28 @@ class ACPSessionManager:
         # Close existing session if any (under lock to prevent concurrent create)
         with self._acquire_lock():
             if key in self._sessions:
-                self._end_session_unlocked(key)
+                self._end_session_unlocked(key, remove_key_lock=False)
 
         settings = get_settings()
         retries = int(getattr(settings, "acp_startup_retries", 2) or 2)
         retries = max(1, retries)
         effective_agent_type = (agent_type_override or self._agent_type).lower()
-        last_err: Exception | None = None
-        session: SyncSession | None = None
-        actual_id = ""
-        last_spec = ""
-
-        # 可注入启动器（优先）：允许上层把启动编排从 manager 中抽离。
-        # 重要：TTADK 前缀必须强制走 CLI Session，不允许被注入启动器绕过。
-        # 失败诊断的日志格式仍由本模块与 `format_startup_failure_log_line` 统一控制。
-        if callable(self._session_starter) and (not effective_agent_type.startswith("ttadk_")):
-            try:
-                session, actual_id, _diag = self._session_starter(
-                    agent_type=effective_agent_type,
-                    cwd=cwd or ".",
-                    startup_timeout=float(startup_timeout or 60),
-                    model_name=model_name,
-                    session_id=session_id,
-                    project_id=project_id,
-                )
-                if session and actual_id:
-                    # best-effort：保留可读 agent spec
-                    try:
-                        last_spec = session.describe_agent()
-                    except (AttributeError, TypeError) as e:
-                        logger.warning("Error while describing agent", exc_info=True)
-                        last_spec = ""
-                    logger.info(
-                        "[ACP:%s] Session started via injected starter: key=%s, session=%s",
-                        effective_agent_type.upper(),
-                        key[-16:],
-                        actual_id[:8],
-                    )
-            except Exception as e:
-                # 注入启动器出错时，回退到内置逻辑（保持兼容/不引入回归）。
-                # NOTE: keep root cause in last_err for final diagnostics if fallback also fails.
-                last_err = e
-                session = None
-                actual_id = ""
-
-        if effective_agent_type == "claude":
-            # CLI backend doesn't need handshake retries.
-            retries = 1
-
-        # TTADK/ACP: 统一归一化 cwd，避免传入 "." 导致项目级缓存不落盘。
-        try:
-            from ..utils.path import normalize_ttadk_cwd
-
-            raw_cwd = cwd
-            norm_cwd = normalize_ttadk_cwd(raw_cwd)
-            cwd = norm_cwd or raw_cwd
-            try:
-                if bool(getattr(get_settings(), "ttadk_cwd_debug_enabled", False)):
-                    logger.debug(
-                        "[TTADK:CWD] where=%s raw_cwd=%r normalized_cwd=%r",
-                        "acp.manager.ensure_session",
-                        raw_cwd,
-                        norm_cwd,
-                    )
-            except (AttributeError, TypeError) as e:
-                logger.warning("Error while checking TTADK CWD debug flag", exc_info=True)
-        except (ImportError, AttributeError, TypeError) as e:
-            logger.warning("Error while normalizing TTADK CWD", exc_info=True)
-
-        # 強制拦截 ttadk_ 模式并分配 CLI session，绝不触发 ACP Server
-        # （不判断其底层工具是否支持 ACP，只要在 TTADK 模式下就必须 CLI 交互）
-        if effective_agent_type.startswith("ttadk_") and (not session or not actual_id):
-            try:
-                from ..ttadk import get_ttadk_manager
-                from ..ttadk.startup_common import precheck_ttadk_startup_model
-
-                # Resolve which SyncTTADKCLISession to use:
-                # - If tests patched src.acp.manager.SyncTTADKCLISession, prefer that
-                # - Else if tests patched src.agent_session.SyncTTADKCLISession, prefer that
-                # - Otherwise use the original implementation
-
-                mgr_cls = SyncTTADKCLISession
-                try:
-                    agent_cls = getattr(_agent_session_mod, "SyncTTADKCLISession", None)
-                except (AttributeError, TypeError) as e:
-                    logger.warning("Error while getting TTADK CLI session class", exc_info=True)
-                    agent_cls = None
-
-                eff_cls = mgr_cls
-                orig_cls = _ORIG_TTADK_CLI_SESSION
-                if orig_cls is not None:
-                    if mgr_cls is not None and mgr_cls is not orig_cls:
-                        eff_cls = mgr_cls
-                    elif agent_cls is not None and agent_cls is not orig_cls:
-                        eff_cls = agent_cls
-                elif agent_cls is not None:
-                    eff_cls = agent_cls
-
-                ttadk_manager = get_ttadk_manager()
-
-                # Precheck model intent
-                info = precheck_ttadk_startup_model(
-                    agent_type=effective_agent_type,
-                    cwd=cwd or ".",
-                    model_intent=model_name,
-                    manager=ttadk_manager,
-                )
-
-                resolved_model = info.get("model")
-
-                session = eff_cls(agent_type=effective_agent_type, cwd=cwd or ".", model_name=resolved_model)
-                actual_id = session.start()
-
-                logger.info(
-                    "[ACP:%s] TTADK CLI Session started: key=%s, session=%s, model=%s",
-                    effective_agent_type.upper(),
-                    key[-16:],
-                    actual_id[:8],
-                    resolved_model,
-                )
-                
-                # 跳过 ACP Retry 逻辑，直接进入成功收尾
-                retries = 0 
-
-            except Exception as e:
-                last_err = e
-                detail = str(last_err or "").strip() if last_err else ""
-                if not detail and last_err is not None:
-                    for k in ("stderr_snippet", "stdout_snippet", "stderr", "stdout"):
-                        try:
-                            v = str(getattr(last_err, k, "") or "").strip()
-                            if v:
-                                detail = v
-                                break
-                        except (AttributeError, TypeError) as e:
-                            logger.warning("Error while extracting error detail from attribute %s", k, exc_info=True)
-                            continue
-                if not detail:
-                    _, err_repr = _format_error_type_and_repr(last_err)
-                    detail = err_repr or "unknown"
-                safe_detail = _sanitize_startup_detail(detail) or "start_failed"
-                logger.warning("Error while starting TTADK CLI: %s", safe_detail)
-                try:
-                    self._session_telemetry.on_session_start_failed(
-                        manager_agent_type=self._agent_type,
-                        session_key=key,
-                        backend_kind="cli",
-                        error=last_err or RuntimeError(safe_detail),
-                        diagnostics=None,
-                    )
-                except Exception as e:
-                    logger.debug("[ACP:%s] session telemetry on_session_start_failed error", self._agent_type.upper(), exc_info=True)
-                raise RuntimeError(f"启动 {effective_agent_type} CLI 失败: {safe_detail}")
-
-        # Retry spawning agent process + handshake, since ACP CLI may be temporarily unavailable.
-        if not session or not actual_id:
-            effective_timeout = float(startup_timeout or 60)
-            for attempt in range(1, retries + 1):
-                try:
-                    if effective_agent_type == "claude":
-                        session = SyncClaudeCLISession(cwd=cwd or ".")
-                    else:
-                        # Backward-compatible construction: older tests/fakes may not accept model_name kw.
-                        if model_name:
-                            try:
-                                session = SyncACPSession(
-                                    agent_type=effective_agent_type,
-                                    cwd=cwd or ".",
-                                    model_name=model_name,
-                                )
-                            except TypeError:
-                                session = SyncACPSession(agent_type=effective_agent_type, cwd=cwd or ".")
-                        else:
-                            session = SyncACPSession(agent_type=effective_agent_type, cwd=cwd or ".")
-
-                    try:
-                        last_spec = session.describe_agent()
-                    except (AttributeError, TypeError) as e:
-                        logger.warning("Error while describing agent", exc_info=True)
-                        last_spec = ""
-
-                    # Progressive timeout: allow more time on later attempts.
-                    effective_timeout = float(startup_timeout) * (1.0 + 0.5 * (attempt - 1))
-                    actual_id = session.start(startup_timeout=effective_timeout)
-                    logger.info(
-                        "[ACP:%s] Session started: key=%s, session=%s (attempt=%d/%d)",
-                        effective_agent_type.upper(),
-                        key[-16:],
-                        actual_id[:8],
-                        attempt,
-                        retries,
-                    )
-                    break
-                except Exception as e:
-                    last_err = e
-                    # SSOT: 统一诊断构造入口（确保稳定字段存在）
-                    diag = build_startup_diagnostics(
-                        agent_type=effective_agent_type,
-                        cwd=cwd or ".",
-                        model_name=model_name,
-                        session=session,
-                        error=e,
-                        attempt=int(attempt),
-                        retries=int(retries),
-                        timeout_s=float(effective_timeout or 0),
-                    )
-
-                    # 兼容运行期老日志格式：保证 error_text 非空（避免出现 `...: ` 空原因）
-                    # 注意：真正的 SSOT 是 format_startup_failure_log_line，但历史日志仍依赖
-                    # `logger.warning("...: %s", str(e))` 风格；这里确保 `str(e)` 可读。
-                    try:
-                        if isinstance(diag, dict):
-                            et = str(diag.get("error_text") or "").strip()
-                            if et:
-                                # Best-effort: make `str(e)` informative even when __str__ is empty.
-                                # RuntimeError/Exception are mutable enough for this pattern.
-                                try:
-                                    if not (str(e) or "").strip() or (str(e) or "").strip() in ("(empty)", "None"):
-                                        e.args = (et,)
-                                except Exception as e:
-                                    logger.warning("Error while setting error args", exc_info=True)
-                                    pass
-                    except Exception as e:
-                        logger.warning("Error while processing diagnostics", exc_info=True)
-                        pass
-
-                    # 统一失败日志（SSOT=src.acp.diagnostics.format_startup_failure_log_line）
-                    logger.warning(
-                        format_startup_failure_log_line(
-                            agent_type=effective_agent_type,
-                            event="Session start failed",
-                            attempt=int(attempt),
-                            retries=int(retries),
-                            error=e,
-                            diag=diag if isinstance(diag, dict) else None,
-                            attempts=(diag.get("attempts") if isinstance(diag, dict) else None),
-                            get_settings_fn=get_settings,
-                        )
-                    )
-
-                    try:
-                        if session:
-                            session.close()
-                    except Exception as e:
-                        logger.warning("Error while closing session", exc_info=True)
-                        pass
-                    session = None
-                    if attempt < retries:
-                        # small backoff
-                        time.sleep(min(2.0, 0.3 * attempt))
-
-        if not session or not actual_id:
-            detail = str(last_err) if last_err else "unknown"
-            spec = f" ({last_spec})" if last_spec else ""
-            kind = "会话" if effective_agent_type == "claude" else "ACP Server"
-            try:
-                self._session_telemetry.on_session_start_failed(
-                    manager_agent_type=self._agent_type,
-                    session_key=key,
-                    backend_kind=("cli" if effective_agent_type == "claude" or effective_agent_type.startswith("ttadk_") else "acp"),
-                    error=last_err or RuntimeError(detail),
-                    diagnostics=None,
-                )
-            except Exception as e:
-                logger.debug("[ACP:%s] session telemetry on_session_start_failed error", self._agent_type.upper(), exc_info=True)
-            raise RuntimeError(f"启动 {effective_agent_type} {kind} 失败{spec}（已重试 {retries} 次）: {detail}")
+        startup_result = self._build_startup_coordinator().start(
+            _startup_utils.SessionStartupRequest(
+                key=key,
+                cwd=cwd,
+                startup_timeout=startup_timeout,
+                project_id=project_id,
+                session_id=session_id,
+                effective_agent_type=effective_agent_type,
+                model_name=model_name,
+                retries=retries,
+            )
+        )
+        session = startup_result.session
+        actual_id = startup_result.actual_id
+        effective_agent_type = startup_result.effective_agent_type
+        model_name = startup_result.model_name
 
         # If caller wants a specific session_id (resume), load it
         if session_id:
@@ -865,18 +584,11 @@ class ACPSessionManager:
                     target_model: Optional[str] = None
                     if not getattr(existing, "_degraded_to", ""):
                         try:
-                            from ..ttadk import get_ttadk_manager
-                            from ..ttadk.startup_common import precheck_ttadk_startup_model
-
-                            ttadk_manager = get_ttadk_manager()
-                            pre = precheck_ttadk_startup_model(
+                            target_model = self._build_startup_coordinator().resolve_ttadk_target_model_for_existing_session(
                                 agent_type=agent_type_override,
                                 cwd=cwd or ".",
-                                model_intent=model_name,
-                                manager=ttadk_manager,
+                                model_name=model_name,
                             )
-                            if bool(pre.get("validated")):
-                                target_model = str(pre.get("model") or "").strip() or None
                         except Exception as e:
                             logger.warning("Error while prechecking TTADK startup model", exc_info=True)
                             target_model = None
@@ -1009,7 +721,7 @@ class ACPSessionManager:
                     return None
         return session
 
-    def _end_session_unlocked(self, key: str) -> Optional[dict]:
+    def _end_session_unlocked(self, key: str, *, remove_key_lock: bool = False) -> Optional[dict]:
         """End a session without acquiring lock (caller must hold _lock)."""
         if key in self._sessions:
             session = self._sessions[key]
@@ -1034,11 +746,11 @@ class ACPSessionManager:
             except Exception as e:
                 logger.debug("[ACP:%s] session telemetry on_session_end error", self._agent_type.upper(), exc_info=True)
             del self._sessions[key]
-            # Clean up per-key lock to prevent unbounded memory growth.
-            # Lock order here: self._lock (held by caller) → _key_locks_lock (leaf).
-            # _remove_key_lock uses non-blocking acquire to avoid removing a lock
-            # that another thread's start_session is currently holding/waiting on.
-            self._remove_key_lock(key)
+            if remove_key_lock:
+                # Historical compatibility only: key-lock leases are owned by
+                # start_session(), so end/keepalive/rebind callers must not
+                # release or remove the startup lock registry entry.
+                self._remove_key_lock(key)
 
             # Offload closing to a background thread to prevent blocking _lock
             # for up to 5 seconds during event loop shutdown.

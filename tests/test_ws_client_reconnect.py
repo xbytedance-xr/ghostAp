@@ -51,7 +51,7 @@ def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
             return None
 
     # Avoid background watchdog behavior in this unit test.
-    monkeypatch.setattr(ws, "_ObservedLarkWSClient", DummyClient)
+    monkeypatch.setattr(ws, "ObservedLarkWSClient", DummyClient)
     from src.feishu.ws_health import WSHealthMonitor
     monkeypatch.setattr(WSHealthMonitor, "start_watchdog", lambda self: None)
     monkeypatch.setattr(WSHealthMonitor, "stop_watchdog", lambda self: None)

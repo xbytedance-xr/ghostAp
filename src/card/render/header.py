@@ -65,6 +65,8 @@ def _render_v2_header(state: CardState) -> dict:
     model_suffix = "" if metadata.frozen else (f" · {metadata.model_name}" if metadata.model_name else "")
 
     title = f"📁 {project_name} · 🤖 {tool_label} · #{seq}{model_suffix}{archived}"
+    if state.terminal == "failed" and "错误" not in title:
+        title = f"❌ 错误 · {title}"
 
     # Minimal subtitle: only status marker + cumulative elapsed time
     cumulative_elapsed = _cumulative_elapsed_seconds(state)

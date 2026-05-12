@@ -23,14 +23,18 @@ from ..config import get_settings
 from ..ttadk.env_sandbox import build_ttadk_subprocess_env
 from .client import ACPHistoryStore
 from .diagnostics import (
+    DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT,
+    DEFAULT_DIAGNOSTICS_TOTAL_LIMIT,
     get_diagnostics_config,
     normalize_startup_diagnostics,
     redact_text,
+    safe_extract,
     safe_str,
     truncate_text,
 )
 from .models import ACPEvent, PromptResult
 from .session import ACPSession, ACPStartupError
+from .startup_utils import initial_startup_diagnostics, safe_float_or_none
 from ..utils.errors import ACPError, get_error_detail, sanitize_futures_msg
 
 logger = logging.getLogger(__name__)
@@ -44,22 +48,46 @@ def _safe_float_or_none(value: object) -> Optional[float]:
 
     Contract: never raises; returns None when conversion is impossible.
     """
-    if value is None:
-        return None
+    return safe_float_or_none(value)
+
+
+def _resolve_startup_snippet_limit(snippet_limit: int) -> int:
+    """Resolve effective startup diagnostics snippet limit from config with compat fallback."""
+    cfg = get_diagnostics_config(get_settings_fn=get_settings)
     try:
-        # Fast path for common numeric inputs
-        if isinstance(value, (int, float)):
-            return float(value)
-        # Reject bool explicitly (bool is subclass of int)
-        if isinstance(value, bool):
-            return float(value)
-        s = str(value).strip()
-        if not s:
-            return None
-        return float(s)
+        snippet_limit_eff = int(cfg.snippet_limit or 0)
     except Exception:
-        logger.debug("_safe_float_or_none: conversion failed for %r", value, exc_info=True)
-        return None
+        logger.debug("build_startup_diagnostics: snippet_limit config conversion failed", exc_info=True)
+        snippet_limit_eff = 0
+    if snippet_limit_eff <= 0:
+        try:
+            snippet_limit_eff = int(snippet_limit or DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT)
+        except Exception:
+            logger.debug("build_startup_diagnostics: snippet_limit argument conversion failed", exc_info=True)
+            snippet_limit_eff = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
+    return snippet_limit_eff
+
+
+def _initial_startup_diagnostics(
+    *,
+    agent_type: str,
+    cwd: str,
+    model_name: Optional[str],
+    error: Exception,
+    attempt: Optional[int],
+    retries: Optional[int],
+    timeout_s: Optional[float],
+) -> dict:
+    """Create the stable startup diagnostics container before best-effort enrichment."""
+    return initial_startup_diagnostics(
+        agent_type=agent_type,
+        cwd=cwd,
+        model_name=model_name,
+        error=error,
+        attempt=attempt,
+        retries=retries,
+        timeout_s=timeout_s,
+    )
 
 
 def classify_startup_fail_phase(*, error: Exception, error_blob: str) -> str:
@@ -121,6 +149,51 @@ def classify_startup_fail_phase(*, error: Exception, error_blob: str) -> str:
         return "start_failed"
 
 
+class StartupDiagnosticsBuilder:
+    """Builder for stable startup failure diagnostics.
+
+    ``build_startup_diagnostics`` remains the public compatibility function;
+    this class owns the construction path so future enrichment can be split
+    into focused methods without growing the compatibility wrapper.
+    """
+
+    def __init__(
+        self,
+        *,
+        agent_type: str,
+        cwd: str,
+        model_name: Optional[str],
+        error: Exception,
+        session: object = None,
+        attempt: Optional[int] = None,
+        retries: Optional[int] = None,
+        timeout_s: Optional[float] = None,
+        snippet_limit: int = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT,
+    ) -> None:
+        self.agent_type = agent_type
+        self.cwd = cwd
+        self.model_name = model_name
+        self.session = session
+        self.error = error
+        self.attempt = attempt
+        self.retries = retries
+        self.timeout_s = timeout_s
+        self.snippet_limit = snippet_limit
+
+    def build(self) -> dict:
+        return _build_startup_diagnostics_impl(
+            agent_type=self.agent_type,
+            cwd=self.cwd,
+            model_name=self.model_name,
+            session=self.session,
+            error=self.error,
+            attempt=self.attempt,
+            retries=self.retries,
+            timeout_s=self.timeout_s,
+            snippet_limit=self.snippet_limit,
+        )
+
+
 def build_startup_diagnostics(
     *,
     agent_type: str,
@@ -131,7 +204,33 @@ def build_startup_diagnostics(
     attempt: Optional[int] = None,
     retries: Optional[int] = None,
     timeout_s: Optional[float] = None,
-    snippet_limit: int = 240,
+    snippet_limit: int = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT,
+) -> dict:
+    """Compatibility entrypoint for startup diagnostics construction."""
+    return StartupDiagnosticsBuilder(
+        agent_type=agent_type,
+        cwd=cwd,
+        model_name=model_name,
+        session=session,
+        error=error,
+        attempt=attempt,
+        retries=retries,
+        timeout_s=timeout_s,
+        snippet_limit=snippet_limit,
+    ).build()
+
+
+def _build_startup_diagnostics_impl(
+    *,
+    agent_type: str,
+    cwd: str,
+    model_name: Optional[str],
+    session: object = None,
+    error: Exception,
+    attempt: Optional[int] = None,
+    retries: Optional[int] = None,
+    timeout_s: Optional[float] = None,
+    snippet_limit: int = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT,
 ) -> dict:
     """构造稳定可序列化的启动失败诊断信息。
 
@@ -143,51 +242,24 @@ def build_startup_diagnostics(
     # NOTE: `build_startup_diagnostics` is a compat entry.
     # New SSOT for non-empty fallbacks/redaction/truncation is
     # `src.acp.diagnostics.normalize_startup_diagnostics`.
-    cfg = get_diagnostics_config(get_settings_fn=get_settings)
-    int(cfg.args_limit or 0)
-    snippet_limit_cfg = int(cfg.snippet_limit or 0)
-    try:
-        snippet_limit_eff = int(snippet_limit_cfg or 0) if snippet_limit_cfg is not None else int(snippet_limit or 0)
-    except Exception:
-        logger.debug("build_startup_diagnostics: snippet_limit conversion failed", exc_info=True)
-        snippet_limit_eff = int(snippet_limit or 240)
-    if snippet_limit_eff <= 0:
-        snippet_limit_eff = int(snippet_limit or 240)
+    snippet_limit_eff = _resolve_startup_snippet_limit(snippet_limit)
 
-    diag: dict = {
-        "agent_type": (agent_type or ""),
-        "cwd": (cwd or ""),
-        "model": (model_name or ""),
-        "attempt": int(attempt) if isinstance(attempt, int) else attempt,
-        "retries": int(retries) if isinstance(retries, int) else retries,
-        "timeout_s": _safe_float_or_none(timeout_s),
-        "error_type": type(error).__name__ if error is not None else "",
-        # exception_type: optional alias for easier grep / external consumers
-        "exception_type": type(error).__name__ if error is not None else "",
-        # error_text: stable, human-readable summary (must be non-empty)
-        "error_text": "",
-        # error: backward-compatible alias
-        "error": "",
-        # error_repr: optional but useful when __str__ is empty
-        "error_repr": "",
-        "cmd": "",
-        "args": [],
-        "rc": None,
-        "stdout_snippet": "",
-        "stderr_snippet": "",
-        # fail_reason: stable, short classification string
-        "fail_reason": "",
-        "spec": "",
-        # Backward-compatible alias used by older diagnostics/logs
-        "agent_spec": "",
-    }
+    diag: dict = _initial_startup_diagnostics(
+        agent_type=agent_type,
+        cwd=cwd,
+        model_name=model_name,
+        error=error,
+        attempt=attempt,
+        retries=retries,
+        timeout_s=timeout_s,
+    )
 
     # error_repr (best-effort; later redaction+truncation handled by normalize_startup_diagnostics)
-    try:
-        diag["error_repr"] = truncate_text(repr(error) if error is not None else "", 240)
-    except Exception:
-        logger.debug("build_startup_diagnostics: error_repr extraction failed", exc_info=True)
-        diag["error_repr"] = ""
+    diag["error_repr"] = safe_extract(
+        lambda: truncate_text(repr(error) if error is not None else "", DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT),
+        default="",
+        log_msg="build_startup_diagnostics: error_repr extraction failed",
+    )
 
     # cmd/args: prefer session then error (标准协议优先：ACPStartupError.agent_cmd/agent_args)
     try:
@@ -447,7 +519,7 @@ def build_startup_diagnostics(
     return normalize_startup_diagnostics(diag, get_settings_fn=get_settings)
 
 
-def format_startup_diagnostics(diag: object, *, total_limit: int = 2000) -> str:
+def format_startup_diagnostics(diag: object, *, total_limit: int = DEFAULT_DIAGNOSTICS_TOTAL_LIMIT) -> str:
     """将 diagnostics 格式化为稳定的单行字符串（JSON），避免日志为空/难 grep。"""
     base = {
         "cmd": "",
@@ -494,7 +566,7 @@ def format_startup_diagnostics(diag: object, *, total_limit: int = 2000) -> str:
             s = redact_text(s, patterns, repl)
         except Exception:
             logger.debug("format_startup_diagnostics: redaction failed", exc_info=True)
-    return truncate_text(s, int(total_limit or 2000))
+    return truncate_text(s, int(total_limit or DEFAULT_DIAGNOSTICS_TOTAL_LIMIT))
 
 
 class AgentSpecResolveError(ACPStartupError):
@@ -999,7 +1071,7 @@ def start_session_with_retry(
     if not stdout_snip:
         try:
             stdout_snip = truncate_text(
-                safe_str(getattr(last_err, "stdout_snippet", "") or getattr(last_err, "stdout", "") or ""), 240
+                safe_str(getattr(last_err, "stdout_snippet", "") or getattr(last_err, "stdout", "") or ""), DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
             )
         except Exception:
             logger.debug("start_session_with_retry: stdout snippet fallback failed", exc_info=True)
@@ -1007,7 +1079,7 @@ def start_session_with_retry(
     if not stderr_snip:
         try:
             stderr_snip = truncate_text(
-                safe_str(getattr(last_err, "stderr_snippet", "") or getattr(last_err, "stderr", "") or ""), 240
+                safe_str(getattr(last_err, "stderr_snippet", "") or getattr(last_err, "stderr", "") or ""), DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
             )
         except Exception:
             logger.debug("start_session_with_retry: stderr snippet fallback failed", exc_info=True)
@@ -1274,10 +1346,10 @@ def start_ttadk_session_with_pty_retry(
                 cwd=cwd,
                 returncode=getattr(e2, "returncode", None),
                 stdout_snippet=truncate_text(
-                    safe_str(getattr(e2, "stdout_snippet", "") or getattr(e2, "stdout", "") or ""), 240
+                    safe_str(getattr(e2, "stdout_snippet", "") or getattr(e2, "stdout", "") or ""), DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
                 ),
                 stderr_snippet=truncate_text(
-                    safe_str(getattr(e2, "stderr_snippet", "") or getattr(e2, "stderr", "") or blob), 240
+                    safe_str(getattr(e2, "stderr_snippet", "") or getattr(e2, "stderr", "") or blob), DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
                 ),
                 fail_phase="pty_retry",
                 cause=e2,

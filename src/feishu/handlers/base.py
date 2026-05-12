@@ -92,6 +92,10 @@ class BaseHandler:
         title: str = "",
         origin_message_id: Optional[str] = None,
         reply_in_thread: Optional[bool] = None,
+        *,
+        details: Optional[str] = None,
+        detail_action: Optional[dict] = None,
+        retry_action: Optional[dict] = None,
     ):
         """Send a structured error card (schema 2.0) with QuickActions if available."""
         from ...card import CardBuilder
@@ -100,7 +104,22 @@ class BaseHandler:
             title = UI_TEXT["system_error_title"]
 
         try:
-            _, card_json_str = CardBuilder.build_error_card(exc, title=title)
+            detail_value = detail_action
+            if detail_value is None:
+                detail_value = {
+                    "action": "show_error_details",
+                    "chat_id": chat_id,
+                    "origin_message_id": origin_message_id or "",
+                    "title": title,
+                    "summary": get_error_detail(exc),
+                }
+            _, card_json_str = CardBuilder.build_error_card(
+                exc,
+                title=title,
+                details=details or f"错误上下文：chat={chat_id}，message={origin_message_id or '未绑定原消息'}",
+                detail_action=detail_value,
+                retry_action=retry_action,
+            )
 
             if origin_message_id:
                 self.reply_card(
@@ -111,7 +130,6 @@ class BaseHandler:
         except Exception as e:
             logger.error("发送错误卡片失败: %s", e, exc_info=True)
             # Fallback to simple text reply
-            from ...utils.errors import get_error_detail
             fallback_detail = get_error_detail(exc)
             if origin_message_id:
                 self.reply_text(origin_message_id, f"❌ {title}: {fallback_detail}")

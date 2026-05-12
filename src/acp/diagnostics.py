@@ -27,13 +27,21 @@ logger = logging.getLogger(__name__)
 from ..utils.errors import get_error_detail
 from ..config import get_settings as _default_get_settings
 
+DEFAULT_DIAGNOSTICS_ARGS_LIMIT = 600
+DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT = 240
+DEFAULT_DIAGNOSTICS_TOTAL_LIMIT = 2000
+
 __all__ = [
     # Public API (stable)
     "DiagnosticsConfig",
+    "DEFAULT_DIAGNOSTICS_ARGS_LIMIT",
+    "DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT",
+    "DEFAULT_DIAGNOSTICS_TOTAL_LIMIT",
     "get_diagnostics_config",
     "safe_str",
     "truncate_text",
     "truncate_args",
+    "safe_extract",
     "redact_text",
     "format_attempts_summary",
     "normalize_startup_diagnostics",
@@ -65,9 +73,9 @@ class DiagnosticsConfig:
     redact_enabled: bool = True
     redact_patterns: list[str] = field(default_factory=lambda: list(_DEFAULT_REDACT_PATTERNS))
     redact_replacement: str = "***REDACTED***"
-    args_limit: int = 600
-    snippet_limit: int = 240
-    total_limit: int = 2000
+    args_limit: int = DEFAULT_DIAGNOSTICS_ARGS_LIMIT
+    snippet_limit: int = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
+    total_limit: int = DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
 
 def get_diagnostics_config(*, get_settings_fn: Optional[Callable[[], object]] = None) -> DiagnosticsConfig:
@@ -79,9 +87,9 @@ def get_diagnostics_config(*, get_settings_fn: Optional[Callable[[], object]] = 
     enabled = True
     patterns = list(_DEFAULT_REDACT_PATTERNS)
     repl = "***REDACTED***"
-    args_limit = 600
-    snippet_limit = 240
-    total_limit = 2000
+    args_limit = DEFAULT_DIAGNOSTICS_ARGS_LIMIT
+    snippet_limit = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
+    total_limit = DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
     try:
         getter = get_settings_fn or _default_get_settings
@@ -99,24 +107,24 @@ def get_diagnostics_config(*, get_settings_fn: Optional[Callable[[], object]] = 
         args_limit = int(args_limit)
     except Exception as e:
         logger.warning("Error while converting args limit to int", exc_info=True)
-        args_limit = 600
+        args_limit = DEFAULT_DIAGNOSTICS_ARGS_LIMIT
     try:
         snippet_limit = int(snippet_limit)
     except Exception as e:
         logger.warning("Error while converting snippet limit to int", exc_info=True)
-        snippet_limit = 240
+        snippet_limit = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
     try:
         total_limit = int(total_limit)
     except Exception as e:
         logger.warning("Error while converting total limit to int", exc_info=True)
-        total_limit = 2000
+        total_limit = DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
     if args_limit < 0:
-        args_limit = 600
+        args_limit = DEFAULT_DIAGNOSTICS_ARGS_LIMIT
     if snippet_limit < 0:
-        snippet_limit = 240
+        snippet_limit = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
     if total_limit < 0:
-        total_limit = 2000
+        total_limit = DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
     return DiagnosticsConfig(
         redact_enabled=bool(enabled),
@@ -282,18 +290,18 @@ def _resolve_diag_config(
         enabled = bool(cfg.redact_enabled)
         patterns = list(cfg.redact_patterns or [])
         repl = _safe_str(cfg.redact_replacement or "***REDACTED***") or "***REDACTED***"
-        args_limit = int(cfg.args_limit or 0) if int(cfg.args_limit or 0) > 0 else 600
-        snippet_limit = int(cfg.snippet_limit or 0) if int(cfg.snippet_limit or 0) > 0 else 240
-        total_limit = int(cfg.total_limit or 0) if int(cfg.total_limit or 0) > 0 else 2000
+        args_limit = int(cfg.args_limit or 0) if int(cfg.args_limit or 0) > 0 else DEFAULT_DIAGNOSTICS_ARGS_LIMIT
+        snippet_limit = int(cfg.snippet_limit or 0) if int(cfg.snippet_limit or 0) > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
+        total_limit = int(cfg.total_limit or 0) if int(cfg.total_limit or 0) > 0 else DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
     except Exception as e:
         logger.warning("Error while resolving diagnostics config", exc_info=True)
         enabled, patterns, repl, args_limit, snippet_limit, total_limit = (
             True,
             list(_DEFAULT_REDACT_PATTERNS),
             "***REDACTED***",
-            600,
-            240,
-            2000,
+            DEFAULT_DIAGNOSTICS_ARGS_LIMIT,
+            DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT,
+            DEFAULT_DIAGNOSTICS_TOTAL_LIMIT,
         )
     return enabled, patterns, repl, args_limit, snippet_limit, total_limit
 
@@ -422,7 +430,7 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
     try:
         out["error_text"] = (
             _truncate_text(
-                _safe_str(out.get("error_text") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240
+                _safe_str(out.get("error_text") or ""), min(400, snippet_limit) if snippet_limit > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
             )
             or "(empty)"
         )
@@ -431,7 +439,7 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
         out["error_text"] = _safe_str(out.get("error_text") or "") or "(empty)"
     try:
         out["error"] = (
-            _truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else 240)
+            _truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT)
             or out["error_text"]
         )
     except Exception as e:
@@ -513,6 +521,19 @@ def truncate_args(args: list[str], limit: int) -> list[str]:
     return _truncate_args(args, limit)
 
 
+def safe_extract(fn: Callable[[], object], *, default: object = None, log_msg: str = "diagnostics extraction failed") -> object:
+    """Run a diagnostics extractor without letting optional data collection fail startup.
+
+    This is intentionally small and dependency-light: diagnostics collection is
+    best-effort, so callers get a stable default plus a debug breadcrumb.
+    """
+    try:
+        return fn()
+    except Exception:
+        logger.debug(log_msg, exc_info=True)
+        return default
+
+
 def redact_text(text: str, patterns: list[str], replacement: str) -> str:
     """Regex-based redaction with compiled-pattern cache (best-effort).
 
@@ -570,7 +591,13 @@ def format_attempts_summary(
         cfg_total = int(cfg.total_limit or 0)
     except Exception as e:
         logger.warning("Error while getting diagnostics config in format_attempts_summary", exc_info=True)
-        enabled, patterns, repl, cfg_snip, cfg_total = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 240, 2000
+        enabled, patterns, repl, cfg_snip, cfg_total = (
+            True,
+            list(_DEFAULT_REDACT_PATTERNS),
+            "***REDACTED***",
+            DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT,
+            DEFAULT_DIAGNOSTICS_TOTAL_LIMIT,
+        )
 
     try:
         per_lim = int(per_item_limit) if per_item_limit is not None else int(cfg_snip or 0)
@@ -588,14 +615,14 @@ def format_attempts_summary(
     elif cfg_snip:
         per_lim = int(cfg_snip)
     if per_lim <= 0:
-        per_lim = 240
+        per_lim = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
 
     if cfg_total and total_lim:
         total_lim = min(int(cfg_total), int(total_lim))
     elif cfg_total:
         total_lim = int(cfg_total)
     if total_lim <= 0:
-        total_lim = 2000
+        total_lim = DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
     try:
         items = list(attempts or []) if isinstance(attempts, (list, tuple)) else []
@@ -704,9 +731,9 @@ def format_startup_diagnostics_summary(
         cfg_total = int(cfg.total_limit or 0)
     except Exception as e:
         logger.warning("Error while getting diagnostics config in summary", exc_info=True)
-        enabled, patterns, repl, cfg_total = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 2000
+        enabled, patterns, repl, cfg_total = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
-    eff_total = cfg_total if cfg_total > 0 else 2000
+    eff_total = cfg_total if cfg_total > 0 else DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
     if total_limit is not None:
         try:
             tl = int(total_limit)
@@ -788,7 +815,7 @@ def format_startup_failure_log_line(
         lim = int(cfg.snippet_limit or 0)
     except Exception as e:
         logger.warning("Error while getting diagnostics config in log line", exc_info=True)
-        enabled, patterns, repl, lim = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", 240
+        enabled, patterns, repl, lim = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
 
     if enabled:
         try:

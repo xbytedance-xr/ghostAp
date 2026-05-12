@@ -53,15 +53,17 @@ from .helper import SessionKeyCodec
 # 模块公开 API 面：其余未在 __all__ 中列出的符号视为内部实现细节或测试工具。
 #
 # 对业务调用方（包括 Handler / Manager / FeishuWSClient 等），IdleHealth 相关
-# 的**唯一推荐入口**刻意收敛为三个：
+# 的推荐稳定入口刻意收敛为以下少量 facade：
 # - :class:`IdleHealthConfig`：ACPSessionManager 级 IdleHealth 高层配置对象；
 # - :func:`build_idle_health_config_for_manager`：构造 IdleHealthConfig 的便捷工厂；
+# - :func:`resolve_idle_health_collaborators_for_manager`：manager 解析 IdleHealth 协作者；
+# - :func:`classify_manager_idle_health`：manager idle-health 分类入口；
 # - :class:`IdleHealthTelemetryContext`：仅在需要透出 Telemetry-only 上下文
 #   类型时使用。
 #
 # 其余 IdleHealth 工厂函数、协议类型与服务实现（例如
 # :class:`IdleHealthServiceProtocol`、:class:`IdleHealthService`、
-# ``classify_idle_health_for_manager``、``get_idle_health_*``、
+# ``_classify_idle_health_for_manager``、``get_idle_health_*``、
 # ``IdleHealthConfig.resolve_for_manager`` 等）均视为 Telemetry 层内部或
 # 测试/高级用法入口：
 # - 不再通过 ``__all__`` 导出；
@@ -71,6 +73,8 @@ __all__ = [
     # === 业务推荐入口（Stable API） ===
     "IdleHealthConfig",
     "build_idle_health_config_for_manager",
+    "resolve_idle_health_collaborators_for_manager",
+    "classify_manager_idle_health",
     "IdleHealthTelemetryContext",
 ]
 
@@ -351,6 +355,29 @@ class IdleHealthConfig:
         return eff_idle_health_telemetry, eff_session_telemetry, eff_idle_health_service
 
 
+def resolve_idle_health_collaborators_for_manager(
+    *,
+    config: "IdleHealthConfig | None" = None,
+    idle_health_telemetry: "_IdleHealthTelemetry | None" = None,
+    session_telemetry: "TelemetryAdapter | None" = None,
+    idle_health_service: "_IdleHealthServiceProtocol | None" = None,
+) -> tuple["_IdleHealthTelemetry", "TelemetryAdapter", "_IdleHealthServiceProtocol"]:
+    """Public facade for resolving ACPSessionManager IdleHealth collaborators.
+
+    ACPSessionManager should depend on this stable module-level facade rather
+    than calling ``IdleHealthConfig`` private helpers directly.  The private
+    method remains as the compatibility implementation so existing tests and
+    advanced callers keep identical precedence/default semantics.
+    """
+
+    return IdleHealthConfig._resolve_for_manager(
+        config=config,
+        idle_health_telemetry=idle_health_telemetry,
+        session_telemetry=session_telemetry,
+        idle_health_service=idle_health_service,
+    )
+
+
 class _IdleHealthServiceProtocol(Protocol):
     """[INTERNAL] IdleHealth 业务协作者协议：供 Telemetry/测试注入 IdleHealthService 实现使用。
 
@@ -558,7 +585,7 @@ def _classify_idle_health_for_manager(
     bucket: "TimeAgoBucket",
     context: IdleHealthContext | None = None,
     telemetry: _IdleHealthTelemetry | None = None,
-    ) -> IdleHealth:
+) -> IdleHealth:
     """面向 ACPSessionManager 的首选 IdleHealth 分类入口（官方入口）。
 
     设计约束：
@@ -576,6 +603,22 @@ def _classify_idle_health_for_manager(
 
     eff_telemetry = telemetry or _get_manager_compat_idle_health_telemetry()
     return _classify_idle_health_with_fallback(bucket, context=context, telemetry=eff_telemetry)
+
+
+def classify_manager_idle_health(
+    bucket: "TimeAgoBucket",
+    context: IdleHealthContext | None = None,
+    telemetry: _IdleHealthTelemetry | None = None,
+) -> IdleHealth:
+    """Public manager-facing facade for IdleHealth classification.
+
+    Manager code should depend on this stable facade instead of importing
+    private telemetry helpers directly.  The implementation intentionally
+    delegates to the internal fallback path so existing UNKNOWN fallback and
+    telemetry semantics remain unchanged.
+    """
+
+    return _classify_idle_health_for_manager(bucket, context=context, telemetry=telemetry)
 
 
 def _get_idle_health_telemetry_for_manager(

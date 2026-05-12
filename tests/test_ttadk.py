@@ -201,6 +201,63 @@ def test_ttadk_start_agent_session_runs_coordinate_and_returns_session_fields(mo
     assert info.get("session_id") == "sid"
 
 
+def test_coordinate_ttadk_startup_delegates_to_startup_coordinator(monkeypatch):
+    """重构护栏：公共函数保持签名/返回不变，并委托给小型 Coordinator。"""
+
+    from src.ttadk import startup
+
+    captured: dict = {}
+
+    class _Coordinator:
+        def __init__(self, **kwargs):
+            captured["init"] = dict(kwargs)
+
+        def run(self):
+            captured["run"] = True
+            return {
+                "result": "ok",
+                "tool": "codex",
+                "input_model": "gpt-5.2",
+                "resolved_model": "(auto)",
+                "validated": False,
+                "source": "fake",
+                "warnings": [],
+                "degraded": False,
+                "repaired": False,
+                "fail_phase": "",
+                "decision": "start_ok",
+                "diagnostics": {"attempts": []},
+            }
+
+    monkeypatch.setattr(startup, "TTADKStartupCoordinator", _Coordinator)
+
+    out = startup.coordinate_ttadk_startup(
+        manager="mgr",
+        tool_name="codex",
+        input_model="gpt-5.2",
+        cwd="/tmp",
+        start_fn=lambda model: ("session", model),
+        fallback_fn=lambda err: ("fallback", err),
+        startup_probe_timeout_s=0.1,
+        precheck_fn=lambda intent: {},
+        get_settings_fn=lambda: object(),
+        time_fn=lambda: 123.0,
+    )
+
+    assert out["result"] == "ok"
+    assert captured["run"] is True
+    assert captured["init"]["manager"] == "mgr"
+    assert captured["init"]["tool_name"] == "codex"
+    assert captured["init"]["input_model"] == "gpt-5.2"
+    assert captured["init"]["cwd"] == "/tmp"
+    assert callable(captured["init"]["start_fn"])
+    assert callable(captured["init"]["fallback_fn"])
+    assert captured["init"]["startup_probe_timeout_s"] == 0.1
+    assert callable(captured["init"]["precheck_fn"])
+    assert callable(captured["init"]["get_settings_fn"])
+    assert callable(captured["init"]["time_fn"])
+
+
 def test_ttadk_stub_cooldown_ssot_identity():
     """防回归：manager 侧 compat 符号必须指向 startup_common 的 SSOT（避免双实现漂移）。"""
     import src.ttadk.manager as m

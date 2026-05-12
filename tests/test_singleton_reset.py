@@ -59,6 +59,51 @@ class TestThreadManagerReset:
             assert b is not a
 
 
+class TestChatLockManagerSingletonInterface:
+    def test_set_chat_lock_manager_injects_test_instance_and_reset_clears_it(self):
+        from src.chat_lock import (
+            _reset_chat_lock_manager_for_testing,
+            get_chat_lock_manager,
+            set_chat_lock_manager,
+        )
+
+        injected = MagicMock(name="chat_lock_manager")
+
+        set_chat_lock_manager(injected)
+        assert get_chat_lock_manager() is injected
+
+        _reset_chat_lock_manager_for_testing()
+
+        with patch("src.chat_lock.ChatLockManager") as MockCls:
+            MockCls.return_value = MagicMock(name="rebuilt_chat_lock_manager")
+            rebuilt = get_chat_lock_manager()
+
+        assert rebuilt is not injected
+
+    def test_set_and_reset_chat_lock_manager_are_test_only(self):
+        from src.chat_lock import _reset_chat_lock_manager_for_testing, set_chat_lock_manager
+
+        injected = MagicMock(name="chat_lock_manager")
+
+        try:
+            with patch("src.chat_lock.is_test_environment", return_value=False):
+                try:
+                    set_chat_lock_manager(injected)
+                except RuntimeError as exc:
+                    assert "only allowed in test environments" in str(exc)
+                else:
+                    raise AssertionError("set_chat_lock_manager should reject production injection")
+
+                try:
+                    _reset_chat_lock_manager_for_testing()
+                except RuntimeError as exc:
+                    assert "only allowed in test environments" in str(exc)
+                else:
+                    raise AssertionError("_reset_chat_lock_manager_for_testing should reject production reset")
+        finally:
+            _reset_chat_lock_manager_for_testing()
+
+
 class TestProvidersReset:
     def test_reset_clears_and_allows_rebuild(self):
         from src.acp.providers import (

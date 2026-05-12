@@ -21,6 +21,8 @@ def test_acp_manager_retries_start_failure(monkeypatch, caplog):
     from tests.helpers import FakeSessionBase
 
     from src.acp import manager as mgr
+    from src.acp.startup_utils import StartupOperationalError
+    from src.acp.startup_utils import StartupOperationalError
 
     calls = {"start": 0}
 
@@ -62,13 +64,14 @@ def test_acp_manager_ttadk_start_failure_no_coco_acp_fallback(monkeypatch, caplo
     from tests.helpers import FakeSessionBase
 
     from src.acp import manager as mgr
+    from src.acp.startup_utils import StartupOperationalError
 
     class FakeFailCLISession(FakeSessionBase):
         def describe_agent(self):
             return "tool=coco backend=cli cwd=."
 
         def start(self, startup_timeout: float = 60):
-            raise RuntimeError("boom_cli")
+            raise StartupOperationalError("boom_cli")
 
         def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
             return False

@@ -18,10 +18,20 @@ from .runtime_repair import repair_invalid_model_startup
 __all__ = [
     "coordinate_ttadk_startup",
     "start_agent_session",
+    "StartupStage",
+    "TTADKStartupCoordinator",
 ]
 
 
 logger = logging.getLogger(__name__)
+
+
+class StartupStage:
+    """TTADK 启动编排阶段名（集中定义，避免字符串分叉）。"""
+
+    PRECHECK = "precheck"
+    START = "start"
+    DEGRADE = "degrade"
 
 
 class AgentSessionStartInfo(TypedDict, total=False):
@@ -75,7 +85,7 @@ def start_agent_session(
     from src.acp.sync_adapter import SyncACPSession as _DefaultSession
 
     # ACP 启动依赖（延迟导入）
-    from src.acp.sync_adapter import _call_start_session_with_retry_compat, start_ttadk_session_with_pty_retry
+    from src.acp.sync_adapter import start_ttadk_session_with_pty_retry
 
     from . import get_ttadk_manager
 
@@ -134,45 +144,19 @@ def start_agent_session(
             last_spec = ""
         return (s, str(getattr(s, "session_id", "") or ""))
 
-    def _coco_acp_args(model_name: Optional[str]) -> list[str]:
-        args: list[str] = ["acp", "serve"]
-        if model_name:
-            args.extend(["-c", f"model.name={model_name}"])
-        return args
+    def _fallback_to_degraded_diagnostics(err: Exception):
+        """启动期降级只产出诊断语义，不创建 ACP/coco 会话。
 
-    def _fallback_to_coco(err: Exception):
-        # TTADK tool 不可用时的确定性降级：切到 coco ACP。
-        # 关键约束：保留 session 的 `_agent_type=ttadk_*`，避免 ACPSessionManager 的 agent_type mismatch 触发抖动重启。
-        from src.coco_model import get_coco_model_manager
+        TTADK transport 的架构边界是 CLI bridge-only。历史上的 coco ACP
+        direct fallback 会把失败的 TTADK 启动伪装成可用 session，破坏
+        TTADK/ACP 隔离；这里故意返回空 session 结果，让上层以结构化
+        diagnostics/错误卡向用户闭环，而不是透明切换到 coco ACP。
+        """
 
-        fallback_model = get_coco_model_manager().get_current_model()
-        # 兼容：部分单测会 monkeypatch `start_session_with_retry` 为旧签名，不接受 session_cls/log_failures。
-        s = _call_start_session_with_retry_compat(
-            agent_type="coco",
-            cwd=(cwd or "."),
-            startup_timeout=float(startup_timeout or 60),
-            model_name=fallback_model,
-            # 允许上层注入 session_cls（尤其是单测），避免 fallback 路径绕过注入点而触发真实子进程。
-            session_cls=session_cls or _DefaultSession,
-            ttadk_use_pty=False,
-            # 降级路径避免重复刷屏；详细诊断通过 diagnostics 附着在异常/汇总日志中。
-            log_failures=False,
-        )
-        sid = str(getattr(s, "session_id", "") or "")
-        # best-effort: 标记降级，并将 agent_type 伪装回 ttadk_*（避免上层抖动）
-        try:
-            s._degraded_to = "coco"
-        except Exception:
-            logger.debug("_fallback_to_coco: 'coco'", exc_info=True)
-        try:
-            s._agent_type = at
-        except Exception:
-            logger.debug("_fallback_to_coco: at", exc_info=True)
-        # Best-effort: keep a non-empty, user-facing reason summary.
         try:
             from src.acp.sync_adapter import build_startup_diagnostics
 
-            d = build_startup_diagnostics(
+            diagnostics = build_startup_diagnostics(
                 agent_type=at,
                 cwd=(cwd or "."),
                 model_name=None,
@@ -180,22 +164,15 @@ def start_agent_session(
                 error=err,
                 timeout_s=float(startup_timeout or 0),
             )
-            fr = (
-                str((d or {}).get("fail_reason") or (d or {}).get("fail_phase") or "start_failed").strip()
-                or "start_failed"
+            logger.warning(
+                "[TTADK:Startup] degraded_without_acp_session agent_type=%s fail_phase=%s error_type=%s",
+                at,
+                (diagnostics or {}).get("fail_phase") or (diagnostics or {}).get("fail_reason") or "start_failed",
+                (diagnostics or {}).get("error_type") or type(err).__name__,
             )
-            et = str(
-                (d or {}).get("error_text") or (d or {}).get("stderr_snippet") or (d or {}).get("error") or ""
-            ).strip()
-            if not et:
-                et = repr(err) if err is not None else "<Exception> (empty)"
-            try:
-                s._degraded_reason = f"{fr}: {et}"
-            except Exception:
-                logger.debug("f'{fr}: {et}'", exc_info=True)
         except Exception:
-            logger.debug("f'{fr}: {et}'", exc_info=True)
-        return (s, sid)
+            logger.debug("_fallback_to_degraded_diagnostics: build diagnostics failed", exc_info=True)
+        return (None, "")
 
     info = coordinate_ttadk_startup(
         manager=ttadk_manager,
@@ -203,7 +180,7 @@ def start_agent_session(
         input_model=model_intent,
         cwd=(cwd or "."),
         start_fn=_start_ttadk,
-        fallback_fn=_fallback_to_coco,
+        fallback_fn=_fallback_to_degraded_diagnostics,
         get_settings_fn=get_settings_fn,
     )
 
@@ -250,7 +227,82 @@ def start_agent_session(
     return out  # type: ignore[return-value]
 
 
+class TTADKStartupCoordinator:
+    """小型 TTADK 启动协调器。
+
+    保持 `coordinate_ttadk_startup` 作为公共稳定函数；实际编排集中到
+    coordinator，便于后续按阶段继续拆分，同时不改变调用方行为。
+    """
+
+    def __init__(
+        self,
+        *,
+        manager: Any,
+        tool_name: str,
+        input_model: str,
+        cwd: Optional[str],
+        start_fn: Callable[[Optional[str]], Any],
+        fallback_fn: Optional[Callable[[Exception], Any]] = None,
+        startup_probe_timeout_s: Optional[float] = None,
+        precheck_fn: Optional[Callable[[str], dict]] = None,
+        get_settings_fn: Optional[Callable[[], object]] = None,
+        time_fn: Optional[Callable[[], float]] = None,
+    ) -> None:
+        self.manager = manager
+        self.tool_name = tool_name
+        self.input_model = input_model
+        self.cwd = cwd
+        self.start_fn = start_fn
+        self.fallback_fn = fallback_fn
+        self.startup_probe_timeout_s = startup_probe_timeout_s
+        self.precheck_fn = precheck_fn
+        self.get_settings_fn = get_settings_fn
+        self.time_fn = time_fn
+
+    def run(self) -> dict:
+        return _coordinate_ttadk_startup_impl(
+            manager=self.manager,
+            tool_name=self.tool_name,
+            input_model=self.input_model,
+            cwd=self.cwd,
+            start_fn=self.start_fn,
+            fallback_fn=self.fallback_fn,
+            startup_probe_timeout_s=self.startup_probe_timeout_s,
+            precheck_fn=self.precheck_fn,
+            get_settings_fn=self.get_settings_fn,
+            time_fn=self.time_fn,
+        )
+
+
 def coordinate_ttadk_startup(
+    *,
+    manager: Any,
+    tool_name: str,
+    input_model: str,
+    cwd: Optional[str],
+    start_fn: Callable[[Optional[str]], Any],
+    fallback_fn: Optional[Callable[[Exception], Any]] = None,
+    startup_probe_timeout_s: Optional[float] = None,
+    precheck_fn: Optional[Callable[[str], dict]] = None,
+    get_settings_fn: Optional[Callable[[], object]] = None,
+    time_fn: Optional[Callable[[], float]] = None,
+) -> dict:
+    """统一 TTADK 启动协调入口（precheck→start→invalid_model_repair→retry→degrade）。"""
+    return TTADKStartupCoordinator(
+        manager=manager,
+        tool_name=tool_name,
+        input_model=input_model,
+        cwd=cwd,
+        start_fn=start_fn,
+        fallback_fn=fallback_fn,
+        startup_probe_timeout_s=startup_probe_timeout_s,
+        precheck_fn=precheck_fn,
+        get_settings_fn=get_settings_fn,
+        time_fn=time_fn,
+    ).run()
+
+
+def _coordinate_ttadk_startup_impl(
     *,
     manager: Any,
     tool_name: str,
@@ -413,7 +465,7 @@ def coordinate_ttadk_startup(
 
     attempts.append(
         {
-            "phase": "precheck",
+            "phase": StartupStage.PRECHECK,
             "ok": True,
             "tool": tool,
             "input_model": intent,
@@ -452,7 +504,7 @@ def coordinate_ttadk_startup(
     # 防漂移护栏：attempts[precheck].resolved_model 语义只能是“真实透传名”或 “(auto)”。
     # best-effort：仅在本地 attempts 结构上纠偏，不抛异常影响主流程。
     try:
-        if attempts and attempts[-1].get("phase") == "precheck":
+        if attempts and attempts[-1].get("phase") == StartupStage.PRECHECK:
             if passthrough_model:
                 attempts[-1]["resolved_model"] = passthrough_model
             else:
@@ -464,7 +516,7 @@ def coordinate_ttadk_startup(
         r = start_fn(passthrough_model)
         attempts.append(
             {
-                "phase": "start",
+                "phase": StartupStage.START,
                 "ok": True,
                 "tool": tool,
                 "input_model": intent,
@@ -586,7 +638,7 @@ def coordinate_ttadk_startup(
 
         attempts.append(
             {
-                "phase": "start",
+                "phase": StartupStage.START,
                 "ok": False,
                 "tool": tool,
                 "input_model": intent,
@@ -633,7 +685,7 @@ def coordinate_ttadk_startup(
             r_fb = fallback_fn(e)
             attempts.append(
                 {
-                    "phase": "degrade",
+                    "phase": StartupStage.DEGRADE,
                     "ok": True,
                     "tool": tool,
                     "input_model": intent,

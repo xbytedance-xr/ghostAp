@@ -159,8 +159,9 @@ def test_acp_manager_ensure_session_start_failure_empty_exc_has_non_empty_detail
     import pytest
 
     from src.acp.manager import ACPSessionManager
+    from src.acp.startup_utils import StartupOperationalError
 
-    class _EmptyErr(RuntimeError):
+    class _EmptyErr(StartupOperationalError):
         def __str__(self):
             return ""
 

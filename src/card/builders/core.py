@@ -1,8 +1,9 @@
+from __future__ import annotations
+
 import logging
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from src.project.context import ProjectContext
 from src.utils.text import format_time_ago
 from src.mode.manager import InteractionMode
 
@@ -13,6 +14,9 @@ from ..styles import THRESHOLDS
 from ..ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from src.project.context import ProjectContext
 
 
 class CoreBuilder:

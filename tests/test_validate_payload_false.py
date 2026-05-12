@@ -21,17 +21,17 @@ class TestValidatePayloadFalseWorktreeProgress:
     def test_unit_without_status_passes_silently(self, monkeypatch):
         _disable_validation(monkeypatch)
 
-        from src.card.events.factories import CardEvent
+        from src.card.events.worktree import worktree_progress
         # Unit missing 'status' — would fail with _VALIDATE_PAYLOAD=True
-        e = CardEvent.worktree_progress(units=[{"name": "u1"}], project_id="p1")
+        e = worktree_progress(units=[{"name": "u1"}], project_id="p1")
         assert e.payload["units"] == [{"name": "u1"}]
 
     def test_unit_non_dict_passes_silently(self, monkeypatch):
         _disable_validation(monkeypatch)
 
-        from src.card.events.factories import CardEvent
+        from src.card.events.worktree import worktree_progress
         # Unit is a string — per-element check skipped
-        e = CardEvent.worktree_progress(units=["not_a_dict"], project_id="p1")
+        e = worktree_progress(units=["not_a_dict"], project_id="p1")
         assert e.payload["units"] == ["not_a_dict"]
 
 
@@ -41,8 +41,8 @@ class TestValidatePayloadFalseWorktreeToolSelect:
     def test_non_dict_tool_passes_silently(self, monkeypatch):
         _disable_validation(monkeypatch)
 
-        from src.card.events.factories import CardEvent
-        e = CardEvent.worktree_tool_select(tools=["not_a_dict"])
+        from src.card.events.worktree import worktree_tool_select
+        e = worktree_tool_select(tools=["not_a_dict"])
         assert e.payload["tools"] == ["not_a_dict"]
 
 
@@ -52,9 +52,9 @@ class TestValidatePayloadFalseWorktreeCleanup:
     def test_merge_note_missing_branch_passes_silently(self, monkeypatch):
         _disable_validation(monkeypatch)
 
-        from src.card.events.factories import CardEvent
+        from src.card.events.worktree import worktree_cleanup
         # merge_note missing 'branch' — would fail with _VALIDATE_PAYLOAD=True
-        e = CardEvent.worktree_cleanup(
+        e = worktree_cleanup(
             merge_notes=[{"status": "ok"}],
             cleanup_phase="summary",
         )
@@ -67,8 +67,8 @@ class TestValidatePayloadFalseWorktreeMerge:
     def test_merge_note_missing_status_passes_silently(self, monkeypatch):
         _disable_validation(monkeypatch)
 
-        from src.card.events.factories import CardEvent
-        e = CardEvent.worktree_merge(merge_notes=[{"branch": "feat-1"}])
+        from src.card.events.worktree import worktree_merge
+        e = worktree_merge(merge_notes=[{"branch": "feat-1"}])
         assert e.payload["merge_notes"] == [{"branch": "feat-1"}]
 
 
@@ -78,13 +78,13 @@ class TestTopLevelTypeChecksStillEnforced:
     def test_units_non_list_still_raises(self, monkeypatch):
         _disable_validation(monkeypatch)
 
-        from src.card.events.factories import CardEvent
+        from src.card.events.worktree import worktree_progress
         with pytest.raises(TypeError, match="units must be a list"):
-            CardEvent.worktree_progress(units="bad", project_id="p1")
+            worktree_progress(units="bad", project_id="p1")
 
     def test_tools_non_list_still_raises(self, monkeypatch):
         _disable_validation(monkeypatch)
 
-        from src.card.events.factories import CardEvent
+        from src.card.events.worktree import worktree_tool_select
         with pytest.raises(TypeError, match="tools must be a list"):
-            CardEvent.worktree_tool_select(tools="bad")
+            worktree_tool_select(tools="bad")

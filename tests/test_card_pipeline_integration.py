@@ -6,6 +6,12 @@ renders correctly to card JSON.
 import json
 
 from src.card.events import CardEvent, CardEventType
+from src.card.events.worktree import (
+    worktree_cleanup,
+    worktree_merge,
+    worktree_progress,
+    worktree_tool_select,
+)
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import render_card
 from src.card.session.config import SessionConfig
@@ -124,7 +130,7 @@ class TestWorktreeProgressPipeline:
         ]
         state = _dispatch_sequence([
             CardEvent.started(),
-            CardEvent.worktree_progress(units, project_id="p1", message="执行中"),
+            worktree_progress(units, project_id="p1", message="执行中"),
         ], meta)
 
         assert len(state.blocks) == 1
@@ -187,7 +193,7 @@ class TestWorktreeProgressBoundary:
         meta = CardMetadata(engine_type="worktree", mode_name="Worktree")
         state = _dispatch_sequence([
             CardEvent.started(),
-            CardEvent.worktree_progress([], project_id="p1"),
+            worktree_progress([], project_id="p1"),
         ], meta)
 
         assert len(state.blocks) == 1
@@ -206,7 +212,7 @@ class TestWorktreeProgressBoundary:
         ]
         state = _dispatch_sequence([
             CardEvent.started(),
-            CardEvent.worktree_progress(units, project_id="p1", message="全部完成"),
+            worktree_progress(units, project_id="p1", message="全部完成"),
         ], meta)
 
         assert state.footer.progress_pct == 100
@@ -276,7 +282,7 @@ class TestWorktreeEndToEndPipeline:
         assert merge_notes[1]["branch"] == "feat/backend"
 
         # 3. Create CardEvent via factory (validates payload)
-        event = CardEvent.worktree_cleanup(
+        event = worktree_cleanup(
             merge_notes=merge_notes,
             base_branch="main",
             cleanup_phase="summary",
@@ -321,7 +327,7 @@ class TestWorktreeEndToEndPipeline:
         merge_notes = WorktreeReporter().build_merge_notes(units, "develop")
 
         # This should NOT raise — reporter output matches expected schema
-        event = CardEvent.worktree_merge(
+        event = worktree_merge(
             merge_notes=merge_notes,
             base_branch="develop",
         )
@@ -379,7 +385,7 @@ class TestCancelledWorktreePipeline:
         ]
         state = _dispatch_sequence([
             CardEvent.started(),
-            CardEvent.worktree_progress(units, project_id="p1", message="执行中"),
+            worktree_progress(units, project_id="p1", message="执行中"),
             CardEvent(type=CardEventType.WARNING_UPDATED, payload={"warning": "⚠️ 资源紧张"}),
             CardEvent.cancelled(),
         ], meta)
@@ -396,7 +402,7 @@ class TestCancelledWorktreePipeline:
         units = [{"name": "A", "status": "completed"}]
         state = _dispatch_sequence([
             CardEvent.started(),
-            CardEvent.worktree_progress(units, project_id="p1"),
+            worktree_progress(units, project_id="p1"),
             CardEvent.cancelled(reason="ttl_expired"),
         ], meta)
 
@@ -544,13 +550,13 @@ class TestWorktreeEngineE2ESmokeTest:
         state = _dispatch_sequence([
             CardEvent.started(),
             # Selection phase
-            CardEvent.worktree_tool_select(tools, selected=["coco", "claude"]),
+            worktree_tool_select(tools, selected=["coco", "claude"]),
             # Execution phase
-            CardEvent.worktree_progress(units, project_id="p1", message="All done"),
+            worktree_progress(units, project_id="p1", message="All done"),
             # Merge phase
-            CardEvent.worktree_merge(merge_notes=merge_notes, base_branch="main"),
+            worktree_merge(merge_notes=merge_notes, base_branch="main"),
             # Cleanup phase
-            CardEvent.worktree_cleanup(
+            worktree_cleanup(
                 merge_notes=merge_notes, base_branch="main", cleanup_phase="summary",
                 merge_results=[
                     {"branch": "wt/coco-main", "success": True},
@@ -575,7 +581,7 @@ class TestWorktreeEngineE2ESmokeTest:
         ]
         state = _dispatch_sequence([
             CardEvent.started(),
-            CardEvent.worktree_progress(units, project_id="p1"),
+            worktree_progress(units, project_id="p1"),
             CardEvent.failed("1 unit failed"),
         ], meta)
 

@@ -1,8 +1,8 @@
+from __future__ import annotations
+
 import json
 import logging
-from typing import Optional
-
-from src.project.context import ProjectContext
+from typing import TYPE_CHECKING, Optional
 
 from ..models import EngineCardState
 from ..shared import (
@@ -15,6 +15,9 @@ from ..ui_text import UI_TEXT
 from .core import CoreBuilder
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from src.project.context import ProjectContext
 
 
 class DeepBuilder:

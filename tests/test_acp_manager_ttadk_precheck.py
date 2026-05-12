@@ -124,7 +124,9 @@ def test_acp_session_manager_ttadk_startup_fail_log_has_non_empty_error_blob(mon
     monkeypatch.setattr("src.ttadk.startup_common.precheck_ttadk_startup_model", fake_precheck)
 
     # --- stub SyncTTADKCLISession to fail with empty str(exception) ---
-    class _EmptyStrErr(Exception):
+    from src.acp.startup_utils import StartupOperationalError
+
+    class _EmptyStrErr(StartupOperationalError):
         def __str__(self):
             return ""
 
@@ -187,10 +189,8 @@ def test_acp_session_manager_ttadk_startup_fail_log_has_non_empty_error_blob(mon
     # It catches exception, logs warning, tries degrade (which fails here because we didn't mock it well?),
     # then raises RuntimeError.
 
-    # Actually, if degrade succeeds (it mocks SyncACPSession elsewhere?), then no raise.
-    # But here we only mocked SyncTTADKCLISession. _degrade_ttadk_to_coco_acp uses SyncACPSession.
-    # We need to ensure _degrade_ttadk_to_coco_acp ALSO fails or returns nothing if we want to test raise.
-    # By default SyncACPSession is not mocked globally here, so it might try to run real acp and fail (binary missing).
+    # Direct ACP fallback for ttadk_* identities is intentionally unavailable; a CLI
+    # startup failure must surface as a TTADK CLI error instead of starting Coco ACP.
     pass
 
 

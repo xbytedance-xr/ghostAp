@@ -96,6 +96,16 @@ class SpecHandler(BaseEngineHandler):
             project_id=project.project_id if project else None,
             engine_project_id=project.project_id if project else root_path,
             footer_note=self.format_ref_note(message_id, request_id) if request_id else None,
+            error_details=f"engine={engine_name}; action=spec; request_id={request_id or 'n/a'}",
+            detail_action={
+                "action": "show_error_details",
+                "engine_type": "spec",
+                "request_id": request_id or "",
+            },
+            retry_action={
+                "action": "spec_resume",
+                "request_id": request_id or "",
+            },
         )
         self.send_card_to_chat(chat_id, err_card, origin_message_id=message_id, request_id=request_id)
 

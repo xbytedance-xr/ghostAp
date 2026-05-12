@@ -12,6 +12,14 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card.events import CardEvent, CardEventType
+from ...card.events.worktree import (
+    worktree_cleanup,
+    worktree_completed_no_change,
+    worktree_confirm,
+    worktree_merge,
+    worktree_progress,
+    worktree_tool_select,
+)
 from ...card.ui_text import UI_TEXT
 from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ...repo_lock import LockConflictError
@@ -148,7 +156,7 @@ class WorktreeHandler(BaseHandler):
                             elapsed=int(elapsed // 60)
                         )
                         if session:
-                            session.dispatch(CardEvent.worktree_progress(
+                            session.dispatch(worktree_progress(
                                 cur_dicts, project_id=pid, message=msg,
                             ))
                     except Exception:
@@ -163,7 +171,7 @@ class WorktreeHandler(BaseHandler):
                 cur_dicts = [u.to_dict() for u in cur_state.units]
                 msg = UI_TEXT["worktree_executing_live"].format(goal=truncate_goal(goal))
                 if session:
-                    session.dispatch(CardEvent.worktree_progress(
+                    session.dispatch(worktree_progress(
                         cur_dicts, project_id=pid, message=msg,
                     ))
             except Exception:
@@ -237,7 +245,7 @@ class WorktreeHandler(BaseHandler):
 
         # Dispatch tool selection through CardSession
         session = self._get_or_create_session(chat_id, project_id, reply_to=message_id if not from_card else None)
-        session.dispatch(CardEvent.worktree_tool_select(
+        session.dispatch(worktree_tool_select(
             tools=tools, selected=selected_dicts, project_id=project_id,
         ))
 
@@ -273,7 +281,7 @@ class WorktreeHandler(BaseHandler):
             ttadk_tools = [self._normalize_ttadk_tool_option(t) for t in self._get_ttadk_worktree_tools()]
             # Show TTADK tool selection via session dispatch
             session = self._get_or_create_session(chat_id, pid)
-            session.dispatch(CardEvent.worktree_tool_select(
+            session.dispatch(worktree_tool_select(
                 tools=ttadk_tools, selected=selected_dicts, project_id=pid,
                 message="请选择 TTADK 工具",
             ))
@@ -336,7 +344,7 @@ class WorktreeHandler(BaseHandler):
                     "name": display,
                     "description": blurb,
                 })
-            session.dispatch(CardEvent.worktree_tool_select(
+            session.dispatch(worktree_tool_select(
                 tools=model_tools, selected=selected_dicts, project_id=pid,
                 message=UI_TEXT["system_worktree_select_model_prompt"].format(tool=option.display_name),
                 select_action="worktree_select_model",
@@ -359,7 +367,7 @@ class WorktreeHandler(BaseHandler):
             tools = self._get_available_worktree_tools()
             selected_dicts = [item.to_dict() for item in state.selection.selected_items]
             session = self._get_or_create_session(chat_id, pid)
-            session.dispatch(CardEvent.worktree_tool_select(
+            session.dispatch(worktree_tool_select(
                 tools=tools, selected=selected_dicts, project_id=pid,
                 message=msg,
             ))
@@ -393,7 +401,7 @@ class WorktreeHandler(BaseHandler):
         tools = self._get_available_worktree_tools()
         pid = project.project_id
         session = self._get_or_create_session(chat_id, pid)
-        session.dispatch(CardEvent.worktree_tool_select(
+        session.dispatch(worktree_tool_select(
             tools=tools, selected=selected_dicts, project_id=pid, message=msg,
         ))
 
@@ -420,7 +428,7 @@ class WorktreeHandler(BaseHandler):
         pid = project.project_id
         tools = self._get_available_worktree_tools()
         session = self._get_or_create_session(chat_id, pid)
-        session.dispatch(CardEvent.worktree_tool_select(
+        session.dispatch(worktree_tool_select(
             tools=tools, selected=selected_dicts, project_id=pid, message=msg,
         ))
 
@@ -445,7 +453,7 @@ class WorktreeHandler(BaseHandler):
         pid = project.project_id
         tools = self._get_available_worktree_tools()
         session = self._get_or_create_session(chat_id, pid)
-        session.dispatch(CardEvent.worktree_tool_select(
+        session.dispatch(worktree_tool_select(
             tools=tools, selected=selected_dicts, project_id=pid, message=msg,
         ))
 
@@ -478,7 +486,7 @@ class WorktreeHandler(BaseHandler):
         session = self._get_or_create_session(chat_id, pid)
 
         if goal:
-            session.dispatch(CardEvent.worktree_confirm(
+            session.dispatch(worktree_confirm(
                 selected_items=[item.to_dict() for item in state.selection.selected_items],
                 project_id=pid,
                 message=UI_TEXT["worktree_auto_executing_banner"],
@@ -488,7 +496,7 @@ class WorktreeHandler(BaseHandler):
             return
 
         selected_dicts = [item.to_dict() for item in state.selection.selected_items]
-        session.dispatch(CardEvent.worktree_confirm(
+        session.dispatch(worktree_confirm(
             selected_items=selected_dicts, project_id=pid,
         ))
 
@@ -515,7 +523,7 @@ class WorktreeHandler(BaseHandler):
             units_dicts = [u.to_dict() for u in state.units] if state.units else []
             if units_dicts:
                 session = self._get_or_create_session(chat_id, pid)
-                session.dispatch(CardEvent.worktree_progress(
+                session.dispatch(worktree_progress(
                     units_dicts, pid, message=error_msg,
                 ))
             self.reply_error(message_id, error_msg)
@@ -557,7 +565,7 @@ class WorktreeHandler(BaseHandler):
         if goal:
             mgr.apply_journey_event(state, event="auto_execute_started", goal=goal, silent_mode=False)
             session = self._get_or_create_session(chat_id, pid)
-            session.dispatch(CardEvent.worktree_confirm(
+            session.dispatch(worktree_confirm(
                 selected_items=[item.to_dict() for item in mgr.get_state(project).selection.selected_items],
                 project_id=pid,
                 message=UI_TEXT["worktree_auto_executing_banner"],
@@ -569,7 +577,7 @@ class WorktreeHandler(BaseHandler):
         units_dicts = [u.to_dict() for u in state.units]
         ready_msg = UI_TEXT["system_worktree_created_prompt"] + "\n" + UI_TEXT["worktree_ready_intercept_hint"]
         session = self._get_or_create_session(chat_id, pid)
-        session.dispatch(CardEvent.worktree_progress(
+        session.dispatch(worktree_progress(
             units_dicts, project_id=pid, message=ready_msg,
         ))
 
@@ -608,7 +616,7 @@ class WorktreeHandler(BaseHandler):
         # Create a CardSession for progress tracking
         session = self._get_or_create_session(chat_id, pid, reply_to=message_id)
         session.dispatch(CardEvent.started())
-        session.dispatch(CardEvent.worktree_progress(
+        session.dispatch(worktree_progress(
             units_dicts, project_id=pid, message=init_msg,
             silent=silent_mode,
         ))
@@ -637,12 +645,12 @@ class WorktreeHandler(BaseHandler):
 
         final_dicts = [u.to_dict() for u in state.units]
         if state.merge_entry_ready:
-            session.dispatch(CardEvent.worktree_cleanup(
+            session.dispatch(worktree_cleanup(
                 state.merge_notes, base_branch=state.base_branch or "main",
                 project_id=pid, units=final_dicts,
             ))
         else:
-            session.dispatch(CardEvent.worktree_completed_no_change(
+            session.dispatch(worktree_completed_no_change(
                 final_dicts, project_id=pid,
                 message=UI_TEXT["worktree_completed_no_change"],
             ))
@@ -683,7 +691,7 @@ class WorktreeHandler(BaseHandler):
 
         # Use CardSession for cleanup card
         session = self._get_or_create_session(chat_id, pid)
-        session.dispatch(CardEvent.worktree_cleanup(
+        session.dispatch(worktree_cleanup(
             state.merge_notes, base_branch=state.base_branch or "main",
             merge_results=[r if isinstance(r, dict) else {"branch": str(r), "success": True} for r in (merge_results or [])],
             project_id=pid,
@@ -714,7 +722,7 @@ class WorktreeHandler(BaseHandler):
 
         pid = project.project_id
         session = self._get_or_create_session(chat_id, pid)
-        session.dispatch(CardEvent.worktree_merge(
+        session.dispatch(worktree_merge(
             merge_notes=state.merge_notes,
             base_branch=state.base_branch or "main",
             project_id=pid,
@@ -807,7 +815,7 @@ class WorktreeHandler(BaseHandler):
         # Use CardSession for retry progress
         session = self._get_or_create_session(chat_id, pid, reply_to=message_id)
         session.dispatch(CardEvent.started())
-        session.dispatch(CardEvent.worktree_progress(
+        session.dispatch(worktree_progress(
             units_dicts, project_id=pid, message=UI_TEXT["system_worktree_retry_starting"],
         ))
 
@@ -824,12 +832,12 @@ class WorktreeHandler(BaseHandler):
 
         final_dicts = [u.to_dict() for u in state.units]
         if state.merge_entry_ready:
-            session.dispatch(CardEvent.worktree_cleanup(
+            session.dispatch(worktree_cleanup(
                 state.merge_notes, base_branch=state.base_branch or "main",
                 project_id=pid, units=final_dicts,
             ))
         else:
-            session.dispatch(CardEvent.worktree_progress(
+            session.dispatch(worktree_progress(
                 final_dicts, project_id=pid,
                 message=UI_TEXT["system_worktree_retry_completed"],
             ))

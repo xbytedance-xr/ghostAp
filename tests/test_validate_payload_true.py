@@ -2,6 +2,7 @@
 import pytest
 
 from src.card.events import CardEvent, CardEventType
+from src.card.events.worktree import worktree_merge, worktree_progress
 
 
 class TestCardEventPayloadValidation:
@@ -50,14 +51,14 @@ class TestCardEventPayloadValidation:
     def test_worktree_progress_payload_structure(self):
         """worktree_progress includes units list."""
         units = [{"name": "A", "status": "running"}]
-        event = CardEvent.worktree_progress(units, project_id="p1")
+        event = worktree_progress(units, project_id="p1")
         assert event.type == CardEventType.WORKTREE_PROGRESS
         assert event.payload["units"] == units
 
     def test_worktree_merge_payload(self):
         """worktree_merge includes merge_notes and base_branch."""
         notes = [{"branch": "feat-1", "status": "ready"}]
-        event = CardEvent.worktree_merge(merge_notes=notes, base_branch="main")
+        event = worktree_merge(merge_notes=notes, base_branch="main")
         assert event.type == CardEventType.WORKTREE_MERGE
         assert event.payload["merge_notes"] == notes
         assert event.payload["base_branch"] == "main"

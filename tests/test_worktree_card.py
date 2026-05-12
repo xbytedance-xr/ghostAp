@@ -1,6 +1,14 @@
 """Tests for worktree reducer and event dispatch flow."""
 import json
 from src.card.events import CardEvent, CardEventType
+from src.card.events.worktree import (
+    worktree_cleanup,
+    worktree_completed_no_change,
+    worktree_confirm,
+    worktree_merge,
+    worktree_progress,
+    worktree_tool_select,
+)
 from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import CardMetadata, CardState
 from src.card.state.reducer import reduce_card_state
@@ -22,7 +30,7 @@ def _parse_block_data(state: CardState, index: int = 0) -> dict:
 class TestReduceWorktreeToolSelect:
     def test_tool_select_stores_structured_data(self):
         state = _base_state()
-        event = CardEvent.worktree_tool_select(
+        event = worktree_tool_select(
             tools=[
                 {"id": "coco", "name": "Coco", "description": "AI assistant"},
                 {"id": "bash", "name": "Bash", "description": "Shell executor"},
@@ -43,7 +51,7 @@ class TestReduceWorktreeToolSelect:
     def test_tool_select_reducer_emits_no_buttons(self):
         """Reducer 不再产出 footer 按钮——render 层全权负责确认/移除/清空。"""
         state = _base_state()
-        event = CardEvent.worktree_tool_select(
+        event = worktree_tool_select(
             tools=[{"id": "coco", "name": "Coco"}],
             selected=["coco"],
         )
@@ -52,7 +60,7 @@ class TestReduceWorktreeToolSelect:
 
     def test_tool_select_empty_selection_no_confirm_button(self):
         state = _base_state()
-        event = CardEvent.worktree_tool_select(
+        event = worktree_tool_select(
             tools=[{"id": "coco", "name": "Coco"}],
             selected=[],
         )
@@ -63,7 +71,7 @@ class TestReduceWorktreeToolSelect:
 class TestReduceWorktreeConfirm:
     def test_confirm_stores_structured_data(self):
         state = _base_state()
-        event = CardEvent.worktree_confirm(
+        event = worktree_confirm(
             selected_items=[
                 {"tool": "Coco", "model": "claude-sonnet"},
                 {"tool": "Bash", "model": "none"},
@@ -87,7 +95,7 @@ class TestReduceWorktreeProgress:
             {"name": "Unit B", "status": "running"},
             {"name": "Unit C", "status": "failed"},
         ]
-        event = CardEvent.worktree_progress(units, project_id="p1")
+        event = worktree_progress(units, project_id="p1")
         new = reduce_worktree(state, event)
         assert new.blocks[0].kind == "worktree_units"
         data = _parse_block_data(new)
@@ -100,14 +108,14 @@ class TestReduceWorktreeProgress:
     def test_progress_with_failed_shows_retry_button(self):
         state = _base_state()
         units = [{"name": "U1", "status": "failed"}]
-        event = CardEvent.worktree_progress(units)
+        event = worktree_progress(units)
         new = reduce_worktree(state, event)
         assert any(b.action_id == ButtonIntent.WORKTREE_RETRY_FAILED for b in new.buttons)
 
     def test_progress_without_failed_no_retry_button(self):
         state = _base_state()
         units = [{"name": "U1", "status": "completed"}]
-        event = CardEvent.worktree_progress(units)
+        event = worktree_progress(units)
         new = reduce_worktree(state, event)
         # All completed with no failures → show retry_all + cancel buttons
         assert len(new.buttons) == 2
@@ -122,7 +130,7 @@ class TestReduceWorktreeProgress:
             {"name": "C", "status": "running"},
             {"name": "D", "status": "pending"},
         ]
-        event = CardEvent.worktree_progress(units)
+        event = worktree_progress(units)
         new = reduce_worktree(state, event)
         assert new.footer.progress_pct == 50
         assert "2/4" in new.footer.progress
@@ -130,7 +138,7 @@ class TestReduceWorktreeProgress:
     def test_progress_empty_units_no_error(self):
         """Empty units list should not raise and should produce valid state."""
         state = _base_state()
-        event = CardEvent.worktree_progress([], project_id="p1")
+        event = worktree_progress([], project_id="p1")
         new = reduce_worktree(state, event)
         assert new.blocks[0].kind == "worktree_units"
         data = _parse_block_data(new)
@@ -149,7 +157,7 @@ class TestReduceWorktreeMerge:
             {"branch": "feat/search", "status": "ready", "summary": "Search feature"},
             {"branch": "feat/auth", "status": "conflict", "summary": "Auth module"},
         ]
-        event = CardEvent.worktree_merge(merge_notes, base_branch="develop")
+        event = worktree_merge(merge_notes, base_branch="develop")
         new = reduce_worktree(state, event)
         assert new.blocks[0].kind == "worktree_merge"
         data = _parse_block_data(new)
@@ -161,7 +169,7 @@ class TestReduceWorktreeMerge:
     def test_merge_empty_notes_no_error(self):
         """Empty merge_notes list should not raise and should produce valid state."""
         state = _base_state()
-        event = CardEvent.worktree_merge([], base_branch="main")
+        event = worktree_merge([], base_branch="main")
         new = reduce_worktree(state, event)
         assert new.blocks[0].kind == "worktree_merge"
         data = _parse_block_data(new)
@@ -174,7 +182,7 @@ class TestReduceWorktreeCleanup:
         state = _base_state()
         merge_notes = [{"branch": "feat/a", "status": "merged"}]
         merge_results = [{"branch": "feat/a", "success": True}]
-        event = CardEvent.worktree_cleanup(
+        event = worktree_cleanup(
             merge_notes, merge_results=merge_results, project_id="p1",
             cleanup_phase="actions",
         )
@@ -189,7 +197,7 @@ class TestReduceWorktreeCleanup:
         state = _base_state()
         merge_notes = [{"branch": "feat/b", "status": "conflict"}]
         merge_results = [{"branch": "feat/b", "success": False}]
-        event = CardEvent.worktree_cleanup(
+        event = worktree_cleanup(
             merge_notes, merge_results=merge_results,
         )
         new = reduce_worktree(state, event)
@@ -200,7 +208,7 @@ class TestReduceWorktreeCleanup:
         state = _base_state()
         merge_notes = [{"branch": "feat/x", "status": "ready"}]
         merge_results = [{"branch": "feat/x", "success": True}]
-        event = CardEvent.worktree_cleanup(
+        event = worktree_cleanup(
             merge_notes, merge_results=merge_results,
             cleanup_phase="summary",
         )
@@ -216,7 +224,7 @@ class TestReduceWorktreeCleanup:
         state = _base_state()
         merge_notes = [{"branch": "feat/y", "status": "conflict"}]
         merge_results = [{"branch": "feat/y", "success": False}]
-        event = CardEvent.worktree_cleanup(
+        event = worktree_cleanup(
             merge_notes, merge_results=merge_results,
             cleanup_phase="summary",
         )
@@ -235,7 +243,7 @@ class TestWorktreeReducerInMainPipeline:
         state = reduce_card_state(None, CardEvent.started(), meta)
         state = reduce_card_state(
             state,
-            CardEvent.worktree_progress(
+            worktree_progress(
                 [{"name": "U1", "status": "running"}], project_id="p1",
             ),
         )
@@ -380,7 +388,7 @@ class TestReduceWorktreeCompletedNoChange:
     """Test the WORKTREE_COMPLETED_NO_CHANGE event and its reducer handler."""
 
     def test_event_factory_creates_correct_type(self):
-        event = CardEvent.worktree_completed_no_change(
+        event = worktree_completed_no_change(
             [{"name": "U1", "status": "completed"}], project_id="p1", message="No changes"
         )
         assert event.type == CardEventType.WORKTREE_COMPLETED_NO_CHANGE
@@ -389,7 +397,7 @@ class TestReduceWorktreeCompletedNoChange:
 
     def test_reducer_produces_completed_terminal(self):
         state = _base_state()
-        event = CardEvent.worktree_completed_no_change(
+        event = worktree_completed_no_change(
             [{"name": "U1", "status": "completed"}], message="无变更"
         )
         new = reduce_worktree(state, event)
@@ -399,7 +407,7 @@ class TestReduceWorktreeCompletedNoChange:
 
     def test_reducer_shows_retry_and_cancel_buttons(self):
         state = _base_state()
-        event = CardEvent.worktree_completed_no_change(
+        event = worktree_completed_no_change(
             [{"name": "U1", "status": "completed"}]
         )
         new = reduce_worktree(state, event)
@@ -409,14 +417,14 @@ class TestReduceWorktreeCompletedNoChange:
 
     def test_reducer_uses_default_message_when_empty(self):
         state = _base_state()
-        event = CardEvent.worktree_completed_no_change([], message="")
+        event = worktree_completed_no_change([], message="")
         new = reduce_worktree(state, event)
         # Should use the UI_TEXT default
         assert new.footer.status_text != ""
 
     def test_header_uses_wathet_template(self):
         state = _base_state()
-        event = CardEvent.worktree_completed_no_change(
+        event = worktree_completed_no_change(
             [{"name": "U1", "status": "completed"}]
         )
         new = reduce_worktree(state, event)
@@ -467,7 +475,7 @@ class TestWorktreeProgressSilentBranch:
         state = reduce_card_state(None, CardEvent.started(), meta)
         state = reduce_card_state(
             state,
-            CardEvent.worktree_completed_no_change(
+            worktree_completed_no_change(
                 [{"name": "U1", "status": "completed"}], message="无变更"
             ),
         )
@@ -484,7 +492,7 @@ class TestRetryButtonConfirmText:
 
         state = _base_state()
         # Start with a progress event containing failures
-        event = CardEvent.worktree_progress(
+        event = worktree_progress(
             units=[
                 {"name": "coco", "status": "completed"},
                 {"name": "bash", "status": "failed"},
@@ -502,7 +510,7 @@ class TestRetryButtonConfirmText:
 
         state = _base_state()
         # All completed, no failures → retry_all
-        event = CardEvent.worktree_progress(
+        event = worktree_progress(
             units=[
                 {"name": "coco", "status": "completed"},
                 {"name": "bash", "status": "completed"},

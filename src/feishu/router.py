@@ -159,6 +159,53 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_show_message_trace": ("diagnostics", "show_message_trace"),
 }
 
+
+def _handler_classes() -> dict[str, type]:
+    """Return handler classes used to validate FORWARDING_MAP method names."""
+    from .handlers.deep import DeepHandler
+    from .handlers.diagnostics import DiagnosticsHandler
+    from .handlers.programming import (
+        AidenModeHandler,
+        ClaudeModeHandler,
+        CocoModeHandler,
+        CodexModeHandler,
+        GeminiModeHandler,
+        TTADKModeHandler,
+    )
+    from .handlers.project import ProjectHandler
+    from .handlers.spec import SpecHandler
+    from .handlers.system import SystemHandler
+    from .handlers.worktree import WorktreeHandler
+
+    return {
+        "coco": CocoModeHandler,
+        "claude": ClaudeModeHandler,
+        "aiden": AidenModeHandler,
+        "codex": CodexModeHandler,
+        "gemini": GeminiModeHandler,
+        "ttadk": TTADKModeHandler,
+        "system": SystemHandler,
+        "worktree": WorktreeHandler,
+        "deep": DeepHandler,
+        "spec": SpecHandler,
+        "project": ProjectHandler,
+        "diagnostics": DiagnosticsHandler,
+    }
+
+
+def validate_forwarding_map() -> list[str]:
+    """Validate that each forwarding target refers to an existing handler method."""
+    handler_classes = _handler_classes()
+    errors: list[str] = []
+    for attr_name, (handler_key, method_name) in FORWARDING_MAP.items():
+        handler_cls = handler_classes.get(handler_key)
+        if handler_cls is None:
+            errors.append(f"{attr_name}: unknown handler key {handler_key!r}")
+            continue
+        if not hasattr(handler_cls, method_name):
+            errors.append(f"{attr_name}: {handler_key}.{method_name} is missing")
+    return errors
+
 def bind_forwarding_methods(client: Any, handler_ctx: Any) -> None:
     """
     Bind forwarding methods directly on the client instance.

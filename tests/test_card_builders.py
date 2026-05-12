@@ -35,6 +35,57 @@ def _collect_buttons(card: dict) -> list[dict]:
     return buttons
 
 
+def _collect_button_layout_blocks(card: dict) -> list[list[dict]]:
+    """Return button groups by their immediate column_set layout block."""
+
+    blocks: list[list[dict]] = []
+
+    def collect_buttons(node) -> list[dict]:
+        found: list[dict] = []
+        if isinstance(node, dict):
+            if node.get("tag") == "button":
+                found.append(node)
+            for value in node.values():
+                found.extend(collect_buttons(value))
+        elif isinstance(node, list):
+            for item in node:
+                found.extend(collect_buttons(item))
+        return found
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "column_set":
+                buttons = collect_buttons(node.get("columns", []))
+                if buttons:
+                    blocks.append(buttons)
+                    return
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(card)
+    return blocks
+
+
+def _collect_selects(card: dict) -> list[dict]:
+    selects: list[dict] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "select_static":
+                selects.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(card)
+    return selects
+
+
 def test_tool_option_view_defaults():
     opt = ToolOptionView(name="coco")
 
@@ -189,6 +240,542 @@ def test_system_builder_soft_failure_banner():
     assert elements[0]["tag"] == "column_set"
     assert elements[0]["background_style"] == "orange"  # soft failure 使用 warning 类型（Apple 风格优化：橙色）
     assert message in elements[0]["columns"][0]["elements"][0]["content"]
+
+
+def test_system_error_card_action_buttons_have_callback_behaviors():
+    """Error card detail/retry buttons must be clickable callback buttons in Feishu."""
+    msg_type, card_json = SystemBuilder.build_error_card(
+        RuntimeError("boom"),
+        title="启动失败",
+        summary="boom",
+        detail_action={"action": "show_error_details", "session_id": "s1"},
+        retry_action={"action": "deep_resume", "project_id": "p1"},
+    )
+
+    assert msg_type == "interactive"
+    card = json.loads(card_json)
+    buttons = _collect_buttons(card)
+    assert len(buttons) == 2
+    for button in buttons:
+        assert button["value"]["action"]
+        assert button.get("behaviors") == [{"type": "callback", "value": button["value"]}]
+
+
+def test_ttadk_select_cards_keep_critical_fields_and_refresh_button():
+    """TTADK tool/model/combined cards must keep select value and refresh fields stable."""
+    tools = [ToolOptionView(name="coco", description="Coco agent")]
+    models = [ModelOptionView(name="gpt-5", description="Flagship", display_name="GPT 5")]
+
+    _, tool_json = SystemBuilder.build_ttadk_tool_select_card(
+        tools, project_id="p1", current_tool="coco"
+    )
+    tool_card = json.loads(tool_json)
+    tool_select = _collect_selects(tool_card)[0]
+    assert tool_select["initial_option"] == "coco"
+    assert tool_select["value"] == {"action": "select_ttadk_tool", "project_id": "p1"}
+    assert tool_select["options"][0]["value"] == "coco"
+    assert "Coco agent" in tool_select["options"][0]["text"]["content"]
+
+    _, model_json = SystemBuilder.build_ttadk_model_select_card(
+        models, tool_name="coco", project_id="p1", current_model="gpt-5"
+    )
+    model_card = json.loads(model_json)
+    model_select = _collect_selects(model_card)[0]
+    assert model_select["initial_option"] == "gpt-5"
+    assert model_select["value"] == {
+        "action": "select_ttadk_model",
+        "tool_name": "coco",
+        "project_id": "p1",
+    }
+    refresh_buttons = [b for b in _collect_buttons(model_card) if b["value"].get("action") == "refresh_ttadk_models"]
+    assert refresh_buttons[0]["value"] == {
+        "action": "refresh_ttadk_models",
+        "tool_name": "coco",
+        "project_id": "p1",
+    }
+
+    _, combined_json = SystemBuilder.build_ttadk_combined_select_card(
+        tools,
+        {"coco": models},
+        project_id="p1",
+        current_tool="coco",
+        current_model="gpt-5",
+    )
+    combined_card = json.loads(combined_json)
+    combined_selects = _collect_selects(combined_card)
+    assert combined_selects[0]["value"] == {"action": "select_ttadk_combined_tool", "project_id": "p1"}
+    assert combined_selects[1]["value"] == {
+        "action": "select_ttadk_combined",
+        "tool_name": "coco",
+        "project_id": "p1",
+    }
+
+
+def test_acp_select_cards_keep_project_tool_thread_and_refresh_fields():
+    """ACP selection cards must keep action payloads stable across helper extraction."""
+    _, tool_json = SystemBuilder.build_acp_tool_select_card(
+        [ToolOptionView(name="coco", description="Coco", emoji="🤖")],
+        project_id="p1",
+        current_tool="coco",
+    )
+    tool_buttons = _collect_buttons(json.loads(tool_json))
+    assert tool_buttons[0]["type"] == "primary"
+    assert tool_buttons[0]["value"] == {
+        "action": "select_acp_tool",
+        "tool_name": "coco",
+        "project_id": "p1",
+    }
+
+    _, model_json = SystemBuilder.build_acp_model_select_card(
+        [ModelOptionView(name="gpt-5", description="Flagship", display_name="GPT 5")],
+        tool_name="coco",
+        project_id="p1",
+        current_model="gpt-5",
+        thread_root_id="thread-1",
+    )
+    model_buttons = _collect_buttons(json.loads(model_json))
+    assert model_buttons[0]["type"] == "primary"
+    assert model_buttons[0]["value"] == {
+        "action": "select_acp_model",
+        "tool_name": "coco",
+        "model_name": "gpt-5",
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+    assert model_buttons[-1]["value"] == {
+        "action": "refresh_acp_models",
+        "tool_name": "coco",
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+
+
+def test_system_error_card_uses_unified_error_visual_contract():
+    """BaseHandler/SystemBuilder error card should share summary/details/retry visual contract."""
+    msg_type, card_json = SystemBuilder.build_error_card(
+        "boom",
+        title="系统错误",
+        details="stderr: boom\n/home/alice/project/.env SECRET_TOKEN=abc123",
+        detail_action={"action": "show_error_details", "trace_id": "trace-1", "details": "stderr: boom"},
+        retry_action={"action": "retry_original", "request_id": "req-1"},
+    )
+    card = json.loads(card_json)
+    card_text = json.dumps(card, ensure_ascii=False)
+    buttons = _collect_buttons(card)
+
+    assert msg_type == "interactive"
+    assert "错误摘要" in card_text
+    assert "boom" in card_text
+    assert "详情已收起" in card_text
+    assert "stderr: boom" not in card_text
+    assert "/home/alice/project" not in card_text
+    assert "SECRET_TOKEN" not in card_text
+    assert any(button["text"]["content"] == "查看详情" for button in buttons)
+    assert any(button["text"]["content"].startswith("🔄") for button in buttons)
+    detail_buttons = [button for button in buttons if button["value"].get("action") == "show_error_details"]
+    assert detail_buttons
+    detail_value = detail_buttons[0]["value"]
+    assert detail_value["trace_id"] == "trace-1"
+    assert "diagnostic_token" in detail_value
+    assert "details" not in detail_value
+    assert any(button["value"] == {"action": "retry_original", "request_id": "req-1"} for button in buttons)
+
+
+def test_system_error_card_without_recoverable_action_hides_retry_button():
+    """通用错误卡片没有原操作上下文时不得硬编码 show_status/retry_command。"""
+    _, card_json = SystemBuilder.build_error_card(
+        "boom",
+        title="系统错误",
+        details="trace 摘要: line 1",
+        detail_action={"action": "show_error_details", "trace_id": "trace-2"},
+    )
+    card = json.loads(card_json)
+    buttons = _collect_buttons(card)
+    values = [button.get("value", {}) for button in buttons]
+    card_text = json.dumps(card, ensure_ascii=False)
+
+    assert "trace 摘要: line 1" not in card_text
+    assert any(
+        value.get("action") == "show_error_details"
+        and value.get("trace_id") == "trace-2"
+        and value.get("diagnostic_token")
+        and "details" not in value
+        for value in values
+    )
+    assert {"action": "show_status"} not in values
+    assert {"action": "retry_command"} not in values
+    assert not any(button["text"]["content"].startswith("🔄") for button in buttons)
+
+
+def test_system_error_card_detail_action_payload_details_feed_diagnostic_store():
+    from src.card.error_diagnostics import render_error_diagnostic
+
+    _, card_json = SystemBuilder.build_error_card(
+        "TTADK 启动失败",
+        title="TTADK 暂不可用",
+        severity="degraded",
+        summary="系统已切换到备用路径",
+        details="诊断详情已收起，点击“查看详情”可查看本次失败摘要。",
+        detail_action={
+            "action": "show_error_details",
+            "trace_id": "trace-real-detail",
+            "details": "real startup failure cwd=/data00/home/alice/project TOKEN=secret",
+        },
+    )
+    buttons = _collect_buttons(json.loads(card_json))
+    detail_value = next(button["value"] for button in buttons if button["value"].get("action") == "show_error_details")
+
+    rendered = render_error_diagnostic(
+        detail_value["diagnostic_token"],
+        trace_id="trace-real-detail",
+    )
+
+    assert "real startup failure" in rendered
+    assert "诊断详情已收起" not in rendered
+    assert "/data00/home/alice" not in rendered
+    assert "TOKEN=secret" not in rendered
+
+
+def test_system_error_card_distinguishes_error_severity_visual_hierarchy():
+    cases = {
+        "recoverable": ("orange", "🟠 可恢复错误", "primary"),
+        "degraded": ("yellow", "🟡 降级错误", "default"),
+        "fatal": ("red", "🔴 致命错误", "default"),
+    }
+
+    for severity, (template, label, retry_type) in cases.items():
+        _, card_json = SystemBuilder.build_error_card(
+            "boom",
+            title="系统错误",
+            severity=severity,
+            detail_action={"action": "show_error_details", "trace_id": severity},
+            retry_action={
+                "action": "retry_original",
+                "request_id": severity,
+                "original_mode": "Claude",
+                "retry_mode": "Claude",
+                "degraded_to": "Coco",
+            },
+        )
+        card = json.loads(card_json)
+        card_text = json.dumps(card, ensure_ascii=False)
+        buttons = _collect_buttons(card)
+        retry_buttons = [button for button in buttons if button["value"].get("action") == "retry_original"]
+
+        assert card["header"]["template"] == template
+        assert label in card_text
+        assert retry_buttons[0]["type"] == retry_type
+
+
+def test_degraded_error_card_without_complete_retry_payload_has_only_details_button():
+    _, card_json = SystemBuilder.build_error_card(
+        "部分能力不可用，已进入降级模式",
+        title="系统降级",
+        severity="degraded",
+        detail_action={"action": "show_error_details", "trace_id": "degraded-no-quick-action"},
+        continue_action={"action": "continue_degraded", "request_id": "req-degraded"},
+        retry_action={"action": "retry_original", "request_id": "req-degraded"},
+    )
+    card = json.loads(card_json)
+    buttons = _collect_buttons(card)
+    retry_buttons = [button for button in buttons if button["value"].get("action") == "retry_original"]
+    continue_buttons = [button for button in buttons if button["value"].get("action") == "continue_degraded"]
+    button_labels = [button["text"]["content"] for button in buttons]
+    button_blocks = _collect_button_layout_blocks(card)
+
+    assert continue_buttons == []
+    assert retry_buttons == []
+    assert button_labels == [
+        UI_TEXT["card_lifecycle_show_details"],
+    ]
+    assert [[button["text"]["content"] for button in block] for block in button_blocks[-1:]] == [
+        [UI_TEXT["card_lifecycle_show_details"]],
+    ]
+
+
+@pytest.mark.parametrize(
+    "retry_action",
+    [
+        None,
+        {"action": "retry_original", "original_mode": "Claude", "retry_mode": "Claude"},
+        {"action": "retry_original", "original_mode": "Claude", "degraded_to": "Coco"},
+        {"action": "retry_original", "retry_mode": "Claude", "degraded_to": "Coco"},
+        {"action": "retry_original", "original_mode": "Claude", "retry_mode": "Claude", "degraded_to": ""},
+    ],
+)
+def test_degraded_error_card_omits_retry_button_when_retry_payload_incomplete(retry_action):
+    _, card_json = SystemBuilder.build_error_card(
+        "部分能力不可用，已进入降级模式",
+        title="系统降级",
+        severity="degraded",
+        detail_action={"action": "show_error_details", "trace_id": "trace-incomplete-retry"},
+        continue_action={"action": "continue_degraded", "request_id": "req-degraded"},
+        retry_action=retry_action,
+    )
+
+    buttons = _collect_buttons(json.loads(card_json))
+
+    assert [button["value"].get("action") for button in buttons] == ["show_error_details"]
+
+
+def test_degraded_error_card_with_quick_actions_keeps_single_decision_area():
+    from src.utils.errors import GhostAPError
+
+    _, card_json = SystemBuilder.build_error_card(
+        GhostAPError(
+            "部分能力不可用，已进入可用模式",
+            quick_actions=["retry", "cancel"],
+            context={"request_id": "req-quick"},
+        ),
+        title="系统降级",
+        severity="degraded",
+        detail_action={"action": "show_error_details", "trace_id": "trace-quick"},
+        continue_action={"action": "continue_degraded", "request_id": "continue-quick", "degraded_to": "Aiden"},
+        retry_action={
+            "action": "retry_original",
+            "request_id": "retry-quick",
+            "original_mode": "TTADK",
+            "retry_mode": "TTADK",
+            "degraded_to": "Aiden",
+        },
+    )
+
+    card = json.loads(card_json)
+    buttons = _collect_buttons(card)
+    button_blocks = _collect_button_layout_blocks(card)
+
+    assert buttons[0]["text"]["content"] == UI_TEXT["card_lifecycle_degraded_primary"].format(mode="Aiden")
+    assert buttons[0]["type"] == "primary"
+    assert buttons[0]["value"] == {
+        "action": "continue_degraded",
+        "request_id": "continue-quick",
+        "degraded_to": "Aiden",
+    }
+    assert [button["text"]["content"] for button in button_blocks[-3]] == [
+        UI_TEXT["card_lifecycle_degraded_primary"].format(mode="Aiden")
+    ]
+    assert [button["value"]["action"] for button in button_blocks[-1]] == ["retry_original"]
+    assert [button["value"]["action"] for button in button_blocks[-2]] == ["show_error_details"]
+    assert all(button["type"] == "default" for button in button_blocks[-2] + button_blocks[-1])
+    assert [button["value"]["action"] for button in buttons] == [
+        "continue_degraded",
+        "show_error_details",
+        "retry_original",
+    ]
+    assert {button["value"].get("request_id") for button in buttons} >= {"continue-quick", "retry-quick"}
+
+
+def test_degraded_error_card_sanitizes_summary_and_uses_action_allowlist():
+    """降级错误卡 builder 边界必须拦截正文和按钮负载中的敏感字段。"""
+
+    _, card_json = SystemBuilder.build_error_card(
+        RuntimeError("boom cmd=rm -rf /tmp/secret cwd=/data00/home/user path=/data00/home/user/repo args=--token=abc"),
+        title="Claude CLI 启动失败",
+        severity="degraded",
+        detail_action={
+            "action": "show_error_details",
+            "diagnostic_token": "diag-1",
+            "trace_id": "trace-1",
+            "cmd": "rm -rf /tmp/secret",
+            "cwd": "/data00/home/user/repo",
+            "path": "/data00/home/user/repo/file.py",
+            "args": ["--token=abc"],
+        },
+        continue_action={
+            "action": "continue_degraded",
+            "degraded_to": "Coco",
+            "request_id": "req-1",
+            "cmd": "unsafe-command",
+        },
+        retry_action={
+            "action": "retry_original",
+            "original_mode": "Claude CLI",
+            "retry_mode": "Claude CLI",
+            "degraded_to": "Coco",
+            "request_id": "req-1",
+            "cwd": "/data00/home/user/repo",
+        },
+        details="stderr includes /data00/home/user/repo and TOKEN=abc",
+    )
+
+    card = json.loads(card_json)
+    serialized = json.dumps(card, ensure_ascii=False)
+    for leaked in ("rm -rf", "/data00/home/user", "--token=abc", "cmd=", "cwd=", "args="):
+        assert leaked not in serialized
+
+    buttons = _collect_buttons(card)
+    allowed = {
+        "action",
+        "diagnostic_token",
+        "trace_id",
+        "request_id",
+        "project_id",
+        "degraded_to",
+        "original_mode",
+        "retry_mode",
+    }
+    for button in buttons:
+        assert set(button["value"]) <= allowed
+    assert buttons[0]["value"] == {"request_id": "req-1", "degraded_to": "Coco", "action": "continue_degraded"}
+    assert buttons[1]["value"] == {
+        "diagnostic_token": "diag-1",
+        "trace_id": "trace-1",
+        "action": "show_error_details",
+    }
+    assert buttons[2]["value"] == {
+        "action": "retry_original",
+        "request_id": "req-1",
+        "degraded_to": "Coco",
+        "original_mode": "Claude CLI",
+        "retry_mode": "Claude CLI",
+    }
+
+
+def test_degraded_error_card_does_not_infer_degraded_to_from_legacy_next_mode():
+    """Builder 只能消费上游显式 degraded_to，不能从 next_mode 修补降级语义。"""
+
+    _, card_json = SystemBuilder.build_error_card(
+        RuntimeError("ttadk failed"),
+        title="TTADK 启动失败",
+        severity="degraded",
+        continue_action={"action": "continue_degraded", "next_mode": "Coco", "request_id": "req-legacy"},
+        retry_action={
+            "action": "retry_original",
+            "original_mode": "TTADK",
+            "retry_mode": "TTADK",
+            "next_mode": "Coco",
+            "request_id": "req-legacy",
+        },
+    )
+
+    card = json.loads(card_json)
+    serialized = json.dumps(card, ensure_ascii=False)
+    buttons = _collect_buttons(card)
+
+    assert "继续使用 Coco" not in serialized
+    assert "当前暂未确定可继续模式" in serialized
+    assert not any(button["value"].get("degraded_to") == "Coco" for button in buttons)
+    assert all("next_mode" not in button["value"] for button in buttons)
+
+
+def test_mobile_preview_covers_degraded_error_card_visual_contract():
+    """ux/card_preview.html 必须可回归展示降级错误移动端卡片。"""
+    from pathlib import Path
+
+    html = (Path(__file__).resolve().parents[1] / "ux" / "card_preview.html").read_text(encoding="utf-8")
+
+    assert ".header-yellow" in html
+    assert "yellow — Degraded" in html
+    assert ".button-row-primary .btn" in html
+    assert ".button-row-secondary" in html
+    assert "错误卡 · 降级错误" in html
+    degraded_section = html.split("错误卡 · 降级错误", 1)[1].split("</div>\n</div>\n\n<!-- ==================== Footer Legend", 1)[0]
+    assert degraded_section.index("button-row-primary") < degraded_section.index("button-row-secondary")
+    assert degraded_section.index("继续使用 Coco") < degraded_section.index("查看详情")
+    for expected in (
+        "header-yellow",
+        "🟡 降级错误",
+        "错误摘要",
+        "错误场景",
+        "详情已收起",
+        "查看详情",
+        "重试原模式",
+        "继续使用 Coco",
+        "button-row-primary",
+        "button-row-secondary",
+        "btn-default",
+        "btn-primary",
+    ):
+        assert expected in degraded_section
+    assert "stderr" not in degraded_section
+    assert "可用模式" not in degraded_section
+    assert "available_mode" not in degraded_section
+
+
+def test_select_option_long_name_and_description_are_mobile_safe():
+    """长名称 + 描述应被压缩，避免移动端下拉项过宽。"""
+    long_tool = ToolOptionView(name="tool-" + "x" * 80, description="desc-" + "y" * 120)
+
+    _, card_json = SystemBuilder.build_ttadk_tool_select_card([long_tool], project_id="p1")
+    select = _collect_selects(json.loads(card_json))[0]
+    label = select["options"][0]["text"]["content"]
+
+    assert len(label) <= 72
+    assert label.endswith("…")
+    assert select["options"][0]["value"] == long_tool.name
+
+
+def test_acp_tool_button_long_name_and_description_are_mobile_safe():
+    """ACP 工具按钮文案应压缩，但 callback payload 保留完整工具名。"""
+    long_name = "tool-" + "x" * 80
+    long_desc = "desc-" + "y" * 120
+
+    _, card_json = SystemBuilder.build_acp_tool_select_card(
+        [ToolOptionView(name=long_name, description=long_desc, emoji="🤖")],
+        project_id="p1",
+        current_tool=long_name,
+    )
+    button = _collect_buttons(json.loads(card_json))[0]
+
+    assert len(button["text"]["content"]) <= 40
+    assert button["text"]["content"].endswith("…")
+    assert button["value"] == {"action": "select_acp_tool", "tool_name": long_name, "project_id": "p1"}
+
+
+def test_acp_model_button_long_display_and_description_are_mobile_safe():
+    """ACP 模型按钮展示名/描述应压缩，但 model_name 与 thread_root_id 不丢失。"""
+    model_name = "model-" + "m" * 80
+    display = "Display-" + "d" * 80
+    desc = "Description-" + "x" * 120
+
+    _, card_json = SystemBuilder.build_acp_model_select_card(
+        [ModelOptionView(name=model_name, description=desc, display_name=display)],
+        tool_name="coco",
+        project_id="p1",
+        current_model=model_name,
+        thread_root_id="thread-1",
+    )
+    button = _collect_buttons(json.loads(card_json))[0]
+
+    assert len(button["text"]["content"]) <= 40
+    assert button["text"]["content"].endswith("…")
+    assert button["value"] == {
+        "action": "select_acp_model",
+        "tool_name": "coco",
+        "model_name": model_name,
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+
+
+def test_ttadk_select_label_boundary_exact_limit_and_overflow():
+    """TTADK 下拉项 72 字符边界：等长不截断，超长追加省略号。"""
+    exact = "x" * 72
+    overflow = "y" * 73
+
+    _, exact_json = SystemBuilder.build_ttadk_tool_select_card([ToolOptionView(name=exact)], project_id="p1")
+    exact_label = _collect_selects(json.loads(exact_json))[0]["options"][0]["text"]["content"]
+
+    _, overflow_json = SystemBuilder.build_ttadk_tool_select_card([ToolOptionView(name=overflow)], project_id="p1")
+    overflow_label = _collect_selects(json.loads(overflow_json))[0]["options"][0]["text"]["content"]
+
+    assert exact_label == exact
+    assert len(overflow_label) == 72
+    assert overflow_label.endswith("…")
+
+
+def test_selector_cards_empty_options_still_render_operable_shells():
+    """空工具/模型列表不得生成坏卡片；可操作辅助入口仍保留。"""
+    _, ttadk_tool_json = SystemBuilder.build_ttadk_tool_select_card([], project_id="p1")
+    ttadk_tool_select = _collect_selects(json.loads(ttadk_tool_json))[0]
+    assert ttadk_tool_select["options"] == []
+
+    _, acp_tool_json = SystemBuilder.build_acp_tool_select_card([], project_id="p1")
+    assert _collect_buttons(json.loads(acp_tool_json)) == []
+
+    _, acp_model_json = SystemBuilder.build_acp_model_select_card([], tool_name="coco", project_id="p1")
+    acp_model_buttons = _collect_buttons(json.loads(acp_model_json))
+    assert [button["value"]["action"] for button in acp_model_buttons] == ["refresh_acp_models"]
 
 
 def test_deep_builder_warning_banner():

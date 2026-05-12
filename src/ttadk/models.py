@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 import logging
 
+from . import model_resolver as _model_resolver
+
 logger = logging.getLogger(__name__)
 
 
@@ -863,11 +865,7 @@ class ModelDescriptor:
 
 
 def _normalize_model_key(name: object) -> str:
-    try:
-        s = str(name or "")
-    except Exception:
-        s = ""
-    return s.strip().lower()
+    return _model_resolver.normalize_model_key(name)
 
 
 def build_model_id_index(descriptors: list[object]) -> tuple[dict[str, str], list[str]]:
@@ -877,55 +875,7 @@ def build_model_id_index(descriptors: list[object]) -> tuple[dict[str, str], lis
     - 同一个 key 映射到多个 model_id 时，保持“先到先得”以确保确定性
     - 冲突会写入 warnings（不抛异常）
     """
-
-    idx: dict[str, str] = {}
-    warnings: list[str] = []
-
-    for d in descriptors or []:
-        # 兼容：允许直接传 TTADKModel
-        model_id = ""
-        display_name = ""
-        aliases: list[str] = []
-
-        try:
-            if isinstance(d, ModelDescriptor):
-                model_id = str(d.model_id or "")
-                display_name = str(d.display_name or "")
-                aliases = [str(x) for x in (d.aliases or []) if str(x).strip()]
-            else:
-                # TTADKModel 或其他 dict-like
-                model_id = str(getattr(d, "model_id", "") or getattr(d, "name", "") or "")
-                display_name = str(getattr(d, "display_name", "") or getattr(d, "friendly_name", "") or "")
-                raw_aliases = getattr(d, "aliases", None)
-                if isinstance(raw_aliases, list):
-                    aliases = [str(x) for x in raw_aliases if str(x).strip()]
-        except Exception:
-            model_id, display_name, aliases = "", "", []
-
-        model_id = (model_id or "").strip()
-        display_name = (display_name or "").strip()
-        if not model_id:
-            continue
-
-        # 统一候选 key（去重保序）
-        keys: list[str] = []
-        for k in [model_id, display_name, *aliases]:
-            kk = _normalize_model_key(k)
-            if not kk:
-                continue
-            if kk not in keys:
-                keys.append(kk)
-
-        for k in keys:
-            prev = idx.get(k)
-            if prev is None:
-                idx[k] = model_id
-                continue
-            if prev != model_id:
-                # 确保稳定：保留旧映射，记录冲突
-                warnings.append(f"model_alias_conflict:{k}:{prev}->{model_id}")
-
-    return idx, warnings
+    return _model_resolver.build_model_id_index(descriptors)
 
 
 def resolve_model_id(
@@ -950,213 +900,24 @@ def resolve_model_id(
     - candidates: list[dict]  # {model_id, display}
     - warnings: list[str]
     """
-
-    tool = (tool_name or "").strip().lower()
-    raw = (input_name or "").strip()
-
-    idx, idx_warnings = build_model_id_index(list(descriptors or []))
-    idx_warn = list(idx_warnings or [])
-
-    def _iter_descriptor_items() -> list[tuple[str, str]]:
-        items: list[tuple[str, str]] = []
-        for d in descriptors or []:
-            try:
-                if isinstance(d, ModelDescriptor):
-                    mid = str(d.model_id or "").strip()
-                    disp = str(d.display_name or "").strip()
-                else:
-                    mid = str(getattr(d, "model_id", "") or getattr(d, "name", "") or "").strip()
-                    disp = str(getattr(d, "display_name", "") or getattr(d, "friendly_name", "") or "").strip()
-            except Exception:
-                mid, disp = "", ""
-            if not mid:
-                continue
-            items.append((mid, disp))
-        return items
-
-    def _find_display(mid: str) -> str:
-        mid = str(mid or "").strip()
-        if not mid:
-            return ""
-        for d in descriptors or []:
-            try:
-                if isinstance(d, ModelDescriptor):
-                    if str(d.model_id or "").strip() == mid:
-                        return str(d.display_name or "").strip()
-                else:
-                    rid = str(getattr(d, "model_id", "") or getattr(d, "name", "") or "").strip()
-                    if rid == mid:
-                        return str(getattr(d, "display_name", "") or getattr(d, "friendly_name", "") or "").strip()
-            except Exception:
-                continue
-        return ""
-
-    def _build_candidates(query: str) -> list[dict]:
-        q = _normalize_model_key(query)
-        if not q:
-            return []
-        out: list[dict] = []
-        seen: set[str] = set()
-        # 简单子串匹配：优先命中 key（display/alias/model_id）包含 query 的模型
-        for k, mid in (idx or {}).items():
-            try:
-                if q in (k or ""):
-                    if mid in seen:
-                        continue
-                    seen.add(mid)
-                    out.append({"model_id": mid, "display": _find_display(mid)})
-                    if len(out) >= int(max_candidates or 20):
-                        break
-            except Exception:
-                continue
-        return out
-
-    warnings: list[str] = []
-    # 控制 warnings 规模，避免污染日志
-    if idx_warn:
-        warnings.extend(idx_warn[:10])
-
-    if not raw:
-        r = ResolvedModelResult(
-            tool_name=tool,
-            input_name="",
-            real_name="",
-            source="unknown",
-            validated=False,
-            warnings=["missing_model_intent"],
-        )
-        return r, {
-            "model_display": "",
-            "resolution_source": "unknown",
-            "resolution_reason": "empty_input",
-            "candidates": [],
-            "warnings": list(warnings),
-        }
-
-    key = _normalize_model_key(raw)
-    resolved: str | None = None
-    reason = ""
-    src = ""
-
-    try:
-        resolved = idx.get(key)
-    except Exception:
-        resolved = None
-
-    if resolved:
-        mid = str(resolved or "").strip()
-        # source 语义：exact 表示用户已输入 model_id；friendly 表示来自 display/aliases
-        if _normalize_model_key(mid) == key:
-            src = "exact"
-            reason = "model_id_hit"
-        else:
-            src = "friendly"
-            reason = "friendly_or_alias_hit"
-        r = ResolvedModelResult(
-            tool_name=tool,
-            input_name=raw,
-            real_name=mid,
-            source=src,
-            validated=True,
-            warnings=list(warnings),
-        )
-        return r, {
-            "model_display": _find_display(mid),
-            "resolution_source": src,
-            "resolution_reason": reason,
-            "candidates": [],
-            "warnings": list(warnings),
-        }
-
-    # 兜底：prefix/partial（为了兼容历史行为，例如输入 `gpt-5.2` 匹配 `gpt-5.2-codex-ttadk`）
-    raw_l = _normalize_model_key(raw)
-    if raw_l:
-        items = _iter_descriptor_items()
-        # prefix
-        for mid, disp in items:
-            try:
-                if _normalize_model_key(mid).startswith(raw_l) or (
-                    disp and _normalize_model_key(disp).startswith(raw_l)
-                ):
-                    r = ResolvedModelResult(
-                        tool_name=tool,
-                        input_name=raw,
-                        real_name=mid,
-                        source="prefix",
-                        validated=True,
-                        warnings=list(warnings),
-                    )
-                    return r, {
-                        "model_display": disp or _find_display(mid),
-                        "resolution_source": "prefix",
-                        "resolution_reason": "prefix_match",
-                        "candidates": [],
-                        "warnings": list(warnings),
-                    }
-            except Exception:
-                continue
-        # partial
-        for mid, disp in items:
-            try:
-                if raw_l in _normalize_model_key(mid) or (disp and raw_l in _normalize_model_key(disp)):
-                    r = ResolvedModelResult(
-                        tool_name=tool,
-                        input_name=raw,
-                        real_name=mid,
-                        source="partial",
-                        validated=True,
-                        warnings=list(warnings),
-                    )
-                    return r, {
-                        "model_display": disp or _find_display(mid),
-                        "resolution_source": "partial",
-                        "resolution_reason": "partial_match",
-                        "candidates": [],
-                        "warnings": list(warnings),
-                    }
-            except Exception:
-                continue
-
-    # unknown 分支：默认不透传，避免 display 误当 model_id
-    if allow_unknown_passthrough and is_model_token(raw):
-        mid = raw
-        warnings2 = list(warnings)
-        warnings2.append("unknown_model_passthrough")
-        r = ResolvedModelResult(
-            tool_name=tool,
-            input_name=raw,
-            real_name=mid,
-            source="passthrough",
-            validated=False,
-            warnings=warnings2,
-        )
-        return r, {
-            "model_display": _find_display(mid),
-            "resolution_source": "passthrough",
-            "resolution_reason": "token_passthrough",
-            "candidates": [],
-            "warnings": list(warnings2),
-        }
-
-    # unknown：返回候选，交由上层决定是否报错/是否刷新模型列表
-    candidates = _build_candidates(raw)
-    warnings2 = list(warnings)
-    warnings2.append("unknown_model_input")
-    r = ResolvedModelResult(
-        tool_name=tool,
-        input_name=raw,
-        real_name=raw,
-        source="unknown",
-        validated=False,
-        warnings=warnings2,
+    resolved, diagnostics = _model_resolver.resolve_model_id(
+        tool_name=tool_name,
+        input_name=input_name,
+        descriptors=descriptors,
+        allow_unknown_passthrough=allow_unknown_passthrough,
+        max_candidates=max_candidates,
+        is_model_token_fn=is_model_token,
     )
-    return r, {
-        "model_display": "",
-        "resolution_source": "unknown",
-        "resolution_reason": "no_index_match",
-        "candidates": list(candidates),
-        "warnings": list(warnings2),
-    }
+    if isinstance(resolved, ResolvedModelResult):
+        return resolved, diagnostics
+    return ResolvedModelResult(
+        tool_name=str(getattr(resolved, "tool_name", "") or ""),
+        input_name=str(getattr(resolved, "input_name", "") or ""),
+        real_name=str(getattr(resolved, "real_name", "") or ""),
+        source=str(getattr(resolved, "source", "") or ""),
+        validated=bool(getattr(resolved, "validated", False)),
+        warnings=list(getattr(resolved, "warnings", []) or []),
+    ), diagnostics
 
 
 @dataclass

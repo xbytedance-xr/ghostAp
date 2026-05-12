@@ -7,7 +7,7 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 from ..utils.errors import get_error_detail
-from ..utils.spec_utils import (
+from .utils import (
     extract_json_blob,
     normalize_list,
     validate_plan_artifact_dict,

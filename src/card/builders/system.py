@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import math
+import re
 from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
-from src.project.context import ProjectContext
+from src.card.error_diagnostics import register_error_diagnostic
 from src.utils.errors import GhostAPError, get_error_detail
 
+from ..actions import dispatch as action_ids
 from ..models import ModelOptionView, ToolOptionView
 from ..shared import build_responsive_layout
 from ..styles import THRESHOLDS
@@ -19,7 +21,11 @@ from .lock import build_lock_help_body
 
 logger = logging.getLogger(__name__)
 
+_SELECT_LABEL_MOBILE_LIMIT = 72
+_BUTTON_LABEL_MOBILE_LIMIT = 40
+
 if TYPE_CHECKING:
+    from src.project.context import ProjectContext
     from src.sandbox.executor import ExecutionResult
 
 # Sentinel injected into the lru_cache'd help card; replaced post-cache
@@ -37,6 +43,90 @@ def _get_version() -> str:
 
 class SystemBuilder:
     """System-related card building utilities."""
+
+    _SAFE_ACTION_KEYS = {
+        "action",
+        "chat_id",
+        "origin_message_id",
+        "diagnostic_token",
+        "trace_id",
+        "request_id",
+        "project_id",
+        "degraded_to",
+        "mode",
+        "original_mode",
+        "retry_mode",
+    }
+    _SENSITIVE_TOKEN_RE = re.compile(
+        r"(?i)\b(cmd|cwd|path|args|token|secret|password|passwd|key)\s*=\s*[^\s\n]+"
+    )
+    _PATH_RE = re.compile(r"(?<![\w])(?:/[\w.\-]+){2,}")
+
+    @staticmethod
+    def _callback_button(*, text: str, action: dict, button_type: str = "default") -> dict:
+        """Build a Feishu callback button with value and behavior kept in sync."""
+        value = dict(action)
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": text},
+            "type": button_type,
+            "value": value,
+            "behaviors": [{"type": "callback", "value": value}],
+        }
+
+    @staticmethod
+    def _select_option(label: str, value: str) -> dict:
+        """Build a Feishu select option with consistent plain-text shape."""
+        return {"text": {"tag": "plain_text", "content": SystemBuilder._mobile_safe_label(label)}, "value": value}
+
+    @staticmethod
+    def _mobile_safe_label(label: object, *, limit: int = _SELECT_LABEL_MOBILE_LIMIT) -> str:
+        """Keep select labels compact enough for mobile Feishu cards."""
+        text = str(label or "")
+        if len(text) <= limit:
+            return text
+        return text[: max(1, limit - 1)].rstrip() + "…"
+
+    @staticmethod
+    def _label_with_optional_description(name: object, description: object = "") -> str:
+        """Format a select/button label without duplicating empty descriptions."""
+        label = str(name or "")
+        desc = str(description or "").strip()
+        if desc:
+            label += f" ({desc})"
+        return label
+
+    @staticmethod
+    def _mobile_safe_button_label(label: object) -> str:
+        """Keep button labels short enough for Feishu mobile card columns."""
+        return SystemBuilder._mobile_safe_label(label, limit=_BUTTON_LABEL_MOBILE_LIMIT)
+
+    @staticmethod
+    def _build_select_static(
+        *,
+        placeholder_key: str,
+        action: str,
+        options: list[dict],
+        initial_option: Optional[str] = None,
+        value_extra: Optional[dict] = None,
+    ) -> dict:
+        """Build a select_static element used by TTADK selection cards."""
+        value = {"action": action}
+        if value_extra:
+            value.update(value_extra)
+        return {
+            "tag": "select_static",
+            "placeholder": {"tag": "plain_text", "content": UI_TEXT[placeholder_key]},
+            "initial_option": initial_option,
+            "value": value,
+            "options": options,
+        }
+
+    @staticmethod
+    def _wrap_system_card(title: str, elements: list[dict], *, template: str = "blue") -> tuple[str, str]:
+        """Wrap system-card elements with the standard interactive response tuple."""
+        card = CoreBuilder._wrap_card(title, template, elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
     def build_directory_change_card(
@@ -170,13 +260,26 @@ class SystemBuilder:
         exc: Exception | str,
         title: str = "",
         project: Optional[ProjectContext] = None,
+        *,
+        summary: Optional[str] = None,
+        details: Optional[str] = None,
+        detail_action: Optional[dict] = None,
+        continue_action: Optional[dict] = None,
+        retry_action: Optional[dict] = None,
+        severity: str = "fatal",
     ) -> tuple[str, str]:
         from ..shared import build_quick_actions
 
         if not title:
             title = UI_TEXT["system_error_title"]
 
-        message = get_error_detail(exc) if isinstance(exc, Exception) else (str(exc) or UI_TEXT["system_unknown_error"])
+        message = SystemBuilder._card_safe_summary(exc, summary=summary, severity=severity)
+        severity_map = {
+            "recoverable": ("orange", "🟠 可恢复错误", "可重试或自动恢复的问题"),
+            "degraded": ("yellow", "🟡 降级错误", "功能已降级，核心流程会尽量继续"),
+            "fatal": ("red", "🔴 致命错误", "需要停止当前操作并暴露根因"),
+        }
+        header_template, severity_label, severity_hint = severity_map.get(severity, severity_map["fatal"])
         quick_actions = []
         context = {}
 
@@ -189,18 +292,231 @@ class SystemBuilder:
             elements.append(CoreBuilder._build_directory_element(project))
             elements.append({"tag": "hr"})
 
-        elements.append(CoreBuilder._build_content_element(f"❌ **{title}**\n\n{message}"))
+        elements.append(
+            CoreBuilder._build_content_element(
+                f"{severity_label}\n{severity_hint}\n\n"
+                f"❌ **错误摘要**\n{message}\n\n"
+                f"**错误场景**\n{title}\n\n"
+                f"**当前状态**\n{SystemBuilder._current_status_text(severity, continue_action, context)}\n\n"
+                f"{UI_TEXT['card_lifecycle_details_collapsed']}"
+            )
+        )
 
         # project info is handled by project_response_card if needed, but build_error_card
         # is often used for generic errors. Original code had optional project.
         # We'll stick to a simpler interactive card here or wrap it.
         
-        if quick_actions:
+        if severity == "degraded":
+            degraded_mode = SystemBuilder._resolve_degraded_mode(continue_action, context)
+            if degraded_mode:
+                primary_continue = SystemBuilder._callback_button(
+                    text=UI_TEXT["card_lifecycle_degraded_primary"].format(
+                        mode=SystemBuilder._display_mode_label(degraded_mode)
+                    ),
+                    action=SystemBuilder._build_degraded_continue_action(continue_action, context),
+                    button_type="primary",
+                )
+                elements.extend(build_responsive_layout([primary_continue]))
+
+            secondary_buttons = SystemBuilder._build_degraded_secondary_buttons(
+                detail_action=detail_action,
+                continue_action=continue_action,
+                retry_action=retry_action,
+                context=context,
+                title=title,
+                summary=message,
+                details=details,
+            )
+            elements.extend(build_responsive_layout(secondary_buttons, layout="mobile"))
+
+            # 降级卡只保留一个主决策和两个次级决策。异常自带 quick_actions
+            # 不再追加成第三组同级按钮，避免稀释“继续使用目标模式”的主决策。
+        elif quick_actions:
             buttons = build_quick_actions(quick_actions, context)
             elements.extend(build_responsive_layout(buttons))
+        else:
+            buttons = []
+            if detail_action:
+                safe_detail_action = SystemBuilder._build_detail_action(
+                    detail_action,
+                    title=title,
+                    summary=message,
+                    details=details,
+                    context=context,
+                )
+                buttons.append(
+                    SystemBuilder._callback_button(
+                        text=UI_TEXT["card_lifecycle_show_details"],
+                        action=safe_detail_action,
+                        button_type="default",
+                    )
+                )
+            if retry_action:
+                retry_button_text = UI_TEXT["card_lifecycle_restart"]
+                buttons.append(
+                    SystemBuilder._callback_button(
+                        text=retry_button_text,
+                        action=SystemBuilder._safe_action_payload(retry_action),
+                        button_type="primary" if severity == "recoverable" else "default",
+                    )
+                )
+            if buttons:
+                elements.extend(build_responsive_layout(buttons))
 
-        card = CoreBuilder._wrap_card(UI_TEXT["system_error_prompt_title"], "red", elements)
+        card = CoreBuilder._wrap_card(UI_TEXT["system_error_prompt_title"], header_template, elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def _build_degraded_continue_action(
+        continue_action: Optional[dict],
+        context: Optional[dict] = None,
+    ) -> dict:
+        action = SystemBuilder._safe_action_payload(context)
+        action.update(SystemBuilder._safe_action_payload(continue_action))
+        action["action"] = action_ids.CONTINUE_DEGRADED
+        degraded_mode = SystemBuilder._resolve_degraded_mode(continue_action, context)
+        if degraded_mode:
+            action.setdefault("degraded_to", degraded_mode)
+        return action
+
+    @staticmethod
+    def _build_degraded_secondary_buttons(
+        *,
+        detail_action: Optional[dict],
+        continue_action: Optional[dict],
+        retry_action: Optional[dict],
+        context: Optional[dict],
+        title: str,
+        summary: str,
+        details: Optional[str],
+    ) -> list[dict]:
+        safe_context = SystemBuilder._safe_action_payload(context)
+        detail_payload = SystemBuilder._build_detail_action(
+            detail_action,
+            title=title,
+            summary=summary,
+            details=details,
+            context=safe_context,
+        )
+        retry_payload = {**safe_context, **SystemBuilder._safe_action_payload(retry_action)}
+        retry_payload["action"] = str(retry_payload.get("action") or action_ids.RETRY_ORIGINAL)
+        retry_payload.pop("mode", None)
+        buttons = [
+            SystemBuilder._callback_button(
+                text=UI_TEXT["card_lifecycle_show_details"],
+                action=detail_payload,
+                button_type="default",
+            )
+        ]
+        if SystemBuilder._has_complete_retry_original_payload(retry_payload):
+            buttons.append(
+                SystemBuilder._callback_button(
+                    text=UI_TEXT["card_lifecycle_retry_original"],
+                    action=retry_payload,
+                    button_type="default",
+                )
+            )
+        return buttons
+
+    @staticmethod
+    def _has_complete_retry_original_payload(payload: dict) -> bool:
+        if str(payload.get("action") or "") != action_ids.RETRY_ORIGINAL:
+            return False
+        return all(str(payload.get(field) or "").strip() for field in ("original_mode", "retry_mode", "degraded_to"))
+
+    @staticmethod
+    def _safe_degraded_context(context: Optional[dict]) -> dict:
+        return SystemBuilder._safe_action_payload(context)
+
+    @staticmethod
+    def _safe_action_payload(payload: Optional[dict]) -> dict:
+        return {key: value for key, value in dict(payload or {}).items() if key in SystemBuilder._SAFE_ACTION_KEYS}
+
+    @staticmethod
+    def _sanitize_card_text(text: object, *, fallback: str) -> str:
+        value = str(text or "").strip()
+        if not value:
+            return fallback
+        value = SystemBuilder._SENSITIVE_TOKEN_RE.sub(lambda match: f"{match.group(1)}=<redacted>", value)
+        value = SystemBuilder._PATH_RE.sub("<path>", value)
+        return value[:600].rstrip() or fallback
+
+    @staticmethod
+    def _card_safe_summary(exc: Exception | str, *, summary: Optional[str], severity: str) -> str:
+        fallback = "操作未能按原模式完成，已进入安全降级路径。" if severity == "degraded" else UI_TEXT["system_unknown_error"]
+        if severity == "degraded":
+            # Degraded cards are often built from startup/runtime exceptions that
+            # include commands, paths or stack traces.  The user-visible body must
+            # always stay on a fixed safe boundary; raw details are disclosed only
+            # through the diagnostic store after context validation.
+            return fallback
+        if summary is not None:
+            return SystemBuilder._sanitize_card_text(summary, fallback=fallback)
+        if isinstance(exc, Exception):
+            return SystemBuilder._sanitize_card_text(get_error_detail(exc), fallback=fallback)
+        return SystemBuilder._sanitize_card_text(exc, fallback=fallback)
+
+    @staticmethod
+    def _resolve_degraded_mode(action: Optional[dict], context: Optional[dict]) -> str:
+        payload = {**dict(context or {}), **dict(action or {})}
+        return str(payload.get("degraded_to") or "")
+
+    @staticmethod
+    def _current_status_text(severity: str, continue_action: Optional[dict], context: Optional[dict]) -> str:
+        if severity == "degraded":
+            mode = SystemBuilder._resolve_degraded_mode(continue_action, context)
+            if mode:
+                return f"可继续使用 {SystemBuilder._display_mode_label(mode)}，或查看脱敏诊断后再决定是否重试原模式。"
+            return "当前暂未确定可继续模式；请重新发送原命令，或查看脱敏诊断后再决定是否重试。"
+        if severity == "recoverable":
+            return "可查看脱敏诊断，也可以按卡片按钮重试。"
+        return "当前操作已停止；可查看脱敏诊断并按提示重新发起。"
+
+    @staticmethod
+    def _display_mode_label(mode: str) -> str:
+        labels = {
+            "coco": "Coco",
+            "claude": "Claude",
+            "claude cli": "Claude CLI",
+            "aiden": "Aiden",
+            "codex": "Codex",
+            "gemini": "Gemini",
+            "ttadk": "TTADK",
+        }
+        raw = str(mode or "").strip()
+        return labels.get(raw.lower(), raw)
+
+    @staticmethod
+    def _build_detail_action(
+        detail_action: Optional[dict],
+        *,
+        title: str,
+        summary: str,
+        details: Optional[str],
+        context: Optional[dict],
+    ) -> dict:
+        raw_payload = dict(detail_action or {})
+        payload = {**SystemBuilder._safe_action_payload(context), **SystemBuilder._safe_action_payload(raw_payload)}
+        payload["action"] = str(payload.get("action") or action_ids.SHOW_ERROR_DETAILS)
+        if not payload.get("diagnostic_token"):
+            raw_details = (
+                raw_payload.get("details")
+                or raw_payload.get("detail")
+                or raw_payload.get("stderr")
+                or raw_payload.get("error")
+                or details
+                or summary
+            )
+            payload["diagnostic_token"] = register_error_diagnostic(
+                title=title,
+                summary=summary,
+                details=str(raw_details or "本次错误暂无更多诊断上下文。"),
+                chat_id=payload.get("chat_id"),
+                origin_message_id=payload.get("origin_message_id"),
+                request_id=payload.get("request_id"),
+                trace_id=payload.get("trace_id"),
+            )
+        return payload
 
     @staticmethod
     def build_shell_result_card(
@@ -312,33 +628,25 @@ class SystemBuilder:
         )
         elements.append({"tag": "hr"})
 
-        options = []
-        for tool in tools:
-            btn_text = f"{tool.name}"
-            if tool.description:
-                btn_text += f" ({tool.description})"
-            options.append(
-                {
-                    "text": {"tag": "plain_text", "content": btn_text},
-                    "value": tool.name
-                }
+        options = [
+            SystemBuilder._select_option(
+                SystemBuilder._label_with_optional_description(tool.name, getattr(tool, "description", "")),
+                tool.name,
             )
+            for tool in tools
+        ]
 
         elements.append(
-            {
-                "tag": "select_static",
-                "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_tool_placeholder"]},
-                "initial_option": current_tool,
-                "value": {
-                    "action": "select_ttadk_tool",
-                    "project_id": project_id,
-                },
-                "options": options
-            }
+            SystemBuilder._build_select_static(
+                placeholder_key="system_ttadk_select_tool_placeholder",
+                action="select_ttadk_tool",
+                options=options,
+                initial_option=current_tool,
+                value_extra={"project_id": project_id},
+            )
         )
 
-        card = CoreBuilder._wrap_card(UI_TEXT["system_ttadk_tool_select_title"], "blue", elements)
-        return "interactive", json.dumps(card, ensure_ascii=False)
+        return SystemBuilder._wrap_system_card(UI_TEXT["system_ttadk_tool_select_title"], elements)
 
     @staticmethod
     def build_ttadk_model_select_card(
@@ -361,30 +669,22 @@ class SystemBuilder:
         )
         elements.append({"tag": "hr"})
 
-        options = []
-        for model in models:
-            btn_text = f"{model.name}"
-            if model.description:
-                btn_text += f" ({model.description})"
-            options.append(
-                {
-                    "text": {"tag": "plain_text", "content": btn_text},
-                    "value": model.name
-                }
+        options = [
+            SystemBuilder._select_option(
+                SystemBuilder._label_with_optional_description(model.name, getattr(model, "description", "")),
+                model.name,
             )
+            for model in models
+        ]
             
         elements.append(
-            {
-                "tag": "select_static",
-                "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_model_placeholder"]},
-                "initial_option": current_model,
-                "value": {
-                    "action": "select_ttadk_model",
-                    "tool_name": tool_name,
-                    "project_id": project_id,
-                },
-                "options": options
-            }
+            SystemBuilder._build_select_static(
+                placeholder_key="system_ttadk_select_model_placeholder",
+                action="select_ttadk_model",
+                options=options,
+                initial_option=current_model,
+                value_extra={"tool_name": tool_name, "project_id": project_id},
+            )
         )
 
         # 辅助入口：强制刷新模型列表（常用于 Invalid model / 可用模型为空）
@@ -406,8 +706,7 @@ class SystemBuilder:
             )
         )
 
-        card = CoreBuilder._wrap_card(UI_TEXT["system_ttadk_model_select_title"].format(tool=tool_name), "blue", elements)
-        return "interactive", json.dumps(card, ensure_ascii=False)
+        return SystemBuilder._wrap_system_card(UI_TEXT["system_ttadk_model_select_title"].format(tool=tool_name), elements)
 
     @staticmethod
     def build_ttadk_combined_select_card(
@@ -429,30 +728,23 @@ class SystemBuilder:
         elements.append({"tag": "hr"})
 
         # Tool selection
-        tool_options = []
-        for tool in tools:
-            btn_text = f"{tool.name}"
-            if tool.description:
-                btn_text += f" ({tool.description})"
-            tool_options.append(
-                {
-                    "text": {"tag": "plain_text", "content": btn_text},
-                    "value": tool.name,
-                }
+        tool_options = [
+            SystemBuilder._select_option(
+                SystemBuilder._label_with_optional_description(tool.name, getattr(tool, "description", "")),
+                tool.name,
             )
+            for tool in tools
+        ]
 
         elements.append({"tag": "markdown", "content": UI_TEXT["system_ttadk_label_tool"]})
         elements.append(
-            {
-                "tag": "select_static",
-                "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_tool_placeholder"]},
-                "initial_option": current_tool,
-                "value": {
-                    "action": "select_ttadk_combined_tool",
-                    "project_id": project_id,
-                },
-                "options": tool_options,
-            }
+            SystemBuilder._build_select_static(
+                placeholder_key="system_ttadk_select_tool_placeholder",
+                action="select_ttadk_combined_tool",
+                options=tool_options,
+                initial_option=current_tool,
+                value_extra={"project_id": project_id},
+            )
         )
 
         # Model selection per tool (show current_tool's models or first tool's models by default)
@@ -465,30 +757,22 @@ class SystemBuilder:
                 elements.append({"tag": "hr"})
                 elements.append({"tag": "markdown", "content": UI_TEXT["system_ttadk_label_model"].format(tool=selected_tool)})
 
-                model_options = []
-                for model in models:
-                    btn_text = f"{model.name}"
-                    if model.description:
-                        btn_text += f" ({model.description})"
-                    model_options.append(
-                        {
-                            "text": {"tag": "plain_text", "content": btn_text},
-                            "value": model.name,
-                        }
+                model_options = [
+                    SystemBuilder._select_option(
+                        SystemBuilder._label_with_optional_description(model.name, getattr(model, "description", "")),
+                        model.name,
                     )
+                    for model in models
+                ]
 
                 elements.append(
-                    {
-                        "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_select_model_placeholder"]},
-                        "initial_option": current_model,
-                        "value": {
-                            "action": "select_ttadk_combined",
-                            "tool_name": selected_tool,
-                            "project_id": project_id,
-                        },
-                        "options": model_options,
-                    }
+                    SystemBuilder._build_select_static(
+                        placeholder_key="system_ttadk_select_model_placeholder",
+                        action="select_ttadk_combined",
+                        options=model_options,
+                        initial_option=current_model,
+                        value_extra={"tool_name": selected_tool, "project_id": project_id},
+                    )
                 )
 
         # Refresh button
@@ -509,8 +793,7 @@ class SystemBuilder:
             )
         )
 
-        card = CoreBuilder._wrap_card(UI_TEXT["system_ttadk_combined_title"], "blue", elements)
-        return "interactive", json.dumps(card, ensure_ascii=False)
+        return SystemBuilder._wrap_system_card(UI_TEXT["system_ttadk_combined_title"], elements)
 
     @staticmethod
     def build_ttadk_soft_failure_card(
@@ -609,6 +892,7 @@ class SystemBuilder:
             btn_text = f"{t.emoji} {t.name}"
             if t.description:
                 btn_text += f" ({t.description})"
+            btn_text = SystemBuilder._mobile_safe_button_label(btn_text)
 
             buttons.append(
                 {
@@ -676,6 +960,7 @@ class SystemBuilder:
             btn_text = f"{label}"
             if m.description and m.description != label:
                 btn_text += f" ({m.description})"
+            btn_text = SystemBuilder._mobile_safe_button_label(btn_text)
 
             buttons.append(
                 {

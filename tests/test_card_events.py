@@ -1,6 +1,16 @@
 """Tests for card event types and conversion."""
+from pathlib import Path
+
 import pytest
 from src.card.events import CardEvent, CardEventType, VALIDATE_PAYLOAD
+from src.card.events.worktree import (
+    worktree_cleanup,
+    worktree_completed_no_change,
+    worktree_confirm,
+    worktree_merge,
+    worktree_progress,
+    worktree_tool_select,
+)
 from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo, PlanInfo, PlanEntryInfo
 
 
@@ -142,8 +152,62 @@ class TestFromACP:
 class TestWorktreePayloadValidation:
     """Assert validations on worktree factory methods."""
 
+    def test_deprecated_card_event_worktree_factories_warn_and_match_module_factories(self):
+        """Compatibility shims stay until 2026-06-01 and delegate to module factories."""
+        cases = [
+            (
+                "worktree_progress",
+                {"units": [{"name": "u1", "status": "running"}], "project_id": "p1"},
+                worktree_progress(units=[{"name": "u1", "status": "running"}], project_id="p1"),
+            ),
+            (
+                "worktree_tool_select",
+                {"tools": [{"id": "coco", "name": "Coco"}], "selected": ["coco"]},
+                worktree_tool_select(tools=[{"id": "coco", "name": "Coco"}], selected=["coco"]),
+            ),
+            (
+                "worktree_confirm",
+                {"selected_items": [{"tool": "coco", "model": "gpt4"}], "goal": "ship"},
+                worktree_confirm(selected_items=[{"tool": "coco", "model": "gpt4"}], goal="ship"),
+            ),
+            (
+                "worktree_cleanup",
+                {"merge_notes": [{"branch": "feat", "status": "ready"}], "base_branch": "main"},
+                worktree_cleanup(merge_notes=[{"branch": "feat", "status": "ready"}], base_branch="main"),
+            ),
+            (
+                "worktree_merge",
+                {"merge_notes": [{"branch": "feat", "status": "ready"}], "base_branch": "main"},
+                worktree_merge(merge_notes=[{"branch": "feat", "status": "ready"}], base_branch="main"),
+            ),
+            (
+                "worktree_completed_no_change",
+                {"units": [{"name": "u1", "status": "done"}], "message": "no diff"},
+                worktree_completed_no_change(units=[{"name": "u1", "status": "done"}], message="no diff"),
+            ),
+        ]
+
+        for method_name, kwargs, expected in cases:
+            with pytest.warns(DeprecationWarning, match="src.card.events.worktree.*2026-06-01"):
+                actual = getattr(CardEvent, method_name)(**kwargs)
+
+            assert actual == expected
+
+    def test_production_code_uses_worktree_module_factories_not_deprecated_shims(self):
+        """Task 26 guard: production paths must not call CardEvent.worktree_* shims."""
+        root = Path(__file__).parent.parent / "src"
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            if path.parts[-3:] == ("card", "events", "factories.py"):
+                continue
+            text = path.read_text(encoding="utf-8")
+            if "CardEvent.worktree_" in text:
+                offenders.append(str(path.relative_to(root.parent)))
+
+        assert not offenders, "Production code must import src.card.events.worktree factories: " + ", ".join(offenders)
+
     def test_worktree_progress_valid(self):
-        e = CardEvent.worktree_progress(
+        e = worktree_progress(
             units=[{"name": "u1", "status": "running"}],
             project_id="p1",
         )
@@ -152,14 +216,14 @@ class TestWorktreePayloadValidation:
 
     def test_worktree_progress_rejects_non_list(self):
         with pytest.raises(TypeError, match="units must be a list"):
-            CardEvent.worktree_progress(units="bad", project_id="p1")
+            worktree_progress(units="bad", project_id="p1")
 
     def test_worktree_progress_rejects_unit_without_status(self):
         with pytest.raises(ValueError, match="must be a dict with 'status'"):
-            CardEvent.worktree_progress(units=[{"name": "u1"}], project_id="p1")
+            worktree_progress(units=[{"name": "u1"}], project_id="p1")
 
     def test_worktree_tool_select_valid(self):
-        e = CardEvent.worktree_tool_select(
+        e = worktree_tool_select(
             tools=[{"provider": "acp", "tool_name": "coco", "display_name": "Coco"}],
             selected=["coco"],
         )
@@ -168,10 +232,10 @@ class TestWorktreePayloadValidation:
 
     def test_worktree_tool_select_rejects_non_dict_tool(self):
         with pytest.raises(TypeError, match="each tool must be a dict"):
-            CardEvent.worktree_tool_select(tools=["not_a_dict"])
+            worktree_tool_select(tools=["not_a_dict"])
 
     def test_worktree_confirm_valid(self):
-        e = CardEvent.worktree_confirm(
+        e = worktree_confirm(
             selected_items=[{"tool": "coco", "model": "gpt4"}],
             goal="implement feature",
         )
@@ -180,10 +244,10 @@ class TestWorktreePayloadValidation:
 
     def test_worktree_confirm_rejects_non_list(self):
         with pytest.raises(TypeError, match="selected_items must be a list"):
-            CardEvent.worktree_confirm(selected_items="bad")
+            worktree_confirm(selected_items="bad")
 
     def test_worktree_cleanup_valid(self):
-        e = CardEvent.worktree_cleanup(
+        e = worktree_cleanup(
             merge_notes=[{"branch": "feat-1", "status": "success", "summary": "done"}],
             base_branch="main",
         )
@@ -192,17 +256,17 @@ class TestWorktreePayloadValidation:
 
     def test_worktree_cleanup_rejects_missing_branch(self):
         with pytest.raises(ValueError, match="must have 'branch' and 'status'"):
-            CardEvent.worktree_cleanup(merge_notes=[{"status": "ok"}])
+            worktree_cleanup(merge_notes=[{"status": "ok"}])
 
     def test_worktree_cleanup_rejects_invalid_phase(self):
         with pytest.raises(ValueError, match="cleanup_phase must be 'summary' or 'actions'"):
-            CardEvent.worktree_cleanup(
+            worktree_cleanup(
                 merge_notes=[{"branch": "b", "status": "ok"}],
                 cleanup_phase="invalid",
             )
 
     def test_worktree_merge_valid(self):
-        e = CardEvent.worktree_merge(
+        e = worktree_merge(
             merge_notes=[{"branch": "feat-1", "status": "ready"}],
             base_branch="develop",
         )
@@ -211,7 +275,7 @@ class TestWorktreePayloadValidation:
 
     def test_worktree_merge_rejects_missing_status(self):
         with pytest.raises(ValueError, match="must have 'branch' and 'status'"):
-            CardEvent.worktree_merge(merge_notes=[{"branch": "feat-1"}])
+            worktree_merge(merge_notes=[{"branch": "feat-1"}])
 
 
 class TestCardEventCancelled:

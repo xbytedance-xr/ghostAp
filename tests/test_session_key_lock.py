@@ -120,16 +120,120 @@ class TestPerKeyLockSerialization:
         manager.start_session("chat1", project_id="proj1")
         key = manager._session_key("chat1", "proj1")
 
-        # Key lock should exist
+        # The transient start lock reference should be released after start.
         with manager._key_locks_lock:
-            assert key in manager._key_locks
+            assert key not in manager._key_locks
 
         # End session
         manager.end_session("chat1", project_id="proj1")
 
-        # Key lock should be cleaned up
+        # Ending the session must not recreate or retain a key lock.
         with manager._key_locks_lock:
             assert key not in manager._key_locks
+
+    def test_replacing_existing_session_keeps_same_key_start_serialized(self):
+        """Replacing an old session must not drop the key lock while startup is still running."""
+        FakeSession._instance_count = 0
+        active_starters = 0
+        max_active_starters = 0
+        active_lock = threading.Lock()
+        first_started = threading.Event()
+
+        def starter(*, agent_type, cwd, startup_timeout, model_name=None, session_id=None, project_id=None, **kw):
+            nonlocal active_starters, max_active_starters
+            with active_lock:
+                active_starters += 1
+                max_active_starters = max(max_active_starters, active_starters)
+                first_started.set()
+            time.sleep(0.2)
+            with active_lock:
+                active_starters -= 1
+            sess = FakeSession()
+            return sess, sess.session_id, {}
+
+        mgr = ACPSessionManager(agent_type="test", session_starter=starter)
+        key = mgr._session_key("chat1", "proj1")
+        with mgr._acquire_lock():
+            mgr._sessions[key] = FakeSession()
+        errors: list[BaseException] = []
+
+        def start_replace():
+            try:
+                mgr.start_session("chat1", project_id="proj1", startup_timeout=5)
+            except BaseException as exc:  # pragma: no cover - assertion reports errors
+                errors.append(exc)
+
+        try:
+            t1 = threading.Thread(target=start_replace)
+            t2 = threading.Thread(target=start_replace)
+            t1.start()
+            assert first_started.wait(timeout=2)
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+            assert errors == []
+            assert max_active_starters == 1
+        finally:
+            mgr.cleanup_all()
+
+    def test_end_session_does_not_release_start_owned_key_lock_reference(self):
+        """External end_session must not delete a key lock owned by an in-flight start_session."""
+        FakeSession._instance_count = 0
+        mgr = ACPSessionManager(agent_type="test", session_starter=_make_starter(0.01))
+        key = mgr._session_key("chat1", "proj1")
+        with mgr._acquire_lock():
+            mgr._sessions[key] = FakeSession()
+
+        first_start_entered = threading.Event()
+        allow_first_to_finish = threading.Event()
+        active_starts = 0
+        max_active_starts = 0
+        active_lock = threading.Lock()
+        errors: list[BaseException] = []
+
+        def patched_inner(key_arg, *args, **kwargs):
+            nonlocal active_starts, max_active_starts
+            with active_lock:
+                active_starts += 1
+                max_active_starts = max(max_active_starts, active_starts)
+                if active_starts == 1:
+                    first_start_entered.set()
+            allow_first_to_finish.wait(timeout=2)
+            sess = FakeSession()
+            with mgr._acquire_lock():
+                mgr._sessions[key_arg] = sess
+            with active_lock:
+                active_starts -= 1
+            return sess
+
+        mgr._start_session_inner = patched_inner
+
+        def do_start():
+            try:
+                mgr.start_session("chat1", project_id="proj1", startup_timeout=2)
+            except BaseException as exc:  # pragma: no cover - assertion reports errors
+                errors.append(exc)
+
+        try:
+            t1 = threading.Thread(target=do_start)
+            t1.start()
+            assert first_start_entered.wait(timeout=2)
+
+            mgr.end_session("chat1", project_id="proj1")
+
+            t2 = threading.Thread(target=do_start)
+            t2.start()
+            time.sleep(0.1)
+            allow_first_to_finish.set()
+            t1.join(timeout=3)
+            t2.join(timeout=3)
+
+            assert errors == []
+            assert max_active_starts == 1
+        finally:
+            allow_first_to_finish.set()
+            mgr.cleanup_all()
 
 
 class TestKeyLockExceptionRecovery:
@@ -238,6 +342,12 @@ class TestKeyLockExceptionRecovery:
             t1.join(timeout=3)
 
             assert len(errors) == 1
-            assert "超时" in str(errors[0])
+            assert "当前会话正忙" in str(errors[0])
+            assert "稍后重试" in str(errors[0])
+
+            # Timeout must release the transient key-lock reference so the same
+            # user/session key can retry successfully after the busy operation.
+            retry_session = mgr.start_session("chat1", project_id="proj1", startup_timeout=2)
+            assert retry_session is not None
         finally:
             mgr.cleanup_all()

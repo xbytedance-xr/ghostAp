@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar, TYPE_CHECKING, overload
@@ -89,7 +90,14 @@ class CardEvent(Generic[P]):
         return cls(type=CardEventType.COMPLETED, payload=payload)
 
     @classmethod
-    def failed(cls, error: str = "") -> CardEvent[FailedPayload]:
+    def failed(
+        cls,
+        error: str = "",
+        *,
+        details: str = "",
+        detail_action: Mapping[str, Any] | None = None,
+        retry_action: Mapping[str, Any] | None = None,
+    ) -> CardEvent[FailedPayload]:
         """Signal that the engine session has failed.
 
         Payload: {error: str} — error description text.
@@ -97,7 +105,32 @@ class CardEvent(Generic[P]):
         """
         if not isinstance(error, str):
             raise TypeError(f"error must be str, got {type(error).__name__}")
-        return cls(type=CardEventType.FAILED, payload={"error": error})
+        payload: dict[str, Any] = {"error": error}
+        if details:
+            payload["details"] = str(details)
+        if detail_action:
+            action_payload = dict(detail_action)
+            if "diagnostic_token" not in action_payload:
+                from src.card.error_diagnostics import register_error_diagnostic
+
+                action_payload = {
+                    key: value
+                    for key, value in action_payload.items()
+                    if key not in {"details", "detail", "stderr", "stdout", "error", "exception", "traceback"}
+                }
+                action_payload["diagnostic_token"] = register_error_diagnostic(
+                    title="错误详情",
+                    summary=error,
+                    details=str(details or error),
+                    chat_id=action_payload.get("chat_id"),
+                    origin_message_id=action_payload.get("origin_message_id"),
+                    request_id=action_payload.get("request_id"),
+                    trace_id=action_payload.get("trace_id"),
+                )
+            payload["detail_action"] = action_payload
+        if retry_action:
+            payload["retry_action"] = dict(retry_action)
+        return cls(type=CardEventType.FAILED, payload=payload)
 
     @classmethod
     def cancelled(cls, *, reason: str | None = None) -> CardEvent[Mapping[str, Any]]:
@@ -456,104 +489,103 @@ class CardEvent(Generic[P]):
         """Escalate a pending stop to force-stop after timeout."""
         return cls(type=CardEventType.STOP_ESCALATED)
 
-    # --- Worktree factory methods (delegates to src.card.events.worktree) ---
-    # DEPRECATED: Use src.card.events.worktree functions directly. These proxies
-    # will be removed after 2026-06-01.
+    @classmethod
+    def _warn_worktree_factory_deprecated(cls, method_name: str) -> None:
+        warnings.warn(
+            f"CardEvent.{method_name}() is deprecated and will be removed after "
+            "2026-06-01; use src.card.events.worktree instead "
+            "(migration target: src.card.events.worktree; removal: 2026-06-01).",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     @classmethod
     def worktree_progress(
         cls, units: list[dict], project_id: str = "", message: str = "", silent: bool = False
     ) -> CardEvent[Mapping[str, Any]]:
-        """Worktree execution progress update."""
-        import warnings
-        warnings.warn(
-            "CardEvent.worktree_progress() is deprecated, use src.card.events.worktree.worktree_progress() directly. "
-            "This proxy will be removed after 2026-06-01.",
-            DeprecationWarning, stacklevel=2,
-        )
+        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
+        cls._warn_worktree_factory_deprecated("worktree_progress")
         from .worktree import worktree_progress
-        return worktree_progress(units, project_id, message, silent=silent)
+
+        return worktree_progress(units=units, project_id=project_id, message=message, silent=silent)
 
     @classmethod
     def worktree_tool_select(
-        cls, tools: list[dict], selected: list[str] | None = None,
-        project_id: str = "", message: str = "",
+        cls,
+        tools: list[dict],
+        selected: list[str] | None = None,
+        project_id: str = "",
+        message: str = "",
         select_action: str = "worktree_select_tool",
         pending_tool: str = "",
     ) -> CardEvent[Mapping[str, Any]]:
-        """Worktree tool selection card state."""
-        import warnings
-        warnings.warn(
-            "CardEvent.worktree_tool_select() is deprecated, use src.card.events.worktree.worktree_tool_select() directly. "
-            "This proxy will be removed after 2026-06-01.",
-            DeprecationWarning, stacklevel=2,
-        )
+        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
+        cls._warn_worktree_factory_deprecated("worktree_tool_select")
         from .worktree import worktree_tool_select
+
         return worktree_tool_select(
-            tools, selected, project_id, message,
-            select_action=select_action, pending_tool=pending_tool,
+            tools=tools,
+            selected=selected,
+            project_id=project_id,
+            message=message,
+            select_action=select_action,
+            pending_tool=pending_tool,
         )
 
     @classmethod
     def worktree_confirm(
-        cls, selected_items: list[dict], goal: str = "",
-        project_id: str = "", message: str = "",
+        cls, selected_items: list[dict], goal: str = "", project_id: str = "", message: str = ""
     ) -> CardEvent[Mapping[str, Any]]:
-        """Worktree execution confirmation card state."""
-        import warnings
-        warnings.warn(
-            "CardEvent.worktree_confirm() is deprecated, use src.card.events.worktree.worktree_confirm() directly. "
-            "This proxy will be removed after 2026-06-01.",
-            DeprecationWarning, stacklevel=2,
-        )
+        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
+        cls._warn_worktree_factory_deprecated("worktree_confirm")
         from .worktree import worktree_confirm
-        return worktree_confirm(selected_items, goal, project_id, message)
+
+        return worktree_confirm(
+            selected_items=selected_items, goal=goal, project_id=project_id, message=message
+        )
 
     @classmethod
     def worktree_cleanup(
-        cls, merge_notes: list[dict], base_branch: str = "main",
+        cls,
+        merge_notes: list[dict],
+        base_branch: str = "main",
         merge_results: list[dict] | None = None,
-        project_id: str = "", units: list[dict] | None = None,
+        project_id: str = "",
+        units: list[dict] | None = None,
         cleanup_phase: str = "summary",
     ) -> CardEvent[Mapping[str, Any]]:
-        """Worktree cleanup/merge action card state."""
-        import warnings
-        warnings.warn(
-            "CardEvent.worktree_cleanup() is deprecated, use src.card.events.worktree.worktree_cleanup() directly. "
-            "This proxy will be removed after 2026-06-01.",
-            DeprecationWarning, stacklevel=2,
-        )
+        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
+        cls._warn_worktree_factory_deprecated("worktree_cleanup")
         from .worktree import worktree_cleanup
-        return worktree_cleanup(merge_notes, base_branch, merge_results, project_id, units, cleanup_phase)
+
+        return worktree_cleanup(
+            merge_notes=merge_notes,
+            base_branch=base_branch,
+            merge_results=merge_results,
+            project_id=project_id,
+            units=units,
+            cleanup_phase=cleanup_phase,
+        )
 
     @classmethod
     def worktree_merge(
-        cls, merge_notes: list[dict], base_branch: str = "main",
-        project_id: str = "",
+        cls, merge_notes: list[dict], base_branch: str = "main", project_id: str = ""
     ) -> CardEvent[Mapping[str, Any]]:
-        """Worktree merge entry card state."""
-        import warnings
-        warnings.warn(
-            "CardEvent.worktree_merge() is deprecated, use src.card.events.worktree.worktree_merge() directly. "
-            "This proxy will be removed after 2026-06-01.",
-            DeprecationWarning, stacklevel=2,
-        )
+        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
+        cls._warn_worktree_factory_deprecated("worktree_merge")
         from .worktree import worktree_merge
-        return worktree_merge(merge_notes, base_branch, project_id)
+
+        return worktree_merge(merge_notes=merge_notes, base_branch=base_branch, project_id=project_id)
 
     @classmethod
     def worktree_completed_no_change(
         cls, units: list[dict], project_id: str = "", message: str = ""
     ) -> CardEvent[Mapping[str, Any]]:
-        """Worktree execution completed with no file changes."""
-        import warnings
-        warnings.warn(
-            "CardEvent.worktree_completed_no_change() is deprecated, use src.card.events.worktree.worktree_completed_no_change() directly. "
-            "This proxy will be removed after 2026-06-01.",
-            DeprecationWarning, stacklevel=2,
-        )
+        """Deprecated compatibility shim for :mod:`src.card.events.worktree`."""
+        cls._warn_worktree_factory_deprecated("worktree_completed_no_change")
         from .worktree import worktree_completed_no_change
-        return worktree_completed_no_change(units, project_id, message)
+
+        return worktree_completed_no_change(units=units, project_id=project_id, message=message)
 
     @classmethod
     def from_acp(cls, acp_event: "ACPEvent") -> CardEvent[Mapping[str, Any]]:

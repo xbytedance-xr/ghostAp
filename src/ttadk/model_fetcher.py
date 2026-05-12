@@ -9,7 +9,6 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -17,6 +16,7 @@ from ..config import get_settings
 from ..utils.errors import get_error_detail
 from .env_sandbox import build_ttadk_subprocess_env
 from .models import TTADKModel, is_invalid_model_error, parse_models_cache_json, redact_and_truncate
+from .model_fetching import FetchDiagnostics, FetchResult, TTADKRunResult
 from .strategies import (
     InteractiveStrategy,
     LocalConfigModelsStrategy,
@@ -66,30 +66,6 @@ def _is_ttadk_config_missing_error(e: Exception) -> bool:
         "not initialized",
     ]
     return any(n in hay for n in needles)
-
-
-@dataclass
-class FetchDiagnostics:
-    tool_name: str
-    attempts: list[dict] = field(default_factory=list)
-    chosen_strategy: str = ""
-    warnings: list[str] = field(default_factory=list)
-
-
-@dataclass
-class FetchResult:
-    tool_name: str
-    models: list[TTADKModel] = field(default_factory=list)
-    source: str = ""
-    diagnostics: FetchDiagnostics = field(default_factory=lambda: FetchDiagnostics(tool_name=""))
-
-    def __post_init__(self) -> None:
-        # 确保 diagnostics.tool_name 与 tool_name 一致，便于上层直接记录
-        try:
-            if not getattr(self.diagnostics, "tool_name", None):
-                self.diagnostics.tool_name = self.tool_name
-        except Exception:
-            logger.debug("__post_init__: evaluate condition", exc_info=True)
 
 
 class TTADKModelFetcher:
@@ -955,13 +931,6 @@ class FileCacheStrategy(ModelFetchStrategy):
             }
         except Exception:
             return {"file_hit": "models_cache.json", "scope": "home"}
-
-
-@dataclass
-class TTADKRunResult:
-    returncode: int
-    stdout: str
-    stderr: str
 
 
 class TTADKRunner:

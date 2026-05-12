@@ -71,31 +71,16 @@ def start_ttadk_engine_session(
         start_ttadk_session_fn = _start
 
     if fallback_fn is None:
-        # Default deterministic degrade: fall back to coco ACP
-        from ..acp.sync_adapter import start_session_with_retry as _start_coco
-        from ..coco_model import get_coco_model_manager as _get_coco_model_manager
-
         def fallback_fn(err: Exception):
-            fallback_model = _get_coco_model_manager().get_current_model()
+            """Default TTADK failure path: diagnostics only, no ACP session creation."""
             logger.warning(
-                "[TTADK:Startup] degrade_to_coco: tool=%s input_model=%s err_type=%s err=%s",
+                "[TTADK:Startup] degraded_without_acp_session: tool=%s input_model=%s err_type=%s err=%s",
                 tool_name,
                 intent,
                 type(err).__name__,
                 get_error_detail(err)[:200],
             )
-            s = _start_coco(
-                agent_type="coco",
-                cwd=cwd,
-                startup_timeout=float(startup_timeout or 60),
-                model_name=fallback_model,
-            )
-            try:
-                s._degraded_to = "coco"
-                s._degraded_reason = get_error_detail(err)[:200]
-            except Exception:
-                logger.debug("fallback_fn: 'coco'", exc_info=True)
-            return s
+            return (None, "")
 
     def _start_fn(passthrough_model: Optional[str]):
         # 协议适配快速失败：若无法解析 cmd/args，直接触发可控降级（避免长时间等待）。
@@ -251,4 +236,3 @@ def precheck_ttadk_startup_model(
         manager=manager,
         startup_probe_timeout_s=startup_probe_timeout_s,
     )
-

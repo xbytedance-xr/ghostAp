@@ -235,7 +235,8 @@ def _render_button(spec: ButtonSpec, *, engine_type: str | None = None, budget: 
         if spec.disabled_text:
             btn["disabled_tips"] = {"tag": "plain_text", "content": spec.disabled_text}
         return btn
-    value: dict = {"action": action_id}
+    value: dict = dict(spec.value or {})
+    value.setdefault("action", action_id)
     # Inject engine_type for ENGINE_STOP so the dispatcher can route correctly
     if action_id == ENGINE_STOP and engine_type:
         value["engine_type"] = engine_type

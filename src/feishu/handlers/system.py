@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from ...acp.helper import fetch_acp_models, list_acp_tools
@@ -27,6 +28,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class _SystemSubcommands:
+    """Minimal delegator view for a SystemHandler responsibility group."""
+    _owner: "SystemHandler"
+    _method_names: tuple[str, ...]
+
+    def __getattr__(self, name: str):
+        if name in self._method_names:
+            return getattr(self._owner, name)
+        raise AttributeError(name)
+
+
 class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
     """Help, exit, shell, directory, and intercepted-command handling."""
 
@@ -42,6 +55,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         # Keyed by f"{chat_id}:{tool_name}".
         self._pending_prompts: "OrderedDict[str, str]" = OrderedDict()
         self._PENDING_PROMPTS_MAX_SIZE = 256
+        self.help_commands = _SystemSubcommands(self, ("show_help", "show_full_help", "handle_help_category", "handle_menu_command"))
+        self.shell_commands = _SystemSubcommands(self, ("submit_shell_command", "execute_shell_and_reply", "change_directory"))
+        self.acp_commands = _SystemSubcommands(self, ("handle_acp_command", "handle_select_acp_tool", "handle_select_acp_model", "handle_refresh_acp_models", "handle_model_command"))
+        self.ttadk_commands = _SystemSubcommands(self, ("handle_ttadk_command", "handle_select_ttadk_tool", "handle_select_ttadk_model", "handle_refresh_ttadk_models", "handle_toggle_ttadk_yolo", "handle_select_ttadk_combined", "handle_select_ttadk_combined_tool"))
+        self.lock_commands = _SystemSubcommands(self, ("handle_force_release_repo_lock", "handle_confirm_lock", "handle_cancel_lock", "handle_confirm_force_release", "handle_cancel_force_release"))
 
     @staticmethod
     def _pending_prompt_key(chat_id: str, tool_name: str) -> str:

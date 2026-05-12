@@ -4,6 +4,8 @@ Each handler is tested with a fully-mocked HandlerContext so that no real
 Feishu API calls or sessions are required.
 """
 
+import ast
+import inspect
 import json
 import threading
 from types import SimpleNamespace
@@ -13,6 +15,7 @@ import pytest
 
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
+from src.feishu.handlers.engine_base import BaseEngineHandler
 from src.feishu.handlers.deep import DeepHandler
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.handlers.diagnostics import DiagnosticsHandler
@@ -22,6 +25,7 @@ from src.feishu.handlers.programming import (
     AidenModeHandler,
     CodexModeHandler,
     GeminiModeHandler,
+    ProgrammingModeHandler,
     TTADKModeHandler,
 )
 from src.feishu.handlers.project import ProjectHandler
@@ -82,6 +86,55 @@ def _set_all_programming_mode_flags(ctx, value: bool) -> None:
     ctx.mode_manager.is_codex_mode.return_value = value
     ctx.mode_manager.is_gemini_mode.return_value = value
     ctx.mode_manager.is_ttadk_mode.return_value = value
+
+
+def _collect_buttons(card: dict) -> list[dict]:
+    buttons: list[dict] = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "button":
+                buttons.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(card)
+    return buttons
+
+
+def _collect_button_layout_blocks(card: dict) -> list[list[dict]]:
+    blocks: list[list[dict]] = []
+
+    def collect_buttons(node) -> list[dict]:
+        found: list[dict] = []
+        if isinstance(node, dict):
+            if node.get("tag") == "button":
+                found.append(node)
+            for value in node.values():
+                found.extend(collect_buttons(value))
+        elif isinstance(node, list):
+            for item in node:
+                found.extend(collect_buttons(item))
+        return found
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "column_set":
+                buttons = collect_buttons(node.get("columns", []))
+                if buttons:
+                    blocks.append(buttons)
+                    return
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(card)
+    return blocks
 
 
 # ======================================================================
@@ -168,6 +221,55 @@ class TestBaseHandler:
         assert "hello" in result
 
 
+class TestBaseEngineHandlerTemplateEntrypoints:
+    def test_engine_base_exposes_lock_callback_and_status_template_facade(self):
+        class DummyEngineHandler(BaseEngineHandler):
+            def _get_engine_manager(self):
+                return MagicMock()
+
+            def _get_engine_name_prefix(self) -> str:
+                return "Dummy"
+
+            def _get_task_type(self) -> str:
+                return "dummy_engine"
+
+            def _show_status(self, message_id, chat_id, project=None):
+                self.status_calls.append((message_id, chat_id, project))
+
+            def _create_callbacks(self, message_id, chat_id, project, engine_name, root_path):
+                return {"message_id": message_id, "chat_id": chat_id, "engine_name": engine_name, "root_path": root_path}
+
+        ctx = _make_handler_context()
+        h = DummyEngineHandler(ctx)
+        h.status_calls = []
+        h.lock_helper.handle_lock_conflict = MagicMock(side_effect=lambda body, *_args: body())
+        project = SimpleNamespace(root_path="/repo", project_id="p1")
+        ran = []
+
+        h._run_engine_with_conflict_card(lambda: ran.append(True), project, "chat-1", "msg-1", "/dummy run")
+        callbacks = h._build_engine_callbacks("msg-1", "chat-1", project, "Engine", "/repo")
+        h._show_engine_status("msg-1", "chat-1", project)
+
+        assert ran == [True]
+        h.lock_helper.handle_lock_conflict.assert_called_once()
+        assert h.lock_helper.handle_lock_conflict.call_args.args[1:] == ("/repo", "chat-1", "msg-1", "/dummy run")
+        assert callbacks["engine_name"] == "Engine"
+        assert h.status_calls == [("msg-1", "chat-1", project)]
+
+
+class TestHandlerContextDependencyView:
+    def test_dependency_view_exposes_narrow_core_services_without_removing_fields(self):
+        ctx = _make_handler_context()
+
+        view = ctx.dependency_view()
+
+        assert view.settings is ctx.settings
+        assert view.scheduler is ctx.scheduler
+        assert view.project_manager is ctx.project_manager
+        assert view.message_linker is ctx.message_linker
+        assert ctx.handlers == {}
+
+
 # ======================================================================
 # SystemHandler tests
 # ======================================================================
@@ -236,6 +338,15 @@ class TestSystemHandlerRouting:
         h.show_full_help = MagicMock()
         h.handle_intercepted_command("m1", "c1", "/help", None, command_match=SlashCommandParser.parse("/help"))
         h.show_full_help.assert_called_once_with("m1", "c1", None)
+
+    def test_subhandler_facade_exposes_minimal_responsibility_entries(self):
+        h = self._make()
+
+        assert h.help_commands.show_full_help.__func__ is h.show_full_help.__func__
+        assert h.shell_commands.submit_shell_command.__func__ is h.submit_shell_command.__func__
+        assert h.acp_commands.handle_acp_command.__func__ is h.handle_acp_command.__func__
+        assert h.ttadk_commands.handle_ttadk_command.__func__ is h.handle_ttadk_command.__func__
+        assert h.lock_commands.handle_force_release_repo_lock.__func__ is h.handle_force_release_repo_lock.__func__
 
     def test_route_coco_info(self):
         h = self._make()
@@ -591,6 +702,31 @@ class TestCocoModeHandler:
         h._clear_snapshot_on_project(project)
         assert project.coco_session_snapshot is None
 
+    def test_base_model_name_override_uses_project_model_when_tool_matches(self):
+        h, _ = self._make()
+        h.current_model = "handler-model"
+        project = SimpleNamespace(acp_tool_name="coco", acp_model_name="project-model")
+
+        assert h._get_model_name_override(project) == "project-model"
+
+    def test_base_model_name_override_falls_back_to_current_model(self):
+        h, _ = self._make()
+        h.current_model = "handler-model"
+        project = SimpleNamespace(acp_tool_name="aiden", acp_model_name="project-model")
+
+        assert h._get_model_name_override(project) == "handler-model"
+
+    def test_programming_mode_handler_declares_single_base_model_override(self):
+        source = inspect.getsource(ProgrammingModeHandler)
+        tree = ast.parse(source)
+        class_node = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ProgrammingModeHandler")
+        definitions = [
+            node for node in class_node.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_get_model_name_override"
+        ]
+
+        assert len(definitions) == 1
+
     def test_exit_opposite_mode(self):
         h, _ = self._make()
         h.mode_manager.is_claude_mode.return_value = True
@@ -748,6 +884,141 @@ class TestTTADKModeHandler:
             assert "已进入TTADK编程模式" in content
             h.reply_card.assert_called_once()
 
+    def test_enter_mode_ttadk_degraded_session_sends_structured_error_card(self):
+        ctx = _make_handler_context()
+        ctx.mode_manager.is_ttadk_mode.return_value = False
+        ctx.mode_manager.is_coco_mode.return_value = False
+        ctx.mode_manager.is_claude_mode.return_value = False
+        ctx.mode_manager.is_aiden_mode.return_value = False
+        ctx.mode_manager.is_codex_mode.return_value = False
+        ctx.mode_manager.is_gemini_mode.return_value = False
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        ctx.project_manager.validate_project_path.return_value = (True, "ok")
+
+        project = MagicMock()
+        project.ttadk_session_snapshot = None
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
+
+        sess = MagicMock()
+        sess.session_id = "sid_ttadk"
+        sess.is_resumed = False
+        sess._degraded_to = "coco"
+        sess._degraded_reason = "ttadk cli unavailable"
+        ctx.ttadk_manager.ensure_session.return_value = sess
+
+        h = TTADKModeHandler(ctx)
+        h._get_agent_type_override = MagicMock(return_value="ttadk_coco")
+        h._get_model_name_override = MagicMock(return_value="gpt-5.2")
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
+        h.add_reaction = MagicMock()
+        h.record_mode_transition = MagicMock()
+        h.register_message_project = MagicMock()
+
+        with patch("src.feishu.handlers.programming.CardBuilder.build_project_response_card") as mock_build:
+            mock_build.return_value = ("interactive", "{}")
+            h.enter_mode("m1", "c1", project=project)
+
+        mock_build.assert_not_called()
+
+        h.reply_text.assert_not_called()
+        assert h.reply_card.call_count == 1
+        degraded_card = json.loads(h.reply_card.call_args_list[0].args[1])
+        card_text = json.dumps(degraded_card, ensure_ascii=False)
+        buttons = _collect_buttons(degraded_card)
+        button_blocks = _collect_button_layout_blocks(degraded_card)
+
+        assert "🟡 降级错误" in card_text
+        assert [button["value"]["action"] for button in button_blocks[-3]] == ["continue_degraded"]
+        assert [button["value"]["action"] for button in button_blocks[-2]] == ["show_error_details"]
+        assert [button["value"]["action"] for button in button_blocks[-1]] == ["retry_original"]
+        continue_payload = button_blocks[-3][0]["value"]
+        detail_payload = button_blocks[-2][0]["value"]
+        retry_payload = button_blocks[-1][0]["value"]
+        assert buttons[0]["text"]["content"] == "继续使用 Coco"
+        assert continue_payload == {
+            "action": "continue_degraded",
+            "chat_id": "c1",
+            "origin_message_id": "m1",
+            "degraded_to": "coco",
+        }
+        assert detail_payload["action"] == "show_error_details"
+        assert detail_payload["diagnostic_token"]
+        assert "details" not in detail_payload
+        from src.card.error_diagnostics import render_error_diagnostic
+
+        diagnostic_text = render_error_diagnostic(
+            detail_payload["diagnostic_token"],
+            chat_id="c1",
+            origin_message_id="m1",
+        )
+        assert "ttadk cli unavailable" in diagnostic_text
+        assert "下一步建议" in diagnostic_text
+        assert "重试原模式" in diagnostic_text
+        assert retry_payload == {
+            "action": "retry_original",
+            "chat_id": "c1",
+            "origin_message_id": "m1",
+            "original_mode": "ttadk_coco",
+            "retry_mode": "ttadk_coco",
+            "degraded_to": "coco",
+        }
+        assert continue_payload != retry_payload
+        assert detail_payload != retry_payload
+
+    def test_enter_mode_ttadk_startup_failure_sends_degraded_feedback_without_session_switch(self):
+        ctx = _make_handler_context()
+        ctx.mode_manager.is_ttadk_mode.return_value = False
+        ctx.mode_manager.is_coco_mode.return_value = False
+        ctx.mode_manager.is_claude_mode.return_value = False
+        ctx.mode_manager.is_aiden_mode.return_value = False
+        ctx.mode_manager.is_codex_mode.return_value = False
+        ctx.mode_manager.is_gemini_mode.return_value = False
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        ctx.project_manager.validate_project_path.return_value = (True, "ok")
+
+        project = MagicMock()
+        project.ttadk_session_snapshot = None
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
+        ctx.ttadk_manager.ensure_session.side_effect = RuntimeError("ttadk cli unavailable")
+
+        h = TTADKModeHandler(ctx)
+        h._get_agent_type_override = MagicMock(return_value="ttadk_coco")
+        h._get_model_name_override = MagicMock(return_value="gpt-5.2")
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock(return_value="reply_1")
+        h.add_reaction = MagicMock()
+        h.record_mode_transition = MagicMock()
+        h.register_message_project = MagicMock()
+
+        with patch("src.feishu.handlers.programming.CardBuilder.build_project_response_card") as mock_build:
+            h.enter_mode("m1", "c1", project=project)
+
+        mock_build.assert_not_called()
+        h.reply_text.assert_not_called()
+        h.reply_card.assert_called_once()
+        ctx.mode_manager.enter_programming_mode.assert_not_called()
+        h.record_mode_transition.assert_not_called()
+        degraded_card = json.loads(h.reply_card.call_args.args[1])
+        button_blocks = _collect_button_layout_blocks(degraded_card)
+        assert not any(
+            button["value"].get("action") == "continue_degraded"
+            for block in button_blocks
+            for button in block
+        )
+        assert [button["value"]["action"] for button in button_blocks[-1]] == ["show_error_details"]
+        assert not any(
+            button["value"].get("action") == "retry_original"
+            for block in button_blocks
+            for button in block
+        )
+
     def test_enter_mode_ttadk_timeout_uses_warning(self):
         ctx = _make_handler_context()
         ctx.mode_manager.is_ttadk_mode.return_value = False
@@ -774,7 +1045,9 @@ class TestTTADKModeHandler:
 
         h.reply_card.assert_called_once()
         h.send_error_card.assert_not_called()
-        assert "已为你保留选择" in str(h.reply_card.call_args)
+        assert "重新发送原命令" in str(h.reply_card.call_args)
+        assert "continue_degraded" not in str(h.reply_card.call_args)
+        assert "retry_original" not in str(h.reply_card.call_args)
 
 
 class TestProgrammingModeEnterExit:
@@ -1038,7 +1311,7 @@ class TestOneShotPendingSlot:
 
 
 class TestTTADKModeDegradeWarning:
-    def test_ttadk_enter_mode_emits_degrade_warning(self):
+    def test_ttadk_enter_mode_emits_degrade_card(self):
         ctx = _make_handler_context()
 
         ctx.mode_manager.is_ttadk_mode.return_value = False
@@ -1076,7 +1349,16 @@ class TestTTADKModeDegradeWarning:
 
         h.enter_mode("m1", "c1", project=project)
 
-        assert any("TTADK 后端暂不可用" in str(call) for call in h.reply_text.call_args_list)
+        h.reply_text.assert_not_called()
+        assert h.reply_card.call_count >= 1
+        degraded_card = json.loads(h.reply_card.call_args_list[0].args[1])
+        card_text = json.dumps(degraded_card, ensure_ascii=False)
+        buttons = _collect_buttons(degraded_card)
+
+        assert "🟡 降级错误" in card_text
+        assert "TTADK 暂不可用" in card_text
+        assert buttons[0]["text"]["content"] == "继续使用 Coco"
+        assert buttons[0]["value"]["action"] == "continue_degraded"
 
 
 # ======================================================================

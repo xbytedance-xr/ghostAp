@@ -1,4 +1,8 @@
+import logging
+
 import pytest
+import ast
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from src.feishu.dispatcher import MessageDispatcher
 from src.agent.intent_recognizer import IntentType
@@ -49,6 +53,25 @@ class TestMessageDispatcher:
             None,
             command_match=SlashCommandParser.parse("hello coco"),
         )
+
+        self.client._get_mode_handler.assert_called_once_with(InteractionMode.COCO)
+        mock_handler.handle_message.assert_called_once_with("m1", "c1", "hello coco", None)
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_process_with_request_context_programming_mode_forwarding(self, mock_tid):
+        from src.feishu.dispatcher import FeishuRequestContext
+
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
+        self.client._is_exit_command.return_value = False
+        self.client.settings.thread_programming_enabled = False
+        self.client._get_effective_mode.return_value = (InteractionMode.COCO, True)
+        mock_handler = MagicMock()
+        self.client._get_mode_handler.return_value = mock_handler
+
+        req = FeishuRequestContext(message_id="m1", chat_id="c1", text="hello coco", project=None)
+        self.dispatcher.process_request(req)
 
         self.client._get_mode_handler.assert_called_once_with(InteractionMode.COCO)
         mock_handler.handle_message.assert_called_once_with("m1", "c1", "hello coco", None)
@@ -131,3 +154,85 @@ class TestMessageDispatcher:
                 command_match=SlashCommandParser.parse("help me"),
             )
             mock_exec.assert_called_once()
+
+    def test_dispatcher_classifies_startup_and_dispatch_failures(self):
+        from src.feishu.dispatcher import DispatchErrorAction, classify_dispatch_error
+
+        intent_failure = classify_dispatch_error(RuntimeError("llm down"), phase="intent_recognition")
+        assert intent_failure.action == DispatchErrorAction.FALLBACK_TO_SHELL
+        assert intent_failure.user_reachable is True
+
+        model_card_failure = classify_dispatch_error(RuntimeError("card failed"), phase="coco_model_card")
+        assert model_card_failure.action == DispatchErrorAction.FALLBACK_TO_DIRECT_ENTER
+        assert model_card_failure.user_reachable is True
+
+        forward_failure = classify_dispatch_error(RuntimeError("forward failed"), phase="pending_prompt_forward")
+        assert forward_failure.action == DispatchErrorAction.LOG_AND_CONTINUE
+
+        task_failure = classify_dispatch_error(RuntimeError("step failed"), phase="multi_task_step")
+        assert task_failure.action == DispatchErrorAction.STOP_MULTI_TASK
+
+    def test_dispatcher_recoverable_intent_error_falls_back_to_shell_with_log(self, caplog):
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
+        self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+        self.client._pending_image_lock = MagicMock()
+        self.client._pending_image_only = set()
+        self.client._intent_recognizer.recognize.side_effect = TimeoutError("llm timeout")
+        self.client._get_working_dir.return_value = "/repo"
+
+        with caplog.at_level(logging.ERROR, logger="src.feishu.dispatcher"):
+            self.dispatcher.process_with_intent(
+                "m1",
+                "c1",
+                "ls -la",
+                None,
+                command_match=SlashCommandParser.parse("ls -la"),
+            )
+
+        self.client._submit_shell_command.assert_called_once_with("m1", "c1", "ls -la", "/repo", None)
+        assert "意图识别异常" in caplog.text
+
+    def test_dispatcher_degraded_coco_card_error_enters_directly_with_warning(self, caplog):
+        self.client._mode_manager.is_coco_mode.return_value = False
+        self.client._system_handler.handle_select_acp_tool.side_effect = RuntimeError("card failed")
+
+        with caplog.at_level(logging.WARNING, logger="src.feishu.dispatcher"):
+            self.dispatcher._handle_enter_coco("m1", "c1", project=None)
+
+        self.client._enter_coco_mode.assert_called_once_with("m1", "c1", project=None)
+        assert "回退直接进入" in caplog.text
+
+    def test_dispatcher_fatal_programming_error_propagates_without_success_reply(self):
+        self.client._get_effective_mode.side_effect = AssertionError("programming invariant broken")
+
+        with pytest.raises(AssertionError):
+            self.dispatcher.process_with_intent(
+                "m1",
+                "c1",
+                "hello",
+                None,
+                command_match=SlashCommandParser.parse("hello"),
+            )
+
+        self.client._submit_shell_command.assert_not_called()
+        self.client._reply_text.assert_not_called()
+
+    def test_dispatcher_key_paths_have_no_uncategorized_broad_catches(self):
+        root = Path(__file__).resolve().parents[1]
+        tree = ast.parse((root / "src" / "feishu" / "dispatcher.py").read_text(encoding="utf-8"))
+        key_functions = {"process_with_intent", "_handle_enter_coco", "execute_task_step"}
+        broad_by_function: dict[str, list[int]] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name in key_functions:
+                broad_by_function[node.name] = [
+                    handler.lineno
+                    for handler in ast.walk(node)
+                    if isinstance(handler, ast.ExceptHandler)
+                    and isinstance(handler.type, ast.Name)
+                    and handler.type.id == "Exception"
+                ]
+
+        assert set(broad_by_function) == key_functions
+        assert broad_by_function == {name: [] for name in key_functions}

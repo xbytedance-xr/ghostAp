@@ -555,32 +555,6 @@ class ModelFailureAwareSession:
         self._inner = rewrap(new_base)
         return True
 
-    def _do_degrade_to_coco(self) -> bool:
-        """运行期降级：切换到 coco ACP session 并替换 inner（best-effort）。"""
-        base, rewrap = self._unwrap_rate_limit()
-        cwd = str(getattr(base, "_cwd", "") or "")
-        if not cwd:
-            return False
-
-        try:
-            from ..acp.sync_adapter import start_session_with_retry
-            from ..coco_model import get_coco_model_manager
-
-            model = get_coco_model_manager().get_current_model()
-            timeout_s = float(getattr(self._settings, "acp_startup_timeout", 20) or 20)
-            new_base = start_session_with_retry(agent_type="coco", cwd=cwd, startup_timeout=timeout_s, model_name=model)
-        except (ImportError, RuntimeError, OSError, TimeoutError):
-            logger.debug("_do_degrade_to_coco: start coco session failed", exc_info=True)
-            return False
-
-        try:
-            # best-effort 标记
-            new_base._degraded_to = "coco"
-        except Exception:
-            logger.debug("_do_degrade_to_coco: _degraded_to marker failed", exc_info=True)
-        self._inner = rewrap(new_base)
-        return True
-
     # --- Model-failure-aware send_prompt ---
 
     def send_prompt(
@@ -754,29 +728,27 @@ class ModelFailureAwareSession:
                                 if ok:
                                     continue
 
-                            # 3) degrade to coco (best-effort)
+                            # 3) Produce explicit degraded diagnostics only.
+                            # TTADK runtime self-healing must not replace the
+                            # current TTADK session with a coco ACP session.
                             if not degraded_tried:
                                 degraded_tried = True
-                                ok = self._do_degrade_to_coco()
                                 _record_attempt(
-                                    "degrade_to_coco",
-                                    ok=bool(ok),
+                                    "degraded_result",
+                                    ok=False,
                                     tool=tool,
                                     input_model=input_model,
                                     extra={
                                         "retry_count": int(invalid_real_tried) + int(invalid_auto_tried),
-                                        "degraded": bool(ok),
+                                        "degraded": True,
+                                        "session_replaced": False,
                                     },
                                 )
                                 logger.warning(
-                                    "[TTADK:RuntimeInvalidModel] action=degrade_to_coco ok=%s tool=%s input_model=%s",
-                                    bool(ok),
+                                    "[TTADK:RuntimeInvalidModel] action=degraded_result session_replaced=false tool=%s input_model=%s",
                                     tool,
                                     input_model,
                                 )
-                                if ok:
-                                    # 下一轮循环会对 coco 会话执行 send_prompt（达到"自动降级不崩溃"的目标）
-                                    continue
 
                             # give up: raise a diagnosable error (keep original as cause)
                             try:

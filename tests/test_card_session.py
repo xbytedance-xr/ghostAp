@@ -8,6 +8,13 @@ import pytest
 
 from src.card.delivery.engine import CardDelivery, MutationOutcome
 from src.card.events import CardEvent, CardEventType
+from src.card.events.worktree import (
+    worktree_cleanup,
+    worktree_confirm,
+    worktree_merge,
+    worktree_progress,
+    worktree_tool_select,
+)
 from src.card.types import RenderedCard
 from src.card.session import CardSession
 from src.card.session.config import SessionCallbacks, SessionConfig
@@ -1287,7 +1294,7 @@ class TestWorktreeStepperRender:
         from src.card.ui_text import UI_TEXT
 
         state = reduce_card_state(None, CardEvent.started(), CardMetadata(mode_name="Worktree"))
-        state = reduce_card_state(state, CardEvent.worktree_tool_select(
+        state = reduce_card_state(state, worktree_tool_select(
             tools=[{"id": "t1", "name": "tool1", "description": "desc"}],
             selected=["t1"],
         ), CardMetadata(mode_name="Worktree"))
@@ -1301,7 +1308,7 @@ class TestWorktreeStepperRender:
         from src.card.ui_text import UI_TEXT
 
         state = reduce_card_state(None, CardEvent.started(), CardMetadata(mode_name="Worktree"))
-        state = reduce_card_state(state, CardEvent.worktree_confirm(
+        state = reduce_card_state(state, worktree_confirm(
             selected_items=[{"tool": "t1", "model": "m1"}], goal="test"
         ), CardMetadata(mode_name="Worktree"))
 
@@ -1314,7 +1321,7 @@ class TestWorktreeStepperRender:
         from src.card.ui_text import UI_TEXT
 
         state = reduce_card_state(None, CardEvent.started(), CardMetadata(mode_name="Worktree"))
-        state = reduce_card_state(state, CardEvent.worktree_progress(
+        state = reduce_card_state(state, worktree_progress(
             units=[{"name": "u1", "status": "running"}]
         ), CardMetadata(mode_name="Worktree"))
 
@@ -1327,7 +1334,7 @@ class TestWorktreeStepperRender:
         from src.card.ui_text import UI_TEXT
 
         state = reduce_card_state(None, CardEvent.started(), CardMetadata(mode_name="Worktree"))
-        state = reduce_card_state(state, CardEvent.worktree_merge(
+        state = reduce_card_state(state, worktree_merge(
             merge_notes=[{"branch": "feat-1", "status": "ready", "summary": "ok"}],
             base_branch="main",
         ), CardMetadata(mode_name="Worktree"))
@@ -1341,7 +1348,7 @@ class TestWorktreeStepperRender:
         from src.card.ui_text import UI_TEXT
 
         state = reduce_card_state(None, CardEvent.started(), CardMetadata(mode_name="Worktree"))
-        state = reduce_card_state(state, CardEvent.worktree_cleanup(
+        state = reduce_card_state(state, worktree_cleanup(
             merge_notes=[{"branch": "feat-1", "status": "merged", "summary": "done"}],
             base_branch="main",
         ), CardMetadata(mode_name="Worktree"))
@@ -1831,7 +1838,7 @@ class TestWorktreeRetryAllButton:
             {"name": "A", "status": "completed"},
             {"name": "B", "status": "completed"},
         ]
-        event = CardEvent.worktree_progress(units)
+        event = worktree_progress(units)
         new = reduce_worktree(state, event)
         assert any(b.action_id == ButtonIntent.WORKTREE_RETRY_ALL for b in new.buttons)
         assert not any(b.action_id == ButtonIntent.WORKTREE_RETRY_FAILED for b in new.buttons)

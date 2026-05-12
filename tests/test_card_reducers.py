@@ -10,7 +10,7 @@ from src.card.state.reducers.lifecycle import reduce_lifecycle
 
 
 def _base_state() -> CardState:
-    return CardState(metadata=CardMetadata(project_name="Test", mode_name="Deep Agent", mode_emoji="🧠"))
+    return CardState(metadata=CardMetadata(engine_type="deep", project_name="Test", mode_name="Deep Agent", mode_emoji="🧠"))
 
 
 class TestTextReducer:
@@ -109,6 +109,40 @@ class TestLifecycleReducer:
         s = reduce_lifecycle(_base_state(), CardEvent.failed("err"))
         assert s.terminal == "failed"
         assert s.header.template == "red"
+
+    def test_failed_uses_unified_error_visual_contract(self):
+        s = reduce_lifecycle(
+            _base_state(),
+            CardEvent.failed(
+                "boom",
+                details="trace 摘要",
+                detail_action={"action": "show_error_details"},
+                retry_action={"action": "deep_resume"},
+            ),
+        )
+
+        error_block = s.blocks[-1].content
+        assert "**错误摘要**" in error_block
+        assert "boom" in error_block
+        assert "详情已收起" in error_block
+        assert "**详细信息**" not in error_block
+        assert "trace 摘要" not in error_block
+        assert any(button.text == "查看详情" for button in s.buttons)
+        assert any(button.action_id == "show_error_details" for button in s.buttons)
+        detail_buttons = [button for button in s.buttons if button.action_id == "show_error_details"]
+        assert detail_buttons[0].value and detail_buttons[0].value.get("diagnostic_token")
+        assert "details" not in detail_buttons[0].value
+        assert any(button.text.startswith("🔁") for button in s.buttons)
+        assert any(button.action_id == "deep_resume" for button in s.buttons)
+
+    def test_failed_without_detail_action_does_not_show_misleading_details_button(self):
+        s = reduce_lifecycle(
+            _base_state(),
+            CardEvent.failed("boom", retry_action={"action": "deep_resume"}),
+        )
+
+        assert not any(button.text == "查看详情" for button in s.buttons)
+        assert any(button.text == "📋 查看状态" and button.action_id == "intent.global.show_status" for button in s.buttons)
 
     def test_cancelled_grey(self):
         s = reduce_lifecycle(_base_state(), CardEvent.cancelled())

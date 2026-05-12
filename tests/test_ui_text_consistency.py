@@ -192,6 +192,44 @@ class TestUiTextKeyConflictAssertion:
             assert key in UI_TEXT
 
 
+class TestUiTextDomainViews:
+    """Task 29: card/ui_text.py keeps aggregate UI_TEXT while exposing domain views."""
+
+    def test_core_card_ui_text_view_is_subset_of_aggregate(self):
+        from src.card.ui_text import UI_TEXT
+        from src.card.ui_text_domains import CORE_CARD_UI_TEXT
+
+        assert CORE_CARD_UI_TEXT
+        assert "log_truncated_warning" in CORE_CARD_UI_TEXT
+        assert "system_error_title" in CORE_CARD_UI_TEXT
+        for key, value in CORE_CARD_UI_TEXT.items():
+            assert UI_TEXT[key] == value
+
+    def test_styles_ui_text_shim_documents_migration_target_and_removal_window(self):
+        source = (Path(__file__).parent.parent / "src" / "card" / "styles.py").read_text(encoding="utf-8")
+
+        assert "from src.card.ui_text import UI_TEXT" in source
+        assert "removed after 2026-06-01" in source
+        assert "DeprecationWarning" in source
+
+
+class TestDegradedPathTextConsistency:
+    def test_degraded_continue_text_uses_spaced_brand_and_no_hardcoded_coco_fallback(self):
+        from src.card.ui_text import UI_TEXT
+
+        assert UI_TEXT["card_lifecycle_degraded_primary"].format(mode="Coco") == "继续使用 Coco"
+        assert UI_TEXT["card_lifecycle_continue_degraded_ack"].format(mode="Aiden") == (
+            "✅ 已继续使用 Aiden。你可以直接继续发送消息；如需恢复原能力，可点击重试。"
+        )
+        assert "继续使用Coco" not in "\n".join(str(value) for value in UI_TEXT.values())
+        assert "可继续使用Coco" not in "\n".join(str(value) for value in UI_TEXT.values())
+        assert UI_TEXT["card_lifecycle_retry_original_unavailable"] == (
+            "当前降级卡缺少可自动重试的原模式上下文，请重新发送原命令或查看诊断。"
+        )
+        assert "继续使用 Coco" not in UI_TEXT["card_lifecycle_retry_original_manual_required"]
+        assert "卡片存在可继续模式" in UI_TEXT["card_lifecycle_retry_original_manual_required"]
+
+
 # ---------------------------------------------------------------------------
 # Task 23: .env.example only contains user-facing variables
 # ---------------------------------------------------------------------------
@@ -247,3 +285,30 @@ class TestEvictionTextConsistency:
         assert core_phrase in UI_TEXT["eviction_notify_body"], (
             f"eviction_notify_body missing core phrase: {core_phrase}"
         )
+
+
+class TestDegradedRetryTextConsistency:
+    """降级错误卡的次级重试按钮必须表达“重试原模式”，不能像重启任务。"""
+
+    def test_degraded_retry_label_is_not_restart(self):
+        from src.card.styles import UI_TEXT
+
+        assert UI_TEXT["card_lifecycle_retry_original"] == "重试原模式"
+        assert UI_TEXT["card_lifecycle_retry_original"] != UI_TEXT["card_lifecycle_restart"]
+
+    def test_degraded_primary_and_feedback_require_specific_mode(self):
+        from src.card.styles import UI_TEXT
+
+        assert "{mode}" in UI_TEXT["card_lifecycle_degraded_primary"]
+        assert "{mode}" in UI_TEXT["card_lifecycle_continue_degraded_ack"]
+        assert "{mode}" in UI_TEXT["card_lifecycle_retry_original_started"]
+        assert "详情已收起" in UI_TEXT["card_lifecycle_details_collapsed"]
+
+    def test_mobile_preview_uses_retry_original_for_degraded_card(self):
+        html = (Path(__file__).parent.parent / "ux" / "card_preview.html").read_text(encoding="utf-8")
+        degraded_section = html.split("错误卡 · 降级错误", 1)[1]
+
+        assert "重试原模式" in degraded_section
+        assert "详情已收起" in degraded_section
+        assert "详细信息" not in degraded_section
+        assert "🔄 重新开始" not in degraded_section

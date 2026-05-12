@@ -1,6 +1,7 @@
 import pytest
 
 from src.agent.intent_recognizer import (
+    IntentMatcher,
     IntentRecognizer,
     IntentResult,
     IntentType,
@@ -133,6 +134,36 @@ class TestIntentRecognizerQuickMatch:
     def test_chinese_text_not_quick_matched(self, recognizer):
         result = recognizer._quick_match("帮我写一个函数")
         assert result is None
+
+    def test_quick_match_delegates_to_registered_matcher(self, recognizer):
+        matcher = IntentMatcher()
+
+        def always_help(_recognizer, text, current_mode):
+            assert text == "anything"
+            assert current_mode == "smart"
+            return IntentResult.single(
+                IntentType.SHOW_HELP,
+                confidence=0.42,
+                original_text=text,
+                reasoning="test matcher",
+                description="测试注册表入口",
+            )
+
+        matcher.register("always_help", always_help)
+        recognizer.intent_matcher = matcher
+
+        result = recognizer._quick_match("anything")
+
+        assert result is not None
+        assert result.primary_intent == IntentType.SHOW_HELP
+        assert result.confidence == 0.42
+
+    def test_default_matcher_registry_exposes_rule_names(self, recognizer):
+        assert recognizer.intent_matcher.rule_names[:3] == (
+            "command_typo",
+            "exact_command",
+            "coco_info",
+        )
 
 
 class TestIntentRecognizerASR:

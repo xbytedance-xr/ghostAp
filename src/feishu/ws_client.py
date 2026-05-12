@@ -12,7 +12,6 @@
 
 import asyncio
 from collections import OrderedDict
-import hashlib
 import json
 import logging
 import os
@@ -25,15 +24,12 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
-from lark_oapi.ws import client as lark_ws_client_impl
-from lark_oapi.ws.const import HEADER_TYPE
-from lark_oapi.ws.enum import MessageType
 
 # NOTE: lark-oapi 的 event callback models 在不同版本中并不完整。
 # 本项目仅将 P2ImMessageReceiveV1 用于类型标注；运行时缺失不应导致 import 失败。
 try:  # pragma: no cover
     from lark_oapi.event.callback.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1  # type: ignore
-except Exception:  # pragma: no cover
+except (ImportError, AttributeError):  # pragma: no cover
     P2ImMessageReceiveV1 = Any  # type: ignore
 
 from ..acp.manager import ACPSessionManager
@@ -83,6 +79,10 @@ from .renderers.worktree_renderer import WorktreeRenderer
 from .image_handler import FeishuImageHandler
 from .message_cache import MessageCache
 from .message_formatter import FeishuMessageFormatter as fmt
+from .ws_card_action_handler import CardActionInspector, classify_card_action_error
+from .ws_event_router import MessageIngressGuard, classify_ws_error
+from .ws_lifecycle import ObservedLarkWSClient
+from .ws_resource_manager import EngineResourceGroup
 from .ws_health import WSHealthMonitor
 from .slash_command_parser import CommandMatch, SlashCommandParser
 
@@ -92,51 +92,6 @@ logger = logging.getLogger(__name__)
 # "caller provided command_match=None". This ensures request-scoped SSOT:
 # parse exactly once at WS ingress, then thread the result through.
 _COMMAND_MATCH_MISSING: object = object()
-
-
-def _frame_header_value(frame: Any, key: str) -> Optional[str]:
-    for header in getattr(frame, "headers", []) or []:
-        if getattr(header, "key", None) == key:
-            return getattr(header, "value", None)
-    return None
-
-
-class _ObservedLarkWSClient(lark.ws.Client):
-    """Wrap lark-oapi WS client to expose connection activity hooks.
-
-    lark-oapi only reconnects after explicit read/write failures. If the socket
-    becomes half-open, its recv loop can stay blocked forever and the service
-    stops receiving new Feishu events without emitting any error. We observe
-    connect/data/pong/disconnect to drive an external watchdog.
-    """
-
-    def __init__(self, *args, on_activity: Callable[[str], None], **kwargs):
-        super().__init__(*args, **kwargs)
-        self._on_activity = on_activity
-
-    async def _connect(self) -> None:
-        await super()._connect()
-        self._on_activity("connected")
-
-    async def _disconnect(self):
-        try:
-            return await super()._disconnect()
-        finally:
-            self._on_activity("disconnected")
-
-    async def _handle_control_frame(self, frame):
-        message_type = _frame_header_value(frame, HEADER_TYPE)
-        if message_type == MessageType.PONG.value:
-            self._on_activity("pong")
-        elif message_type == MessageType.PING.value:
-            self._on_activity("ping")
-        else:
-            self._on_activity("control")
-        return await super()._handle_control_frame(frame)
-
-    async def _handle_data_frame(self, frame):
-        self._on_activity("data")
-        return await super()._handle_data_frame(frame)
 
 
 _READONLY_CARD_ACTIONS = {
@@ -208,6 +163,10 @@ class FeishuWSClient:
         )
         self._intent_recognizer = IntentRecognizer()
         self._message_cache = MessageCache(ttl=self.settings.message_cache_ttl, max_size=self.settings.message_cache_max_size, cleanup_interval=60)
+        self._message_ingress_guard = MessageIngressGuard(
+            message_cache=self._message_cache,
+            message_expire_seconds=self.settings.message_expire_seconds,
+        )
         self._card_event_cache = MessageCache(ttl=self.settings.message_cache_ttl, max_size=self.settings.message_cache_max_size, cleanup_interval=60)
         # Card action dedupe (user rapid clicks): short TTL, per-action key.
         self._card_action_dedup_cache = MessageCache(ttl=self.settings.card.action_dedup_ttl, max_size=self.settings.card.action_dedup_max_size, cleanup_interval=30)
@@ -481,50 +440,15 @@ class FeishuWSClient:
         except Exception:
             logger.debug("failed to stop control_plane", exc_info=True)
 
-        def _wait_engines_stopped(engines: list[Any], timeout_s: float = 5.0, interval_s: float = 0.05) -> None:
-            deadline = time.time() + max(0.1, timeout_s)
-            while time.time() < deadline:
-                any_running = False
-                for e in engines:
-                    try:
-                        if e and getattr(e, "is_running", False):
-                            any_running = True
-                            break
-                    except Exception:
-                        continue
-                if not any_running:
-                    return
-                time.sleep(interval_s)
-
         # 1) Stop long-running engines first (they may hold ACP subprocesses)
-        deep_engines: list[Any] = []
-        spec_engines: list[Any] = []
-
-        try:
-            deep_engines = list(self._deep_engine_manager.list_engines())
-            for engine in deep_engines:
-                try:
-                    if engine and getattr(engine, "is_running", False):
-                        engine.stop()
-                except Exception:
-                    logger.debug("failed to stop deep engine instance", exc_info=True)
-        except Exception:
-            logger.debug("failed to stop deep engines", exc_info=True)
-
-        try:
-            spec_engines = list(self._spec_engine_manager.list_engines())
-            for engine in spec_engines:
-                try:
-                    if engine and getattr(engine, "is_running", False):
-                        engine.stop()
-                except Exception:
-                    logger.debug("failed to stop spec engine instance", exc_info=True)
-        except Exception:
-            logger.debug("failed to stop spec engines", exc_info=True)
+        deep_resources = EngineResourceGroup("deep_engine", self._deep_engine_manager)
+        spec_resources = EngineResourceGroup("spec_engine", self._spec_engine_manager)
+        deep_engines = deep_resources.stop_running_engines()
+        spec_engines = spec_resources.stop_running_engines()
 
         # Give running engines a short grace period to exit run loops before hard cleanup.
-        _wait_engines_stopped(deep_engines)
-        _wait_engines_stopped(spec_engines)
+        EngineResourceGroup.wait_stopped(deep_engines)
+        EngineResourceGroup.wait_stopped(spec_engines)
 
         try:
             self._message_cache.stop_cleanup_thread()
@@ -548,14 +472,8 @@ class FeishuWSClient:
             except Exception as e:
                 logger.debug("清理%s_session_manager失败: %s", name, get_error_detail(e))
 
-        for name, mgr in (
-            ("deep_engine", self._deep_engine_manager),
-            ("spec_engine", self._spec_engine_manager),
-        ):
-            try:
-                mgr.cleanup_all()
-            except Exception as e:
-                logger.debug("清理%s_manager失败: %s", name, get_error_detail(e))
+        deep_resources.cleanup_all()
+        spec_resources.cleanup_all()
 
         try:
             self._thread_manager.close()
@@ -640,15 +558,11 @@ class FeishuWSClient:
         飞书历史消息可能会被 WS 重放；这里通过 `create_time` 过滤掉过旧消息，
         避免触发重复执行（尤其是 shell/编程任务）。
         """
-        if not create_time:
-            return False
-        current_time = int(time.time() * 1000)
-        message_age_ms = current_time - create_time
-        return message_age_ms > self.settings.message_expire_seconds * 1000
+        return self._message_ingress_guard.is_message_expired(create_time)
 
     def _is_duplicate_message(self, message_id: str) -> bool:
         """消息去重：基于 `MessageCache` 判断是否重复处理。"""
-        return self._message_cache.is_duplicate(message_id)
+        return self._message_ingress_guard.is_duplicate_message(message_id)
 
     def _get_api_client(self) -> lark.Client:
         """延迟构造 `lark_oapi.Client`（用于调用消息/卡片 API）。"""
@@ -1166,13 +1080,16 @@ class FeishuWSClient:
             logger.warning("处理消息超时: %s", get_error_detail(e))
             try:
                 self._reply_text(message_id, UI_TEXT["ws_message_timeout"])
-            except Exception:
+            except (RuntimeError, OSError, TimeoutError, TypeError, ValueError):
+                classify_ws_error(RuntimeError("reply timeout failed"), phase="dispatch")
                 logger.debug("failed to reply timeout message", exc_info=True)
-        except Exception as e:
+        except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as e:
+            classify_ws_error(e, phase="dispatch")
             logger.error("处理消息异常: %s", e, exc_info=True)
             try:
                 self._reply_text(message_id, UI_TEXT["ws_message_internal_error"])
-            except Exception:
+            except (RuntimeError, OSError, TimeoutError, TypeError, ValueError):
+                classify_ws_error(RuntimeError("reply internal error failed"), phase="dispatch")
                 logger.debug("failed to reply internal error message", exc_info=True)
         finally:
             set_current_thread_id(None)
@@ -1605,7 +1522,7 @@ class FeishuWSClient:
             else:
                 try:
                     value_preview = json.dumps(value_preview, ensure_ascii=False)[:500]
-                except Exception:
+                except (TypeError, ValueError):
                     value_preview = str(value_preview)[:500]
             logger.debug(
                 "卡片回调收到: event_id=%s, event_type=%s, open_message_id=%s, open_chat_id=%s, "
@@ -1634,21 +1551,9 @@ class FeishuWSClient:
 
         action_type_preview = ""
         try:
-            value_raw = data.event.action.value
-            if isinstance(value_raw, dict):
-                action_type_preview = str(value_raw.get("action", "") or "")
-            elif isinstance(value_raw, str):
-                try:
-                    parsed = json.loads(value_raw)
-                    if isinstance(parsed, dict):
-                        action_type_preview = str(parsed.get("action", "") or "")
-                    else:
-                        action_type_preview = ""
-                except Exception:
-                    action_type_preview = ""
-            else:
-                action_type_preview = ""
-        except Exception:
+            action_type_preview = CardActionInspector.action_type(data.event.action)
+        except (AttributeError, TypeError, ValueError):
+            classify_card_action_error(RuntimeError("action preview failed"), phase="payload_parse")
             action_type_preview = ""
 
         try:
@@ -1658,7 +1563,8 @@ class FeishuWSClient:
                 if open_message_id:
                     self._reply_text(open_message_id, UI_TEXT["ws_system_cmd_gate_blocked"])
                 return None
-        except Exception:
+        except (RuntimeError, OSError, TypeError, ValueError):
+            classify_card_action_error(RuntimeError("system command gate failed"), phase="dispatch")
             logger.debug("failed to check system command gate", exc_info=True)
 
         operator_id = ""
@@ -1670,18 +1576,19 @@ class FeishuWSClient:
                 or getattr(operator, "union_id", None)
                 or ""
             )
-        except Exception:
+        except (AttributeError, TypeError):
             operator_id = ""
 
         if open_message_id and action_type_preview:
-            dedupe_fingerprint = self._card_action_dedup_fingerprint(data.event.action)
+            dedupe_fingerprint = CardActionInspector.dedup_fingerprint(data.event.action)
             dedupe_key = f"{open_chat_id}:{open_message_id}:{operator_id}:{action_type_preview}:{dedupe_fingerprint}"
             try:
                 if self._card_action_dedup_cache.is_duplicate(dedupe_key):
                     return {"toast": {"type": "info", "content": UI_TEXT["card_session_toast_dedup"]}}
 
 
-            except Exception:
+            except (RuntimeError, OSError, TypeError, ValueError):
+                classify_card_action_error(RuntimeError("dedup failed"), phase="dedup")
                 # best-effort only
                 logger.debug("failed to ack card action", exc_info=True)
 
@@ -1695,35 +1602,27 @@ class FeishuWSClient:
                 undo_expires = _val.get("_ue", 0)
                 if undo_expires and time.time() > undo_expires:
                     return {"toast": {"type": "warning", "content": "撤销窗口已过期，请使用 /unlock 解锁"}}
-        except Exception:
-            pass
+        except (json.JSONDecodeError, TypeError, ValueError):
+            classify_card_action_error(RuntimeError("undo payload parse failed"), phase="payload_parse")
 
         project_id = None
         try:
-            value_raw = data.event.action.value
-            if isinstance(value_raw, dict):
-                project_id = value_raw.get("project_id")
-            elif isinstance(value_raw, str):
-                try:
-                    parsed = json.loads(value_raw)
-                    if isinstance(parsed, dict):
-                        project_id = parsed.get("project_id")
-                except Exception:
-                    project_id = None
-        except Exception:
+            project_id = CardActionInspector.project_id(data.event.action)
+        except (AttributeError, TypeError, ValueError):
+            classify_card_action_error(RuntimeError("project id parse failed"), phase="payload_parse")
             project_id = None
 
         if not project_id:
             try:
                 active = self._project_manager.get_active_project(open_chat_id)
                 project_id = active.project_id if active else None
-            except Exception:
+            except (RuntimeError, OSError, TypeError, ValueError):
                 project_id = None
 
         origin_message_id = None
         try:
             origin_message_id = self._message_linker.resolve_origin(reply_message_id=open_message_id)
-        except Exception:
+        except (RuntimeError, OSError, TypeError, ValueError):
             origin_message_id = None
         origin_message_id = origin_message_id or open_message_id
         request_id = self._ensure_request_id(origin_message_id, chat_id=open_chat_id, project_id=project_id)
@@ -1756,30 +1655,14 @@ class FeishuWSClient:
     @classmethod
     def _card_action_dedup_fingerprint(cls, action: Any) -> str:
         """Return a stable fingerprint for the concrete card interaction payload."""
-        payload: dict[str, Any] = {"value": cls._normalize_card_action_dedup_value(getattr(action, "value", None))}
-        for attr in ("option", "options", "form_value", "input_value"):
-            extra = getattr(action, attr, None)
-            if isinstance(extra, (str, int, float, bool, list, tuple, dict)):
-                payload[attr] = cls._normalize_card_action_dedup_value(extra)
-
-        try:
-            canonical = json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            )
-        except Exception:
-            canonical = str(payload)
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+        return CardActionInspector.dedup_fingerprint(action)
 
     @staticmethod
     def _normalize_card_action_dedup_value(value: Any) -> Any:
         if isinstance(value, str):
             try:
                 parsed = json.loads(value)
-            except Exception:
+            except (json.JSONDecodeError, TypeError, ValueError):
                 return value
             return parsed
         return value
@@ -1787,67 +1670,7 @@ class FeishuWSClient:
     def _is_system_card_action(self, data: P2CardActionTrigger) -> bool:
         """Check if the card action is a system action that should bypass project queue."""
         try:
-            value_raw = data.event.action.value
-            if isinstance(value_raw, dict):
-                action_type = value_raw.get("action", "")
-            elif isinstance(value_raw, str):
-                import json
-
-                try:
-                    parsed = json.loads(value_raw)
-                    action_type = parsed.get("action", "") if isinstance(parsed, dict) else ""
-                except Exception:
-                    action_type = ""
-            else:
-                action_type = ""
-            system_actions = {
-                "show_status",
-                "switch_project",
-                "show_board",
-                "refresh_board",
-                "show_detail",
-                "new_project_prompt",
-                "select_ttadk_tool",
-                "select_ttadk_model",
-                "refresh_ttadk_models",
-                "select_acp_tool",
-                "select_acp_model",
-                "refresh_acp_models",
-                "select_ttadk_combined_tool",
-                "load_more",
-                "load_prev",
-                "show_ttadk_menu",
-                "show_acp_menu",
-                "show_help_menu",
-                "show_worktree_menu",
-                "worktree_finish_selection",
-                "worktree_select_tool",
-                "worktree_select_model",
-                "worktree_remove_item",
-                "worktree_clear_items",
-                "worktree_confirm_start",
-                "worktree_execute_action",
-                "worktree_merge",
-                "worktree_cleanup",
-                "worktree_retry_failed",
-                "worktree_retry_all",
-                "force_release_repo_lock",
-                "confirm_lock",
-                "cancel_lock",
-                "confirm_force_release",
-                "cancel_force_release",
-                "enter_deep_prompt",
-                "help_category",
-                "engine_stop",
-                "deep_pause",
-                "deep_stop",
-                "deep_resume",
-                "spec_pause",
-                "spec_stop",
-                "spec_resume",
-                "spec_skip_retry",
-            }
-            return action_type in system_actions
+            return CardActionInspector.is_system_action(data.event.action)
         except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
             return False
 
@@ -2043,13 +1866,17 @@ class FeishuWSClient:
                 command_match = SlashCommandParser.parse(text)
             except Exception:
                 command_match = None
-        self._message_dispatcher.process_with_intent(
-            message_id,
-            chat_id,
-            text,
-            project,
-            command_match=command_match,
-            shell_fast_tracked=shell_fast_tracked,
+        from .dispatcher import FeishuRequestContext
+
+        self._message_dispatcher.process_request(
+            FeishuRequestContext(
+                message_id=message_id,
+                chat_id=chat_id,
+                text=text,
+                project=project,
+                command_match=command_match,
+                shell_fast_tracked=shell_fast_tracked,
+            )
         )
 
     def _execute_multi_tasks(
@@ -2134,7 +1961,7 @@ class FeishuWSClient:
         reconnect_delay = getattr(self.settings, "feishu_ws_reconnect_delay_s", 5.0)
 
         while not self._closed:
-            self._client = _ObservedLarkWSClient(
+            self._client = ObservedLarkWSClient(
                 self.settings.app_id,
                 self.settings.app_secret,
                 event_handler=event_handler,
@@ -2143,7 +1970,8 @@ class FeishuWSClient:
             )
             try:
                 self._client.start()
-            except Exception:
+            except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as e:
+                classify_ws_error(e, phase="dispatch")
                 if self._closed:
                     break
                 logger.exception("飞书 WS 连接异常退出")

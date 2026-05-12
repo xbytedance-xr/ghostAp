@@ -679,6 +679,32 @@ def test_build_startup_diagnostics_timeout_s_parseable_is_float():
     assert d3.get("timeout_s") == 1.5
 
 
+def test_startup_diagnostics_builder_is_extracted_entrypoint():
+    class _Err(Exception):
+        pass
+
+    error = _Err("boom")
+    builder = sa.StartupDiagnosticsBuilder(
+        agent_type="coco",
+        cwd="/tmp/project",
+        model_name="model-a",
+        error=error,
+        attempt=1,
+        retries=2,
+        timeout_s=3,
+    )
+
+    assert builder.build() == sa.build_startup_diagnostics(
+        agent_type="coco",
+        cwd="/tmp/project",
+        model_name="model-a",
+        error=error,
+        attempt=1,
+        retries=2,
+        timeout_s=3,
+    )
+
+
 def test_startup_diagnostics_redaction_enabled_masks_tokens(monkeypatch):
     """脱敏开启：args/stdout/stderr 中的敏感片段应被掩码。"""
     settings = _fake_settings(
@@ -781,6 +807,76 @@ def test_diagnostics_public_api_config_injection(monkeypatch):
     assert cfg.redact_patterns == [r"sk-[A-Za-z0-9]{10,}"]
 
 
+@pytest.mark.parametrize(
+    ("settings_overrides", "expected"),
+    [
+        ({}, (600, 240, 2000)),
+        (
+            {
+                "acp_diagnostics_args_limit": "not-int",
+                "acp_diagnostics_snippet_limit": "bad",
+                "acp_diagnostics_total_limit": object(),
+            },
+            (600, 240, 2000),
+        ),
+        (
+            {
+                "acp_diagnostics_args_limit": -1,
+                "acp_diagnostics_snippet_limit": -2,
+                "acp_diagnostics_total_limit": -3,
+            },
+            (600, 240, 2000),
+        ),
+        (
+            {
+                "acp_diagnostics_args_limit": 0,
+                "acp_diagnostics_snippet_limit": 0,
+                "acp_diagnostics_total_limit": 0,
+            },
+            (0, 0, 0),
+        ),
+        (
+            {
+                "acp_diagnostics_args_limit": "123",
+                "acp_diagnostics_snippet_limit": 45,
+                "acp_diagnostics_total_limit": 678,
+            },
+            (123, 45, 678),
+        ),
+    ],
+)
+def test_diagnostics_config_limit_boundaries(settings_overrides, expected):
+    """SSOT 常量迁移后，配置缺失/非法/负数/0/显式值边界保持不变。"""
+    cfg = diag.get_diagnostics_config(get_settings_fn=lambda: _fake_settings(**settings_overrides))
+
+    assert (cfg.args_limit, cfg.snippet_limit, cfg.total_limit) == expected
+
+
+@pytest.mark.parametrize(
+    ("settings_overrides", "expected_stdout"),
+    [
+        ({}, "x" * 240 + "…(truncated)"),
+        ({"acp_diagnostics_snippet_limit": "bad"}, "x" * 240 + "…(truncated)"),
+        ({"acp_diagnostics_snippet_limit": -1}, "x" * 240 + "…(truncated)"),
+        ({"acp_diagnostics_snippet_limit": 0}, "x" * 240 + "…(truncated)"),
+        ({"acp_diagnostics_snippet_limit": 12}, "x" * 12 + "…(truncated)"),
+    ],
+)
+def test_sync_adapter_diagnostics_snippet_limit_boundaries(monkeypatch, settings_overrides, expected_stdout):
+    """sync_adapter 通过 diagnostics SSOT 获取 snippet 默认值并保持边界语义。"""
+    monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings(**settings_overrides))
+
+    class _Err(Exception):
+        pass
+
+    e = _Err("boom")
+    e.stdout = "x" * 300  # type: ignore[attr-defined]
+
+    d = sa.build_startup_diagnostics(agent_type="coco", cwd=".", model_name=None, error=e, session=None)
+
+    assert d["stdout_snippet"] == expected_stdout
+
+
 def test_diagnostics_public_api_redact_text_illegal_pattern_is_safe():
     """公共 API：非法正则不应抛异常。"""
     s = diag.redact_text("hello sk-0123456789abcdefTOKEN", patterns=["("], replacement="***")
@@ -841,3 +937,14 @@ def test_diagnostics_redact_text_mixed_valid_invalid_patterns_still_redacts():
     out = diag.redact_text(text, patterns=["(", r"(?i)bearer\s+[^\s]+"], replacement="***")
     assert isinstance(out, str)
     assert "Bearer abcdef" not in out
+
+
+def test_diagnostics_safe_extract_returns_default_and_logs_debug(caplog):
+    """diagnostics 场景的安全提取 helper 应保留容错语义并留下可追溯日志。"""
+    caplog.set_level("DEBUG", logger="src.acp.diagnostics")
+
+    def boom():
+        raise RuntimeError("diagnostic source failed")
+
+    assert diag.safe_extract(boom, default="fallback", log_msg="collect session failed") == "fallback"
+    assert "collect session failed" in caplog.text

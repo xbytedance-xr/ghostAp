@@ -258,7 +258,7 @@ class DeepRenderer(BaseRenderer):
                 )
                 hint = f"接续 task {step_idx}「{next_entry.content}」"
             if not getattr(session, "closed", False):
-                self._dispatch_card_split(session, reason="task_done", hint=hint, bridge_phrase="续接：")
+                self.render_strategy.dispatch_card_split(session, reason="task_done", hint=hint)
 
         last_statuses[0] = new_statuses
 

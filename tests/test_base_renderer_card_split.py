@@ -4,7 +4,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from src.card.events import CardEventType
-from src.feishu.renderers.base import BaseRenderer
+from src.feishu.renderers.base import BaseRenderer, EngineRenderStrategy
 
 
 class _FakeRenderer(BaseRenderer):
@@ -14,6 +14,7 @@ class _FakeRenderer(BaseRenderer):
         self.settings = MagicMock()
         self.ui_states = {}
         self._session_factory = None
+        self.render_strategy = EngineRenderStrategy(self)
         self.split_calls: list[tuple[str, str | None, str | None]] = []
 
     def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
@@ -53,3 +54,28 @@ def test_default_on_card_split_completed_is_noop():
 
     renderer = _Plain()
     renderer._on_card_split_completed("any_reason", None)
+
+
+def test_engine_render_strategy_dispatches_split_with_shared_bridge_phrase():
+    renderer = _FakeRenderer()
+    session = MagicMock()
+
+    renderer.render_strategy.dispatch_card_split(session, reason="cycle_changed", hint="cycle 2")
+
+    event = session.dispatch.call_args.args[0]
+    assert event.type == CardEventType.CARD_SPLIT
+    assert event.payload["reason"] == "cycle_changed"
+    assert event.payload["hint"] == "cycle 2"
+    assert event.payload["bridge_phrase"] == EngineRenderStrategy.DEFAULT_BRIDGE_PHRASE
+
+
+def test_deep_and_spec_renderers_share_strategy_facade_type():
+    from src.feishu.renderers.deep_renderer import DeepRenderer
+    from src.feishu.renderers.spec_renderer import SpecRenderer
+
+    handler = MagicMock()
+    handler.ctx = MagicMock()
+    handler.settings = MagicMock()
+
+    assert isinstance(DeepRenderer(handler).render_strategy, EngineRenderStrategy)
+    assert isinstance(SpecRenderer(handler).render_strategy, EngineRenderStrategy)

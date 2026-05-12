@@ -337,8 +337,8 @@ def test_ttadk_unit_invalid_model_retries_with_auto(tmp_path):
     assert creates[1] == ("create", "ttadk", "codex", None)  # auto retry
 
 
-def test_ttadk_unit_generic_error_falls_back_to_coco(tmp_path):
-    """TTADK unit with non-model error falls back to coco session."""
+def test_ttadk_unit_generic_error_fails_without_coco_fallback(tmp_path):
+    """TTADK unit with non-model error must not degrade to ACP/coco."""
     from dataclasses import dataclass
 
     d = tmp_path / "wt"
@@ -359,9 +359,12 @@ def test_ttadk_unit_generic_error_falls_back_to_coco(tmp_path):
             call_log.append(("create", provider, tool_name))
 
         def start(self, startup_timeout=60):
-            # TTADK codex always fails with generic error
+            # TTADK codex always fails with generic error; creating ACP/coco would
+            # indicate the forbidden final fallback path was taken.
             if self.provider == "ttadk" and self.tool_name == "codex":
                 raise RuntimeError("connection refused")
+            if self.provider == "acp" and self.tool_name == "coco":
+                raise AssertionError("TTADK failure must not create ACP/coco fallback")
             return "ok"
 
         def send_prompt(self, text, on_event=None, timeout=None):
@@ -377,12 +380,53 @@ def test_ttadk_unit_generic_error_falls_back_to_coco(tmp_path):
     planned = dispatcher.plan_user_goal("test task", [unit], [tool])
     executed = dispatcher.execute_units(planned, max_workers=1)
 
-    assert executed[0].status == "completed"
-    assert executed[0].summary == "coco-done"
-    # Verify coco fallback was created
+    assert executed[0].status == "failed"
+    assert "connection refused" in executed[0].summary
+    assert "启动失败" in executed[0].summary
+    # Verify coco fallback was not created
     coco_creates = [(p, t) for _, p, t in call_log if _ == "create" and t == "coco"]
-    assert len(coco_creates) >= 1
-    assert coco_creates[0] == ("acp", "coco")
+    assert coco_creates == []
+
+
+def test_ttadk_invalid_model_auto_retry_failure_does_not_fallback_to_coco(tmp_path):
+    """Even after invalid-model auto retry fails, TTADK must not fall through to ACP/coco."""
+    d = tmp_path / "wt"
+    d.mkdir()
+    call_log = []
+
+    class FailingAutoRetrySession:
+        def __init__(self, *, provider, tool_name, working_dir, model_name=None, ttadk_use_pty=False):
+            self.provider = provider
+            self.tool_name = tool_name
+            self.model_name = model_name
+            call_log.append(("create", provider, tool_name, model_name))
+
+        def start(self, startup_timeout=60):
+            if self.provider == "acp" and self.tool_name == "coco":
+                raise AssertionError("TTADK invalid-model recovery must not create ACP/coco fallback")
+            if self.model_name == "bad-model":
+                raise RuntimeError("invalid value for --model: bad-model")
+            raise RuntimeError("auto model also unavailable")
+
+        def send_prompt(self, text, on_event=None, timeout=None):
+            raise AssertionError("failed start should not prompt")
+
+        def close(self):
+            return None
+
+    unit = WorktreeUnit(unit_id="u0", worktree_path=str(d))
+    tool = WorktreeSelectionItem(provider="ttadk", tool_name="codex", display_name="Codex")
+
+    dispatcher = WorktreeDispatcher(session_factory=lambda **kw: FailingAutoRetrySession(**kw))
+    planned = dispatcher.plan_user_goal("test task", [unit], [tool])
+    planned[0].model_name = "bad-model"
+    executed = dispatcher.execute_units(planned, max_workers=1)
+
+    assert executed[0].status == "failed"
+    assert "invalid value for --model" in executed[0].summary
+    assert ("create", "ttadk", "codex", "bad-model") in call_log
+    assert ("create", "ttadk", "codex", None) in call_log
+    assert not any(entry[1:3] == ("acp", "coco") for entry in call_log)
 
 
 def test_non_ttadk_unit_no_recovery_on_start_failure(tmp_path):
@@ -413,4 +457,3 @@ def test_non_ttadk_unit_no_recovery_on_start_failure(tmp_path):
     assert executed[0].status == "failed"
     assert "启动失败" in executed[0].error
     assert "acp startup failed" in executed[0].error
-

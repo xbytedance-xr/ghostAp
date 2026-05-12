@@ -106,6 +106,7 @@ class ButtonSpec:
     url: str | None = None  # If set, renders as URL-open button instead of callback
     disabled: bool = False
     disabled_text: str | None = None  # Tooltip shown when button is disabled
+    value: dict | None = None  # Optional callback payload; action_id is used as default action
 
 
 # ---------------------------------------------------------------------------

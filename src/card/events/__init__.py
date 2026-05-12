@@ -34,12 +34,26 @@ from src.card.events.payloads import (
     WorktreeUnitPayload,
 )
 from src.card.events.types import CardEventType
+from src.card.events.worktree import (
+    worktree_cleanup,
+    worktree_completed_no_change,
+    worktree_confirm,
+    worktree_merge,
+    worktree_progress,
+    worktree_tool_select,
+)
 
 __all__ = [
     "CardEvent",
     "CardEventType",
     "card_event_from_acp",
     "VALIDATE_PAYLOAD",
+    "worktree_cleanup",
+    "worktree_completed_no_change",
+    "worktree_confirm",
+    "worktree_merge",
+    "worktree_progress",
+    "worktree_tool_select",
     # Payloads
     "BlockedPayload",
     "CompletedPayload",

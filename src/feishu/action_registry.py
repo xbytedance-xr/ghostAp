@@ -5,10 +5,26 @@ if TYPE_CHECKING:
     from .ws_client import FeishuWSClient
 
 from ..card import CardBuilder
+from ..card.actions import dispatch as action_ids
 from ..card.ui_text import UI_TEXT
+from .dispatch_context import DispatchContext
 from .slash_command_parser import SlashCommandParser
 
 logger = logging.getLogger(__name__)
+
+
+def _display_mode_label(mode: str) -> str:
+    labels = {
+        "coco": "Coco",
+        "claude": "Claude",
+        "claude cli": "Claude CLI",
+        "aiden": "Aiden",
+        "codex": "Codex",
+        "gemini": "Gemini",
+        "ttadk": "TTADK",
+    }
+    raw = str(mode or "").strip()
+    return labels.get(raw.lower(), raw)
 
 
 class _RetryDispatchAdapter:
@@ -31,10 +47,7 @@ class _RetryDispatchAdapter:
     ) -> bool:
         # Best-effort: keep retry dispatch compatible with the main gate API.
         # Parse once and pass the structured CommandMatch to the gate.
-        try:
-            m = SlashCommandParser.parse(raw_text)
-        except Exception:
-            m = None
+        m = SlashCommandParser.parse(raw_text)
         return self._client._chat_lock_gate.check(
             chat_id, sender_id, message_id, command_match=m,
         )
@@ -64,7 +77,7 @@ class _RetryDispatchAdapter:
 
 def _resolve_project(client: "FeishuWSClient", pid: str | None, cid: str):
     """Resolve project from pid+cid, returning None when pid is absent."""
-    return client._project_manager.get_project_for_chat(pid, cid) if pid else None
+    return DispatchContext(project_manager=client._project_manager).resolve_project(pid, cid)
 
 
 def init_action_registry(client: 'FeishuWSClient') -> None:
@@ -76,28 +89,28 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val: client._show_project_status(
             mid, cid, _resolve_project(client, pid, cid)
         ),
-        exact="show_status",
+        exact=action_ids.SHOW_STATUS,
     )
     client._register_action(
-        lambda mid, cid, pid, val: client._show_project_board(mid, cid, origin_message_id=mid), exact="switch_project"
+        lambda mid, cid, pid, val: client._show_project_board(mid, cid, origin_message_id=mid), exact=action_ids.SWITCH_PROJECT
     )
     client._register_action(
-        lambda mid, cid, pid, val: client._show_project_board(mid, cid, origin_message_id=mid), exact="show_board"
+        lambda mid, cid, pid, val: client._show_project_board(mid, cid, origin_message_id=mid), exact=action_ids.SHOW_BOARD
     )
     client._register_action(
-        lambda mid, cid, pid, val: client._show_project_board(mid, cid, origin_message_id=mid), exact="refresh_board"
+        lambda mid, cid, pid, val: client._show_project_board(mid, cid, origin_message_id=mid), exact=action_ids.REFRESH_BOARD
     )
     client._register_action(
         lambda mid, cid, pid, val: client._show_project_board(
             mid, cid, origin_message_id=mid, page=val.get("page", 1)
         ),
-        exact="switch_board_page",
+        exact=action_ids.SWITCH_BOARD_PAGE,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._show_project_status(
             mid, cid, _resolve_project(client, pid, cid), origin_message_id=mid
         ),
-        exact="show_detail",
+        exact=action_ids.SHOW_DETAIL,
     )
 
     def _handle_switch_to(mid, cid, pid, val):
@@ -107,7 +120,7 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
         else:
             client._reply_text(mid, UI_TEXT["lock_project_not_found_hint"])
 
-    client._register_action(_handle_switch_to, exact="switch_to")
+    client._register_action(_handle_switch_to, exact=action_ids.SWITCH_TO)
 
     def _handle_continue_dev(mid, cid, pid, val):
         project = _resolve_project(client, pid, cid)
@@ -123,7 +136,7 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
         else:
             client._reply_text(mid, UI_TEXT["lock_project_not_found_hint"])
 
-    client._register_action(_handle_continue_dev, exact="continue_dev")
+    client._register_action(_handle_continue_dev, exact=action_ids.CONTINUE_DEV)
 
     def _handle_list_files(mid, cid, pid, val):
         project = _resolve_project(client, pid, cid)
@@ -133,20 +146,20 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
         else:
             client._reply_text(mid, UI_TEXT["lock_project_not_found_hint"])
 
-    client._register_action(_handle_list_files, exact="list_files")
+    client._register_action(_handle_list_files, exact=action_ids.LIST_FILES)
 
     client._register_action(
         lambda mid, cid, pid, val: client._reply_text(
             mid, "📝 创建新项目\n\n请发送: `/new 项目名 路径`\n\n例如: `/new myApp ~/workspace/myApp`"
         ),
-        exact="new_project_prompt",
+        exact=action_ids.NEW_PROJECT_PROMPT,
     )
 
     client._register_action(
         lambda mid, cid, pid, val: client._handle_select_ttadk_tool(
             mid, cid, val.get("_option") or val.get("tool_name", ""), pid
         ),
-        exact="select_ttadk_tool",
+        exact=action_ids.SELECT_TTADK_TOOL,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_toggle_ttadk_yolo(
@@ -157,7 +170,7 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
             val.get("tool_name", ""),
             pid,
         ),
-        exact="toggle_ttadk_yolo",
+        exact=action_ids.TOGGLE_TTADK_YOLO,
     )
 
 
@@ -185,11 +198,11 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
             val.get("_option") or val.get("model_name", ""),
             _resolve_project(client, pid, cid),
         ),
-        exact="select_ttadk_model",
+        exact=action_ids.SELECT_TTADK_MODEL,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_refresh_ttadk_models(mid, cid, val.get("tool_name", ""), pid),
-        exact="refresh_ttadk_models",
+        exact=action_ids.REFRESH_TTADK_MODELS,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_select_ttadk_combined(
@@ -199,19 +212,19 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
             val.get("_option") or val.get("model_name", ""),
             _resolve_project(client, pid, cid),
         ),
-        exact="select_ttadk_combined",
+        exact=action_ids.SELECT_TTADK_COMBINED,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_select_ttadk_combined_tool(
             mid, cid, val.get("_option", ""), _resolve_project(client, pid, cid),
         ),
-        exact="select_ttadk_combined_tool",
+        exact=action_ids.SELECT_TTADK_COMBINED_TOOL,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_ttadk_command(
             mid, cid, _resolve_project(client, pid, cid), True
         ),
-        exact="show_ttadk_menu",
+        exact=action_ids.SHOW_TTADK_MENU,
     )
 
     # Worktree
@@ -219,55 +232,55 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val: client._handle_worktree_command(
             mid, cid, _resolve_project(client, pid, cid), True
         ),
-        exact="show_worktree_menu",
+        exact=action_ids.SHOW_WORKTREE_MENU,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_finish_worktree_selection(mid, cid, pid, val),
-        exact="worktree_finish_selection",
+        exact=action_ids.WORKTREE_FINISH_SELECTION,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_select_tool(mid, cid, pid, val),
-        exact="worktree_select_tool",
+        exact=action_ids.WORKTREE_SELECT_TOOL,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_select_model(mid, cid, pid, val),
-        exact="worktree_select_model",
+        exact=action_ids.WORKTREE_SELECT_MODEL,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_remove_item(mid, cid, pid, val),
-        exact="worktree_remove_item",
+        exact=action_ids.WORKTREE_REMOVE_ITEM,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_clear_items(mid, cid, pid, val),
-        exact="worktree_clear_items",
+        exact=action_ids.WORKTREE_CLEAR_ITEMS,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_confirm_start(mid, cid, pid, val),
-        exact="worktree_confirm_start",
+        exact=action_ids.WORKTREE_CONFIRM_START,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_merge(mid, cid, pid, val),
-        exact="worktree_merge",
+        exact=action_ids.WORKTREE_MERGE,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_show_worktree_merge_entry(mid, cid, pid, val),
-        exact="show_worktree_merge_entry",
+        exact=action_ids.SHOW_WORKTREE_MERGE_ENTRY,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_cleanup(mid, cid, pid, val),
-        exact="worktree_cleanup",
+        exact=action_ids.WORKTREE_CLEANUP,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_execute_action(mid, cid, pid, val),
-        exact="worktree_execute_action",
+        exact=action_ids.WORKTREE_EXECUTE_ACTION,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_retry_failed(mid, cid, pid, val),
-        exact="worktree_retry_failed",
+        exact=action_ids.WORKTREE_RETRY_FAILED,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_retry_all(mid, cid, pid, val),
-        exact="worktree_retry_all",
+        exact=action_ids.WORKTREE_RETRY_ALL,
     )
 
     # ACP
@@ -275,11 +288,11 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val: client._handle_acp_command(
             mid, cid, _resolve_project(client, pid, cid)
         ),
-        exact="show_acp_menu",
+        exact=action_ids.SHOW_ACP_MENU,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_select_acp_tool(mid, cid, val.get("tool_name", ""), pid),
-        exact="select_acp_tool",
+        exact=action_ids.SELECT_ACP_TOOL,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_select_acp_model(
@@ -289,11 +302,11 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
             val.get("model_name", ""),
             _resolve_project(client, pid, cid),
         ),
-        exact="select_acp_model",
+        exact=action_ids.SELECT_ACP_MODEL,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_refresh_acp_models(mid, cid, val.get("tool_name", ""), pid),
-        exact="refresh_acp_models",
+        exact=action_ids.REFRESH_ACP_MODELS,
     )
 
     # System
@@ -301,32 +314,69 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val: client._show_full_help(
             mid, cid, _resolve_project(client, pid, cid)
         ),
-        exact="show_help_menu",
+        exact=action_ids.SHOW_HELP_MENU,
     )
-    client._register_action(lambda mid, cid, pid, val: client._handle_deep_prompt(mid, cid), exact="enter_deep_prompt")
+    client._register_action(lambda mid, cid, pid, val: client._handle_deep_prompt(mid, cid), exact=action_ids.ENTER_DEEP_PROMPT)
     client._register_action(
         lambda mid, cid, pid, val: client._handle_force_release_repo_lock(mid, cid, pid, val),
-        exact="force_release_repo_lock",
+        exact=action_ids.FORCE_RELEASE_REPO_LOCK,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_confirm_lock(mid, cid, pid, val),
-        exact="confirm_lock",
+        exact=action_ids.CONFIRM_LOCK,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_cancel_lock(mid, cid, pid, val),
-        exact="cancel_lock",
+        exact=action_ids.CANCEL_LOCK,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_confirm_force_release(mid, cid, pid, val),
-        exact="confirm_force_release",
+        exact=action_ids.CONFIRM_FORCE_RELEASE,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_cancel_force_release(mid, cid, pid, val),
-        exact="cancel_force_release",
+        exact=action_ids.CANCEL_FORCE_RELEASE,
     )
 
     from .retry_handler import RetryCommandHandler
-    client._register_action(RetryCommandHandler(_RetryDispatchAdapter(client)), exact="retry_command")
+    client._register_action(RetryCommandHandler(_RetryDispatchAdapter(client)), exact=action_ids.RETRY_COMMAND)
+    def _handle_continue_degraded(mid, cid, pid, val):
+        mode = str((val or {}).get("degraded_to") or "").strip()
+        if mode:
+            message = UI_TEXT["card_lifecycle_continue_degraded_ack"].format(mode=_display_mode_label(mode))
+        else:
+            message = UI_TEXT["card_lifecycle_continue_degraded_unknown_ack"]
+        client._reply_text(mid, message)
+
+    client._register_action(_handle_continue_degraded, exact=action_ids.CONTINUE_DEGRADED)
+
+    def _handle_show_error_details(mid, cid, pid, val):
+        from src.card.error_diagnostics import render_error_diagnostic
+
+        client._reply_text(
+            mid,
+            render_error_diagnostic(
+                val.get("diagnostic_token"),
+                chat_id=cid,
+                # Diagnostic records are bound to the original triggering
+                # message when the card is built.  In a real card click, ``mid``
+                # is the card message being clicked, so using it here would
+                # reject legitimate clicks.  Prefer the explicit payload binding
+                # and fall back to ``mid`` only for older cards without it.
+                origin_message_id=val.get("origin_message_id") or mid,
+                request_id=val.get("request_id"),
+                trace_id=val.get("trace_id"),
+            ),
+        )
+
+    def _handle_retry_original(mid, cid, pid, val):
+        from .retry_original import RetryOriginalModeUseCase
+
+        decision = RetryOriginalModeUseCase()(mid, cid, pid, dict(val or {}))
+        client._reply_text(mid, decision.message)
+
+    client._register_action(_handle_show_error_details, exact=action_ids.SHOW_ERROR_DETAILS)
+    client._register_action(_handle_retry_original, exact=action_ids.RETRY_ORIGINAL)
 
     # Approval — dispatches APPROVAL_RESOLVED event to update CardSession state
     def _handle_approval(mid, cid, pid, val, *, approved: bool):
@@ -334,7 +384,6 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         client._reply_text(mid, "✅ 已批准操作" if approved else "❌ 已拒绝操作")
         # Dispatch APPROVAL_RESOLVED to the engine that rendered the approval card
         try:
-            from ..card.events import CardEvent, CardEventType
             engine_type = val.get("engine_type", "")
             approval_val = {**val, "approved": approved}
             if engine_type == "deep":
@@ -345,16 +394,16 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
                 # Fallback: try deep handler (approval may not have engine_type in value)
                 logger.debug("approval: no engine_type, trying deep")
                 client._deep_handler.handle_card_action(mid, cid, "deep_approval_resolved", approval_val)
-        except Exception as exc:
+        except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
             logger.warning("Failed to dispatch APPROVAL_RESOLVED for message_id=%s: %s", mid, repr(exc))
 
     client._register_action(
         lambda mid, cid, pid, val: _handle_approval(mid, cid, pid, val, approved=True),
-        exact="approve_action",
+        exact=action_ids.APPROVE_ACTION,
     )
     client._register_action(
         lambda mid, cid, pid, val: _handle_approval(mid, cid, pid, val, approved=False),
-        exact="reject_action",
+        exact=action_ids.REJECT_ACTION,
     )
 
     client._register_action(
@@ -365,7 +414,7 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
             _resolve_project(client, pid, cid),
             origin_message_id=mid,
         ),
-        exact="help_category",
+        exact=action_ids.HELP_CATEGORY,
     )
 
     # Deep Engine
@@ -373,7 +422,7 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         lambda mid, cid, pid, val: client._show_deep_status(
             mid, cid, _resolve_project(client, pid, cid), origin_message_id=mid
         ),
-        exact="show_deep_status",
+        exact=action_ids.SHOW_DEEP_STATUS,
     )
     client._register_action(
         lambda mid, cid, pid, val, type=None: client._deep_handler.handle_card_action(mid, cid, type, val),
@@ -398,4 +447,4 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
             logger.warning("engine_stop: unknown engine_type=%s, trying deep handler", engine_type)
             client._deep_handler.handle_card_action(mid, cid, "deep_stop", val)
 
-    client._register_action(_handle_engine_stop, exact="engine_stop")
+    client._register_action(_handle_engine_stop, exact=action_ids.ENGINE_STOP)

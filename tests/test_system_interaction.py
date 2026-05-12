@@ -1,8 +1,31 @@
 import json
+from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock
 
+from src import __version__
 from src.feishu.handlers.system import SystemHandler
+
+
+def _collect_buttons(card: dict) -> list[dict]:
+    buttons = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("tag") == "button":
+                buttons.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(card)
+    return buttons
+
+
+def _card_text(card: dict) -> str:
+    return json.dumps(card, ensure_ascii=False)
 
 
 class TestSystemInteraction(unittest.TestCase):
@@ -45,7 +68,7 @@ class TestSystemInteraction(unittest.TestCase):
         # Verify content structure
         card = json.loads(content)
         self.assertIn("header", card)
-        self.assertEqual(card["header"]["title"]["content"], "📖 GhostAP 使用帮助")
+        self.assertEqual(card["header"]["title"]["content"], f"📖 GhostAP 使用帮助 v{__version__}")
 
         # Verify category buttons exist
         elements = card["body"]["elements"]
@@ -134,6 +157,139 @@ class TestSystemInteraction(unittest.TestCase):
         self.assertIn("/spec_save", content)
         self.assertIn("/spec_export", content)
         self.assertIn("/spec_recover", content)
+
+
+class TestUnifiedErrorCardPaths(unittest.TestCase):
+    """Regression coverage for the three production error-card entry paths."""
+
+    def _make_ctx(self):
+        ctx = MagicMock()
+        ctx.settings.app_id = "test_app"
+        ctx.settings.app_secret = "test_secret"
+        ctx.settings.ref_note_enabled = False
+        ctx.settings.spec_execution_timeout = 3600
+        return ctx
+
+    def _assert_error_contract(self, card: dict, *, summary: str, detail_action: str, retry_action: str | None):
+        text = _card_text(card)
+        values = [button.get("value", {}) for button in _collect_buttons(card)]
+
+        self.assertEqual(card["header"]["template"], "red")
+        self.assertIn("错误", card["header"]["title"]["content"])
+        self.assertIn(summary, text)
+        self.assertIn("错误摘要", text)
+        self.assertIn("详情已收起", text)
+        self.assertNotIn("**详细信息**", text)
+        self.assertTrue(any(value.get("action") == detail_action for value in values))
+        detail_values = [value for value in values if value.get("action") == detail_action]
+        self.assertTrue(detail_values)
+        self.assertTrue(detail_values[0].get("diagnostic_token"))
+        self.assertNotIn("details", detail_values[0])
+        if retry_action is None:
+            self.assertFalse(any(str(value.get("action", "")).endswith("_resume") for value in values))
+        else:
+            self.assertTrue(any(value.get("action") == retry_action for value in values))
+
+    def test_base_handler_error_path_uses_detail_action_without_unrecoverable_retry(self):
+        from src.feishu.handlers.base import BaseHandler
+
+        handler = BaseHandler(self._make_ctx())
+        handler.reply_card = MagicMock()
+
+        handler.send_error_card(
+            chat_id="chat-base",
+            exc=RuntimeError("base boom"),
+            title="系统错误",
+            origin_message_id="msg-base",
+        )
+
+        handler.reply_card.assert_called_once()
+        card = json.loads(handler.reply_card.call_args.args[1])
+        self._assert_error_contract(
+            card,
+            summary="base boom",
+            detail_action="show_error_details",
+            retry_action=None,
+        )
+
+    def test_spec_handler_error_path_builds_contextual_detail_and_retry_actions(self):
+        from src.feishu.handlers.spec import SpecHandler
+        from src.feishu.renderers.spec_renderer import SpecRenderer
+
+        handler = SpecHandler(self._make_ctx(), renderer=MagicMock())
+        handler.get_card_delivery = MagicMock(return_value=MagicMock())
+        handler.renderer = SpecRenderer(handler)
+        handler.send_card_to_chat = MagicMock()
+        project = SimpleNamespace(project_id="proj-1", project_name="Demo", root_path="/repo/demo")
+
+        handler._on_engine_error(
+            RuntimeError("spec boom"),
+            task_id="task-spec",
+            chat_id="chat-spec",
+            message_id="msg-spec",
+            project=project,
+            engine_name="Coco",
+            reporter=MagicMock(),
+            request_id="req-spec",
+        )
+
+        handler.send_card_to_chat.assert_called_once()
+        card = json.loads(handler.send_card_to_chat.call_args.args[1])
+        self._assert_error_contract(
+            card,
+            summary="spec boom",
+            detail_action="show_error_details",
+            retry_action="spec_resume",
+        )
+
+    def test_engine_base_error_path_dispatches_contextual_failed_card(self):
+        from src.card.session.factory import CardSessionFactory
+        from src.card.state.models import CardMetadata
+        from src.feishu.handlers.engine_base import BaseEngineHandler
+
+        class DummyEngineHandler(BaseEngineHandler):
+            def _get_engine_manager(self):
+                raise NotImplementedError
+
+            def _get_engine_name_prefix(self) -> str:
+                return "Deep"
+
+            def _get_task_type(self) -> str:
+                return "deep_engine"
+
+            def _show_status(self, message_id, chat_id, project=None):
+                raise NotImplementedError
+
+            def _create_callbacks(self, message_id, chat_id, project, engine_name, root_path):
+                raise NotImplementedError
+
+        session = CardSessionFactory(MagicMock()).create_snapshot(
+            metadata=CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🧠", tool_name="Coco")
+        )
+        handler = DummyEngineHandler(self._make_ctx())
+        handler.renderer = SimpleNamespace(get_active_session=lambda: session)
+        reporter = MagicMock()
+        reporter.format_error.side_effect = lambda msg: f"formatted: {msg}"
+
+        handler._on_engine_error(
+            RuntimeError("deep boom"),
+            task_id="task-deep",
+            chat_id="chat-deep",
+            message_id="msg-deep",
+            project=None,
+            engine_name="Coco",
+            reporter=reporter,
+            request_id="req-deep",
+            action_prefix="deep",
+        )
+
+        _, card_json = session.snapshot()
+        self._assert_error_contract(
+            json.loads(card_json),
+            summary="deep boom",
+            detail_action="show_error_details",
+            retry_action="deep_resume",
+        )
 
 
 if __name__ == "__main__":

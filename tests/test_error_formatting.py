@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from src.utils.errors import classify_timeout, fmt_error, fmt_exception, get_error_detail
 
@@ -36,6 +37,42 @@ class TestErrorFormatting:
         result = fmt_error("测试", exc)
         # Expecting: ❌ 测试失败: 操作超时 (连接超时)
         assert "操作超时 (连接超时)" in result
+
+
+class TestErrorDiagnosticContext:
+    def test_register_and_resolve_diagnostic_details_are_sanitized_and_truncated(self):
+        from src.card.error_diagnostics import ErrorDiagnosticStore
+
+        store = ErrorDiagnosticStore(ttl_seconds=60, max_details_chars=80)
+        token = store.register(
+            title="TTADK 暂不可用",
+            summary="cli unavailable",
+            details="command: /home/alice/project/.venv/bin/coco --token SECRET_TOKEN=abc123\n"
+            "stderr: failed at /data00/home/alice/work/ghostAp/src/main.py\n"
+            + "x" * 200,
+            chat_id="c1",
+            origin_message_id="m1",
+            request_id="req-1",
+        )
+
+        rendered = store.render(token, chat_id="c1", origin_message_id="m1", request_id="req-1")
+
+        assert "TTADK 暂不可用" in rendered
+        assert "cli unavailable" in rendered
+        assert "/home/alice" not in rendered
+        assert "/data00/home/alice" not in rendered
+        assert "SECRET_TOKEN=abc123" not in rendered
+        assert "<path>" in rendered
+        assert "<redacted>" in rendered
+        assert "已截断" in rendered
+        assert len(rendered) < 500
+
+    def test_missing_diagnostic_token_returns_expired_feedback(self):
+        from src.card.error_diagnostics import ErrorDiagnosticStore
+
+        store = ErrorDiagnosticStore(ttl_seconds=60)
+
+        assert store.render("missing-token") == "⚠️ 诊断详情已过期或不存在，请重新触发操作获取最新摘要。"
 
 
 class TestFuturesUnfinishedSanitization:
@@ -206,3 +243,82 @@ class TestHasOnErrorProtocol:
             ValueError("x"), "测试", callbacks=NullCallbacks()
         )
         assert "测试异常" in result
+
+
+class TestErrorCardPathContract:
+    """Task 30: base/spec/engine error-card paths share detail/retry payload contract."""
+
+    def test_system_error_card_preserves_detail_and_retry_action_payloads(self):
+        from src.card import CardBuilder
+
+        detail_action = {
+            "action": "show_error_details",
+            "engine_type": "spec",
+            "request_id": "req-1",
+            "engine_project_id": "proj-1",
+        }
+        retry_action = {
+            "action": "spec_resume",
+            "request_id": "req-1",
+            "engine_project_id": "proj-1",
+        }
+
+        _, card_json = CardBuilder.build_error_card(
+            ValueError("boom"),
+            title="Spec 执行失败",
+            details="engine=Spec; action=spec; request_id=req-1; project=proj-1",
+            detail_action=detail_action,
+            retry_action=retry_action,
+        )
+        card = json.loads(card_json)
+
+        def _button_values(node):
+            if isinstance(node, dict):
+                if node.get("tag") == "button":
+                    yield node.get("value")
+                for value in node.values():
+                    yield from _button_values(value)
+            elif isinstance(node, list):
+                for item in node:
+                    yield from _button_values(item)
+
+        values = list(_button_values(card.get("body", {}).get("elements", [])))
+
+        detail_values = [value for value in values if value.get("action") == "show_error_details"]
+        assert detail_values
+        detail_value = detail_values[0]
+        assert detail_value["request_id"] == "req-1"
+        assert detail_value.get("diagnostic_token")
+        assert "engine_type" not in detail_value
+        assert "engine_project_id" not in detail_value
+        assert "details" not in detail_value
+        assert {"action": "spec_resume", "request_id": "req-1"} in values
+
+    def test_degraded_error_card_uses_fixed_safe_summary_and_hides_raw_exception(self):
+        """Degraded cards must not expose caller-composed raw exception text."""
+        from src.card import CardBuilder
+
+        raw_error = (
+            "RuntimeError: cmd=/data00/home/alice/work/ghostAp/.venv/bin/coco "
+            "TOKEN=secret\nTraceback at /data00/home/alice/work/ghostAp/src/feishu/handlers/programming.py"
+        )
+
+        _, card_json = CardBuilder.build_error_card(
+            raw_error,
+            title="Claude 启动失败",
+            summary=raw_error,
+            details=raw_error,
+            severity="degraded",
+            continue_action={"degraded_to": "Aiden"},
+            retry_action={"original_mode": "Claude", "retry_mode": "Claude", "degraded_to": "Aiden"},
+            detail_action={"chat_id": "c1", "origin_message_id": "card-mid"},
+        )
+        card = json.loads(card_json)
+        rendered = json.dumps(card, ensure_ascii=False)
+
+        assert "操作未能按原模式完成，已进入安全降级路径。" in rendered
+        assert "cmd=" not in rendered
+        assert "TOKEN=secret" not in rendered
+        assert "Traceback" not in rendered
+        assert "/data00/home/alice" not in rendered
+        assert "Claude 启动失败" in rendered

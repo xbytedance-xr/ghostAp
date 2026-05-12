@@ -23,6 +23,43 @@ logger = logging.getLogger(__name__)
 _StreamThrottle = StreamThrottle
 
 
+class EngineRenderStrategy:
+    """Shared facade for engine renderer composition policies.
+
+    Keeps split/continuation wording and terminal dispatch helpers in one
+    place so Deep and Spec renderers use the same card composition semantics
+    without changing their public rendering behavior.
+    """
+
+    DEFAULT_BRIDGE_PHRASE = "续接："
+
+    def __init__(self, renderer: "BaseRenderer") -> None:
+        self.renderer = renderer
+
+    def dispatch_card_split(
+        self,
+        session,
+        *,
+        reason: str,
+        hint: str | None = None,
+        bridge_phrase: str | None = None,
+    ) -> None:
+        self.renderer._dispatch_card_split(
+            session,
+            reason=reason,
+            hint=hint,
+            bridge_phrase=bridge_phrase or self.DEFAULT_BRIDGE_PHRASE,
+        )
+
+    def dispatch_terminal(self, session, *, completed: bool, summary: str | None = None, error: str | None = None) -> None:
+        from ...card.events import CardEvent
+
+        if completed:
+            session.dispatch(CardEvent.completed(summary=summary))
+        else:
+            session.dispatch(CardEvent.failed(error or ""))
+
+
 def _dispatch_text_block(dispatchable, block_id: str, content: str) -> None:
     """Dispatch a completed text block when content is non-empty."""
     if not content:
@@ -80,6 +117,7 @@ class BaseRenderer:
         # project_id -> state dict
         self.ui_states: dict[str, dict[str, Any]] = {}
         self._session_factory = None
+        self.render_strategy = EngineRenderStrategy(self)
 
     def get_active_session(self) -> "Dispatchable | None":
         """Return the currently active session for this renderer, or None.

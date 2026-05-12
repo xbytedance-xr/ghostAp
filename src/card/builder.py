@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Optional
 from src.mode.manager import InteractionMode
 
-from ..project.context import ProjectContext
 from .builders.core import CoreBuilder
 from .builders.deep import DeepBuilder
 from .builders.project import ProjectBuilder
@@ -10,6 +11,7 @@ from .models import EngineCardState
 from .shared import apply_compact_style
 
 if TYPE_CHECKING:
+    from ..project.context import ProjectContext
     from ..sandbox.executor import ExecutionResult
 
 
@@ -309,8 +311,25 @@ class CardBuilder:
         exc: Exception | str,
         title: str = "操作失败",
         project: Optional[ProjectContext] = None,
+        *,
+        summary: Optional[str] = None,
+        details: Optional[str] = None,
+        detail_action: Optional[dict] = None,
+        continue_action: Optional[dict] = None,
+        retry_action: Optional[dict] = None,
+        severity: str = "fatal",
     ) -> tuple[str, str]:
-        return SystemBuilder.build_error_card(exc, title, project)
+        return SystemBuilder.build_error_card(
+            exc,
+            title,
+            project,
+            summary=summary,
+            details=details,
+            detail_action=detail_action,
+            continue_action=continue_action,
+            retry_action=retry_action,
+            severity=severity,
+        )
 
     @staticmethod
     def build_shell_result_card(

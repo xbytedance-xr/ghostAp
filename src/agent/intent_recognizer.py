@@ -3,7 +3,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 from ..config import get_settings
 
@@ -94,6 +94,31 @@ class IntentResult:
             original_text=original_text,
             reasoning=reasoning,
         )
+
+
+QuickMatchRule = Callable[["IntentRecognizer", str, str], Optional[IntentResult]]
+
+
+class IntentMatcher:
+    """Ordered registry for quick intent match rules."""
+
+    def __init__(self) -> None:
+        self._rules: list[tuple[str, QuickMatchRule]] = []
+
+    def register(self, name: str, rule: QuickMatchRule) -> "IntentMatcher":
+        self._rules.append((name, rule))
+        return self
+
+    @property
+    def rule_names(self) -> tuple[str, ...]:
+        return tuple(name for name, _rule in self._rules)
+
+    def match(self, recognizer: "IntentRecognizer", text: str, current_mode: str = "smart") -> Optional[IntentResult]:
+        for _name, rule in self._rules:
+            result = rule(recognizer, text, current_mode)
+            if result is not None:
+                return result
+        return None
 
 
 class IntentRecognizer:
@@ -339,6 +364,7 @@ class IntentRecognizer:
 
     def __init__(self):
         self.settings = get_settings()
+        self.intent_matcher = self._build_intent_matcher()
 
     EXIT_KEYWORDS = {"退出", "结束", "exit", "quit", "不用了", "算了", "停止"}
     PROJECT_SWITCH_KEYWORDS = {"切换项目", "换项目", "换到项目", "去项目", "打开项目"}
@@ -374,9 +400,45 @@ class IntentRecognizer:
         "/helo": "/help",
     }
 
-    def _quick_match(self, text: str, current_mode: str = "smart") -> Optional[IntentResult]:
-        text_lower = text.lower().strip()
+    def _build_intent_matcher(self) -> IntentMatcher:
+        matcher = IntentMatcher()
+        for name, rule in (
+            ("command_typo", IntentRecognizer._match_command_typo),
+            ("exact_command", IntentRecognizer._match_exact_command),
+            ("coco_info", IntentRecognizer._match_coco_info),
+            ("new_chat", IntentRecognizer._match_new_chat_command),
+            ("new_project", IntentRecognizer._match_new_project_command),
+            ("switch_project", IntentRecognizer._match_switch_project_command),
+            ("close_project", IntentRecognizer._match_close_project_command),
+            ("deep_update", IntentRecognizer._match_deep_update_command),
+            ("deep_status", IntentRecognizer._match_deep_status_command),
+            ("stop_deep", IntentRecognizer._match_stop_deep_command),
+            ("deep", IntentRecognizer._match_deep_command),
+            ("spec_guide", IntentRecognizer._match_spec_guide_command),
+            ("spec", IntentRecognizer._match_spec_command),
+            ("exit_mode_keyword", IntentRecognizer._match_exit_mode_keyword),
+            ("enter_coco_keyword", IntentRecognizer._match_enter_coco_keyword),
+            ("enter_claude_keyword", IntentRecognizer._match_enter_claude_keyword),
+            ("info_commands", IntentRecognizer._match_info_commands),
+            ("enter_aiden_keyword", IntentRecognizer._match_enter_aiden_keyword),
+            ("enter_codex_keyword", IntentRecognizer._match_enter_codex_keyword),
+            ("enter_gemini_keyword", IntentRecognizer._match_enter_gemini_keyword),
+            ("enter_ttadk_keyword", IntentRecognizer._match_enter_ttadk_keyword),
+            ("programming_exit_keyword", IntentRecognizer._match_programming_exit_keyword),
+            ("project_list_keyword", IntentRecognizer._match_project_list_keyword),
+            ("cd_command", IntentRecognizer._match_cd_command),
+            ("shell_command", IntentRecognizer._match_shell_command),
+            ("shell_heuristic", IntentRecognizer._match_shell_heuristic),
+        ):
+            matcher.register(name, rule)
+        return matcher
 
+    @staticmethod
+    def _lower(text: str) -> str:
+        return text.lower().strip()
+
+    def _match_command_typo(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = text.lower().strip()
         if text_lower in self.COMMAND_TYPO_MAP:
             corrected = self.COMMAND_TYPO_MAP[text_lower]
             if corrected in self.EXACT_COMMANDS:
@@ -388,7 +450,10 @@ class IntentRecognizer:
                     reasoning=f"纠正拼写错误: {text_lower} -> {corrected}",
                     description=f"{desc}（已纠正拼写）",
                 )
+        return None
 
+    def _match_exact_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower in self.EXACT_COMMANDS:
             intent, desc = self.EXACT_COMMANDS[text_lower]
             return IntentResult.single(
@@ -398,7 +463,10 @@ class IntentRecognizer:
                 reasoning=f"精确匹配命令: {text_lower}",
                 description=desc,
             )
+        return None
 
+    def _match_coco_info(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower == "/coco_info":
             return IntentResult.single(
                 intent=IntentType.COCO_MESSAGE,
@@ -408,7 +476,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /coco_info",
                 description="查看 Coco 会话信息",
             )
+        return None
 
+    def _match_new_chat_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower == "/new-chat" or text_lower.startswith("/new-chat "):
             parts = text.split()
             data = {}
@@ -426,7 +497,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /new-chat 命令",
                 description="创建项目专属群",
             )
+        return None
 
+    def _match_new_project_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/new "):
             parts = text.split(None, 2)
             name = parts[1] if len(parts) >= 2 else "project"
@@ -439,7 +513,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /new 命令",
                 description=f"创建项目: {name}",
             )
+        return None
 
+    def _match_switch_project_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/switch "):
             name = text[8:].strip()
             return IntentResult.single(
@@ -450,7 +527,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /switch 命令",
                 description=f"切换到项目: {name}",
             )
+        return None
 
+    def _match_close_project_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/close "):
             name = text[7:].strip()
             return IntentResult.single(
@@ -461,7 +541,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /close 命令",
                 description=f"关闭项目: {name}",
             )
+        return None
 
+    def _match_deep_update_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/deep_update "):
             update_message = text[len("/deep_update ") :].strip()
             return IntentResult.single(
@@ -472,7 +555,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /deep_update 命令",
                 description="更新 Deep Engine 上下文",
             )
+        return None
 
+    def _match_deep_status_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/deep_status "):
             # e.g. /deep_status all
             return IntentResult.single(
@@ -483,7 +569,10 @@ class IntentRecognizer:
                 reasoning="前缀匹配: /deep_status 命令",
                 description="查看 Deep Agent 任务状态",
             )
+        return None
 
+    def _match_stop_deep_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/stop_deep "):
             # e.g. /stop_deep all
             return IntentResult.single(
@@ -494,7 +583,10 @@ class IntentRecognizer:
                 reasoning="前缀匹配: /stop_deep 命令",
                 description="停止 Deep Agent 任务",
             )
+        return None
 
+    def _match_deep_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/deep "):
             requirement = text[6:].strip()
             return IntentResult.single(
@@ -505,7 +597,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /deep 命令",
                 description="启动 Deep Engine",
             )
+        return None
 
+    def _match_spec_guide_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/spec_guide "):
             guide_message = text[len("/spec_guide ") :].strip()
             return IntentResult.single(
@@ -516,7 +611,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /spec_guide 命令",
                 description="注入 Spec 引导信息",
             )
+        return None
 
+    def _match_spec_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if text_lower.startswith("/spec "):
             requirement = text[6:].strip()
             return IntentResult.single(
@@ -527,7 +625,10 @@ class IntentRecognizer:
                 reasoning="精确匹配: /spec 命令",
                 description="启动 Spec Engine",
             )
+        return None
 
+    def _match_exit_mode_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.EXIT_MODE_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.EXIT_MODE,
@@ -536,7 +637,10 @@ class IntentRecognizer:
                 reasoning="检测到退出模式关键词",
                 description="退出当前模式",
             )
+        return None
 
+    def _match_enter_coco_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.ENTER_COCO_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.ENTER_COCO,
@@ -545,7 +649,10 @@ class IntentRecognizer:
                 reasoning="检测到进入 Coco 编程模式关键词",
                 description="进入 Coco 编程模式",
             )
+        return None
 
+    def _match_enter_claude_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.ENTER_CLAUDE_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.ENTER_CLAUDE,
@@ -554,47 +661,30 @@ class IntentRecognizer:
                 reasoning="检测到进入 Claude 编程模式关键词",
                 description="进入 Claude 编程模式",
             )
+        return None
 
-        if text_lower == "/claude_info":
+    def _match_info_commands(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
+        info_commands = {
+            "/claude_info": (IntentType.CLAUDE_MESSAGE, "Claude"),
+            "/aiden_info": (IntentType.AIDEN_MESSAGE, "Aiden"),
+            "/codex_info": (IntentType.CODEX_MESSAGE, "Codex"),
+            "/gemini_info": (IntentType.GEMINI_MESSAGE, "Gemini"),
+        }
+        if text_lower in info_commands:
+            intent, name = info_commands[text_lower]
             return IntentResult.single(
-                intent=IntentType.CLAUDE_MESSAGE,
+                intent=intent,
                 confidence=1.0,
                 data={"command": "info"},
                 original_text=text,
-                reasoning="精确匹配: /claude_info",
-                description="查看 Claude 会话信息",
+                reasoning=f"精确匹配: {text_lower}",
+                description=f"查看 {name} 会话信息",
             )
+        return None
 
-        if text_lower == "/aiden_info":
-            return IntentResult.single(
-                intent=IntentType.AIDEN_MESSAGE,
-                confidence=1.0,
-                data={"command": "info"},
-                original_text=text,
-                reasoning="精确匹配: /aiden_info",
-                description="查看 Aiden 会话信息",
-            )
-
-        if text_lower == "/codex_info":
-            return IntentResult.single(
-                intent=IntentType.CODEX_MESSAGE,
-                confidence=1.0,
-                data={"command": "info"},
-                original_text=text,
-                reasoning="精确匹配: /codex_info",
-                description="查看 Codex 会话信息",
-            )
-
-        if text_lower == "/gemini_info":
-            return IntentResult.single(
-                intent=IntentType.GEMINI_MESSAGE,
-                confidence=1.0,
-                data={"command": "info"},
-                original_text=text,
-                reasoning="精确匹配: /gemini_info",
-                description="查看 Gemini 会话信息",
-            )
-
+    def _match_enter_aiden_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.ENTER_AIDEN_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.ENTER_AIDEN,
@@ -603,7 +693,10 @@ class IntentRecognizer:
                 reasoning="检测到进入 Aiden 编程模式关键词",
                 description="进入 Aiden 编程模式",
             )
+        return None
 
+    def _match_enter_codex_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.ENTER_CODEX_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.ENTER_CODEX,
@@ -612,7 +705,10 @@ class IntentRecognizer:
                 reasoning="检测到进入 Codex 编程模式关键词",
                 description="进入 Codex 编程模式",
             )
+        return None
 
+    def _match_enter_gemini_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.ENTER_GEMINI_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.ENTER_GEMINI,
@@ -621,7 +717,10 @@ class IntentRecognizer:
                 reasoning="检测到进入 Gemini 编程模式关键词",
                 description="进入 Gemini 编程模式",
             )
+        return None
 
+    def _match_enter_ttadk_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.ENTER_TTADK_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.TTADK_MESSAGE,
@@ -630,7 +729,10 @@ class IntentRecognizer:
                 reasoning="检测到 TTADK 模式关键词",
                 description="进入 TTADK 编程模式",
             )
+        return None
 
+    def _match_programming_exit_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         is_programming = current_mode in ("coco", "claude", "aiden", "codex", "gemini", "ttadk")
         if is_programming and len(text) < 20:
             if any(kw in text_lower for kw in self.EXIT_KEYWORDS):
@@ -641,7 +743,10 @@ class IntentRecognizer:
                     reasoning=f"{current_mode}模式下检测到退出关键词",
                     description="退出当前编程模式",
                 )
+        return None
 
+    def _match_project_list_keyword(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         if any(kw in text_lower for kw in self.PROJECT_LIST_KEYWORDS):
             return IntentResult.single(
                 intent=IntentType.LIST_PROJECTS,
@@ -650,9 +755,11 @@ class IntentRecognizer:
                 reasoning="检测到项目列表关键词",
                 description="查看项目列表",
             )
+        return None
 
+    def _match_cd_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
         first_word = text_lower.split()[0] if text_lower else ""
-
         if first_word == "cd":
             parts = text.strip().split(maxsplit=1)
             path = parts[1] if len(parts) > 1 else ""
@@ -664,7 +771,11 @@ class IntentRecognizer:
                 reasoning="cd 命令匹配为目录切换",
                 description=f"切换目录: {path}" if path else "查看当前目录",
             )
+        return None
 
+    def _match_shell_command(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
+        first_word = text_lower.split()[0] if text_lower else ""
         if first_word in self.SHELL_COMMANDS:
             return IntentResult.single(
                 intent=IntentType.SHELL_COMMAND,
@@ -673,10 +784,13 @@ class IntentRecognizer:
                 reasoning=f"Shell命令白名单匹配: {first_word}",
                 description=f"执行命令: {text}",
             )
+        return None
 
+    def _match_shell_heuristic(self, text: str, current_mode: str) -> Optional[IntentResult]:
+        text_lower = self._lower(text)
+        first_word = text_lower.split()[0] if text_lower else ""
         if first_word in self.COMMON_WORDS:
             return None
-
         if self._looks_like_shell_token(first_word, text_lower):
             return IntentResult.single(
                 intent=IntentType.SHELL_COMMAND,
@@ -687,6 +801,9 @@ class IntentRecognizer:
             )
 
         return None
+
+    def _quick_match(self, text: str, current_mode: str = "smart") -> Optional[IntentResult]:
+        return self.intent_matcher.match(self, text, current_mode)
 
     def _normalize_path(self, path: str) -> str:
         if not path:

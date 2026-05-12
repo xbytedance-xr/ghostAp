@@ -3,6 +3,8 @@ import logging
 import time
 import os
 import asyncio
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,11 +27,61 @@ from .slash_command_parser import CommandMatch
 
 logger = logging.getLogger(__name__)
 
+
+class DispatchErrorAction(str, Enum):
+    FALLBACK_TO_SHELL = "fallback_to_shell"
+    FALLBACK_TO_DIRECT_ENTER = "fallback_to_direct_enter"
+    LOG_AND_CONTINUE = "log_and_continue"
+    STOP_MULTI_TASK = "stop_multi_task"
+    RAISE = "raise"
+
+
+@dataclass(frozen=True)
+class DispatchErrorClassification:
+    action: DispatchErrorAction
+    phase: str
+    user_reachable: bool = True
+
+
+def classify_dispatch_error(error: Exception, *, phase: str) -> DispatchErrorClassification:
+    if phase == "intent_recognition":
+        return DispatchErrorClassification(DispatchErrorAction.FALLBACK_TO_SHELL, phase, True)
+    if phase == "coco_model_card":
+        return DispatchErrorClassification(DispatchErrorAction.FALLBACK_TO_DIRECT_ENTER, phase, True)
+    if phase == "pending_prompt_forward":
+        return DispatchErrorClassification(DispatchErrorAction.LOG_AND_CONTINUE, phase, False)
+    if phase == "multi_task_step":
+        return DispatchErrorClassification(DispatchErrorAction.STOP_MULTI_TASK, phase, True)
+    return DispatchErrorClassification(DispatchErrorAction.RAISE, phase, False)
+
+
+@dataclass(frozen=True)
+class FeishuRequestContext:
+    """Request-scoped message context for dispatcher core paths."""
+    message_id: str
+    chat_id: str
+    text: str
+    project: Optional['ProjectContext'] = None
+    command_match: CommandMatch | None = None
+    shell_fast_tracked: bool = False
+
+
 class MessageDispatcher:
     """Handles the dispatching of user messages and intents to appropriate engines/modes."""
 
     def __init__(self, client: Any):
         self.client = client
+
+    def process_request(self, request: FeishuRequestContext):
+        """Dispatch using a request context while preserving legacy entrypoint behavior."""
+        return self.process_with_intent(
+            request.message_id,
+            request.chat_id,
+            request.text,
+            request.project,
+            command_match=request.command_match,
+            shell_fast_tracked=request.shell_fast_tracked,
+        )
 
     def process_with_intent(
         self,
@@ -115,7 +167,8 @@ class MessageDispatcher:
 
         try:
             intent_result = self.client._intent_recognizer.recognize(text, current_mode.value)
-        except Exception as e:
+        except (RuntimeError, TimeoutError, ValueError, TypeError) as e:
+            classify_dispatch_error(e, phase="intent_recognition")
             logger.error("意图识别异常: %s", get_error_detail(e))
             working_dir = self.client._get_working_dir(chat_id)
             self.client._submit_shell_command(message_id, chat_id, text, working_dir, project)
@@ -334,7 +387,8 @@ class MessageDispatcher:
                 message_id, chat_id, "coco", project_id=_pid,
                 pending_prompt=pending_prompt,
             )
-        except Exception as e:
+        except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as e:
+            classify_dispatch_error(e, phase="coco_model_card")
             logger.warning("展示 Coco 模型选择卡失败，回退直接进入: %s", get_error_detail(e))
             self.client._enter_coco_mode(message_id, chat_id, project=project)
             # Best-effort: forward the pending prompt after fallback entry.
@@ -343,7 +397,8 @@ class MessageDispatcher:
                 if handle_fn:
                     try:
                         handle_fn(message_id, chat_id, pending_prompt, project)
-                    except Exception as fwd_err:
+                    except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as fwd_err:
+                        classify_dispatch_error(fwd_err, phase="pending_prompt_forward")
                         logger.warning("fallback 转发 pending prompt 失败: %s", str(fwd_err))
 
     def _auto_enter_and_forward(self, mode: str, message_id: str, chat_id: str, text: str, project):
@@ -529,7 +584,8 @@ class MessageDispatcher:
             else:
                 return False
 
-        except Exception as e:
+        except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as e:
+            classify_dispatch_error(e, phase="multi_task_step")
             logger.error("执行步骤 %d 异常: %s", step_num, get_error_detail(e))
             return False
 

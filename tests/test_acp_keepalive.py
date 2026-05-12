@@ -689,6 +689,7 @@ class TestSessionTelemetryAdapterIntegration:
         adapter = FakeAdapter()
 
         import src.acp.manager as manager_mod
+        from src.acp.startup_utils import StartupOperationalError
 
         class FailingSession:
             def __init__(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
@@ -698,7 +699,7 @@ class TestSessionTelemetryAdapterIntegration:
                 return "failing-agent"
 
             def start(self, startup_timeout: float) -> str:  # type: ignore[no-untyped-def]
-                raise RuntimeError("handshake failed for telemetry test")
+                raise StartupOperationalError("handshake failed for telemetry test")
 
         # 拦截 SyncACPSession，避免真实进程启动
         monkeypatch.setattr(manager_mod, "SyncACPSession", FailingSession)

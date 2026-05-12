@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import json
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from urllib.parse import quote
 
-from src.project.context import ProjectContext, ProjectStatus
+from src.project.context import ProjectStatus
 from src.mode.manager import InteractionMode
 
 from ..ui_text import UI_TEXT
@@ -12,6 +14,9 @@ from ..shared import (
     get_theme,
 )
 from .core import CoreBuilder
+
+if TYPE_CHECKING:
+    from src.project.context import ProjectContext
 
 
 class ProjectBuilder:

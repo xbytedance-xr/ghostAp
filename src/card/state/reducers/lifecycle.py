@@ -49,6 +49,26 @@ def _compute_duration(state: CardState, now: float | None) -> float | None:
     return now - started_at
 
 
+def _format_unified_error_block(error: str, *, engine_cmd: str) -> str:
+    """Unified user-visible error card content for engine/session failures."""
+    summary = (error or "").strip() or UI_TEXT["card_lifecycle_error_fallback"].format(engine_cmd=engine_cmd)
+    return (
+        "❌ **错误摘要**\n"
+        f"{summary}\n\n"
+        "**当前状态**\n"
+        "当前操作已停止；可查看脱敏诊断并按提示重新发起。\n\n"
+        f"{UI_TEXT['card_lifecycle_details_collapsed']}"
+    )
+
+
+def _with_failed_title(header: HeaderState) -> HeaderState:
+    """Make terminal error cards explicit in the title, while preserving context."""
+    title = header.title or UI_TEXT["system_error_prompt_title"]
+    if "错误" not in title:
+        title = f"❌ 错误 · {title}"
+    return replace(header, title=title)
+
+
 def _compute_frozen_elapsed(state: CardState, now: float | None) -> float | None:
     """Compute final elapsed for a frozen/archived card with monotonic clocks."""
     duration = _compute_duration(state, now)
@@ -173,37 +193,53 @@ def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
                 header = replace(state.header, template=TERMINAL_TEMPLATES.get("failed", "red"))
             else:
                 header = build_header(state.metadata, "failed")
+            header = _with_failed_title(header)
             # Insert error message as visible content block
             payload_f = cast(FailedPayload, payload)
             error = payload_f.get("error", "")
             blocks = state.blocks
             engine_cmd = _ENGINE_CMD.get(state.metadata.engine_type or "", UI_TEXT["card_session_fallback_cmd"])
-            if error:
-                error_text = f"❌ {error}"
-            else:
+            if not error:
                 # Select engine-specific error fallback text
                 _fallback_key = {
                     "spec": "card_lifecycle_error_fallback_spec",
                 }.get(state.metadata.engine_type or "", "card_lifecycle_error_fallback")
-                error_text = UI_TEXT[_fallback_key].format(engine_cmd=engine_cmd)
+                error = UI_TEXT[_fallback_key].format(engine_cmd=engine_cmd)
+            error_text = _format_unified_error_block(error, engine_cmd=engine_cmd)
             blocks = blocks + (TextBlock(
                 block_id="_error", content=error_text
             ),)
             # Inject retry button based on engine type with differentiated CTA text
             buttons_list: list[ButtonSpec] = []
             engine_type = state.metadata.engine_type
-            if engine_type and engine_type in _RETRY_ACTIONS:
+            retry_action = payload_f.get("retry_action") if isinstance(payload_f, dict) else None
+            retry_action_id = None
+            if isinstance(retry_action, dict):
+                retry_action_id = str(retry_action.get("action") or "") or None
+            if retry_action_id or (engine_type and engine_type in _RETRY_ACTIONS):
                 retry_text = _RETRY_CTA_TEXT.get(engine_type, UI_TEXT["card_lifecycle_retry_failed"])
                 buttons_list.append(ButtonSpec(
                     text=retry_text,
-                    action_id=_RETRY_ACTIONS[engine_type],
+                    action_id=retry_action_id or _RETRY_ACTIONS[engine_type],
                     type="primary",
                     confirm=UI_TEXT["card_btn_confirm_retry_body"],
+                    value=dict(retry_action) if isinstance(retry_action, dict) else None,
                 ))
-            buttons_list.append(ButtonSpec(
-                text=UI_TEXT["card_lifecycle_show_details"],
-                action_id=ButtonIntent.SHOW_STATUS,
-            ))
+            detail_action = payload_f.get("detail_action") if isinstance(payload_f, dict) else None
+            detail_action_id = None
+            if isinstance(detail_action, dict):
+                detail_action_id = str(detail_action.get("action") or "") or None
+            if detail_action_id:
+                buttons_list.append(ButtonSpec(
+                    text=UI_TEXT["card_lifecycle_show_details"],
+                    action_id=detail_action_id,
+                    value=dict(detail_action) if isinstance(detail_action, dict) else None,
+                ))
+            else:
+                buttons_list.append(ButtonSpec(
+                    text=UI_TEXT.get("card_btn_show_status", "📋 查看状态"),
+                    action_id=ButtonIntent.SHOW_STATUS,
+                ))
             buttons = tuple(buttons_list)
             return replace(state, terminal="failed", terminal_reason="failed",
                            header=header, footer=FooterState(duration_seconds=_compute_duration(state, now)),

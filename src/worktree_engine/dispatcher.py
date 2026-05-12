@@ -252,23 +252,10 @@ class WorktreeDispatcher:
                     except Exception:
                         pass
 
-            # Final fallback: degrade to coco
-            try:
-                session = self._session_factory(
-                    provider="acp",
-                    tool_name="coco",
-                    working_dir=unit.worktree_path,
-                    model_name=None,
-                )
-                session.start()
-                logger.info("[Worktree] TTADK recovery: degraded to coco: unit=%s", unit.unit_id)
-                return session
-            except Exception as coco_err:
-                try:
-                    session.close()
-                except Exception:
-                    pass
-                raise first_err from coco_err
+            # TTADK worktree units are isolated from ACP/coco direct mode.  A
+            # generic TTADK startup failure must surface as failed/degraded
+            # diagnostics instead of silently creating provider="acp", tool_name="coco".
+            raise first_err
 
     def _assign_roles_smart(
         self,

@@ -5,6 +5,7 @@ Covers boundary cases: data=None, empty lists, missing fields, unknown kinds.
 import pytest
 
 from src.card.events import CardEvent
+from src.card.events.worktree import worktree_tool_select
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import render_card
 from src.card.state.models import CardMetadata, CardState
@@ -200,7 +201,7 @@ class TestRenderWorktreeToolSelectInteractions:
         state = CardState(metadata=CardMetadata(engine_type="worktree"))
         state = reduce_card_state(
             state,
-            CardEvent.worktree_tool_select(
+            worktree_tool_select(
                 tools=[
                     {
                         "provider": "acp",
@@ -292,7 +293,7 @@ class TestRenderWorktreeToolSelectInteractions:
         state = CardState(metadata=CardMetadata(engine_type="worktree"))
         state = reduce_card_state(
             state,
-            CardEvent.worktree_tool_select(
+            worktree_tool_select(
                 tools=[
                     {
                         "provider": "acp",
@@ -398,7 +399,7 @@ class TestRenderWorktreeToolSelectInteractions:
         state = CardState(metadata=CardMetadata(engine_type="worktree"))
         state = reduce_card_state(
             state,
-            CardEvent.worktree_tool_select(
+            worktree_tool_select(
                 tools=[{"provider": "acp", "tool_name": "coco", "display_name": "Coco"}],
                 selected=[],
                 project_id="p-tool",
@@ -469,7 +470,7 @@ class TestRenderWorktreeToolSelectInteractions:
         state = CardState(metadata=CardMetadata(engine_type="worktree"))
         state = reduce_card_state(
             state,
-            CardEvent.worktree_tool_select(
+            worktree_tool_select(
                 tools=[
                     {
                         "id": f"model-{i:02d}-very-long-name",
@@ -498,7 +499,7 @@ class TestRenderWorktreeToolSelectInteractions:
         state = CardState(metadata=CardMetadata(engine_type="worktree"))
         state = reduce_card_state(
             state,
-            CardEvent.worktree_tool_select(
+            worktree_tool_select(
                 tools=[{"id": "gpt", "name": "GPT-5.2", "description": "模型: GPT-5.2"}],
                 selected=[],
                 project_id="p-model",

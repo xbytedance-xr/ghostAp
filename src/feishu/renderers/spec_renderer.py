@@ -58,11 +58,10 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
             session = self._current_session
             if session is not None and not getattr(session, "closed", False):
                 persp = perspective or "—"
-                self._dispatch_card_split(
+                self.render_strategy.dispatch_card_split(
                     session,
                     reason="cycle_changed",
                     hint=f"进入 cycle {current_cycle} · {persp}",
-                    bridge_phrase="续接：",
                 )
         self._last_cycle = current_cycle
         self._last_perspective = perspective
@@ -258,6 +257,9 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         engine_project_id: Optional[str] = None,
         footer_note: Optional[str] = None,
         terminal_state: Optional[str] = None,
+        error_details: str = "",
+        detail_action: Optional[dict] = None,
+        retry_action: Optional[dict] = None,
     ) -> tuple[str, str]:
         """Build error card via CardSession and return (msg_type, card_content).
 
@@ -279,7 +281,14 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         factory = self._get_session_factory()
         session = factory.create_snapshot(metadata=metadata)
         session.dispatch(CardEvent.started())
-        session.dispatch(CardEvent.failed(error_msg))
+        session.dispatch(
+            CardEvent.failed(
+                error_msg,
+                details=error_details,
+                detail_action=detail_action,
+                retry_action=retry_action,
+            )
+        )
 
         # Snapshot returns the rendered card
         result = session.snapshot()

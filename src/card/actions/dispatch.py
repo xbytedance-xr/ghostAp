@@ -71,6 +71,9 @@ SHOW_HELP_MENU = "show_help_menu"  # Display help menu card
 ENTER_DEEP_PROMPT = "enter_deep_prompt"  # Quick-enter Deep mode from status card
 SHOW_DEEP_STATUS = "show_deep_status"  # Show Deep engine execution status
 RETRY_COMMAND = "retry_command"  # Retry the last failed command
+CONTINUE_DEGRADED = "continue_degraded"  # Continue with the available degraded capability
+SHOW_ERROR_DETAILS = "show_error_details"  # Show diagnostics for a degraded/recoverable error card
+RETRY_ORIGINAL = "retry_original"  # Retry the original mode/action that produced a degraded card
 HELP_CATEGORY = "help_category"  # Navigate to a specific help category
 
 # ---------------------------------------------------------------------------
