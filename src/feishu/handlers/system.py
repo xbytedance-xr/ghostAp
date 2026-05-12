@@ -290,6 +290,9 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/model",
             "/lock",
             "/unlock",
+            # Mode-enter commands that go through ACP model selection
+            "/codex",
+            "/enter_codex",
         }
         if not m.has_args and cmd in exact_commands:
             return True
@@ -337,6 +340,12 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 else:
                     wt.handle_worktree_command(message_id, chat_id, project, goal=m.args)
                 return
+
+        # ACP model-select mode enter: /codex, /enter_codex
+        if not m.has_args and text_lower in {"/codex", "/enter_codex"}:
+            _pid = project.project_id if project else None
+            self.handle_select_acp_tool(message_id, chat_id, "codex", project_id=_pid)
+            return
 
         # 1. Try exact match
         if not m.has_args:
