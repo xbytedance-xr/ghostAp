@@ -859,6 +859,34 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         )
         self.reply_card(message_id, card_content)
 
+    def handle_enter_acp_saved_selection(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        project: Optional["ProjectContext"],
+        *,
+        pending_prompt: Optional[str] = None,
+    ) -> None:
+        """Enter an ACP tool using the project's stored tool/model selection.
+
+        Project chats use this path for free-form messages after a tool has
+        already been chosen once, so normal follow-up work does not show the
+        model selection card again.
+        """
+        tool = (tool_name or "").strip().lower()
+        if not tool:
+            self.reply_error(message_id, UI_TEXT["system_acp_select_tool_prompt"])
+            return
+
+        stored_model = None
+        if project and getattr(project, "acp_tool_name", "") == tool:
+            stored_model = getattr(project, "acp_model_name", None)
+        model_name = str(stored_model).strip() if stored_model else None
+        if pending_prompt:
+            self._stash_pending_prompt(chat_id, tool, pending_prompt)
+        self.handle_select_acp_model(message_id, chat_id, tool, model_name, project)
+
     def handle_refresh_acp_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
         self.handle_select_acp_tool(message_id, chat_id, tool_name, project_id)
 

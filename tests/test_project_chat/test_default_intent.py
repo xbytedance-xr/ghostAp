@@ -150,6 +150,8 @@ class TestProjectChatDefaultCocoRouting(unittest.TestCase):
 
     def test_free_text_in_project_chat_respects_project_codex_tool(self):
         self.bound_project.acp_tool_name = "codex"
+        self.bound_project.acp_model_name = "gpt-5.5"
+        self.client._system_handler = MagicMock()
 
         self.client._dispatch_message_logic(
             "m1", "oc_project", "帮我重构 foo.py",
@@ -157,8 +159,34 @@ class TestProjectChatDefaultCocoRouting(unittest.TestCase):
             command_match=None, is_image_only=False,
         )
 
-        self.client._message_dispatcher._handle_enter_acp_mode.assert_called_once_with(
-            "codex", "m1", "oc_project", self.bound_project, pending_prompt="帮我重构 foo.py"
+        self.client._system_handler.handle_enter_acp_saved_selection.assert_called_once_with(
+            "m1",
+            "oc_project",
+            "codex",
+            self.bound_project,
+            pending_prompt="帮我重构 foo.py",
+        )
+        self.client._message_dispatcher._handle_enter_acp_mode.assert_not_called()
+        self.client._message_dispatcher._handle_enter_coco.assert_not_called()
+        self.client._process_with_intent.assert_not_called()
+
+    def test_free_text_in_project_chat_reuses_saved_non_codex_tool(self):
+        self.bound_project.acp_tool_name = "aiden"
+        self.bound_project.acp_model_name = "aiden-model"
+        self.client._system_handler = MagicMock()
+
+        self.client._dispatch_message_logic(
+            "m1", "oc_project", "继续实现",
+            project=self.bound_project, auto_enter_mode=None,
+            command_match=None, is_image_only=False,
+        )
+
+        self.client._system_handler.handle_enter_acp_saved_selection.assert_called_once_with(
+            "m1",
+            "oc_project",
+            "aiden",
+            self.bound_project,
+            pending_prompt="继续实现",
         )
         self.client._message_dispatcher._handle_enter_coco.assert_not_called()
         self.client._process_with_intent.assert_not_called()

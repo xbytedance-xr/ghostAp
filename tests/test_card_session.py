@@ -183,6 +183,37 @@ class TestCardSessionDispatch:
         assert delivered == [["terminal"]]
         assert pool.jobs == []
 
+    def test_async_delivery_drops_duplicate_terminal_update_behind_terminal_job(self, monkeypatch):
+        session, _, _ = self._make_session()
+        session._sync_delivery = False
+        delivered = []
+
+        class FakePool:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.jobs.append((fn, args, kwargs))
+
+        def _deliver_and_close(rendered, is_terminal, *, event=None):
+            delivered.append(rendered)
+            if is_terminal:
+                session._closed.set()
+
+        pool = FakePool()
+        monkeypatch.setattr("src.card.delivery.pool.get_delivery_pool", lambda: pool)
+        monkeypatch.setattr(session, "_deliver_and_track", _deliver_and_close)
+
+        session._submit_delivery(["terminal"], True, CardEvent.completed())
+        session._submit_delivery(["duplicate-terminal"], True, CardEvent.completed())
+
+        assert len(pool.jobs) == 1
+        fn, args, kwargs = pool.jobs.pop(0)
+        fn(*args, **kwargs)
+
+        assert delivered == [["terminal"]]
+        assert pool.jobs == []
+
     def test_tool_panel_has_input_and_output_from_acp_raw_fields(self):
         """ACP ToolCall raw_input/raw_output should surface in tool panel."""
         from types import SimpleNamespace
@@ -1639,8 +1670,15 @@ class TestCardSessionLifecycleHooks:
         session.dispatch(CardEvent.started())
         session.dispatch(CardEvent.completed())
 
-        # on_dispatched called for both events, on_terminal for completed
-        assert order == ["A", "B", "A", "B", "A_term", "B_term"]
+        # on_dispatched is fire-and-forget; terminal hooks are waited on, so
+        # cross-thread ordering is intentionally not guaranteed.
+        deadline = time.time() + 1.0
+        while len(order) < 6 and time.time() < deadline:
+            time.sleep(0.01)
+        assert order.count("A") == 2
+        assert order.count("B") == 2
+        assert order.count("A_term") == 1
+        assert order.count("B_term") == 1
 
     def test_on_terminal_called_on_cancelled(self):
         """on_terminal fires with reason='cancelled' for CANCELLED events."""

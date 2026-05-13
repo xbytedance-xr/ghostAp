@@ -1519,9 +1519,18 @@ class FeishuWSClient:
                         or getattr(self.settings, "default_acp_tool", None)
                         or "coco"
                     ).strip().lower()
+                    saved_tool = str(getattr(bound_project, "acp_tool_name", None) or "").strip().lower()
                     self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                     self._add_reaction(message_id, EmojiReaction.on_processing())
-                    if default_tool == "coco":
+                    if saved_tool in {"coco", "claude", "aiden", "codex", "gemini"}:
+                        self._system_handler.handle_enter_acp_saved_selection(
+                            message_id,
+                            chat_id,
+                            saved_tool,
+                            bound_project,
+                            pending_prompt=text,
+                        )
+                    elif default_tool == "coco":
                         self._message_dispatcher._handle_enter_coco(
                             message_id, chat_id, bound_project, pending_prompt=text,
                         )

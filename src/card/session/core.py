@@ -383,7 +383,8 @@ class CardSession:
     def _on_stop_escalation_timeout(self) -> None:
         """Timer callback: dispatch STOP_ESCALATED to show force-stop button."""
         self._stop_escalation_handle = None
-        if self._closed.is_set():
+        closed_event = getattr(self, "_closed", None)
+        if closed_event is not None and closed_event.is_set():
             return
         try:
             self.dispatch(CardEvent.stop_escalated())
@@ -534,13 +535,16 @@ class CardSession:
         When ``_sync_delivery`` is True (configured via SessionConfig.sync_delivery),
         delivery runs synchronously on the calling thread for deterministic test behavior.
         """
+        closed_event = getattr(self, "_closed", None)
+        if closed_event is not None and closed_event.is_set():
+            return
         if self._sync_delivery:
             self._deliver_and_track(rendered, is_terminal, event=event)
             return
         CardSession._ensure_delivery_coalescing_state(self)
         with self._delivery_gate:
             if self._delivery_in_flight:
-                if self._delivery_in_flight_terminal and not is_terminal:
+                if self._delivery_in_flight_terminal:
                     return
                 pending_is_terminal = bool(self._delivery_pending and self._delivery_pending[1])
                 if is_terminal or not pending_is_terminal:
@@ -580,6 +584,12 @@ class CardSession:
 
     def _submit_pending_delivery_if_any(self) -> None:
         with self._delivery_gate:
+            closed_event = getattr(self, "_closed", None)
+            if closed_event is not None and closed_event.is_set():
+                self._delivery_pending = None
+                self._delivery_in_flight = False
+                self._delivery_in_flight_terminal = False
+                return
             pending = self._delivery_pending
             if pending is None:
                 self._delivery_in_flight = False
