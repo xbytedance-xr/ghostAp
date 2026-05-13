@@ -9,6 +9,7 @@ from src.feishu.ws_client import FeishuWSClient
 from src.mode import InteractionMode
 from src.project import ProjectContext
 from src.tasking import TaskPriority
+from src.thread import set_current_thread_id
 
 
 @pytest.fixture
@@ -142,6 +143,38 @@ def test_resolve_message_context_plain_message_does_not_fallback_to_engine_topic
 
     assert project is fallback_project
     assert auto_enter_mode is None
+
+
+def test_worktree_topic_goal_routes_without_interaction_mode_cast(mock_ws_client: FeishuWSClient):
+    """A worktree topic is an engine context, not an InteractionMode enum value."""
+    mock_ws_client.settings.thread_programming_enabled = True
+    mock_ws_client._thread_manager.register(
+        "thread-wt",
+        "chat_456",
+        "proj_1",
+        mode="worktree",
+    )
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._is_worktree_awaiting_goal = MagicMock(return_value=True)
+    mock_ws_client._handle_worktree_execute = MagicMock()
+
+    set_current_thread_id("thread-wt")
+    try:
+        mock_ws_client._message_dispatcher.process_with_intent(
+            "msg_goal",
+            "chat_456",
+            "从不同的视角审查下当前项目的实现",
+            project,
+        )
+    finally:
+        set_current_thread_id(None)
+
+    mock_ws_client._handle_worktree_execute.assert_called_once_with(
+        "msg_goal",
+        "chat_456",
+        "从不同的视角审查下当前项目的实现",
+        project,
+    )
 
 
 def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):

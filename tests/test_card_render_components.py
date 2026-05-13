@@ -590,6 +590,21 @@ class TestRenderWorktreeCleanup:
 class TestRenderWorktreePanelDispatch:
     """Tests for render_worktree_panel routing and data failure fallback."""
 
+    def _collect_content(self, node: dict) -> str:
+        parts: list[str] = []
+
+        def walk(value):
+            if isinstance(value, dict):
+                if value.get("tag") == "markdown":
+                    parts.append(str(value.get("content") or ""))
+                for child in value.get("elements") or []:
+                    walk(child)
+                for child in value.get("columns") or []:
+                    walk(child)
+
+        walk(node)
+        return "\n".join(parts)
+
     def test_json_parse_failure(self):
         """Block with no .data should return fallback message."""
         block = ContentBlock(kind="worktree_tool_select", block_id="wt1", content="not json")
@@ -602,6 +617,25 @@ class TestRenderWorktreePanelDispatch:
         result = render_worktree_panel(block)
         # With new signature, a block without data returns load_failed message
         assert "加载异常" in result["content"]
+
+    def test_confirm_without_goal_renders_awaiting_goal_hint(self):
+        block = ContentBlock(
+            kind="worktree_confirm",
+            block_id="worktree_confirm",
+            content="",
+            data={
+                "selected_items": [{"display_label": "Coco / DeepSeek-V4-Flash"}],
+                "goal": "",
+                "message": "Worktree 已创建，请发送任务目标开始并行执行。",
+                "awaiting_goal": True,
+            },
+        )
+
+        content = self._collect_content(render_worktree_panel(block))
+
+        assert "等待目标" in content
+        assert "当前话题直接发送任务目标" in content
+        assert "点击开始后" not in content
 
 
 # ---------------------------------------------------------------------------

@@ -1196,8 +1196,18 @@ class FeishuWSClient:
         if thread_id:
             thread_ctx = self._thread_manager.get(thread_id)
             if thread_ctx and thread_ctx.mode != "smart":
-                return InteractionMode(thread_ctx.mode), True
-        return self._mode_manager.get_mode(chat_id, project_id=project_id), self._mode_manager.is_programming_mode(chat_id, project_id=project_id)
+                try:
+                    return InteractionMode(thread_ctx.mode), True
+                except ValueError:
+                    logger.debug(
+                        "thread mode is engine-only, not InteractionMode: %s",
+                        thread_ctx.mode,
+                    )
+                    return InteractionMode.SMART, False
+        return (
+            self._mode_manager.get_mode(chat_id, project_id=project_id),
+            self._mode_manager.is_programming_mode(chat_id, project_id=project_id),
+        )
 
     def _get_mode_handler(self, mode):
         from ..mode import InteractionMode

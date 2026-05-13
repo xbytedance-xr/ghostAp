@@ -1423,6 +1423,19 @@ class TestWorktreeStepperRender:
         assert state.header.subtitle == UI_TEXT["worktree_step_confirm"]
         assert "确认选择" in state.header.subtitle
 
+    def test_confirm_without_goal_has_awaiting_goal_subtitle(self):
+        """WORKTREE_CONFIRM without goal should tell users to send the goal in-topic."""
+        from src.card.state.reducer import reduce_card_state
+        from src.card.ui_text import UI_TEXT
+
+        state = reduce_card_state(None, CardEvent.started(), CardMetadata(mode_name="Worktree"))
+        state = reduce_card_state(state, worktree_confirm(
+            selected_items=[{"tool": "t1", "model": "m1"}], goal=""
+        ), CardMetadata(mode_name="Worktree"))
+
+        assert state.header.subtitle == UI_TEXT["worktree_step_awaiting_goal"]
+        assert state.footer.status_text == UI_TEXT["worktree_footer_awaiting_goal"]
+
     def test_progress_has_stepper_subtitle(self):
         """WORKTREE_PROGRESS → header subtitle = step title."""
         from src.card.state.reducer import reduce_card_state

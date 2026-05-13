@@ -75,8 +75,15 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             goal = event.payload.get("goal", "")
             message = event.payload.get("message", "")
             thread_root_id = event.payload.get("thread_root_id", "")
+            awaiting_goal = not str(goal or "").strip()
 
-            data = {"selected_items": selected_items, "goal": goal, "message": message, "thread_root_id": thread_root_id}
+            data = {
+                "selected_items": selected_items,
+                "goal": goal,
+                "message": message,
+                "thread_root_id": thread_root_id,
+                "awaiting_goal": awaiting_goal,
+            }
             block = WorktreeConfirmBlock(
                 block_id="worktree_confirm",
                 data=data,
@@ -86,8 +93,18 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 ButtonSpec(text=UI_TEXT["wt_btn_reselect"], action_id=ButtonIntent.WORKTREE_SHOW_MENU),
                 ButtonSpec(text=UI_TEXT["wt_btn_cancel"], action_id=ButtonIntent.WORKTREE_CANCEL, type="danger"),
             )
-            header = _build_worktree_header(state, UI_TEXT["worktree_step_confirm"])
-            footer = FooterState(status="idle", status_text=UI_TEXT["worktree_footer_awaiting_confirm"])
+            header_title = (
+                UI_TEXT["worktree_step_awaiting_goal"]
+                if awaiting_goal
+                else UI_TEXT["worktree_step_confirm"]
+            )
+            footer_text = (
+                UI_TEXT["worktree_footer_awaiting_goal"]
+                if awaiting_goal
+                else UI_TEXT["worktree_footer_awaiting_confirm"]
+            )
+            header = _build_worktree_header(state, header_title)
+            footer = FooterState(status="idle", status_text=footer_text)
             return replace(state, blocks=(block,), buttons=buttons, footer=footer, header=header)
 
         case CardEventType.WORKTREE_PROGRESS:

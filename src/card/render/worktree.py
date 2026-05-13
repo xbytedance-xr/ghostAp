@@ -173,6 +173,9 @@ def render_worktree_panel(block: ContentBlock) -> dict:
         if is_model_select:
             title_key = "worktree_step_model_select"
             hint_key = "worktree_step_model_select_hint"
+        elif kind == "worktree_confirm" and _is_worktree_confirm_awaiting_goal(data):
+            title_key = "worktree_step_awaiting_goal"
+            hint_key = "worktree_step_awaiting_goal_hint"
         else:
             title_key = _STEP_TITLE_KEY_MAP.get(kind, "")
             hint_key = _STEP_HINT_KEY_MAP.get(kind, "")
@@ -198,6 +201,14 @@ def render_worktree_panel(block: ContentBlock) -> dict:
             }],
         }
     return content_el
+
+
+def _is_worktree_confirm_awaiting_goal(data: dict) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if data.get("awaiting_goal") is True:
+        return True
+    return not str(data.get("goal") or "").strip()
 
 
 def _render_worktree_tool_select(data: dict) -> dict:
