@@ -1456,6 +1456,17 @@ class FeishuWSClient:
                     shell_fast_tracked=shell_fast_tracked,
                 )
                 return
+        if auto_enter_mode in {"worktree", "deep", "spec"}:
+            self._process_with_intent(
+                message_id,
+                chat_id,
+                text,
+                project,
+                command_match=command_match,
+                shell_fast_tracked=shell_fast_tracked,
+            )
+            return
+
         if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
             from ..mode import InteractionMode
             handler = self._get_mode_handler(InteractionMode(auto_enter_mode))

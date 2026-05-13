@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -50,8 +49,30 @@ class WorktreeDispatcher:
 
         return create_sync_session_for_worktree(**kwargs)
 
-    # Tools known for strong reasoning / analysis capabilities
-    _REASONING_TOOLS: frozenset[str] = frozenset({"claude", "gemini"})
+    # Deterministic strength hints for the coordinator pick. If no signal is
+    # available, the first selected tool remains the coordinator.
+    _MODEL_STRENGTH_HINTS: tuple[tuple[str, int], ...] = (
+        ("gpt-5.5", 120),
+        ("gpt-5-5", 120),
+        ("gpt-5.4", 115),
+        ("gpt-5-4", 115),
+        ("gpt-5.2", 110),
+        ("gpt-5-2", 110),
+        ("opus", 105),
+        ("sonnet", 95),
+        ("gemini-3.1-pro", 100),
+        ("gemini-3-pro", 98),
+        ("gemini-2.5-pro", 92),
+        ("thinking", 90),
+        ("pro", 70),
+    )
+    _TOOL_STRENGTH_HINTS: dict[str, int] = {
+        "claude": 80,
+        "codex": 76,
+        "coco": 74,
+        "gemini": 72,
+        "aiden": 68,
+    }
 
     def plan_user_goal(self, goal: str, units: Iterable[WorktreeUnit], tools: Iterable[WorktreeSelectionItem]) -> list[WorktreeUnit]:
         normalized_goal = str(goal or "").strip()
@@ -60,10 +81,12 @@ class WorktreeDispatcher:
         if not planned_units or not tool_pool:
             return planned_units
 
-        # 决定角色与工具分配
         assignments = self._assign_roles_smart(planned_units, tool_pool)
+        main_tool = assignments[0][0] if assignments else None
+        main_label = main_tool.display_label if main_tool else "第一个已选工具"
         for unit, (tool, role_info) in zip(planned_units, assignments):
             title, role_prompt = role_info
+            is_main = tool is main_tool and unit is planned_units[0]
             
             # 动态绑定工具
             unit.provider = tool.provider
@@ -72,13 +95,17 @@ class WorktreeDispatcher:
             unit.selection_key = tool.selection_key
             unit.display_name = tool.display_name
             unit.model_name = tool.model_name
+            unit.metadata["worktree_main_agent"] = is_main
+            unit.metadata["worktree_main_selection_key"] = main_tool.selection_key if main_tool else ""
             
             unit.task_title = title
             unit.task_prompt = (
                 f"用户目标：{normalized_goal}\n"
+                f"主控 agent：{main_label}\n"
                 f"你的角色：{role_prompt}\n"
-                "你会和其它 worktree 单元并行执行。请只在当前 worktree 中工作，"
-                "优先处理与你角色匹配且不会和其它单元争用同一文件/接口契约的任务；"
+                "执行方式：主控 agent 负责统一梳理目标、拆分任务、控制节奏和最终验收；"
+                "其它单元按主控目标并行承担可独立完成的具体任务。同一个工具可以被复用到多个任务，"
+                "但每个单元必须只在当前 worktree 中工作，优先处理与你角色匹配且不会和其它单元争用同一文件/接口契约的任务；"
                 "如发现潜在冲突，请记录冲突点和建议串行顺序，不要跨 worktree 修改。"
             )
             unit.status = WorktreeUnitStatus.PLANNED
@@ -264,94 +291,75 @@ class WorktreeDispatcher:
         units: list[WorktreeUnit],
         tools: list[WorktreeSelectionItem]
     ) -> list[tuple[WorktreeSelectionItem, tuple[str, str]]]:
-        """Assign analysis/implementation/review roles and bind tools from pool.
+        """Assign a coordinator first, then deterministic parallel worker roles."""
+        if not units or not tools:
+            return []
 
-        Reasoning-strong tools (claude, gemini) are preferred for analysis and
-        review. Remaining tools are assigned implementation roles.
-        """
-        role_defs = {
-            "analysis": ("分析与方案", "先理解需求、梳理风险与改动范围，并给出执行建议"),
-            "implement": ("实现与修改", "聚焦代码实现、必要修改与验证思路"),
-            "review": ("审查与汇总", "复核前面结果，指出风险、遗漏与合并建议"),
-        }
+        main_tool = self._select_main_agent_tool(tools)
+        remaining_tools = [tool for tool in tools if tool is not main_tool]
+        tool_sequence = [main_tool] + remaining_tools
 
-        count = len(units)
-        if count <= 1:
-            # Only one unit, use the first tool for comprehensive handling
-            tool = tools[0] if tools else WorktreeSelectionItem(provider="none", tool_name="none", display_name="None")
-            return [(tool, ("综合处理", "完成需求分析、实现与复核，给出最终建议"))]
-
-        # Classify tool pool
-        reasoning_tools = [t for t in tools if t.tool_name in self._REASONING_TOOLS]
-        other_tools = [t for t in tools if t.tool_name not in self._REASONING_TOOLS]
-
-        # Shuffle for diversity if multiple options exist
-        random.shuffle(reasoning_tools)
-        random.shuffle(other_tools)
-
+        roles = self._build_role_templates(len(units))
         assignments: list[tuple[WorktreeSelectionItem, tuple[str, str]]] = []
-        
-        # 1. Pick analyser – prefer reasoning tool
-        if reasoning_tools:
-            analyser_tool = reasoning_tools.pop(0)
-        else:
-            analyser_tool = other_tools.pop(0)
-
-        # 2. Pick reviewer (if count >= 2) – prefer reasoning tool (different from analyser)
-        reviewer_tool = None
-        if count >= 2:
-            if reasoning_tools:
-                reviewer_tool = reasoning_tools.pop(0)
-            elif other_tools:
-                reviewer_tool = other_tools.pop(-1) # Take from the end to leave room for implementers
-
-        # 3. Remaining are implementers
-        remaining = reasoning_tools + other_tools
-        random.shuffle(remaining)
-
-        # Build sequence: Analysis -> Implementation(s) -> Review
-        # Analysis first
-        assignments.append((analyser_tool, role_defs["analysis"]))
-
-        # Implementers middle
-        impl_target_count = count - (2 if reviewer_tool else 1)
-        if reviewer_tool:
-            # If we have a reviewer, we expect count-2 implementers
-            impl_target_count = count - 2
-        else:
-            # This case shouldn't happen if count >= 2 due to logic above
-            impl_target_count = count - 1
-        for i in range(impl_target_count):
-            if remaining:
-                tool = remaining.pop(0)
-            else:
-                # Fallback: re-use existing tools if pool is smaller than units (theoretically shouldn't happen)
-                tool = tools[i % len(tools)]
-            
-            label = f"实现与修改 {i + 1}" if impl_target_count > 1 else "实现与修改"
-            assignments.append((tool, (label, role_defs["implement"][1])))
-
-        # Review last
-        if reviewer_tool:
-            assignments.append((reviewer_tool, role_defs["review"]))
-
+        for index, role in enumerate(roles):
+            tool = tool_sequence[index % len(tool_sequence)]
+            assignments.append((tool, role))
         return assignments
+
+    @classmethod
+    def _select_main_agent_tool(cls, tools: list[WorktreeSelectionItem]) -> WorktreeSelectionItem:
+        scored: list[tuple[int, int, WorktreeSelectionItem]] = []
+        for index, tool in enumerate(tools):
+            scored.append((cls._tool_strength_score(tool), -index, tool))
+        best_score, _, best_tool = max(scored, key=lambda item: (item[0], item[1]))
+        if best_score <= 0:
+            return tools[0]
+        return best_tool
+
+    @classmethod
+    def _tool_strength_score(cls, tool: WorktreeSelectionItem) -> int:
+        text = " ".join(
+            str(part or "").lower()
+            for part in (
+                tool.provider,
+                tool.tool_name,
+                tool.display_name,
+                tool.agent_name,
+                tool.model_name,
+                tool.model_display_name,
+            )
+        )
+        score = cls._TOOL_STRENGTH_HINTS.get(str(tool.tool_name or "").lower(), 0)
+        for token, value in cls._MODEL_STRENGTH_HINTS:
+            if token in text:
+                score = max(score, value)
+        return score
 
     @staticmethod
     def _build_role_templates(count: int) -> list[tuple[str, str]]:
         if count <= 1:
-            return [("综合处理", "完成需求分析、实现与复核，给出最终建议")]
+            return [(
+                "主控规划与执行",
+                "作为本次任务的主控 agent，完成目标澄清、方案拆分、实现与复核，给出最终结论",
+            )]
         templates = [
-            ("分析与方案", "先理解需求、梳理风险与改动范围，并给出执行建议"),
-            ("实现与修改", "聚焦代码实现、必要修改与验证思路"),
-            ("审查与汇总", "复核前面结果，指出风险、遗漏与合并建议"),
+            (
+                "主控规划与验收",
+                "作为本次任务的主控 agent，统一理解用户目标，拆出可并行任务，约束文件边界，最后给出验收和合并建议",
+            ),
+            ("实现与修改", "聚焦代码实现、必要修改与验证思路；如任务较多，可承担其中一个独立子任务"),
+            ("测试与验证", "聚焦回归测试、执行日志、边界条件和可复现验证，补齐必要的测试或验证说明"),
+            ("审查与汇总", "复核前面结果，指出风险、遗漏、冲突点与合并建议"),
         ]
         roles: list[tuple[str, str]] = []
         for index in range(count):
             if index == 0:
                 roles.append(templates[0])
             elif index == count - 1:
+                roles.append(templates[3])
+            elif index == 2:
                 roles.append(templates[2])
             else:
-                roles.append((f"实现与修改 {index}", templates[1][1]))
+                label = "实现与修改" if count <= 3 else f"实现与修改 {index}"
+                roles.append((label, templates[1][1]))
         return roles

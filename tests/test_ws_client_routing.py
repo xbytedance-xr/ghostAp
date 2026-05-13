@@ -177,6 +177,33 @@ def test_worktree_topic_goal_routes_without_interaction_mode_cast(mock_ws_client
     )
 
 
+def test_dispatch_message_logic_worktree_topic_bypasses_project_chat_default(mock_ws_client: FeishuWSClient):
+    """WT 话题里的普通消息应先交给 WT 引擎，不能掉到项目群默认 Coco 入口。"""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._project_manager.find_by_bound_chat_id = MagicMock(return_value=project)
+    mock_ws_client._process_with_intent = MagicMock()
+    mock_ws_client._message_dispatcher._handle_enter_coco = MagicMock()
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_goal",
+        "chat_456",
+        "修复卡片样式",
+        project,
+        "worktree",
+        command_match=None,
+    )
+
+    mock_ws_client._process_with_intent.assert_called_once_with(
+        "msg_goal",
+        "chat_456",
+        "修复卡片样式",
+        project,
+        command_match=None,
+        shell_fast_tracked=False,
+    )
+    mock_ws_client._message_dispatcher._handle_enter_coco.assert_not_called()
+
+
 def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
     """Test that an ongoing mode (auto_enter_mode) directly forwards to the respective handler."""
     msg = create_mock_message("hello")

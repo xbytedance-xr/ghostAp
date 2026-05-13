@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-13
+- **WT 带目标/话题目标交互与主控 agent 规划修复** — 修复 `/wt <目标>` 只因 handler 只认 `/worktree` 而丢目标的问题；WT engine 话题里的普通消息现在直接回到 WT awaiting-goal 链路，不再被项目群自由文本默认路由送进 Coco 模型选择。WorktreeDispatcher 改为从已选工具/模型中确定性选择主控 agent（优先强模型，无法判断则保留第一个），由主控角色统一梳理目标、拆分任务和验收，其它单元并行承担实现/测试/审查；当单元多于工具时按顺序复用工具。相关 WT 路由/自动执行/dispatcher 回归 `123 passed` → [详细记录](2026-05-13.md)
 - **/new-chat 关键指令 slash 路由恢复** — 修复 `/new-chat hermes` 被 slash 优先路由误判为未知命令的问题：`/new-chat` 已重新纳入 `SystemHandler` interceptable/router，直接分发到 `ProjectHandler.handle_new_chat_project()`，并保留 `/new-chat <名称> [后缀] [路径]` 的路径空格；project-chat/slash 相关子集 `274 passed` → [详细记录](2026-05-13.md)
 - **执行日志 error/warning 收口** — 修复 Worktree units 卡片 `collapsible_panel.background_style` 导致飞书 Schema V2 拒绝的问题，并在 render 出口兜底剥离同类非法字段；正常路径提示降为 info：Codex 本地模型缓存、空管理员 bootstrap、Spec retry 软预算、SIGTERM 优雅停机不再污染 warning 日志；相关 card/worktree/delivery/config 子集 `164 passed`，`--validate` 输出干净 → [详细记录](2026-05-13.md)
 - **WT 空目标等待目标续聊修复** — 修复空 `/wt` 选完工具模型后，在同一飞书话题直接发送任务目标会内部错误的问题：thread context 的 `mode=worktree` 是 engine-only mode，不再强转为 `InteractionMode`，而是交给 WT awaiting-goal 判定后进入 `handle_worktree_execute`；无 goal 的 WT confirm 卡片同步改为“等待目标”标题、提示和 footer，不再显示“等待确认/点击开始”。全量 `6435 passed` → [详细记录](2026-05-13.md)

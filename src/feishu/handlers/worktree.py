@@ -239,7 +239,7 @@ class WorktreeHandler(BaseHandler):
         :class:`~src.feishu.slash_command_parser.SlashCommandParser`.
         """
         m = SlashCommandParser.parse(text)
-        if not m or m.command != "/worktree":
+        if not m or m.command not in {"/worktree", "/wt"}:
             # Not a worktree slash command; fall back to the legacy behavior (no goal).
             self.handle_worktree_command(message_id, chat_id, project, goal="")
             return
@@ -258,7 +258,11 @@ class WorktreeHandler(BaseHandler):
 
         全链路只消费 CommandMatch（单一事实源），避免 handler 内二次 parse。
         """
-        goal = (command_match.args or "").strip() if command_match.command == "/worktree" else ""
+        goal = (
+            (command_match.args or "").strip()
+            if command_match.command in {"/worktree", "/wt"}
+            else ""
+        )
         self.handle_worktree_command(message_id, chat_id, project, from_card=from_card, goal=goal)
 
     def handle_worktree_command(

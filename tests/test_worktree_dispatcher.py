@@ -46,9 +46,10 @@ def test_dispatcher_plans_and_executes_units_without_cross_contamination(tmp_pat
     planned = dispatcher.plan_user_goal("完成 worktree 模式的实现", units, tools)
     executed = dispatcher.execute_units(planned, max_workers=2)
 
-    assert executed[0].task_title == "分析与方案"
+    assert executed[0].task_title == "主控规划与验收"
     assert executed[1].task_title == "审查与汇总"
-    assert "其它 worktree 单元并行执行" in executed[0].task_prompt
+    assert executed[0].metadata["worktree_main_agent"] is True
+    assert "其它单元按主控目标并行承担" in executed[0].task_prompt
     assert "不要跨 worktree 修改" in executed[0].task_prompt
     assert executed[0].status == "completed"
     assert executed[1].status == "completed"
@@ -113,30 +114,28 @@ def test_execute_goal_single_unit_failure_others_continue(tmp_path):
 
 
 def test_plan_user_goal_smart_role_assignment():
-    """T6: claude/gemini get analysis/review roles, codex gets implementation."""
+    """T6: the strongest selected model becomes the coordinator."""
     units = [
         WorktreeUnit(unit_id="u0"),
         WorktreeUnit(unit_id="u1"),
         WorktreeUnit(unit_id="u2"),
     ]
     tools = [
-        WorktreeSelectionItem(provider="cli", tool_name="claude", display_name="Claude"),
-        WorktreeSelectionItem(provider="acp", tool_name="codex", display_name="Codex"),
-        WorktreeSelectionItem(provider="acp", tool_name="gemini", display_name="Gemini"),
+        WorktreeSelectionItem(provider="cli", tool_name="claude", display_name="Claude", model_name="Sonnet"),
+        WorktreeSelectionItem(provider="acp", tool_name="codex", display_name="Codex", model_name="GPT-5.5"),
+        WorktreeSelectionItem(provider="acp", tool_name="gemini", display_name="Gemini", model_name="Gemini-3.1-Pro-Preview"),
     ]
 
     dispatcher = WorktreeDispatcher(session_factory=lambda **kw: None)
     planned = dispatcher.plan_user_goal("build feature X", units, tools)
 
-    by_name = {u.tool_name: u for u in planned}
-
-    # claude and gemini (reasoning) → analysis and review
-    reasoning_roles = {by_name["claude"].task_title, by_name["gemini"].task_title}
-    assert "分析与方案" in reasoning_roles
-    assert "审查与汇总" in reasoning_roles
-    # codex (general) → implementation
-    assert "实现与修改" in by_name["codex"].task_title
-    assert "不会和其它单元争用同一文件/接口契约" in by_name["codex"].task_prompt
+    assert planned[0].tool_name == "codex"
+    assert planned[0].task_title == "主控规划与验收"
+    assert planned[0].metadata["worktree_main_agent"] is True
+    assert "统一梳理目标、拆分任务、控制节奏和最终验收" in planned[0].task_prompt
+    assert planned[1].task_title == "实现与修改"
+    assert planned[2].task_title == "审查与汇总"
+    assert "不会和其它单元争用同一文件/接口契约" in planned[1].task_prompt
 
 
 def test_plan_user_goal_no_reasoning_tools_falls_back():
@@ -153,10 +152,33 @@ def test_plan_user_goal_no_reasoning_tools_falls_back():
     dispatcher = WorktreeDispatcher(session_factory=lambda **kw: None)
     planned = dispatcher.plan_user_goal("build feature Y", units, tools)
 
-    # Sequence: Analysis -> Implementation/Review (if count=2, it's Analysis -> Implementation or Review)
-    # Our implementation: [Analysis, Implement/Review]
-    assert planned[0].task_title == "分析与方案"
-    assert "实现与修改" in planned[1].task_title or planned[1].task_title == "审查与汇总"
+    assert planned[0].tool_name == "codex"
+    assert planned[0].task_title == "主控规划与验收"
+    assert planned[1].task_title == "审查与汇总"
+
+
+def test_plan_user_goal_reuses_tools_when_units_exceed_selected_tools():
+    units = [
+        WorktreeUnit(unit_id="u0"),
+        WorktreeUnit(unit_id="u1"),
+        WorktreeUnit(unit_id="u2"),
+        WorktreeUnit(unit_id="u3"),
+    ]
+    tools = [
+        WorktreeSelectionItem(provider="acp", tool_name="coco", display_name="Coco"),
+        WorktreeSelectionItem(provider="acp", tool_name="codex", display_name="Codex"),
+    ]
+
+    dispatcher = WorktreeDispatcher(session_factory=lambda **kw: None)
+    planned = dispatcher.plan_user_goal("build feature Z", units, tools)
+
+    assert [u.tool_name for u in planned] == ["codex", "coco", "codex", "coco"]
+    assert [u.task_title for u in planned] == [
+        "主控规划与验收",
+        "实现与修改 1",
+        "测试与验证",
+        "审查与汇总",
+    ]
 
 
 # ---------------------------------------------------------------------------
