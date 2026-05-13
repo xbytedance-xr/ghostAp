@@ -49,13 +49,17 @@ def discover_optimization_questions(
     settings,
     all_satisfied: bool = False,
     backlog_pending: int = 0,
+    min_cycles: int = 2,
 ) -> list[dict]:
     if not session or not project:
         return []
 
     # === Discovery 门控（防空转）===
     # Gate 1: AC 全满足 → 不再发现新问题
-    if getattr(settings, "spec_discovery_gate_on_satisfied", True) and all_satisfied:
+    # BUT: 在前 min_cycles 轮内不应用此门控，因为早期评估可能不可靠
+    # （LLM 在同一 session 内评估自己的工作，容易过度乐观）
+    gate_on_satisfied = getattr(settings, "spec_discovery_gate_on_satisfied", True)
+    if gate_on_satisfied and all_satisfied and cycle_num > min_cycles:
         logger.debug("[Spec] Discovery 门控：所有标准已满足，跳过")
         return []
 

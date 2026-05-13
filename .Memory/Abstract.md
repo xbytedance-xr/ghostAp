@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-13
+- **Spec 首轮乐观收敛防护** — Spec 验收标准现在允许从 PASS 回退为 FAIL；多标准在单轮从 0% 跳到 100% 时不再立即 success，而是要求后续确认；discovery 的“全满足即跳过”门控延后到 `spec_min_cycles` 之后，降低 LLM 自评过度乐观导致提前结束的风险。同步补齐 ACP 默认模型按钮、Settings `.env` 隔离与 ReviewCircuitState 有界 outcome list 的全量测试暴露缺口；全量 `6445 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-13.md)
 - **ACP/Codex 默认模型显式选项** — ACP 模型选择卡和 WT 模型选择卡新增“使用默认模型”选项：点击后不会把 sentinel 或具体模型名写入 `project.acp_model_name` / WT selection，也不会向 Codex ACP fallback 传 `-c model=...`，由工具自身默认配置决定模型。相关模型选择/WT/action/card 回归 `222 passed`，`--validate` 通过 → [详细记录](2026-05-13.md)
 - **WT 带目标/话题目标交互与主控 agent 规划修复** — 修复 `/wt <目标>` 只因 handler 只认 `/worktree` 而丢目标的问题；WT engine 话题里的普通消息现在直接回到 WT awaiting-goal 链路，不再被项目群自由文本默认路由送进 Coco 模型选择。WorktreeDispatcher 改为从已选工具/模型中确定性选择主控 agent（优先强模型，无法判断则保留第一个），由主控角色统一梳理目标、拆分任务和验收，其它单元并行承担实现/测试/审查；当单元多于工具时按顺序复用工具。相关 WT 路由/自动执行/dispatcher 回归 `123 passed` → [详细记录](2026-05-13.md)
 - **/new-chat 关键指令 slash 路由恢复** — 修复 `/new-chat hermes` 被 slash 优先路由误判为未知命令的问题：`/new-chat` 已重新纳入 `SystemHandler` interceptable/router，直接分发到 `ProjectHandler.handle_new_chat_project()`，并保留 `/new-chat <名称> [后缀] [路径]` 的路径空格；project-chat/slash 相关子集 `274 passed` → [详细记录](2026-05-13.md)

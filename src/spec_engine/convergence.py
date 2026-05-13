@@ -33,6 +33,17 @@ class ContinuationPolicy:
             return None
 
         if all_satisfied and review_passed:
+            # Guard: if ALL criteria became satisfied in a single evaluation
+            # (0% → 100% jump) and there are multiple criteria, require one more
+            # confirming cycle. This prevents a single optimistic first-cycle
+            # evaluation from causing premature termination when there are
+            # dozens of goals/criteria.
+            if (
+                metrics.new_satisfied > 0
+                and metrics.total_criteria > 1
+                and metrics.new_satisfied >= metrics.total_criteria
+            ):
+                return None
             if not ignore_backlog and metrics.backlog_pending > 0:
                 return None
             return "success"

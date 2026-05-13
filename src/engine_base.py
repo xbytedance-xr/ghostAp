@@ -497,6 +497,12 @@ class CriteriaTracker:
         if is_satisfied and not self.satisfied.get(criteria_id, False):
             self.satisfied[criteria_id] = True
             self.satisfied_at_iteration[criteria_id] = iteration_id
+        elif not is_satisfied and self.satisfied.get(criteria_id, False):
+            # Allow re-evaluation: criteria can regress from PASS to FAIL.
+            # This prevents a single optimistic evaluation from permanently
+            # locking all criteria as satisfied.
+            self.satisfied[criteria_id] = False
+            self.satisfied_at_iteration.pop(criteria_id, None)
 
     def batch_update(self, progress: dict[int, bool], iteration_id: int):
         for criteria_id, is_satisfied in progress.items():

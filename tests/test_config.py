@@ -127,7 +127,7 @@ class TestAdminUserIdsFrozenset:
         assert len(s.admin_user_ids) == 2
 
     def test_admin_user_ids_empty_is_frozenset(self):
-        s = Settings()
+        s = Settings(_env_file=None)
         assert isinstance(s.admin_user_ids, frozenset)
         assert len(s.admin_user_ids) == 0
 
@@ -207,4 +207,3 @@ class TestNewConfigDefaults:
     def test_spec_review_max_parallel_default(self):
         s = Settings()
         assert s.spec_review_max_parallel == 3
-

@@ -572,13 +572,13 @@ class TestDiscoveryGating:
         return project
 
     def test_gate_on_all_satisfied(self):
-        """所有标准满足后 discovery 返回空列表。"""
+        """所有标准满足后 discovery 返回空列表（early cycles bypass 后生效）。"""
         from src.spec_engine.discovery import discover_optimization_questions
 
         project = self._make_project()
         result = discover_optimization_questions(
             project=project, session=object(), send_prompt_fn=lambda *a, **k: None,
-            last_review=None, cycle_num=1, settings=self._make_settings(),
+            last_review=None, cycle_num=5, settings=self._make_settings(),
             all_satisfied=True, backlog_pending=0,
         )
         assert result == []

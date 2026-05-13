@@ -1298,6 +1298,7 @@ class SpecEngine(BaseEngine):
             settings=self.settings,
             all_satisfied=all_satisfied,
             backlog_pending=backlog_pending,
+            min_cycles=max(1, self.settings.spec_min_cycles),
         )
 
     def _generate_specs_from_discovery(self, cycle_num: int, discovery: list[dict]) -> list:

@@ -20,6 +20,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class _BoundedOutcomeList(list):
+    """List that keeps only the most recent review outcomes."""
+
+    def __init__(self, values=None, maxlen: int = 20):
+        self._maxlen = maxlen
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+        super().__init__(values or [])
+        self._trim()
+
+    def _trim(self) -> None:
+        overflow = len(self) - self._maxlen
+        if overflow > 0:
+            del self[:overflow]
+
+    def append(self, item) -> None:
+        with self._lock:
+            super().append(item)
+            self._trim()
+
+
 class RetryTexts(TypedDict, total=False):
     """Formal contract for retry UI text overrides.
 
@@ -49,7 +69,11 @@ class ReviewCircuitState:
     consecutive_skips: int = 0
     last_review_elapsed_ms: int = 0
     last_failure_timestamp: float = 0.0
-    recent_outcomes: list = field(default_factory=list)
+    recent_outcomes: list = field(default_factory=_BoundedOutcomeList)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.recent_outcomes, _BoundedOutcomeList):
+            self.recent_outcomes = _BoundedOutcomeList(self.recent_outcomes)
 
     def reset_on_success(self) -> None:
         """Reset all failure/backoff counters after a successful review.

@@ -15,6 +15,7 @@ from src.card.models import (
     ModelOptionView,
     ToolOptionView,
 )
+from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
 from src.project.context import ProjectContext
 
 
@@ -374,8 +375,19 @@ def test_acp_select_cards_keep_project_tool_thread_and_refresh_fields():
         thread_root_id="thread-1",
     )
     model_buttons = _collect_buttons(json.loads(model_json))
-    assert model_buttons[0]["type"] == "primary"
-    assert model_buttons[0]["value"] == {
+    default_model_button = model_buttons[0]
+    assert default_model_button["type"] == "default"
+    assert default_model_button["value"] == {
+        "action": "select_acp_model",
+        "tool_name": "coco",
+        "model_name": DEFAULT_MODEL_OPTION_VALUE,
+        "use_default_model": True,
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+    model_button = next(b for b in model_buttons if b["value"].get("model_name") == "gpt-5")
+    assert model_button["type"] == "primary"
+    assert model_button["value"] == {
         "action": "select_acp_model",
         "tool_name": "coco",
         "model_name": "gpt-5",
@@ -775,7 +787,8 @@ def test_acp_model_button_long_display_and_description_are_mobile_safe():
         current_model=model_name,
         thread_root_id="thread-1",
     )
-    button = _collect_buttons(json.loads(card_json))[0]
+    buttons = _collect_buttons(json.loads(card_json))
+    button = next(b for b in buttons if b["value"].get("model_name") == model_name)
 
     assert len(button["text"]["content"]) <= 40
     assert button["text"]["content"].endswith("…")
@@ -815,7 +828,18 @@ def test_selector_cards_empty_options_still_render_operable_shells():
 
     _, acp_model_json = SystemBuilder.build_acp_model_select_card([], tool_name="coco", project_id="p1")
     acp_model_buttons = _collect_buttons(json.loads(acp_model_json))
-    assert [button["value"]["action"] for button in acp_model_buttons] == ["refresh_acp_models"]
+    assert [button["value"]["action"] for button in acp_model_buttons] == [
+        "select_acp_model",
+        "refresh_acp_models",
+    ]
+    assert acp_model_buttons[0]["value"] == {
+        "action": "select_acp_model",
+        "tool_name": "coco",
+        "model_name": DEFAULT_MODEL_OPTION_VALUE,
+        "use_default_model": True,
+        "project_id": "p1",
+        "thread_root_id": None,
+    }
 
 
 def test_deep_builder_warning_banner():
