@@ -21,6 +21,7 @@ from ...card.events.worktree import (
     worktree_tool_select,
 )
 from ...card.ui_text import UI_TEXT
+from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
 from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ...repo_lock import LockConflictError
 from ...utils.errors import get_error_detail
@@ -383,6 +384,12 @@ class WorktreeHandler(BaseHandler):
             # Show model selection as tool_select with model list
             session = self._get_or_create_session(chat_id, pid)
             model_tools = []
+            model_tools.append({
+                "id": DEFAULT_MODEL_OPTION_VALUE,
+                "name": UI_TEXT["system_acp_default_model_option"],
+                "description": UI_TEXT["system_acp_default_model_desc"],
+                "use_default_model": True,
+            })
             for m in models:
                 model_id = str(m.get("name") or "").strip()
                 if not model_id:
@@ -446,7 +453,7 @@ class WorktreeHandler(BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
 
-        model_name = (
+        raw_model_name = (
             value.get("_option")
             or value.get("model_name")
             or value.get("id")
@@ -454,11 +461,17 @@ class WorktreeHandler(BaseHandler):
             or value.get("tool_name")
             or None
         )
+        use_default_model = bool(value.get("use_default_model")) or is_default_model_option(raw_model_name)
+        model_name = None if use_default_model else raw_model_name
         model_display = (
-            value.get("model_display_name")
-            or value.get("display_name")
-            or value.get("name")
-            or model_name
+            None
+            if use_default_model
+            else (
+                value.get("model_display_name")
+                or value.get("display_name")
+                or value.get("name")
+                or model_name
+            )
         )
 
         mgr = self._worktree_manager()

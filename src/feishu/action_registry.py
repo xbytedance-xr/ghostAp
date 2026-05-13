@@ -299,7 +299,7 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
             mid,
             cid,
             val.get("tool_name", ""),
-            val.get("model_name", ""),
+            None if val.get("use_default_model") else val.get("model_name", ""),
             _resolve_project(client, pid, cid),
         ),
         exact=action_ids.SELECT_ACP_MODEL,

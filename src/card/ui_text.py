@@ -179,6 +179,8 @@ UI_TEXT = {
     "system_acp_no_available_tools": "未检测到可用 ACP 工具",
     "system_acp_select_tool_prompt": "请选择 ACP 工具",
     "system_acp_select_model_prompt": "请选择 ACP 模型",
+    "system_acp_default_model_option": "使用默认模型",
+    "system_acp_default_model_desc": "不固定传入模型，使用工具当前默认配置",
     "system_acp_querying_models": "🔍 正在查询 {tool_name} 支持的模型…",
     "system_acp_get_models_failed": "获取 {tool_name} 模型列表失败，请稍后重试",
     "system_acp_specify_model_prompt": "请指定模型名称，例如：{example}",

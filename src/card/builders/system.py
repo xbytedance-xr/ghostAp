@@ -8,6 +8,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Optional
 
 from src.card.error_diagnostics import register_error_diagnostic
+from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
 from src.utils.errors import GhostAPError, get_error_detail
 
 from ..actions import dispatch as action_ids
@@ -992,7 +993,26 @@ class SystemBuilder:
                 )
             )
 
-        buttons = []
+        buttons = [
+            {
+                "tag": "button",
+                "text": {
+                    "tag": "plain_text",
+                    "content": SystemBuilder._mobile_safe_button_label(
+                        UI_TEXT["system_acp_default_model_option"]
+                    ),
+                },
+                "type": "primary" if not current_model else "default",
+                "value": {
+                    "action": "select_acp_model",
+                    "tool_name": tool_name,
+                    "model_name": DEFAULT_MODEL_OPTION_VALUE,
+                    "use_default_model": True,
+                    "project_id": project_id,
+                    "thread_root_id": thread_root_id,
+                },
+            }
+        ]
         for m in items:
             label = m.display_name or m.name
             btn_text = f"{label}"

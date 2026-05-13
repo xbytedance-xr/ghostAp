@@ -173,6 +173,30 @@ def test_feishu_action_registry_uses_canonical_core_action_ids():
     assert {"deep_", "spec_"} <= client.prefix_actions
 
 
+def test_select_acp_model_default_option_passes_none_model():
+    from src.feishu.action_registry import init_action_registry
+
+    client = _RegistryCaptureClient()
+    calls = []
+    client._handle_select_acp_model = lambda *args: calls.append(args)
+    init_action_registry(client)
+
+    client.handlers[action_ids.SELECT_ACP_MODEL](
+        "msg1",
+        "chat1",
+        None,
+        {
+            "tool_name": "codex",
+            "model_name": "__ghostap_default_model__",
+            "use_default_model": True,
+        },
+    )
+
+    assert calls
+    assert calls[0][2] == "codex"
+    assert calls[0][3] is None
+
+
 def test_degraded_continue_action_is_registered_separately_from_retry():
     from src.feishu.action_registry import init_action_registry
 

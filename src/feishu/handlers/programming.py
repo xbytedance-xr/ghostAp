@@ -491,7 +491,7 @@ class ProgrammingModeHandler(BaseHandler):
         self,
         message_id: str,
         chat_id: str,
-        model_name: str,
+        model_name: Optional[str],
         project: Optional["ProjectContext"] = None,
     ) -> None:
         """Switch the model for the active programming session.
@@ -510,7 +510,7 @@ class ProgrammingModeHandler(BaseHandler):
         if session:
             # Attempt protocol-level model switch (preserves conversation context).
             set_model_fn = getattr(session, "set_model", None)
-            if callable(set_model_fn):
+            if model_name and callable(set_model_fn):
                 try:
                     if set_model_fn(model_name):
                         logger.info("[%s] Model switched via ACP protocol: %s", self.mode_name, model_name)
@@ -543,7 +543,8 @@ class ProgrammingModeHandler(BaseHandler):
                 model_name=model_name,
             )
             
-            banner = CardBuilder._build_banner_element(UI_TEXT["mode_model_switched_banner"].format(name=self.mode_name, model=model_name), type="success")
+            display_model = model_name or UI_TEXT["system_acp_default_model_option"]
+            banner = CardBuilder._build_banner_element(UI_TEXT["mode_model_switched_banner"].format(name=self.mode_name, model=display_model), type="success")
             msg_type, card_content = CardBuilder.build_project_response_card(
                 project,
                 UI_TEXT["mode_model_switched_title"].format(name=self.mode_name),

@@ -683,6 +683,37 @@ def test_goal_from_start_selection_persists_through_model_select():
     assert state.selection.pending_goal == "重构数据库"
 
 
+def test_worktree_select_default_model_adds_unpinned_selection():
+    """The explicit default-model option should not pin a model into WT units."""
+    handler = _make_system_handler()
+    project = _make_project("p-default-model")
+    handler.ctx.project_manager.get_active_project.return_value = project
+    handler.ctx.project_manager.get_project.return_value = project
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
+
+    mgr = handler._worktree_manager()
+    mgr.start_selection(project)
+    mgr.select_tool(project, WorktreeToolOption(
+        provider="acp", tool_name="codex", display_name="Codex", supports_model=True,
+    ))
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
+         patch.object(handler, "_get_or_create_session", return_value=mock_session):
+        handler.handle_worktree_select_model(
+            "m-default", "c-default", project_id="p-default-model",
+            value={"model_name": "__ghostap_default_model__", "use_default_model": True},
+        )
+
+    state = mgr.get_state(project)
+    assert len(state.selection.selected_items) == 1
+    item = state.selection.selected_items[0]
+    assert item.tool_name == "codex"
+    assert item.model_name is None
+    assert item.effective_model_display_name == "默认模型"
+
+
 
 def test_plan_goal_emits_goal_created_and_updates_journey():
     """WorktreeManager.plan_goal 应触发 goal_created 并记录 journey.goal。"""

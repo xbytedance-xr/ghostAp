@@ -20,6 +20,7 @@ from src.card.actions.dispatch import (
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES
 from src.card.ui_text import UI_TEXT
+from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
 
 if TYPE_CHECKING:
     from src.worktree_engine.models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit
@@ -485,6 +486,8 @@ def _render_worktree_model_option_grid(tools: list, *, project_id: str, thread_r
             "model_display_name": name,
             "project_id": project_id,
         }
+        if tool.get("use_default_model") or model_id == DEFAULT_MODEL_OPTION_VALUE:
+            value["use_default_model"] = True
         value = _with_thread_root(value, thread_root_id)
         pair.append({
             "tag": "column",

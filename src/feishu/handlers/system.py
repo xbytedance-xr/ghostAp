@@ -649,7 +649,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         message_id: str,
         chat_id: str,
         tool_name: str,
-        model_name: str,
+        model_name: Optional[str],
         project: Optional["ProjectContext"] = None,
     ) -> bool:
         target_project = project or self.project_manager.get_active_project(chat_id)
@@ -867,12 +867,13 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         message_id: str,
         chat_id: str,
         tool_name: str,
-        model_name: str,
+        model_name: Optional[str],
         project: Optional["ProjectContext"] = None,
     ):
         tool = (tool_name or "").strip().lower()
-        model = (model_name or "").strip()
-        if not tool or not model:
+        use_default_model = model_name is None
+        model = None if use_default_model else (model_name or "").strip()
+        if not tool or (not use_default_model and not model):
             self.reply_error(message_id, UI_TEXT["system_acp_select_model_prompt"])
             return
 

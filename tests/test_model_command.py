@@ -203,6 +203,30 @@ class TestHandleModelCommandList(unittest.TestCase):
         self.assertTrue(values)
         self.assertTrue(all(v.get("thread_root_id") == "thread1" for v in values))
 
+    def test_model_list_card_includes_default_model_option(self):
+        fake_models = [MagicMock()]
+        fake_models[0].name = "gpt-5.5"
+        fake_models[0].description = "GPT-5.5"
+        fake_models[0].is_default = True
+        with self._patch_fetch(fake_models):
+            self.handler.handle_model_command("msg1", "chat1", "/model list")
+
+        card_str = self.handler.reply_card.call_args[0][1]
+        card = json.loads(card_str)
+        values = []
+        labels = []
+        for element in card["body"]["elements"]:
+            for column in element.get("columns", []):
+                for child in column.get("elements", []):
+                    if child.get("tag") == "button":
+                        values.append(child.get("value", {}))
+                        labels.append(child.get("text", {}).get("content", ""))
+
+        self.assertIn("使用默认模型", labels)
+        default_values = [v for v in values if v.get("use_default_model")]
+        self.assertEqual(len(default_values), 1)
+        self.assertEqual(default_values[0].get("action"), "select_acp_model")
+
     def test_model_list_error_when_no_models(self):
         with self._patch_fetch([]):
             self.handler.handle_model_command("msg1", "chat1", "/model list")
@@ -255,6 +279,21 @@ class TestHandleModelCommandSwitch(unittest.TestCase):
 class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
     def setUp(self):
         self.handler = _make_handler()
+
+    def test_default_model_selection_does_not_store_fixed_model(self):
+        self.handler.settings.thread_programming_enabled = False
+        project = MagicMock()
+        project.project_id = "ghostap"
+        codex_handler = self.handler.get_handler("codex")
+
+        self.handler.handle_select_acp_model("msg1", "chat1", "codex", None, project)
+
+        self.assertEqual(project.acp_tool_name, "codex")
+        self.assertIsNone(project.acp_model_name)
+        self.assertIsNone(codex_handler.current_model)
+        codex_handler.enter_mode.assert_called_once_with(
+            "msg1", "chat1", project=project, silent=True
+        )
 
     def test_pending_prompt_starts_thread_instead_of_top_level_mode(self):
         self.handler.settings.thread_programming_enabled = True
