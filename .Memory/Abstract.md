@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-13
+- **/new-chat 关键指令 slash 路由恢复** — 修复 `/new-chat hermes` 被 slash 优先路由误判为未知命令的问题：`/new-chat` 已重新纳入 `SystemHandler` interceptable/router，直接分发到 `ProjectHandler.handle_new_chat_project()`，并保留 `/new-chat <名称> [后缀] [路径]` 的路径空格；project-chat/slash 相关子集 `274 passed` → [详细记录](2026-05-13.md)
 - **执行日志 error/warning 收口** — 修复 Worktree units 卡片 `collapsible_panel.background_style` 导致飞书 Schema V2 拒绝的问题，并在 render 出口兜底剥离同类非法字段；正常路径提示降为 info：Codex 本地模型缓存、空管理员 bootstrap、Spec retry 软预算、SIGTERM 优雅停机不再污染 warning 日志；相关 card/worktree/delivery/config 子集 `164 passed`，`--validate` 输出干净 → [详细记录](2026-05-13.md)
 - **WT 空目标等待目标续聊修复** — 修复空 `/wt` 选完工具模型后，在同一飞书话题直接发送任务目标会内部错误的问题：thread context 的 `mode=worktree` 是 engine-only mode，不再强转为 `InteractionMode`，而是交给 WT awaiting-goal 判定后进入 `handle_worktree_execute`；无 goal 的 WT confirm 卡片同步改为“等待目标”标题、提示和 footer，不再显示“等待确认/点击开始”。全量 `6435 passed` → [详细记录](2026-05-13.md)
 - **/setadmin 首次管理员自助初始化** — 新增 `/setadmin` 命令解决 `ADMIN_USER_IDS` 为空导致 `/lock`/`/unlock` 不可用的问题：当没有管理员配置时，首个发送 `/setadmin` 的飞书 open_id 会被写入 `.env` 并成为唯一 Bot 管理员；一旦已有管理员，只有现有管理员可用 `/setadmin [open_id]` 替换唯一管理员，其他用户调用不改配置，重启后仍以 `.env` 为准。实现包含 `AdminBootstrapService` 全局锁下原子写 `.env`、当前进程 settings 同步、slash 路由和帮助卡说明；全量 `6432 passed` → [详细记录](2026-05-13.md)

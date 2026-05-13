@@ -310,6 +310,7 @@ class TestSystemHandlerPredicates:
         assert SystemHandler.is_interceptable_command_match(m("/status")) is True
         assert SystemHandler.is_interceptable_command_match(m("/switch foo")) is True
         assert SystemHandler.is_interceptable_command_match(m("/new myproject /tmp")) is True
+        assert SystemHandler.is_interceptable_command_match(m("/new-chat hermes")) is True
         assert SystemHandler.is_interceptable_command_match(m("/tasks")) is True
         assert SystemHandler.is_interceptable_command_match(m("/diff")) is True
         assert SystemHandler.is_interceptable_command_match(m("/trace")) is True
@@ -367,6 +368,36 @@ class TestSystemHandlerRouting:
         h = self._make()
         h.handle_intercepted_command("m1", "c1", "/projects", None, command_match=SlashCommandParser.parse("/projects"))
         h.project_handler.show_project_board.assert_called_once_with("m1", "c1")
+
+    def test_route_new_chat_project(self):
+        h = self._make()
+        h.handle_intercepted_command(
+            "m1",
+            "c1",
+            "/new-chat hermes",
+            None,
+            command_match=SlashCommandParser.parse("/new-chat hermes"),
+        )
+        h.project_handler.handle_new_chat_project.assert_called_once_with(
+            "m1",
+            "c1",
+            {"name": "hermes"},
+        )
+
+    def test_route_new_chat_project_preserves_path_spaces(self):
+        h = self._make()
+        h.handle_intercepted_command(
+            "m1",
+            "c1",
+            "/new-chat hermes dev /tmp/a b",
+            None,
+            command_match=SlashCommandParser.parse("/new-chat hermes dev /tmp/a b"),
+        )
+        h.project_handler.handle_new_chat_project.assert_called_once_with(
+            "m1",
+            "c1",
+            {"name": "hermes", "suffix": "dev", "path": "/tmp/a b"},
+        )
 
     def test_route_tasks(self):
         h = self._make()

@@ -124,6 +124,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/projects": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/project": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/switch": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
+            "/new-chat": lambda m, c, t, p: self._handle_new_chat_project_args(m, c, ""),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/enter_ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
@@ -191,6 +192,19 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self.reply_error(
                 message_id, UI_TEXT["system_new_project_usage"], title=UI_TEXT["system_arg_error"]
             )
+
+    def _handle_new_chat_project_args(self, message_id: str, chat_id: str, args: str) -> None:
+        parts = (args or "").strip().split(None, 3)
+        data: dict[str, str] = {}
+        if len(parts) >= 1 and parts[0]:
+            data["name"] = parts[0]
+        if len(parts) >= 2 and parts[1]:
+            data["suffix"] = parts[1]
+        if len(parts) >= 3 and parts[2]:
+            data["path"] = parts[2]
+        if len(parts) >= 4 and parts[3]:
+            data["path"] = f"{data.get('path', '')} {parts[3]}".strip()
+        self.get_handler("project").handle_new_chat_project(message_id, chat_id, data)
 
     def _handle_close_args(self, message_id: str, chat_id: str, args: str) -> None:
         name = (args or "").strip()
@@ -379,6 +393,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/status",
             "/project",
             "/switch",
+            "/new-chat",
             "/tasks",
             "/diff",
             "/trace",
@@ -401,6 +416,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/worktree",
             "/switch",
             "/new",
+            "/new-chat",
             "/close",
             "/tasks",
             "/diff",
@@ -470,6 +486,9 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             return
         if text_lower == "/new":
             self._handle_new_project_args(message_id, chat_id, m.args)
+            return
+        if text_lower == "/new-chat":
+            self._handle_new_chat_project_args(message_id, chat_id, m.args)
             return
         if text_lower == "/close":
             self._handle_close_args(message_id, chat_id, m.args)
