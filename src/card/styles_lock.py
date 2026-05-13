@@ -139,7 +139,7 @@ LOCK_UI_TEXT: dict[str, str] = {
     "lock_help_admin_group_mgmt": "**管理命令**",
     "lock_help_admin_lock_cmd": "`/lock` · 锁定当前群（直接执行，{lock_undo_window_display}内可撤销）",
     "lock_help_admin_lock_cmd_no_undo": "`/lock` · 锁定当前群（直接执行）",
-    "lock_help_admin_unlock_cmd": "`/unlock` · 解锁当前群",
+    "lock_help_admin_unlock_cmd": "`/unlock` · 解锁当前群\n`/setadmin [open_id]` · 初始化或更换唯一 Bot 管理员",
     "lock_help_admin_group_info": "**锁定期间仍可使用的命令**",
     "lock_help_admin_exempt_cmds": "锁定后非 Bot 管理员的指令将不被 Bot 执行，但仍可使用：\n{cmd_list}",
     "lock_help_admin_repo_lock_hint": "当多个群同时操作同一仓库时，系统会自动加锁保护；私聊不受仓库锁限制",

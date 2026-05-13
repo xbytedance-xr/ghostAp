@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 # Add new read-only commands here when they are introduced.
 READONLY_COMMANDS: frozenset[str] = frozenset({
     "/status", "/help", "/帮助", "/menu", "/projects",
-    "/lock", "/unlock", "/exit", "/quit",
+    "/lock", "/unlock", "/setadmin", "/exit", "/quit",
 })
 
 # Safe interrupt commands — allowed during lock so users can abort running tasks.
@@ -175,7 +175,7 @@ class ChatLockManager:
         presentation layer — card builders should call this method instead
         of importing READONLY_COMMANDS / SAFE_INTERRUPT_COMMANDS directly.
         """
-        _admin_only = frozenset({"/lock", "/unlock"})
+        _admin_only = frozenset({"/lock", "/unlock", "/setadmin"})
         _cmds = sorted((READONLY_COMMANDS | SAFE_INTERRUPT_COMMANDS) - _admin_only)
         return " ".join(f"`{c}`" for c in _cmds) if _cmds else "`/help` `/status`"
 

@@ -137,6 +137,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/model": lambda m, c, t, p: self.handle_model_command(m, c, t, p),
             "/lock": lambda m, c, t, p: self._handle_lock_command(m, c, "lock"),
             "/unlock": lambda m, c, t, p: self._handle_lock_command(m, c, "unlock"),
+            "/setadmin": lambda m, c, t, p: self._handle_setadmin_command(m, c, ""),
         }
 
         # Prefix match handlers: prefix -> handler_func(message_id, chat_id, text, project)
@@ -391,6 +392,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/model",
             "/lock",
             "/unlock",
+            "/setadmin",
             "/btw",
         }
         if not m.has_args and cmd in exact_commands:
@@ -406,6 +408,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/status",
             "/model",
             "/btw",
+            "/setadmin",
         }
         return cmd in prefix_commands
 
@@ -450,6 +453,9 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if text_lower == "/btw":
             self._handle_btw_command(message_id, chat_id, m, project)
             return
+        if text_lower == "/setadmin":
+            self._handle_setadmin_command(message_id, chat_id, m.args)
+            return
 
         # 1. Try exact match
         if not m.has_args:
@@ -479,6 +485,30 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             message_id,
             UI_TEXT["system_unknown_slash_command"].format(command=m.raw_command or text_lower),
         )
+
+    def _handle_setadmin_command(self, message_id: str, chat_id: str, args: str = "") -> None:
+        from ...admin_bootstrap import AdminBootstrapService
+        from ...thread import get_current_sender_id
+
+        del chat_id
+        sender_id = get_current_sender_id() or ""
+        result = AdminBootstrapService().set_admin(sender_id, args)
+        if result.success:
+            if result.code == "bootstrap":
+                self.reply_text(message_id, UI_TEXT["system_setadmin_bootstrap_success"])
+            else:
+                self.reply_text(
+                    message_id,
+                    UI_TEXT["system_setadmin_update_success"].format(admin_id=result.target_id),
+                )
+            return
+
+        if result.code == "missing_sender":
+            self.reply_error(message_id, UI_TEXT["system_setadmin_missing_sender"])
+        elif result.code == "invalid_target":
+            self.reply_error(message_id, UI_TEXT["system_setadmin_invalid_target"])
+        else:
+            self.reply_text(message_id, UI_TEXT["system_setadmin_denied"])
 
     def _handle_btw_command(
         self,

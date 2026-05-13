@@ -58,6 +58,9 @@ Use this file like a harness, not a wiki:
 - Treat Coco/Claude/Aiden/Codex/Gemini/TTADK as tool backends behind GhostAP's
   programming abstractions. Avoid adding backend-specific branches unless the
   transport or capability really differs.
+- Bot admin bootstrap is intentionally one-way: `/setadmin` is accepted from
+  anyone only while `ADMIN_USER_IDS` is empty; afterward only the configured
+  admin may replace the single admin in `.env`.
 - Worktree mode should produce directly usable code without manual conflict
   repair. Merge conflicts created by WT output are resolved automatically in
   favor of the WT branch, and the card must disclose that impact so users can
