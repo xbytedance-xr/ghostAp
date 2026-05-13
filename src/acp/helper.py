@@ -190,7 +190,7 @@ def fetch_acp_models(
         if tool_name == "codex":
             fallback = _local_fallback_models(tool_name, current_model)
             if fallback:
-                logger.warning(
+                logger.info(
                     "[ACP] using local %s model cache (%d models) before live probe",
                     tool_name,
                     len(fallback),

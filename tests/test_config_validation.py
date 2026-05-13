@@ -277,10 +277,10 @@ class TestSpecReviewConfigProperty:
 
 
 class TestPostValidateWarnings:
-    """_post_validate_warnings emits WARNING when realistic retry budget exceeds soft limit."""
+    """_post_validate_warnings reports soft retry budget notes without startup warning noise."""
 
-    def test_post_validate_warnings_emits_log(self, caplog):
-        """When (retry_max_delay + timeout) * max_attempts > timeout * 2, a WARNING is emitted."""
+    def test_post_validate_warnings_emits_info_log(self, caplog):
+        """When (retry_max_delay + timeout) * max_attempts > timeout * 2, an INFO note is emitted."""
         import logging
         from src.config import _post_validate_warnings
 
@@ -302,11 +302,11 @@ class TestPostValidateWarnings:
             spec_review_retry_max_attempts=2,
         )
 
-        with caplog.at_level(logging.WARNING, logger="src.config"):
+        with caplog.at_level(logging.INFO, logger="src.config"):
             _post_validate_warnings(s)
 
         assert any("重试实际预算可能超限" in r.message for r in caplog.records), (
-            f"Expected warning not found. Records: {[r.message for r in caplog.records]}"
+            f"Expected info log not found. Records: {[r.message for r in caplog.records]}"
         )
 
 

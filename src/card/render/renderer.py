@@ -504,6 +504,18 @@ def _prepend_bridge_phrase(element: dict, phrase: str) -> bool:
     return False
 
 
+def _sanitize_schema_v2_node(node) -> None:
+    """Remove fields known to be rejected on specific Feishu Schema 2.0 nodes."""
+    if isinstance(node, dict):
+        if node.get("tag") == "collapsible_panel":
+            node.pop("background_style", None)
+        for value in node.values():
+            _sanitize_schema_v2_node(value)
+    elif isinstance(node, list):
+        for item in node:
+            _sanitize_schema_v2_node(item)
+
+
 def _order_atoms_by_section(atoms: list[RenderAtom]) -> list[RenderAtom]:
     """Render sections in stable order: status → body.
 
@@ -613,6 +625,7 @@ def _assemble_card_json(
     total_pages: int = 1,
 ) -> dict:
     """Assemble a complete Feishu Schema 2.0 card JSON."""
+    _sanitize_schema_v2_node(body_elements)
     card: dict = {
         "schema": "2.0",
         "config": {

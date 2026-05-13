@@ -149,13 +149,14 @@ class ChatLockManager:
         self._cleanup_thread: Optional[threading.Thread] = None
         self._thread_mu = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
-        # Warn early if no admins are configured — /lock will be unusable.
+        # Empty admins are a supported bootstrap state; /setadmin can initialize
+        # the first admin without requiring a manual .env edit.
         try:
             settings = get_settings()
             if not settings.admin_user_ids:
-                logger.warning(
+                logger.info(
                     "ChatLockManager: admin_user_ids is empty — /lock and /unlock "
-                    "will be unavailable. Set ADMIN_USER_IDS in .env to enable."
+                    "will be unavailable until /setadmin initializes the bot admin."
                 )
         except Exception:
             logger.debug("Failed to check admin_user_ids during init", exc_info=True)

@@ -25,7 +25,7 @@ def _post_validate_warnings(settings: Settings) -> None:
             settings.spec_review_retry_max_delay + settings.spec_review_timeout
         ) * settings.spec_review_retry_max_attempts
         if realistic_budget > budget_limit and settings.spec_review_retry_max_attempts > 0:
-            logger.warning(
+            logger.info(
                 "重试实际预算可能超限：(retry_max_delay + base_timeout) × max_attempts = %d，"
                 "超过 timeout × 2 = %d。首次 retry 耗时可能远超预期",
                 realistic_budget, budget_limit,

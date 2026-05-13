@@ -107,7 +107,7 @@ class Application:
             except Exception:
                 logger.debug("_handle_sigterm: signal name lookup failed for %s", signum, exc_info=True)
                 sig_name = str(signum)
-            logger.warning("收到终止信号 %s，开始优雅停机", sig_name)
+            logger.info("收到终止信号 %s，开始优雅停机", sig_name)
             raise KeyboardInterrupt
 
         try:

@@ -8,6 +8,7 @@ from src.card.render.budget import RenderBudget
 from src.card.render.renderer import (
     ActiveElement,
     RenderedCard,
+    _assemble_card_json,
     compute_structure_signature,
     render_card,
 )
@@ -260,6 +261,60 @@ class TestSchemaDivStyleSafety:
             if node.get("tag") == "div":
                 assert "padding" not in node
                 assert "background_style" not in node
+
+    def test_worktree_units_collapsible_panel_omits_unsupported_background_style(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="worktree_units",
+                    block_id="w1",
+                    content="",
+                    data={
+                        "message": "执行中",
+                        "units": [
+                            {"name": "unit-a", "status": "running", "metadata": {"started_at": time.time()}},
+                        ],
+                    },
+                ),
+            ),
+        )
+        cards = render_card(state, RenderBudget())
+        card_json = cards[0]._card_json
+        panels = [node for node in _iter_dict_nodes(card_json) if node.get("tag") == "collapsible_panel"]
+
+        assert panels
+        assert all("background_style" not in panel for panel in panels)
+
+    def test_assemble_card_json_strips_collapsible_panel_background_style(self):
+        body_elements = [
+            {
+                "tag": "column_set",
+                "columns": [
+                    {
+                        "tag": "column",
+                        "elements": [
+                            {
+                                "tag": "collapsible_panel",
+                                "background_style": "default",
+                                "header": {"title": {"tag": "markdown", "content": "执行单元"}},
+                                "elements": [{"tag": "markdown", "content": "body"}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        card_json = _assemble_card_json(
+            CardState(),
+            body_elements=body_elements,
+            streaming=False,
+            active_element=None,
+        )
+        panels = [node for node in _iter_dict_nodes(card_json) if node.get("tag") == "collapsible_panel"]
+
+        assert panels
+        assert all("background_style" not in panel for panel in panels)
 
     def test_streaming_disabled_when_no_active_element(self):
         state = CardState(

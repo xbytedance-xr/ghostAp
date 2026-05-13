@@ -698,7 +698,6 @@ def _render_worktree_units(data: dict) -> dict:
     panel = {
         "tag": "collapsible_panel",
         "expanded": not panel_collapsed,
-        "background_style": "default",
         "border": {"color": border_color, "corner_radius": PANEL_STYLES["corner_radius"]},
         "vertical_spacing": PANEL_STYLES["vertical_spacing"],
         "padding": PANEL_STYLES["padding_standard"],
