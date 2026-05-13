@@ -423,6 +423,40 @@ class TestTransportError:
         assert outcomes[0].kind == "reconcile"
         assert "connection timeout" in outcomes[0].message
 
+    def test_stale_binding_discards_session_and_short_circuits_remaining_pages(self):
+        """A stale message means the whole session binding is unusable, not just one page."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        rendered_v1 = [
+            RenderedCard(_card_json={"page": 0}, structure_signature="sig_1", page_index=0, total_pages=2),
+            RenderedCard(_card_json={"page": 1}, structure_signature="sig_1", page_index=1, total_pages=2),
+        ]
+        delivery.deliver("sess_stale", "chat_abc", rendered_v1)
+
+        update_attempts = {"n": 0}
+
+        def stale_update(*args, **kwargs):
+            update_attempts["n"] += 1
+            raise TransportError("message not found", code=99992354)
+
+        client.update_card = stale_update
+        rendered_v2 = [
+            RenderedCard(_card_json={"page": 0, "v": 2}, structure_signature="sig_2", page_index=0, total_pages=2),
+            RenderedCard(_card_json={"page": 1, "v": 2}, structure_signature="sig_2", page_index=1, total_pages=2),
+        ]
+        outcomes = delivery.deliver("sess_stale", "chat_abc", rendered_v2)
+
+        assert [outcome.message for outcome in outcomes] == ["recreate:99992354"]
+        assert update_attempts["n"] == 1
+        assert delivery.get_binding("sess_stale") is None
+
+        client.update_card = MockCardClient.update_card.__get__(client, MockCardClient)
+        outcomes = delivery.deliver("sess_stale", "chat_abc", rendered_v2)
+
+        assert [outcome.kind for outcome in outcomes] == ["applied", "applied"]
+        assert len(client.creates) == 4
+
     def test_transport_error_on_element_falls_back_to_update(self):
         """update_element raising TransportError falls back to _update_page."""
         client = MockCardClient()

@@ -488,8 +488,10 @@ class SpecEngine(BaseEngine):
         try:
             self._initialize_model_context()
 
-            # Parse requirement — extract acceptance criteria
-            criteria = parse_acceptance_criteria(requirement_text, self._decompose_criteria_with_llm)
+            # Parse requirement from explicit user markers only. Plain-language
+            # input starts with a single provisional criterion; the first Spec
+            # artifact replaces it with model-derived acceptance criteria.
+            criteria = parse_acceptance_criteria(requirement_text)
             self._project.acceptance_criteria = criteria
             self._project.criteria_tracker.init_criteria(criteria)
             self._project.status = SpecProjectStatus.RUNNING

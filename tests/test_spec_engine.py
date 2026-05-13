@@ -2577,6 +2577,44 @@ class TestSpecEngineExecution:
         assert called["cycles"] == [1]
         assert engine.run_state == EngineRunState.IDLE
 
+    @patch("src.spec_engine.engine.prompt_via_acp")
+    @patch("src.spec_engine.engine.create_engine_session")
+    @patch("src.engine_base.get_settings")
+    def test_execute_plain_requirement_skips_aux_criteria_session(
+        self,
+        mock_settings,
+        mock_create,
+        mock_prompt_via_acp,
+    ):
+        """Plain-language startup must not block on a disposable ACP criteria session."""
+        mock_settings.return_value = self._mock_settings()
+        mock_prompt_via_acp.side_effect = AssertionError("aux criteria prompt should not run")
+
+        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
+        criteria_text = "CRITERIA_1: PASS"
+        spec_json = """```json\n{\"goals\":[\"G\"],\"functional_spec\":[\"F\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"登录页面可用\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
+        plan_json = """```json\n{\"architecture\":\"A\",\"tech_stack\":[],\"steps\":[\"S\"],\"file_changes\":[],\"test_plan\":[],\"risks\":[],\"version\":\"1.0\"}\n```"""
+
+        session = self._make_mock_session(
+            [
+                spec_json,
+                plan_json,
+                "1. Task one (依赖: 无)",
+                "build done " * 20,
+                review_text,
+                criteria_text,
+            ]
+        )
+        mock_create.return_value = session
+
+        engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
+        project = engine.execute("实现一个简单的登录页面")
+
+        assert project.status == SpecProjectStatus.COMPLETED
+        mock_prompt_via_acp.assert_not_called()
+        mock_create.assert_called_once()
+        assert project.acceptance_criteria == ["登录页面可用"]
+
     @patch("src.engine_base.close_session_safely")
     @patch("src.spec_engine.engine.create_engine_session")
     @patch("src.engine_base.get_settings")

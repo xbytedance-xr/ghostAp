@@ -19,6 +19,8 @@ from src.card.types import RenderedCard
 
 logger = logging.getLogger(__name__)
 
+_RECREATE_OUTCOME_PREFIX = "recreate:"
+
 
 # ---------------------------------------------------------------------------
 # Outcome types (re-exported from src.card.delivery.types for backwards compat)
@@ -206,6 +208,9 @@ class CardDelivery:
                 else:
                     outcome = MutationOutcome(kind="skipped")
                 outcomes.append(outcome)
+                if self._is_recreate_outcome(outcome):
+                    self._discard_binding_for_recreate(session_id, binding)
+                    break
 
             # Finalize stale pages (pages in binding but not in current rendered set)
             rendered_indices = {card.page_index for card in rendered}
@@ -272,3 +277,19 @@ class CardDelivery:
     def _finalize_page(self, session_id: str, page: PageBinding) -> None:
         """Finalize a stale page."""
         self._mutator.finalize_page(session_id, page)
+
+    @staticmethod
+    def _is_recreate_outcome(outcome: MutationOutcome) -> bool:
+        return outcome.kind == "reconcile" and outcome.message.startswith(_RECREATE_OUTCOME_PREFIX)
+
+    def _discard_binding_for_recreate(self, session_id: str, binding: object) -> None:
+        """Drop all pages after one stale message proves this session binding is expired."""
+        removed = self._bindings.remove(session_id)
+        target = removed or binding
+        pages = getattr(target, "pages", None)
+        if not isinstance(pages, dict):
+            return
+        for page in list(pages.values()):
+            if page.card_id:
+                self._sequences.reset(page.card_id)
+        pages.clear()
