@@ -281,6 +281,9 @@ class IntentRecognizer:
         "env",
         "export",
         "source",
+        "sh",
+        "bash",
+        "zsh",
         "alias",
         "ping",
         "netstat",
@@ -824,6 +827,8 @@ class IntentRecognizer:
         """
         if not first_word:
             return False
+        if IntentRecognizer._looks_like_local_executable_path(first_word):
+            return True
         if not re.match(r"^[a-z][a-z0-9_.-]*$", first_word):
             return False
         if not (2 <= len(first_word) <= 15):
@@ -831,6 +836,17 @@ class IntentRecognizer:
         if any(kw in text_lower for kw in ("帮", "请", "能", "可以", "想", "吗", "呢")):
             return False
         return True
+
+    @staticmethod
+    def _looks_like_local_executable_path(first_word: str) -> bool:
+        """Return True for direct local executable invocations like ./restart.sh."""
+        token = (first_word or "").strip()
+        if not token:
+            return False
+        if token.startswith(("./", "../", "~/")):
+            tail = token.rsplit("/", 1)[-1]
+            return bool(tail and tail not in {".", ".."})
+        return False
 
     def looks_like_shell(self, text: str) -> bool:
         """Public: does *text* look like a shell command invocation?

@@ -185,25 +185,15 @@ class ProgrammingModeHandler(BaseHandler):
 
         if thread_id is None:
             thread_id = get_current_thread_id()
-        _thread_enabled = self.settings.thread_programming_enabled and not thread_id
-
         if not thread_id and self._is_in_this_mode(chat_id, project_id=project_id):
             if not silent:
-                if _thread_enabled:
-                    self.reply_text(
-                        message_id,
-                        fmt.format_warning(
-                            UI_TEXT["mode_already_in_thread_msg"].format(name=self.mode_name)
-                        ),
-                    )
-                else:
-                    info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
-                    self.reply_text(
-                        message_id,
-                        fmt.format_warning(
-                            UI_TEXT["mode_already_in_msg"].format(name=self.mode_name, info=info)
-                        ),
-                    )
+                info = self._get_session_manager().get_session_info(chat_id, project_id=project_id)
+                self.reply_text(
+                    message_id,
+                    fmt.format_warning(
+                        UI_TEXT["mode_already_in_msg"].format(name=self.mode_name, info=info)
+                    ),
+                )
             return
 
         previous_mode = self.mode_manager.get_mode(chat_id, project_id=project_id)
@@ -230,37 +220,6 @@ class ProgrammingModeHandler(BaseHandler):
                 if not silent:
                     self.reply_text(message_id, UI_TEXT["mode_invalid_project_path"].format(msg=path_msg))
                 return
-
-        if _thread_enabled:
-            self._enter_mode_on_manager(chat_id, project_id=project_id)
-            self.add_reaction(message_id, EmojiReaction.on_coco_enter())
-            if project:
-                self._deactivate_other_project_modes(project)
-                self._set_mode_on_project(project, True)
-            if not silent:
-                content = UI_TEXT["mode_enter_thread_msg"].format(emoji=self.mode_emoji, name=self.mode_name)
-                if self.mode_name == "TTADK":
-                    content += UI_TEXT["ttadk_extra_hint"]
-                if project:
-                    msg_type, card_content = CardBuilder.build_project_response_card(
-                        project,
-                        UI_TEXT["mode_card_enter_title"].format(emoji=self.mode_emoji, name=self.mode_name),
-                        content,
-                        show_buttons=True,
-                        footer=UI_TEXT["mode_project_dir_label"].format(path=project.root_path),
-                    )
-                    self.reply_card(message_id, card_content)
-                else:
-                    self.reply_text(message_id, content)
-            if project:
-                self.record_mode_transition(
-                    project.project_id,
-                    previous_mode,
-                    self._get_interaction_mode(),
-                    reason=f"enter_{self.mode_name.lower()}_mode(thread_pending)",
-                    chat_id=chat_id,
-                )
-            return
 
         target_session_id = None
         snapshot = self._get_snapshot(project) if project else None

@@ -148,15 +148,6 @@ class MessageDispatcher:
 
         # Programming mode (Coco / Claude / TTADK): exit or forward to active session
         if is_in_programming:
-            from ..thread import get_current_thread_id
-            if not get_current_thread_id() and self.client.settings.thread_programming_enabled:
-                pending, handler = self.client._is_one_shot_pending(chat_id, _pid, current_mode)
-                if pending:
-                    if not shell_fast_tracked:
-                        self.client._dispatch_to_thread(message_id, chat_id, text, project, current_mode, handler)
-                        return
-                    is_in_programming = False
-
             self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
             handler = self.client._get_mode_handler(current_mode)

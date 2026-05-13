@@ -1221,20 +1221,6 @@ class FeishuWSClient:
         }
         return _map.get(mode)
 
-    def _is_one_shot_pending(self, chat_id, project_id, current_mode):
-        if get_current_thread_id():
-            return False, None
-        if not self.settings.thread_programming_enabled:
-            return False, None
-        handler = self._get_mode_handler(current_mode)
-        if not handler:
-            return False, None
-        mgr = handler._get_session_manager()
-        session = mgr.get_session(chat_id, project_id=project_id, thread_id=None)
-        if session:
-            return False, None
-        return True, handler
-
     def _find_active_thread(self, chat_id):
         if not self.settings.thread_programming_enabled:
             return None
@@ -1243,93 +1229,6 @@ class FeishuWSClient:
             if ctx.mode and ctx.mode != "smart":
                 return ctx
         return None
-
-    def _dispatch_to_thread(self, message_id, chat_id, text, project, current_mode, handler):
-        from ..thread import set_current_thread_id, get_thread_manager
-
-        self._add_reaction(message_id, EmojiReaction.on_coco_mode())
-        self._add_reaction(message_id, EmojiReaction.on_processing())
-
-        project_id = project.project_id if project else None
-
-        old_thread = self._find_active_thread(chat_id)
-        if old_thread:
-            try:
-                from ..mode import InteractionMode as _IM
-                old_handler = self._get_mode_handler(_IM(old_thread.mode))
-                if old_handler:
-                    old_session_mgr = old_handler._get_session_manager()
-                    old_session_mgr.end_session(chat_id, project_id=old_thread.project_id, thread_id=old_thread.thread_root_id)
-                self._thread_manager.remove(old_thread.thread_root_id)
-                logger.info("[Thread] Closed old thread %s before creating new one", old_thread.thread_root_id[:12])
-            except Exception as e:
-                logger.warning("[Thread] Failed to close old thread: %s", get_error_detail(e))
-
-        mode_name = handler.mode_name
-        content = (
-            f"{handler.mode_emoji} 正在创建编程话题…\n\n"
-            f"你的需求将在话题中由 {mode_name} 处理"
-        )
-        if project:
-            msg_type, card_content = CardBuilder.build_project_response_card(
-                project,
-                f"{handler.mode_emoji} {mode_name} 编程话题",
-                content,
-                show_buttons=False,
-                footer=f"📂 项目目录: {project.root_path}",
-            )
-            reply_id = handler.reply_card(
-                message_id, card_content, reply_in_thread=True,
-            )
-            if reply_id:
-                handler.register_message_project(reply_id, project)
-        else:
-            reply_id = handler.reply_text(
-                message_id, content, reply_in_thread=True,
-            )
-
-        if not reply_id:
-            self._reply_text(message_id, UI_TEXT["ws_thread_create_failed"])
-            return
-
-        thread_root_id = reply_id
-        alias_keys = [message_id] if message_id != reply_id else []
-
-        try:
-            set_current_thread_id(thread_root_id)
-
-            handler.enter_mode(
-                thread_root_id, chat_id, silent=True, project=project, thread_id=thread_root_id,
-            )
-
-            if not project:
-                project = self._project_manager.get_active_project(chat_id)
-                project_id = project.project_id if project else None
-
-            session = handler._get_session_manager().get_session(
-                chat_id, project_id=project_id, thread_id=thread_root_id,
-            )
-            if session:
-                self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
-                if project:
-                    handler._set_mode_on_project(project, False)
-                handler._register_thread_context(thread_root_id, chat_id, project, session, alias_keys=alias_keys)
-                handler.handle_message(message_id, chat_id, text, project)
-            else:
-                self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
-                if project:
-                    handler._set_mode_on_project(project, False)
-                self._reply_text(
-                    message_id,
-                    UI_TEXT["ws_session_fail_msg"].format(name=mode_name, cmd=mode_name.lower()),
-                )
-        except Exception as e:
-            log_exception(logger, f"{mode_name} 话题执行异常", e)
-            self._mode_manager.exit_to_smart(chat_id, project_id=project_id)
-            if project:
-                handler._set_mode_on_project(project, False)
-        finally:
-            set_current_thread_id(None)
 
     def _update_task_project(self, task_ctx, project_id):
         """将调度任务与 project_id 关联（便于任务看板/诊断）。"""
@@ -1355,17 +1254,6 @@ class FeishuWSClient:
             InteractionMode.GEMINI,
             InteractionMode.TTADK,
         }:
-            # 如果消息来自话题（有 root_id），说明用户已经在话题中，
-            # 不应该提示"创建编程话题"，而应直接转发给 handler 处理。
-            if not root_id and not get_current_thread_id() and self.settings.thread_programming_enabled:
-                pending, handler = self._is_one_shot_pending(chat_id, _pid, current_mode)
-                if pending:
-                    self._reply_text(
-                        message_id,
-                        UI_TEXT["ws_thread_pending_msg"].format(name=handler.mode_name),
-                    )
-                    return
-
             if project is None:
                 project = self._project_manager.get_active_project(chat_id)
 

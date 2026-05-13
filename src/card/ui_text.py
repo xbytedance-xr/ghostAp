@@ -515,10 +515,8 @@ UI_TEXT = {
     "project_resume_no_session": "没有可恢复的会话",
     "project_notif_suggestion_header": "💡 **建议下一步:**",
     # ── Programming Mode Prompts (centralized) ──
-    "mode_enter_thread_msg": "{emoji} 已开启{name}编程模式\n\n📝 发送你的编程需求，将自动创建编程话题\n\n说「退出模式」或发送 `/exit` 退出",
     "mode_enter_msg": "{emoji} 已进入{name}编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出",
     "mode_enter_no_project_msg": "{emoji} 已进入 {name} 编程模式\n\n现在可以用自然语言描述你的需求\n\n说「退出模式」或发送 `/exit` 退出",
-    "mode_already_in_thread_msg": "已开启{name}编程模式\n\n直接发送你的编程需求，将自动创建编程话题\n\n说「退出模式」或发送 /exit 退出",
     "mode_already_in_msg": "已经在{name}编程模式中\n\n{info}\n\n说「退出模式」或发送 /exit 退出",
     "mode_exit_msg": "👋 已退出{name}编程模式\n\n会话已保存，下次可以恢复\n\n当前为 💭 智能模式",
     "mode_exit_pending_msg": "👋 已退出{name}编程模式\n\n当前为 💭 智能模式",
@@ -556,8 +554,7 @@ UI_TEXT = {
     "continuation_stale_stub": "▼ 请查看下方最新卡片",
     # ── ws_client Prompts ──
     "ws_session_fail_msg": "⚠️ {name} 会话启动失败，已退回智能模式，请重新发送 /{cmd} 重试",
-    "ws_thread_pending_msg": "📝 当前已开启{name}编程模式\n\n请发送你的编程需求，将自动创建编程话题",
-    "ws_topic_hint_msg": "💡 当前话题已在编程模式中，直接发送你的需求即可\n\n如需切换工具，请在主对话中发送对应命令创建新话题",
+    "ws_topic_hint_msg": "💡 当前对话已在编程模式中，直接发送需求即可\n\n如需切换工具，请先发送 `/exit` 回到智能模式，再发送 `/codex`、`/coco` 等命令",
     "topic_engine_switch_blocked": "当前话题已绑定 {current} 模式，不能直接切换到 {requested}。\n\n请先停止当前话题任务，或在主对话中新开一个话题启动 {requested}。",
     "ws_exit_deferred_msg": "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）",
     "ws_active_topic_msg": "💡 你有一个活跃的 {name} 编程话题正在进行中\n\n请在话题中回复继续对话\n如需新建编程环境，请先发送对应的编程模式命令（如 /coco）",
@@ -567,7 +564,6 @@ UI_TEXT = {
     "ws_message_internal_error": "❌ 处理消息时发生内部错误，请稍后重试",
     "ws_unsupported_msg_type": "⚠️ 目前仅支持文本、图片和富文本消息",
     "ws_image_only_prefix": "请查看并理解以下图片",
-    "ws_thread_create_failed": "⚠️ 创建编程话题失败，请重试",
     "ws_system_cmd_gate_blocked": "⏳ 系统指令处理中，按钮暂不可用，请稍后重试",
     "ws_card_action_ack": "已收到操作，正在处理…",
     "ws_project_eviction_notify": "该项目「{name}」暂时与当前群断开连接——因为同时使用的群聊数量已满。你可以随时发送 /project 重新连接",

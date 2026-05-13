@@ -1282,7 +1282,7 @@ class TestProgrammingModeEnterExit:
         h.exit_mode.assert_called_once()
 
 
-class TestOneShotPendingSlot:
+class TestTopLevelProgrammingState:
 
     def _make_coco_pending(self):
         ctx = _make_handler_context()
@@ -1325,7 +1325,7 @@ class TestOneShotPendingSlot:
         return h, ctx
 
     @patch("src.thread.get_current_thread_id", return_value=None)
-    def test_enter_mode_thread_enabled_sets_mode_no_session(self, mock_tid):
+    def test_enter_mode_thread_enabled_starts_top_level_session(self, mock_tid):
         h, ctx = self._make_coco_pending()
         project = MagicMock()
         project.coco_session_snapshot = None
@@ -1336,13 +1336,13 @@ class TestOneShotPendingSlot:
         h.enter_mode("m1", "c1", project=project)
 
         ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id="test_id")
-        ctx.coco_manager.ensure_session.assert_not_called()
+        ctx.coco_manager.ensure_session.assert_called_once()
         h.add_reaction.assert_called_once()
         h.reply_card.assert_called_once()
         call_args = str(h.reply_card.call_args)
         assert "编程模式已开启" in call_args or "已开启" in call_args
         h.record_mode_transition.assert_called_once()
-        assert "thread_pending" in str(h.record_mode_transition.call_args)
+        assert "enter_coco_mode" in str(h.record_mode_transition.call_args)
 
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_enter_mode_thread_enabled_already_in_mode(self, mock_tid):
@@ -1352,8 +1352,7 @@ class TestOneShotPendingSlot:
         h.enter_mode("m1", "c1")
 
         h.reply_text.assert_called_once()
-        assert "已开启" in str(h.reply_text.call_args)
-        assert "自动创建编程话题" in str(h.reply_text.call_args)
+        assert "已经在Coco编程模式" in str(h.reply_text.call_args)
 
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_exit_mode_pending_slot_no_session(self, mock_tid):
@@ -1761,6 +1760,11 @@ class TestShellCommandHeuristic:
             "grep pattern file",
             "docker ps",
             "make build",
+            "./restart.sh rr",
+            "../scripts/restart rr",
+            "bash ./restart.sh rr",
+            "sh ./restart.sh rr",
+            "uv run python -m pytest",
             "tree src/",
         ],
     )

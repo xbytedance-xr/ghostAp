@@ -280,6 +280,14 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         return any(text_lower == cmd or text_lower.startswith(f"{cmd} ") for cmd in spec_prefixes)
 
     @staticmethod
+    def _looks_like_local_executable_path(first_word: str) -> bool:
+        token = (first_word or "").strip()
+        if token.startswith(("./", "../", "~/")):
+            tail = token.rsplit("/", 1)[-1]
+            return bool(tail and tail not in {".", ".."})
+        return False
+
+    @staticmethod
     def is_likely_shell_command(text: str) -> bool:
         """Heuristic check for common shell commands.
 
@@ -290,6 +298,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if not text_lower or text_lower.startswith("/"):
             return False
         first_word = text_lower.split()[0].lower()
+        if SystemHandler._looks_like_local_executable_path(first_word):
+            return True
         # Single-word commands that are almost certainly shell
         shell_exact = {
             "ls",
@@ -335,10 +345,17 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "curl",
             "wget",
             "pip",
+            "uv",
             "npm",
             "yarn",
+            "pnpm",
             "docker",
             "make",
+            "python",
+            "node",
+            "sh",
+            "bash",
+            "zsh",
             "tree",
         }
         return first_word in shell_prefixes
@@ -686,112 +703,6 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         self.reply_error(message_id, UI_TEXT["system_acp_unsupported_tool"].format(tool_name=tool_name))
         return False
 
-    def _dispatch_pending_prompt_to_thread(
-        self,
-        message_id: str,
-        chat_id: str,
-        pending: Optional[str],
-        handler,
-        project: Optional["ProjectContext"],
-    ) -> bool:
-        """Create a programming thread and (optionally) run a stashed prompt in it.
-
-        ``pending`` 可为 None：当用户在主聊天选完模型但还没有具体 prompt 时，仍需要创建
-        thread + 启动 session + register thread context，让后续在 thread 中的消息能命中
-        session。否则 handle_message 永远查不到 thread_id 进而走 thread_pending 分支
-        死循环输出 "会话启动失败"。
-        """
-        from ...thread import set_current_thread_id
-
-        mode_name = getattr(handler, "mode_name", "Coco")
-        mode_emoji = getattr(handler, "mode_emoji", "💭")
-        project_id = project.project_id if project else None
-        if pending:
-            content = (
-                f"{mode_emoji} 正在创建编程话题…\n\n"
-                f"你的需求将在话题中由 {mode_name} 处理"
-            )
-        else:
-            content = (
-                f"{mode_emoji} 编程话题已就绪\n\n"
-                f"在此话题内直接发送你的需求，由 {mode_name} 处理"
-            )
-
-        if project:
-            _, card_content = CardBuilder.build_project_response_card(
-                project,
-                f"{mode_emoji} {mode_name} 编程话题",
-                content,
-                show_buttons=False,
-                footer=UI_TEXT["mode_project_dir_label"].format(path=project.root_path),
-            )
-            thread_root_id = handler.reply_card(
-                message_id, card_content, reply_in_thread=True
-            )
-            if thread_root_id:
-                handler.register_message_project(thread_root_id, project)
-        else:
-            thread_root_id = handler.reply_text(
-                message_id, content, reply_in_thread=True
-            )
-
-        if not thread_root_id:
-            self.reply_text(message_id, UI_TEXT["ws_thread_create_failed"])
-            return False
-
-        alias_keys = [message_id] if message_id != thread_root_id else []
-        try:
-            set_current_thread_id(thread_root_id)
-            handler.enter_mode(
-                thread_root_id,
-                chat_id,
-                silent=True,
-                project=project,
-                thread_id=thread_root_id,
-            )
-            session = handler._get_session_manager().get_session(
-                chat_id,
-                project_id=project_id,
-                thread_id=thread_root_id,
-            )
-            if not session:
-                self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
-                if project:
-                    handler._set_mode_on_project(project, False)
-                self.reply_text(
-                    message_id,
-                    UI_TEXT["ws_session_fail_msg"].format(
-                        name=mode_name,
-                        cmd=mode_name.lower(),
-                    ),
-                )
-                return False
-
-            self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
-            if project:
-                handler._set_mode_on_project(project, False)
-            handler._register_thread_context(
-                thread_root_id,
-                chat_id,
-                project,
-                session,
-                alias_keys=alias_keys,
-            )
-            # pending=None 时不需要 forward 任何消息，注册完 thread context 即返回成功；
-            # 用户后续在 thread 内发消息时通过 _resolve_message_context 能命中已注册的
-            # thread_root_id，正常进入 handle_message。
-            if pending:
-                handler.handle_message(message_id, chat_id, pending, project)
-            return True
-        except Exception as e:
-            logger.warning("模型选择后创建编程话题失败: %s", str(e), exc_info=True)
-            self.mode_manager.exit_to_smart(chat_id, project_id=project_id)
-            if project:
-                handler._set_mode_on_project(project, False)
-            return False
-        finally:
-            set_current_thread_id(None)
-
     def handle_acp_command(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         project_id = project.project_id if project else None
         current_tool = project.acp_tool_name if project else None
@@ -915,66 +826,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if handler and hasattr(handler, "current_model"):
             handler.current_model = model
 
-        from ...thread import get_current_thread_id
-
-        # Thread mode 下：选完模型后必须创建 thread + 启 session + register thread context，
-        # 否则 enter_mode 走 thread_pending 分支只标记 mode 不启 session，后续 handle_message
-        # 因 thread_manager 没注册而 thread_id=None 死循环报 "Coco 会话启动失败"。
-        # 即便 pending=None（用户只选模型还没发需求），也必须创建 thread 让用户后续可用。
-        if (
-            handler
-            and hasattr(handler, "handle_message")
-            and self.settings.thread_programming_enabled
-            and not get_current_thread_id()
-        ):
-            ok = self._dispatch_pending_prompt_to_thread(
-                message_id,
-                chat_id,
-                pending,  # 可能为 None，dispatch 内已支持
-                handler,
-                target_project,
-            )
-            if ok:
-                return
-            # dispatch 失败时降级到 chat-level enter_mode（保留旧行为兜底）
-
         entered = self._enter_mode_with_acp_model(message_id, chat_id, tool, model, target_project)
 
         # If we entered the mode and a prompt was stashed (project-chat default
         # Coco flow), forward it to the mode handler as the first requirement.
         if entered and pending and handler and hasattr(handler, "handle_message"):
-            # 在 thread_programming_enabled 模式下，_enter_mode_with_acp_model 走的
-            # silent enter_mode 不会真正起 session（只标记 mode_manager），随后 handle_message
-            # 拿不到 session 会走 recovery 分支，但 recovery 在 chat-level 同样起不了 thread session，
-            # 最终只能 reply "Coco 会话启动失败"。这里改为直接重新创建编程话题，复用已经
-            # 验证过的 _dispatch_pending_prompt_to_thread 路径。
-            target_project_id = target_project.project_id if target_project else None
-            session_ok = False
-            try:
-                session_ok = bool(
-                    handler._get_session_manager().get_session(
-                        chat_id,
-                        project_id=target_project_id,
-                        thread_id=get_current_thread_id(),
-                    )
-                )
-            except Exception:
-                logger.debug("session lookup before pending forward failed", exc_info=True)
-
-            if (
-                not session_ok
-                and self.settings.thread_programming_enabled
-                and not get_current_thread_id()
-            ):
-                self._dispatch_pending_prompt_to_thread(
-                    message_id,
-                    chat_id,
-                    pending,
-                    handler,
-                    target_project,
-                )
-                return
-
             try:
                 handler.handle_message(
                     message_id, chat_id, pending, target_project,

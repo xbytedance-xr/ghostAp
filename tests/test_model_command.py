@@ -295,7 +295,7 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
             "msg1", "chat1", project=project, silent=True
         )
 
-    def test_pending_prompt_starts_thread_instead_of_top_level_mode(self):
+    def test_pending_prompt_uses_top_level_programming_mode(self):
         self.handler.settings.thread_programming_enabled = True
         self.handler._stash_pending_prompt("chat1", "coco", "这个项目是干什么的")
 
@@ -308,7 +308,6 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         coco_handler = self.handler.get_handler("coco")
         coco_handler.mode_name = "Coco"
         coco_handler.mode_emoji = "💭"
-        coco_handler.reply_card.return_value = "thread1"
         coco_handler._get_session_manager.return_value.get_session.return_value = MagicMock()
 
         with patch("src.thread.get_current_thread_id", return_value=None):
@@ -316,11 +315,10 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
 
         self.handler.reply_card.assert_not_called()
         coco_handler.enter_mode.assert_called_once_with(
-            "thread1",
+            "msg1",
             "chat1",
-            silent=True,
             project=project,
-            thread_id="thread1",
+            silent=True,
         )
         coco_handler.handle_message.assert_called_once_with(
             "msg1",
@@ -354,12 +352,12 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
             "msg1", "chat1", "目标拉平", project,
         )
 
-    def test_fallthrough_falls_back_to_thread_when_session_missing(self):
-        """fall-through 路径若 thread mode 启用、不在 thread 且 session 没起来，
-        重新走 _dispatch_pending_prompt_to_thread 创建话题（防御性兜底）。
+    def test_pending_prompt_stays_in_top_level_mode_when_session_missing(self):
+        """Pending prompt should stay in the chat-level programming state.
 
-        这覆盖了 _enter_mode_with_acp_model(silent=True) 在 thread 模式下没真正
-        启动 session 的边缘情况，避免 handle_message 输出"会话启动失败"误导消息。
+        handle_message owns session recovery; normal programming should not
+        create a separate Feishu topic unless the user is already inside an
+        engine/topic context.
         """
         self.handler.settings.thread_programming_enabled = True
         self.handler._stash_pending_prompt("chat1", "coco", "目标拉平")
@@ -373,27 +371,12 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         coco_handler = self.handler.get_handler("coco")
         coco_handler.mode_name = "Coco"
         coco_handler.mode_emoji = "💭"
-        coco_handler.reply_card.return_value = "thread_new"
-        # 关键：session 缺失
         coco_handler._get_session_manager.return_value.get_session.return_value = None
 
-        # 模拟 fall-through：上层守卫已被绕过（如已在 thread），但本测试假定守卫未触发
-        # 直接通过 patch 让上层守卫不进 dispatch、fall-through 内自己再判
-        # 简便做法：让 settings 在第一次 if 时假装关闭、第二次 if 时打开
-        # 这里直接 patch 上层守卫的 get_current_thread_id 让它 in-thread 跳过守卫
-        # 然后 fall-through 内重新 patch 让 not get_current_thread_id() 返回 True
-        original_thread_id = ["existing"]
-
-        def _toggling_thread_id():
-            v = original_thread_id[0]
-            original_thread_id[0] = None  # 第二次返回 None 触发 fall-through dispatch
-            return v
-
-        with patch("src.thread.get_current_thread_id", side_effect=_toggling_thread_id):
+        with patch("src.thread.get_current_thread_id", return_value=None):
             self.handler.handle_select_acp_model("msg1", "chat1", "coco", "doubao", project)
 
-        # 应触发 _dispatch_pending_prompt_to_thread 中的 reply_card 创建新话题
-        coco_handler.reply_card.assert_called_once()
-        # 不应直接走原始 fall-through handle_message
-        # 注意：_dispatch_pending_prompt_to_thread 末尾会调 handle_message，所以也会被 mock
-        # 这里只校验 reply_card 被调（创建新话题动作发生）
+        coco_handler.reply_card.assert_not_called()
+        coco_handler.handle_message.assert_called_once_with(
+            "msg1", "chat1", "目标拉平", project,
+        )

@@ -74,6 +74,10 @@ class TestIntentRecognizerLooksLikeShell(unittest.TestCase):
     def test_command_like_token_matches(self):
         self.assertTrue(self.ir.looks_like_shell("mytool --help"))
 
+    def test_local_executable_path_matches(self):
+        self.assertTrue(self.ir.looks_like_shell("./restart.sh rr"))
+        self.assertTrue(self.ir.looks_like_shell("../scripts/deploy rr"))
+
     def test_natural_language_does_not_match(self):
         for text in ("帮我重构这个模块", "请帮我写一个函数", "我想做一个 API"):
             self.assertFalse(self.ir.looks_like_shell(text), text)
