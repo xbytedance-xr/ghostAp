@@ -275,6 +275,27 @@ class WorktreeGitService:
         if (status.stdout or "").strip():
             raise WorktreeGitError("仓库工作区有未提交的修改，请先提交或 stash 后再操作")
 
+    def commit_worktree_changes(self, worktree_path: str, message: str) -> bool:
+        """Commit dirty worktree changes so the branch can be merged."""
+        status = self._run_git(worktree_path, "status", "--porcelain", check=False)
+        if not (status.stdout or "").strip():
+            return False
+        self._run_git(worktree_path, "add", "-A", check=False)
+        diff = self._run_git(worktree_path, "diff", "--cached", "--quiet", check=False)
+        if diff.returncode == 0:
+            return False
+        self._run_git(
+            worktree_path,
+            "-c",
+            "user.name=GhostAP",
+            "-c",
+            "user.email=ghostap@local",
+            "commit",
+            "-m",
+            message,
+        )
+        return True
+
     def merge_branch(
         self,
         repo_root: str,
@@ -289,7 +310,7 @@ class WorktreeGitService:
         self._assert_clean_worktree(repo_root)
         # Ensure we are on base_branch
         self._run_git(repo_root, "checkout", base_branch)
-        result = self._run_git(repo_root, "merge", "--no-ff", "--", branch_name, check=False)
+        result = self._run_git(repo_root, "merge", "--no-ff", "-X", "theirs", "--", branch_name, check=False)
         if result.returncode == 0:
             return True, []
 

@@ -1,6 +1,7 @@
 from src.project import ProjectContext
 from src.thread import get_thread_manager, set_current_thread_id
 from src.worktree_engine.manager import WorktreeManager
+from src.worktree_engine.models import WorktreeUnit
 from src.worktree_engine.session_store import WorktreeSessionKey, WorktreeSessionStore
 
 
@@ -41,3 +42,34 @@ def test_worktree_manager_uses_topic_scoped_state():
         set_current_thread_id(None)
         mgr.remove("thread-a")
         mgr.remove("thread-b")
+
+
+def test_cleanup_resets_topic_scoped_state():
+    mgr = get_thread_manager()
+    mgr.register("thread-clean", "chat1", "p1", mode="worktree")
+    project = ProjectContext("p1", "Project", "/tmp/project")
+    manager = WorktreeManager(project_manager=None)
+    try:
+        set_current_thread_id("thread-clean")
+        state = manager.get_state(project)
+        state.git_root = project.root_path
+        state.base_branch = "main"
+        state.units = [
+            WorktreeUnit(
+                unit_id="u1",
+                branch_name="ghostap/wt/topic/01-unit",
+                worktree_path="/tmp/project/.ghostap-worktrees/wt-01",
+            )
+        ]
+        manager._git.remove_worktree = lambda *args, **kwargs: None
+        manager._git.remove_branch = lambda *args, **kwargs: None
+        manager._git.optimize_storage = lambda *args, **kwargs: None
+
+        cleaned_state, warnings = manager.cleanup_worktrees(project, force=True)
+
+        assert warnings == []
+        assert cleaned_state.units == []
+        assert manager.get_state(project) is cleaned_state
+    finally:
+        set_current_thread_id(None)
+        mgr.remove("thread-clean")

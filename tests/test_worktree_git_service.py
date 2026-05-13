@@ -177,8 +177,8 @@ def test_merge_branch_success(tmp_path):
     assert (repo / "a.txt").exists()
 
 
-def test_merge_branch_conflict_aborts(tmp_path):
-    """Conflicting merge returns (False, conflict_files) and aborts cleanly."""
+def test_merge_branch_conflict_prefers_worktree_branch(tmp_path):
+    """Conflicting merge resolves automatically by preferring the worktree branch."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo(repo)
@@ -192,11 +192,31 @@ def test_merge_branch_conflict_aborts(tmp_path):
     service = WorktreeGitService()
     ok, conflicts = service.merge_branch(str(repo), "feature-b", "main")
 
-    assert ok is False
-    assert "shared.txt" in conflicts
-    # Repo should be clean after abort
+    assert ok is True
+    assert conflicts == []
+    assert (repo / "shared.txt").read_text(encoding="utf-8") == "feature content\n"
+    # Repo should be clean after automatic conflict resolution
     status = _run_git(repo, "status", "--porcelain")
     assert status.stdout.strip() == ""
+
+
+def test_commit_worktree_changes_persists_dirty_output_for_merge(tmp_path):
+    """Dirty WT output is committed before merge so generated code reaches base."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo(repo)
+    _run_git(repo, "checkout", "-b", "feature-dirty")
+    (repo / "generated.txt").write_text("generated\n", encoding="utf-8")
+
+    service = WorktreeGitService()
+    committed = service.commit_worktree_changes(str(repo), "Apply generated output")
+    _run_git(repo, "checkout", "main")
+    ok, conflicts = service.merge_branch(str(repo), "feature-dirty", "main")
+
+    assert committed is True
+    assert ok is True
+    assert conflicts == []
+    assert (repo / "generated.txt").read_text(encoding="utf-8") == "generated\n"
 
 
 def test_remove_worktree(tmp_path):

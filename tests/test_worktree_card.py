@@ -243,6 +243,18 @@ class TestReduceWorktreeCleanup:
         assert ButtonIntent.WORKTREE_CANCEL in action_ids
         assert ButtonIntent.WORKTREE_RETRY_FAILED in action_ids
 
+    def test_cleanup_completed_phase_has_no_buttons(self):
+        """cleanup_phase='completed' is terminal after auto merge and cleanup."""
+        state = _base_state()
+        event = worktree_cleanup(
+            [{"branch": "feat/z", "status": "ready"}],
+            merge_results=[{"branch": "feat/z", "success": True}],
+            cleanup_phase="completed",
+        )
+        new = reduce_worktree(state, event)
+        assert new.blocks[0].kind == "worktree_cleanup"
+        assert new.buttons == ()
+
 
 class TestWorktreeReducerInMainPipeline:
     """Verify worktree events route correctly through main reducer."""

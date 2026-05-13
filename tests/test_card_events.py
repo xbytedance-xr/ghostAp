@@ -230,7 +230,7 @@ class TestWorktreePayloadValidation:
             worktree_cleanup(merge_notes=[{"status": "ok"}])
 
     def test_worktree_cleanup_rejects_invalid_phase(self):
-        with pytest.raises(ValueError, match="cleanup_phase must be 'summary' or 'actions'"):
+        with pytest.raises(ValueError, match="cleanup_phase must be 'summary', 'actions', or 'completed'"):
             worktree_cleanup(
                 merge_notes=[{"branch": "b", "status": "ok"}],
                 cleanup_phase="invalid",

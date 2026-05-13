@@ -191,7 +191,9 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 r.get("success") is False for r in (merge_results or [])
             )
 
-            if cleanup_phase == "summary":
+            if cleanup_phase == "completed":
+                buttons_list = []
+            elif cleanup_phase == "summary":
                 buttons_list = [
                     ButtonSpec(
                         text=UI_TEXT["wt_btn_merge"],

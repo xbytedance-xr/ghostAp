@@ -128,13 +128,14 @@ def worktree_cleanup(
         merge_results: results from merge attempts (if any).
         project_id: associated project identifier.
         units: work unit data for retry context.
-        cleanup_phase: "summary" (default, shows merge only) or "actions" (full controls).
+        cleanup_phase: "summary" (default, shows merge only), "actions" (full controls),
+            or "completed" (auto-merged and cleaned).
     Triggered when: execution completes and merge/cleanup options are shown.
     """
     if not isinstance(merge_notes, list):
         raise TypeError(f"merge_notes must be a list, got {type(merge_notes).__name__}")
-    if cleanup_phase not in ("summary", "actions"):
-        raise ValueError(f"cleanup_phase must be 'summary' or 'actions', got {cleanup_phase!r}")
+    if cleanup_phase not in ("summary", "actions", "completed"):
+        raise ValueError(f"cleanup_phase must be 'summary', 'actions', or 'completed', got {cleanup_phase!r}")
     if VALIDATE_PAYLOAD:
         for mn in merge_notes:
             if "branch" not in mn or "status" not in mn:

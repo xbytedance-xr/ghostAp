@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-13
+- **WT 自动合并清理与冲突自动处理原则落地** — WT 成功执行后不再把 merge/cleanup 作为必须人工点击的后续步骤：执行完成会自动提交 worktree 脏变更、合并回 base、成功后清理 worktree 目录和本地分支，并重置 topic-scoped WT state。合并冲突默认用 `git merge -X theirs` 优先采用 WT 分支产物，卡片合并结果披露“冲突时优先采用 Worktree 分支变更”的影响；未完成单元或自动合并失败时保留现场并提示用户发起额外修复。AGENTS.md 已补充该项目原则；全量 `6422 passed` → [详细记录](2026-05-13.md)
 - **Topic-scoped engine sessions 完整落地** — Deep/Spec/WT 续聊统一收敛到飞书 `thread_root_id/root_id`：命中话题才继承 engine mode，移除按 chat 找最近编程话题的隐式 fallback，同一话题阻止切换到不同 engine。WT 强制创建/绑定话题上下文，状态迁入 topic-scoped `WorktreeSessionStore`，同项目不同话题可拥有独立 WT 单任务；`/wt <目标>` 选完工具模型后自动执行，空 `/wt` 选完后等待同话题第一条普通消息作为目标，确认卡不再提供单独“开始执行”按钮。WT 分支/worktree/unit 命名携带 topic session slug，执行后记录轻量多角色 review plan/outcome；全量 `6418 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-13.md)
 ## 2026-05-12
 - **Topic-scoped engine sessions 设计与计划** — 收敛 WT 产品方向：WT 保持单任务，不做全局任务拆分/调度；同项目多 WT 并发来自飞书话题，每个话题一个独立 WT session。设计文档 `docs/superpowers/specs/2026-05-12-topic-scoped-engine-sessions-design.md` 定义严格 `thread_root_id/root_id` 续聊、单话题单 engine、WT 强制话题模式；`/wt <需求目标>` 与空 `/wt` 都先进入工具/模型选择，带目标在选择完成后自动启动，不带目标则选择完成后等待同话题第一条普通消息作为目标，不再保留独立“开始执行”按钮。实现计划见 `docs/superpowers/plans/2026-05-12-topic-scoped-engine-sessions.md`；WT 状态从 `ProjectContext.worktree_state` 迁出到 topic-scoped store，merge 项目级串行，overlap 首版只提示不阻塞，WT review 复用 Spec 多角色评估思想但通过轻量适配器接入 → [详细记录](2026-05-12.md)

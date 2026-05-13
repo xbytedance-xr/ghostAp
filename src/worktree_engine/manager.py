@@ -448,20 +448,62 @@ class WorktreeManager:
 
         merge_results: list[dict] = []
         for unit in state.units:
-            if unit.status != WorktreeUnitStatus.COMPLETED or not unit.has_changes:
+            if unit.status != WorktreeUnitStatus.COMPLETED:
                 merge_results.append(
-                    {"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": "跳过（未完成或无变更）"}
+                    {
+                        "display_name": unit.display_name,
+                        "branch": unit.branch_name,
+                        "branch_name": unit.branch_name,
+                        "success": False,
+                        "detail": "跳过（单元未完成，需额外修复）",
+                    }
+                )
+                continue
+            if not unit.has_changes:
+                merge_results.append(
+                    {
+                        "display_name": unit.display_name,
+                        "branch": unit.branch_name,
+                        "branch_name": unit.branch_name,
+                        "success": True,
+                        "skipped": True,
+                        "detail": "跳过（无代码变更）",
+                    }
                 )
                 continue
             try:
+                if unit.worktree_path:
+                    self._git.commit_worktree_changes(
+                        unit.worktree_path,
+                        f"Apply worktree unit {unit.unit_id}",
+                    )
                 ok, conflicts = self._git.merge_branch(state.git_root, unit.branch_name, state.base_branch)
                 if ok:
-                    merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": True, "detail": "合并成功"})
+                    merge_results.append({
+                        "display_name": unit.display_name,
+                        "branch": unit.branch_name,
+                        "branch_name": unit.branch_name,
+                        "success": True,
+                        "conflict_policy": "worktree_branch_wins",
+                        "detail": "合并成功；如有同文件冲突，已自动优先采用 Worktree 分支变更",
+                    })
                 else:
-                    merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": f"冲突文件: {', '.join(conflicts)}"})
+                    merge_results.append({
+                        "display_name": unit.display_name,
+                        "branch": unit.branch_name,
+                        "branch_name": unit.branch_name,
+                        "success": False,
+                        "detail": f"自动冲突处理未完成，保留现场；冲突文件: {', '.join(conflicts)}",
+                    })
             except Exception as exc:
                 from ..utils.errors import get_error_detail
-                merge_results.append({"display_name": unit.display_name, "branch_name": unit.branch_name, "success": False, "detail": get_error_detail(exc)})
+                merge_results.append({
+                    "display_name": unit.display_name,
+                    "branch": unit.branch_name,
+                    "branch_name": unit.branch_name,
+                    "success": False,
+                    "detail": get_error_detail(exc),
+                })
 
         state.last_error = ""
         state.merge_entry_ready = False
@@ -507,8 +549,7 @@ class WorktreeManager:
                 self._git.optimize_storage(repo_root)
             except Exception:
                 logger.warning("optimize_storage failed", exc_info=True)
-            project.worktree_state = WorktreeRuntimeState()
-            return self.get_state(project), []
+            return self.reset_state(project), []
         return self._reporter.refresh_state(state), warnings
 
     # ------------------------------------------------------------------

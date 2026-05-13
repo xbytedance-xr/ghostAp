@@ -228,7 +228,7 @@ class WorktreeCleanupPayload(TypedDict):
     merge_results: NotRequired[list[dict] | None]
     project_id: str
     units: NotRequired[list[dict] | None]
-    cleanup_phase: Literal["summary", "actions"]
+    cleanup_phase: Literal["summary", "actions", "completed"]
     thread_root_id: NotRequired[str]
 
 

@@ -544,8 +544,61 @@ def test_silent_mode_throttle_interval():
     cb = captured_callback[0]
     cb(state.units[0])  # first call — should NOT update (just set time)
     cb(state.units[0])  # second call within <30s — should be throttled
-    # Only final result card patched (from main flow), not from rapid callbacks
-    # The rapid callbacks should not cause additional dispatch calls beyond throttle
+    # Only final result card patched (from main flow), not from rapid callbacks.
+    # The rapid callbacks should not cause additional dispatch calls beyond throttle.
+
+
+def test_handle_worktree_execute_auto_merges_and_cleans_after_success():
+    """Successful WT execution auto-merges and auto-cleans without a manual merge step."""
+    handler = _make_system_handler()
+    project = _make_project("p-auto-merge")
+    handler.ctx.project_manager.get_active_project.return_value = project
+
+    mgr = handler._worktree_manager()
+    state = mgr.get_state(project)
+    state.base_branch = "main"
+    state.git_root = project.root_path
+    state.units = [
+        WorktreeUnit(
+            unit_id="u1",
+            branch_name="ghostap/wt/topic/01-unit",
+            status="ready",
+            has_changes=True,
+        )
+    ]
+
+    mock_session = MagicMock()
+    mock_session.closed = False
+    merge_results = [{
+        "branch": "ghostap/wt/topic/01-unit",
+        "success": True,
+        "detail": "合并成功；如有同文件冲突，已自动优先采用 Worktree 分支变更",
+    }]
+
+    def fake_execute(proj, goal, on_unit_update=None, **kw):
+        state.units[0].status = "completed"
+        state.merge_entry_ready = True
+        state.merge_notes = [{"branch": state.units[0].branch_name, "status": "ready", "summary": "ready"}]
+        state.last_error = ""
+        return state
+
+    with patch.object(mgr, "execute_goal", side_effect=fake_execute), \
+         patch.object(mgr, "merge_to_base", return_value=(state, merge_results)) as merge_mock, \
+         patch.object(mgr, "cleanup_worktrees", return_value=(WorktreeRuntimeState(), [])) as cleanup_mock, \
+         patch.object(handler, "_get_or_create_session", return_value=mock_session), \
+         patch.object(handler, "_close_session") as close_mock:
+        handler.handle_worktree_execute("msg-auto", "chat-auto", "实现功能", project=project)
+
+    merge_mock.assert_called_once_with(project)
+    cleanup_mock.assert_called_once_with(project, force=True)
+    close_mock.assert_called_once_with(project.project_id)
+    cleanup_events = [
+        c.args[0] for c in mock_session.dispatch.call_args_list
+        if getattr(c.args[0].type, "value", c.args[0].type) == "worktree_cleanup"
+    ]
+    assert cleanup_events
+    assert cleanup_events[-1].payload["cleanup_phase"] == "completed"
+    assert "Worktree 分支变更" in cleanup_events[-1].payload["merge_results"][0]["detail"]
 
 
 # ---------------------------------------------------------------------------

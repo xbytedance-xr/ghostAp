@@ -792,6 +792,8 @@ def _render_worktree_cleanup(data: dict) -> dict:
             branch = result.get("branch", "")
             success = result.get("success", False)
             icon = "✅" if success else "❌"
-            lines.append(f"{icon} `{branch}`")
+            detail = str(result.get("detail") or "").strip()
+            suffix = f" — {detail}" if detail else ""
+            lines.append(f"{icon} `{branch}`{suffix}")
 
     return {"tag": "markdown", "content": "\n".join(lines)}

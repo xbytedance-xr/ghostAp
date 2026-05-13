@@ -615,6 +615,10 @@ class WorktreeHandler(BaseHandler):
 
         self.handle_worktree_execute(message_id, chat_id, goal, project=project, silent_mode=True)
 
+    @staticmethod
+    def _merge_results_allow_cleanup(merge_results: list[dict]) -> bool:
+        return bool(merge_results) and all(bool(result.get("success")) for result in merge_results)
+
     def handle_worktree_confirm_start(
         self,
         message_id: str,
@@ -714,10 +718,24 @@ class WorktreeHandler(BaseHandler):
         root_path = getattr(project, "root_path", None)
 
         def _locked_body():
-            return mgr.execute_goal(project, goal, on_unit_update=_on_unit_update)
+            state = mgr.execute_goal(project, goal, on_unit_update=_on_unit_update)
+            final_units = [u.to_dict() for u in state.units]
+            merge_notes = list(state.merge_notes)
+            base_branch = state.base_branch or "main"
+            merge_results: list[dict] = []
+            cleanup_warnings = []
+            cleaned = False
+
+            if not state.last_error and state.merge_entry_ready:
+                state, merge_results = mgr.merge_to_base(project)
+                if self._merge_results_allow_cleanup(merge_results):
+                    state, cleanup_warnings = mgr.cleanup_worktrees(project, force=True)
+                    cleaned = not cleanup_warnings
+
+            return state, final_units, merge_notes, base_branch, merge_results, cleanup_warnings, cleaned
 
         try:
-            state = self._with_repo_lock(root_path, chat_id, _locked_body)
+            state, final_dicts, merge_notes, base_branch, merge_results, cleanup_warnings, cleaned = self._with_repo_lock(root_path, chat_id, _locked_body)
         except LockConflictError as e:
             # Rich lock-conflict display with context info
             error_detail = get_error_detail(e)
@@ -729,13 +747,28 @@ class WorktreeHandler(BaseHandler):
             session.dispatch(CardEvent.failed(error=state.last_error))
             return
 
-        final_dicts = [u.to_dict() for u in state.units]
-        if state.merge_entry_ready:
+        if merge_results:
+            cleanup_phase = "completed" if cleaned else "actions"
             session.dispatch(worktree_cleanup(
-                state.merge_notes, base_branch=state.base_branch or "main",
+                merge_notes, base_branch=base_branch,
+                merge_results=merge_results,
                 project_id=pid, units=final_dicts,
+                cleanup_phase=cleanup_phase,
                 thread_root_id=thread_root_id,
             ))
+            if cleanup_warnings:
+                details = "\n".join(
+                    f"- {'未提交变更' if w.has_uncommitted else ''}"
+                    f"{'、' if w.has_uncommitted and w.has_unmerged else ''}"
+                    f"{'未合并分支 ' + w.unmerged_branch if w.has_unmerged else ''}"
+                    for w in cleanup_warnings
+                )
+                self.reply_text(
+                    message_id,
+                    UI_TEXT["system_worktree_cleanup_warnings"].format(details=details),
+                )
+            elif cleaned:
+                self._close_session(pid)
         else:
             session.dispatch(worktree_completed_no_change(
                 final_dicts, project_id=pid,
@@ -779,17 +812,42 @@ class WorktreeHandler(BaseHandler):
             self.reply_error(message_id, state.last_error)
             return
 
+        merge_notes = list(state.merge_notes)
+        base_branch = state.base_branch or "main"
+        cleanup_warnings = []
+        cleaned = False
+        if self._merge_results_allow_cleanup(merge_results):
+            def _locked_cleanup():
+                return mgr.cleanup_worktrees(project, force=True)
+            try:
+                state, cleanup_warnings = self._with_repo_lock(root_path, chat_id, _locked_cleanup)
+                cleaned = not cleanup_warnings
+            except LockConflictError as e:
+                self.send_lock_conflict_card(e, message_id, "")
+                return
+
         # Use CardSession for cleanup card
         session = self._get_or_create_session(chat_id, pid)
         session.dispatch(worktree_cleanup(
-            state.merge_notes, base_branch=state.base_branch or "main",
+            merge_notes, base_branch=base_branch,
             merge_results=[r if isinstance(r, dict) else {"branch": str(r), "success": True} for r in (merge_results or [])],
             project_id=pid,
-            cleanup_phase="actions",
+            cleanup_phase="completed" if cleaned else "actions",
             thread_root_id=thread_root_id,
         ))
-        # Merge succeeded — close session
-        self._close_session(pid)
+        if cleanup_warnings:
+            details = "\n".join(
+                f"- {'未提交变更' if w.has_uncommitted else ''}"
+                f"{'、' if w.has_uncommitted and w.has_unmerged else ''}"
+                f"{'未合并分支 ' + w.unmerged_branch if w.has_unmerged else ''}"
+                for w in cleanup_warnings
+            )
+            self.reply_text(
+                message_id,
+                UI_TEXT["system_worktree_cleanup_warnings"].format(details=details),
+            )
+        elif cleaned:
+            self._close_session(pid)
 
     def handle_show_worktree_merge_entry(
         self,
