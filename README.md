@@ -215,7 +215,7 @@ ACP_PERMISSION_AUTO_APPROVE=true      # 自动批准 Agent 操作
 ACP_STREAM_BUFFER_LIMIT=10485760      # stdio 缓冲区（默认 10MB）
 
 # Spec 引擎
-SPEC_MAX_CYCLES=10                     # 最大循环次数
+SPEC_MAX_CYCLES=1000                   # 最大循环次数
 SPEC_CONVERGENCE_WINDOW=2              # 收敛窗口（连续 N 轮无有效改进则终止）
 SPEC_REVIEW_ENABLED=true               # 启用多视角审查（架构师/产品/用户/测试）
 SPEC_EXECUTION_TIMEOUT=7200            # 单次 Spec 执行超时（秒）

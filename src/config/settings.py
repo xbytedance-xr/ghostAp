@@ -236,7 +236,7 @@ class Settings(BaseSettings):
     ttadk_pty_retry_cooldown_s: float = 60.0
 
     # Spec Engine settings
-    spec_max_cycles: int = 500
+    spec_max_cycles: int = 1000
     # Hard upper bound for long-range spec cycles (configurable via env).
     # Engine will clamp spec_max_cycles to this limit.
     spec_max_cycles_limit: int = 5000

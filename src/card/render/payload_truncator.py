@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from src.card.engine_meta import engine_type_to_cmd
@@ -15,6 +16,13 @@ from src.card.ui_text import UI_TEXT
 from src.utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)
+
+FEISHU_CARD_TABLE_LIMIT = 5
+_TABLE_WARNING_CONTENT = (
+    "⚠️ 表格数量超过飞书卡片限制，已将 Markdown 表格按代码块展示，避免卡片发送失败。"
+)
+_FENCE_PREFIXES = ("```", "~~~")
+_TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 
 
 def count_tagged_nodes(obj: Any) -> int:
@@ -29,6 +37,149 @@ def count_tagged_nodes(obj: Any) -> int:
         for item in obj:
             count += count_tagged_nodes(item)
     return count
+
+
+def count_markdown_table_blocks(text: str) -> int:
+    """Count markdown pipe-table blocks outside fenced code blocks."""
+    return _rewrite_markdown_tables_as_code(text, rewrite=False)[1]
+
+
+def _count_explicit_table_nodes(obj: Any) -> int:
+    if isinstance(obj, dict):
+        count = 1 if obj.get("tag") == "table" else 0
+        return count + sum(_count_explicit_table_nodes(v) for v in obj.values())
+    if isinstance(obj, list):
+        return sum(_count_explicit_table_nodes(item) for item in obj)
+    return 0
+
+
+def _count_markdown_tables_in_payload(obj: Any) -> int:
+    if isinstance(obj, dict):
+        count = 0
+        if obj.get("tag") == "markdown" and isinstance(obj.get("content"), str):
+            count += count_markdown_table_blocks(obj["content"])
+        return count + sum(_count_markdown_tables_in_payload(v) for v in obj.values())
+    if isinstance(obj, list):
+        return sum(_count_markdown_tables_in_payload(item) for item in obj)
+    return 0
+
+
+def _guard_feishu_table_limit(card: dict) -> tuple[dict, bool]:
+    """Neutralize markdown tables when Feishu would reject the card.
+
+    Feishu reports markdown-table overflows as card table component overflows even
+    when the JSON has no explicit ``tag=table`` node.
+    """
+    table_count = (
+        _count_explicit_table_nodes(card)
+        + _count_markdown_tables_in_payload(card)
+    )
+    if table_count <= FEISHU_CARD_TABLE_LIMIT:
+        return card, False
+
+    guarded = json.loads(json.dumps(card))
+    changed = _rewrite_markdown_tables_in_payload(guarded)
+    if changed:
+        _append_table_limit_warning(guarded)
+        logger.warning(
+            "Feishu card markdown table count %d exceeds limit %d; "
+            "converted markdown tables to code blocks",
+            table_count,
+            FEISHU_CARD_TABLE_LIMIT,
+        )
+    return guarded, changed
+
+
+def _rewrite_markdown_tables_in_payload(obj: Any) -> bool:
+    changed = False
+    if isinstance(obj, dict):
+        if obj.get("tag") == "markdown" and isinstance(obj.get("content"), str):
+            rewritten, count = _rewrite_markdown_tables_as_code(
+                obj["content"],
+                rewrite=True,
+            )
+            if count:
+                obj["content"] = rewritten
+                changed = True
+        for value in obj.values():
+            changed = _rewrite_markdown_tables_in_payload(value) or changed
+    elif isinstance(obj, list):
+        for item in obj:
+            changed = _rewrite_markdown_tables_in_payload(item) or changed
+    return changed
+
+
+def _append_table_limit_warning(card: dict) -> None:
+    warning = {
+        "tag": "markdown",
+        "content": _TABLE_WARNING_CONTENT,
+        "text_size": "notation",
+    }
+    body = card.get("body")
+    if isinstance(body, dict) and isinstance(body.get("elements"), list):
+        body["elements"].append(warning)
+        return
+    if isinstance(card.get("elements"), list):
+        card["elements"].append(warning)
+
+
+def _rewrite_markdown_tables_as_code(text: str, *, rewrite: bool) -> tuple[str, int]:
+    lines = str(text or "").splitlines()
+    if not lines:
+        return text, 0
+
+    out: list[str] = []
+    table_count = 0
+    in_fence = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+        if stripped.startswith(_FENCE_PREFIXES):
+            in_fence = not in_fence
+            out.append(line)
+            i += 1
+            continue
+
+        if (
+            not in_fence
+            and i + 1 < len(lines)
+            and _looks_like_table_row(line)
+            and _is_table_separator_line(lines[i + 1])
+        ):
+            end = i + 2
+            while end < len(lines) and _looks_like_table_row(lines[end]):
+                end += 1
+            table_lines = lines[i:end]
+            table_count += 1
+            if rewrite:
+                out.extend(("```text", *table_lines, "```"))
+            else:
+                out.extend(table_lines)
+            i = end
+            continue
+
+        out.append(line)
+        i += 1
+
+    if not rewrite or table_count == 0:
+        return text, table_count
+    return "\n".join(out), table_count
+
+
+def _looks_like_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return bool(stripped) and "|" in stripped
+
+
+def _is_table_separator_line(line: str) -> bool:
+    stripped = line.strip().strip("|")
+    if "|" not in line or not stripped:
+        return False
+    cells = [cell.strip().replace(" ", "") for cell in stripped.split("|")]
+    non_empty = [cell for cell in cells if cell]
+    return bool(non_empty) and all(_TABLE_SEPARATOR_RE.match(cell) for cell in non_empty)
 
 
 def check_and_truncate_payload(
@@ -46,6 +197,9 @@ def check_and_truncate_payload(
         # Still check node count even if byte size is OK
         try:
             card_check = json.loads(card_content)
+            table_guarded_card, table_guarded = _guard_feishu_table_limit(card_check)
+            if table_guarded:
+                return json.dumps(table_guarded_card, ensure_ascii=False)
             node_budget = THRESHOLDS["CARD_NODE_BUDGET"]
             if count_tagged_nodes(card_check) > node_budget:
                 logger.warning(
@@ -69,6 +223,14 @@ def check_and_truncate_payload(
 
     try:
         card = json.loads(card_content)
+        card, table_guarded = _guard_feishu_table_limit(card)
+        if table_guarded:
+            card_content = json.dumps(card, ensure_ascii=False)
+            if (
+                len(card_content.encode("utf-8")) <= max_size
+                and count_tagged_nodes(card) <= THRESHOLDS["CARD_NODE_BUDGET"]
+            ):
+                return card_content
 
         # Helper to recursively truncate strings in the dict
         def truncate_recursive(obj: Any, depth: int = 0) -> Any:

@@ -2457,7 +2457,7 @@ class TestConfigSpec:
         from src.config import Settings
 
         s = Settings(app_id="", app_secret="", _env_file=None)
-        assert s.spec_max_cycles == 500
+        assert s.spec_max_cycles == 1000
         assert s.spec_max_cycles_limit >= 5000
         assert s.spec_execution_timeout == 7200
         assert s.spec_convergence_window == 2

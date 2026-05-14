@@ -9,7 +9,11 @@ import json
 
 import pytest
 
-from src.card.render.payload_truncator import check_and_truncate_payload, count_tagged_nodes
+from src.card.render.payload_truncator import (
+    check_and_truncate_payload,
+    count_markdown_table_blocks,
+    count_tagged_nodes,
+)
 
 
 def _collect_tags(obj):
@@ -42,6 +46,61 @@ class TestCountTaggedNodes:
     def test_list_of_tagged(self):
         obj = [{"tag": "a"}, {"tag": "b"}, {"no_tag": "c"}]
         assert count_tagged_nodes(obj) == 2
+
+
+class TestMarkdownTableGuard:
+    """Tests for Feishu markdown table limit guard."""
+
+    def test_count_markdown_table_blocks_ignores_code_fences(self):
+        text = (
+            "| A | B |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n\n"
+            "```text\n"
+            "| C | D |\n"
+            "|---|---|\n"
+            "| 3 | 4 |\n"
+            "```\n"
+        )
+
+        assert count_markdown_table_blocks(text) == 1
+
+    def test_markdown_tables_over_feishu_limit_are_neutralized(self):
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        card = {
+            "schema": "2.0",
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": "\n\n".join([table] * 6)}
+                ]
+            },
+        }
+        content = json.dumps(card, ensure_ascii=False)
+
+        result = check_and_truncate_payload(content, max_size=1_000_000)
+        parsed = json.loads(result)
+        markdown = parsed["body"]["elements"][0]["content"]
+
+        assert result != content
+        assert count_markdown_table_blocks(markdown) == 0
+        assert markdown.count("```text") == 6
+        assert "表格数量超过飞书卡片限制" in result
+
+    def test_markdown_tables_at_feishu_limit_are_preserved(self):
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+        card = {
+            "schema": "2.0",
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": "\n\n".join([table] * 5)}
+                ]
+            },
+        }
+        content = json.dumps(card, ensure_ascii=False)
+
+        result = check_and_truncate_payload(content, max_size=1_000_000)
+
+        assert result == content
 
 
 class TestCheckAndTruncatePayload:

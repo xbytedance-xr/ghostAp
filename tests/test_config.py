@@ -207,3 +207,7 @@ class TestNewConfigDefaults:
     def test_spec_review_max_parallel_default(self):
         s = Settings()
         assert s.spec_review_max_parallel == 3
+
+    def test_spec_max_cycles_default(self):
+        s = Settings()
+        assert s.spec_max_cycles == 1000

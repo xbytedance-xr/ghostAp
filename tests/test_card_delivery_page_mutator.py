@@ -201,7 +201,8 @@ class TestUpdatePage:
             calls.append({"card_id": card_id, "card_json": card_json, "sequence": sequence})
             if len(calls) == 1:
                 raise TransportError(
-                    "Patch failed: code=230099, msg=ErrCode: 200621 content parse failed",
+                    "Patch failed: code=230099, msg=ErrCode: 200621; "
+                    "ErrMsg: content parse failed",
                     code=230099,
                 )
 
@@ -217,6 +218,40 @@ class TestUpdatePage:
         assert binding.pages[0].signature == "new_sig"
         assert len(calls) == 2
         assert calls[1]["card_json"]["header"]["title"]["content"] == "⚠️ 卡片渲染失败"
+        assert calls[1]["card_json"]["body"]["elements"][0]["content"].endswith(
+            "原因：code=230099；content parse failed"
+        )
+
+    def test_update_page_content_invalid_fallback_shows_table_limit_reason(self):
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "old_sig", "old_text")
+        page = bindings.get("sess_1").pages[0]
+
+        calls = []
+
+        def update_card(card_id, card_json, *, sequence=0):
+            calls.append({"card_id": card_id, "card_json": card_json, "sequence": sequence})
+            if len(calls) == 1:
+                raise TransportError(
+                    "Patch failed: code=230099, msg=Failed to create card content, "
+                    "ext=ErrCode: 11310; ErrMsg: card table number over limit; "
+                    "ErrorValue: table; ",
+                    code=230099,
+                )
+
+        client.update_card = update_card
+        card = _make_card(signature="new_sig")
+        outcome = mutator.update_page("sess_1", page, card)
+
+        assert outcome.kind == "applied"
+        assert "原因：code=230099；card table number over limit" in (
+            calls[1]["card_json"]["body"]["elements"][0]["content"]
+        )
 
     def test_update_page_content_invalid_suppresses_repeated_bad_signature_when_fallback_fails(self):
         client = MockClient()

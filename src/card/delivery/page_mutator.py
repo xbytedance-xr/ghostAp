@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 
 from src.card.delivery.binding import BindingStore, PageBinding
@@ -15,6 +16,7 @@ from src.card.types import RenderedCard
 logger = logging.getLogger(__name__)
 
 _PAGE_CREATE_NAMESPACE = uuid.UUID("4388eebc-b0bc-5d6a-9c65-6ac058db0324")
+_ERRMSG_RE = re.compile(r"ErrMsg:\s*([^;]+)")
 
 
 def _guard_payload(card_payload: dict) -> dict:
@@ -47,6 +49,16 @@ def _fallback_invalid_card(reason: str) -> dict:
             ]
         },
     }
+
+
+def _format_invalid_card_reason(error: TransportError) -> str:
+    parts: list[str] = []
+    if error.code:
+        parts.append(f"code={error.code}")
+    match = _ERRMSG_RE.search(str(error))
+    if match:
+        parts.append(match.group(1).strip())
+    return "；".join(parts) or "card_content_invalid"
 
 
 def _page_create_idempotency_key(session_id: str, page_index: int) -> str:
@@ -204,7 +216,7 @@ class PageMutator:
         )
         try:
             seq = self._sequences.next_sequence(page.card_id)
-            reason = f"code={error.code}" if error.code else "card_content_invalid"
+            reason = _format_invalid_card_reason(error)
             self._client.update_card(page.card_id, _fallback_invalid_card(reason), sequence=seq)
             self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
             self._bindings.update_text(session_id, page.page_index, "card_content_invalid")
