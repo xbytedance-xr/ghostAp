@@ -273,7 +273,12 @@ def _render_worktree_tool_select(data: dict) -> dict:
         # 模型列表来自真实 ACP/TTADK 环境，常见 25+ 项。每个模型一整行会把
         # Schema 2.0 元素数推到 Feishu 200 上限附近，导致 patch 被 230099 拒收。
         # 模型阶段改用双列按钮网格：按钮本身就是选择目标，value 仍携带真实 model_id。
-        elements.extend(_render_worktree_model_option_grid(tools, project_id=project_id, thread_root_id=thread_root_id))
+        elements.extend(_render_worktree_model_option_grid(
+            tools,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+            select_action=default_action,
+        ))
     else:
         if auto_action:
             auto_text = str(data.get("auto_text") or UI_TEXT.get("spec_review_auto_btn", "Auto"))
@@ -489,7 +494,13 @@ def _is_model_select_action(action: str) -> bool:
     return normalized == WORKTREE_SELECT_MODEL or normalized.endswith("_select_model")
 
 
-def _render_worktree_model_option_grid(tools: list, *, project_id: str, thread_root_id: str = "") -> list[dict]:
+def _render_worktree_model_option_grid(
+    tools: list,
+    *,
+    project_id: str,
+    thread_root_id: str = "",
+    select_action: str = WORKTREE_SELECT_MODEL,
+) -> list[dict]:
     """Render model choices as compact callback buttons.
 
     The Worktree model card can list dozens of models. A two-column grid keeps
@@ -515,8 +526,9 @@ def _render_worktree_model_option_grid(tools: list, *, project_id: str, thread_r
         model_id, name, _ = _tool_identity(tool)
         if not model_id:
             continue
+        action = str(select_action or WORKTREE_SELECT_MODEL)
         value = {
-            "action": WORKTREE_SELECT_MODEL,
+            "action": action,
             "model_name": model_id,
             "model_display_name": name,
             "project_id": project_id,
@@ -559,7 +571,7 @@ def _render_worktree_select_option(
 
     if _is_model_select_action(action):
         value = {
-            "action": WORKTREE_SELECT_MODEL,
+            "action": action,
             "model_name": tool_id,
             "model_display_name": name,
             "project_id": project_id,

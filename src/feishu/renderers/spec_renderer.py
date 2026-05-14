@@ -42,6 +42,7 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
     def __init__(self, handler: "SpecHandler") -> None:
         super().__init__(handler)
         self._current_session: "Dispatchable | None" = None
+        self._selection_sessions: dict[tuple[str, str, str], "CardSession"] = {}
         self._last_cycle: int | None = None
         self._last_perspective: str | None = None
         self._pending_split_hint: str | None = None
@@ -50,6 +51,12 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         self, chat_id: str, project_id: str, *, reply_to: str | None = None
     ) -> "CardSession":
         """Create a lightweight Spec card session for pre-run selection UI."""
+        selection_key = (chat_id, project_id, reply_to or "")
+        existing = self._selection_sessions.get(selection_key)
+        if existing is not None and not getattr(existing, "closed", False):
+            self._current_session = existing
+            return existing
+
         metadata = CardMetadata(
             engine_type="spec",
             mode_name="Spec Review",
@@ -65,6 +72,7 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
             budget=RenderBudget(engine_cmd="/spec"),
             notify_callback=self.handler.send_text_to_chat,
         )
+        self._selection_sessions[selection_key] = session
         self._current_session = session
         return session
 

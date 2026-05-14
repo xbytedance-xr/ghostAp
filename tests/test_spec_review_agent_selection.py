@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.card.actions.dispatch import (
+    SPEC_REVIEW_FINISH_SELECTION,
+    SPEC_REVIEW_SELECT_MODEL,
     SPEC_REVIEW_SELECT_TOOL,
     SPEC_REVIEW_USE_AUTO,
 )
@@ -141,6 +143,22 @@ def _collect_markdown_content(node) -> list[str]:
     return []
 
 
+def _collect_buttons(node) -> list[dict]:
+    if isinstance(node, dict):
+        buttons = []
+        if node.get("tag") == "button":
+            buttons.append(node)
+        for value in node.values():
+            buttons.extend(_collect_buttons(value))
+        return buttons
+    if isinstance(node, list):
+        buttons = []
+        for item in node:
+            buttons.extend(_collect_buttons(item))
+        return buttons
+    return []
+
+
 def test_spec_start_shows_review_agent_selection_before_submitting_task():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-spec", project_name="Spec", root_path="/tmp/spec")
@@ -200,6 +218,50 @@ def test_spec_review_selection_card_does_not_render_worktree_journey_copy():
     assert "Worktree" not in text
     assert "等待目标" not in text
     assert "Spec Review" in text
+
+
+def test_spec_review_model_grid_keeps_spec_review_actions():
+    event = CardEventType.WORKTREE_TOOL_SELECT
+    state = CardState(metadata=CardMetadata(engine_type="spec", mode_name="Spec Review"))
+    state = reduce_card_state(state, SimpleNamespace(
+        type=event,
+        payload={
+            "tools": [
+                {"id": "gpt-5.5", "name": "gpt-5.5"},
+                {"id": "gpt-5.4", "name": "gpt-5.4"},
+            ],
+            "selected": [{"selection_key": "acp:coco:m1", "display_label": "Coco / m1"}],
+            "project_id": "p-spec",
+            "thread_root_id": "root-spec-msg",
+            "select_action": SPEC_REVIEW_SELECT_MODEL,
+            "finish_action": SPEC_REVIEW_FINISH_SELECTION,
+            "pending_tool": "Codex",
+            "show_stepper": False,
+            "mode_label": "Spec Review",
+        },
+    ))
+    rendered = render_card(state, RenderBudget(engine_cmd="/spec"))[0].to_feishu_json()
+    buttons = _collect_buttons(rendered)
+    actions = [button["value"].get("action") for button in buttons]
+
+    assert SPEC_REVIEW_SELECT_MODEL in actions
+    assert "worktree_select_model" not in actions
+    model_buttons = [button for button in buttons if button["value"].get("model_name") == "gpt-5.5"]
+    assert model_buttons[0]["value"]["thread_root_id"] == "root-spec-msg"
+
+
+def test_spec_review_selection_session_reuses_same_topic_card():
+    handler = _make_spec_handler()
+    first_session = MagicMock()
+    first_session.closed = False
+
+    with patch.object(handler.renderer, "create_session", return_value=first_session) as create_session:
+        session_a = handler.renderer.get_or_create_session("chat-spec", "p-spec", reply_to="root-spec-msg")
+        session_b = handler.renderer.get_or_create_session("chat-spec", "p-spec", reply_to="root-spec-msg")
+
+    assert session_a is first_session
+    assert session_b is first_session
+    create_session.assert_called_once()
 
 
 def test_spec_review_auto_starts_with_empty_review_agent_pool():
