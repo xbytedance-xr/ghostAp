@@ -105,6 +105,12 @@ async def _read_stream_snippet(stream: object, *, max_bytes: int = 8192, timeout
         return ""
 
 
+async def _drain_loop_callbacks(rounds: int = 3) -> None:
+    """Let subprocess pipe close callbacks run before the owning loop is closed."""
+    for _ in range(max(1, int(rounds or 1))):
+        await asyncio.sleep(0)
+
+
 class ACPSession:
     """Single ACP session — manages one agent process's full lifecycle.
 
@@ -374,6 +380,7 @@ class ACPSession:
             self._ctx_manager = None
             self._conn = None
             self._proc = None
+            await _drain_loop_callbacks()
         logger.info("[ACP:%s] Session closed: %s", self._agent_cmd, (self._session_id or "none")[:8])
 
     def _dispatch_event(self, event: ACPEvent) -> None:

@@ -12,6 +12,8 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, ClassVar, Literal, TypeAlias, TypedDict, Union, get_args
 
+from .runtime_stats import RuntimeStats
+
 if TYPE_CHECKING:
     from src.card.events.payloads import TaskSnapshotPayload
 
@@ -411,6 +413,8 @@ class CardState:
     structural_version: int = 0
     # Engine-specific extended state (None for non-engine cards)
     engine_ext: EngineExtState | None = None
+    # Runtime context consumed by sticky/banner rendering.
+    runtime_stats: RuntimeStats = field(default_factory=RuntimeStats)
     # Lazy O(1) block_id → index cache (built on first access, not on every state change)
     _block_index_cache: dict[str, int] | None = field(
         default=None, repr=False, compare=False, init=False

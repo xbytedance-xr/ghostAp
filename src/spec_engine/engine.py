@@ -1029,6 +1029,8 @@ class SpecEngine(BaseEngine):
         if self.settings.spec_review_enabled:
             cycle.phase = SpecPhase.REVIEW
             self._last_phase = cycle.phase
+            if callbacks.on_phase_start:
+                callbacks.on_phase_start(cycle_num, SpecPhase.REVIEW)
             review_result = self._conduct_review(cycle_num, callbacks, cycle_obj=cycle)
             cycle.review_result = review_result
             # best-effort: persist review failure decision/diagnostics for traceability

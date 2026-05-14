@@ -121,6 +121,42 @@ def test_spec_engine_review_error_empty_message_uses_snippets(monkeypatch):
     assert any("invalid params" in s.lower() for rev in r.reviews for s in (rev.suggestions or []))
 
 
+def test_run_review_phase_emits_phase_start_before_review_sessions(tmp_path, monkeypatch):
+    """Review can run for minutes, so the main Spec card must update before workers start."""
+    engine = SpecEngine(chat_id="c", root_path=str(tmp_path))
+    engine.settings = SimpleNamespace(
+        spec_review_enabled=True,
+        spec_persist_phase_artifacts=False,
+        spec_persist_every_phase=False,
+    )
+    cycle = SpecCycle(cycle_number=2)
+    calls: list[tuple[str, int, str | None]] = []
+    review = ReviewResult(
+        reviews=[
+            PerspectiveReview(
+                perspective=ReviewPerspective.TESTER,
+                passed=True,
+                suggestions=[],
+                summary="ok",
+            )
+        ],
+        iteration=2,
+    )
+
+    def fake_conduct(cycle_num, callbacks, cycle_obj=None):
+        calls.append(("conduct", cycle_num, None))
+        return review
+
+    monkeypatch.setattr(engine, "_conduct_review", fake_conduct)
+    callbacks = SpecEngineCallbacks(
+        on_phase_start=lambda cycle_num, phase: calls.append(("phase_start", cycle_num, phase.value)),
+    )
+
+    assert engine._run_review_phase(2, cycle, callbacks) is True
+    assert calls[0] == ("phase_start", 2, "review")
+    assert calls[1] == ("conduct", 2, None)
+
+
 def test_spec_engine_review_error_snippet_is_redacted(monkeypatch, caplog):
     """回归：review 异常诊断应遵循 diagnostics 脱敏规则，避免在 error_text 中泄露 token。"""
     engine = SpecEngine(chat_id="c", root_path="/tmp")
@@ -1131,6 +1167,27 @@ class TestSpecReporter:
         result = r.format_review_result(review, 1)
         assert "PASS" in result
         assert "无改进建议" in result
+
+    def test_format_review_result_shows_role_agent_detail(self):
+        r = SpecReporter()
+        review = ReviewResult(
+            reviews=[
+                PerspectiveReview(
+                    perspective=ReviewPerspective.TESTER,
+                    passed=False,
+                    suggestions=["补齐回归测试"],
+                    summary="需要测试",
+                    role_display_name="测试工程师",
+                    review_agent_label="Codex / gpt-5.5",
+                )
+            ],
+            iteration=1,
+        )
+
+        result = r.format_review_result(review, 1)
+
+        assert "测试工程师（Codex / gpt-5.5）" in result
+        assert "补齐回归测试" in result
 
     def test_format_criteria_brief(self):
         r = SpecReporter()

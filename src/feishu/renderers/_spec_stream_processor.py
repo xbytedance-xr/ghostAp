@@ -230,7 +230,9 @@ class SpecStreamProcessor:
         )
 
         content = self._reporter.format_review_result(review, cycle_num)
-        _dispatch_text_block(self._rotator, f"_review_{cycle_num}", content)
+        self._rotator.dispatch(
+            CardEvent.phase_done(cycle_num, SpecPhase.REVIEW.value, content)
+        )
 
         _, spec_project, state, _ = self._get_engine_and_state()
         if spec_project:

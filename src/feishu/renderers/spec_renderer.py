@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card.events import CardEvent
@@ -125,6 +126,7 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
             model_name=model_name or None,
             working_dir=project.root_path if project else None,
             project_name=project.project_name if project else None,
+            session_started_at=time.monotonic(),
         )
 
         # Session rotator: manages atomic session rotation at cycle boundaries

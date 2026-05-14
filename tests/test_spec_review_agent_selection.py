@@ -113,6 +113,7 @@ def test_adaptive_review_uses_selected_agents_for_role_sessions(monkeypatch):
     assert {agent for agent, _ in captured} == {"coco", "codex"}
     assert ("codex", "gpt-5.2") in captured
     assert ("coco", "m1") in captured
+    assert {review.review_agent_label for review in result.reviews} == {"Coco / m1", "Codex / gpt-5.2"}
 
 
 def _make_spec_handler() -> SpecHandler:

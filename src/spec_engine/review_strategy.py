@@ -105,7 +105,7 @@ class MultiPerspectiveStrategy(ReviewStrategy):
     name = "multi_perspective"
 
     def run(self, ctx: ReviewContext) -> ReviewResult:
-        return conduct_review(
+        result = conduct_review(
             pipeline_cfg=ReviewPipelineConfig(
                 settings=ctx.settings,
                 circuit=ctx.circuit,
@@ -121,6 +121,8 @@ class MultiPerspectiveStrategy(ReviewStrategy):
                 model_name=ctx.model_name,
             ),
         )
+        _annotate_review_result_agents(result, {}, ctx)
+        return result
 
 
 class AdaptiveRoleReviewStrategy(ReviewStrategy):
@@ -173,6 +175,7 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
         result.role_plan_hash = role_plan_hash
         result.blocking_suggestion_hash = result.aggregated.blocking_hash() if result.aggregated else ""
         result.blocking_review_passed = result.all_passed and not result.blocking_suggestion_hash
+        _annotate_review_result_agents(result, role_agent_map, ctx)
         ctx.circuit.reset_on_success()
 
         if ctx.on_review_done:
@@ -214,6 +217,44 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
 
         payload = [r.to_dict() for r in roles if getattr(r, "blocking", True)]
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _default_agent_label(agent_type: str, model_name: str | None) -> str:
+    normalized = str(agent_type or "coco").strip()
+    display = normalized
+    if normalized.startswith("ttadk_"):
+        display = f"TTADK {normalized.replace('ttadk_', '', 1).title()}"
+    else:
+        display = {
+            "coco": "Coco",
+            "codex": "Codex",
+            "aiden": "Aiden",
+            "claude": "Claude",
+            "gemini": "Gemini",
+        }.get(normalized.lower(), normalized.title())
+    model = str(model_name or "").strip() or "默认模型"
+    return f"{display} / {model}"
+
+
+def _annotate_review_result_agents(
+    result: ReviewResult,
+    role_agent_map: dict[str, ReviewAgentBinding],
+    ctx: ReviewContext,
+) -> None:
+    """Attach actual tool/model assignment to each review for UI rendering."""
+    if not result or not getattr(result, "reviews", None):
+        return
+    default_label = _default_agent_label(ctx.agent_type, ctx.model_name)
+    for review in result.reviews:
+        binding = role_agent_map.get(getattr(review, "role_id", "") or "")
+        if binding is not None:
+            review.review_agent_label = binding.display_label
+            review.review_agent_type = binding.agent_type
+            review.review_model_name = binding.model_name or ""
+            continue
+        review.review_agent_label = default_label
+        review.review_agent_type = str(ctx.agent_type or "coco")
+        review.review_model_name = str(ctx.model_name or "")
 
 
 _STRATEGY_REGISTRY: dict[str, type[ReviewStrategy]] = {

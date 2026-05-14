@@ -5,6 +5,7 @@ import pytest
 
 from src.card.render.header import render_header
 from src.card.state.models import CardMetadata, CardState, HeaderState
+from src.card.state.runtime_stats import RuntimeStats
 
 # AC-1 pattern: 📁 {project} · 🤖 {tool} · #{seq} with optional model suffix and 已封存
 _AC1_PATTERN = re.compile(r"^📁 .+ · 🤖 .+ · #\S+( · .+)?$")
@@ -50,6 +51,54 @@ def test_header_v2_includes_iteration_task_and_page_context():
         "任务 2: 修复紧凑工具摘要 · #3.2 · 页 2/3"
     )
     assert "Coco" not in result["title"]["content"]
+
+
+def test_header_v2_spec_iteration_includes_total_elapsed():
+    state = CardState(
+        header=HeaderState(title="legacy", template="green"),
+        metadata=CardMetadata(
+            engine_type="spec",
+            mode_name="Spec",
+            mode_emoji="📋",
+            tool_name="coco",
+            model_name="Test-O-New-Thinking",
+            iteration_index=5,
+            iteration_total=500,
+            card_sequence=6,
+            session_started_at=100.0,
+        ),
+        runtime_stats=RuntimeStats(elapsed_seconds=83.0),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "第 5/500 轮 · Test-O-New-Thinking · 总耗时 1m23s"
+    assert result["subtitle"]["content"] == "#6"
+
+
+def test_header_v2_spec_archived_iteration_hides_total_elapsed():
+    state = CardState(
+        header=HeaderState(title="legacy", template="green"),
+        terminal="archived",
+        metadata=CardMetadata(
+            engine_type="spec",
+            mode_name="Spec",
+            mode_emoji="📋",
+            tool_name="coco",
+            model_name="Test-O-New-Thinking",
+            iteration_index=4,
+            iteration_total=500,
+            frozen=True,
+            frozen_total_elapsed=82.0,
+            session_started_at=100.0,
+        ),
+        runtime_stats=RuntimeStats(elapsed_seconds=83.0),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "第 4/500 轮 · 已封存"
+    assert "总耗时" not in result["title"]["content"]
 
 
 def test_header_v2_includes_subagent_task_context():

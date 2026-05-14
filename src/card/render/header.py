@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.card.render.banner_computer import format_elapsed
 from src.card.state.models import CardState
 
 _TOOL_DISPLAY = {
@@ -60,15 +61,16 @@ def _render_v2_header(state: CardState, *, page_index: int = 0, total_pages: int
     archived = " · 已封存" if metadata.frozen else ""
     # v2 design: frozen cards hide model_name (mutual exclusion with 已封存 tag)
     model_suffix = "" if metadata.frozen else (f" · {metadata.model_name}" if metadata.model_name else "")
+    elapsed_suffix = _spec_elapsed_suffix(state)
 
     iteration = _iteration_label(state)
     unit = _unit_label(metadata, iteration)
     page = _page_label(page_index=page_index, total_pages=total_pages)
     if iteration:
-        title = f"{iteration}{model_suffix}{archived}"
+        title = f"{iteration}{model_suffix}{elapsed_suffix}{archived}"
     else:
         context_suffix = _title_context_suffix(state)
-        title = f"📁 {project_name} · 🤖 {tool_label}{context_suffix} · #{seq}{page}{model_suffix}{archived}"
+        title = f"📁 {project_name} · 🤖 {tool_label}{context_suffix} · #{seq}{page}{model_suffix}{elapsed_suffix}{archived}"
     if state.terminal == "failed" and "错误" not in title:
         title = f"❌ 错误 · {title}"
 
@@ -132,6 +134,16 @@ def _iteration_label(state: CardState) -> str:
     if total and total > 1:
         return f"第 {index}/{total} 轮"
     return f"第 {index} 轮"
+
+
+def _spec_elapsed_suffix(state: CardState) -> str:
+    metadata = state.metadata
+    if metadata.engine_type != "spec" or metadata.frozen:
+        return ""
+    if not _iteration_label(state):
+        return ""
+    seconds = float(getattr(state.runtime_stats, "elapsed_seconds", 0.0) or 0.0)
+    return f" · 总耗时 {format_elapsed(seconds)}"
 
 
 def _unit_label(metadata, iteration_label: str) -> str:

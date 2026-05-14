@@ -485,13 +485,15 @@ class CardSession:
             banner_event = _pending_action_to_event(action, self._coordinator, engine_cmd)
             self._state = reduce_card_state(self._state, banner_event, self._metadata)
 
-        # Inject monotonic timestamp into PROGRESS_UPDATED for pure reducer ETA
-        if event.type == CardEventType.PROGRESS_UPDATED and "timestamp" not in event.payload:
-            event = CardEvent(type=event.type, payload={**event.payload, "timestamp": self._clock()})
-
-        # Inject _now for lifecycle terminal events to keep reducer pure
-        if event.type in _TERMINAL_EVENTS and "_now" not in (event.payload or {}):
-            event = CardEvent(type=event.type, payload={**(event.payload or {}), "_now": self._clock()})
+        # Inject one monotonic timestamp for reducer-owned runtime/ETA fields.
+        now = self._clock()
+        payload = dict(event.payload or {})
+        if "_now" not in payload:
+            payload["_now"] = now
+        if event.type == CardEventType.PROGRESS_UPDATED and "timestamp" not in payload:
+            payload["timestamp"] = now
+        if payload != event.payload:
+            event = CardEvent(type=event.type, payload=payload)
 
         return event
 

@@ -2,6 +2,7 @@
 
 import re
 
+from ..engine_base import PerspectiveReview
 from ..utils.text import format_duration, make_progress_bar
 from .models import (
     ReviewResult,
@@ -245,11 +246,14 @@ class SpecReporter:
 
         for pr in review.reviews:
             count += 1
+            title = pr.role_display_name or pr.perspective.display_name
+            agent_detail = self._format_review_agent_detail(pr)
+            title_with_agent = f"{title}（{agent_detail}）" if agent_detail else title
             if pr.passed:
-                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: ✅ PASS")
+                lines.append(f"{pr.perspective.emoji} **{title_with_agent}**: ✅ PASS")
             else:
                 status_text = pr.perspective.failure_label
-                lines.append(f"{pr.perspective.emoji} **{pr.perspective.display_name}**: {status_text}")
+                lines.append(f"{pr.perspective.emoji} **{title_with_agent}**: {status_text}")
                 for s in pr.suggestions:
                     lines.append(f"- {s}")
 
@@ -265,6 +269,21 @@ class SpecReporter:
             lines.append("✅ **所有视角均通过，无改进建议**")
 
         return "\n".join(lines)
+
+    def _format_review_agent_detail(self, review: PerspectiveReview) -> str:
+        """Return compact tool/model label for a role review title."""
+        label = str(getattr(review, "review_agent_label", "") or "").strip()
+        if label:
+            return label
+        agent = str(getattr(review, "review_agent_type", "") or "").strip()
+        model = str(getattr(review, "review_model_name", "") or "").strip()
+        if not agent and not model:
+            return ""
+        if not agent:
+            return model
+        if not model:
+            return agent
+        return f"{agent} / {model}"
 
     def format_criteria_brief(self, project: SpecProject) -> str:
         tracker = project.criteria_tracker

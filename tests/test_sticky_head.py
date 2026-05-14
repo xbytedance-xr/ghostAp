@@ -4,7 +4,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from src.card.render.sticky_head import STICKY_HEAD_MAX_NODES, build_sticky_head
+from src.card.events import CardEvent, CardEventType
 from src.card.state.models import CardMetadata, CardState
+from src.card.state.reducer import reduce_card_state
 from src.card.state.runtime_stats import RuntimeStats
 
 
@@ -64,3 +66,30 @@ def test_sticky_head_node_cap_keeps_required_atoms_only():
     assert "phase_banner" in [a.kind for a in sticky]
     assert "activity_summary" not in [a.kind for a in sticky]
     assert sum(a.node_count for a in sticky) <= STICKY_HEAD_MAX_NODES
+
+
+def test_sticky_head_uses_reducer_runtime_stats_for_spec_banner():
+    metadata = CardMetadata(
+        mode_name="Spec",
+        mode_emoji="📋",
+        engine_type="spec",
+        session_started_at=100.0,
+    )
+    state = reduce_card_state(
+        None,
+        CardEvent(type=CardEventType.STARTED, payload={"_now": 100.0}),
+        metadata=metadata,
+    )
+    state = reduce_card_state(
+        state,
+        CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 2, "max_cycles": 500, "_now": 120.0}),
+    )
+    state = reduce_card_state(
+        state,
+        CardEvent(type=CardEventType.PHASE_STARTED, payload={"cycle_num": 2, "phase": "review", "_now": 188.0}),
+    )
+
+    sticky = build_sticky_head(state, state.metadata)
+
+    assert sticky[0].content == "📋 Spec · cycle 2/review · 1m28s"
+    assert "?/—" not in sticky[0].content

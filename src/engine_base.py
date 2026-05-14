@@ -93,6 +93,9 @@ class PerspectiveReview:
     role_id: str = ""
     role_display_name: str = ""
     role_category: str = ""
+    review_agent_label: str = ""
+    review_agent_type: str = ""
+    review_model_name: str = ""
     blocking: bool = True
 
     def to_dict(self) -> dict:
@@ -104,6 +107,9 @@ class PerspectiveReview:
             "role_id": self.role_id,
             "role_display_name": self.role_display_name,
             "role_category": self.role_category,
+            "review_agent_label": self.review_agent_label,
+            "review_agent_type": self.review_agent_type,
+            "review_model_name": self.review_model_name,
             "blocking": self.blocking,
         }
 
@@ -117,6 +123,9 @@ class PerspectiveReview:
             role_id=str(data.get("role_id") or ""),
             role_display_name=str(data.get("role_display_name") or ""),
             role_category=str(data.get("role_category") or ""),
+            review_agent_label=str(data.get("review_agent_label") or ""),
+            review_agent_type=str(data.get("review_agent_type") or ""),
+            review_model_name=str(data.get("review_model_name") or ""),
             blocking=bool(data.get("blocking", True)),
         )
 

@@ -19,6 +19,7 @@ from src.card.render.throttle import StreamThrottle
 from src.card.state.models import CardMetadata
 from src.card.ui_text import UI_TEXT, _MUTABLE_UI_TEXT
 from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
+from src.engine_base import ReviewResult
 from src.spec_engine import SpecEngineCallbacks
 from src.spec_engine.models import SpecPhase, SpecProject, SpecProjectStatus
 from src.spec_engine.retry_status import RetryEvent, RetryStatus
@@ -297,6 +298,22 @@ class TestOnCycleStart:
         dispatched = [call[0][0] for call in deps["rotator"].dispatch.call_args_list]
         types = [e.type for e in dispatched]
         assert CardEventType.CYCLE_STARTED in types
+
+
+class TestOnReviewDone:
+    """Verify review completion closes the visible review phase."""
+
+    def test_dispatches_review_phase_done(self):
+        proc, deps = _make_processor()
+        proc.on_review_done(2, ReviewResult(iteration=2))
+
+        dispatched = [call[0][0] for call in deps["rotator"].dispatch.call_args_list]
+        phase_done = [
+            event for event in dispatched
+            if event.type == CardEventType.PHASE_DONE and event.payload.get("phase") == "review"
+        ]
+        assert phase_done
+        assert phase_done[-1].payload["output"] == "review result"
 
 
 class TestOnError:

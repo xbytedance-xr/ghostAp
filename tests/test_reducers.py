@@ -7,6 +7,7 @@ from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import (
     CardState, CardMetadata, ContentBlock, FooterState, EngineExtState, ButtonSpec,
 )
+from src.card.state.reducer import reduce_card_state
 from src.card.state.reducers.criteria import reduce_criteria
 from src.card.state.reducers.cycle import reduce_cycle
 from src.card.state.reducers.phase import reduce_phase
@@ -221,6 +222,70 @@ class TestReducePhase:
         state = _base_state()
         event = CardEvent(type=CardEventType.STARTED)
         assert reduce_phase(state, event) is state
+
+
+class TestRuntimeStats:
+    def test_spec_runtime_stats_track_cycle_phase_and_elapsed(self):
+        metadata = CardMetadata(
+            mode_name="Spec",
+            mode_emoji="📋",
+            engine_type="spec",
+            session_started_at=100.0,
+        )
+        state = reduce_card_state(
+            None,
+            CardEvent(type=CardEventType.STARTED, payload={"_now": 101.0}),
+            metadata=metadata,
+        )
+        state = reduce_card_state(
+            state,
+            CardEvent(type=CardEventType.CYCLE_STARTED, payload={
+                "cycle_num": 2,
+                "max_cycles": 500,
+                "_now": 110.0,
+            }),
+        )
+        state = reduce_card_state(
+            state,
+            CardEvent(type=CardEventType.PHASE_STARTED, payload={
+                "cycle_num": 2,
+                "phase": "review",
+                "_now": 125.0,
+            }),
+        )
+
+        assert state.runtime_stats.spec_cycle == 2
+        assert state.runtime_stats.spec_perspective == "review"
+        assert state.runtime_stats.elapsed_seconds == 25.0
+
+    def test_spec_runtime_stats_keep_last_phase_after_phase_done(self):
+        metadata = CardMetadata(engine_type="spec", session_started_at=100.0)
+        state = reduce_card_state(
+            None,
+            CardEvent(type=CardEventType.STARTED, payload={"_now": 101.0}),
+            metadata=metadata,
+        )
+        state = reduce_card_state(
+            state,
+            CardEvent(type=CardEventType.CYCLE_STARTED, payload={"cycle_num": 1, "max_cycles": 3, "_now": 105.0}),
+        )
+        state = reduce_card_state(
+            state,
+            CardEvent(type=CardEventType.PHASE_STARTED, payload={"cycle_num": 1, "phase": "plan", "_now": 110.0}),
+        )
+        state = reduce_card_state(
+            state,
+            CardEvent(type=CardEventType.PHASE_DONE, payload={
+                "cycle_num": 1,
+                "phase": "plan",
+                "output": "done",
+                "_now": 120.0,
+            }),
+        )
+
+        assert state.runtime_stats.spec_cycle == 1
+        assert state.runtime_stats.spec_perspective == "plan"
+        assert state.runtime_stats.elapsed_seconds == 20.0
 
 
 # ==============================================================================

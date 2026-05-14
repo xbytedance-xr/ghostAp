@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from .models import CardState, CardMetadata, HeaderState, FooterState, EngineExtState
+from .runtime_stats import RuntimeStats
 from ..events import CardEvent, CardEventType
 from .reducers.text import reduce_text
 from .reducers.tool import reduce_tool
@@ -226,6 +227,56 @@ def _is_structural_event(event: CardEvent) -> bool:
     return False
 
 
+def _as_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _refresh_runtime_stats(state: CardState, event: CardEvent) -> CardState:
+    """Derive banner runtime state from immutable card state plus event time."""
+    runtime = state.runtime_stats or RuntimeStats()
+    elapsed_seconds = runtime.elapsed_seconds
+
+    now = _as_float((event.payload or {}).get("_now"))
+    started_at = _as_float(state.metadata.session_started_at)
+    if now is not None and started_at is not None:
+        elapsed_seconds = max(0.0, now - started_at)
+
+    spec_cycle = runtime.spec_cycle
+    spec_perspective = runtime.spec_perspective
+    deep_phase = runtime.deep_phase
+    worktree_subagent = runtime.worktree_subagent
+
+    engine_type = state.metadata.engine_type
+    if engine_type == "spec" and state.engine_ext is not None:
+        spec_cycle = state.engine_ext.cycle_num or state.metadata.iteration_index or spec_cycle
+        if event.type is CardEventType.CYCLE_STARTED:
+            spec_perspective = None
+        elif state.engine_ext.phase_info:
+            spec_perspective = state.engine_ext.phase_info
+    elif engine_type == "deep" and state.engine_ext is not None:
+        deep_phase = state.engine_ext.phase_info or deep_phase
+    elif engine_type == "worktree":
+        worktree_subagent = (
+            state.metadata.unit_label
+            or state.metadata.unit_id
+            or state.metadata.tool_name
+            or worktree_subagent
+        )
+
+    refreshed = RuntimeStats(
+        elapsed_seconds=elapsed_seconds,
+        deep_phase=deep_phase,
+        spec_cycle=spec_cycle,
+        spec_perspective=spec_perspective,
+        worktree_subagent=worktree_subagent,
+    )
+    if refreshed == runtime:
+        return state
+    return replace(state, runtime_stats=refreshed)
+
+
 def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardMetadata | None = None) -> CardState:
     """
     Pure function: old state + event → new state. No side effects.
@@ -252,6 +303,7 @@ def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardM
 
     # Bump version if state changed
     if new_state is not state:
+        new_state = _refresh_runtime_stats(new_state, event)
         new_version = state.version + 1
         # Bump structural_version only for structural events
         if _is_structural_event(event):

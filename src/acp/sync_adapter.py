@@ -1651,6 +1651,7 @@ class SyncACPSession:
                 logger.debug("Error closing ACP session: %s", get_error_detail(e))
 
         if self._loop:
+            self._drain_loop_before_close()
             self._loop.call_soon_threadsafe(self._loop.stop)
             if self._loop_thread and self._loop_thread.is_alive():
                 self._loop_thread.join(timeout=5)
@@ -1658,6 +1659,26 @@ class SyncACPSession:
             self._loop = None
 
         self._acp_session = None
+
+    def _drain_loop_before_close(self) -> None:
+        """Run pending subprocess pipe callbacks before closing the loop."""
+        loop = self._loop
+        if not loop or not loop.is_running():
+            return
+        if self._loop_thread and threading.current_thread() is self._loop_thread:
+            return
+
+        async def _drain() -> None:
+            for _ in range(3):
+                await asyncio.sleep(0)
+            with contextlib.suppress(Exception):
+                await loop.shutdown_asyncgens()
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_drain(), loop)
+            future.result(timeout=2.0)
+        except (TimeoutError, OSError, RuntimeError) as e:
+            logger.debug("[ACP:%s] loop drain before close skipped: %s", self._agent_type, get_error_detail(e))
 
     def to_snapshot(self) -> dict:
         """Return session snapshot for persistence."""

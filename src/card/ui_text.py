@@ -854,6 +854,7 @@ UI_TEXT = {
     "phase_coding": "编码中",
     "phase_review": "审查中",
     "phase_spec_review": "规格审查中",
+    "spec_review_phase_done": "多视角审查完成",
     "phase_testing": "测试中",
     "phase_building": "构建中",
     "phase_deploying": "部署中",
