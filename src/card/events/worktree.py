@@ -67,6 +67,7 @@ def worktree_tool_select(
     remove_action: str = "",
     clear_action: str = "",
     back_action: str = "",
+    show_stepper: bool = True,
 ) -> CardEvent:
     """Worktree tool selection card state.
 
@@ -93,6 +94,7 @@ def worktree_tool_select(
         "project_id": project_id, "message": message,
         "select_action": select_action,
         "pending_tool": pending_tool,
+        "show_stepper": show_stepper,
     }
     if thread_root_id:
         payload["thread_root_id"] = thread_root_id

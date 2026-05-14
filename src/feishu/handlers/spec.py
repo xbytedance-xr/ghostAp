@@ -157,10 +157,10 @@ class SpecHandler(BaseEngineHandler):
         message: str = "",
         select_action: str = SPEC_REVIEW_SELECT_TOOL,
         pending_tool: str = "",
+        thread_root_id: str = "",
     ) -> None:
-        from ...thread import get_current_thread_id
-
-        session = self.renderer.get_or_create_session(chat_id, project.project_id, reply_to=message_id)
+        thread_root_id = self._spec_review_thread_root_id(thread_root_id, fallback_message_id=message_id)
+        session = self.renderer.get_or_create_session(chat_id, project.project_id, reply_to=thread_root_id)
         session.dispatch(worktree_tool_select(
             tools=tools,
             selected=selected or [],
@@ -168,7 +168,7 @@ class SpecHandler(BaseEngineHandler):
             message=message,
             select_action=select_action,
             pending_tool=pending_tool,
-            thread_root_id=get_current_thread_id() or "",
+            thread_root_id=thread_root_id,
             mode_label="Spec Review",
             tool_select_title=UI_TEXT["spec_review_select_tool_title"],
             model_select_title=UI_TEXT["spec_review_select_model_title"],
@@ -179,7 +179,20 @@ class SpecHandler(BaseEngineHandler):
             remove_action=SPEC_REVIEW_REMOVE_ITEM,
             clear_action=SPEC_REVIEW_CLEAR_ITEMS,
             back_action=SHOW_SPEC_REVIEW_MENU,
+            show_stepper=False,
         ))
+
+    @staticmethod
+    def _spec_review_value_thread_root(value: dict | None) -> str:
+        return str((value or {}).get("thread_root_id") or "").strip()
+
+    @staticmethod
+    def _spec_review_thread_root_id(thread_root_id: str = "", *, fallback_message_id: str = "") -> str:
+        if thread_root_id:
+            return thread_root_id
+        from ...thread import get_current_thread_id
+
+        return get_current_thread_id() or fallback_message_id
 
     def _start_spec_review_selection(
         self,
@@ -407,8 +420,12 @@ class SpecHandler(BaseEngineHandler):
         if not requirement:
             self.reply_error(message_id, UI_TEXT["spec_cmd_help_usage"])
             return
+        start_message_id = self._spec_review_thread_root_id(
+            self._spec_review_value_thread_root(value),
+            fallback_message_id=message_id,
+        )
         self._spec_review_selection_controller().reset_selection(project)
-        self._start_spec_engine_now(message_id, chat_id, requirement, project, review_agents=[])
+        self._start_spec_engine_now(start_message_id, chat_id, requirement, project, review_agents=[])
 
     def handle_spec_review_select_tool(
         self,
@@ -422,6 +439,10 @@ class SpecHandler(BaseEngineHandler):
         if not project:
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
+        thread_root_id = self._spec_review_thread_root_id(
+            self._spec_review_value_thread_root(value),
+            fallback_message_id=message_id,
+        )
 
         tool_name = value.get("_option") or value.get("tool_name", "")
         provider = value.get("provider", "")
@@ -444,6 +465,7 @@ class SpecHandler(BaseEngineHandler):
                 tools=tools,
                 selected=selected_dicts,
                 message="请选择 TTADK 工具",
+                thread_root_id=thread_root_id,
             )
             return
 
@@ -502,6 +524,7 @@ class SpecHandler(BaseEngineHandler):
                 message=UI_TEXT["system_worktree_select_model_prompt"].format(tool=option.display_name),
                 select_action=SPEC_REVIEW_SELECT_MODEL,
                 pending_tool=option.display_name,
+                thread_root_id=thread_root_id,
             )
             return
 
@@ -520,6 +543,7 @@ class SpecHandler(BaseEngineHandler):
             tools=self._get_available_spec_review_tools(),
             selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
             message=msg,
+            thread_root_id=thread_root_id,
         )
 
     def handle_spec_review_select_model(
@@ -534,6 +558,10 @@ class SpecHandler(BaseEngineHandler):
         if not project:
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
+        thread_root_id = self._spec_review_thread_root_id(
+            self._spec_review_value_thread_root(value),
+            fallback_message_id=message_id,
+        )
         raw_model_name = (
             value.get("_option")
             or value.get("model_name")
@@ -557,6 +585,7 @@ class SpecHandler(BaseEngineHandler):
             tools=self._get_available_spec_review_tools(),
             selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
             message=msg,
+            thread_root_id=thread_root_id,
         )
 
     def handle_spec_review_remove_item(
@@ -571,6 +600,10 @@ class SpecHandler(BaseEngineHandler):
         if not project:
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
+        thread_root_id = self._spec_review_thread_root_id(
+            self._spec_review_value_thread_root(value),
+            fallback_message_id=message_id,
+        )
         ctrl = self._spec_review_selection_controller()
         _, _, msg = ctrl.remove_selected_item(project, str(value.get("selection_key") or value.get("_option") or ""))
         self._dispatch_spec_review_tool_select(
@@ -580,6 +613,7 @@ class SpecHandler(BaseEngineHandler):
             tools=self._get_available_spec_review_tools(),
             selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
             message=msg,
+            thread_root_id=thread_root_id,
         )
 
     def handle_spec_review_clear_items(
@@ -593,6 +627,10 @@ class SpecHandler(BaseEngineHandler):
         if not project:
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
+        thread_root_id = self._spec_review_thread_root_id(
+            self._spec_review_value_thread_root(value),
+            fallback_message_id=message_id,
+        )
         ctrl = self._spec_review_selection_controller()
         _, _, msg = ctrl.clear_selected_items(project)
         self._dispatch_spec_review_tool_select(
@@ -602,6 +640,7 @@ class SpecHandler(BaseEngineHandler):
             tools=self._get_available_spec_review_tools(),
             selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
             message=msg,
+            thread_root_id=thread_root_id,
         )
 
     def handle_spec_review_menu(
@@ -615,6 +654,10 @@ class SpecHandler(BaseEngineHandler):
         if not project:
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
+        thread_root_id = self._spec_review_thread_root_id(
+            self._spec_review_value_thread_root(value),
+            fallback_message_id=message_id,
+        )
         ctrl = self._spec_review_selection_controller()
         ctrl.back_to_tool_selection(project)
         self._dispatch_spec_review_tool_select(
@@ -624,6 +667,7 @@ class SpecHandler(BaseEngineHandler):
             tools=self._get_available_spec_review_tools(),
             selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
             message=UI_TEXT["spec_review_select_message"],
+            thread_root_id=thread_root_id,
         )
 
     def handle_spec_review_finish_selection(
@@ -637,6 +681,10 @@ class SpecHandler(BaseEngineHandler):
         if not project:
             self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
             return
+        start_message_id = self._spec_review_thread_root_id(
+            self._spec_review_value_thread_root(value),
+            fallback_message_id=message_id,
+        )
         ctrl = self._spec_review_selection_controller()
         state = ctrl._get_state(project)
         requirement = self._spec_review_pending_requirement(project)
@@ -651,7 +699,7 @@ class SpecHandler(BaseEngineHandler):
             ReviewAgentBinding.from_selection_item(item)
             for item in state.selection.selected_items
         ]
-        self._start_spec_engine_now(message_id, chat_id, requirement, project, review_agents=review_agents)
+        self._start_spec_engine_now(start_message_id, chat_id, requirement, project, review_agents=review_agents)
 
     # ------------------------------------------------------------------
     # status

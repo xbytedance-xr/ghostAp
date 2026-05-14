@@ -164,7 +164,7 @@ def render_worktree_panel(block: ContentBlock) -> dict:
 
     # Prepend inline stepper + dynamic step title if this kind has a known step
     step_idx = _STEP_MAP.get(kind)
-    if step_idx is not None:
+    if step_idx is not None and data.get("show_stepper", True):
         stepper_elements = _render_stepper(step_idx)
         # Tool select kind doubles as model select stage; pick title/hint by select_action.
         is_model_select = (

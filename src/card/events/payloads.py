@@ -220,6 +220,7 @@ class WorktreeToolSelectPayload(TypedDict):
     remove_action: NotRequired[str]
     clear_action: NotRequired[str]
     back_action: NotRequired[str]
+    show_stepper: NotRequired[bool]
 
 
 class WorktreeConfirmPayload(TypedDict):

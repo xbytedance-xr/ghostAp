@@ -53,6 +53,7 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 "thread_root_id": thread_root_id,
                 "select_action": select_action,
                 "pending_tool": pending_tool,
+                "show_stepper": event.payload.get("show_stepper", True),
             }
             for key in (
                 "mode_label",

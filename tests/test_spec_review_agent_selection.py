@@ -7,6 +7,10 @@ from src.card.actions.dispatch import (
     SPEC_REVIEW_USE_AUTO,
 )
 from src.card.events import CardEventType
+from src.card.render.budget import RenderBudget
+from src.card.render.renderer import render_card
+from src.card.state.models import CardMetadata, CardState
+from src.card.state.reducer import reduce_card_state
 from src.engine_base import ReviewPerspective
 from src.feishu.handlers.spec import SpecHandler
 from src.project.context import ProjectContext
@@ -121,6 +125,22 @@ def _make_spec_handler() -> SpecHandler:
     return SpecHandler(ctx)
 
 
+def _collect_markdown_content(node) -> list[str]:
+    if isinstance(node, dict):
+        texts = []
+        if node.get("tag") == "markdown":
+            texts.append(str(node.get("content") or ""))
+        for value in node.values():
+            texts.extend(_collect_markdown_content(value))
+        return texts
+    if isinstance(node, list):
+        texts = []
+        for item in node:
+            texts.extend(_collect_markdown_content(item))
+        return texts
+    return []
+
+
 def test_spec_start_shows_review_agent_selection_before_submitting_task():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-spec", project_name="Spec", root_path="/tmp/spec")
@@ -147,7 +167,39 @@ def test_spec_start_shows_review_agent_selection_before_submitting_task():
     assert event.payload["select_action"] == SPEC_REVIEW_SELECT_TOOL
     assert event.payload["auto_action"] == SPEC_REVIEW_USE_AUTO
     assert event.payload["mode_label"] == "Spec Review"
+    assert event.payload["show_stepper"] is False
     assert project.spec_review_selection_state.selection.pending_goal == "implement auth"
+
+
+def test_spec_review_selection_card_does_not_render_worktree_journey_copy():
+    handler = _make_spec_handler()
+    project = ProjectContext(project_id="p-render", project_name="Spec", root_path="/tmp/spec-render")
+    mock_session = MagicMock()
+    fake_tools = [
+        {
+            "provider": "acp",
+            "tool_name": "coco",
+            "display_name": "Coco",
+            "description": "ACP Coco",
+            "supports_model": True,
+        }
+    ]
+
+    with patch.object(handler, "_get_available_spec_review_tools", return_value=fake_tools), \
+         patch.object(handler.renderer, "get_or_create_session", return_value=mock_session):
+        handler.start_spec_engine("msg-render", "chat-render", "implement spec", project)
+
+    event = mock_session.dispatch.call_args[0][0]
+    state = CardState(metadata=CardMetadata(engine_type="spec", mode_name="Spec Review"))
+    state = reduce_card_state(state, event)
+    rendered = render_card(state, RenderBudget(engine_cmd="/spec"))[0].to_feishu_json()
+    text = "\n".join(_collect_markdown_content(rendered))
+
+    assert "步骤 1/4" not in text
+    assert "(1/4)" not in text
+    assert "Worktree" not in text
+    assert "等待目标" not in text
+    assert "Spec Review" in text
 
 
 def test_spec_review_auto_starts_with_empty_review_agent_pool():
@@ -157,10 +209,15 @@ def test_spec_review_auto_starts_with_empty_review_agent_pool():
     handler._spec_review_selection_controller().start_selection(project, goal="ship it")
 
     with patch.object(handler, "_start_spec_engine_now") as start_now:
-        handler.handle_spec_review_use_auto("msg-auto", "chat-auto", project_id="p-auto")
+        handler.handle_spec_review_use_auto(
+            "msg-auto",
+            "chat-auto",
+            project_id="p-auto",
+            value={"thread_root_id": "root-spec-msg"},
+        )
 
     start_now.assert_called_once_with(
-        "msg-auto",
+        "root-spec-msg",
         "chat-auto",
         "ship it",
         project,
@@ -187,11 +244,57 @@ def test_spec_review_finish_starts_with_selected_review_agent_pool():
     ctrl.add_pending_item(project, model_name="gpt-5.2", model_display_name="GPT 5.2")
 
     with patch.object(handler, "_start_spec_engine_now") as start_now:
-        handler.handle_spec_review_finish_selection("msg-finish", "chat-finish", project_id="p-finish")
+        handler.handle_spec_review_finish_selection(
+            "msg-finish",
+            "chat-finish",
+            project_id="p-finish",
+            value={"thread_root_id": "root-spec-msg"},
+        )
 
     start_now.assert_called_once()
+    assert start_now.call_args.args[:4] == (
+        "root-spec-msg",
+        "chat-finish",
+        "build review",
+        project,
+    )
     kwargs = start_now.call_args.kwargs
     agents = kwargs["review_agents"]
     assert len(agents) == 1
     assert agents[0].agent_type == "codex"
     assert agents[0].model_name == "gpt-5.2"
+
+
+def test_spec_review_select_model_rerenders_original_topic_card():
+    handler = _make_spec_handler()
+    project = ProjectContext(project_id="p-model", project_name="Spec", root_path="/tmp/spec-model")
+    handler.ctx.project_manager.get_project_for_chat.return_value = project
+    ctrl = handler._spec_review_selection_controller()
+    ctrl.start_selection(project, goal="build review")
+    ctrl.select_tool(
+        project,
+        WorktreeToolOption(
+            provider="acp",
+            tool_name="codex",
+            display_name="Codex",
+            supports_model=True,
+            model_optional=True,
+        ),
+    )
+    mock_session = MagicMock()
+
+    with patch.object(handler.renderer, "get_or_create_session", return_value=mock_session) as get_session:
+        handler.handle_spec_review_select_model(
+            "action-card-msg",
+            "chat-model",
+            project_id="p-model",
+            value={"model_name": "gpt-5.5", "thread_root_id": "root-spec-msg"},
+        )
+
+    get_session.assert_called_with(
+        "chat-model",
+        "p-model",
+        reply_to="root-spec-msg",
+    )
+    event = mock_session.dispatch.call_args[0][0]
+    assert event.payload["thread_root_id"] == "root-spec-msg"
