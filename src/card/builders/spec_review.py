@@ -52,6 +52,27 @@ class SpecReviewBuilder:
         ).strip()
 
     @staticmethod
+    def _selected_signature(selected: list[dict]) -> str:
+        keys: list[str] = []
+        for item in selected:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("selection_key") or "").strip()
+            if not key:
+                provider = str(item.get("provider") or "").strip().lower()
+                tool_name = str(item.get("tool_name") or item.get("tool") or "").strip().lower()
+                model_name = str(
+                    item.get("model_name")
+                    or item.get("effective_model_name")
+                    or item.get("model")
+                    or DEFAULT_MODEL_OPTION_VALUE
+                ).strip()
+                key = ":".join(part for part in (provider, tool_name, model_name) if part)
+            if key:
+                keys.append(key)
+        return "|".join(sorted(keys)) or "empty"
+
+    @staticmethod
     def _selected_elements(
         *,
         selected: list[dict],
@@ -123,6 +144,7 @@ class SpecReviewBuilder:
         project_id: Optional[str],
         thread_root_id: str,
         select_action: str,
+        selection_sig: str,
     ) -> dict:
         tool_name = str(tool.get("tool_name") or tool.get("name") or tool.get("id") or "").strip()
         display = str(tool.get("display_name") or tool_name).strip() or tool_name
@@ -140,6 +162,7 @@ class SpecReviewBuilder:
             "agent_name": tool.get("agent_name"),
             "supports_model": bool(tool.get("supports_model", False)),
             "skip_model_selection": bool(tool.get("skip_model_selection", False)),
+            "_selection_sig": selection_sig,
         }
         return {
             "tag": "column_set",
@@ -212,6 +235,7 @@ class SpecReviewBuilder:
                 thread_root_id=thread_root_id,
             )
 
+        selection_sig = SpecReviewBuilder._selected_signature(selected_items)
         elements: list[dict] = [
             {
                 "tag": "markdown",
@@ -247,6 +271,7 @@ class SpecReviewBuilder:
                         project_id=project_id,
                         thread_root_id=thread_root_id,
                         select_action=select_action,
+                        selection_sig=selection_sig,
                     )
                 )
         else:

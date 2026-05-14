@@ -277,6 +277,56 @@ def test_spec_review_model_grid_keeps_spec_review_actions():
     assert model_buttons[0]["value"]["thread_root_id"] == "root-spec-msg"
 
 
+def test_spec_review_tool_buttons_include_selected_model_signature_for_dedupe():
+    tools = [
+        {
+            "provider": "acp",
+            "tool_name": "coco",
+            "display_name": "Coco",
+            "supports_model": True,
+        }
+    ]
+    _, empty_content = CardBuilder.build_spec_review_agent_select_card(
+        tools=tools,
+        selected=[],
+        project_id="p-spec",
+        thread_root_id="root-spec-msg",
+        select_action=SPEC_REVIEW_SELECT_TOOL,
+    )
+    _, selected_content = CardBuilder.build_spec_review_agent_select_card(
+        tools=tools,
+        selected=[
+            {
+                "provider": "acp",
+                "tool_name": "coco",
+                "model_name": "Test-New-Thinking",
+                "display_label": "Coco / Test-New-Thinking",
+                "selection_key": "acp:coco:Test-New-Thinking",
+            }
+        ],
+        project_id="p-spec",
+        thread_root_id="root-spec-msg",
+        select_action=SPEC_REVIEW_SELECT_TOOL,
+    )
+
+    empty_button = next(
+        button
+        for button in _collect_buttons(json.loads(empty_content))
+        if button["value"].get("tool_name") == "coco"
+    )
+    selected_button = next(
+        button
+        for button in _collect_buttons(json.loads(selected_content))
+        if button["value"].get("tool_name") == "coco"
+    )
+
+    assert empty_button["value"]["action"] == SPEC_REVIEW_SELECT_TOOL
+    assert selected_button["value"]["action"] == SPEC_REVIEW_SELECT_TOOL
+    assert empty_button["value"]["_selection_sig"] == "empty"
+    assert selected_button["value"]["_selection_sig"] == "acp:coco:Test-New-Thinking"
+    assert empty_button["value"] != selected_button["value"]
+
+
 def test_spec_review_action_patches_existing_selection_card():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-patch", project_name="Spec", root_path="/tmp/spec-patch")
