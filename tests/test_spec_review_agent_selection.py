@@ -12,6 +12,7 @@ from src.card.actions.dispatch import (
 from src.engine_base import ReviewPerspective
 from src.feishu.handlers.spec import SpecHandler
 from src.project.context import ProjectContext
+from src.spec_engine.models import SpecProjectStatus
 from src.spec_engine.review import ReviewCircuitState
 from src.spec_engine.review_agents import ReviewAgentBinding, assign_review_agents
 from src.spec_engine.review_artifacts import ReviewArtifacts
@@ -241,6 +242,30 @@ def test_spec_recover_with_run_id_falls_back_to_cached_run_restore(monkeypatch):
 
     restore.assert_called_once_with("msg-recover", "chat-recover", "run123", project=project)
     reply_text.assert_not_called()
+
+
+def test_restore_spec_run_resumes_interrupted_running_state(monkeypatch):
+    handler = _make_spec_handler()
+    project = MagicMock()
+    project.project_id = "p1"
+    project.root_path = "/repo/ghostAp"
+    engine = MagicMock()
+    engine.project.status = SpecProjectStatus.RUNNING
+    engine.is_running = False
+    handler.ctx.spec_engine_manager.load_or_create_from_state_file.return_value = engine
+    monkeypatch.setattr(
+        "src.feishu.handlers.spec.state_path_for_run",
+        lambda root, settings, run_id: "/cache/repo/ghostAp/.spec_engine/run123/state.json",
+    )
+    monkeypatch.setattr("src.feishu.handlers.spec.os.path.isfile", lambda path: True)
+
+    with patch.object(handler, "get_engine_name", return_value="Coco"), \
+         patch.object(handler, "resume_spec_engine") as resume:
+        handler.restore_spec_run("msg-restore", "chat-restore", "run123", project)
+
+    assert engine.project.status == SpecProjectStatus.PAUSED
+    engine.save_state.assert_called_once()
+    resume.assert_called_once_with("msg-restore", "chat-restore", project)
 
 
 def test_spec_review_selection_card_does_not_render_worktree_journey_copy():

@@ -1409,6 +1409,13 @@ class SpecHandler(BaseEngineHandler):
             self.reply_text(message_id, f"❌ Spec 状态不可用: {run_id}")
             return
 
+        if engine.project.status == SpecProjectStatus.RUNNING and not engine.is_running:
+            engine.project.status = SpecProjectStatus.PAUSED
+            try:
+                engine.save_state()
+            except Exception:
+                logger.debug("failed to save interrupted Spec state before restore", exc_info=True)
+
         if engine.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING):
             self.resume_spec_engine(message_id, chat_id, project)
             return
