@@ -1345,14 +1345,33 @@ class FeishuWSClient:
                 )
                 return
         if auto_enter_mode in {"worktree", "deep", "spec"}:
-            self._process_with_intent(
-                message_id,
-                chat_id,
-                text,
-                project,
-                command_match=command_match,
-                shell_fast_tracked=shell_fast_tracked,
-            )
+            if command_match is not None:
+                self._process_with_intent(
+                    message_id,
+                    chat_id,
+                    text,
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=shell_fast_tracked,
+                )
+                return
+            if project is None:
+                self._process_with_intent(
+                    message_id,
+                    chat_id,
+                    text,
+                    project,
+                    command_match=command_match,
+                    shell_fast_tracked=shell_fast_tracked,
+                )
+                return
+            self._add_reaction(message_id, EmojiReaction.on_processing())
+            if auto_enter_mode == "worktree":
+                self._handle_worktree_execute(message_id, chat_id, text, project)
+            elif auto_enter_mode == "deep":
+                self._start_deep_engine(message_id, chat_id, text, project)
+            else:
+                self._start_spec_engine(message_id, chat_id, text, project)
             return
 
         if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
@@ -1443,11 +1462,24 @@ class FeishuWSClient:
     @staticmethod
     def _requested_topic_engine(command_match) -> Optional[str]:
         command = getattr(command_match, "command", None)
-        if command == "/worktree":
+        if command in {"/worktree", "/wt"}:
             return "worktree"
-        if command == "/deep":
+        if command in {"/deep", "/deep_update", "/deep_status", "/stop_deep"}:
             return "deep"
-        if command == "/spec":
+        if command in {
+            "/spec",
+            "/spec_status",
+            "/spec_history",
+            "/spec_metrics",
+            "/spec_config",
+            "/spec_export",
+            "/spec_save",
+            "/spec_pause",
+            "/spec_resume",
+            "/spec_recover",
+            "/spec_guide",
+            "/stop_spec",
+        }:
             return "spec"
         return None
 

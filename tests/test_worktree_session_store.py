@@ -1,7 +1,7 @@
 from src.project import ProjectContext
 from src.thread import get_thread_manager, set_current_thread_id
 from src.worktree_engine.manager import WorktreeManager
-from src.worktree_engine.models import WorktreeUnit
+from src.worktree_engine.models import WorktreeSelectionItem, WorktreeUnit
 from src.worktree_engine.session_store import WorktreeSessionKey, WorktreeSessionStore
 
 
@@ -73,3 +73,36 @@ def test_cleanup_resets_topic_scoped_state():
     finally:
         set_current_thread_id(None)
         mgr.remove("thread-clean")
+
+
+def test_cleanup_preserves_topic_tool_model_selection_for_next_goal():
+    mgr = get_thread_manager()
+    mgr.register("thread-clean-selection", "chat1", "p1", mode="worktree")
+    project = ProjectContext("p1", "Project", "/tmp/project")
+    manager = WorktreeManager(project_manager=None)
+    try:
+        set_current_thread_id("thread-clean-selection")
+        state = manager.get_state(project)
+        selected = WorktreeSelectionItem(
+            provider="acp",
+            tool_name="codex",
+            display_name="Codex",
+            model_name="gpt-5.5",
+            model_display_name="GPT-5.5",
+        )
+        state.selection.selected_items = [selected]
+        state.git_root = project.root_path
+        state.base_branch = "main"
+        manager._git.optimize_storage = lambda *args, **kwargs: None
+
+        cleaned_state, warnings = manager.cleanup_worktrees(project, force=True)
+
+        assert warnings == []
+        assert cleaned_state.units == []
+        assert [item.selection_key for item in cleaned_state.selection.selected_items] == [
+            selected.selection_key
+        ]
+        assert manager.get_state(project) is cleaned_state
+    finally:
+        set_current_thread_id(None)
+        mgr.remove("thread-clean-selection")

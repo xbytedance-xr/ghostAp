@@ -173,6 +173,12 @@ class SpecHandler(BaseEngineHandler):
         project = self._ensure_project(message_id, chat_id, project)
         if not project:
             return
+        self._ensure_topic_engine_context(
+            mode="spec",
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+        )
 
         root_path = project.root_path if project else self.get_working_dir(chat_id)
 

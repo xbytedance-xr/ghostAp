@@ -82,6 +82,43 @@ class BaseEngineHandler(BaseHandler):
         """Subclasses must implement callback creation."""
         raise NotImplementedError
 
+    def _ensure_topic_engine_context(
+        self,
+        *,
+        mode: str,
+        message_id: str,
+        chat_id: str,
+        project: "ProjectContext",
+    ) -> str:
+        """Bind Deep/Spec style engines to the current Feishu topic.
+
+        Engine modes are topic-scoped strategies. If a command starts outside an
+        existing topic, the command message itself becomes the canonical root.
+        """
+        from ...thread import get_current_thread_id, set_current_thread_id
+
+        thread_root_id = get_current_thread_id() or message_id
+        ctx = self.ctx.thread_manager.get(thread_root_id)
+        if not ctx:
+            self.ctx.thread_manager.bind_engine(
+                thread_root_id=thread_root_id,
+                chat_id=chat_id,
+                project_id=project.project_id,
+                mode=mode,
+            )
+        elif ctx.mode != mode:
+            self.ctx.thread_manager.bind_engine(
+                thread_root_id=ctx.thread_root_id,
+                chat_id=ctx.chat_id,
+                project_id=ctx.project_id,
+                mode=mode,
+                tool_name=ctx.tool_name,
+                model_name=ctx.model_name,
+            )
+            thread_root_id = ctx.thread_root_id
+        set_current_thread_id(thread_root_id)
+        return thread_root_id
+
     def _pause_engine_generic(
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None, status_paused_enum: Any = None
     ):

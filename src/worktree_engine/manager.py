@@ -117,8 +117,15 @@ class WorktreeManager:
             pass
         return state
 
-    def reset_state(self, project: ProjectContext) -> WorktreeRuntimeState:
+    def reset_state(self, project: ProjectContext, *, preserve_selection: bool = False) -> WorktreeRuntimeState:
+        previous = self.get_state(project) if preserve_selection else None
         state = self._session_store.reset(self._session_key_for(project))
+        if previous is not None and previous.selection.selected_items:
+            state.selection.selected_items = list(previous.selection.selected_items)
+            state.selection.active = True
+            state.selection.stage = previous.selection.stage
+            state.enabled = True
+            state.summary_lines = format_selection_lines(state.selection.selected_items)
         try:
             project.worktree_state = state
         except Exception:
@@ -549,7 +556,7 @@ class WorktreeManager:
                 self._git.optimize_storage(repo_root)
             except Exception:
                 logger.warning("optimize_storage failed", exc_info=True)
-            return self.reset_state(project), []
+            return self.reset_state(project, preserve_selection=True), []
         return self._reporter.refresh_state(state), warnings
 
     # ------------------------------------------------------------------

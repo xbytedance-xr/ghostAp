@@ -182,6 +182,7 @@ def test_dispatch_message_logic_worktree_topic_bypasses_project_chat_default(moc
     project = ProjectContext("proj_1", "GhostAP", "/tmp")
     mock_ws_client._project_manager.find_by_bound_chat_id = MagicMock(return_value=project)
     mock_ws_client._process_with_intent = MagicMock()
+    mock_ws_client._handle_worktree_execute = MagicMock()
     mock_ws_client._message_dispatcher._handle_enter_coco = MagicMock()
 
     mock_ws_client._dispatch_message_logic(
@@ -193,15 +194,73 @@ def test_dispatch_message_logic_worktree_topic_bypasses_project_chat_default(moc
         command_match=None,
     )
 
-    mock_ws_client._process_with_intent.assert_called_once_with(
+    mock_ws_client._handle_worktree_execute.assert_called_once_with(
         "msg_goal",
         "chat_456",
         "修复卡片样式",
         project,
-        command_match=None,
-        shell_fast_tracked=False,
     )
+    mock_ws_client._process_with_intent.assert_not_called()
     mock_ws_client._message_dispatcher._handle_enter_coco.assert_not_called()
+
+
+def test_worktree_topic_plain_text_keeps_wt_strategy_after_previous_goal(mock_ws_client: FeishuWSClient):
+    """WT is a persistent topic strategy, not only an awaiting-goal transient state."""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._handle_worktree_execute = MagicMock()
+    mock_ws_client._process_with_intent = MagicMock()
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_next",
+        "chat_456",
+        "继续优化刚才的实现",
+        project,
+        "worktree",
+        command_match=None,
+    )
+
+    mock_ws_client._handle_worktree_execute.assert_called_once_with(
+        "msg_next",
+        "chat_456",
+        "继续优化刚才的实现",
+        project,
+    )
+    mock_ws_client._process_with_intent.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("engine", "expected_method"),
+    [
+        ("deep", "_start_deep_engine"),
+        ("spec", "_start_spec_engine"),
+    ],
+)
+def test_deep_and_spec_topic_plain_text_keeps_engine_strategy(
+    mock_ws_client: FeishuWSClient,
+    engine: str,
+    expected_method: str,
+):
+    """Deep/Spec topic continuation should not fall back to SMART intent routing."""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._process_with_intent = MagicMock()
+    setattr(mock_ws_client, expected_method, MagicMock())
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_next",
+        "chat_456",
+        "继续按这个方向做",
+        project,
+        engine,
+        command_match=None,
+    )
+
+    getattr(mock_ws_client, expected_method).assert_called_once_with(
+        "msg_next",
+        "chat_456",
+        "继续按这个方向做",
+        project,
+    )
+    mock_ws_client._process_with_intent.assert_not_called()
 
 
 def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
@@ -250,6 +309,27 @@ def test_topic_bound_worktree_blocks_spec_switch_command(mock_ws_client: FeishuW
     mock_ws_client._process_with_intent.assert_not_called()
 
 
+def test_topic_bound_worktree_blocks_spec_resume_command_family(mock_ws_client: FeishuWSClient):
+    """Engine switch blocking applies to the whole command family, not only /spec."""
+    project = ProjectContext("proj_1", "Test", "/tmp")
+    mock_ws_client._reply_text = MagicMock()
+    mock_ws_client._process_with_intent = MagicMock()
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_123",
+        "chat_456",
+        "/spec_resume",
+        project,
+        "worktree",
+        command_match=MagicMock(command="/spec_resume"),
+    )
+
+    mock_ws_client._reply_text.assert_called_once()
+    assert "WT" in mock_ws_client._reply_text.call_args.args[1]
+    assert "Spec" in mock_ws_client._reply_text.call_args.args[1]
+    mock_ws_client._process_with_intent.assert_not_called()
+
+
 def test_topic_bound_spec_allows_spec_command(mock_ws_client: FeishuWSClient):
     """Same-engine explicit commands remain available inside their topic."""
     project = ProjectContext("proj_1", "Test", "/tmp")
@@ -268,6 +348,74 @@ def test_topic_bound_spec_allows_spec_command(mock_ws_client: FeishuWSClient):
 
     mock_ws_client._reply_text.assert_not_called()
     mock_ws_client._process_with_intent.assert_called_once()
+
+
+def test_deep_start_binds_topic_context(mock_ws_client: FeishuWSClient):
+    """Starting Deep registers the current Feishu topic as a Deep strategy context."""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._thread_manager.remove("msg_deep")
+    mock_ws_client._deep_handler._submit_engine_task = MagicMock()
+    mock_ws_client._deep_handler.add_reaction = MagicMock()
+    mock_ws_client._deep_handler.ensure_request_id = MagicMock(return_value="req-1")
+    mock_ws_client._deep_handler.ctx.deep_engine_manager.get = MagicMock(return_value=None)
+    mock_ws_client._deep_handler.ctx.deep_engine_manager.get_or_create = MagicMock(return_value=MagicMock())
+
+    set_current_thread_id(None)
+    try:
+        mock_ws_client._deep_handler.start_deep_engine("msg_deep", "chat_456", "深入分析", project)
+    finally:
+        set_current_thread_id(None)
+
+    ctx = mock_ws_client._thread_manager.get("msg_deep")
+    assert ctx is not None
+    assert ctx.mode == "deep"
+    assert ctx.project_id == "proj_1"
+
+
+def test_spec_start_binds_topic_context(mock_ws_client: FeishuWSClient):
+    """Starting Spec registers the current Feishu topic as a Spec strategy context."""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._thread_manager.remove("msg_spec")
+    mock_ws_client._spec_handler._submit_engine_task = MagicMock()
+    mock_ws_client._spec_handler.add_reaction = MagicMock()
+    mock_ws_client._spec_handler.ensure_request_id = MagicMock(return_value="req-1")
+    mock_ws_client._spec_handler.ctx.spec_engine_manager.get = MagicMock(return_value=None)
+    mock_ws_client._spec_handler.ctx.spec_engine_manager.get_or_create = MagicMock(return_value=MagicMock())
+
+    set_current_thread_id(None)
+    try:
+        mock_ws_client._spec_handler.start_spec_engine("msg_spec", "chat_456", "写清规格", project)
+    finally:
+        set_current_thread_id(None)
+
+    ctx = mock_ws_client._thread_manager.get("msg_spec")
+    assert ctx is not None
+    assert ctx.mode == "spec"
+    assert ctx.project_id == "proj_1"
+
+
+def test_exit_in_engine_topic_unbinds_topic_strategy(mock_ws_client: FeishuWSClient):
+    """In an engine-only topic, /exit exits the topic strategy instead of reporting SMART."""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._thread_manager.register("thread-wt-exit", "chat_456", "proj_1", mode="worktree")
+    mock_ws_client._system_handler.reply_text = MagicMock()
+    mock_ws_client._control_plane.should_defer_exit = MagicMock(return_value=False)
+
+    set_current_thread_id("thread-wt-exit")
+    try:
+        mock_ws_client._dispatch_message_logic(
+            "msg_exit",
+            "chat_456",
+            "/exit",
+            project,
+            "worktree",
+            command_match=MagicMock(command="/exit"),
+        )
+    finally:
+        set_current_thread_id(None)
+
+    assert mock_ws_client._thread_manager.get("thread-wt-exit") is None
+    mock_ws_client._system_handler.reply_text.assert_called_once()
 
 
 def test_process_message_async_slash_parse_is_request_scoped(mock_ws_client: FeishuWSClient):
