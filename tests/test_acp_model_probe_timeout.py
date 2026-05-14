@@ -6,11 +6,13 @@ from src.coco_model.manager import DEFAULT_MODELS
 import src.acp.helper as _helper_mod
 
 
-def test_fetch_acp_models_times_out_and_returns_current_model(monkeypatch):
+def test_fetch_acp_models_times_out_and_returns_current_model(monkeypatch, tmp_path):
     async def slow_probe(_tool_name, _cwd, _current_model):
         await asyncio.sleep(1)
         return []
 
+    (tmp_path / ".codex").mkdir()
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setattr("src.acp.helper.probe_acp_models", slow_probe)
 
     started = time.monotonic()
@@ -54,6 +56,41 @@ def test_fetch_codex_models_uses_local_codex_cache_without_live_probe(monkeypatc
 
     assert [m.name for m in models] == ["gpt-5.5", "gpt-5.4"]
     assert models[0].is_default is True
+
+
+def test_fetch_codex_models_current_model_marks_default_without_collapsing_cache(monkeypatch, tmp_path):
+    async def probe_should_not_run(*_args, **_kwargs):  # pragma: no cover
+        raise AssertionError("codex fallback should not require live model probe")
+
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+    (codex_home / "models_cache.json").write_text(
+        """
+        {
+          "models": [
+            {"slug": "gpt-5.5", "display_name": "GPT-5.5", "visibility": "list", "priority": 0},
+            {"slug": "gpt-5.4", "display_name": "GPT-5.4", "visibility": "list", "priority": 1},
+            {"slug": "gpt-5.3", "display_name": "GPT-5.3", "visibility": "hidden", "priority": 2}
+          ]
+        }
+        """,
+        encoding="utf-8",
+    )
+
+    _helper_mod._acp_probe_cache.clear()
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe_should_not_run)
+
+    models = fetch_acp_models(
+        "codex",
+        cwd="/tmp/ghostap",
+        current_model="gpt-5.4",
+        probe_timeout=0.1,
+    )
+
+    assert [m.name for m in models] == ["gpt-5.5", "gpt-5.4"]
+    assert [m.name for m in models if m.is_default] == ["gpt-5.4"]
 
 
 def test_fetch_coco_models_timeout_uses_static_defaults(monkeypatch):

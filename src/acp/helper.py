@@ -63,16 +63,8 @@ def _read_codex_current_model() -> str:
 
 def _codex_models_from_local_cache(current_model: Optional[str] = None) -> list[ACPModelOption]:
     explicit_current = str(current_model or "").strip()
-    if explicit_current:
-        return [
-            ACPModelOption(
-                name=explicit_current,
-                description=explicit_current,
-                is_default=True,
-            )
-        ]
 
-    target_default = _read_codex_current_model()
+    target_default = explicit_current or _read_codex_current_model()
     models: list[ACPModelOption] = []
     seen: set[str] = set()
 
@@ -115,6 +107,15 @@ def _codex_models_from_local_cache(current_model: Optional[str] = None) -> list[
         )
     elif models and not any(m.is_default for m in models):
         models[0].is_default = True
+
+    if not models and explicit_current:
+        return [
+            ACPModelOption(
+                name=explicit_current,
+                description=explicit_current,
+                is_default=True,
+            )
+        ]
 
     return models[:8]
 
