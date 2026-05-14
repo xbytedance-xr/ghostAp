@@ -114,8 +114,9 @@ def check_and_truncate_payload(
         else:
             trunc_msg = UI_TEXT["truncation_warning_generic"]
         warning_element = {
-            "tag": "note",
-            "elements": [{"tag": "plain_text", "content": trunc_msg}],
+            "tag": "markdown",
+            "content": trunc_msg,
+            "text_size": "notation",
         }
 
         if "body" in truncated_card and isinstance(truncated_card.get("body", {}).get("elements"), list):
@@ -137,7 +138,8 @@ def check_and_truncate_payload(
                 logger.debug("failed to extract summary text", exc_info=True)
 
             fallback_card = {
-                "config": card.get("config", {"wide_screen_mode": True}),
+                "schema": "2.0",
+                "config": {**card.get("config", {"wide_screen_mode": True}), "update_multi": True},
                 "header": card.get("header", {"title": {"tag": "plain_text", "content": UI_TEXT["truncation_card_header"]}}),
                 "body": {
                     "elements": [

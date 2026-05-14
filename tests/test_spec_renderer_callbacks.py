@@ -83,6 +83,24 @@ class TestFooterStatusWithoutButtons:
             f"All elements: {[e for e in elements if e.get('tag') == 'markdown']}"
         )
 
+    def test_sticky_message_uses_schema_v2_safe_markdown(self):
+        """Sticky message must not render deprecated Schema V1 note elements."""
+        from src.card.builders.layout import UnifiedCardLayout
+        from src.card.models import CardLayoutSpec
+
+        spec = CardLayoutSpec(
+            content_markdown="Hello",
+            sticky_message="请注意",
+        )
+
+        elements = UnifiedCardLayout.build(spec)
+
+        assert not [e for e in elements if e.get("tag") == "note"]
+        assert any(
+            e.get("tag") == "markdown" and "请注意" in e.get("content", "")
+            for e in elements
+        )
+
 
 class TestOnReviewRetryAllStatuses:
     """AC-R12: on_review_retry handles all RetryStatus values without error."""

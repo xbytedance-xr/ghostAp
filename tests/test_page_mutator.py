@@ -17,6 +17,7 @@ from src.card.delivery.binding import BindingStore, PageBinding
 from src.card.delivery.engine import MutationOutcome, SequenceConflictError
 from src.card.delivery.page_mutator import PageMutator
 from src.card.delivery.sequence import SequenceManager
+from src.card.delivery.types import TransportError
 
 
 @dataclass
@@ -150,3 +151,31 @@ class TestStreamElementFallbackToUpdate:
 
         assert result.kind == "applied"
         client.update_card.assert_called_once()
+
+
+class TestInvalidCardFallback:
+    """update_page: invalid card content patches a known-good Schema V2 fallback."""
+
+    def test_content_invalid_fallback_payload_keeps_schema_v2_identity(self):
+        client = MagicMock()
+        client.update_card.side_effect = [
+            TransportError(
+                "Patch failed: ErrCode: 200861; ErrPath: ROOT -> body -> elements -> [6](tag: note)",
+                code=230099,
+            ),
+            None,
+        ]
+
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        page = PageBinding(page_index=0, message_id="msg_1", card_id="card_1", signature="old_sig", last_text="")
+        card = FakeRenderedCard(active_element=FakeActiveElement())
+
+        result = mutator.update_page("session_1", page, card)
+
+        assert result.kind == "applied"
+        fallback_payload = client.update_card.call_args_list[1].args[1]
+        assert fallback_payload["schema"] == "2.0"
+        assert fallback_payload["config"]["update_multi"] is True

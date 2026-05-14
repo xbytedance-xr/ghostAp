@@ -56,8 +56,9 @@ class UnifiedCardLayout:
         if spec.sticky_message:
             elements.append(
                 {
-                    "tag": "note",
-                    "elements": [{"tag": "plain_text", "content": f"⚠️ {spec.sticky_message}"}],
+                    "tag": "markdown",
+                    "content": f"⚠️ {spec.sticky_message}",
+                    "text_size": "notation",
                 }
             )
 

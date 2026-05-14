@@ -29,7 +29,8 @@ def _guard_payload(card_payload: dict) -> dict:
 def _fallback_invalid_card(reason: str) -> dict:
     """Small known-good card used when Feishu rejects the rendered card JSON."""
     return {
-        "config": {"wide_screen_mode": True},
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "update_multi": True},
         "header": {
             "template": "red",
             "title": {"tag": "plain_text", "content": "⚠️ 卡片渲染失败"},

@@ -12,6 +12,20 @@ import pytest
 from src.card.render.payload_truncator import check_and_truncate_payload, count_tagged_nodes
 
 
+def _collect_tags(obj):
+    tags = []
+    if isinstance(obj, dict):
+        tag = obj.get("tag")
+        if isinstance(tag, str):
+            tags.append(tag)
+        for value in obj.values():
+            tags.extend(_collect_tags(value))
+    elif isinstance(obj, list):
+        for item in obj:
+            tags.extend(_collect_tags(item))
+    return tags
+
+
 class TestCountTaggedNodes:
     """Tests for count_tagged_nodes helper."""
 
@@ -125,3 +139,36 @@ class TestCheckAndTruncatePayload:
         result = check_and_truncate_payload(content, max_size=9000, engine_type="deep")
         # Should mention /deep in truncation warning note
         assert "/deep" in result
+
+    def test_truncation_warning_uses_schema_v2_safe_element(self):
+        """Truncation warning must not use deprecated Schema V1 note elements."""
+        big_text = "X" * 9000
+        card = {
+            "schema": "2.0",
+            "body": {"elements": [{"tag": "markdown", "content": big_text}]},
+        }
+        content = json.dumps(card, ensure_ascii=False)
+
+        result = check_and_truncate_payload(content, max_size=9000, engine_type="deep")
+        parsed = json.loads(result)
+
+        assert "note" not in _collect_tags(parsed)
+        assert "/deep" in result
+
+    def test_aggressive_fallback_card_keeps_schema_v2_identity(self):
+        """Aggressive truncation fallback must remain a Schema V2 card."""
+        big_text = "X" * 50000
+        card = {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {"title": {"tag": "plain_text", "content": "Test"}},
+            "body": {"elements": [{"tag": "markdown", "content": big_text}]},
+        }
+        content = json.dumps(card, ensure_ascii=False)
+
+        result = check_and_truncate_payload(content, max_size=1000)
+        parsed = json.loads(result)
+
+        assert parsed["schema"] == "2.0"
+        assert parsed["config"]["update_multi"] is True
+        assert "note" not in _collect_tags(parsed)
