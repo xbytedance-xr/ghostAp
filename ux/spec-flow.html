@@ -149,6 +149,88 @@
       color: #fde68a;
       font-size: 12px;
     }
+    .review-flow {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(230px, 1fr));
+      gap: 12px;
+      min-width: 1040px;
+    }
+    .review-card {
+      border: 1px solid #334155;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.72);
+      overflow: hidden;
+    }
+    .review-card-head {
+      padding: 10px 12px;
+      border-bottom: 1px solid #334155;
+      background: rgba(14, 116, 144, 0.2);
+      color: #bae6fd;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .review-card-body {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      min-height: 236px;
+      color: #cbd5e1;
+      font-size: 11px;
+    }
+    .review-action {
+      border: 1px solid #475569;
+      border-radius: 6px;
+      background: rgba(2, 6, 23, 0.42);
+      padding: 7px 8px;
+    }
+    .review-primary {
+      border-color: #60a5fa;
+      color: #bfdbfe;
+      font-weight: 700;
+      text-align: center;
+    }
+    .review-solid {
+      background: rgba(37, 99, 235, 0.62);
+      border-color: #60a5fa;
+      color: #eff6ff;
+      font-weight: 700;
+      text-align: center;
+    }
+    .review-chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .review-chip {
+      border: 1px solid #334155;
+      border-radius: 999px;
+      background: rgba(30, 41, 59, 0.78);
+      padding: 3px 7px;
+      color: #ddd6fe;
+      font-size: 10px;
+    }
+    .review-phase-row {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 4px;
+    }
+    .review-phase-row span {
+      border-radius: 4px;
+      background: rgba(76, 29, 149, 0.42);
+      color: #ddd6fe;
+      padding: 5px 2px;
+      text-align: center;
+      font-size: 9px;
+      font-weight: 700;
+    }
+    .review-warning {
+      border: 1px solid rgba(248, 113, 113, 0.45);
+      border-radius: 8px;
+      background: rgba(127, 29, 29, 0.18);
+      color: #fecaca;
+      padding: 10px 12px;
+      font-size: 12px;
+    }
     .footer { margin-top: 18px; color: #64748b; font-size: 11px; text-align: center; }
     @media (max-width: 1100px) {
       .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -360,6 +442,75 @@
           <li>也可能因收敛、backlog 停滞、连续失败或 max cycles 停止。</li>
         </ul>
       </article>
+    </section>
+
+    <section class="panel" style="margin-top: 18px;">
+      <div class="panel-head">
+        <h2 class="panel-title">Spec Review 选择卡片目标流程</h2>
+        <span class="panel-note">同一张卡选择工具/模型，确认后进入原 Spec 流程</span>
+      </div>
+      <div class="diagram-wrap">
+        <div class="review-flow">
+          <article class="review-card">
+            <div class="review-card-head">1. /spec 目标已进入</div>
+            <div class="review-card-body">
+              <strong>Spec Review 编程模式 · Review Agents</strong>
+              <span>/spec 的文本已经是任务目标，这里只配置后续 REVIEW 阶段可用的 agent 池。</span>
+              <div class="review-action review-primary">Auto：使用主 agent 审查</div>
+              <div class="review-action">+ 添加 Coco</div>
+              <div class="review-action">+ 添加 Codex</div>
+              <div class="review-action">+ 添加 Claude</div>
+              <div class="review-action">+ 添加 TTADK</div>
+            </div>
+          </article>
+
+          <article class="review-card">
+            <div class="review-card-head">2. 原卡 PATCH 到模型选择</div>
+            <div class="review-card-body">
+              <strong>为选中的工具选择模型</strong>
+              <span>点击工具后不发新消息，只把同一张 Spec Review 卡切到该工具的模型列表。</span>
+              <div class="review-chip-row">
+                <span class="review-chip">默认模型</span>
+                <span class="review-chip">gpt-5.5</span>
+                <span class="review-chip">gpt-5.4</span>
+                <span class="review-chip">Test-O-New</span>
+              </div>
+              <div class="review-action">返回工具选择</div>
+              <div class="review-action">移除当前选择</div>
+            </div>
+          </article>
+
+          <article class="review-card">
+            <div class="review-card-head">3. 原卡确认 review 池</div>
+            <div class="review-card-body">
+              <strong>已选 review 组合</strong>
+              <span>确认后直接消费最初的 /spec 目标，不进入等待目标状态。</span>
+              <div class="review-action">Coco / Test-O-New-Thinking</div>
+              <div class="review-action">Coco / DeepSeek-V4-Pro</div>
+              <div class="review-action">Codex / gpt-5.5</div>
+              <div class="review-action review-solid">确认并开始 Spec</div>
+            </div>
+          </article>
+
+          <article class="review-card">
+            <div class="review-card-head">4. 同卡进入原 Spec 执行态</div>
+            <div class="review-card-body">
+              <strong>Spec · cycle 1/∞</strong>
+              <div class="review-phase-row">
+                <span>SPEC</span>
+                <span>PLAN</span>
+                <span>TASK</span>
+                <span>BUILD</span>
+                <span>REVIEW</span>
+              </div>
+              <span>主 Spec 持续执行用户最初输入的目标。到 REVIEW 阶段，多角色审查随机使用 review 池，并尽量让单轮覆盖已选工具。</span>
+              <div class="review-action">Architect -> Coco / Test-O-New</div>
+              <div class="review-action">Tester -> Codex / gpt-5.5</div>
+            </div>
+          </article>
+        </div>
+        <div class="review-warning" style="margin-top: 12px;">禁止链路：Spec Review 选择完成后不能触发 Worktree 四步骤、Worktree 标题、等待目标卡，也不能在群里另发一张 Worktree 卡。详细单页图：<a href="./spec-review-card-flow.html" style="color:#bfdbfe;">spec-review-card-flow.html</a></div>
+      </div>
     </section>
 
     <section class="two-col" style="margin-top: 18px;">
