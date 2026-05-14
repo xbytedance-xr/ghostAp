@@ -58,6 +58,13 @@ SYSTEM_CARD_ACTIONS = {
     "spec_stop",
     "spec_resume",
     "spec_skip_retry",
+    "spec_review_use_auto",
+    "spec_review_finish_selection",
+    "spec_review_select_tool",
+    "spec_review_select_model",
+    "spec_review_remove_item",
+    "spec_review_clear_items",
+    "show_spec_review_menu",
 }
 
 

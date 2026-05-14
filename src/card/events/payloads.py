@@ -210,6 +210,16 @@ class WorktreeToolSelectPayload(TypedDict):
     select_action: NotRequired[str]
     pending_tool: NotRequired[str]
     thread_root_id: NotRequired[str]
+    mode_label: NotRequired[str]
+    tool_select_title: NotRequired[str]
+    model_select_title: NotRequired[str]
+    auto_action: NotRequired[str]
+    auto_text: NotRequired[str]
+    auto_description: NotRequired[str]
+    finish_action: NotRequired[str]
+    remove_action: NotRequired[str]
+    clear_action: NotRequired[str]
+    back_action: NotRequired[str]
 
 
 class WorktreeConfirmPayload(TypedDict):

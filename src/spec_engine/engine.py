@@ -71,6 +71,7 @@ from .review import (
     review_result_to_text,
 )
 from .review_strategy import ReviewContext, select_review_strategy
+from .review_agents import ReviewAgentBinding, normalize_review_agents
 from .retry_status import RetryEvent, RetryStatus
 from .convergence import (
     ContinuationPolicy,
@@ -171,6 +172,11 @@ class SpecEngine(BaseEngine):
         self._review_orchestrator = ReviewOrchestrator()
         self._last_cycle_num: int = 0
         self._last_phase: SpecPhase = SpecPhase.SPEC
+        self._review_agent_pool: list[ReviewAgentBinding] = []
+
+    def set_review_agent_pool(self, agents: list[object] | None) -> None:
+        """Set optional heterogeneous review agents for adaptive role review."""
+        self._review_agent_pool = normalize_review_agents(agents)
 
     # ------------------------------------------------------------------
     # Compatibility properties: delegate to _review_orchestrator
@@ -260,7 +266,7 @@ class SpecEngine(BaseEngine):
         return "Coco"
 
     def _build_runtime_context(self) -> dict:
-        return _build_runtime_context(
+        runtime = _build_runtime_context(
             agent_type=str(self._agent_type or ""),
             engine_name=self.engine_name,
             model_name=self._model_name,
@@ -268,6 +274,9 @@ class SpecEngine(BaseEngine):
             models_tried=self._models_tried,
             infer_engine_name_fn=self._infer_engine_name,
         )
+        if self._review_agent_pool:
+            runtime["review_agents"] = [agent.to_dict() for agent in self._review_agent_pool]
+        return runtime
 
     def _restore_runtime_context(
         self,
@@ -300,6 +309,7 @@ class SpecEngine(BaseEngine):
         self._on_rate_limit = result["on_rate_limit"]
         self._saved_task_id = result["saved_task_id"]
         self._saved_task_signature = None
+        self._review_agent_pool = normalize_review_agents(runtime.get("review_agents"))
 
     def restore_from_task_state(
         self,
@@ -1406,6 +1416,7 @@ class SpecEngine(BaseEngine):
                 model_name=self._model_name,
                 on_retry_status=_on_retry_status,
                 cancel_event=self._review_orchestrator.cancel_event,
+                review_agents=list(self._review_agent_pool),
             ),
         )
 

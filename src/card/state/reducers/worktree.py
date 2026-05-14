@@ -17,6 +17,11 @@ from ...ui_text import UI_TEXT
 from ._shared import build_header
 
 
+def _is_model_select_action(action: str) -> bool:
+    normalized = str(action or "").strip()
+    return normalized == "worktree_select_model" or normalized.endswith("_select_model")
+
+
 def _build_worktree_header(state: CardState, subtitle: str) -> HeaderState:
     """Reuse shared programming-style title while updating worktree step subtitle."""
     current = build_header(state.metadata, state.terminal)
@@ -49,6 +54,21 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 "select_action": select_action,
                 "pending_tool": pending_tool,
             }
+            for key in (
+                "mode_label",
+                "tool_select_title",
+                "model_select_title",
+                "auto_action",
+                "auto_text",
+                "auto_description",
+                "finish_action",
+                "remove_action",
+                "clear_action",
+                "back_action",
+            ):
+                value = event.payload.get(key)
+                if value:
+                    data[key] = value
             block = WorktreeSelectBlock(
                 block_id="worktree_tool_list",
                 data=data,
@@ -58,8 +78,12 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
             # render 层的 _render_worktree_tool_select 内嵌输出，避免出现两个 "确认选择"。
             buttons: tuple[ButtonSpec, ...] = ()
 
-            is_model_select = select_action == "worktree_select_model"
-            subtitle = UI_TEXT["worktree_step_model_select"] if is_model_select else UI_TEXT["worktree_step_tool_select"]
+            is_model_select = _is_model_select_action(select_action)
+            subtitle = (
+                str(data.get("model_select_title") or UI_TEXT["worktree_step_model_select"])
+                if is_model_select
+                else str(data.get("tool_select_title") or UI_TEXT["worktree_step_tool_select"])
+            )
             header = _build_worktree_header(state, subtitle)
             if is_model_select:
                 footer_text = UI_TEXT["worktree_step_model_select_hint"]

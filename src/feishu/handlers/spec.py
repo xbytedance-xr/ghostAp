@@ -9,7 +9,19 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
+from ...card.actions.dispatch import (
+    SHOW_SPEC_REVIEW_MENU,
+    SPEC_REVIEW_CLEAR_ITEMS,
+    SPEC_REVIEW_FINISH_SELECTION,
+    SPEC_REVIEW_REMOVE_ITEM,
+    SPEC_REVIEW_SELECT_MODEL,
+    SPEC_REVIEW_SELECT_TOOL,
+    SPEC_REVIEW_USE_AUTO,
+)
+from ...card.events.worktree import worktree_tool_select
 from ...card.ui_text import UI_TEXT
+from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
+from ...spec_engine.review_agents import ReviewAgentBinding
 from ...spec_engine.models import SpecProjectStatus
 from ...spec_engine.task_persistence import list_pending_tasks, load_task_state
 from ...tasking import TaskPriority, TaskSpec
@@ -72,6 +84,124 @@ class SpecHandler(BaseEngineHandler):
     def _get_spec_reporter(self):
         """Return the progress reporter used by _safe_execute_engine."""
         return self.ctx.progress_reporter
+
+    def _worktree_manager(self):
+        """Reuse Worktree tool/model discovery for Spec review selection."""
+        mgr = getattr(self, "_spec_review_wt_manager", None)
+        if mgr is None:
+            from ...worktree_engine.manager import WorktreeManager
+
+            mgr = WorktreeManager(self.project_manager)
+            self._spec_review_wt_manager = mgr
+        return mgr
+
+    def _spec_review_selection_controller(self):
+        ctrl = getattr(self, "_spec_review_selection_ctrl", None)
+        if ctrl is None:
+            from ...worktree_engine.models import WorktreeRuntimeState
+            from ...worktree_engine.selection_controller import WorktreeSelectionController
+
+            def _get_state(project: "ProjectContext") -> WorktreeRuntimeState:
+                state = getattr(project, "spec_review_selection_state", None)
+                if state is None:
+                    state = WorktreeRuntimeState()
+                    project.spec_review_selection_state = state
+                return state
+
+            def _reset_state(project: "ProjectContext") -> WorktreeRuntimeState:
+                project.spec_review_selection_state = WorktreeRuntimeState()
+                return project.spec_review_selection_state
+
+            ctrl = WorktreeSelectionController(state_getter=_get_state, state_resetter=_reset_state)
+            self._spec_review_selection_ctrl = ctrl
+        return ctrl
+
+    def _get_available_spec_review_tools(self) -> list[dict]:
+        return self._worktree_manager().get_available_tools()
+
+    def _get_ttadk_spec_review_tools(self) -> list[dict]:
+        return self._worktree_manager().get_ttadk_tools()
+
+    def _get_spec_review_models_for_tool(
+        self,
+        tool_name: str,
+        provider: str = "ttadk",
+        cwd: Optional[str] = None,
+        current_model: Optional[str] = None,
+    ) -> list[dict]:
+        return self._worktree_manager().get_models_for_tool(
+            tool_name, provider=provider, cwd=cwd, current_model=current_model
+        )
+
+    @staticmethod
+    def _normalize_ttadk_tool_option(tool: dict) -> dict:
+        item = dict(tool or {})
+        item["provider"] = "ttadk"
+        item["agent_name"] = item.get("agent_name") or "ttadk"
+        display_name = str(item.get("display_name") or item.get("tool_name") or item.get("name") or "").strip()
+        prefix = "TTADK · "
+        if display_name.startswith(prefix):
+            display_name = display_name[len(prefix):].strip()
+        if display_name:
+            item["display_name"] = display_name
+        return item
+
+    def _dispatch_spec_review_tool_select(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        project: "ProjectContext",
+        tools: list[dict],
+        selected: list[dict] | None = None,
+        message: str = "",
+        select_action: str = SPEC_REVIEW_SELECT_TOOL,
+        pending_tool: str = "",
+    ) -> None:
+        from ...thread import get_current_thread_id
+
+        session = self.renderer.get_or_create_session(chat_id, project.project_id, reply_to=message_id)
+        session.dispatch(worktree_tool_select(
+            tools=tools,
+            selected=selected or [],
+            project_id=project.project_id,
+            message=message,
+            select_action=select_action,
+            pending_tool=pending_tool,
+            thread_root_id=get_current_thread_id() or "",
+            mode_label="Spec Review",
+            tool_select_title=UI_TEXT["spec_review_select_tool_title"],
+            model_select_title=UI_TEXT["spec_review_select_model_title"],
+            auto_action=SPEC_REVIEW_USE_AUTO,
+            auto_text=UI_TEXT["spec_review_auto_btn"],
+            auto_description=UI_TEXT["spec_review_auto_desc"],
+            finish_action=SPEC_REVIEW_FINISH_SELECTION,
+            remove_action=SPEC_REVIEW_REMOVE_ITEM,
+            clear_action=SPEC_REVIEW_CLEAR_ITEMS,
+            back_action=SHOW_SPEC_REVIEW_MENU,
+        ))
+
+    def _start_spec_review_selection(
+        self,
+        message_id: str,
+        chat_id: str,
+        requirement: str,
+        project: "ProjectContext",
+    ) -> None:
+        ctrl = self._spec_review_selection_controller()
+        state = ctrl.start_selection(project, goal=requirement)
+        tools = self._get_available_spec_review_tools()
+        if not tools:
+            self._start_spec_engine_now(message_id, chat_id, requirement, project, review_agents=[])
+            return
+        self._dispatch_spec_review_tool_select(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+            tools=tools,
+            selected=[item.to_dict() for item in state.selection.selected_items],
+            message=UI_TEXT["spec_review_select_message"],
+        )
 
     def _on_engine_error(
         self,
@@ -190,6 +320,30 @@ class SpecHandler(BaseEngineHandler):
             )
             return
 
+        self._start_spec_review_selection(message_id, chat_id, requirement, project)
+
+    def _start_spec_engine_now(
+        self,
+        message_id: str,
+        chat_id: str,
+        requirement: str,
+        project: Optional["ProjectContext"] = None,
+        *,
+        review_agents: list[ReviewAgentBinding] | None = None,
+    ):
+        project = self._ensure_project(message_id, chat_id, project)
+        if not project:
+            return
+
+        root_path = project.root_path if project else self.get_working_dir(chat_id)
+        existing = self.ctx.spec_engine_manager.get(chat_id, root_path)
+        if existing and existing.is_running:
+            self.reply_text(
+                message_id,
+                "⚠️ 当前项目已有 Spec 任务在执行中\n\n发送 `/spec_status` 查看进度\n发送 `/stop_spec` 停止任务",
+            )
+            return
+
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
         request_id = self.ensure_request_id(
@@ -204,6 +358,8 @@ class SpecHandler(BaseEngineHandler):
         # frame) becomes the entry surface, and TaskOrchestrator's lazy mode builds
         # per-task cards only when each task actually transitions to in_progress.
         engine = self.ctx.spec_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
+        if hasattr(engine, "set_review_agent_pool"):
+            engine.set_review_agent_pool(review_agents or [])
 
         project_name = project.project_name if project else os.path.basename(root_path) or "spec"
         task_id = generate_task_id(project_name)
@@ -231,6 +387,271 @@ class SpecHandler(BaseEngineHandler):
             )
 
         self._submit_engine_task(_scheduled_run, chat_id, message_id, project, request_id, task_id)
+
+    def _spec_review_pending_requirement(self, project: "ProjectContext") -> str:
+        state = getattr(project, "spec_review_selection_state", None)
+        return str(getattr(getattr(state, "selection", None), "pending_goal", "") or "").strip()
+
+    def handle_spec_review_use_auto(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ) -> None:
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+        requirement = self._spec_review_pending_requirement(project)
+        if not requirement:
+            self.reply_error(message_id, UI_TEXT["spec_cmd_help_usage"])
+            return
+        self._spec_review_selection_controller().reset_selection(project)
+        self._start_spec_engine_now(message_id, chat_id, requirement, project, review_agents=[])
+
+    def handle_spec_review_select_tool(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ) -> None:
+        value = value or {}
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+
+        tool_name = value.get("_option") or value.get("tool_name", "")
+        provider = value.get("provider", "")
+        supports_model = value.get("supports_model", False)
+        skip_model_selection = value.get("skip_model_selection", False)
+        if not tool_name:
+            self.reply_error(message_id, UI_TEXT["system_worktree_select_tool_error"])
+            return
+
+        ctrl = self._spec_review_selection_controller()
+        state = ctrl._get_state(project)
+        selected_dicts = [item.to_dict() for item in state.selection.selected_items]
+
+        if provider == "ttadk" and tool_name == "ttadk":
+            tools = [self._normalize_ttadk_tool_option(t) for t in self._get_ttadk_spec_review_tools()]
+            self._dispatch_spec_review_tool_select(
+                message_id=message_id,
+                chat_id=chat_id,
+                project=project,
+                tools=tools,
+                selected=selected_dicts,
+                message="请选择 TTADK 工具",
+            )
+            return
+
+        from ...worktree_engine.selection import WorktreeToolOption
+
+        option = WorktreeToolOption(
+            provider=provider,
+            tool_name=tool_name,
+            display_name=value.get("display_name") or tool_name,
+            agent_name=value.get("agent_name") or "",
+            supports_model=bool(supports_model),
+            model_optional=True,
+            skip_model_selection=bool(skip_model_selection),
+        )
+        ctrl.select_tool(project, option)
+
+        should_skip_model = not option.supports_model
+        models: list[dict] = []
+        if option.supports_model:
+            current_model = None
+            if project and getattr(project, "acp_tool_name", "") == tool_name:
+                current_model = getattr(project, "acp_model_name", None)
+            models = self._get_spec_review_models_for_tool(
+                tool_name,
+                provider=provider,
+                cwd=project.root_path,
+                current_model=current_model,
+            )
+            if not models or option.skip_model_selection:
+                should_skip_model = True
+
+        if not should_skip_model:
+            model_tools = [{
+                "id": DEFAULT_MODEL_OPTION_VALUE,
+                "name": UI_TEXT["system_acp_default_model_option"],
+                "description": UI_TEXT["system_acp_default_model_desc"],
+                "use_default_model": True,
+            }]
+            for m in models:
+                model_id = str(m.get("name") or "").strip()
+                if not model_id:
+                    continue
+                display = str(m.get("display_name") or model_id).strip() or model_id
+                blurb = str(m.get("description") or "").strip()
+                if blurb and blurb != display and len(blurb) > 60:
+                    blurb = blurb[:60].rstrip() + "…"
+                elif blurb == display:
+                    blurb = ""
+                model_tools.append({"id": model_id, "name": display, "description": blurb})
+            self._dispatch_spec_review_tool_select(
+                message_id=message_id,
+                chat_id=chat_id,
+                project=project,
+                tools=model_tools,
+                selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
+                message=UI_TEXT["system_worktree_select_model_prompt"].format(tool=option.display_name),
+                select_action=SPEC_REVIEW_SELECT_MODEL,
+                pending_tool=option.display_name,
+            )
+            return
+
+        model_name = None
+        model_display = None
+        if models:
+            target = next((m for m in models if m.get("is_default")), models[0])
+            model_name = target.get("name")
+            model_display = target.get("display_name")
+        _, _, msg = ctrl.add_pending_item(project, model_name=model_name, model_display_name=model_display)
+        ctrl.back_to_tool_selection(project)
+        self._dispatch_spec_review_tool_select(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+            tools=self._get_available_spec_review_tools(),
+            selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
+            message=msg,
+        )
+
+    def handle_spec_review_select_model(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ) -> None:
+        value = value or {}
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+        raw_model_name = (
+            value.get("_option")
+            or value.get("model_name")
+            or value.get("id")
+            or value.get("name")
+            or value.get("tool_name")
+            or None
+        )
+        use_default_model = bool(value.get("use_default_model")) or is_default_model_option(raw_model_name)
+        model_name = None if use_default_model else raw_model_name
+        model_display = None if use_default_model else (
+            value.get("model_display_name") or value.get("display_name") or value.get("name") or model_name
+        )
+        ctrl = self._spec_review_selection_controller()
+        _, _, msg = ctrl.add_pending_item(project, model_name=model_name, model_display_name=model_display)
+        ctrl.back_to_tool_selection(project)
+        self._dispatch_spec_review_tool_select(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+            tools=self._get_available_spec_review_tools(),
+            selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
+            message=msg,
+        )
+
+    def handle_spec_review_remove_item(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ) -> None:
+        value = value or {}
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+        ctrl = self._spec_review_selection_controller()
+        _, _, msg = ctrl.remove_selected_item(project, str(value.get("selection_key") or value.get("_option") or ""))
+        self._dispatch_spec_review_tool_select(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+            tools=self._get_available_spec_review_tools(),
+            selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
+            message=msg,
+        )
+
+    def handle_spec_review_clear_items(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ) -> None:
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+        ctrl = self._spec_review_selection_controller()
+        _, _, msg = ctrl.clear_selected_items(project)
+        self._dispatch_spec_review_tool_select(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+            tools=self._get_available_spec_review_tools(),
+            selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
+            message=msg,
+        )
+
+    def handle_spec_review_menu(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ) -> None:
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+        ctrl = self._spec_review_selection_controller()
+        ctrl.back_to_tool_selection(project)
+        self._dispatch_spec_review_tool_select(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+            tools=self._get_available_spec_review_tools(),
+            selected=[item.to_dict() for item in ctrl._get_state(project).selection.selected_items],
+            message=UI_TEXT["spec_review_select_message"],
+        )
+
+    def handle_spec_review_finish_selection(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: Optional[str] = None,
+        value: dict | None = None,
+    ) -> None:
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        if not project:
+            self.reply_error(message_id, UI_TEXT["system_worktree_project_not_found"])
+            return
+        ctrl = self._spec_review_selection_controller()
+        state = ctrl._get_state(project)
+        requirement = self._spec_review_pending_requirement(project)
+        if not requirement:
+            self.reply_error(message_id, UI_TEXT["spec_cmd_help_usage"])
+            return
+        state = ctrl.finalize_selection(project)
+        if not state.selection.selected_items:
+            self.reply_error(message_id, UI_TEXT["system_worktree_no_selection_error"])
+            return
+        review_agents = [
+            ReviewAgentBinding.from_selection_item(item)
+            for item in state.selection.selected_items
+        ]
+        self._start_spec_engine_now(message_id, chat_id, requirement, project, review_agents=review_agents)
 
     # ------------------------------------------------------------------
     # status

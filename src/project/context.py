@@ -126,6 +126,7 @@ class ProjectContext:
     bound_chat_created_at: float = 0.0
 
     worktree_state: Any = None
+    spec_review_selection_state: Any = None
 
     def __post_init__(self):
         # Lightweight lock protecting add_chat_id() mutations on
@@ -140,6 +141,9 @@ class ProjectContext:
         if self.worktree_state is None:
             from ..worktree_engine.models import WorktreeRuntimeState
             self.worktree_state = WorktreeRuntimeState()
+        if self.spec_review_selection_state is None:
+            from ..worktree_engine.models import WorktreeRuntimeState
+            self.spec_review_selection_state = WorktreeRuntimeState()
         if not self.working_dir:
             self.working_dir = self.root_path
         self.root_path = os.path.expanduser(self.root_path)

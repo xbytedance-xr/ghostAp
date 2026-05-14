@@ -20,6 +20,13 @@ REJECT_ACTION = "reject_action"  # User rejects a pending approval request
 SPEC_STOP = "spec_stop"  # Force-stop current Spec engine execution
 SPEC_SKIP_RETRY = "spec_skip_retry"  # Skip retry and accept current cycle result
 SPEC_RESUME = "spec_resume"  # Resume/retry Spec engine after failure
+SPEC_REVIEW_USE_AUTO = "spec_review_use_auto"  # Keep Spec review on the main agent/model
+SPEC_REVIEW_FINISH_SELECTION = "spec_review_finish_selection"  # Confirm selected Spec review agents
+SPEC_REVIEW_SELECT_TOOL = "spec_review_select_tool"  # Select a tool for Spec multi-agent review
+SPEC_REVIEW_SELECT_MODEL = "spec_review_select_model"  # Select a model for pending Spec review tool
+SPEC_REVIEW_REMOVE_ITEM = "spec_review_remove_item"  # Remove a selected Spec review agent
+SPEC_REVIEW_CLEAR_ITEMS = "spec_review_clear_items"  # Clear selected Spec review agents
+SHOW_SPEC_REVIEW_MENU = "show_spec_review_menu"  # Return to Spec review tool selection
 
 # ---------------------------------------------------------------------------
 # Deep engine actions

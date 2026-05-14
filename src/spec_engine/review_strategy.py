@@ -26,6 +26,7 @@ from ..agent_session import EphemeralReviewSession
 from ..engine_base import ReviewResult
 from .adaptive_review import PromptRunner, run_adaptive_role_review_pipeline
 from .review import ReviewCircuitState, ReviewPipelineConfig, conduct_review
+from .review_agents import ReviewAgentBinding, assign_review_agents, normalize_review_agents
 from .review_artifacts import ReviewArtifacts
 from .review_roles import ReviewRoleSpec, build_adaptive_role_plan, fixed_programming_roles
 
@@ -65,6 +66,8 @@ class ReviewContext:
     model_name: Optional[str] = None
     prompt_runner_factory: Optional[Callable[[ReviewRoleSpec], PromptRunner]] = None
     role_plan_override: Optional[list[ReviewRoleSpec]] = None
+    review_agents: Optional[list[ReviewAgentBinding]] = None
+    review_agent_rng: Any = None
 
 
 class ReviewStrategy(ABC):
@@ -153,7 +156,12 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
         if ctx.role_plan_override:
             role_plan_hash = self._hash_roles(roles)
 
-        prompt_runner_factory = ctx.prompt_runner_factory or self._build_ephemeral_prompt_runner_factory(ctx)
+        review_agents = normalize_review_agents(ctx.review_agents)
+        role_agent_map = assign_review_agents(roles, review_agents, rng=ctx.review_agent_rng)
+        prompt_runner_factory = ctx.prompt_runner_factory or self._build_ephemeral_prompt_runner_factory(
+            ctx,
+            role_agent_map=role_agent_map,
+        )
         result = run_adaptive_role_review_pipeline(
             ctx.artifacts,
             roles,
@@ -174,15 +182,24 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
                 logger.debug("[ReviewStrategy:adaptive_roles] on_review_done raised: %s", repr(e))
         return result
 
-    def _build_ephemeral_prompt_runner_factory(self, ctx: ReviewContext) -> Callable[[ReviewRoleSpec], PromptRunner]:
+    def _build_ephemeral_prompt_runner_factory(
+        self,
+        ctx: ReviewContext,
+        *,
+        role_agent_map: dict[str, ReviewAgentBinding] | None = None,
+    ) -> Callable[[ReviewRoleSpec], PromptRunner]:
         cwd = (ctx.artifacts.cwd if ctx.artifacts else "") or "."
+        role_agent_map = role_agent_map or {}
 
         def _factory(role: ReviewRoleSpec) -> PromptRunner:
             def _runner(prompt: str, on_event: Optional[Callable] = None, timeout: float = 240.0) -> str:
-                if callable(ctx.send_prompt_with_retry_fn) and ctx.session is None:
+                if callable(ctx.send_prompt_with_retry_fn) and ctx.session is None and not role_agent_map:
                     res = ctx.send_prompt_with_retry_fn(prompt, on_event=on_event, timeout=timeout)
                     return str(getattr(res, "text", res) or "")
-                with EphemeralReviewSession(ctx.agent_type, cwd, ctx.model_name) as session:
+                binding = role_agent_map.get(role.role_id)
+                agent_type = binding.agent_type if binding else ctx.agent_type
+                model_name = binding.model_name if binding else ctx.model_name
+                with EphemeralReviewSession(agent_type, cwd, model_name) as session:
                     res = session.send_prompt(prompt, on_event=on_event, timeout=timeout)
                     return str(getattr(res, "text", res) or "")
 

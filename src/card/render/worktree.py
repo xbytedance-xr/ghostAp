@@ -169,7 +169,7 @@ def render_worktree_panel(block: ContentBlock) -> dict:
         # Tool select kind doubles as model select stage; pick title/hint by select_action.
         is_model_select = (
             kind == "worktree_tool_select"
-            and str((data or {}).get("select_action") or "") == WORKTREE_SELECT_MODEL
+            and _is_model_select_action(str((data or {}).get("select_action") or ""))
         )
         if is_model_select:
             title_key = "worktree_step_model_select"
@@ -181,6 +181,9 @@ def render_worktree_panel(block: ContentBlock) -> dict:
             title_key = _STEP_TITLE_KEY_MAP.get(kind, "")
             hint_key = _STEP_HINT_KEY_MAP.get(kind, "")
         step_title = UI_TEXT.get(title_key, "")
+        if kind == "worktree_tool_select" and isinstance(data, dict):
+            override_key = "model_select_title" if is_model_select else "tool_select_title"
+            step_title = str(data.get(override_key) or step_title)
         step_num = step_idx + 1
         step_label = f"**{UI_TEXT['worktree_step_label_fmt'].format(num=step_num, total=_TOTAL_STEPS, title=step_title)}**"
         title_el = {"tag": "markdown", "content": step_label, "text_size": "normal"}
@@ -235,9 +238,14 @@ def _render_worktree_tool_select(data: dict) -> dict:
     project_id = str(data.get("project_id") or "")
     thread_root_id = str(data.get("thread_root_id") or "")
     default_action = str(data.get("select_action") or WORKTREE_SELECT_TOOL)
+    finish_action = str(data.get("finish_action") or WORKTREE_FINISH_SELECTION)
+    remove_action = str(data.get("remove_action") or WORKTREE_REMOVE_ITEM)
+    clear_action = str(data.get("clear_action") or WORKTREE_CLEAR_ITEMS)
+    back_action = str(data.get("back_action") or SHOW_WORKTREE_MENU)
+    auto_action = str(data.get("auto_action") or "")
     pending_tool = str(data.get("pending_tool") or "").strip()
     selected_keys = _selected_tool_keys(selected)
-    is_model_select = default_action == WORKTREE_SELECT_MODEL
+    is_model_select = _is_model_select_action(default_action)
 
     elements: list[dict] = []
     if is_model_select:
@@ -267,6 +275,17 @@ def _render_worktree_tool_select(data: dict) -> dict:
         # 模型阶段改用双列按钮网格：按钮本身就是选择目标，value 仍携带真实 model_id。
         elements.extend(_render_worktree_model_option_grid(tools, project_id=project_id, thread_root_id=thread_root_id))
     else:
+        if auto_action:
+            auto_text = str(data.get("auto_text") or UI_TEXT.get("spec_review_auto_btn", "Auto"))
+            auto_desc = str(data.get("auto_description") or "").strip()
+            if auto_desc:
+                elements.append({"tag": "markdown", "content": auto_desc, "text_size": "notation"})
+            elements.append(_callback_button(
+                text=auto_text,
+                value=_with_thread_root({"action": auto_action, "project_id": project_id}, thread_root_id),
+                button_type="primary",
+            ))
+            elements.append({"tag": "hr"})
         for tool in tools:
             elements.append(
                 _render_worktree_select_option(
@@ -306,7 +325,7 @@ def _render_worktree_tool_select(data: dict) -> dict:
         elements.append({"tag": "hr"})
         elements.append(_callback_button(
             text=UI_TEXT["worktree_back_to_tools_btn"],
-            value=_with_thread_root({"action": SHOW_WORKTREE_MENU, "project_id": project_id}, thread_root_id),
+            value=_with_thread_root({"action": back_action, "project_id": project_id}, thread_root_id),
         ))
     else:
         if selected_dicts:
@@ -316,17 +335,22 @@ def _render_worktree_tool_select(data: dict) -> dict:
                 "content": UI_TEXT["worktree_selected_block_title"].format(count=len(selected_dicts)),
             })
             for item in selected_dicts:
-                elements.append(_render_selected_item_row(item, project_id=project_id, thread_root_id=thread_root_id))
+                elements.append(_render_selected_item_row(
+                    item,
+                    project_id=project_id,
+                    thread_root_id=thread_root_id,
+                    remove_action=remove_action,
+                ))
             elements.append(_callback_button(
                 text=UI_TEXT["worktree_clear_items_btn"],
-                value=_with_thread_root({"action": WORKTREE_CLEAR_ITEMS, "project_id": project_id}, thread_root_id),
+                value=_with_thread_root({"action": clear_action, "project_id": project_id}, thread_root_id),
             ))
 
         elements.append({"tag": "hr"})
         if selected_dicts:
             elements.append(_callback_button(
                 text=UI_TEXT["worktree_confirm_selection_btn"],
-                value=_with_thread_root({"action": WORKTREE_FINISH_SELECTION, "project_id": project_id}, thread_root_id),
+                value=_with_thread_root({"action": finish_action, "project_id": project_id}, thread_root_id),
                 button_type="primary",
             ))
         else:
@@ -367,7 +391,13 @@ def _callback_button(
     }
 
 
-def _render_selected_item_row(item: dict, *, project_id: str, thread_root_id: str = "") -> dict:
+def _render_selected_item_row(
+    item: dict,
+    *,
+    project_id: str,
+    thread_root_id: str = "",
+    remove_action: str = WORKTREE_REMOVE_ITEM,
+) -> dict:
     """One already-selected item row: label + ✕ remove button."""
     label = str(
         item.get("display_label")
@@ -396,7 +426,7 @@ def _render_selected_item_row(item: dict, *, project_id: str, thread_root_id: st
                 "elements": [_callback_button(
                     text=UI_TEXT["worktree_remove_item_btn"],
                     value=_with_thread_root({
-                        "action": WORKTREE_REMOVE_ITEM,
+                        "action": remove_action,
                         "selection_key": selection_key,
                         "project_id": project_id,
                     }, thread_root_id),
@@ -452,6 +482,11 @@ def _with_thread_root(value: dict, thread_root_id: str) -> dict:
     if thread_root_id:
         value["thread_root_id"] = thread_root_id
     return value
+
+
+def _is_model_select_action(action: str) -> bool:
+    normalized = str(action or "").strip()
+    return normalized == WORKTREE_SELECT_MODEL or normalized.endswith("_select_model")
 
 
 def _render_worktree_model_option_grid(tools: list, *, project_id: str, thread_root_id: str = "") -> list[dict]:
@@ -522,7 +557,7 @@ def _render_worktree_select_option(
     tool_id, name, desc = _tool_identity(tool)
     action = str(tool.get("action") or default_action or WORKTREE_SELECT_TOOL)
 
-    if action == WORKTREE_SELECT_MODEL:
+    if _is_model_select_action(action):
         value = {
             "action": WORKTREE_SELECT_MODEL,
             "model_name": tool_id,
@@ -551,7 +586,7 @@ def _render_worktree_select_option(
 
     # Tool rows can afford one compact markdown label. Model choices normally
     # bypass this row renderer and use the grid above to stay under node budget.
-    if action == WORKTREE_SELECT_MODEL:
+    if _is_model_select_action(action):
         label_elements: list[dict] = [
             {"tag": "markdown", "content": f"**{name}**"}
         ]

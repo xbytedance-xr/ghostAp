@@ -46,6 +46,28 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         self._last_perspective: str | None = None
         self._pending_split_hint: str | None = None
 
+    def get_or_create_session(
+        self, chat_id: str, project_id: str, *, reply_to: str | None = None
+    ) -> "CardSession":
+        """Create a lightweight Spec card session for pre-run selection UI."""
+        metadata = CardMetadata(
+            engine_type="spec",
+            mode_name="Spec Review",
+            mode_emoji="📋",
+            tool_name="Review Agents",
+        )
+        hooks = self._build_hooks(reply_to or "", chat_id=chat_id)
+        session = self.create_session(
+            chat_id=chat_id,
+            message_id=reply_to or "",
+            metadata=metadata,
+            hooks=hooks,
+            budget=RenderBudget(engine_cmd="/spec"),
+            notify_callback=self.handler.send_text_to_chat,
+        )
+        self._current_session = session
+        return session
+
     def get_active_session(self) -> "Dispatchable | None":
         """Return the currently active spec engine session (rotator)."""
         return self._current_session

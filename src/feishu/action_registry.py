@@ -247,6 +247,34 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.WORKTREE_SELECT_MODEL,
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._handle_spec_review_use_auto(mid, cid, pid, val),
+        exact=action_ids.SPEC_REVIEW_USE_AUTO,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_spec_review_finish_selection(mid, cid, pid, val),
+        exact=action_ids.SPEC_REVIEW_FINISH_SELECTION,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_spec_review_select_tool(mid, cid, pid, val),
+        exact=action_ids.SPEC_REVIEW_SELECT_TOOL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_spec_review_select_model(mid, cid, pid, val),
+        exact=action_ids.SPEC_REVIEW_SELECT_MODEL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_spec_review_remove_item(mid, cid, pid, val),
+        exact=action_ids.SPEC_REVIEW_REMOVE_ITEM,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_spec_review_clear_items(mid, cid, pid, val),
+        exact=action_ids.SPEC_REVIEW_CLEAR_ITEMS,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_spec_review_menu(mid, cid, pid, val),
+        exact=action_ids.SHOW_SPEC_REVIEW_MENU,
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_remove_item(mid, cid, pid, val),
         exact=action_ids.WORKTREE_REMOVE_ITEM,
     )

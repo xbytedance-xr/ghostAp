@@ -52,11 +52,21 @@ def worktree_progress(
 
 
 def worktree_tool_select(
-    tools: list[dict], selected: list[str] | None = None,
+    tools: list[dict], selected: list[str] | list[dict] | None = None,
     project_id: str = "", message: str = "",
     select_action: str = "worktree_select_tool",
     pending_tool: str = "",
     thread_root_id: str = "",
+    mode_label: str = "",
+    tool_select_title: str = "",
+    model_select_title: str = "",
+    auto_action: str = "",
+    auto_text: str = "",
+    auto_description: str = "",
+    finish_action: str = "",
+    remove_action: str = "",
+    clear_action: str = "",
+    back_action: str = "",
 ) -> CardEvent:
     """Worktree tool selection card state.
 
@@ -86,6 +96,20 @@ def worktree_tool_select(
     }
     if thread_root_id:
         payload["thread_root_id"] = thread_root_id
+    for key, value in {
+        "mode_label": mode_label,
+        "tool_select_title": tool_select_title,
+        "model_select_title": model_select_title,
+        "auto_action": auto_action,
+        "auto_text": auto_text,
+        "auto_description": auto_description,
+        "finish_action": finish_action,
+        "remove_action": remove_action,
+        "clear_action": clear_action,
+        "back_action": back_action,
+    }.items():
+        if value:
+            payload[key] = value
     return CardEvent(type=CardEventType.WORKTREE_TOOL_SELECT, payload=payload)
 
 

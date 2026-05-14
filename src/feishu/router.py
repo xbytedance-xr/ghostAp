@@ -130,6 +130,13 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_toggle_spec_log": ("spec", "_toggle_log"),
     "_switch_spec_card_mode": ("spec", "_switch_card_mode"),
     "_toggle_spec_ac": ("spec", "_toggle_ac"),
+    "_handle_spec_review_use_auto": ("spec", "handle_spec_review_use_auto"),
+    "_handle_spec_review_finish_selection": ("spec", "handle_spec_review_finish_selection"),
+    "_handle_spec_review_select_tool": ("spec", "handle_spec_review_select_tool"),
+    "_handle_spec_review_select_model": ("spec", "handle_spec_review_select_model"),
+    "_handle_spec_review_remove_item": ("spec", "handle_spec_review_remove_item"),
+    "_handle_spec_review_clear_items": ("spec", "handle_spec_review_clear_items"),
+    "_handle_spec_review_menu": ("spec", "handle_spec_review_menu"),
     # --- Project ---
     "_create_project": ("project", "create_project"),
     "_show_project_board": ("project", "show_project_board"),

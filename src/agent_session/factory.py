@@ -289,7 +289,9 @@ def create_review_session(
         session.start()
         return session
 
-    effective_model = model_name or get_coco_model_manager().get_current_model()
+    effective_model = model_name
+    if not effective_model and agent_type in ("coco", ""):
+        effective_model = get_coco_model_manager().get_current_model()
     return start_session_with_retry(
         agent_type=agent_type,
         cwd=cwd,
