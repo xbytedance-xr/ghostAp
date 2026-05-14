@@ -414,6 +414,44 @@ class CardBuilder:
         )
 
     @staticmethod
+    def build_acp_model_loading_card(
+        tool_name: str,
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_acp_model_loading_card(
+            tool_name,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+        )
+
+    @staticmethod
+    def build_acp_model_error_card(
+        tool_name: str,
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_acp_model_error_card(
+            tool_name,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+        )
+
+    @staticmethod
+    def build_acp_programming_ready_card(
+        tool_name: str,
+        model_name: Optional[str],
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_acp_programming_ready_card(
+            tool_name,
+            model_name,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+        )
+
+    @staticmethod
     def build_command_menu_card(project: Optional[ProjectContext] = None) -> tuple[str, str]:
         return SystemBuilder.build_command_menu_card(project)
 

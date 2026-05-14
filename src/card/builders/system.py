@@ -1059,6 +1059,108 @@ class SystemBuilder:
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
+    def build_acp_model_loading_card(
+        tool_name: str,
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build the first frame for ACP model discovery."""
+        _ = project_id, thread_root_id
+        elements = [
+            {
+                "tag": "markdown",
+                "content": UI_TEXT["system_acp_model_loading_body"].format(tool=tool_name),
+            }
+        ]
+        card = CoreBuilder._wrap_card(
+            UI_TEXT["system_acp_model_loading_title"].format(tool=tool_name),
+            "blue",
+            elements,
+        )
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_acp_model_error_card(
+        tool_name: str,
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build an in-place error frame for ACP model discovery."""
+        elements = [
+            {
+                "tag": "markdown",
+                "content": UI_TEXT["system_acp_model_error_body"].format(tool=tool_name),
+            },
+            {"tag": "hr"},
+        ]
+        elements.extend(
+            build_responsive_layout(
+                [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_refresh_btn"]},
+                        "type": "primary",
+                        "value": {
+                            "action": "refresh_acp_models",
+                            "tool_name": tool_name,
+                            "project_id": project_id,
+                            "thread_root_id": thread_root_id,
+                        },
+                    }
+                ]
+            )
+        )
+        card = CoreBuilder._wrap_card(
+            UI_TEXT["system_acp_model_error_title"].format(tool=tool_name),
+            "red",
+            elements,
+        )
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_acp_programming_ready_card(
+        tool_name: str,
+        model_name: Optional[str],
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build the final frame after an ACP model has been selected."""
+        model_label = model_name or UI_TEXT["system_acp_default_model_option"]
+        elements = [
+            {
+                "tag": "markdown",
+                "content": UI_TEXT["system_acp_programming_ready_body"].format(
+                    tool=tool_name,
+                    model=model_label,
+                ),
+            },
+            {"tag": "hr"},
+        ]
+        elements.extend(
+            build_responsive_layout(
+                [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": UI_TEXT["system_acp_switch_model_btn"]},
+                        "type": "default",
+                        "value": {
+                            "action": "refresh_acp_models",
+                            "tool_name": tool_name,
+                            "project_id": project_id,
+                            "thread_root_id": thread_root_id,
+                        },
+                    }
+                ]
+            )
+        )
+        card = CoreBuilder._wrap_card(
+            UI_TEXT["system_acp_programming_ready_title"].format(tool=tool_name),
+            "green",
+            elements,
+        )
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
     def build_command_menu_card(project: Optional[ProjectContext] = None) -> tuple[str, str]:
         """Build a mobile-friendly command menu card."""
         project_id = project.project_id if project else None

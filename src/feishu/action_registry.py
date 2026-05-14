@@ -333,7 +333,7 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.SELECT_ACP_MODEL,
     )
     client._register_action(
-        lambda mid, cid, pid, val: client._handle_refresh_acp_models(mid, cid, val.get("tool_name", ""), pid),
+        lambda mid, cid, pid, val: client._handle_refresh_acp_models(mid, cid, val.get("tool_name", ""), pid, val),
         exact=action_ids.REFRESH_ACP_MODELS,
     )
 

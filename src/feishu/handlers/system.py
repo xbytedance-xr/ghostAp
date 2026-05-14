@@ -727,6 +727,56 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         """
         return fetch_acp_models(tool_name, cwd=cwd, current_model=current_model)
 
+    def _show_acp_model_selection_flow(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        tool: str,
+        project_id: Optional[str],
+        cwd: str,
+        current_model: Optional[str],
+        thread_root_id: Optional[str],
+        update_existing: bool = False,
+    ) -> None:
+        """Show ACP model discovery and selection as one progressively patched card."""
+        _, loading_card = CardBuilder.build_acp_model_loading_card(
+            tool,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+        )
+        progress_message_id: Optional[str] = None
+        if update_existing:
+            if self.update_card(message_id, loading_card):
+                progress_message_id = message_id
+            else:
+                progress_message_id = self.reply_card(message_id, loading_card)
+        else:
+            progress_message_id = self.reply_card(message_id, loading_card)
+
+        models = self._fetch_acp_models(tool, cwd=cwd, current_model=current_model)
+        if not models:
+            _, error_card = CardBuilder.build_acp_model_error_card(
+                tool,
+                project_id=project_id,
+                thread_root_id=thread_root_id,
+            )
+            if progress_message_id and self.update_card(progress_message_id, error_card):
+                return
+            self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool_name=tool))
+            return
+
+        _, model_card = CardBuilder.build_acp_model_select_card(
+            models,
+            tool,
+            project_id,
+            current_model=current_model,
+            thread_root_id=thread_root_id,
+        )
+        if progress_message_id and self.update_card(progress_message_id, model_card):
+            return
+        self.reply_card(message_id, model_card)
+
     def handle_select_acp_tool(
         self,
         message_id: str,
@@ -749,11 +799,6 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             current_model = getattr(project, "acp_model_name", None)
 
         logger.info("[ACP] selecting tool=%s project_id=%s cwd=%s", tool, project_id or "-", cwd)
-        self.reply_text(message_id, UI_TEXT["system_acp_querying_models"].format(tool_name=tool))
-        models = self._fetch_acp_models(tool, cwd=cwd, current_model=current_model)
-        if not models:
-            self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool=tool))
-            return
 
         # Stash the pending prompt (if provided) so that after the user picks a
         # model, the mode handler picks it up as the first programming request.
@@ -761,14 +806,15 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self._stash_pending_prompt(chat_id, tool, pending_prompt)
 
         from ...thread import get_current_thread_id
-        msg_type, card_content = CardBuilder.build_acp_model_select_card(
-            models,
-            tool,
-            project_id,
+        self._show_acp_model_selection_flow(
+            message_id=message_id,
+            chat_id=chat_id,
+            tool=tool,
+            project_id=project_id,
+            cwd=cwd,
             current_model=current_model,
             thread_root_id=get_current_thread_id(),
         )
-        self.reply_card(message_id, card_content)
 
     def handle_enter_acp_saved_selection(
         self,
@@ -798,8 +844,35 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self._stash_pending_prompt(chat_id, tool, pending_prompt)
         self.handle_select_acp_model(message_id, chat_id, tool, model_name, project)
 
-    def handle_refresh_acp_models(self, message_id: str, chat_id: str, tool_name: str, project_id: Optional[str] = None):
-        self.handle_select_acp_tool(message_id, chat_id, tool_name, project_id)
+    def handle_refresh_acp_models(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        project_id: Optional[str] = None,
+        value: Optional[dict] = None,
+    ):
+        tool = (tool_name or "").strip().lower()
+        if not tool:
+            self.reply_error(message_id, UI_TEXT["system_acp_select_tool_prompt"])
+            return
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+        cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
+        current_model = None
+        if project and getattr(project, "acp_tool_name", "") == tool:
+            current_model = getattr(project, "acp_model_name", None)
+        from ...thread import get_current_thread_id
+        thread_root_id = str((value or {}).get("thread_root_id") or "").strip() or get_current_thread_id()
+        self._show_acp_model_selection_flow(
+            message_id=message_id,
+            chat_id=chat_id,
+            tool=tool,
+            project_id=project_id,
+            cwd=cwd,
+            current_model=current_model,
+            thread_root_id=thread_root_id,
+            update_existing=True,
+        )
 
     def handle_select_acp_model(
         self,
@@ -827,6 +900,15 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             handler.current_model = model
 
         entered = self._enter_mode_with_acp_model(message_id, chat_id, tool, model, target_project)
+        if entered:
+            from ...thread import get_current_thread_id
+            _, ready_card = CardBuilder.build_acp_programming_ready_card(
+                tool,
+                model,
+                project_id=(target_project.project_id if target_project else None),
+                thread_root_id=get_current_thread_id(),
+            )
+            self.update_card(message_id, ready_card)
 
         # If we entered the mode and a prompt was stashed (project-chat default
         # Coco flow), forward it to the mode handler as the first requirement.
@@ -900,20 +982,16 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
 
         if subcommand in ("", "list", "ls"):
             # Show interactive model selection card
-            self.reply_text(message_id, UI_TEXT["system_acp_querying_models"].format(tool_name=tool_name))
-            models = self._fetch_acp_models(tool_name, cwd=cwd, current_model=current_model)
-            if not models:
-                self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool_name=tool_name))
-                return
             from ...thread import get_current_thread_id
-            msg_type, card_content = CardBuilder.build_acp_model_select_card(
-                models,
-                tool_name,
-                project_id,
+            self._show_acp_model_selection_flow(
+                message_id=message_id,
+                chat_id=chat_id,
+                tool=tool_name,
+                project_id=project_id,
+                cwd=cwd,
                 current_model=current_model,
                 thread_root_id=get_current_thread_id(),
             )
-            self.reply_card(message_id, card_content)
             return
 
         # Direct switch: /model <name> or /model switch <name>

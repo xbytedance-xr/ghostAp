@@ -44,8 +44,10 @@ def _make_handler():
 
     handler = SystemHandler(ctx)
     handler.reply_card = MagicMock()
+    handler.reply_card.return_value = "card-msg"
     handler.reply_text = MagicMock()
     handler.reply_error = MagicMock()
+    handler.update_card = MagicMock(return_value=True)
     handler.get_working_dir = MagicMock(return_value="/tmp")
     return handler
 
@@ -172,7 +174,7 @@ class TestHandleModelCommandList(unittest.TestCase):
         title = card["header"]["title"]["content"].lower()
         self.assertIn("coco", title)
 
-    def test_select_acp_tool_replies_before_model_probe_result(self):
+    def test_select_acp_tool_patches_query_card_into_model_list(self):
         fake_models = [
             ACPModelOption(name="gpt-5", description="GPT-5", is_default=True),
         ]
@@ -180,8 +182,21 @@ class TestHandleModelCommandList(unittest.TestCase):
         with self._patch_fetch(fake_models):
             self.handler.handle_select_acp_tool("msg1", "chat1", "codex")
 
-        self.handler.reply_text.assert_called_once_with("msg1", "🔍 正在查询 codex 支持的模型…")
+        self.handler.reply_text.assert_not_called()
         self.handler.reply_card.assert_called_once()
+        loading_card = json.loads(self.handler.reply_card.call_args[0][1])
+        self.assertIn("codex", loading_card["header"]["title"]["content"])
+        self.handler.update_card.assert_called_once()
+        updated_card = json.loads(self.handler.update_card.call_args[0][1])
+        self.assertIn("codex", updated_card["header"]["title"]["content"].lower())
+        values = [
+            child.get("value", {})
+            for element in updated_card["body"]["elements"]
+            for column in element.get("columns", [])
+            for child in column.get("elements", [])
+            if child.get("tag") == "button"
+        ]
+        self.assertTrue(any(v.get("action") == "select_acp_model" for v in values))
 
     def test_model_list_card_carries_thread_root_id(self):
         fake_models = [MagicMock()]
@@ -191,7 +206,7 @@ class TestHandleModelCommandList(unittest.TestCase):
         with self._patch_fetch(fake_models), patch("src.thread.get_current_thread_id", return_value="thread1"):
             self.handler.handle_model_command("msg1", "chat1", "/model list")
 
-        card_str = self.handler.reply_card.call_args[0][1]
+        card_str = self.handler.update_card.call_args[0][1]
         card = json.loads(card_str)
         values = []
         for element in card["body"]["elements"]:
@@ -211,7 +226,7 @@ class TestHandleModelCommandList(unittest.TestCase):
         with self._patch_fetch(fake_models):
             self.handler.handle_model_command("msg1", "chat1", "/model list")
 
-        card_str = self.handler.reply_card.call_args[0][1]
+        card_str = self.handler.update_card.call_args[0][1]
         card = json.loads(card_str)
         values = []
         labels = []
@@ -230,7 +245,10 @@ class TestHandleModelCommandList(unittest.TestCase):
     def test_model_list_error_when_no_models(self):
         with self._patch_fetch([]):
             self.handler.handle_model_command("msg1", "chat1", "/model list")
-        self.handler.reply_error.assert_called_once()
+        self.handler.reply_error.assert_not_called()
+        self.handler.update_card.assert_called_once()
+        error_card = json.loads(self.handler.update_card.call_args[0][1])
+        self.assertIn("加载失败", error_card["header"]["title"]["content"])
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +312,25 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         codex_handler.enter_mode.assert_called_once_with(
             "msg1", "chat1", project=project, silent=True
         )
+        self.handler.update_card.assert_called_once()
+        ready_card = json.loads(self.handler.update_card.call_args[0][1])
+        self.assertIn("编程模式已就绪", ready_card["header"]["title"]["content"])
+        self.assertIn("使用默认模型", json.dumps(ready_card, ensure_ascii=False))
+
+    def test_model_selection_patches_model_card_to_ready_state(self):
+        project = MagicMock()
+        project.project_id = "ghostap"
+
+        with patch.object(self.handler, "_enter_mode_with_acp_model", return_value=True):
+            self.handler.handle_select_acp_model("model-card-msg", "chat1", "coco", "gpt-5.5", project)
+
+        self.handler.update_card.assert_called_once()
+        assert self.handler.update_card.call_args[0][0] == "model-card-msg"
+        ready_card = json.loads(self.handler.update_card.call_args[0][1])
+        self.assertIn("coco 编程模式已就绪", ready_card["header"]["title"]["content"])
+        text = json.dumps(ready_card, ensure_ascii=False)
+        self.assertIn("gpt-5.5", text)
+        self.assertIn("切换模型", text)
 
     def test_pending_prompt_uses_top_level_programming_mode(self):
         self.handler.settings.thread_programming_enabled = True

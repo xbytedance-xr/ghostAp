@@ -402,6 +402,49 @@ def test_acp_select_cards_keep_project_tool_thread_and_refresh_fields():
     }
 
 
+def test_acp_model_flow_status_cards_keep_refresh_and_ready_actions():
+    """ACP 模型选择流的 loading/error/ready 三态应可原卡 PATCH。"""
+    _, loading_json = SystemBuilder.build_acp_model_loading_card(
+        "coco",
+        project_id="p1",
+        thread_root_id="thread-1",
+    )
+    loading_card = json.loads(loading_json)
+    assert "coco" in loading_card["header"]["title"]["content"]
+    assert "正在查询" in json.dumps(loading_card, ensure_ascii=False)
+    assert _collect_buttons(loading_card) == []
+
+    _, error_json = SystemBuilder.build_acp_model_error_card(
+        "coco",
+        project_id="p1",
+        thread_root_id="thread-1",
+    )
+    error_buttons = _collect_buttons(json.loads(error_json))
+    assert error_buttons[0]["value"] == {
+        "action": "refresh_acp_models",
+        "tool_name": "coco",
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+
+    _, ready_json = SystemBuilder.build_acp_programming_ready_card(
+        "coco",
+        "gpt-5.5",
+        project_id="p1",
+        thread_root_id="thread-1",
+    )
+    ready_card = json.loads(ready_json)
+    assert "编程模式已就绪" in ready_card["header"]["title"]["content"]
+    ready_buttons = _collect_buttons(ready_card)
+    assert ready_buttons[0]["text"]["content"] == "切换模型"
+    assert ready_buttons[0]["value"] == {
+        "action": "refresh_acp_models",
+        "tool_name": "coco",
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+
+
 def test_system_error_card_uses_unified_error_visual_contract():
     """BaseHandler/SystemBuilder error card should share summary/details/retry visual contract."""
     msg_type, card_json = SystemBuilder.build_error_card(
