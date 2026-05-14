@@ -104,6 +104,9 @@ def state_path_for_run(root_path: str, settings, run_id: str) -> str:
         candidate = os.path.join(base, run_id, RUN_STATE_FILENAME)
         if os.path.isfile(candidate):
             return candidate
+    repaired = _repair_run_state_from_project_state(root_path, settings, run_id)
+    if repaired:
+        return repaired
     return os.path.join(artifact_base_dir(root_path, settings), run_id, RUN_STATE_FILENAME)
 
 
@@ -118,7 +121,18 @@ def list_spec_runs(root_path: str, settings, *, limit: int | None = None) -> lis
             if not entry.is_dir() or entry.name in seen:
                 continue
             seen.add(entry.name)
-            runs.append(_summarize_run(entry.path, entry.name))
+            runs.append(_summarize_run(entry.path, entry.name, root_path=root_path, settings=settings))
+
+    for state_path in state_path_candidates(root_path, settings):
+        data = _read_json_dict(state_path)
+        project = data.get("project") if isinstance(data.get("project"), dict) else {}
+        run_id = str(project.get("project_id") or "").strip()
+        if not run_id or run_id in seen:
+            continue
+        seen.add(run_id)
+        repaired = _repair_run_state_from_project_state(root_path, settings, run_id, data=data)
+        run_dir = artifact_root_dir(root_path, settings, run_id)
+        runs.append(_summarize_run(run_dir, run_id, root_path=root_path, settings=settings, state_path_override=repaired or state_path))
 
     runs.sort(key=lambda item: (item.saved_at or item.created_at or _safe_mtime(item.run_dir)), reverse=True)
     if limit is not None and limit >= 0:
@@ -126,8 +140,19 @@ def list_spec_runs(root_path: str, settings, *, limit: int | None = None) -> lis
     return runs
 
 
-def _summarize_run(run_dir: str, run_id: str) -> SpecRunSummary:
-    state_path = os.path.join(run_dir, RUN_STATE_FILENAME)
+def _summarize_run(
+    run_dir: str,
+    run_id: str,
+    *,
+    root_path: str = "",
+    settings=None,
+    state_path_override: str = "",
+) -> SpecRunSummary:
+    state_path = state_path_override or os.path.join(run_dir, RUN_STATE_FILENAME)
+    if not os.path.isfile(state_path) and root_path and settings is not None:
+        repaired = _repair_run_state_from_project_state(root_path, settings, run_id)
+        if repaired:
+            state_path = repaired
     data = _read_json_dict(state_path)
     project = data.get("project") if isinstance(data.get("project"), dict) else {}
 
@@ -165,6 +190,44 @@ def _summarize_run(run_dir: str, run_id: str) -> SpecRunSummary:
         saved_at=saved_at or _safe_mtime(state_path),
         created_at=created_at,
     )
+
+
+def _repair_run_state_from_project_state(
+    root_path: str,
+    settings,
+    run_id: str,
+    *,
+    data: dict | None = None,
+) -> str:
+    run_id = os.path.basename(str(run_id or "").strip())
+    if not run_id:
+        return ""
+
+    for candidate in state_path_candidates(root_path, settings):
+        state_data = data if data is not None else _read_json_dict(candidate)
+        project = state_data.get("project") if isinstance(state_data.get("project"), dict) else {}
+        if str(project.get("project_id") or "").strip() != run_id:
+            continue
+
+        run_path = run_state_path(root_path, settings, run_id)
+        if os.path.isfile(run_path):
+            return run_path
+        try:
+            _write_json_atomic(run_path, state_data)
+            return run_path
+        except Exception:
+            return candidate if os.path.isfile(candidate) else ""
+    return ""
+
+
+def _write_json_atomic(filepath: str, data: dict) -> None:
+    parent = os.path.dirname(filepath)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = filepath + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp_path, filepath)
 
 
 def _read_json_dict(path: str) -> dict:

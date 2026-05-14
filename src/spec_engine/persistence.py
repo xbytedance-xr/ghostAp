@@ -374,11 +374,11 @@ def save_engine_state(
     }
     if review_circuit:
         state["review_circuit"] = review_circuit
-    _write_json_atomic(filepath, state)
     if default_path:
         run_path = _storage_run_state_path(root_path, settings, project.project_id)
         if run_path != filepath:
             _write_json_atomic(run_path, state)
+    _write_json_atomic(filepath, state)
     return filepath
 
 

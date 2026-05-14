@@ -226,6 +226,23 @@ def test_spec_status_lists_cached_runs_with_restore_button(monkeypatch):
     } in values
 
 
+def test_spec_recover_with_run_id_falls_back_to_cached_run_restore(monkeypatch):
+    handler = _make_spec_handler()
+    project = MagicMock()
+    project.root_path = "/repo/ghostAp"
+    monkeypatch.setattr("src.feishu.handlers.spec.load_task_state", lambda task_id: None)
+    monkeypatch.setattr(
+        "src.feishu.handlers.spec.state_path_for_run",
+        lambda root, settings, run_id: "/cache/repo/ghostAp/.spec_engine/run123/state.json",
+    )
+    monkeypatch.setattr("src.feishu.handlers.spec.os.path.isfile", lambda path: True)
+    with patch.object(handler, "restore_spec_run") as restore, patch.object(handler, "reply_text") as reply_text:
+        handler.recover_spec_task("msg-recover", "chat-recover", "run123", project)
+
+    restore.assert_called_once_with("msg-recover", "chat-recover", "run123", project=project)
+    reply_text.assert_not_called()
+
+
 def test_spec_review_selection_card_does_not_render_worktree_journey_copy():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-render", project_name="Spec", root_path="/tmp/spec-render")

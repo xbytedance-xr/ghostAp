@@ -1268,6 +1268,11 @@ class SpecHandler(BaseEngineHandler):
     ):
         state = load_task_state(task_id)
         if not state:
+            root_path = project.root_path if project else self.get_working_dir(chat_id)
+            run_state_path = state_path_for_run(root_path, self.settings, task_id)
+            if run_state_path and os.path.isfile(run_state_path):
+                self.restore_spec_run(message_id, chat_id, task_id, project=project)
+                return
             self.reply_text(message_id, f"❌ 未找到任务: {task_id}")
             return
 
