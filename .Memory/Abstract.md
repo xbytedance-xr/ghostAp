@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
+## 2026-05-14
+- **状态流转产品契约固化** — 核查并固化当前状态模型：SMART 是默认 chat/project 状态，可识别简单意图与 shell-like 命令；普通 `/coco`、`/codex`、`/aiden`、`/claude`、`/gemini`、`/ttadk` 工具入口进入持久 chat+project 编程状态，直到 `/exit` 回到 SMART；Deep/Spec/WT 是按 Feishu topic/root-thread 保持的 engine strategy，不覆盖群级普通编程工具状态；`./restart.sh rr` 等 shell-like 文本在 SMART 中必须继续走 shell。`AGENTS.md` 已新增该长期开发原则；前置全量 `6441 passed`，`--validate` 通过，文档落地后 `git diff --check` 通过 → [详细记录](2026-05-14.md)
 ## 2026-05-13
 - **智能/编程状态流转与 restart.sh 远程执行修复** — 普通 `/coco`、`/codex` 等工具入口不再把主群变成“等待创建编程话题”的 one-shot pending 状态；选模型后直接在当前 chat/project 启动顶层 ACP session，后续普通消息持续进入当前编程工具，`/exit` 回到 SMART。Deep/Spec/WT 仍保持 topic-scoped engine 模式。SMART/project chat 的 shell heuristic 新增 `./`、`../`、`~/` 本地可执行脚本与 `sh/bash/zsh/uv/pnpm/python/node`，所以 `./restart.sh rr` 会在智能模式走 shell 执行而不是被项目群自由文本编程入口抢走。全量 `6441 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-13.md)
 - **CardSession terminal 去重与项目群保存工具复用** — 排查确认群锁/仓库锁不是卡片重复 PATCH 的主因；CardSession 异步投递合并层会在 terminal delivery 已在途时接受重复 terminal pending，首个 terminal 成功关闭 session 后仍继续提交旧 pending，导致终态卡片重复刷新。现在 terminal 已在途时丢弃后续 delivery，session 关闭后清空 pending；项目群自由文本命中已保存 `project.acp_tool_name/acp_model_name` 时直接复用保存选择处理 pending prompt，不再每次展示模型选择卡；普通编程入口的最终状态契约已由上方“智能/编程状态流转”覆盖。全量 `6449 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-13.md)

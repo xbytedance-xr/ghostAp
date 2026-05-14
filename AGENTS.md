@@ -101,6 +101,18 @@ Keep these axes separate. A new programming feature should usually work across
 Coco, Claude, Aiden, Codex, Gemini, and TTADK unless the user explicitly scopes
 it down or the backend cannot support it.
 
+State scoping is also a product contract:
+
+- SMART is the default chat/project state and may route simple intents or
+  shell-like commands directly.
+- Normal tool entries such as `/coco`, `/codex`, `/aiden`, `/claude`, `/gemini`,
+  and `/ttadk` set a persistent chat+project programming state until `/exit`.
+- Deep, Spec, and Worktree are engine strategies scoped to the Feishu
+  topic/root thread; they must not replace chat+project programming state.
+- Shell-like text in SMART must remain shell execution, including commands such
+  as `./restart.sh rr`, instead of being stolen by project-chat free text
+  programming routing.
+
 ## Card And UI Rules
 
 - Programming cards follow one task per card. Show the overall task list and the
