@@ -1,18 +1,14 @@
+import json
 from random import Random
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from src.card import CardBuilder
 from src.card.actions.dispatch import (
-    SPEC_REVIEW_FINISH_SELECTION,
     SPEC_REVIEW_SELECT_MODEL,
     SPEC_REVIEW_SELECT_TOOL,
     SPEC_REVIEW_USE_AUTO,
 )
-from src.card.events import CardEventType
-from src.card.render.budget import RenderBudget
-from src.card.render.renderer import render_card
-from src.card.state.models import CardMetadata, CardState
-from src.card.state.reducer import reduce_card_state
 from src.engine_base import ReviewPerspective
 from src.feishu.handlers.spec import SpecHandler
 from src.project.context import ProjectContext
@@ -162,7 +158,6 @@ def _collect_buttons(node) -> list[dict]:
 def test_spec_start_shows_review_agent_selection_before_submitting_task():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-spec", project_name="Spec", root_path="/tmp/spec")
-    mock_session = MagicMock()
     fake_tools = [
         {
             "provider": "acp",
@@ -174,25 +169,26 @@ def test_spec_start_shows_review_agent_selection_before_submitting_task():
     ]
 
     with patch.object(handler, "_get_available_spec_review_tools", return_value=fake_tools), \
-         patch.object(handler.renderer, "get_or_create_session", return_value=mock_session), \
+         patch.object(handler, "reply_card", return_value="spec-select-card") as reply_card, \
+         patch.object(handler, "update_card") as update_card, \
          patch.object(handler, "_submit_engine_task") as submit_task:
         handler.start_spec_engine("msg-spec", "chat-spec", "implement auth", project)
 
     submit_task.assert_not_called()
-    mock_session.dispatch.assert_called_once()
-    event = mock_session.dispatch.call_args[0][0]
-    assert event.type == CardEventType.WORKTREE_TOOL_SELECT
-    assert event.payload["select_action"] == SPEC_REVIEW_SELECT_TOOL
-    assert event.payload["auto_action"] == SPEC_REVIEW_USE_AUTO
-    assert event.payload["mode_label"] == "Spec Review"
-    assert event.payload["show_stepper"] is False
+    update_card.assert_not_called()
+    reply_card.assert_called_once()
+    rendered = json.loads(reply_card.call_args.args[1])
+    buttons = _collect_buttons(rendered)
+    actions = [button["value"].get("action") for button in buttons]
+    assert SPEC_REVIEW_SELECT_TOOL in actions
+    assert SPEC_REVIEW_USE_AUTO in actions
+    assert "worktree_select_tool" not in actions
     assert project.spec_review_selection_state.selection.pending_goal == "implement auth"
 
 
 def test_spec_review_selection_card_does_not_render_worktree_journey_copy():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-render", project_name="Spec", root_path="/tmp/spec-render")
-    mock_session = MagicMock()
     fake_tools = [
         {
             "provider": "acp",
@@ -204,43 +200,34 @@ def test_spec_review_selection_card_does_not_render_worktree_journey_copy():
     ]
 
     with patch.object(handler, "_get_available_spec_review_tools", return_value=fake_tools), \
-         patch.object(handler.renderer, "get_or_create_session", return_value=mock_session):
+         patch.object(handler, "reply_card", return_value="spec-select-card") as reply_card:
         handler.start_spec_engine("msg-render", "chat-render", "implement spec", project)
 
-    event = mock_session.dispatch.call_args[0][0]
-    state = CardState(metadata=CardMetadata(engine_type="spec", mode_name="Spec Review"))
-    state = reduce_card_state(state, event)
-    rendered = render_card(state, RenderBudget(engine_cmd="/spec"))[0].to_feishu_json()
+    rendered = json.loads(reply_card.call_args.args[1])
+    title = rendered["header"]["title"]["content"]
     text = "\n".join(_collect_markdown_content(rendered))
 
     assert "步骤 1/4" not in text
     assert "(1/4)" not in text
     assert "Worktree" not in text
     assert "等待目标" not in text
-    assert "Spec Review" in text
+    assert "cycle" not in text
+    assert "Spec Review" in title
 
 
 def test_spec_review_model_grid_keeps_spec_review_actions():
-    event = CardEventType.WORKTREE_TOOL_SELECT
-    state = CardState(metadata=CardMetadata(engine_type="spec", mode_name="Spec Review"))
-    state = reduce_card_state(state, SimpleNamespace(
-        type=event,
-        payload={
-            "tools": [
-                {"id": "gpt-5.5", "name": "gpt-5.5"},
-                {"id": "gpt-5.4", "name": "gpt-5.4"},
-            ],
-            "selected": [{"selection_key": "acp:coco:m1", "display_label": "Coco / m1"}],
-            "project_id": "p-spec",
-            "thread_root_id": "root-spec-msg",
-            "select_action": SPEC_REVIEW_SELECT_MODEL,
-            "finish_action": SPEC_REVIEW_FINISH_SELECTION,
-            "pending_tool": "Codex",
-            "show_stepper": False,
-            "mode_label": "Spec Review",
-        },
-    ))
-    rendered = render_card(state, RenderBudget(engine_cmd="/spec"))[0].to_feishu_json()
+    _, card_content = CardBuilder.build_spec_review_agent_select_card(
+        tools=[
+            {"id": "gpt-5.5", "name": "gpt-5.5"},
+            {"id": "gpt-5.4", "name": "gpt-5.4"},
+        ],
+        selected=[{"selection_key": "acp:coco:m1", "display_label": "Coco / m1"}],
+        project_id="p-spec",
+        thread_root_id="root-spec-msg",
+        select_action=SPEC_REVIEW_SELECT_MODEL,
+        pending_tool="Codex",
+    )
+    rendered = json.loads(card_content)
     buttons = _collect_buttons(rendered)
     actions = [button["value"].get("action") for button in buttons]
 
@@ -250,18 +237,25 @@ def test_spec_review_model_grid_keeps_spec_review_actions():
     assert model_buttons[0]["value"]["thread_root_id"] == "root-spec-msg"
 
 
-def test_spec_review_selection_session_reuses_same_topic_card():
+def test_spec_review_action_patches_existing_selection_card():
     handler = _make_spec_handler()
-    first_session = MagicMock()
-    first_session.closed = False
+    project = ProjectContext(project_id="p-patch", project_name="Spec", root_path="/tmp/spec-patch")
 
-    with patch.object(handler.renderer, "create_session", return_value=first_session) as create_session:
-        session_a = handler.renderer.get_or_create_session("chat-spec", "p-spec", reply_to="root-spec-msg")
-        session_b = handler.renderer.get_or_create_session("chat-spec", "p-spec", reply_to="root-spec-msg")
+    with patch.object(handler, "update_card", return_value=True) as update_card, \
+         patch.object(handler, "reply_card") as reply_card, \
+         patch.object(handler.renderer, "get_or_create_session") as get_session:
+        handler._dispatch_spec_review_tool_select(
+            message_id="selection-card-msg",
+            chat_id="chat-spec",
+            project=project,
+            tools=[{"provider": "acp", "tool_name": "coco", "display_name": "Coco"}],
+            thread_root_id="root-spec-msg",
+        )
 
-    assert session_a is first_session
-    assert session_b is first_session
-    create_session.assert_called_once()
+    update_card.assert_called_once()
+    assert update_card.call_args.args[0] == "selection-card-msg"
+    reply_card.assert_not_called()
+    get_session.assert_not_called()
 
 
 def test_spec_review_auto_starts_with_empty_review_agent_pool():
@@ -270,7 +264,8 @@ def test_spec_review_auto_starts_with_empty_review_agent_pool():
     handler.ctx.project_manager.get_project_for_chat.return_value = project
     handler._spec_review_selection_controller().start_selection(project, goal="ship it")
 
-    with patch.object(handler, "_start_spec_engine_now") as start_now:
+    with patch.object(handler, "update_card", return_value=True) as update_card, \
+         patch.object(handler, "_start_spec_engine_now") as start_now:
         handler.handle_spec_review_use_auto(
             "msg-auto",
             "chat-auto",
@@ -278,6 +273,8 @@ def test_spec_review_auto_starts_with_empty_review_agent_pool():
             value={"thread_root_id": "root-spec-msg"},
         )
 
+    update_card.assert_called_once()
+    assert "正在启动" in json.loads(update_card.call_args.args[1])["header"]["title"]["content"]
     start_now.assert_called_once_with(
         "root-spec-msg",
         "chat-auto",
@@ -305,7 +302,8 @@ def test_spec_review_finish_starts_with_selected_review_agent_pool():
     )
     ctrl.add_pending_item(project, model_name="gpt-5.2", model_display_name="GPT 5.2")
 
-    with patch.object(handler, "_start_spec_engine_now") as start_now:
+    with patch.object(handler, "update_card", return_value=True) as update_card, \
+         patch.object(handler, "_start_spec_engine_now") as start_now:
         handler.handle_spec_review_finish_selection(
             "msg-finish",
             "chat-finish",
@@ -313,6 +311,8 @@ def test_spec_review_finish_starts_with_selected_review_agent_pool():
             value={"thread_root_id": "root-spec-msg"},
         )
 
+    update_card.assert_called_once()
+    assert "正在启动" in json.loads(update_card.call_args.args[1])["header"]["title"]["content"]
     start_now.assert_called_once()
     assert start_now.call_args.args[:4] == (
         "root-spec-msg",
@@ -327,7 +327,39 @@ def test_spec_review_finish_starts_with_selected_review_agent_pool():
     assert agents[0].model_name == "gpt-5.2"
 
 
-def test_spec_review_select_model_rerenders_original_topic_card():
+def test_spec_engine_start_installs_selected_review_pool_before_execution():
+    handler = _make_spec_handler()
+    project = ProjectContext(project_id="p-engine", project_name="Spec", root_path="/tmp/spec-engine")
+    engine = MagicMock()
+    agent = ReviewAgentBinding(
+        provider="acp",
+        tool_name="codex",
+        display_name="Codex",
+        agent_type="codex",
+        model_name="gpt-5.5",
+        model_display_name="GPT 5.5",
+        selection_key="acp:codex:gpt-5.5",
+    )
+    handler.ctx.spec_engine_manager.get.return_value = None
+    handler.ctx.spec_engine_manager.get_or_create.return_value = engine
+
+    with patch.object(handler, "add_reaction"), \
+         patch.object(handler, "ensure_request_id", return_value="req-spec"), \
+         patch.object(handler, "get_engine_name", return_value="Coco"), \
+         patch.object(handler, "_submit_engine_task") as submit_task:
+        handler._start_spec_engine_now(
+            "root-spec-msg",
+            "chat-engine",
+            "ship it",
+            project,
+            review_agents=[agent],
+        )
+
+    engine.set_review_agent_pool.assert_called_once_with([agent])
+    submit_task.assert_called_once()
+
+
+def test_spec_review_select_model_patches_current_selection_card():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-model", project_name="Spec", root_path="/tmp/spec-model")
     handler.ctx.project_manager.get_project_for_chat.return_value = project
@@ -343,9 +375,10 @@ def test_spec_review_select_model_rerenders_original_topic_card():
             model_optional=True,
         ),
     )
-    mock_session = MagicMock()
 
-    with patch.object(handler.renderer, "get_or_create_session", return_value=mock_session) as get_session:
+    with patch.object(handler, "update_card", return_value=True) as update_card, \
+         patch.object(handler, "reply_card") as reply_card, \
+         patch.object(handler.renderer, "get_or_create_session") as get_session:
         handler.handle_spec_review_select_model(
             "action-card-msg",
             "chat-model",
@@ -353,10 +386,10 @@ def test_spec_review_select_model_rerenders_original_topic_card():
             value={"model_name": "gpt-5.5", "thread_root_id": "root-spec-msg"},
         )
 
-    get_session.assert_called_with(
-        "chat-model",
-        "p-model",
-        reply_to="root-spec-msg",
-    )
-    event = mock_session.dispatch.call_args[0][0]
-    assert event.payload["thread_root_id"] == "root-spec-msg"
+    update_card.assert_called_once()
+    assert update_card.call_args.args[0] == "action-card-msg"
+    reply_card.assert_not_called()
+    get_session.assert_not_called()
+    rendered = json.loads(update_card.call_args.args[1])
+    buttons = _collect_buttons(rendered)
+    assert all(button["value"].get("action") != "worktree_select_model" for button in buttons)

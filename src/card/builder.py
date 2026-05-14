@@ -6,6 +6,7 @@ from src.mode.manager import InteractionMode
 from .builders.core import CoreBuilder
 from .builders.deep import DeepBuilder
 from .builders.project import ProjectBuilder
+from .builders.spec_review import SpecReviewBuilder
 from .builders.system import SystemBuilder
 from .models import EngineCardState
 from .shared import apply_compact_style
@@ -450,6 +451,35 @@ class CardBuilder:
             project_id=project_id,
             thread_root_id=thread_root_id,
         )
+
+    @staticmethod
+    def build_spec_review_agent_select_card(
+        *,
+        tools: list[dict],
+        selected: list[dict] | None = None,
+        project_id: Optional[str] = None,
+        message: str = "",
+        select_action: str = "spec_review_select_tool",
+        pending_tool: str = "",
+        thread_root_id: str = "",
+    ) -> tuple[str, str]:
+        return SpecReviewBuilder.build_agent_select_card(
+            tools=tools,
+            selected=selected,
+            project_id=project_id,
+            message=message,
+            select_action=select_action,
+            pending_tool=pending_tool,
+            thread_root_id=thread_root_id,
+        )
+
+    @staticmethod
+    def build_spec_review_starting_card(
+        *,
+        selected: list[dict] | None = None,
+        auto: bool = False,
+    ) -> tuple[str, str]:
+        return SpecReviewBuilder.build_starting_card(selected=selected, auto=auto)
 
     @staticmethod
     def build_command_menu_card(project: Optional[ProjectContext] = None) -> tuple[str, str]:

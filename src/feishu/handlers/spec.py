@@ -10,15 +10,9 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...card.actions.dispatch import (
-    SHOW_SPEC_REVIEW_MENU,
-    SPEC_REVIEW_CLEAR_ITEMS,
-    SPEC_REVIEW_FINISH_SELECTION,
-    SPEC_REVIEW_REMOVE_ITEM,
     SPEC_REVIEW_SELECT_MODEL,
     SPEC_REVIEW_SELECT_TOOL,
-    SPEC_REVIEW_USE_AUTO,
 )
-from ...card.events.worktree import worktree_tool_select
 from ...card.ui_text import UI_TEXT
 from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
 from ...spec_engine.review_agents import ReviewAgentBinding
@@ -158,10 +152,11 @@ class SpecHandler(BaseEngineHandler):
         select_action: str = SPEC_REVIEW_SELECT_TOOL,
         pending_tool: str = "",
         thread_root_id: str = "",
+        patch_existing: bool = True,
     ) -> None:
+        _ = chat_id
         thread_root_id = self._spec_review_thread_root_id(thread_root_id, fallback_message_id=message_id)
-        session = self.renderer.get_or_create_session(chat_id, project.project_id, reply_to=thread_root_id)
-        session.dispatch(worktree_tool_select(
+        _, card_content = CardBuilder.build_spec_review_agent_select_card(
             tools=tools,
             selected=selected or [],
             project_id=project.project_id,
@@ -169,18 +164,21 @@ class SpecHandler(BaseEngineHandler):
             select_action=select_action,
             pending_tool=pending_tool,
             thread_root_id=thread_root_id,
-            mode_label="Spec Review",
-            tool_select_title=UI_TEXT["spec_review_select_tool_title"],
-            model_select_title=UI_TEXT["spec_review_select_model_title"],
-            auto_action=SPEC_REVIEW_USE_AUTO,
-            auto_text=UI_TEXT["spec_review_auto_btn"],
-            auto_description=UI_TEXT["spec_review_auto_desc"],
-            finish_action=SPEC_REVIEW_FINISH_SELECTION,
-            remove_action=SPEC_REVIEW_REMOVE_ITEM,
-            clear_action=SPEC_REVIEW_CLEAR_ITEMS,
-            back_action=SHOW_SPEC_REVIEW_MENU,
-            show_stepper=False,
-        ))
+        )
+        if patch_existing and self.update_card(message_id, card_content):
+            return
+        self.reply_card(message_id, card_content)
+
+    def _patch_spec_review_starting_card(
+        self,
+        *,
+        message_id: str,
+        selected: list[dict] | None = None,
+        auto: bool = False,
+    ) -> None:
+        _, card_content = CardBuilder.build_spec_review_starting_card(selected=selected or [], auto=auto)
+        if not self.update_card(message_id, card_content):
+            logger.debug("failed to patch Spec review starting card: message_id=%s", message_id)
 
     @staticmethod
     def _spec_review_value_thread_root(value: dict | None) -> str:
@@ -188,11 +186,14 @@ class SpecHandler(BaseEngineHandler):
 
     @staticmethod
     def _spec_review_thread_root_id(thread_root_id: str = "", *, fallback_message_id: str = "") -> str:
-        if thread_root_id:
-            return thread_root_id
+        if isinstance(thread_root_id, str) and thread_root_id.strip():
+            return thread_root_id.strip()
         from ...thread import get_current_thread_id
 
-        return get_current_thread_id() or fallback_message_id
+        current = get_current_thread_id()
+        if isinstance(current, str) and current.strip():
+            return current.strip()
+        return fallback_message_id
 
     def _start_spec_review_selection(
         self,
@@ -214,6 +215,7 @@ class SpecHandler(BaseEngineHandler):
             tools=tools,
             selected=[item.to_dict() for item in state.selection.selected_items],
             message=UI_TEXT["spec_review_select_message"],
+            patch_existing=False,
         )
 
     def _on_engine_error(
@@ -424,6 +426,7 @@ class SpecHandler(BaseEngineHandler):
             self._spec_review_value_thread_root(value),
             fallback_message_id=message_id,
         )
+        self._patch_spec_review_starting_card(message_id=message_id, selected=[], auto=True)
         self._spec_review_selection_controller().reset_selection(project)
         self._start_spec_engine_now(start_message_id, chat_id, requirement, project, review_agents=[])
 
@@ -699,6 +702,10 @@ class SpecHandler(BaseEngineHandler):
             ReviewAgentBinding.from_selection_item(item)
             for item in state.selection.selected_items
         ]
+        self._patch_spec_review_starting_card(
+            message_id=message_id,
+            selected=[item.to_dict() for item in state.selection.selected_items],
+        )
         self._start_spec_engine_now(start_message_id, chat_id, requirement, project, review_agents=review_agents)
 
     # ------------------------------------------------------------------
