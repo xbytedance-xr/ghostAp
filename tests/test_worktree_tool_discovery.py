@@ -144,10 +144,10 @@ def test_top_level_tools_keep_native_entries_and_ttadk_at_same_level():
         result = discovery.get_available_tools()
 
     names = [tool["tool_name"] for tool in result]
-    assert names == ["coco", "aiden", "codex", "claude", "gemini", "ttadk"]
+    assert names == ["coco", "aiden", "codex", "claude", "ttadk"]
 
 
-def test_top_level_tools_prioritize_coco_aiden_codex_claude_gemini_before_ttadk():
+def test_top_level_tools_prioritize_coco_aiden_codex_claude_before_ttadk():
     """Top-level tool ordering should follow product entry priority instead of discovery order."""
     discovery = WorktreeToolDiscovery()
     ttadk_mgr = MagicMock()
@@ -166,9 +166,25 @@ def test_top_level_tools_prioritize_coco_aiden_codex_claude_gemini_before_ttadk(
         "aiden",
         "codex",
         "claude",
-        "gemini",
         "ttadk",
     ]
+
+
+def test_gemini_binary_is_not_exposed_as_top_level_tool():
+    """Gemini remains a programming backend but is not a WT/Spec review selector candidate."""
+    discovery = WorktreeToolDiscovery()
+
+    def _which(name):
+        return "/usr/bin/gemini" if name == "gemini" else None
+
+    with patch("src.worktree_engine.tool_discovery.shutil.which", side_effect=_which), \
+         patch("src.worktree_engine.tool_discovery.get_providers"), \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
+        mock_reg.get_provider.return_value = None
+        result = discovery.get_available_tools()
+
+    assert [tool["tool_name"] for tool in result] == []
 
 
 def test_only_shows_tools_with_binary_in_path():
