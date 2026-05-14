@@ -1587,6 +1587,36 @@ class TestDeepHandler:
         h.handle_deep_command("m1", "c1", "/deep implement feature X", None)
         h.start_deep_engine.assert_called_once_with("m1", "c1", "implement feature X", None)
 
+    def test_start_deep_engine_passes_selected_coco_model_to_engine(self):
+        h, ctx = self._make()
+        project = SimpleNamespace(
+            project_id="p1",
+            project_name="Project",
+            root_path="/repo/project",
+            acp_tool_name="coco",
+            acp_model_name="deepseek-v4pro",
+            ttadk_tool_name=None,
+            ttadk_model_name=None,
+        )
+        engine = MagicMock()
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        ctx.deep_engine_manager.get.return_value = None
+        ctx.deep_engine_manager.get_or_create.return_value = engine
+
+        h._ensure_topic_engine_context = MagicMock(return_value="m1")
+        h.ensure_request_id = MagicMock(return_value="req1")
+        h.get_engine_name = MagicMock(return_value="Coco")
+        h._submit_engine_task = MagicMock()
+
+        h.start_deep_engine("m1", "c1", "implement feature X", project)
+
+        ctx.deep_engine_manager.get_or_create.assert_called_once_with(
+            "c1",
+            "/repo/project",
+            engine_name="Coco",
+            model_name="deepseek-v4pro",
+        )
+
     def test_handle_deep_command_update(self):
         h, ctx = self._make()
         h.update_deep_context = MagicMock()

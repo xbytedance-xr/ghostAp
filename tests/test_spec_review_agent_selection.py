@@ -535,6 +535,34 @@ def test_spec_engine_start_installs_selected_review_pool_before_execution():
     submit_task.assert_called_once()
 
 
+def test_spec_engine_start_passes_selected_coco_model_to_engine():
+    handler = _make_spec_handler()
+    project = ProjectContext(project_id="p-engine-model", project_name="Spec", root_path="/tmp/spec-engine-model")
+    project.acp_tool_name = "coco"
+    project.acp_model_name = "deepseek-v4pro"
+    engine = MagicMock()
+    handler.ctx.spec_engine_manager.get.return_value = None
+    handler.ctx.spec_engine_manager.get_or_create.return_value = engine
+
+    with patch.object(handler, "add_reaction"), \
+         patch.object(handler, "ensure_request_id", return_value="req-spec"), \
+         patch.object(handler, "get_engine_name", return_value="Coco"), \
+         patch.object(handler, "_submit_engine_task"):
+        handler._start_spec_engine_now(
+            "root-spec-msg",
+            "chat-engine",
+            "ship it",
+            project,
+        )
+
+    handler.ctx.spec_engine_manager.get_or_create.assert_called_once_with(
+        "chat-engine",
+        "/tmp/spec-engine-model",
+        engine_name="Coco",
+        model_name="deepseek-v4pro",
+    )
+
+
 def test_spec_review_select_model_patches_current_selection_card():
     handler = _make_spec_handler()
     project = ProjectContext(project_id="p-model", project_name="Spec", root_path="/tmp/spec-model")

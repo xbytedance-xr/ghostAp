@@ -51,6 +51,21 @@ class DeepHandler(BaseEngineHandler):
     ):
         return self.renderer.create_deep_callbacks(message_id, chat_id, project, engine_name, root_path)
 
+    def _get_model_name(self, chat_id: str, project: Optional["ProjectContext"]) -> str:
+        """Resolve the selected model for Deep engine startup."""
+        from ...utils.engine_identity import resolve_engine_identity
+
+        project_id = project.project_id if project else None
+        current_mode = self.ctx.mode_manager.get_mode(chat_id, project_id=project_id)
+        identity = resolve_engine_identity(
+            mode=current_mode,
+            ttadk_tool_name=getattr(project, "ttadk_tool_name", None) if project else None,
+            ttadk_model_name=getattr(project, "ttadk_model_name", None) if project else None,
+            acp_tool_name=getattr(project, "acp_tool_name", None) if project else None,
+            acp_model_name=getattr(project, "acp_model_name", None) if project else None,
+        )
+        return identity.model_name or ""
+
     def _refresh_card_view(self, message_id: str, chat_id: str, project=None):
         self.show_deep_status(message_id, chat_id, project, origin_message_id=message_id)
 
@@ -159,7 +174,13 @@ class DeepHandler(BaseEngineHandler):
         # session (created by `create_deep_callbacks`) becomes the single entry surface,
         # and TaskOrchestrator's lazy mode builds per-task cards only when each task
         # actually transitions to in_progress (or its first event arrives).
-        engine = self.ctx.deep_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
+        model_name = self._get_model_name(chat_id, project) or None
+        engine = self.ctx.deep_engine_manager.get_or_create(
+            chat_id,
+            root_path,
+            engine_name=engine_name,
+            model_name=model_name,
+        )
 
         project_name = project.project_name if project else os.path.basename(root_path) or "deep"
         task_id = generate_task_id(project_name)

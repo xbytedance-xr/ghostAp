@@ -373,7 +373,13 @@ class SpecHandler(BaseEngineHandler):
         # rotator session (created lazily by `create_spec_callbacks` → engine first
         # frame) becomes the entry surface, and TaskOrchestrator's lazy mode builds
         # per-task cards only when each task actually transitions to in_progress.
-        engine = self.ctx.spec_engine_manager.get_or_create(chat_id, root_path, engine_name=engine_name)
+        model_name = self._get_model_name(chat_id, project) or None
+        engine = self.ctx.spec_engine_manager.get_or_create(
+            chat_id,
+            root_path,
+            engine_name=engine_name,
+            model_name=model_name,
+        )
         if hasattr(engine, "set_review_agent_pool"):
             engine.set_review_agent_pool(review_agents or [])
 
@@ -385,7 +391,7 @@ class SpecHandler(BaseEngineHandler):
         )
 
         def run_spec_engine():
-            callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name, model_name=self._get_model_name(chat_id, project))
+            callbacks = self.renderer.create_spec_callbacks(message_id, chat_id, project, engine_name, model_name=model_name or "")
             engine.execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
 
         def _scheduled_run():

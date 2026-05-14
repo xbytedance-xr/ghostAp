@@ -399,9 +399,18 @@ class BaseEngineManager(Generic[T]):
     ) -> T:
         raise NotImplementedError
 
-    def get_or_create(self, chat_id: str, root_path: str, engine_name: str = "Coco") -> T:
+    def get_or_create(
+        self,
+        chat_id: str,
+        root_path: str,
+        engine_name: str = "Coco",
+        *,
+        model_name: Optional[str] = None,
+    ) -> T:
         key = f"{chat_id}:{root_path}"
-        resolved_engine_name, agent_type, model_name = self._resolve_identity(engine_name)
+        resolved_engine_name, agent_type, resolved_model_name = self._resolve_identity(engine_name)
+        if model_name:
+            resolved_model_name = model_name
 
         with self._lock:
             if key not in self._engines:
@@ -410,20 +419,25 @@ class BaseEngineManager(Generic[T]):
                     root_path=root_path,
                     agent_type=agent_type,
                     engine_name=resolved_engine_name,
-                    model_name=model_name,
+                    model_name=resolved_model_name,
                 )
                 self._engines[key] = engine
                 self._add_index(chat_id, key)
             else:
                 existing = self._engines[key]
-                if existing.engine_name.lower() != resolved_engine_name.lower() and not existing.is_running:
+                should_replace = (
+                    existing.engine_name.lower() != resolved_engine_name.lower()
+                    or getattr(existing, "_agent_type", None) != agent_type
+                    or getattr(existing, "_model_name", None) != resolved_model_name
+                )
+                if should_replace and not existing.is_running:
                     existing.cleanup()
                     engine = self._create_engine(
                         chat_id=chat_id,
                         root_path=root_path,
                         agent_type=agent_type,
                         engine_name=resolved_engine_name,
-                        model_name=model_name,
+                        model_name=resolved_model_name,
                     )
                     self._engines[key] = engine
             return self._engines[key]
