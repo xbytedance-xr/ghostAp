@@ -17,6 +17,7 @@ from ...card.ui_text import UI_TEXT
 from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
 from ...spec_engine.review_agents import ReviewAgentBinding
 from ...spec_engine.models import SpecProjectStatus
+from ...spec_engine.storage import SpecRunSummary, list_spec_runs, state_path_for_run
 from ...spec_engine.task_persistence import list_pending_tasks, load_task_state
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.errors import fmt_error, get_error_detail
@@ -727,7 +728,86 @@ class SpecHandler(BaseEngineHandler):
 
         self.renderer.update_ui_state(spec_project_id, view_mode="status", view_context={})
 
+        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
+        if not engine or not engine.project:
+            runs = list_spec_runs(root_path, self.settings)
+            if runs:
+                self._show_spec_cache_status(message_id, chat_id, project, root_path, runs)
+                return
+
         self.renderer.render_current_view(message_id, chat_id, project, origin_message_id)
+
+    def _show_spec_cache_status(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"],
+        root_path: str,
+        runs: list[SpecRunSummary],
+    ) -> None:
+        latest = runs[0]
+        lines = [
+            "📋 **Spec 缓存任务**",
+            "",
+            f"- 发现任务: `{len(runs)}` 个",
+            f"- 缓存根: `{os.path.dirname(os.path.dirname(latest.run_dir))}`",
+            "",
+        ]
+        for run in runs[:5]:
+            updated = self._format_timestamp(run.saved_at or run.created_at)
+            req = (run.requirement or "").strip()
+            if len(req) > 56:
+                req = req[:56] + "..."
+            status = run.status or "未知"
+            cycle = f"{run.current_cycle}/{run.total_cycles}" if run.total_cycles else str(run.current_cycle or 0)
+            lines.append(f"**{run.run_id}** · {status} · cycle {cycle}")
+            if updated:
+                lines.append(f"- 更新时间: {updated}")
+            if req:
+                lines.append(f"- 目标: {req}")
+            if not run.state_path:
+                lines.append("- 状态: 仅发现目录，缺少可恢复 state.json")
+            lines.append("")
+        if len(runs) > 5:
+            lines.append(f"... 还有 {len(runs) - 5} 个历史任务未展示")
+            lines.append("")
+
+        lines.append("点击下方按钮会还原最新可恢复的 Spec 状态；如果状态为暂停/待澄清，会继续执行。")
+        buttons: list[dict] = []
+        restorable = next((run for run in runs if run.state_path), None)
+        if restorable:
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "🔄 还原最新 Spec"},
+                "type": "primary",
+                "behaviors": [{
+                    "type": "callback",
+                    "value": {
+                        "action": "spec_restore_run",
+                        "project_id": project.project_id if project else "",
+                        "deep_project_id": root_path,
+                        "run_id": restorable.run_id,
+                    },
+                }],
+            })
+        msg_type, card_content = CardBuilder._build_response_card_inner(
+            project=project,
+            title="📋 Spec 状态",
+            content="\n".join(lines),
+            working_dir=root_path,
+            show_buttons=False,
+            extra_buttons=buttons,
+        )
+        self.reply_card(message_id, card_content)
+
+    @staticmethod
+    def _format_timestamp(ts: float) -> str:
+        try:
+            if not ts:
+                return ""
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+        except Exception:
+            return ""
 
     def show_spec_history(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         if project is None:
@@ -827,6 +907,7 @@ class SpecHandler(BaseEngineHandler):
             f"- generated_specs_per_cycle: `{getattr(s, 'spec_generated_specs_per_cycle', None)}` — 每轮生成规格数\n"
             f"- generated_specs_retention: `{getattr(s, 'spec_generated_specs_retention', None)}` — 生成规格保留数\n"
             "\n💾 **持久化与压缩**\n\n"
+            f"- cache_root: `{getattr(s, 'spec_cache_root', None) or '~/.cache/ghostAp'}` — Spec 过程文件根目录\n"
             f"- state_file: `{getattr(s, 'spec_state_filename', None)}` — 状态文件名\n"
             f"- state_cycles_tail: `{getattr(s, 'spec_state_cycles_tail', None)}` — 状态文件仅保留最近 N 轮\n"
             f"- state_work_items_tail: `{getattr(s, 'spec_state_work_items_tail', None)}` — 工作项保留最近 N 条\n"
@@ -1287,6 +1368,49 @@ class SpecHandler(BaseEngineHandler):
             name_suffix="recover",
         )
 
+    def restore_spec_run(
+        self,
+        message_id: str,
+        chat_id: str,
+        run_id: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        run_id = (run_id or "").strip()
+        if not run_id:
+            self.reply_text(message_id, "❌ 还原失败：缺少 run_id")
+            return
+        if project is None:
+            project = self.project_manager.get_active_project(chat_id)
+        root_path = project.root_path if project else self.get_working_dir(chat_id)
+        state_path = state_path_for_run(root_path, self.settings, run_id)
+        if not state_path or not os.path.isfile(state_path):
+            self.reply_text(message_id, f"❌ 未找到 Spec 状态: {run_id}")
+            return
+
+        engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
+        try:
+            engine = self.ctx.spec_engine_manager.load_or_create_from_state_file(
+                chat_id,
+                root_path,
+                state_path,
+                engine_name=engine_name,
+            )
+        except Exception as e:
+            logger.warning("Spec run 还原失败(run_id=%s): %s", run_id, get_error_detail(e), exc_info=True)
+            self.reply_text(message_id, fmt_error("还原 Spec 状态", e))
+            return
+
+        if not engine or not engine.project:
+            self.reply_text(message_id, f"❌ Spec 状态不可用: {run_id}")
+            return
+
+        if engine.project.status in (SpecProjectStatus.PAUSED, SpecProjectStatus.CLARIFYING):
+            self.resume_spec_engine(message_id, chat_id, project)
+            return
+
+        self.renderer.update_ui_state(project.project_id if project else root_path, view_mode="status", view_context={})
+        self.renderer.render_current_view(message_id, chat_id, project, origin_message_id=message_id)
+
     # ------------------------------------------------------------------
     # UI Interaction Handlers
     # ------------------------------------------------------------------
@@ -1347,4 +1471,9 @@ class SpecHandler(BaseEngineHandler):
                 return
             # Reuse /spec_recover flow to resume from persisted failed-task snapshot.
             self.recover_spec_task(open_message_id, open_chat_id, task_id, project=target_project)
+            return
+
+        if action_type == "spec_restore_run":
+            run_id = (value.get("run_id") or "").strip()
+            self.restore_spec_run(open_message_id, open_chat_id, run_id, project=target_project)
             return

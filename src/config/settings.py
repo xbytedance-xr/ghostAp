@@ -325,6 +325,8 @@ class Settings(BaseSettings):
     review_circuit_lint_timeout: int = 10
 
     # Spec long-range persistence / monitoring
+    # Empty = mirror project absolute paths under ~/.cache/ghostAp.
+    spec_cache_root: str = ""
     spec_state_filename: str = ".spec_engine_state.json"
     spec_artifacts_dirname: str = ".spec_engine"
     # Keep in-memory phase outputs bounded for 5k+ cycles

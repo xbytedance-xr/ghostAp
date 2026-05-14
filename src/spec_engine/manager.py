@@ -9,6 +9,7 @@ from ..engine_base import BaseEngineManager
 from ..utils.engine_identity import resolve_engine_identity
 from .engine import SpecEngine
 from .models import SpecProject
+from .storage import state_path_candidates
 
 
 class SpecEngineManager(BaseEngineManager["SpecEngine"]):
@@ -146,13 +147,50 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
         if not seed_engine.settings.spec_allow_resume_from_disk:
             return seed_engine
 
-        state_path = os.path.join(root_path, seed_engine.settings.spec_state_filename)
+        return self._load_or_create_from_state_paths(
+            chat_id,
+            root_path,
+            state_path_candidates(root_path, seed_engine.settings),
+            engine_name=engine_name,
+        )
+
+    def load_or_create_from_state_file(
+        self,
+        chat_id: str,
+        root_path: str,
+        state_path: str,
+        *,
+        engine_name: str = "Coco",
+    ) -> "SpecEngine":
+        """Create engine and hydrate project state from an explicit Spec run state file."""
+        seed_engine = self.get_or_create(chat_id, root_path, engine_name=engine_name)
+        if not seed_engine.settings.spec_allow_resume_from_disk:
+            return seed_engine
+        return self._load_or_create_from_state_paths(
+            chat_id,
+            root_path,
+            [state_path],
+            engine_name=engine_name,
+        )
+
+    def _load_or_create_from_state_paths(
+        self,
+        chat_id: str,
+        root_path: str,
+        state_paths: list[str],
+        *,
+        engine_name: str,
+    ) -> "SpecEngine":
+        seed_engine = self.get_or_create(chat_id, root_path, engine_name=engine_name)
         persisted_project = None
         persisted_runtime = None
         persisted_saved_at = None
         persisted_compact = None
+        loaded_state_path = ""
 
-        if os.path.exists(state_path):
+        for state_path in state_paths:
+            if not state_path or not os.path.exists(state_path):
+                continue
             try:
                 with open(state_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
@@ -162,6 +200,8 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
                     persisted_runtime = data.get("runtime_context") if isinstance(data.get("runtime_context"), dict) else None
                     persisted_saved_at = data.get("saved_at")
                     persisted_compact = proj.get("_compact")
+                    loaded_state_path = state_path
+                    break
             except Exception:
                 persisted_project = None
                 persisted_runtime = None
@@ -180,7 +220,7 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
                 engine._project = SpecProject.from_dict(persisted_project)
                 engine._restore_runtime_context(runtime)
                 engine._resume_meta = {
-                    "state_path": state_path,
+                    "state_path": loaded_state_path,
                     "saved_at": persisted_saved_at,
                     "compact": persisted_compact,
                 }

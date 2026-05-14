@@ -3333,9 +3333,12 @@ class TestSpecEngineExecution:
         assert len(project.cycles) == 500
         assert project.cycles[-1].status == "completed"
         assert project.status == SpecProjectStatus.ABORTED
-        # State file must exist and be loadable
-        state_path = tmp_path / ".spec_engine_state.json"
-        assert state_path.exists()
+        # State file must exist outside the project tree and be loadable.
+        from src.spec_engine.persistence import get_state_path
+
+        state_path = get_state_path(str(tmp_path), engine.settings)
+        assert os.path.exists(state_path)
+        assert not (tmp_path / ".spec_engine_state.json").exists()
         loaded = SpecEngine.load_state(str(state_path))
         assert loaded is not None
         assert loaded.current_cycle_number == 500

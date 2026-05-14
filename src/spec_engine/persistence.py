@@ -10,13 +10,17 @@ from typing import Optional
 
 from ..utils.errors import get_error_detail
 from .models import SpecProject, SpecWorkItem, SpecWorkItemStatus
+from .storage import (
+    artifact_root_dir as _storage_artifact_root_dir,
+    get_state_path as _storage_get_state_path,
+    run_state_path as _storage_run_state_path,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def get_state_path(root_path: str, settings) -> str:
-    filename = settings.spec_state_filename
-    return os.path.join(root_path, filename)
+    return _storage_get_state_path(root_path, settings)
 
 
 def persist_state_best_effort(project: Optional[SpecProject], save_fn, state_path: str) -> None:
@@ -29,9 +33,8 @@ def persist_state_best_effort(project: Optional[SpecProject], save_fn, state_pat
 
 
 def artifact_root_dir(root_path: str, settings, project: Optional[SpecProject]) -> str:
-    dirname = settings.spec_artifacts_dirname
     pid = project.project_id if project else "unknown"
-    return os.path.join(root_path, dirname, pid)
+    return _storage_artifact_root_dir(root_path, settings, pid)
 
 
 def history_log_path(root_path: str, settings, project: Optional[SpecProject]) -> str:
@@ -359,6 +362,7 @@ def save_engine_state(
 ) -> str:
     if not project:
         raise ValueError("没有项目状态可保存")
+    default_path = not filepath
     if not filepath:
         filepath = get_state_path(root_path, settings)
     state = {
@@ -370,11 +374,22 @@ def save_engine_state(
     }
     if review_circuit:
         state["review_circuit"] = review_circuit
+    _write_json_atomic(filepath, state)
+    if default_path:
+        run_path = _storage_run_state_path(root_path, settings, project.project_id)
+        if run_path != filepath:
+            _write_json_atomic(run_path, state)
+    return filepath
+
+
+def _write_json_atomic(filepath: str, data: dict) -> None:
+    parent = os.path.dirname(filepath)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     tmp_path = filepath + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, filepath)
-    return filepath
 
 
 def load_engine_state(filepath: str) -> tuple[Optional[SpecProject], dict]:

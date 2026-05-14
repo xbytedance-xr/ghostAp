@@ -26,6 +26,7 @@ SPEC_REVIEW_SELECT_TOOL = "spec_review_select_tool"  # Select a tool for Spec mu
 SPEC_REVIEW_SELECT_MODEL = "spec_review_select_model"  # Select a model for pending Spec review tool
 SPEC_REVIEW_REMOVE_ITEM = "spec_review_remove_item"  # Remove a selected Spec review agent
 SPEC_REVIEW_CLEAR_ITEMS = "spec_review_clear_items"  # Clear selected Spec review agents
+SPEC_RESTORE_RUN = "spec_restore_run"  # Restore a persisted Spec run from cache
 SHOW_SPEC_REVIEW_MENU = "show_spec_review_menu"  # Return to Spec review tool selection
 
 # ---------------------------------------------------------------------------

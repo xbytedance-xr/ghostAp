@@ -10,7 +10,7 @@ from ..utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)
 
-SPEC_TASKS_DIR = os.path.expanduser("~/.ghostap/spec_tasks")
+SPEC_TASKS_DIR = os.path.expanduser("~/.cache/ghostAp/spec_tasks")
 SPEC_TASKS_DIR_FALLBACK = os.path.join(tempfile.gettempdir(), "ghostap_spec_tasks")
 
 

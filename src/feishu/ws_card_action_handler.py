@@ -64,6 +64,7 @@ SYSTEM_CARD_ACTIONS = {
     "spec_review_select_model",
     "spec_review_remove_item",
     "spec_review_clear_items",
+    "spec_restore_run",
     "show_spec_review_menu",
 }
 

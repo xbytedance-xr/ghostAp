@@ -98,6 +98,7 @@ from .persistence import (
     save_failed_task as _save_failed_task_impl,
     truncate_output as _truncate_output,
 )
+from .storage import state_path_candidates as _state_path_candidates
 from .discovery import (
     build_input_from_spec_file as _build_input_from_spec_file,
     discover_optimization_questions as _discover_optimization_questions,
@@ -1528,10 +1529,11 @@ class SpecEngine(BaseEngine):
 
         # Restore review circuit state from persistence (survives process restart)
         try:
-            state_path = _get_state_path(self.root_path, self.settings)
-            if os.path.isfile(state_path):
-                _, circuit = self.load_state_with_circuit(state_path)
-                self._review_orchestrator.restore_circuit(circuit)
+            for state_path in _state_path_candidates(self.root_path, self.settings):
+                if os.path.isfile(state_path):
+                    _, circuit = self.load_state_with_circuit(state_path)
+                    self._review_orchestrator.restore_circuit(circuit)
+                    break
         except Exception as e:
             logger.debug("[Spec] resume circuit restore skipped: %s", get_error_detail(e))
 

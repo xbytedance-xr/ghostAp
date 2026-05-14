@@ -17,6 +17,7 @@ from src.spec_engine.review_agents import ReviewAgentBinding, assign_review_agen
 from src.spec_engine.review_artifacts import ReviewArtifacts
 from src.spec_engine.review_roles import ReviewRoleSpec
 from src.spec_engine.review_strategy import AdaptiveRoleReviewStrategy, ReviewContext
+from src.spec_engine.storage import SpecRunSummary
 from src.worktree_engine.models import WorktreeSelectionItem
 from src.worktree_engine.selection import WorktreeToolOption
 
@@ -185,6 +186,44 @@ def test_spec_start_shows_review_agent_selection_before_submitting_task():
     assert SPEC_REVIEW_USE_AUTO in actions
     assert "worktree_select_tool" not in actions
     assert project.spec_review_selection_state.selection.pending_goal == "implement auth"
+
+
+def test_spec_status_lists_cached_runs_with_restore_button(monkeypatch):
+    handler = _make_spec_handler()
+    project = MagicMock()
+    project.project_id = "p1"
+    project.project_name = "ghostAp"
+    project.root_path = "/repo/ghostAp"
+    run = SpecRunSummary(
+        run_id="run123",
+        run_dir="/cache/repo/ghostAp/.spec_engine/run123",
+        state_path="/cache/repo/ghostAp/.spec_engine/run123/state.json",
+        status="paused",
+        requirement="restore this spec",
+        current_cycle=3,
+        total_cycles=10,
+        saved_at=1_700_000_000,
+    )
+    monkeypatch.setattr("src.feishu.handlers.spec.list_spec_runs", lambda root, settings: [run])
+    with patch.object(handler, "reply_card") as reply_card:
+        handler.show_spec_status("msg-status", "chat-status", project)
+
+    card = json.loads(reply_card.call_args[0][1])
+    text = "\n".join(_collect_markdown_content(card))
+    assert "发现任务: `1` 个" in text
+    buttons = _collect_buttons(card)
+    values = [
+        behavior.get("value")
+        for button in buttons
+        for behavior in button.get("behaviors", [])
+        if behavior.get("type") == "callback"
+    ]
+    assert {
+        "action": "spec_restore_run",
+        "project_id": "p1",
+        "deep_project_id": "/repo/ghostAp",
+        "run_id": "run123",
+    } in values
 
 
 def test_spec_review_selection_card_does_not_render_worktree_journey_copy():
