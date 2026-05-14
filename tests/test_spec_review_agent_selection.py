@@ -189,7 +189,7 @@ def test_spec_start_shows_review_agent_selection_before_submitting_task():
     assert project.spec_review_selection_state.selection.pending_goal == "implement auth"
 
 
-def test_spec_status_lists_cached_runs_with_restore_button(monkeypatch):
+def test_spec_status_lists_cached_runs_with_restore_and_delete_buttons(monkeypatch):
     handler = _make_spec_handler()
     project = MagicMock()
     project.project_id = "p1"
@@ -225,6 +225,14 @@ def test_spec_status_lists_cached_runs_with_restore_button(monkeypatch):
         "deep_project_id": "/repo/ghostAp",
         "run_id": "run123",
     } in values
+    assert {
+        "action": "spec_delete_run",
+        "project_id": "p1",
+        "deep_project_id": "/repo/ghostAp",
+        "run_id": "run123",
+    } in values
+    button_types = {button["text"]["content"]: button.get("type") for button in buttons}
+    assert button_types["🗑 删除 run123"] == "danger"
 
 
 def test_spec_recover_with_run_id_falls_back_to_cached_run_restore(monkeypatch):
@@ -266,6 +274,42 @@ def test_restore_spec_run_resumes_interrupted_running_state(monkeypatch):
     assert engine.project.status == SpecProjectStatus.PAUSED
     engine.save_state.assert_called_once()
     resume.assert_called_once_with("msg-restore", "chat-restore", project)
+
+
+def test_delete_spec_run_cache_deletes_cached_run(monkeypatch):
+    handler = _make_spec_handler()
+    project = MagicMock()
+    project.root_path = "/repo/ghostAp"
+    deleted: list[tuple[str, str]] = []
+
+    def fake_delete(root: str, settings, run_id: str) -> bool:
+        deleted.append((root, run_id))
+        return True
+
+    monkeypatch.setattr("src.feishu.handlers.spec.delete_spec_run", fake_delete)
+    with patch.object(handler, "reply_text") as reply_text:
+        handler.delete_spec_run_cache("msg-delete", "chat-delete", "run123", project)
+
+    assert deleted == [("/repo/ghostAp", "run123")]
+    reply_text.assert_called_once_with("msg-delete", "🧹 已删除 Spec 缓存任务: run123")
+
+
+def test_delete_spec_run_cache_blocks_running_engine(monkeypatch):
+    handler = _make_spec_handler()
+    project = MagicMock()
+    project.root_path = "/repo/ghostAp"
+    engine = MagicMock()
+    engine.project.project_id = "run123"
+    engine.is_running = True
+    handler.ctx.spec_engine_manager.get.return_value = engine
+    delete = MagicMock(return_value=True)
+    monkeypatch.setattr("src.feishu.handlers.spec.delete_spec_run", delete)
+
+    with patch.object(handler, "reply_text") as reply_text:
+        handler.delete_spec_run_cache("msg-delete", "chat-delete", "run123", project)
+
+    delete.assert_not_called()
+    assert "仍在运行" in reply_text.call_args.args[1]
 
 
 def test_spec_review_selection_card_does_not_render_worktree_journey_copy():

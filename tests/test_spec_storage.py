@@ -7,6 +7,7 @@ from src.spec_engine.models import SpecProject
 from src.spec_engine.persistence import artifact_root_dir, get_state_path, save_engine_state
 from src.spec_engine.storage import (
     artifact_root_dir as storage_artifact_root_dir,
+    delete_spec_run,
     list_spec_runs,
     project_cache_root,
     run_state_path,
@@ -147,3 +148,28 @@ def test_save_engine_state_writes_run_state_before_project_state(monkeypatch, tm
 
     assert writes[0] == run_state_path(str(project_root), settings, project.project_id)
     assert writes[1] == state_path
+
+
+def test_delete_spec_run_removes_run_dir_and_matching_project_state(tmp_path):
+    settings = _settings(str(tmp_path / "cache"))
+    project_root = tmp_path / "repo"
+    project = SpecProject.create(root_path=str(project_root))
+    project.requirement = "delete me"
+
+    state_path = save_engine_state(
+        project=project,
+        settings=settings,
+        root_path=str(project_root),
+        chat_id="chat-1",
+        build_runtime_context_fn=lambda: {},
+        project_to_compact_dict_fn=project.to_dict,
+    )
+    run_dir = storage_artifact_root_dir(str(project_root), settings, project.project_id)
+    assert os.path.isdir(run_dir)
+    assert os.path.exists(state_path)
+
+    assert delete_spec_run(str(project_root), settings, project.project_id) is True
+
+    assert not os.path.exists(run_dir)
+    assert not os.path.exists(state_path)
+    assert list_spec_runs(str(project_root), settings) == []

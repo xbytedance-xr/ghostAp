@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -108,6 +109,35 @@ def state_path_for_run(root_path: str, settings, run_id: str) -> str:
     if repaired:
         return repaired
     return os.path.join(artifact_base_dir(root_path, settings), run_id, RUN_STATE_FILENAME)
+
+
+def delete_spec_run(root_path: str, settings, run_id: str) -> bool:
+    """Delete a cached Spec run and matching project-level state if present."""
+    run_id = os.path.basename(str(run_id or "").strip())
+    if not run_id:
+        return False
+
+    deleted = False
+    for base in iter_artifact_base_dirs(root_path, settings):
+        run_dir = os.path.join(base, run_id)
+        if os.path.isdir(run_dir):
+            shutil.rmtree(run_dir, ignore_errors=True)
+            deleted = True
+
+    for state_path in state_path_candidates(root_path, settings):
+        data = _read_json_dict(state_path)
+        project = data.get("project") if isinstance(data.get("project"), dict) else {}
+        if str(project.get("project_id") or "").strip() != run_id:
+            continue
+        try:
+            os.remove(state_path)
+            deleted = True
+        except FileNotFoundError:
+            pass
+        except Exception:
+            continue
+
+    return deleted
 
 
 def list_spec_runs(root_path: str, settings, *, limit: int | None = None) -> list[SpecRunSummary]:

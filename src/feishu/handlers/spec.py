@@ -17,7 +17,7 @@ from ...card.ui_text import UI_TEXT
 from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
 from ...spec_engine.review_agents import ReviewAgentBinding
 from ...spec_engine.models import SpecProjectStatus
-from ...spec_engine.storage import SpecRunSummary, list_spec_runs, state_path_for_run
+from ...spec_engine.storage import SpecRunSummary, delete_spec_run, list_spec_runs, state_path_for_run
 from ...spec_engine.task_persistence import list_pending_tasks, load_task_state
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.errors import fmt_error, get_error_detail
@@ -772,21 +772,35 @@ class SpecHandler(BaseEngineHandler):
             lines.append(f"... 还有 {len(runs) - 5} 个历史任务未展示")
             lines.append("")
 
-        lines.append("点击下方按钮会还原最新可恢复的 Spec 状态；如果状态为暂停/待澄清，会继续执行。")
+        lines.append("点击下方按钮可恢复或删除缓存任务；如果状态为暂停/待澄清，会继续执行。")
         buttons: list[dict] = []
-        restorable = next((run for run in runs if run.state_path), None)
-        if restorable:
+        for run in runs[:5]:
+            if run.state_path:
+                buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": f"🔄 恢复 {run.run_id}"},
+                    "type": "primary",
+                    "behaviors": [{
+                        "type": "callback",
+                        "value": {
+                            "action": "spec_restore_run",
+                            "project_id": project.project_id if project else "",
+                            "deep_project_id": root_path,
+                            "run_id": run.run_id,
+                        },
+                    }],
+                })
             buttons.append({
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "🔄 还原最新 Spec"},
-                "type": "primary",
+                "text": {"tag": "plain_text", "content": f"🗑 删除 {run.run_id}"},
+                "type": "danger",
                 "behaviors": [{
                     "type": "callback",
                     "value": {
-                        "action": "spec_restore_run",
+                        "action": "spec_delete_run",
                         "project_id": project.project_id if project else "",
                         "deep_project_id": root_path,
-                        "run_id": restorable.run_id,
+                        "run_id": run.run_id,
                     },
                 }],
             })
@@ -1489,3 +1503,35 @@ class SpecHandler(BaseEngineHandler):
             run_id = (value.get("run_id") or "").strip()
             self.restore_spec_run(open_message_id, open_chat_id, run_id, project=target_project)
             return
+
+        if action_type == "spec_delete_run":
+            run_id = (value.get("run_id") or "").strip()
+            self.delete_spec_run_cache(open_message_id, open_chat_id, run_id, project=target_project)
+            return
+
+    def delete_spec_run_cache(
+        self,
+        message_id: str,
+        chat_id: str,
+        run_id: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        run_id = (run_id or "").strip()
+        if not run_id:
+            self.reply_text(message_id, "❌ 删除失败：缺少 run_id")
+            return
+        if project is None:
+            project = self.project_manager.get_active_project(chat_id)
+        root_path = project.root_path if project else self.get_working_dir(chat_id)
+
+        engine = self.ctx.spec_engine_manager.get(chat_id, root_path)
+        if engine and engine.project and engine.project.project_id == run_id and engine.is_running:
+            self.reply_text(message_id, f"⚠️ Spec 任务仍在运行，不能删除缓存: {run_id}\n\n请先发送 `/stop_spec` 停止任务。")
+            return
+
+        deleted = delete_spec_run(root_path, self.settings, run_id)
+        if not deleted:
+            self.reply_text(message_id, f"❌ 未找到 Spec 缓存任务: {run_id}")
+            return
+
+        self.reply_text(message_id, f"🧹 已删除 Spec 缓存任务: {run_id}")
