@@ -141,16 +141,19 @@ class TestOnPhaseEventThrottle:
         ev.event_type = event_type
         return ev
 
-    def test_non_meaningful_event_returns_early(self):
+    def test_build_phase_text_chunk_still_streams(self):
         proc, deps = _make_processor()
         proc._acp_renderer.process_event = MagicMock()
         ev = self._make_event(ACPEventType.TEXT_CHUNK)
-        # Non-Build phases forward TEXT_CHUNK via stream bridge (TEXT_STARTED + TEXT_DELTA)
-        proc.on_phase_event(1, SpecPhase.SPEC, ev)
+        ev.text = "build output"
+        ev.tool_call = None
+        ev.plan = None
+
+        proc.on_phase_event(1, SpecPhase.BUILD, ev)
+
         dispatched_types = [
             call[0][0].type for call in deps["rotator"].dispatch.call_args_list
         ]
-        assert CardEventType.TEXT_STARTED in dispatched_types
         assert CardEventType.TEXT_DELTA in dispatched_types
 
     def test_structured_phase_text_chunk_is_not_streamed_as_raw_json(self):
@@ -348,7 +351,7 @@ class TestOnReviewDone:
     """Verify review completion closes the visible review phase."""
 
     def test_dispatches_review_phase_done(self):
-        proc, deps = _make_processor()
+        proc, deps = _make_processor(reporter=SpecReporter())
         proc.on_review_done(2, ReviewResult(iteration=2))
 
         dispatched = [call[0][0] for call in deps["rotator"].dispatch.call_args_list]
@@ -357,7 +360,13 @@ class TestOnReviewDone:
             if event.type == CardEventType.PHASE_DONE and event.payload.get("phase") == "review"
         ]
         assert phase_done
-        assert phase_done[-1].payload["output"] == "review result"
+        assert "多视角审查完成" in phase_done[-1].payload["output"]
+
+        text_events = [
+            event for event in dispatched
+            if event.type == CardEventType.TEXT_DELTA
+        ]
+        assert any("多视角审查" in str(event.payload.get("text", "")) for event in text_events)
 
 
 class TestOnError:

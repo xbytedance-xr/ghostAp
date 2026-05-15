@@ -222,7 +222,7 @@ class TestSpecStreamProcessorUnifiedCycleCard:
         )
 
         processor.on_cycle_start(1, 3)
-        processor.on_phase_start(1, SpecPhase.PLAN)
+        processor.on_phase_start(1, SpecPhase.REVIEW)
         rotator.dispatch.reset_mock()
 
         text_event = MagicMock()
@@ -230,7 +230,7 @@ class TestSpecStreamProcessorUnifiedCycleCard:
         text_event.text = "hello"
         text_event.tool_call = None
 
-        processor.on_phase_event(1, SpecPhase.PLAN, text_event)
+        processor.on_phase_event(1, SpecPhase.REVIEW, text_event)
         rotator.dispatch.reset_mock()
 
         processor.on_error("boom")

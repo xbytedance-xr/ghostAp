@@ -46,6 +46,12 @@ _RETRY_STATUS_TEXT: dict[RetryStatus, str] = {
     RetryStatus.NO_RETRY: "retry_no_retry",
 }
 
+_STRUCTURED_ARTIFACT_PHASES = frozenset({
+    SpecPhase.SPEC,
+    SpecPhase.PLAN,
+    SpecPhase.TASK,
+})
+
 
 class _EngineContext(NamedTuple):
     """Lightweight return type for _get_engine_and_state()."""
@@ -230,11 +236,20 @@ class SpecStreamProcessor:
         )
 
         content = self._reporter.format_review_result(review, cycle_num)
-        self._rotator.dispatch(
-            CardEvent.phase_done(cycle_num, SpecPhase.REVIEW.value, content)
+        _, spec_project, state, max_c = self._get_engine_and_state()
+        status_content = self._reporter.format_phase_done_content(
+            cycle_num, SpecPhase.REVIEW, max_c, content
         )
+        subtitle = self._reporter.format_phase_subtitle(
+            cycle_num, max_c, SpecPhase.REVIEW, completed=True
+        )
+        self._rotator.dispatch(
+            CardEvent.phase_done(
+                cycle_num, SpecPhase.REVIEW.value, status_content, subtitle=subtitle
+            )
+        )
+        _dispatch_text_block(self._rotator, f"_review_done_{cycle_num}", content)
 
-        _, spec_project, state, _ = self._get_engine_and_state()
         if spec_project:
             criteria_section = self._reporter.format_criteria_section(spec_project)
             self._rotator.dispatch(CardEvent.criteria_updated(
@@ -301,9 +316,10 @@ class SpecStreamProcessor:
 
         _, spec_project, state, max_c = self._get_engine_and_state()
         subtitle = self._reporter.format_phase_subtitle(cycle_num, max_c, phase, completed=False)
+        content = self._reporter.format_phase_start_content(cycle_num, phase, max_c)
 
         self._rotator.dispatch(
-            CardEvent.phase_started(cycle_num, phase_name, subtitle=subtitle)
+            CardEvent.phase_started(cycle_num, phase_name, subtitle=subtitle, content=content)
         )
 
         if phase == SpecPhase.BUILD:
@@ -322,6 +338,13 @@ class SpecStreamProcessor:
             self._footer_status = "tool_running"
         elif event.event_type == ACPEventType.TEXT_CHUNK:
             self._footer_status = None
+
+        # SPEC/PLAN/TASK are structured artifact phases whose model output is
+        # intentionally JSON-like for parsing. Streaming those chunks verbatim
+        # makes the Feishu card unreadable; keep the raw output in the engine
+        # tracker/artifact path and render a concise phase summary on done.
+        if phase in _STRUCTURED_ARTIFACT_PHASES and event.event_type == ACPEventType.TEXT_CHUNK:
+            return
 
         # Detect PLAN_UPDATE for multi-card split in BUILD phase
         if self._multi_card_enabled and event.event_type == ACPEventType.PLAN_UPDATE and phase == SpecPhase.BUILD:
@@ -371,9 +394,14 @@ class SpecStreamProcessor:
         _, spec_project, state, max_c = self._get_engine_and_state()
         self._footer_status = None
         self._stream_bridge.close_open_blocks()
+        status_content = self._reporter.format_phase_done_content(cycle_num, phase, max_c, output)
+        subtitle = self._reporter.format_phase_subtitle(cycle_num, max_c, phase, completed=True)
 
         self._rotator.dispatch(CardEvent.phase_done(
-            cycle_num, phase.value if hasattr(phase, 'value') else str(phase), output
+            cycle_num,
+            phase.value if hasattr(phase, 'value') else str(phase),
+            status_content,
+            subtitle=subtitle,
         ))
 
         if phase == SpecPhase.BUILD:
@@ -381,10 +409,6 @@ class SpecStreamProcessor:
             summary = self._reporter._extract_phase_summary(phase, output)
             done_text = UI_TEXT["spec_build_done"].format(summary=summary) if summary else UI_TEXT["spec_build_done_plain"]
             _dispatch_text_block(self._rotator, f"_phase_done_{cycle_num}_{phase.value}", done_text)
-        else:
-            # Non-Build phases: append concise summary after streamed content
-            content = self._reporter.format_phase_done_content(cycle_num, phase, max_c, output)
-            _dispatch_text_block(self._rotator, f"_phase_done_{cycle_num}_{phase.value}", content)
 
     def on_phase_retry(self, attempt: int, max_attempts: int, detail: str) -> None:
         """Push phase-level retry status."""

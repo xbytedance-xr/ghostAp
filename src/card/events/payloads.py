@@ -117,6 +117,8 @@ class PhaseStartedPayload(TypedDict):
     """Payload for PHASE_STARTED event."""
     cycle_num: int
     phase: str
+    subtitle: NotRequired[str]
+    content: NotRequired[str]
 
 
 class PhaseDonePayload(TypedDict):
@@ -124,6 +126,7 @@ class PhaseDonePayload(TypedDict):
     cycle_num: int
     phase: str
     output: str
+    subtitle: NotRequired[str]
 
 
 class ReviewRetryPayload(TypedDict):

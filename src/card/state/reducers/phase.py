@@ -15,10 +15,13 @@ _PHASE_KEYS: tuple[str, ...] = (
     "refactoring", "debugging",
 )
 
-
 def _get_phase_display(phase: str) -> str:
     key = f"phase_{phase}"
     return UI_TEXT.get(key, UI_TEXT["phase_default"])
+
+
+def _is_same_cycle_phase_block(block, cycle_num: int) -> bool:
+    return block.kind == "phase" and block.cycle_num == cycle_num
 
 
 def reduce_phase(state: CardState, event: CardEvent) -> CardState:
@@ -31,15 +34,19 @@ def reduce_phase(state: CardState, event: CardEvent) -> CardState:
             cycle_num = event.payload.get("cycle_num", state.engine_ext.cycle_num)
             phase = event.payload.get("phase", "")
             subtitle = event.payload.get("subtitle")
+            content = event.payload.get("content") or phase
             block_id = f"phase_{cycle_num}_{phase}"
-            # Idempotency: if an active phase block with same id exists, replace it
+            # Keep a single visible phase-progress panel per cycle. Completed
+            # phase details stay in normal text blocks / cycle summaries; the
+            # status panel should represent the current phase instead of
+            # leaving stale snapshots at the top of the card.
             new_blocks = tuple(
                 b for b in state.blocks
-                if not (b.block_id == block_id and b.status == "active")
+                if not _is_same_cycle_phase_block(b, cycle_num)
             )
             block = PhaseBlock(
                 block_id=block_id,
-                content=phase,
+                content=content,
                 status="active",
                 phase_name=phase,
                 cycle_num=cycle_num,
@@ -58,6 +65,7 @@ def reduce_phase(state: CardState, event: CardEvent) -> CardState:
             cycle_num = event.payload.get("cycle_num", state.engine_ext.cycle_num)
             phase = event.payload.get("phase", "")
             output = event.payload.get("output", "")
+            subtitle = event.payload.get("subtitle")
             block_id = f"phase_{cycle_num}_{phase}"
             # Guard: if no matching active block exists, warn and return unchanged
             has_block = any(b.block_id == block_id for b in state.blocks)
@@ -75,6 +83,9 @@ def reduce_phase(state: CardState, event: CardEvent) -> CardState:
             )
             footer = replace(state.footer, status="idle", status_text=None)
             ext = replace(state.engine_ext, phase_info=None)
-            return replace(state, blocks=new_blocks, engine_ext=ext, footer=footer)
+            changes: dict = {"blocks": new_blocks, "engine_ext": ext, "footer": footer}
+            if subtitle is not None and state.header:
+                changes["header"] = replace(state.header, subtitle=subtitle)
+            return replace(state, **changes)
 
     return state

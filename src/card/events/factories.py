@@ -396,7 +396,14 @@ class CardEvent(Generic[P]):
         })
 
     @classmethod
-    def phase_started(cls, cycle_num: int, phase: str, *, subtitle: str | None = None) -> CardEvent[PhaseStartedPayload]:
+    def phase_started(
+        cls,
+        cycle_num: int,
+        phase: str,
+        *,
+        subtitle: str | None = None,
+        content: str | None = None,
+    ) -> CardEvent[PhaseStartedPayload]:
         """Signal that a named phase has begun within a cycle.
 
         Payload: {cycle_num: int, phase: str, subtitle?: str}
@@ -410,10 +417,19 @@ class CardEvent(Generic[P]):
         payload: dict = {"cycle_num": cycle_num, "phase": phase}
         if subtitle is not None:
             payload["subtitle"] = subtitle
+        if content is not None:
+            payload["content"] = content
         return cls(type=CardEventType.PHASE_STARTED, payload=payload)
 
     @classmethod
-    def phase_done(cls, cycle_num: int, phase: str, output: str = "") -> CardEvent[PhaseDonePayload]:
+    def phase_done(
+        cls,
+        cycle_num: int,
+        phase: str,
+        output: str = "",
+        *,
+        subtitle: str | None = None,
+    ) -> CardEvent[PhaseDonePayload]:
         """Signal that a named phase has completed.
 
         Payload: {cycle_num: int, phase: str, output: str}
@@ -423,9 +439,12 @@ class CardEvent(Generic[P]):
             raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
         if not phase:
             raise ValueError("phase is required for phase_done")
-        return cls(type=CardEventType.PHASE_DONE, payload={
+        payload: dict = {
             "cycle_num": cycle_num, "phase": phase, "output": output,
-        })
+        }
+        if subtitle is not None:
+            payload["subtitle"] = subtitle
+        return cls(type=CardEventType.PHASE_DONE, payload=payload)
 
     @classmethod
     def review_retry(cls, cycle_num: int, attempt: int, max_attempts: int, status: str = "executing", delay_sec: float = 0) -> CardEvent[ReviewRetryPayload]:

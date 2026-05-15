@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
+## 2026-05-15
+- **Spec 卡片 JSON 可读性与阶段状态流转修复** — Spec 结构化阶段 `SPEC/PLAN/TASK` 不再把模型输出的完整 JSON artifact 实时流入卡片正文，phase done 也不再把 raw output 写进 phase panel；卡片只展示 `SpecReporter` 生成的阶段摘要，raw artifact 仍保留在 engine tracker/artifact/persistence 路径。phase reducer 改为同一 cycle 只保留一个当前 phase 状态块，新阶段会替换旧快照，避免“✅规格定义 → ⬜方案规划 → ...”固定在顶部看起来不流转；review 完成状态与详细审查结果分开展示。相关回归 `171 passed`、扩大 Spec/card `340 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 ## 2026-05-14
 - **Codex 模型列表 current_model 退化修复** — `/codex` 和“刷新模型”本来走同一条 `SystemHandler._show_acp_model_selection_flow()`；线上“怎么刷新都只有 gpt-5.5”的根因在 `src/acp/helper.py` 的 Codex local fallback：只要项目已有 `current_model`，`_codex_models_from_local_cache()` 就直接返回单个当前模型，不再读取 `~/.codex/models_cache.json`，日志表现为反复 `using local codex model cache (1 models) before live probe`。现在 `current_model` 只用于标记默认项；有本地模型缓存时仍展示完整列表，只有本地缓存为空才单模型兜底。相关回归 `8 passed` + `90 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-14.md)
 - **Deep/Spec 继承已选 Coco 模型修复** — 线上现象是用户在 `/coco` 选择 DeepSeek V4 Pro 后，Deep/Spec 执行仍回落到 Coco 全局默认 `test-o-new`。根因不是模型选择卡丢值，而是 engine 启动层只用 `engine_name="Coco"` 创建 `DeepEngine`/`SpecEngine`，没有把 `project.acp_model_name` 传入 engine 的 `_model_name`；卡片可显示已选模型，但 `create_engine_session()` 收到 `model=None` 后会回退到 `CocoModelManager.get_current_model()`。现在 Deep/Spec 启动都会把已选 ACP 模型传给 engine manager，`BaseEngineManager` 也会在非运行 engine 的工具/模型变化时重建实例；聚合回归 `44 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-14.md)

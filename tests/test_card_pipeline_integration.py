@@ -234,11 +234,12 @@ class TestCyclePhasePipeline:
 
         assert state.engine_ext.cycle_num == 1
         assert state.engine_ext.phase_info == "coding"
-        # Should have 2 phase blocks
+        # The card keeps one current phase-progress panel per cycle, so old
+        # phase snapshots do not pin a stale status line at the top.
         phase_blocks = [b for b in state.blocks if b.kind == "phase"]
-        assert len(phase_blocks) == 2
-        assert phase_blocks[0].status == "completed"
-        assert phase_blocks[1].status == "active"
+        assert len(phase_blocks) == 1
+        assert phase_blocks[0].phase_name == "coding"
+        assert phase_blocks[0].status == "active"
 
         rendered = render_card(state, RenderBudget())
         assert len(rendered) >= 1
