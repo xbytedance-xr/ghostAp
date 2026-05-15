@@ -194,7 +194,8 @@ class CoreBuilder:
         thread_root_id = None
         try:
             from ...thread import get_current_thread_id
-            thread_root_id = get_current_thread_id()
+            current_thread_id = get_current_thread_id()
+            thread_root_id = current_thread_id if isinstance(current_thread_id, str) else None
         except Exception:
             logger.debug("failed to get thread_id", exc_info=True)
             

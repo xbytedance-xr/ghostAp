@@ -209,15 +209,19 @@ class SpecHandler(BaseEngineHandler):
         if not tools:
             self._start_spec_engine_now(message_id, chat_id, requirement, project, review_agents=[])
             return
-        self._dispatch_spec_review_tool_select(
-            message_id=message_id,
-            chat_id=chat_id,
-            project=project,
-            tools=tools,
-            selected=[item.to_dict() for item in state.selection.selected_items],
-            message=UI_TEXT["spec_review_select_message"],
-            patch_existing=False,
-        )
+        try:
+            self._dispatch_spec_review_tool_select(
+                message_id=message_id,
+                chat_id=chat_id,
+                project=project,
+                tools=tools,
+                selected=[item.to_dict() for item in state.selection.selected_items],
+                message=UI_TEXT["spec_review_select_message"],
+                patch_existing=False,
+            )
+        except Exception:
+            logger.warning("Spec review selection card failed; starting without review agents", exc_info=True)
+            self._start_spec_engine_now(message_id, chat_id, requirement, project, review_agents=[])
 
     def _on_engine_error(
         self,
