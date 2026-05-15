@@ -197,8 +197,8 @@ class TestDispatchToTask:
 
 
 class TestBroadcastStatusChange:
-    def test_broadcast_updates_all_sessions(self):
-        """Status change broadcasts TASK_LIST_UPDATED to all sessions."""
+    def test_status_change_updates_only_affected_session(self):
+        """Status changes refresh only the affected task card."""
         orch, registry, sessions = _make_orchestrator()
         orch.on_plan_received([
             {"task_id": "t1", "name": "A"},
@@ -213,17 +213,17 @@ class TestBroadcastStatusChange:
         # Wait for debounce + processing
         time.sleep(0.2)
 
-        # Both sessions should have received TASK_LIST_UPDATED
-        for tid, session in sessions.items():
-            task_list_events = session.events_of_type(CardEventType.TASK_LIST_UPDATED)
-            assert len(task_list_events) >= 1
-            # Verify t1 status is updated in payload
-            payload = task_list_events[-1].payload
-            t1_in_payload = next(t for t in payload["tasks"] if t["task_id"] == "t1")
-            assert t1_in_payload["status"] == "completed"
+        t1_events = sessions["t1"].events_of_type(CardEventType.TASK_LIST_UPDATED)
+        t2_events = sessions["t2"].events_of_type(CardEventType.TASK_LIST_UPDATED)
+        assert len(t1_events) >= 1
+        assert t2_events == []
+        payload = t1_events[-1].payload
+        t1_in_payload = next(t for t in payload["tasks"] if t["task_id"] == "t1")
+        assert t1_in_payload["status"] == "completed"
+        assert payload["current_task_id"] == "t1"
 
     def test_broadcast_debounce(self):
-        """Rapid status changes are debounced into fewer broadcasts."""
+        """Rapid status changes coalesce per affected task, without patching unrelated cards."""
         orch, _, sessions = _make_orchestrator()
         orch.on_plan_received([
             {"task_id": "t1", "name": "A"},
@@ -234,17 +234,17 @@ class TestBroadcastStatusChange:
             s.dispatched_events.clear()
 
         # Rapid fire multiple status changes
-        orch.broadcast_status_change("t1", "in_progress")
-        orch.broadcast_status_change("t2", "in_progress")
-        orch.broadcast_status_change("t1", "completed")
+        with patch("src.card.orchestrator._BROADCAST_DEBOUNCE_MS", 50):
+            orch.broadcast_status_change("t1", "in_progress")
+            orch.broadcast_status_change("t2", "in_progress")
+            orch.broadcast_status_change("t1", "completed")
 
-        time.sleep(0.3)
+            time.sleep(0.1)
 
-        # Should have fewer broadcasts than changes (debounce coalescing)
-        for session in sessions.values():
-            task_list_events = session.events_of_type(CardEventType.TASK_LIST_UPDATED)
-            # At least 1 but potentially fewer than 3 (debounced)
-            assert len(task_list_events) >= 1
+        t1_events = sessions["t1"].events_of_type(CardEventType.TASK_LIST_UPDATED)
+        t2_events = sessions["t2"].events_of_type(CardEventType.TASK_LIST_UPDATED)
+        assert 1 <= len(t1_events) < 3
+        assert 1 <= len(t2_events) < 3
 
 
 class TestSubagentSession:
@@ -810,7 +810,7 @@ class TestHandlePlanUpdate:
         assert registry.count == 0
 
     def test_broadcasts_status_after_plan(self):
-        """handle_plan_update broadcasts status changes from entries."""
+        """handle_plan_update refreshes cards whose status changed."""
         orch, _, sessions = _make_orchestrator()
         thinking = FakeSession("thinking")
         orch.set_thinking_session(thinking)
@@ -821,15 +821,15 @@ class TestHandlePlanUpdate:
         bridge = FakeStreamBridge()
         orch.handle_plan_update(event, bridge)
 
-        # Second call with status change
-        import time
-        time.sleep(0.15)  # exceed debounce
+        for sess in sessions.values():
+            sess.dispatched_events.clear()
+
+        # Second call with status changes
         entries2 = [self._make_entry("A", "completed"), self._make_entry("B", "in_progress")]
         event2 = self._make_plan_event(entries2)
-        orch.handle_plan_update(event2, bridge)
+        with patch("src.card.orchestrator._BROADCAST_DEBOUNCE_MS", 0):
+            orch.handle_plan_update(event2, bridge)
 
-        # Wait for debounced broadcast
-        time.sleep(0.15)
         # Check sessions got TASK_LIST_UPDATED
         for task_id, sess in sessions.items():
             has_update = any(e.type == CardEventType.TASK_LIST_UPDATED for e in sess.dispatched_events)
@@ -1103,10 +1103,10 @@ class FakeStreamBridge:
 
 
 class TestBroadcastIsolation:
-    """AC14: If one session.dispatch raises, other sessions still receive the broadcast."""
+    """AC14: If one session.dispatch raises, other targeted sessions still receive updates."""
 
     def test_failing_session_does_not_block_others(self):
-        """When session #2 raises RuntimeError, sessions #1 and #3 still get the event."""
+        """When session #2 raises RuntimeError, sessions #1 and #3 still get their own events."""
         sessions_created: dict[str, FakeSession] = {}
         call_count = [0]
 
@@ -1150,15 +1150,17 @@ class TestBroadcastIsolation:
         # Now enable failure on t2
         sessions_created["t2"]._should_fail = True
 
-        # Trigger a broadcast
-        orch.broadcast_status_change("t1", "completed")
-        time.sleep(0.2)
+        # Trigger targeted broadcasts for all three tasks.
+        with patch("src.card.orchestrator._BROADCAST_DEBOUNCE_MS", 0):
+            orch.broadcast_status_change("t1", "completed")
+            orch.broadcast_status_change("t2", "completed")
+            orch.broadcast_status_change("t3", "completed")
 
-        # t1 and t3 should have received TASK_LIST_UPDATED despite t2 failing
+        # t1 and t3 should have received their own TASK_LIST_UPDATED despite t2 failing.
         t1_events = sessions_created["t1"].events_of_type(CardEventType.TASK_LIST_UPDATED)
         t3_events = sessions_created["t3"].events_of_type(CardEventType.TASK_LIST_UPDATED)
-        assert len(t1_events) >= 1, "Session t1 should receive broadcast"
-        assert len(t3_events) >= 1, "Session t3 should receive broadcast"
+        assert len(t1_events) >= 1, "Session t1 should receive update"
+        assert len(t3_events) >= 1, "Session t3 should receive update"
 
 
 # ---------------------------------------------------------------------------

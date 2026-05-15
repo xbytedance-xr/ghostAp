@@ -183,6 +183,7 @@ class TaskOrchestrator:
         # Debounce state for broadcast
         self._last_broadcast_time: float = 0
         self._pending_broadcast: bool = False
+        self._pending_broadcast_task_ids: set[str] = set()
         self._broadcast_timer: threading.Timer | None = None
 
         # Flood-prevention: overflow task_ids map to the last session's task_id
@@ -284,6 +285,7 @@ class TaskOrchestrator:
             self._subagent_summaries.clear()
             self._finalized_task_ids.clear()
             self._tool_task_bindings.clear()
+            self._pending_broadcast_task_ids.clear()
 
         # Archive sessions OUTSIDE lock (I/O)
         for session in sessions_to_close:
@@ -583,7 +585,7 @@ class TaskOrchestrator:
         return self._thinking_session
 
     def broadcast_status_change(self, task_id: str, new_status: TaskStatus) -> None:
-        """Update a task's status and broadcast to all active sessions.
+        """Update a task's status and refresh the affected task card.
 
         Uses debounce to coalesce rapid consecutive status changes.
         """
@@ -591,7 +593,7 @@ class TaskOrchestrator:
             return
 
         self._registry.update_status(task_id, new_status)
-        # The actual broadcast is triggered via the subscribe callback
+        # The actual targeted refresh is triggered via the subscribe callback.
 
     def handle_plan_update(self, acp_event: ACPEvent, fallback_bridge: StreamBridge) -> None:
         """Unified plan detection + status broadcast entry point for renderers.
@@ -724,14 +726,15 @@ class TaskOrchestrator:
         return False
 
     def _on_registry_status_change(self, task_id: str, new_status: TaskStatus) -> None:
-        """Callback from TaskRegistry when status changes — triggers broadcast."""
-        self._schedule_broadcast()
+        """Callback from TaskRegistry when status changes — triggers targeted refresh."""
+        self._schedule_broadcast({task_id})
 
-    def _schedule_broadcast(self) -> None:
-        """Schedule a debounced broadcast of TASK_LIST_UPDATED to all sessions."""
+    def _schedule_broadcast(self, task_ids: set[str]) -> None:
+        """Schedule a debounced TASK_LIST_UPDATED refresh for affected task cards."""
         with self._lock:
             if self._closed_event.is_set():
                 return
+            self._pending_broadcast_task_ids.update(task_ids)
             now = time.monotonic()
             elapsed_ms = (now - self._last_broadcast_time) * 1000
 
@@ -752,12 +755,26 @@ class TaskOrchestrator:
         self._do_broadcast()
 
     def _do_broadcast(self) -> None:
-        """Actually broadcast TASK_LIST_UPDATED to all active sessions."""
+        """Refresh TASK_LIST_UPDATED only on cards affected by status changes."""
         with self._lock:
             if self._closed_event.is_set():
                 return
             self._last_broadcast_time = time.monotonic()
-            sessions = list(self._sessions.items())
+            pending_task_ids = set(self._pending_broadcast_task_ids)
+            self._pending_broadcast_task_ids.clear()
+            sessions = []
+            seen_targets: set[str] = set()
+            for pending_task_id in pending_task_ids:
+                target_id = self._overflow_target.get(pending_task_id, pending_task_id)
+                if target_id in seen_targets or target_id in self._finalized_task_ids:
+                    continue
+                session = self._sessions.get(target_id)
+                if session is None:
+                    continue
+                seen_targets.add(target_id)
+                sessions.append((target_id, session))
+            if not sessions:
+                return
 
         snapshot = self._registry.get_snapshot()
         tasks_payload = [
@@ -1386,6 +1403,7 @@ class TaskOrchestrator:
             if self._broadcast_timer is not None:
                 self._broadcast_timer.cancel()
                 self._broadcast_timer = None
+            self._pending_broadcast_task_ids.clear()
 
     def _close_bridges(self, bridges: list[StreamBridge]) -> None:
         for bridge in bridges:
