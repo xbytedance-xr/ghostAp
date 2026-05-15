@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-15
+- **Deep 子任务独立卡片路由修复** — Deep 多任务进入 TaskOrchestrator 后，agent/subagent 工具调用不再被合并进最近一个主任务卡片；`TaskOrchestrator.route_acp_event()` 会识别 `agent/subagent` 工具调用或 `子代理：` 标记，为每个 `tool_call.id` 注册独立子任务 CardSession，执行中转发 TOOL_CALL_START/UPDATE/DONE，完成时同步 `completed/failed` 终态，并保留父卡“并行子任务”摘要。新增 orchestrator 与 DeepRenderer 集成回归；相关回归 `151 passed` + Deep/card pipeline `32 passed`，`--validate` 与 `git diff --check` 通过；扩大 `tests/test_deep_engine.py` 中 2 个 TTADK 用例仍因本机缺 `ttadk` 可执行文件失败，和本次卡片路由无关 → [详细记录](2026-05-15.md)
 - **Deep 卡片副标题与折叠阈值优化** — Deep 多任务卡片不再在标题与副标题重复展示同一个任务名；v2 header subtitle 改为展示 Deep 任务整体总耗时，格式为 `H时MM分SS秒`，来源仍是 CardSession `_now` 推导的 `RuntimeStats.elapsed_seconds`，不新增定频刷新。任务列表与工具调用摘要折叠阈值拆开：任务三桶各自尽量展示到 50 条后才折叠，工具调用摘要详情提升到 12 条后折叠。相关卡片/Deep 回归 `61 passed` + `51 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 - **Spec 卡片 JSON 可读性与阶段状态流转修复** — Spec 结构化阶段 `SPEC/PLAN/TASK` 不再把模型输出的完整 JSON artifact 实时流入卡片正文，phase done 也不再把 raw output 写进 phase panel；卡片只展示 `SpecReporter` 生成的阶段摘要，raw artifact 仍保留在 engine tracker/artifact/persistence 路径。phase reducer 改为同一 cycle 只保留一个当前 phase 状态块，新阶段会替换旧快照，避免“✅规格定义 → ⬜方案规划 → ...”固定在顶部看起来不流转；review 完成状态与详细审查结果分开展示。相关回归 `171 passed`、扩大 Spec/card `340 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 ## 2026-05-14

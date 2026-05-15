@@ -84,6 +84,11 @@ class SessionTracker:
         """Each create_session call represents a create_card call."""
         session = MagicMock()
         session.dispatch = MagicMock()
+        session.closed = False
+        session.sequence = len(self.sessions_created) + 1
+        session.session_started_at = time.monotonic()
+        if len(args) >= 3:
+            session._metadata = args[2]
         session.delivered_message_id = f"msg_{len(self.sessions_created)}"
         with self._lock:
             self.sessions_created.append(session)
@@ -271,6 +276,69 @@ class TestDeepRendererMultiCard:
                 if call.args and hasattr(call.args[0], 'type') and call.args[0].type == CardEventType.COMPLETED
             ]
             assert len(completed_calls) >= 1
+
+    def test_agent_tool_call_creates_independent_child_card(self):
+        """Agent/subagent tool calls create and complete a separate Deep child card."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = renderer.create_deep_callbacks(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project=None,
+        )
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        callbacks.on_event(_make_plan_event([
+            ("Task A", "in_progress"),
+            ("Task B", "in_progress"),
+        ]))
+        assert tracker.create_card_count == 3
+
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent_call_1",
+                title="agent",
+                kind="execute",
+                status="in_progress",
+                content="检查卡片路由\n子代理：Explore",
+            ),
+        ))
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_UPDATE,
+            tool_call=ToolCallInfo(
+                id="agent_call_1",
+                title="shell",
+                kind="execute",
+                status="in_progress",
+                content="正在检查 Deep 子任务卡片",
+            ),
+        ))
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id="agent_call_1",
+                title="shell",
+                kind="execute",
+                status="completed",
+                content="子任务完成",
+            ),
+        ))
+
+        assert tracker.create_card_count == 4
+        child_session = tracker.sessions_created[-1]
+        child_event_types = [
+            call.args[0].type
+            for call in child_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type")
+        ]
+        assert CardEventType.TOOL_STARTED in child_event_types
+        assert CardEventType.TOOL_DELTA in child_event_types
+        assert CardEventType.TOOL_DONE in child_event_types
+        assert CardEventType.COMPLETED in child_event_types
 
     def test_error_closes_orchestrator_in_multi_card(self):
         """on_error calls orchestrator.close() in multi-card mode."""

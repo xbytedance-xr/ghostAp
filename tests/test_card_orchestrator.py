@@ -255,6 +255,125 @@ class TestSubagentSession:
         assert registry.count == 0
 
 
+class TestAgentTaskRouting:
+    def _tool_event(self, event_type, *, tool_id="agent_1", title="agent", content="", status="in_progress"):
+        from src.acp.models import ACPEvent, ToolCallInfo
+
+        return ACPEvent(
+            event_type=event_type,
+            tool_call=ToolCallInfo(
+                id=tool_id,
+                title=title,
+                kind="execute",
+                status=status,
+                content=content,
+            ),
+        )
+
+    def test_agent_tool_call_gets_independent_task_card_and_terminal_result(self):
+        """Deep-style agent tool calls route to their own session, not only the parent task card."""
+        from src.acp.models import ACPEventType
+
+        orch, registry, sessions = _make_orchestrator()
+        tasks = [
+            {"task_id": "t1", "name": "Main Task"},
+            {"task_id": "t2", "name": "Second Task"},
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
+        orch.resolver.mark_active("t1")
+
+        for session in sessions.values():
+            session.dispatched_events.clear()
+
+        bridge = FakeStreamBridge()
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                content="检查实现\n子代理：Explore",
+            ),
+            bridge,
+        )
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_UPDATE,
+                title="shell",
+                content="正在检查 src/card/orchestrator.py",
+            ),
+            bridge,
+        )
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_DONE,
+                title="shell",
+                status="completed",
+                content="子任务完成：发现路由缺口",
+            ),
+            bridge,
+        )
+
+        assert "agent_1" in sessions
+        child_events = sessions["agent_1"].dispatched_events
+        child_types = [event.type for event in child_events]
+        assert CardEventType.TOOL_STARTED in child_types
+        assert CardEventType.TOOL_DELTA in child_types
+        assert CardEventType.TOOL_DONE in child_types
+        assert CardEventType.COMPLETED in child_types
+
+        completed = [event for event in child_events if event.type == CardEventType.COMPLETED][-1]
+        assert completed.payload["summary"] == "子任务完成：发现路由缺口"
+        assert not bridge.events
+
+        parent_summary_events = sessions["t1"].events_of_type(CardEventType.TOOL_MODEL_CHANGED)
+        assert parent_summary_events
+        subagents = parent_summary_events[-1].payload["subagents"]
+        assert subagents[0]["status"] == "completed"
+        assert subagents[0]["tool"] == "Explore"
+
+    def test_two_agent_tool_calls_do_not_share_task_session(self):
+        """Parallel agent tool calls keep separate child sessions by tool_call id."""
+        from src.acp.models import ACPEventType
+
+        orch, _, sessions = _make_orchestrator()
+        tasks = [{"task_id": "t1", "name": "Main"}, {"task_id": "t2", "name": "Other"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
+
+        bridge = FakeStreamBridge()
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="agent_a",
+                content="A\n子代理：Aiden",
+            ),
+            bridge,
+        )
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="agent_b",
+                content="B\n子代理：Codex",
+            ),
+            bridge,
+        )
+
+        assert "agent_a" in sessions
+        assert "agent_b" in sessions
+        assert sessions["agent_a"] is not sessions["agent_b"]
+        assert any(
+            event.type == CardEventType.TOOL_STARTED and event.payload["block_id"] == "agent_a"
+            for event in sessions["agent_a"].dispatched_events
+        )
+        assert any(
+            event.type == CardEventType.TOOL_STARTED and event.payload["block_id"] == "agent_b"
+            for event in sessions["agent_b"].dispatched_events
+        )
+        assert not any(
+            event.type == CardEventType.TOOL_STARTED and event.payload["block_id"] == "agent_b"
+            for event in sessions["agent_a"].dispatched_events
+        )
+
+
 class TestClose:
     def test_close_dispatches_completed_to_all(self):
         """close() dispatches COMPLETED to all sessions."""

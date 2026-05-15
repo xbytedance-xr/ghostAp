@@ -41,6 +41,7 @@ _BROADCAST_DEBOUNCE_MS = 800
 
 # Minimum number of tasks for multi-card split
 _MIN_TASKS_FOR_MULTI_CARD = 2
+_AGENT_TOOL_TITLES = {"agent", "subagent"}
 
 
 class TaskIdResolver:
@@ -173,6 +174,8 @@ class TaskOrchestrator:
         self._fallback_mode = False
         self._fallback_session: CardSession | None = None
         self._resolver: TaskIdResolver | None = None
+        self._subagent_task_ids: set[str] = set()
+        self._subagent_summaries: dict[str, dict] = {}
 
         # Debounce state for broadcast
         self._last_broadcast_time: float = 0
@@ -274,6 +277,8 @@ class TaskOrchestrator:
             self._fallback_mode = False
             self._fallback_session = None
             self._resolver = None
+            self._subagent_task_ids.clear()
+            self._subagent_summaries.clear()
 
         # Archive sessions OUTSIDE lock (I/O)
         for session in sessions_to_close:
@@ -662,6 +667,9 @@ class TaskOrchestrator:
             fallback_bridge.on_event(acp_event)
             return
 
+        if self._route_agent_task_event(acp_event):
+            return
+
         task_id = self._resolver.resolve(acp_event)
         if not task_id:
             fallback_bridge.on_event(acp_event)
@@ -1012,6 +1020,53 @@ class TaskOrchestrator:
         """Set the fallback session for single-session mode."""
         self._fallback_session = session
 
+    def _route_agent_task_event(self, acp_event: ACPEvent) -> bool:
+        """Route agent/subagent tool calls into an independent task card."""
+        from src.acp.models import ACPEventType
+        from src.card.events import card_event_from_acp
+
+        if acp_event.event_type not in {
+            ACPEventType.TOOL_CALL_START,
+            ACPEventType.TOOL_CALL_UPDATE,
+            ACPEventType.TOOL_CALL_DONE,
+        }:
+            return False
+
+        tool_call = getattr(acp_event, "tool_call", None)
+        if tool_call is None:
+            return False
+
+        tool_id = str(getattr(tool_call, "id", "") or "").strip()
+        if not tool_id:
+            return False
+
+        with self._lock:
+            known_subagent = tool_id in self._subagent_task_ids
+        if not known_subagent and not self._is_agent_task(tool_call):
+            return False
+
+        if not known_subagent:
+            self.create_subagent_session(tool_id, self._extract_agent_task_label(tool_call))
+            with self._lock:
+                known_subagent = tool_id in self._subagent_task_ids
+            if not known_subagent:
+                return False
+
+        self.dispatch_to_task(tool_id, card_event_from_acp(acp_event))
+
+        if acp_event.event_type == ACPEventType.TOOL_CALL_DONE:
+            status = str(getattr(tool_call, "status", "") or "").strip().lower()
+            content = str(getattr(tool_call, "content", "") or "").strip()
+            if status == "failed":
+                self.dispatch_to_task(tool_id, CardEvent.failed(content or self._extract_agent_task_label(tool_call)))
+                self._publish_subagent_summary(tool_call, status="failed")
+            else:
+                self.dispatch_to_task(tool_id, CardEvent.completed(summary=content))
+                self._publish_subagent_summary(tool_call, status="completed")
+        else:
+            self._publish_subagent_summary(tool_call, status="running")
+        return True
+
     def create_subagent_session(self, task_id: str, name: str) -> None:
         """Create a new session for a detected subagent task.
 
@@ -1022,15 +1077,21 @@ class TaskOrchestrator:
 
         # Register the new subtask
         self._registry.register(task_id=task_id, name=name, status="in_progress")
+        with self._lock:
+            self._subagent_task_ids.add(task_id)
         self._create_task_session(task_id, is_subagent=True)
+        self.broadcast_status_change(task_id, "in_progress")
 
     def _apply_subagent_metadata(self, session: CardSession, task_id: str) -> None:
         """Mark orchestrator-created subagent sessions with v2 parent/sequence metadata."""
         task_item = self._registry.get(task_id)
         if task_item is None:
             return
-        parent_session = self._thinking_session or self._fallback_session
+        parent_session = self._thinking_session or self._fallback_session or self._find_active_session()
         if parent_session is None:
+            return
+        metadata = getattr(session, "_metadata", None)
+        if metadata is None:
             return
         from dataclasses import replace
         with self._lock:
@@ -1038,7 +1099,7 @@ class TaskOrchestrator:
         branch_id = chr(ord("a") + subagent_count)
         parent_seq = str(getattr(parent_session, "sequence", 1))
         session._metadata = replace(
-            session._metadata,
+            metadata,
             unit_id=task_id,
             unit_kind="subagent",
             unit_label=task_item.name,
@@ -1048,6 +1109,70 @@ class TaskOrchestrator:
             parent_card_seq=parent_seq,
             bridge_phrase=None,
         )
+
+    def _publish_subagent_summary(self, tool_call, *, status: str) -> None:
+        task_id = str(getattr(tool_call, "id", "") or "").strip()
+        if not task_id:
+            return
+
+        with self._lock:
+            session = self._sessions.get(task_id)
+        metadata = getattr(session, "_metadata", None)
+        existing = self._subagent_summaries.get(task_id, {})
+        label = self._extract_agent_task_label(tool_call)
+        tool = self._extract_agent_tool_name(tool_call)
+        if existing:
+            label = str(existing.get("label") or label)
+            if tool == "subagent":
+                tool = str(existing.get("tool") or tool)
+        summary = {
+            **existing,
+            "label": label,
+            "tool": tool,
+            "status": status,
+        }
+        if metadata is not None:
+            summary["sequence"] = metadata.card_sequence
+            if metadata.model_name:
+                summary["model"] = metadata.model_name
+        self._subagent_summaries[task_id] = summary
+
+        parent_session = self._find_active_session()
+        if parent_session is None or getattr(parent_session, "closed", False):
+            return
+        try:
+            parent_session.dispatch(CardEvent.tool_model_changed(subagents=tuple(self._subagent_summaries.values())))
+        except Exception:
+            logger.debug("TaskOrchestrator: failed to publish subagent summary for %s", task_id, exc_info=True)
+
+    @staticmethod
+    def _is_agent_task(tool_call) -> bool:
+        title = str(getattr(tool_call, "title", "") or "").strip().lower()
+        content = str(getattr(tool_call, "content", "") or "").strip()
+        if title in _AGENT_TOOL_TITLES:
+            return True
+        return "子代理：" in content
+
+    @staticmethod
+    def _extract_agent_task_label(tool_call) -> str:
+        content = str(getattr(tool_call, "content", "") or "").strip()
+        if content:
+            first_line = content.splitlines()[0].strip()
+            if first_line:
+                return first_line[:60]
+        title = str(getattr(tool_call, "title", "") or "").strip()
+        return title[:60] if title else "子任务"
+
+    @staticmethod
+    def _extract_agent_tool_name(tool_call) -> str:
+        content = str(getattr(tool_call, "content", "") or "").strip()
+        for line in content.splitlines():
+            marker = "子代理："
+            if marker in line:
+                name = line.split(marker, 1)[1].strip()
+                if name:
+                    return name[:40]
+        return "subagent"
 
     def close(self) -> None:
         """Close all sessions and clean up.
