@@ -1,20 +1,17 @@
-"""Integration tests: DeepRenderer + TaskOrchestrator task-card behavior.
+"""Integration tests: DeepRenderer task-list behavior.
 
-Verifies task-level cards stay disabled by default and only create N+1 cards
-when the feature flag is explicitly enabled.
+Deep keeps all live updates on the main Feishu card. Task progress is rendered
+through the shared task-list component instead of creating per-task messages.
 """
 from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEventType
 
 
 # ---------------------------------------------------------------------------
@@ -113,20 +110,13 @@ def _make_text_event(text: str = "hello") -> ACPEvent:
     return ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=text)
 
 
-def _make_tool_start_event(name: str = "write_file") -> ACPEvent:
-    return ACPEvent(
-        event_type=ACPEventType.TOOL_CALL_START,
-        tool_call=ToolCallInfo(id=f"tc_{name}", title=name),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
-class TestDeepRendererMultiCard:
-    """Verify multi-card creation for Deep mode with task orchestration."""
+class TestDeepRendererSingleCard:
+    """Verify Deep mode keeps task orchestration on one card."""
 
     def _setup_renderer(self):
         """Create a DeepRenderer with mocked dependencies and session tracking."""
@@ -187,8 +177,8 @@ class TestDeepRendererMultiCard:
 
         assert tracker.create_card_count == 1
 
-    def test_multi_task_plan_creates_n_plus_1_cards_when_enabled(self):
-        """AC1: flag on + 3 plan steps → 4 create_card calls (1 thinking + 3 task cards)."""
+    def test_multi_task_plan_stays_single_card_even_when_task_cards_enabled(self):
+        """Deep ignores task-card fanout and renders plan tasks on the main card."""
         renderer, tracker = self._setup_renderer()
 
         callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
@@ -206,7 +196,19 @@ class TestDeepRendererMultiCard:
         ])
         callbacks.on_event(plan_event)
 
-        assert tracker.create_card_count == 4
+        assert tracker.create_card_count == 1
+        main_session = tracker.sessions_created[0]
+        task_updates = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type") and call.args[0].type == CardEventType.TASK_LIST_UPDATED
+        ]
+        assert task_updates
+        assert task_updates[-1].payload["tasks"] == [
+            {"task_id": "step_0", "name": "Analyze requirements", "status": "in_progress"},
+            {"task_id": "step_1", "name": "Write implementation", "status": "in_progress"},
+            {"task_id": "step_2", "name": "Run tests", "status": "in_progress"},
+        ]
 
     def test_single_step_plan_stays_single_card(self):
         """A plan with only 1 step stays in single-card mode (no split)."""
@@ -259,8 +261,8 @@ class TestDeepRendererMultiCard:
         # All entries have empty content → factory converts to 0 valid tasks → no split
         assert tracker.create_card_count == 1
 
-    def test_project_done_closes_orchestrator_in_multi_card(self):
-        """on_project_done calls orchestrator.close() in multi-card mode."""
+    def test_project_done_completes_main_card(self):
+        """on_project_done completes the same Deep card."""
         renderer, tracker = self._setup_renderer()
 
         callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
@@ -269,28 +271,26 @@ class TestDeepRendererMultiCard:
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
         callbacks.on_analyzing_done(dp)
 
-        # Trigger multi-card
         plan_event = _make_plan_event([
             ("Task A", "in_progress"),
             ("Task B", "in_progress"),
         ])
         callbacks.on_event(plan_event)
-        assert tracker.create_card_count == 3  # 1 + 2
+        assert tracker.create_card_count == 1
 
-        # Complete the project
         dp.status = DeepProjectStatus.COMPLETED
         callbacks.on_project_done(dp)
 
-        # Verify task sessions received COMPLETED (via orchestrator.close())
-        for session in tracker.sessions_created[1:]:  # Skip thinking session
-            completed_calls = [
-                call for call in session.dispatch.call_args_list
-                if call.args and hasattr(call.args[0], 'type') and call.args[0].type == CardEventType.COMPLETED
-            ]
-            assert len(completed_calls) >= 1
+        assert tracker.create_card_count == 1
+        main_session = tracker.sessions_created[0]
+        completed_calls = [
+            call for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type") and call.args[0].type == CardEventType.COMPLETED
+        ]
+        assert len(completed_calls) == 1
 
-    def test_project_done_creates_final_summary_card_after_task_cards_stop(self):
-        """Deep multi-card completion starts a fresh summary card instead of patching task cards."""
+    def test_project_done_keeps_final_summary_on_main_card(self):
+        """Deep completion summary is delivered on the main card, not a new card."""
         renderer, tracker = self._setup_renderer()
 
         callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
@@ -303,29 +303,25 @@ class TestDeepRendererMultiCard:
             ("Task A", "in_progress"),
             ("Task B", "in_progress"),
         ]))
-        assert tracker.create_card_count == 3
+        assert tracker.create_card_count == 1
 
         dp.status = DeepProjectStatus.COMPLETED
         callbacks.on_project_done(dp)
 
-        assert tracker.create_card_count == 4
-        summary_session = tracker.sessions_created[-1]
+        assert tracker.create_card_count == 1
+        summary_session = tracker.sessions_created[0]
         summary_events = [
             call.args[0]
             for call in summary_session.dispatch.call_args_list
             if call.args and hasattr(call.args[0], "type")
         ]
-        assert [event.type for event in summary_events][-2:] == [
-            CardEventType.TEXT_DONE,
-            CardEventType.COMPLETED,
-        ]
         assert any(
-            event.type == CardEventType.TEXT_DELTA and "执行完成" in event.payload.get("text", "")
+            event.type == CardEventType.COMPLETED and "执行完成" in event.payload.get("summary", "")
             for event in summary_events
         )
 
-    def test_agent_tool_call_creates_independent_child_card(self):
-        """Agent/subagent tool calls create and complete a separate Deep child card."""
+    def test_agent_tool_call_updates_main_card_without_child_card(self):
+        """Agent/subagent tool calls update the main card task list and tool panels."""
         renderer, tracker = self._setup_renderer()
 
         callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
@@ -338,9 +334,7 @@ class TestDeepRendererMultiCard:
             ("Task A", "in_progress"),
             ("Task B", "in_progress"),
         ]))
-        assert tracker.create_card_count == 3
-        for task_session in tracker.sessions_created[1:3]:
-            task_session.dispatch.reset_mock()
+        assert tracker.create_card_count == 1
 
         callbacks.on_event(ACPEvent(
             event_type=ACPEventType.TOOL_CALL_START,
@@ -373,29 +367,91 @@ class TestDeepRendererMultiCard:
             ),
         ))
 
-        assert tracker.create_card_count == 4
-        child_session = tracker.sessions_created[-1]
-        child_event_types = [
+        assert tracker.create_card_count == 1
+        main_session = tracker.sessions_created[0]
+        main_event_types = [
             call.args[0].type
-            for call in child_session.dispatch.call_args_list
+            for call in main_session.dispatch.call_args_list
             if call.args and hasattr(call.args[0], "type")
         ]
-        assert CardEventType.TOOL_STARTED in child_event_types
-        assert CardEventType.TOOL_DELTA in child_event_types
-        assert CardEventType.TOOL_DONE in child_event_types
-        assert CardEventType.COMPLETED in child_event_types
+        assert CardEventType.TOOL_STARTED in main_event_types
+        assert CardEventType.TOOL_DELTA in main_event_types
+        assert CardEventType.TOOL_DONE in main_event_types
+        task_updates = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type") and call.args[0].type == CardEventType.TASK_LIST_UPDATED
+        ]
+        assert task_updates[-1].payload["tasks"][-1] == {
+            "task_id": "agent_call_1",
+            "name": "检查卡片路由",
+            "status": "completed",
+        }
 
-        for parent_session in tracker.sessions_created[1:3]:
-            parent_event_types = [
-                call.args[0].type
-                for call in parent_session.dispatch.call_args_list
-                if call.args and hasattr(call.args[0], "type")
-            ]
-            assert CardEventType.PROGRESS_UPDATED not in parent_event_types
-            assert CardEventType.TOOL_MODEL_CHANGED not in parent_event_types
+    def test_agent_tool_events_stay_on_main_deep_card_even_if_task_cards_enabled(self):
+        """Deep keeps agent/subagent work on the main card and renders tasks there."""
+        renderer, tracker = self._setup_renderer()
 
-    def test_error_closes_orchestrator_in_multi_card(self):
-        """on_error calls orchestrator.close() in multi-card mode."""
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent_call_1",
+                title="agent",
+                kind="execute",
+                status="in_progress",
+                content="梳理 Deep 卡片问题\n子代理：Explore",
+            ),
+        ))
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="agent_call_2",
+                title="subagent",
+                kind="execute",
+                status="in_progress",
+                content="补充 Deep 回归测试\n子代理：Write",
+            ),
+        ))
+        callbacks.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id="agent_call_1",
+                title="agent",
+                kind="execute",
+                status="completed",
+                content="完成卡片路径梳理",
+            ),
+        ))
+
+        assert tracker.create_card_count == 1
+        main_session = tracker.sessions_created[0]
+        task_updates = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type") and call.args[0].type == CardEventType.TASK_LIST_UPDATED
+        ]
+        assert task_updates
+        latest_tasks = task_updates[-1].payload["tasks"]
+        assert latest_tasks == [
+            {"task_id": "agent_call_1", "name": "梳理 Deep 卡片问题", "status": "completed"},
+            {"task_id": "agent_call_2", "name": "补充 Deep 回归测试", "status": "in_progress"},
+        ]
+        main_event_types = [
+            call.args[0].type
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type")
+        ]
+        assert CardEventType.TOOL_STARTED in main_event_types
+        assert CardEventType.TOOL_DONE in main_event_types
+
+    def test_error_fails_main_card(self):
+        """on_error fails the same Deep card."""
         renderer, tracker = self._setup_renderer()
 
         callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
@@ -410,13 +466,12 @@ class TestDeepRendererMultiCard:
         ])
         callbacks.on_event(plan_event)
 
-        # Trigger error
         callbacks.on_error("Something went wrong")
 
-        # Task sessions should have received COMPLETED (close dispatches COMPLETED)
-        for session in tracker.sessions_created[1:]:
-            completed_calls = [
-                call for call in session.dispatch.call_args_list
-                if call.args and hasattr(call.args[0], 'type') and call.args[0].type == CardEventType.COMPLETED
-            ]
-            assert len(completed_calls) >= 1
+        assert tracker.create_card_count == 1
+        main_session = tracker.sessions_created[0]
+        failed_calls = [
+            call for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type") and call.args[0].type == CardEventType.FAILED
+        ]
+        assert len(failed_calls) == 1
