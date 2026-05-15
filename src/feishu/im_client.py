@@ -16,6 +16,7 @@ from lark_oapi.api.im.v1 import (
 )
 
 from ..utils.errors import LARK_CODE_MESSAGE_NOT_FOUND, LARK_CODE_MESSAGE_RECALLED, get_error_detail
+from .emoji import EmojiReaction
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -127,6 +128,10 @@ class FeishuIMClient:
 
     def add_reaction(self, message_id: str, emoji_type: str) -> None:
         """Add a reaction to a message."""
+        if not EmojiReaction.should_send(emoji_type):
+            logger.debug("跳过非输入中表情: %s", emoji_type)
+            return
+
         client = self.api_client_factory()
         request = (
             CreateMessageReactionRequest.builder()

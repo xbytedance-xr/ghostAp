@@ -466,6 +466,11 @@ class BaseHandler:
     # Reactions
     # ------------------------------------------------------------------
     def add_reaction(self, message_id: str, emoji_type: str):
+        from ..emoji import EmojiReaction
+
+        if not EmojiReaction.should_send(emoji_type):
+            logger.debug("跳过非输入中表情: %s", emoji_type)
+            return
         try:
             self.im_client.add_reaction(message_id, emoji_type)
         except Exception as e:

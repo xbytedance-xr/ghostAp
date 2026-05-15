@@ -35,6 +35,13 @@ class EmojiType:
 
 
 class EmojiReaction:
+    _ALLOWED_AUTO_REACTIONS = {EmojiType.TYPING}
+
+    @staticmethod
+    def should_send(emoji_type: str) -> bool:
+        """Return whether an automatic reaction should be sent to Feishu."""
+        return emoji_type in EmojiReaction._ALLOWED_AUTO_REACTIONS
+
     @staticmethod
     def on_message_received() -> str:
         return EmojiType.GET
