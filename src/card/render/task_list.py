@@ -24,9 +24,7 @@ _ACTIVE_STATUSES = frozenset({"in_progress", "active", "running"})
 _COMPLETED_STATUSES = frozenset({"completed", "done"})
 _FAILED_STATUSES = frozenset({"failed", "cancelled"})
 
-_DONE_FOLD_THRESHOLD = 8
-_PENDING_VISIBLE = 5
-_ACTIVE_VISIBLE = 3
+_TASK_BUCKET_VISIBLE_LIMIT = 50
 
 
 def group_tasks(plan_or_tasks) -> tuple[list, list, list]:
@@ -101,8 +99,11 @@ def _build_v2_task_lines(tasks: tuple[TaskSnapshotPayload, ...], current_id: str
     lines: list[str] = []
 
     lines.append(f"▶ **进行中 ({len(in_progress)})**")
-    for task in in_progress[:_ACTIVE_VISIBLE]:
+    active_visible = in_progress[:_TASK_BUCKET_VISIBLE_LIMIT]
+    for task in active_visible:
         lines.append(_format_task_line(task, current_id, tasks, total))
+    if len(active_visible) < len(in_progress):
+        lines.append(f"　…还有 {len(in_progress) - len(active_visible)} 个进行中")
 
     completed_only = sum(1 for task in completed if _task_status(task) in _COMPLETED_STATUSES)
     failed_count = len(completed) - completed_only
@@ -111,9 +112,7 @@ def _build_v2_task_lines(tasks: tuple[TaskSnapshotPayload, ...], current_id: str
     else:
         ended_label = f"✅ **已完成 ({len(completed)})**"
     lines.append(ended_label)
-    done_visible = completed
-    if len(completed) > _DONE_FOLD_THRESHOLD or total > 12:
-        done_visible = completed[:3]
+    done_visible = completed[:_TASK_BUCKET_VISIBLE_LIMIT]
     for task in done_visible:
         lines.append(_format_done_line(task))
     if len(done_visible) < len(completed):
@@ -121,7 +120,7 @@ def _build_v2_task_lines(tasks: tuple[TaskSnapshotPayload, ...], current_id: str
         lines.append(f"　…还有 {len(completed) - len(done_visible)} 个{folded_label}")
 
     lines.append(f"⏳ **未处理 ({len(pending)})**")
-    pending_visible = pending[:_PENDING_VISIBLE]
+    pending_visible = pending[:_TASK_BUCKET_VISIBLE_LIMIT]
     for task in pending_visible:
         lines.append(_format_pending_line(task))
     if len(pending_visible) < len(pending):

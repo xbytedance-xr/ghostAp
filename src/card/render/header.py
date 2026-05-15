@@ -111,7 +111,9 @@ def _build_v2_subtitle(
 ) -> str:
     metadata = state.metadata
     parts: list[str] = []
-    if unit:
+    if metadata.engine_type == "deep" and not metadata.frozen:
+        parts.append(_deep_elapsed_subtitle(state))
+    elif unit:
         parts.append(unit)
     if include_card_position:
         parts.append(f"#{metadata.card_sequence}")
@@ -144,6 +146,19 @@ def _spec_elapsed_suffix(state: CardState) -> str:
         return ""
     seconds = float(getattr(state.runtime_stats, "elapsed_seconds", 0.0) or 0.0)
     return f" · 总耗时 {format_elapsed(seconds)}"
+
+
+def _deep_elapsed_subtitle(state: CardState) -> str:
+    seconds = float(getattr(state.runtime_stats, "elapsed_seconds", 0.0) or 0.0)
+    return f"总耗时 {_format_elapsed_hms(seconds)}"
+
+
+def _format_elapsed_hms(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+    return f"{hours}时{minutes:02d}分{secs:02d}秒"
 
 
 def _unit_label(metadata, iteration_label: str) -> str:

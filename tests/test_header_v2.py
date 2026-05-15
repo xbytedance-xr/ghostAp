@@ -254,13 +254,36 @@ def test_engine_header_uses_v2_when_session_started_for_first_card():
     state = CardState(
         header=HeaderState(title="Deep · 执行中", subtitle="phase: analyze", template="purple"),
         metadata=CardMetadata(engine_type="deep", tool_name="DeepEngine", session_started_at=123.0),
+        runtime_stats=RuntimeStats(elapsed_seconds=3723.0),
     )
 
     result = render_header(state)
 
     assert "#1" in result["title"]["content"]
-    # Engine subtitle (phase info) is now in footer, not header subtitle
-    assert "subtitle" not in result
+    assert result["subtitle"]["content"] == "总耗时 1时02分03秒"
+
+
+def test_deep_task_header_subtitle_uses_elapsed_instead_of_repeating_task():
+    state = CardState(
+        header=HeaderState(title="legacy", template="purple"),
+        metadata=CardMetadata(
+            engine_type="deep",
+            project_name="ghostAp",
+            mode_name="Deep",
+            mode_emoji="🧠",
+            tool_name="Coco",
+            unit_kind="task",
+            unit_id="2",
+            unit_label="实现 Deep 卡片优化",
+            session_started_at=100.0,
+        ),
+        runtime_stats=RuntimeStats(elapsed_seconds=83.0),
+    )
+
+    result = render_header(state)
+
+    assert "任务 2: 实现 Deep 卡片优化" in result["title"]["content"]
+    assert result["subtitle"]["content"] == "总耗时 0时01分23秒"
 
 
 # ---------------------------------------------------------------------------
