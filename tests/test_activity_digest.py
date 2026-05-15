@@ -273,8 +273,7 @@ class TestRenderActiveToolLine:
             tool_input="依赖分析\n检查 package.json 中的依赖是否有过时、安全或冲突问题",
         )
         result = render_active_tool_line(block)
-        assert "依赖分析" in result
-        assert "**task**" not in result
+        assert "task：依赖分析" in result
 
     def test_task_tool_uses_json_description_as_primary_label(self):
         from src.card.render.tools import render_active_tool_line
@@ -286,8 +285,7 @@ class TestRenderActiveToolLine:
             tool_input='{"description": "代码质量分析", "prompt": "检查 lint 和类型问题"}',
         )
         result = render_active_tool_line(block)
-        assert "代码质量分析" in result
-        assert "**task**" not in result
+        assert "task：代码质量分析" in result
 
 
 # ------------------------------------------------------------------

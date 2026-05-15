@@ -23,7 +23,7 @@ class TestValidatePayloadFlag:
 
 class TestCardEventCreation:
     def test_all_event_types_exist(self):
-        assert len(CardEventType) == 42
+        assert len(CardEventType) == 43
 
     def test_started_factory(self):
         e = CardEvent.started()
@@ -56,6 +56,16 @@ class TestCardEventCreation:
         e = CardEvent.blocked()
         assert e.type == CardEventType.BLOCKED
         assert e.payload.get("reason", "") == ""
+
+    def test_review_result_updated_factory(self):
+        e = CardEvent.review_result_updated(
+            1,
+            [{"role_id": "tester", "title": "测试工程师", "suggestions": ["补测试"]}],
+        )
+
+        assert e.type == CardEventType.REVIEW_RESULT_UPDATED
+        assert e.payload["cycle_num"] == 1
+        assert e.payload["roles"][0]["title"] == "测试工程师"
 
     def test_text_delta_factory(self):
         e = CardEvent.text_delta("b1", "hello")

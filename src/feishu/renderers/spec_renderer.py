@@ -15,6 +15,7 @@ from ...spec_engine.models import (
     SpecPhase,
     SpecProject,
 )
+from ...spec_engine.review_display import build_review_role_payloads, format_review_overview
 from ._rotating_mixin import EngineView, RotatingRendererMixin
 from ._spec_stream_processor import SpecStreamProcessor
 from .base import BaseRenderer, _StreamThrottle
@@ -256,8 +257,12 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         session = self._build_view_session(chat_id, message_id, engine_name, state)
         session.dispatch(CardEvent.started())
 
-        content = reporter.format_review_result(cycle.review_result, cycle_num)
+        content = format_review_overview(cycle.review_result, cycle_num)
         session.dispatch(CardEvent.text_delta("_review", content))
+        session.dispatch(CardEvent.review_result_updated(
+            cycle_num,
+            build_review_role_payloads(cycle.review_result, cycle_num),
+        ))
 
         criteria_section = reporter.format_criteria_section(spec_project)
         session.dispatch(CardEvent.criteria_updated(

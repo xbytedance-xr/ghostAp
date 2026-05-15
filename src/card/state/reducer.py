@@ -22,6 +22,7 @@ from .reducers.criteria import reduce_criteria
 from .reducers.worktree import reduce_worktree
 from .reducers.task_list import reduce_task_list
 from .reducers.separator import reduce_separator
+from .reducers.review import reduce_review_result
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,7 @@ _ENGINE_EXT_EVENTS = frozenset({
     CardEventType.CYCLE_DONE,
     CardEventType.PHASE_STARTED,
     CardEventType.PHASE_DONE,
+    CardEventType.REVIEW_RESULT_UPDATED,
     CardEventType.CRITERIA_UPDATED,
     CardEventType.WARNING_UPDATED,
     CardEventType.REVIEW_RETRY,
@@ -137,6 +139,7 @@ _REDUCER_DISPATCH: dict[CardEventType, Callable[[CardState, CardEvent], CardStat
     # Phase events
     CardEventType.PHASE_STARTED: reduce_phase,
     CardEventType.PHASE_DONE: reduce_phase,
+    CardEventType.REVIEW_RESULT_UPDATED: reduce_review_result,
     # Criteria events
     CardEventType.CRITERIA_UPDATED: reduce_criteria,
     CardEventType.WARNING_UPDATED: reduce_criteria,
@@ -199,6 +202,7 @@ _STRUCTURAL_EVENTS = frozenset({
     CardEventType.CYCLE_DONE,
     CardEventType.PHASE_STARTED,
     CardEventType.PHASE_DONE,
+    CardEventType.REVIEW_RESULT_UPDATED,
     # UI control (buttons change)
     CardEventType.MODE_TOGGLED,
     CardEventType.STOP_ESCALATED,

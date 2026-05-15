@@ -311,11 +311,27 @@ class SeparatorBlock:
     status: BlockStatus = "completed"
 
 
+@dataclass(frozen=True)
+class ReviewRoleBlock:
+    """One Spec review role result rendered as its own collapsible panel."""
+    _atom_kind: ClassVar[str] = "review_role"
+    kind: Literal["review_role"] = "review_role"
+    block_id: str = ""
+    data: dict | None = None
+    element_id: str | None = None
+    status: BlockStatus = "completed"
+
+    def __post_init__(self) -> None:
+        if self.data is not None:
+            object.__setattr__(self, "data", copy.deepcopy(self.data))
+
+
 # Tagged-union type alias
 AnyContentBlock: TypeAlias = Union[
     TextBlock, ToolBlock, ReasoningBlock, PlanBlock, PhaseBlock, CriteriaBlock,
     WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
     WorktreeMergeBlock, WorktreeCleanupBlock, TaskListBlock, SeparatorBlock,
+    ReviewRoleBlock,
 ]
 """Union of all content block types. Use isinstance() for type-safe dispatch."""
 
@@ -334,6 +350,7 @@ _BLOCK_KIND_MAP: dict[str, type] = {
     "worktree_cleanup": WorktreeCleanupBlock,
     "task_list": TaskListBlock,
     "separator": SeparatorBlock,
+    "review_role": ReviewRoleBlock,
 }
 
 # Import-time completeness check: every AnyContentBlock subtype must be registered

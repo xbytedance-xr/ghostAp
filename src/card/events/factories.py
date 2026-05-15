@@ -25,6 +25,7 @@ if TYPE_CHECKING:
         PlanUpdatedPayload,
         ProgressPayload,
         ReasoningBlockPayload,
+        ReviewResultUpdatedPayload,
         ReviewRetryPayload,
         TextBlockPayload,
         ToolDeltaPayload,
@@ -450,6 +451,18 @@ class CardEvent(Generic[P]):
         if subtitle is not None:
             payload["subtitle"] = subtitle
         return cls(type=CardEventType.PHASE_DONE, payload=payload)
+
+    @classmethod
+    def review_result_updated(cls, cycle_num: int, roles: list[dict]) -> CardEvent[ReviewResultUpdatedPayload]:
+        """Render Spec multi-role review details as one panel per role."""
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not isinstance(roles, list):
+            raise TypeError(f"roles must be list, got {type(roles).__name__}")
+        return cls(
+            type=CardEventType.REVIEW_RESULT_UPDATED,
+            payload={"cycle_num": cycle_num, "roles": [dict(role) for role in roles]},
+        )
 
     @classmethod
     def review_retry(cls, cycle_num: int, attempt: int, max_attempts: int, status: str = "executing", delay_sec: float = 0) -> CardEvent[ReviewRetryPayload]:

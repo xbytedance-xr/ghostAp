@@ -1,6 +1,7 @@
 """Tests for sub-reducers."""
 from dataclasses import replace
 from src.card.events import CardEvent, CardEventType
+from src.card.state.reducer import reduce_card_state
 from src.card.state.models import CardState, CardMetadata, ContentBlock, FooterState, HeaderState
 from src.card.state.reducers.text import reduce_text
 from src.card.state.reducers.tool import reduce_tool
@@ -60,6 +61,12 @@ class TestToolReducer:
         assert s.blocks[0].status == "failed"
         assert s.blocks[0].tool_output == "not found"
 
+    def test_task_tool_delta_updates_late_description_summary(self):
+        s = reduce_tool(_base_state(), CardEvent.tool_started("task-1", "task", "task"))
+        s = reduce_tool(s, CardEvent.tool_delta("task-1", "整理 Spec Review 角色面板"))
+
+        assert s.blocks[0].tool_summary == "整理 Spec Review 角色面板"
+
 
 class TestReasoningReducer:
     def test_reasoning_started(self):
@@ -92,6 +99,44 @@ class TestPlanReducer:
         s = reduce_plan(s, CardEvent.plan_updated("v2"))
         assert len(s.blocks) == 1
         assert s.blocks[0].content == "v2"
+
+
+class TestReviewRoleReducer:
+    def test_review_result_updated_creates_one_block_per_role(self):
+        event = CardEvent.review_result_updated(
+            2,
+            [
+                {
+                    "role_id": "tester",
+                    "title": "测试工程师",
+                    "emoji": "🧪",
+                    "status_text": "❌ 有建议",
+                    "passed": False,
+                    "suggestions": ["补充 schema 回归", "覆盖分页边界"],
+                    "summary": "测试覆盖不足",
+                    "agent_detail": "Codex / gpt-5.5",
+                    "blocking": True,
+                },
+                {
+                    "role_id": "designer",
+                    "title": "体验设计师",
+                    "emoji": "🎨",
+                    "status_text": "✅ PASS",
+                    "passed": True,
+                    "suggestions": [],
+                    "summary": "",
+                    "agent_detail": "",
+                    "blocking": False,
+                },
+            ],
+        )
+
+        state = reduce_card_state(_base_state(), event)
+
+        assert [block.kind for block in state.blocks] == ["review_role", "review_role"]
+        assert state.blocks[0].data["title"] == "测试工程师"
+        assert state.blocks[0].data["suggestions"] == ["补充 schema 回归", "覆盖分页边界"]
+        assert state.blocks[1].data["title"] == "体验设计师"
 
 
 class TestLifecycleReducer:

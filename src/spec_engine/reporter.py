@@ -177,7 +177,7 @@ class SpecReporter:
             r = cycle.review_result
             passed = sum(1 for pr in r.reviews if pr.passed)
             total = len(r.reviews)
-            parts.append(f"🔍 **多视角审查**: {passed}/{total} 视角通过")
+            parts.append(f"🔍 **多角色审查**: {passed}/{total} 角色通过")
 
         return "\n".join(parts)
 
@@ -239,7 +239,7 @@ class SpecReporter:
         return "\n".join(lines)
 
     def format_review_result(self, review: ReviewResult, cycle: int) -> str:
-        lines = [f"🔍 **多视角审查 [循环 {cycle}]**\n"]
+        lines = [f"🔍 **多角色审查 [循环 {cycle}]**\n"]
 
         count = 0
         total_reviews = len(review.reviews)
@@ -653,7 +653,7 @@ class SpecReporter:
     def get_review_title(self, cycle: int, all_passed: bool) -> str:
         if all_passed:
             return f"✅ 审查通过 [循环 {cycle}]"
-        return f"🔍 多视角审查 [循环 {cycle}]"
+        return f"🔍 多角色审查 [循环 {cycle}]"
 
     def get_project_done_title(self, project: SpecProject) -> str:
         if project.status == SpecProjectStatus.COMPLETED:

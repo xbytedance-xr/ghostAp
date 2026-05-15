@@ -116,6 +116,60 @@ class TestUnifiedCardSections:
         # Status (phase) comes first, then body atoms in original order (digest, text)
         assert phase_idx < digest_idx < text_idx
 
+    def test_review_role_blocks_render_as_separate_collapsible_panels(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="review_role",
+                    block_id="review_1_tester",
+                    data={
+                        "cycle_num": 1,
+                        "title": "测试工程师",
+                        "emoji": "🧪",
+                        "status_text": "❌ 有建议",
+                        "passed": False,
+                        "suggestions": ["补充 schema 回归", "覆盖分页边界"],
+                        "summary": "测试覆盖不足",
+                        "agent_detail": "Codex / gpt-5.5",
+                        "background_style": "wathet",
+                        "border_color": "wathet",
+                    },
+                ),
+                ContentBlock(
+                    kind="review_role",
+                    block_id="review_1_designer",
+                    data={
+                        "cycle_num": 1,
+                        "title": "体验设计师",
+                        "emoji": "🎨",
+                        "status_text": "✅ PASS",
+                        "passed": True,
+                        "suggestions": [],
+                        "summary": "",
+                        "agent_detail": "",
+                        "background_style": "green",
+                        "border_color": "green",
+                    },
+                ),
+            ),
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec", mode_emoji="📋"),
+        )
+
+        cards = render_card(state, RenderBudget())
+        panels = [
+            el for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "collapsible_panel" and "测试工程师" in str(el)
+        ]
+
+        assert len(panels) == 1
+        assert panels[0]["expanded"] is True
+        assert "补充 schema 回归" in str(panels[0])
+        assert "Codex / gpt-5.5" in str(panels[0])
+        assert any(
+            el.get("tag") == "collapsible_panel" and "体验设计师" in str(el)
+            for el in cards[0]._card_json["body"]["elements"]
+        )
+
     def test_bridge_phrase_is_prepended_to_first_text_body_atom(self):
         state = CardState(
             blocks=(ContentBlock(kind="text", block_id="t1", content="继续执行正文"),),

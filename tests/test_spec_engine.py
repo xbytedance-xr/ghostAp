@@ -1261,7 +1261,7 @@ class TestSpecReporter:
         assert "[2/10]" in r.get_cycle_start_title(2, 10)
         assert "规格定义" in r.get_phase_title(1, SpecPhase.SPEC)
         assert "审查通过" in r.get_review_title(1, all_passed=True)
-        assert "多视角审查" in r.get_review_title(1, all_passed=False)
+        assert "多角色审查" in r.get_review_title(1, all_passed=False)
         assert "引导" in r.get_guidance_injected_title()
         assert "错误" in r.get_error_title()
         assert "状态" in r.get_status_title()

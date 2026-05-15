@@ -13,6 +13,7 @@ from src.card.ui_text import UI_TEXT
 from src.card.events import CardEventType
 from src.card.render.budget import RenderBudget
 from src.card.state.models import CardMetadata
+from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
 from src.spec_engine.retry_status import RetryStatus
 from src.spec_engine.models import SpecPhase
@@ -141,6 +142,76 @@ class TestOnReviewRetryAllStatuses:
 
 
 class TestSpecStreamProcessorUnifiedCycleCard:
+    def test_review_done_dispatches_structured_role_panels(self):
+        reporter = MagicMock()
+        reporter.format_review_result.return_value = "legacy review markdown"
+        reporter.format_phase_done_content.return_value = "review phase done"
+        reporter.format_phase_subtitle.return_value = "第 1 轮 · Review"
+        reporter.format_criteria_section.return_value = "Criteria"
+
+        spec_project = MagicMock()
+        spec_project.cycle_count_total = 3
+        spec_project.satisfied_count = 0
+        spec_project.total_criteria = 2
+        spec_project.duration.return_value = 2.0
+
+        renderer = MagicMock()
+        renderer.ctx.spec_engine_manager.snapshot.return_value = MagicMock(ext={"project": spec_project})
+        renderer.get_ui_state.return_value = {}
+        renderer.check_warning_banner.return_value = None
+
+        rotator = MagicMock()
+        throttle = MagicMock()
+
+        processor = SpecStreamProcessor(
+            rotator=rotator,
+            reporter=reporter,
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec · Coco", mode_emoji="📋"),
+            hooks=(),
+            budget=RenderBudget(engine_cmd="/spec"),
+            spec_project_id="p1",
+            message_id="msg1",
+            chat_id="chat1",
+            renderer=renderer,
+            project_root_path="/tmp/p1",
+            throttle=throttle,
+        )
+
+        review = ReviewResult(
+            iteration=1,
+            reviews=[
+                PerspectiveReview(
+                    perspective=ReviewPerspective.TESTER,
+                    passed=False,
+                    suggestions=["补充 schema 回归"],
+                    summary="测试覆盖不足",
+                    role_id="tester",
+                    role_display_name="测试工程师",
+                    review_agent_label="Codex / gpt-5.5",
+                ),
+                PerspectiveReview(
+                    perspective=ReviewPerspective.DESIGNER,
+                    passed=True,
+                    suggestions=[],
+                    role_id="designer",
+                    role_display_name="体验设计师",
+                ),
+            ],
+        )
+
+        processor.on_review_done(1, review)
+
+        dispatched_events = [call.args[0] for call in rotator.dispatch.call_args_list]
+        review_events = [
+            event for event in dispatched_events
+            if event.type == CardEventType.REVIEW_RESULT_UPDATED
+        ]
+        assert len(review_events) == 1
+        roles = review_events[0].payload["roles"]
+        assert [role["title"] for role in roles] == ["测试工程师", "体验设计师"]
+        assert roles[0]["suggestions"] == ["补充 schema 回归"]
+        assert roles[0]["agent_detail"] == "Codex / gpt-5.5"
+
     def test_non_build_phase_forwards_tool_events_as_native_card_events(self):
         reporter = MagicMock()
         reporter.format_phase_subtitle.return_value = "第 1 轮 · Plan"

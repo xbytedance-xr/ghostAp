@@ -37,6 +37,7 @@ class CardEventType(str, Enum):
     CYCLE_DONE = "cycle_done"
     PHASE_STARTED = "phase_started"
     PHASE_DONE = "phase_done"
+    REVIEW_RESULT_UPDATED = "review_result_updated"
     REVIEW_RETRY = "review_retry"
     CRITERIA_UPDATED = "criteria_updated"
     WARNING_UPDATED = "warning_updated"

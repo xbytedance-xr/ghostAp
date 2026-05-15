@@ -858,7 +858,7 @@ UI_TEXT = {
     "phase_plan": "方案规划中",
     "phase_task": "任务分解中",
     "phase_build": "执行构建中",
-    "spec_review_phase_done": "多视角审查完成",
+    "spec_review_phase_done": "多角色审查完成",
     "phase_testing": "测试中",
     "phase_building": "构建中",
     "phase_deploying": "部署中",

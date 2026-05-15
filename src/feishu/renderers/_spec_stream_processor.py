@@ -26,6 +26,7 @@ from ...spec_engine.models import (
     SpecPhase,
     SpecProject,
 )
+from ...spec_engine.review_display import build_review_role_payloads, format_review_overview
 from ...spec_engine.retry_status import RetryEvent, RetryStatus
 from .base import _dispatch_text_block
 
@@ -232,7 +233,7 @@ class SpecStreamProcessor:
             self._spec_project_id, view_mode="review_done", view_context={"cycle_num": cycle_num}
         )
 
-        content = self._reporter.format_review_result(review, cycle_num)
+        content = format_review_overview(review, cycle_num)
         _, spec_project, state, max_c = self._get_engine_and_state()
         status_content = self._reporter.format_phase_done_content(
             cycle_num, SpecPhase.REVIEW, max_c, content
@@ -246,6 +247,9 @@ class SpecStreamProcessor:
             )
         )
         _dispatch_text_block(self._rotator, f"_review_done_{cycle_num}", content)
+        self._rotator.dispatch(
+            CardEvent.review_result_updated(cycle_num, build_review_role_payloads(review, cycle_num))
+        )
 
         if spec_project:
             criteria_section = self._reporter.format_criteria_section(spec_project)

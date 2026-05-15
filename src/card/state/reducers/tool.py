@@ -6,6 +6,15 @@ from ...events import CardEvent, CardEventType
 from ...ui_text import UI_TEXT
 
 
+def _is_task_tool_name(tool_name: str | None) -> bool:
+    return str(tool_name or "").strip().lower() == "task"
+
+
+def _is_helpful_task_summary(value: str | None) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and text.lower() not in {"task", "任务", "{", "}", "[", "]"}
+
+
 def _demote_latest_tool_blocks(blocks: tuple) -> tuple:
     """Clear latest-active flag from existing tool blocks."""
     return tuple(
@@ -58,7 +67,11 @@ def reduce_tool(state: CardState, event: CardEvent) -> CardState:
             idx = state.block_index.get(block_id)
             if idx is not None and idx < len(state.blocks) and state.blocks[idx].kind == "tool_call":
                 b = state.blocks[idx]
-                updated = replace(b, content=b.content + content)
+                combined_content = b.content + content
+                changes = {"content": combined_content}
+                if _is_task_tool_name(b.tool_name) and _is_helpful_task_summary(combined_content):
+                    changes["tool_summary"] = str(combined_content).strip()
+                updated = replace(b, **changes)
                 blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]
                 return replace(state, blocks=blocks)
             return state
@@ -75,6 +88,12 @@ def reduce_tool(state: CardState, event: CardEvent) -> CardState:
                 # into block.content but don't populate tool_output on TOOL_DONE.
                 if not tool_output and getattr(b, "content", ""):
                     tool_output = b.content
+                if _is_task_tool_name(b.tool_name):
+                    if not _is_helpful_task_summary(tool_summary):
+                        if _is_helpful_task_summary(tool_output):
+                            tool_summary = str(tool_output).strip()
+                        elif _is_helpful_task_summary(b.tool_summary):
+                            tool_summary = str(b.tool_summary).strip()
                 updated = replace(b, status="completed", is_latest_active=False,
                                      tool_output=tool_output, tool_summary=tool_summary)
                 blocks = state.blocks[:idx] + (updated,) + state.blocks[idx + 1:]

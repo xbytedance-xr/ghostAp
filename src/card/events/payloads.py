@@ -130,6 +130,12 @@ class PhaseDonePayload(TypedDict):
     subtitle: NotRequired[str]
 
 
+class ReviewResultUpdatedPayload(TypedDict):
+    """Payload for REVIEW_RESULT_UPDATED event."""
+    cycle_num: int
+    roles: list[dict]
+
+
 class ReviewRetryPayload(TypedDict):
     """Payload for REVIEW_RETRY event."""
     cycle_num: int

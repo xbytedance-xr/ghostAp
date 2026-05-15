@@ -360,13 +360,14 @@ class TestOnReviewDone:
             if event.type == CardEventType.PHASE_DONE and event.payload.get("phase") == "review"
         ]
         assert phase_done
-        assert "多视角审查完成" in phase_done[-1].payload["output"]
+        assert "多角色审查完成" in phase_done[-1].payload["output"]
 
         text_events = [
             event for event in dispatched
             if event.type == CardEventType.TEXT_DELTA
         ]
-        assert any("多视角审查" in str(event.payload.get("text", "")) for event in text_events)
+        assert any("多角色审查" in str(event.payload.get("text", "")) for event in text_events)
+        assert any(event.type == CardEventType.REVIEW_RESULT_UPDATED for event in dispatched)
 
 
 class TestOnError:

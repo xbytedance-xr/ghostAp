@@ -120,7 +120,7 @@ class TestToolSummary:
         assert result == "代码质量分析"
 
     def test_task_panel_title_uses_description(self):
-        """task panels should show task content, not the literal tool name."""
+        """task panels should show the literal task label plus a concise description."""
         block = ContentBlock(
             kind="tool_call",
             block_id="task-1",
@@ -131,8 +131,7 @@ class TestToolSummary:
         result = render_tool_panel(block)
         assert result is not None
         title = result["header"]["title"]["content"]
-        assert "代码质量分析" in title
-        assert "**task**" not in title
+        assert "task：代码质量分析" in title
 
 
 class TestReasoningPanel:

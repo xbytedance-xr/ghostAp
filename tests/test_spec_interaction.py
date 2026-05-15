@@ -299,7 +299,7 @@ def test_format_cycle_phase_details_full():
     assert "2/4 完成" in result
     assert "Implement feature A" in result
     assert "输出 3 行" in result
-    assert "1/2 视角通过" in result
+    assert "1/2 角色通过" in result
 
 
 def test_format_cycle_phase_details_empty():

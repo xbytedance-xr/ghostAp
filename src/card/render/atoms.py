@@ -20,7 +20,7 @@ AtomKind = Literal[
     "text", "tool_panel", "reasoning", "plan",
     "criteria_panel", "phase_panel", "warning_banner", "progress_bar",
     "worktree_panel", "task_list", "phase_banner",
-    "subagent_dispatch", "activity_digest",
+    "subagent_dispatch", "activity_digest", "review_role",
 ]
 
 @dataclass
@@ -205,6 +205,24 @@ def _block_to_task_list_atom(block: ContentBlock) -> RenderAtom:
     return atom
 
 
+def _block_to_review_role_atom(block: ContentBlock) -> RenderAtom:
+    data = getattr(block, "data", None) or {}
+    content_parts = [
+        str(data.get("title") or ""),
+        str(data.get("summary") or ""),
+        "\n".join(str(item) for item in data.get("suggestions") or []),
+    ]
+    atom = RenderAtom(
+        kind="review_role",
+        block_id=block.block_id,
+        content="\n".join(part for part in content_parts if part),
+        splittable=False,
+        node_count=1,
+    )
+    atom.byte_size = estimate_atom_size(atom)
+    return atom
+
+
 def _block_to_separator_atom(block: ContentBlock) -> RenderAtom:
     task_name = getattr(block, "task_name", "")
     is_first = getattr(block, "is_first_overflow", False)
@@ -230,6 +248,7 @@ _ATOM_HANDLER_DISPATCH: dict[str, Callable[[ContentBlock], RenderAtom]] = {
     "criteria": _block_to_criteria_atom,
     "phase": _block_to_phase_atom,
     "task_list": _block_to_task_list_atom,
+    "review_role": _block_to_review_role_atom,
     "separator": _block_to_separator_atom,
 }
 
@@ -271,5 +290,4 @@ def invalidate_atom_handlers() -> None:
     """Reset the cached handler mapping. Intended for testing/hot-reload scenarios."""
     global _block_kind_handlers
     _block_kind_handlers = None
-
 

@@ -78,7 +78,7 @@ def render_tool_panel(block: ContentBlock) -> dict | None:
     summary = generate_tool_summary(block)
     tool_name = block.tool_name or "tool"
     if _is_task_tool_name(tool_name) and summary:
-        title_text = f"{icon} **{summary}**"
+        title_text = f"{icon} **{_format_task_label(summary)}**"
     else:
         title_text = f"{icon} **{tool_name}** — {summary}"
 
@@ -193,8 +193,10 @@ def generate_tool_summary(block: ContentBlock) -> str:
 
     if tool_name in _COMPACT_TOOLS:
         desc = _render_compact_detail(tool_input)
-        if desc:
+        if desc and not (_is_task_tool_name(tool_name) and _is_generic_task_summary(desc)):
             return desc
+        if block.tool_summary and not (_is_task_tool_name(tool_name) and _is_generic_task_summary(block.tool_summary)):
+            return block.tool_summary
 
     # bash → command text
     if tool_name in _BASH_TOOLS:
@@ -507,7 +509,7 @@ def render_active_tool_line(block: ContentBlock) -> str:
     tool_name = block.tool_name or "tool"
     summary = generate_tool_summary(block)
     if _is_task_tool_name(tool_name) and summary:
-        return f"⏳ **{summary}**"
+        return f"⏳ **{_format_task_label(summary)}**"
     if summary and summary != tool_name:
         return f"⏳ **{tool_name}** · {summary}"
     return f"⏳ **{tool_name}**"
@@ -515,3 +517,16 @@ def render_active_tool_line(block: ContentBlock) -> str:
 
 def _is_task_tool_name(tool_name: str) -> bool:
     return str(tool_name or "").strip().lower() == "task"
+
+
+def _is_generic_task_summary(value: str) -> bool:
+    return str(value or "").strip().lower() in {"task", "任务"}
+
+
+def _format_task_label(summary: str) -> str:
+    summary = str(summary or "").strip()
+    if not summary or _is_generic_task_summary(summary):
+        return "task"
+    if summary.startswith(("task:", "task：")):
+        return summary.replace("task:", "task：", 1)
+    return f"task：{summary}"

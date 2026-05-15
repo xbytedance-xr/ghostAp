@@ -138,7 +138,7 @@ class SpecPhase(Enum):
             SpecPhase.PLAN: "方案规划",
             SpecPhase.TASK: "任务分解",
             SpecPhase.BUILD: "执行构建",
-            SpecPhase.REVIEW: "多视角审查",
+            SpecPhase.REVIEW: "多角色审查",
         }[self]
 
     @property
