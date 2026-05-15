@@ -187,6 +187,7 @@ class BaseRenderer:
         context_update_fn=None,
         chat_id: str | None = None,
         engine_type: str | None = None,
+        success_emoji: str | None = None,
     ) -> tuple:
         """Build standard lifecycle hooks for engine sessions.
 
@@ -203,7 +204,14 @@ class BaseRenderer:
         """
         from ...card.hooks import ContextPersistenceHook, EmojiHook
 
-        hooks = [EmojiHook(add_reaction=self.handler.add_reaction, message_id=message_id, chat_id=chat_id)]
+        hooks = [
+            EmojiHook(
+                add_reaction=self.handler.add_reaction,
+                message_id=message_id,
+                chat_id=chat_id,
+                success_emoji=success_emoji,
+            )
+        ]
         if include_context_hook or context_update_fn:
             hooks.append(ContextPersistenceHook(
                 update_fn=context_update_fn,

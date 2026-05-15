@@ -251,9 +251,9 @@ def _activity_detail(block: ContentBlock) -> str:
     tool_name = (block.tool_name or "").lower()
     target = _activity_target(block)
     target_part = f" `{_truncate_activity_target(target)}`" if target else ""
+    label = _activity_label(block.tool_name or "工具", target)
 
     if getattr(block, "status", "") == "failed":
-        label = block.tool_name or "工具"
         return f"失败 {label}{target_part}"
     if tool_name in _SEARCH_ACTIVITY_TOOLS:
         return f"搜索{target_part}"
@@ -265,8 +265,19 @@ def _activity_detail(block: ContentBlock) -> str:
         return f"运行{target_part}"
     if tool_name in _COMPACT_TOOLS:
         return f"处理{target_part}"
-    label = block.tool_name or "工具"
     return f"调用 {label}{target_part}"
+
+
+def _activity_label(label: str, target: str) -> str:
+    """Remove target duplicated in the label when detail already renders it."""
+    cleaned = str(label or "").strip() or "工具"
+    target = str(target or "").strip()
+    if not target:
+        return cleaned
+    for needle in (target, f"`{target}`"):
+        cleaned = cleaned.replace(needle, " ")
+    cleaned = " ".join(cleaned.split()).strip(" -:·")
+    return cleaned or "工具"
 
 
 def _truncate_activity_target(value: str) -> str:

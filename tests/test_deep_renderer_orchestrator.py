@@ -41,6 +41,7 @@ class FakeHandler:
         self.settings.deep_stream_min_chars = 10
         self.project_manager = MagicMock()
         self.context_manager = MagicMock()
+        self.add_reaction = MagicMock()
         self.ctx = FakeRendererCtx()
         self._request_ids = {}
 
@@ -288,6 +289,21 @@ class TestDeepRendererSingleCard:
             if call.args and hasattr(call.args[0], "type") and call.args[0].type == CardEventType.COMPLETED
         ]
         assert len(completed_calls) == 1
+
+    def test_project_done_adds_done_reaction_to_original_message(self):
+        """Deep completion sends the user-visible done reaction immediately."""
+        renderer, _ = self._setup_renderer()
+
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        dp.status = DeepProjectStatus.COMPLETED
+        callbacks.on_project_done(dp)
+
+        renderer.handler.add_reaction.assert_called_once_with("msg_1", "PARTY")
 
     def test_project_done_keeps_final_summary_on_main_card(self):
         """Deep completion summary is delivered on the main card, not a new card."""

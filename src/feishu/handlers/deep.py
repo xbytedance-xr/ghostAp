@@ -169,9 +169,8 @@ class DeepHandler(BaseEngineHandler):
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
-        # Deep renderer owns the thinking card and task-card orchestration.
-        # Visible plan items become first-class cards when the plan arrives;
-        # later task/agent events are routed back to those cards.
+        # Deep renderer owns the single live card; plan and task events update
+        # the main task list instead of creating task-level messages.
         model_name = self._get_model_name(chat_id, project) or None
         engine = self.ctx.deep_engine_manager.get_or_create(
             chat_id,

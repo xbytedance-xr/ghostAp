@@ -149,6 +149,25 @@ class TestRenderActivityDigestPanel:
         assert "full file content" not in rendered
         assert "large command output" not in rendered
 
+    def test_panel_strips_duplicate_path_from_tool_label(self):
+        from src.card.render.tools import render_activity_digest_panel
+
+        path = "/Users/jiataorui/workspaces/aiwork/hermes-agent/gateway/run.py"
+        panel = render_activity_digest_panel([
+            ContentBlock(
+                kind="tool_call",
+                block_id="read",
+                tool_name=f"Read {path}",
+                status="completed",
+                tool_input=f'{{"path": "{path}"}}',
+            ),
+        ])
+
+        assert panel is not None
+        detail = panel["elements"][0]["content"]
+        assert detail == f"- 调用 Read `{path}`"
+        assert f"调用 Read {path} `" not in detail
+
     def test_panel_limits_detail_rows(self):
         from src.card.render.tools import render_activity_digest_panel
 

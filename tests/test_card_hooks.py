@@ -56,6 +56,20 @@ class TestEmojiHook:
 
         add_reaction.assert_called_once_with("msg_123", "PARTY")
 
+    def test_blank_success_emoji_skips_completed_reaction(self):
+        """An empty success emoji disables completed reactions for custom owners."""
+        add_reaction = MagicMock()
+        hook = EmojiHook(
+            add_reaction=add_reaction,
+            message_id="msg_123",
+            success_emoji="",
+            error_emoji="SOB",
+        )
+        state = _make_terminal_state("completed")
+        hook.on_terminal(state, "completed")
+
+        add_reaction.assert_not_called()
+
     def test_subagent_completed_does_not_add_success_emoji(self):
         """Child task completion should not send overall-task success reactions."""
         add_reaction = MagicMock()

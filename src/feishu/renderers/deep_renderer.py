@@ -76,6 +76,7 @@ class DeepRenderer(BaseRenderer):
             context_update_fn=context_update_fn,
             chat_id=chat_id,
             engine_type="deep",
+            success_emoji="",
         )
 
         # New pipeline: CardSession (event-driven)
@@ -250,6 +251,7 @@ class DeepRenderer(BaseRenderer):
 
             if deep_project.status == DeepProjectStatus.COMPLETED:
                 session.dispatch(CardEvent.completed(summary=summary))
+                self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
             else:
                 session.dispatch(CardEvent.failed(UI_TEXT["deep_exec_incomplete"]))
             self._current_session = None
