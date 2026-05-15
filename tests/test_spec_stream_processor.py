@@ -22,6 +22,7 @@ from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
 from src.engine_base import ReviewResult
 from src.spec_engine import SpecEngineCallbacks
 from src.spec_engine.models import SpecPhase, SpecProject, SpecProjectStatus
+from src.spec_engine.reporter import SpecReporter
 from src.spec_engine.retry_status import RetryEvent, RetryStatus
 
 
@@ -152,6 +153,22 @@ class TestOnPhaseEventThrottle:
         assert CardEventType.TEXT_STARTED in dispatched_types
         assert CardEventType.TEXT_DELTA in dispatched_types
 
+    def test_structured_phase_text_chunk_is_not_streamed_as_raw_json(self):
+        proc, deps = _make_processor()
+        proc._acp_renderer.process_event = MagicMock()
+        ev = self._make_event(ACPEventType.TEXT_CHUNK)
+        ev.text = '{"goals":["avoid raw json"],"acceptance_criteria":["readable card"]}'
+        ev.tool_call = None
+        ev.plan = None
+
+        proc.on_phase_event(1, SpecPhase.SPEC, ev)
+
+        dispatched_types = [
+            call[0][0].type for call in deps["rotator"].dispatch.call_args_list
+        ]
+        assert CardEventType.TEXT_STARTED not in dispatched_types
+        assert CardEventType.TEXT_DELTA not in dispatched_types
+
     def test_build_phase_text_chunk_forwards_as_text_delta(self):
         """In Build phase, TEXT_CHUNK events are forwarded as TEXT_DELTA via card_event_from_acp."""
         proc, deps = _make_processor()
@@ -281,6 +298,33 @@ class TestOnPhaseRetry:
         deps["rotator"].dispatch.assert_called_once()
         ev = deps["rotator"].dispatch.call_args[0][0]
         assert ev.type == CardEventType.REVIEW_RETRY
+
+
+class TestOnPhaseDone:
+    """Verify phase completion emits readable card status."""
+
+    def test_structured_phase_done_uses_summary_not_raw_json(self):
+        proc, deps = _make_processor(reporter=SpecReporter())
+        raw_json = """```json
+{
+  "goals": ["让 Spec 卡片更容易阅读"],
+  "functional_spec": ["不要展示大段 JSON"],
+  "acceptance_criteria": ["阶段状态会流转"]
+}
+```"""
+
+        proc.on_phase_done(1, SpecPhase.SPEC, raw_json)
+
+        dispatched = [call[0][0] for call in deps["rotator"].dispatch.call_args_list]
+        phase_done = [
+            event for event in dispatched
+            if event.type == CardEventType.PHASE_DONE and event.payload.get("phase") == "spec"
+        ]
+        assert phase_done
+        output = phase_done[-1].payload["output"]
+        assert "规格定义完成" in output
+        assert "goals" not in output
+        assert "functional_spec" not in output
 
 
 class TestOnCycleStart:

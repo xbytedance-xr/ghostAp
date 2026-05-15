@@ -9,6 +9,10 @@ def _meta() -> CardMetadata:
                         tool_name="coco", model_name="gpt-4o", engine_type="deep")
 
 
+def _spec_meta() -> CardMetadata:
+    return CardMetadata(project_name="Ghost", mode_name="Spec", mode_emoji="📋", engine_type="spec")
+
+
 class TestMainReducer:
     def test_none_state_initializes(self):
         s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
@@ -196,6 +200,26 @@ class TestMainReducer:
         assert len(s.blocks) == 2
         assert s.blocks[0].content == "first"
         assert s.blocks[1].content == "second"
+
+    def test_spec_phase_panel_tracks_current_phase_per_cycle(self):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_spec_meta())
+        s = reduce_card_state(s, CardEvent(
+            type=CardEventType.PHASE_STARTED,
+            payload={"cycle_num": 1, "phase": "spec", "content": "▶️**规格定义**"},
+        ))
+        s = reduce_card_state(s, CardEvent.phase_done(1, "spec", "✅规格定义 → ⬜方案规划"))
+        s = reduce_card_state(s, CardEvent(
+            type=CardEventType.PHASE_STARTED,
+            payload={"cycle_num": 1, "phase": "plan", "content": "✅规格定义 → ▶️**方案规划**"},
+        ))
+
+        phase_blocks = [
+            block for block in s.blocks
+            if block.kind == "phase" and block.cycle_num == 1
+        ]
+        assert len(phase_blocks) == 1
+        assert phase_blocks[0].phase_name == "plan"
+        assert "方案规划" in phase_blocks[0].content
 
 
 class TestBlockedReducer:
