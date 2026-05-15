@@ -31,8 +31,8 @@ class TestRenderTaskListPanel:
         assert "分析需求" in content
         assert "编写代码" in content
 
-    def test_current_task_bold_with_arrow(self):
-        """Current task is bolded with ▶ prefix."""
+    def test_current_task_bold_without_fake_fold_arrow(self):
+        """Current task is bolded without fake fold affordances."""
         tasks = [
             {"task_id": "t1", "name": "任务一", "status": "in_progress"},
             {"task_id": "t2", "name": "任务二", "status": "pending"},
@@ -41,10 +41,24 @@ class TestRenderTaskListPanel:
         result = render_task_list_panel(block)
         content = result["elements"][0]["content"]
 
-        assert "▶" in content
+        assert "▶" not in content
         assert "**任务一**" in content
         # Non-current task should NOT be bold
         assert "**任务二**" not in content
+
+    def test_bucket_headers_do_not_look_like_clickable_collapses(self):
+        """Inner task buckets are markdown, so they must not show fold arrows."""
+        tasks = [
+            {"task_id": "t1", "name": "任务一", "status": "in_progress"},
+            {"task_id": "t2", "name": "任务二", "status": "in_progress"},
+        ]
+        block = _make_block(tasks, "t1")
+
+        result = render_task_list_panel(block)
+        content = result["elements"][0]["content"]
+
+        assert "▶ **进行中" not in content
+        assert "▶ 🔄" not in content
 
     def test_all_status_icons(self):
         """Core status types (pending/in_progress/completed/failed) render correct icons."""

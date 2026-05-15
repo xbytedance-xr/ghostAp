@@ -98,7 +98,7 @@ def _build_v2_task_lines(tasks: tuple[TaskSnapshotPayload, ...], current_id: str
     in_progress, completed, pending = group_tasks(tasks)
     lines: list[str] = []
 
-    lines.append(f"▶ **进行中 ({len(in_progress)})**")
+    lines.append(f"**进行中 ({len(in_progress)})**")
     active_visible = in_progress[:_TASK_BUCKET_VISIBLE_LIMIT]
     for task in active_visible:
         lines.append(_format_task_line(task, current_id, tasks, total))
@@ -141,7 +141,7 @@ def _format_task_line(task: TaskSnapshotPayload, current_id: str, tasks: tuple[T
     step_num = f"{step}/{total}"
 
     if task_id == current_id:
-        return f"▶ {icon} {step_num} **{name}**"
+        return f"　{icon} {step_num} **{name}**"
     return f"　{icon} {step_num} {name}"
 
 

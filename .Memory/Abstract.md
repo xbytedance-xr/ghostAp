@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-15
+- **任务列表假折叠箭头修复** — 任务列表内部的 `▶ 进行中` / `▶ 🔄 ...` 原本只是 markdown 文本，不是飞书可展开控件，导致用户看到折叠箭头却无法展开。现在内部桶标题和当前任务行不再输出假折叠三角，只保留外层 `collapsible_panel` 的真实折叠能力，当前任务继续用加粗和状态图标高亮。相关回归 `33 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 - **Feishu 自动 reaction 收敛到 Typing** — 线上消息下方不再叠加 `OK`、`OnIt`、`Fire`、`PARTY` 等自动表情；`EmojiReaction.should_send()` 现在作为统一白名单只允许 `Typing`，`BaseHandler.add_reaction()` 与 `FeishuIMClient.add_reaction()` 双出口过滤，保留现有调用点但不发送非敲键盘 reaction。相关回归 `54 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 - **Deep task 工具分分合合卡片路由修复** — `TaskOrchestrator` 已从“子任务才拆卡”改为“计划任务是一等 Feishu 卡”：多任务 PLAN_UPDATE 出现时立即为每个可见计划项建卡，主编排卡保留任务列表块；`task` 工具调用若匹配已有计划项，会绑定并回填到对应计划任务卡，后续 update/done 继续更新并终态化该卡。active `task` 蓝条现在用任务描述作主标题，不再只显示工具名“task”。二次修正全量 `6522 passed`，三次修正相邻 `10 + 130 + 131 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 - **全量回归失败收口** — Deep 子任务卡片优化后首次全量 `uv run python -m pytest tests/ -q` 暴露 5 个相邻兼容失败：Spec handler 在 review-agent 选择卡构建被 mock/异常时阻断实际 engine 启动，切模型回包卡可能把非字符串 thread context/mock 对象放进按钮 payload 导致 JSON 序列化失败。现在 Spec review 选择卡异常会 warning 后按无 review agents 直接启动，CoreBuilder footer buttons 只接受字符串 thread id。失败用例定向 `5 passed`，全量二次回归 `6514 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
