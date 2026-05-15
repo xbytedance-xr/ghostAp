@@ -241,6 +241,7 @@ def _parse_tool_call(update: ToolCallStart | ToolCallProgress) -> ToolCallInfo:
     is_agent_task = (
         kind == "agent"
         or title_lower == "agent"
+        or title_lower == "task"
         or (isinstance(raw_input, dict) and any(k in raw_input for k in ("subagent_type", "description", "prompt")))
     )
 

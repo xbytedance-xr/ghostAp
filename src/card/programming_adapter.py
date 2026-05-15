@@ -38,7 +38,7 @@ _MODE_DISPLAY: dict[str, tuple[str, str]] = {
     "ttadk": ("🛠️", "TTADK"),
 }
 
-_AGENT_TOOL_TITLES = {"agent", "subagent"}
+_AGENT_TOOL_TITLES = {"agent", "subagent", "task"}
 
 
 def build_programming_metadata(
@@ -577,4 +577,7 @@ class ProgrammingCardSession:
                 name = line.split(marker, 1)[1].strip()
                 if name:
                     return name[:40]
+        title = (tool_call.title or "").strip().lower()
+        if title in _AGENT_TOOL_TITLES:
+            return title
         return "subagent"

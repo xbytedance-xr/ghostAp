@@ -326,6 +326,110 @@ class TestAgentTaskRouting:
 
         assert not sessions["t1"].events_of_type(CardEventType.TOOL_MODEL_CHANGED)
 
+    def test_task_tool_call_gets_independent_task_card(self):
+        """Coco task tool calls are treated as parallel child-task cards."""
+        from src.acp.models import ACPEventType
+
+        orch, _, sessions = _make_orchestrator()
+        tasks = [
+            {"task_id": "t1", "name": "Main Task"},
+            {"task_id": "t2", "name": "Second Task"},
+        ]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
+        for session in sessions.values():
+            session.dispatched_events.clear()
+
+        bridge = FakeStreamBridge()
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="task_parallel_1",
+                title="task",
+                content="依赖分析",
+            ),
+            bridge,
+        )
+
+        assert "task_parallel_1" in sessions
+        child_events = sessions["task_parallel_1"].dispatched_events
+        assert any(event.type == CardEventType.TASK_LIST_UPDATED for event in child_events)
+        assert any(
+            event.type == CardEventType.TOOL_STARTED
+            and event.payload["block_id"] == "task_parallel_1"
+            for event in child_events
+        )
+        assert not bridge.events
+
+    def test_task_tool_call_before_plan_opens_child_card_not_parent(self):
+        """Task tool calls may arrive without PLAN_UPDATE and still split into child cards."""
+        from src.acp.models import ACPEventType
+
+        orch, _, sessions = _make_orchestrator()
+        bridge = FakeStreamBridge()
+
+        result = orch.route_or_fallback(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="task_pre_plan_1",
+                title="task",
+                content="依赖分析",
+            ),
+            bridge,
+        )
+
+        assert result is True
+        assert "task_pre_plan_1" in sessions
+        assert not bridge.events
+        child_events = sessions["task_pre_plan_1"].dispatched_events
+        assert any(event.type == CardEventType.TASK_LIST_UPDATED for event in child_events)
+        assert any(event.type == CardEventType.TOOL_STARTED for event in child_events)
+
+    def test_parallel_task_tools_broadcast_full_task_list_to_existing_cards(self):
+        """When task tools start together, existing child cards receive the expanded task block."""
+        from src.acp.models import ACPEventType
+
+        orch, _, sessions = _make_orchestrator()
+        bridge = FakeStreamBridge()
+
+        for idx, label in enumerate(["依赖分析", "代码质量", "测试配置"], start=1):
+            orch.route_or_fallback(
+                self._tool_event(
+                    ACPEventType.TOOL_CALL_START,
+                    tool_id=f"task_parallel_{idx}",
+                    title="task",
+                    content=label,
+                ),
+                bridge,
+            )
+
+        time.sleep(0.9)
+
+        first = sessions["task_parallel_1"]
+        task_list_events = first.events_of_type(CardEventType.TASK_LIST_UPDATED)
+        assert task_list_events
+        latest_tasks = task_list_events[-1].payload["tasks"]
+        assert [task["name"] for task in latest_tasks] == ["依赖分析", "代码质量", "测试配置"]
+
+    def test_thinking_card_keeps_task_list_block_when_archived(self):
+        """The orchestration card keeps the structured task-list block before child cards take over."""
+        orch, _, _ = _make_orchestrator()
+        thinking = FakeSession("thinking")
+        orch.set_thinking_session(thinking)
+        tasks = [
+            {"task_id": "t1", "name": "分析依赖", "status": "in_progress"},
+            {"task_id": "t2", "name": "代码质量", "status": "in_progress"},
+            {"task_id": "t3", "name": "测试配置", "status": "in_progress"},
+        ]
+
+        orch.on_plan_received(tasks)
+
+        task_list_events = thinking.events_of_type(CardEventType.TASK_LIST_UPDATED)
+        assert task_list_events, "thinking card should retain the task-list block"
+        payload = task_list_events[-1].payload
+        assert [task["name"] for task in payload["tasks"]] == ["分析依赖", "代码质量", "测试配置"]
+        assert thinking.events_of_type(CardEventType.ARCHIVED)
+
     def test_agent_tool_call_does_not_patch_parent_task_card(self):
         """Subagent progress belongs only to the child card after the child card starts."""
         from src.acp.models import ACPEventType

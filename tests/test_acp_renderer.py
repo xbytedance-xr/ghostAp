@@ -469,6 +469,26 @@ class TestParseToolCallTodoWrite:
         tc = _parse_tool_call(MockRegularToolCall())
         assert tc.content == ""
 
+    def test_task_tool_extracts_description_for_child_card_label(self):
+        from src.acp.client import _parse_tool_call
+
+        class MockTaskToolCall:
+            tool_call_id = "task_1"
+            title = "task"
+            kind = "other"
+            status = "in_progress"
+            locations = None
+            raw_input = {
+                "description": "依赖分析",
+                "prompt": "检查 package.json 中的依赖是否有过时、安全或冲突问题",
+            }
+            raw_output = None
+
+        tc = _parse_tool_call(MockTaskToolCall())
+        assert tc.title == "task"
+        assert "依赖分析" in tc.content
+        assert "检查 package.json" in tc.content
+
     def test_todo_detected_by_raw_input_key(self):
         """Even if title doesn't say 'todo', raw_input with 'todos' key triggers extraction."""
         from src.acp.client import _parse_tool_call

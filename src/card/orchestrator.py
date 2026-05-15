@@ -41,7 +41,7 @@ _BROADCAST_DEBOUNCE_MS = 800
 
 # Minimum number of tasks for multi-card split
 _MIN_TASKS_FOR_MULTI_CARD = 2
-_AGENT_TOOL_TITLES = {"agent", "subagent"}
+_AGENT_TOOL_TITLES = {"agent", "subagent", "task"}
 _FINAL_SUMMARY_TASK_ID = "__final_summary__"
 
 
@@ -664,6 +664,9 @@ class TaskOrchestrator:
         if self._closed_event.is_set():
             return
 
+        if self._route_agent_task_event(acp_event):
+            return
+
         # Before plan reception or in fallback mode → use fallback bridge
         if not self._plan_received.is_set() or self._fallback_mode:
             fallback_bridge.on_event(acp_event)
@@ -672,9 +675,6 @@ class TaskOrchestrator:
         # Resolve which task this event belongs to
         if self._resolver is None:
             fallback_bridge.on_event(acp_event)
-            return
-
-        if self._route_agent_task_event(acp_event):
             return
 
         task_id = self._resolver.resolve(acp_event)
@@ -716,6 +716,9 @@ class TaskOrchestrator:
             True if event was routed through the orchestrator (multi-card path).
             False if event was sent to fallback_bridge (single-card path).
         """
+        if self.is_agent_task_event(acp_event):
+            self.route_acp_event(acp_event, fallback_bridge)
+            return True
         if self._plan_received.is_set() and not self._fallback_mode:
             self.route_acp_event(acp_event, fallback_bridge)
             return True
@@ -998,6 +1001,16 @@ class TaskOrchestrator:
         if self._thinking_session is None:
             return
         try:
+            snapshot = self._registry.get_snapshot()
+            tasks_payload = [
+                {"task_id": s.task_id, "name": s.name, "status": s.status}
+                for s in snapshot
+            ]
+            if tasks_payload:
+                self._thinking_session.dispatch(CardEvent(
+                    type=CardEventType.TASK_LIST_UPDATED,
+                    payload={"tasks": tasks_payload, "current_task_id": ""},
+                ))
             task_count = len(task_names)
             # Fold task list when >5 items to save card space
             if task_count > 5:
@@ -1097,6 +1110,34 @@ class TaskOrchestrator:
         with self._lock:
             self._subagent_task_ids.add(task_id)
         self._create_task_session(task_id, is_subagent=True)
+        self._broadcast_subagent_task_list()
+
+    def _broadcast_subagent_task_list(self) -> None:
+        """Refresh task-list blocks only on child task cards.
+
+        New parallel task cards should see the growing task list, but parent plan
+        task cards must remain frozen from subtask progress.
+        """
+        snapshot = self._registry.get_snapshot()
+        tasks_payload = [
+            {"task_id": s.task_id, "name": s.name, "status": s.status}
+            for s in snapshot
+        ]
+        with self._lock:
+            sessions = [
+                (task_id, self._sessions[task_id])
+                for task_id in self._subagent_task_ids
+                if task_id in self._sessions and task_id not in self._finalized_task_ids
+            ]
+
+        for task_id, session in sessions:
+            try:
+                session.dispatch(CardEvent(
+                    type=CardEventType.TASK_LIST_UPDATED,
+                    payload={"tasks": tasks_payload, "current_task_id": task_id},
+                ))
+            except Exception:
+                logger.debug("Broadcast to subagent task_id=%s failed", task_id, exc_info=True)
 
     def _apply_subagent_metadata(self, session: CardSession, task_id: str) -> None:
         """Mark orchestrator-created subagent sessions with v2 parent/sequence metadata."""
@@ -1180,6 +1221,9 @@ class TaskOrchestrator:
                 name = line.split(marker, 1)[1].strip()
                 if name:
                     return name[:40]
+        title = str(getattr(tool_call, "title", "") or "").strip().lower()
+        if title in _AGENT_TOOL_TITLES:
+            return title
         return "subagent"
 
     @classmethod

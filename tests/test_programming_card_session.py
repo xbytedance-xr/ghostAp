@@ -440,6 +440,30 @@ class TestProgrammingCardSession:
         assert all(state.metadata.parent_card_seq == "1" for state in states)
         assert {state.metadata.tool_name for state in states} == {"Explore"}
 
+    def test_task_tool_opens_independent_card(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, client = _make_programming_session()
+        pcs.start()
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="task-tool-1",
+                title="task",
+                kind="other",
+                status="in_progress",
+                content="依赖分析",
+            ),
+        ))
+
+        assert len(client.creates) >= 2
+        assert "task-tool-1" in pcs._agent_sessions
+        state = pcs._agent_sessions["task-tool-1"].state
+        assert state.metadata.is_subagent
+        assert state.metadata.unit_label == "依赖分析"
+        assert state.metadata.tool_name == "task"
+
     def test_parallel_agent_tasks_update_main_summary_panel(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
         from src.card.render.budget import RenderBudget
