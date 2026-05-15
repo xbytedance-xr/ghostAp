@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-15
+- **Deep 卡片副标题与折叠阈值优化** — Deep 多任务卡片不再在标题与副标题重复展示同一个任务名；v2 header subtitle 改为展示 Deep 任务整体总耗时，格式为 `H时MM分SS秒`，来源仍是 CardSession `_now` 推导的 `RuntimeStats.elapsed_seconds`，不新增定频刷新。任务列表与工具调用摘要折叠阈值拆开：任务三桶各自尽量展示到 50 条后才折叠，工具调用摘要详情提升到 12 条后折叠。相关卡片/Deep 回归 `61 passed` + `51 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 - **Spec 卡片 JSON 可读性与阶段状态流转修复** — Spec 结构化阶段 `SPEC/PLAN/TASK` 不再把模型输出的完整 JSON artifact 实时流入卡片正文，phase done 也不再把 raw output 写进 phase panel；卡片只展示 `SpecReporter` 生成的阶段摘要，raw artifact 仍保留在 engine tracker/artifact/persistence 路径。phase reducer 改为同一 cycle 只保留一个当前 phase 状态块，新阶段会替换旧快照，避免“✅规格定义 → ⬜方案规划 → ...”固定在顶部看起来不流转；review 完成状态与详细审查结果分开展示。相关回归 `171 passed`、扩大 Spec/card `340 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 ## 2026-05-14
 - **Codex 模型列表 current_model 退化修复** — `/codex` 和“刷新模型”本来走同一条 `SystemHandler._show_acp_model_selection_flow()`；线上“怎么刷新都只有 gpt-5.5”的根因在 `src/acp/helper.py` 的 Codex local fallback：只要项目已有 `current_model`，`_codex_models_from_local_cache()` 就直接返回单个当前模型，不再读取 `~/.codex/models_cache.json`，日志表现为反复 `using local codex model cache (1 models) before live probe`。现在 `current_model` 只用于标记默认项；有本地模型缓存时仍展示完整列表，只有本地缓存为空才单模型兜底。相关回归 `8 passed` + `90 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-14.md)

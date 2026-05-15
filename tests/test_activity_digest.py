@@ -160,15 +160,15 @@ class TestRenderActivityDigestPanel:
                 status="completed",
                 tool_input=f'{{"path": "file{i}.py"}}',
             )
-            for i in range(8)
+            for i in range(14)
         ]
         panel = render_activity_digest_panel(blocks)
 
         assert panel is not None
         detail = panel["elements"][0]["content"]
         assert "file0.py" in detail
-        assert "file5.py" in detail
-        assert "file6.py" not in detail
+        assert "file11.py" in detail
+        assert "file12.py" not in detail
         assert "另有 2 项已折叠" in detail
 
     def test_panel_border_reflects_dominant_activity(self):

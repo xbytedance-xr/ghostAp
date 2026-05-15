@@ -51,7 +51,7 @@ def test_three_groups_always_open_in_compact_mode():
     assert "补单测" in md
 
 
-def test_task_list_downgrades_completed_and_pending_when_large():
+def test_task_list_keeps_moderate_task_sets_visible():
     rows = [(f"d{i}", f"done{i}", "completed") for i in range(15)]
     rows.append(("now", "now", "in_progress"))
     rows.extend((f"p{i}", f"p{i}", "pending") for i in range(8))
@@ -60,6 +60,17 @@ def test_task_list_downgrades_completed_and_pending_when_large():
     md = atom["elements"][0]["content"]
 
     assert "已完成 (15)" in md
-    assert md.count("~~done") == 3
-    assert "还有 12 个已完成" in md
-    assert "还有 3 个" in md
+    assert md.count("~~done") == 15
+    assert "p7" in md
+    assert "还有" not in md
+
+
+def test_task_list_folds_only_very_large_buckets():
+    rows = [(f"d{i}", f"done{i}", "completed") for i in range(55)]
+
+    atom = render_task_list_panel(_block(rows, current_task_id="missing"))
+    md = atom["elements"][0]["content"]
+
+    assert "已完成 (55)" in md
+    assert md.count("~~done") == 50
+    assert "还有 5 个已完成" in md
