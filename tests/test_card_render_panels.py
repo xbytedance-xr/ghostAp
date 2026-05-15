@@ -109,6 +109,31 @@ class TestToolSummary:
         result = generate_tool_summary(block)
         assert "did something" in result
 
+    def test_summary_task_uses_description(self):
+        """task → user-visible task description, not literal tool name."""
+        block = ContentBlock(
+            kind="tool_call",
+            tool_name="task",
+            tool_input='{"description": "代码质量分析", "prompt": "检查 lint 和类型问题"}',
+        )
+        result = generate_tool_summary(block)
+        assert result == "代码质量分析"
+
+    def test_task_panel_title_uses_description(self):
+        """task panels should show task content, not the literal tool name."""
+        block = ContentBlock(
+            kind="tool_call",
+            block_id="task-1",
+            status="active",
+            tool_name="task",
+            tool_input='{"description": "代码质量分析", "prompt": "检查 lint 和类型问题"}',
+        )
+        result = render_tool_panel(block)
+        assert result is not None
+        title = result["header"]["title"]["content"]
+        assert "代码质量分析" in title
+        assert "**task**" not in title
+
 
 class TestReasoningPanel:
     def test_reasoning_active(self):

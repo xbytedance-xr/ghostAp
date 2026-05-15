@@ -76,7 +76,11 @@ def render_tool_panel(block: ContentBlock) -> dict | None:
 
     icon = _STATUS_ICONS.get(block.status, "⏳")
     summary = generate_tool_summary(block)
-    title_text = f"{icon} **{block.tool_name or 'tool'}** — {summary}"
+    tool_name = block.tool_name or "tool"
+    if _is_task_tool_name(tool_name) and summary:
+        title_text = f"{icon} **{summary}**"
+    else:
+        title_text = f"{icon} **{tool_name}** — {summary}"
 
     expanded = _should_expand_tool(block)
     border_color = PANEL_STYLES["border_failed"] if block.status == "failed" else PANEL_STYLES["border_normal"]
@@ -186,6 +190,11 @@ def generate_tool_summary(block: ContentBlock) -> str:
     """Generate a short summary for a tool call."""
     tool_name = (block.tool_name or "").lower()
     tool_input = block.tool_input or ""
+
+    if tool_name in _COMPACT_TOOLS:
+        desc = _render_compact_detail(tool_input)
+        if desc:
+            return desc
 
     # bash → command text
     if tool_name in _BASH_TOOLS:
@@ -486,6 +495,12 @@ def render_active_tool_line(block: ContentBlock) -> str:
     """
     tool_name = block.tool_name or "tool"
     summary = generate_tool_summary(block)
+    if _is_task_tool_name(tool_name) and summary:
+        return f"⏳ **{summary}**"
     if summary and summary != tool_name:
         return f"⏳ **{tool_name}** · {summary}"
     return f"⏳ **{tool_name}**"
+
+
+def _is_task_tool_name(tool_name: str) -> bool:
+    return str(tool_name or "").strip().lower() == "task"
