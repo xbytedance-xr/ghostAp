@@ -42,6 +42,7 @@ _BROADCAST_DEBOUNCE_MS = 800
 # Minimum number of tasks for multi-card split
 _MIN_TASKS_FOR_MULTI_CARD = 2
 _AGENT_TOOL_TITLES = {"agent", "subagent"}
+_FINAL_SUMMARY_TASK_ID = "__final_summary__"
 
 
 class TaskIdResolver:
@@ -176,6 +177,7 @@ class TaskOrchestrator:
         self._resolver: TaskIdResolver | None = None
         self._subagent_task_ids: set[str] = set()
         self._subagent_summaries: dict[str, dict] = {}
+        self._finalized_task_ids: set[str] = set()
 
         # Debounce state for broadcast
         self._last_broadcast_time: float = 0
@@ -279,6 +281,7 @@ class TaskOrchestrator:
             self._resolver = None
             self._subagent_task_ids.clear()
             self._subagent_summaries.clear()
+            self._finalized_task_ids.clear()
 
         # Archive sessions OUTSIDE lock (I/O)
         for session in sessions_to_close:
@@ -504,6 +507,8 @@ class TaskOrchestrator:
 
         with self._lock:
             session = self._sessions.get(resolved_id)
+            if resolved_id in self._finalized_task_ids:
+                return
             # Atomically check-then-add overflow separator flag under lock
             should_insert_separator = (
                 is_overflow
@@ -637,7 +642,9 @@ class TaskOrchestrator:
                     self._ensure_task_session(resolved_id)
                     self.broadcast_status_change(entry_task_id, "in_progress")
                 elif entry.status == "completed":
-                    self.broadcast_status_change(entry_task_id, "completed")
+                    self._finalize_task_session(entry_task_id, "completed")
+                elif entry.status == "failed":
+                    self._finalize_task_session(entry_task_id, "failed")
 
     def route_acp_event(self, acp_event: ACPEvent, fallback_bridge: StreamBridge) -> None:
         """Unified ACP event routing — resolve task_id and dispatch to the correct bridge.
@@ -758,6 +765,9 @@ class TaskOrchestrator:
         ]
 
         for task_id, session in sessions:
+            with self._lock:
+                if task_id in self._finalized_task_ids:
+                    continue
             event: CardEvent = CardEvent(
                 type=CardEventType.TASK_LIST_UPDATED,
                 payload={"tasks": tasks_payload, "current_task_id": task_id},
@@ -1042,8 +1052,11 @@ class TaskOrchestrator:
 
         with self._lock:
             known_subagent = tool_id in self._subagent_task_ids
+            finalized = tool_id in self._finalized_task_ids
         if not known_subagent and not self._is_agent_task(tool_call):
             return False
+        if finalized:
+            return True
 
         if not known_subagent:
             self.create_subagent_session(tool_id, self._extract_agent_task_label(tool_call))
@@ -1058,10 +1071,14 @@ class TaskOrchestrator:
             status = str(getattr(tool_call, "status", "") or "").strip().lower()
             content = str(getattr(tool_call, "content", "") or "").strip()
             if status == "failed":
-                self.dispatch_to_task(tool_id, CardEvent.failed(content or self._extract_agent_task_label(tool_call)))
+                self._finalize_task_session(
+                    tool_id,
+                    "failed",
+                    summary=content or self._extract_agent_task_label(tool_call),
+                )
                 self._publish_subagent_summary(tool_call, status="failed")
             else:
-                self.dispatch_to_task(tool_id, CardEvent.completed(summary=content))
+                self._finalize_task_session(tool_id, "completed", summary=content)
                 self._publish_subagent_summary(tool_call, status="completed")
         else:
             self._publish_subagent_summary(tool_call, status="running")
@@ -1080,7 +1097,6 @@ class TaskOrchestrator:
         with self._lock:
             self._subagent_task_ids.add(task_id)
         self._create_task_session(task_id, is_subagent=True)
-        self.broadcast_status_change(task_id, "in_progress")
 
     def _apply_subagent_metadata(self, session: CardSession, task_id: str) -> None:
         """Mark orchestrator-created subagent sessions with v2 parent/sequence metadata."""
@@ -1137,14 +1153,6 @@ class TaskOrchestrator:
                 summary["model"] = metadata.model_name
         self._subagent_summaries[task_id] = summary
 
-        parent_session = self._find_active_session()
-        if parent_session is None or getattr(parent_session, "closed", False):
-            return
-        try:
-            parent_session.dispatch(CardEvent.tool_model_changed(subagents=tuple(self._subagent_summaries.values())))
-        except Exception:
-            logger.debug("TaskOrchestrator: failed to publish subagent summary for %s", task_id, exc_info=True)
-
     @staticmethod
     def _is_agent_task(tool_call) -> bool:
         title = str(getattr(tool_call, "title", "") or "").strip().lower()
@@ -1174,6 +1182,149 @@ class TaskOrchestrator:
                     return name[:40]
         return "subagent"
 
+    @classmethod
+    def is_agent_task_event(cls, acp_event: ACPEvent) -> bool:
+        tool_call = getattr(acp_event, "tool_call", None)
+        return tool_call is not None and cls._is_agent_task(tool_call)
+
+    def _finalize_task_session(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        *,
+        summary: str = "",
+    ) -> None:
+        """Mark one task card terminal so later task updates no longer patch it."""
+        if status not in ("completed", "failed"):
+            return
+
+        resolved_id = self._overflow_target.get(task_id, task_id)
+        with self._lock:
+            if resolved_id in self._finalized_task_ids:
+                return
+
+        with self._lock:
+            is_subagent = task_id in self._subagent_task_ids
+        if is_subagent:
+            self._registry.update_status(task_id, status, notify=False)
+        else:
+            self.broadcast_status_change(task_id, status)
+        if self._resolver is not None:
+            self._resolver.mark_inactive(task_id)
+
+        with self._lock:
+            session = self._sessions.get(resolved_id)
+
+        if session is not None:
+            event = CardEvent.failed(summary) if status == "failed" else CardEvent.completed(summary=summary)
+            try:
+                session.dispatch(event)
+            except Exception:
+                logger.debug("TaskOrchestrator: failed to finalize task_id=%s", task_id, exc_info=True)
+
+        with self._lock:
+            self._finalized_task_ids.add(resolved_id)
+            self._finalized_task_ids.add(task_id)
+
+    def finish_with_summary(self, summary: str, *, failed: bool = False) -> None:
+        """Close task cards, then create one fresh final summary card."""
+        if self._closed_event.is_set():
+            return
+        self._closed_event.set()
+
+        self._cancel_broadcast_timer()
+        self._registry.unsubscribe(self._on_registry_status_change)
+
+        with self._lock:
+            sessions = list(self._sessions.items())
+            bridges = list(self._bridges.values())
+            self._sessions.clear()
+            self._bridges.clear()
+            finalized = set(self._finalized_task_ids)
+
+        self._close_bridges(bridges)
+
+        terminal_event = CardEvent.failed(summary) if failed else CardEvent.completed()
+        for task_id, session in sessions:
+            if task_id in finalized:
+                continue
+            try:
+                self._run_with_timeout(
+                    lambda s=session, e=terminal_event: s.dispatch(e),  # type: ignore[misc]
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.debug("Error closing task session", exc_info=True)
+
+        self._create_final_summary_session(summary, failed=failed)
+        self._fallback_session = None
+        self._shutdown_close_executor()
+        logger.info("TaskOrchestrator: finished with summary for chat_id=%s", self._chat_id)
+
+    def _cancel_broadcast_timer(self) -> None:
+        with self._lock:
+            if self._broadcast_timer is not None:
+                self._broadcast_timer.cancel()
+                self._broadcast_timer = None
+
+    def _close_bridges(self, bridges: list[StreamBridge]) -> None:
+        for bridge in bridges:
+            try:
+                self._run_with_timeout(bridge.close_open_blocks, timeout=5.0)
+            except Exception:
+                logger.debug("Error closing bridge", exc_info=True)
+
+    def _create_final_summary_session(self, summary: str, *, failed: bool) -> None:
+        if not summary:
+            return
+
+        self._registry.register(
+            task_id=_FINAL_SUMMARY_TASK_ID,
+            name=UI_TEXT["orch_final_summary_task_name"],
+            status="in_progress",
+        )
+        try:
+            session = self._session_creator(_FINAL_SUMMARY_TASK_ID)
+        except Exception:
+            logger.debug("TaskOrchestrator: failed to create final summary session", exc_info=True)
+            return
+
+        snapshot = self._registry.get_snapshot()
+        tasks_payload = [
+            {"task_id": s.task_id, "name": s.name, "status": s.status}
+            for s in snapshot
+        ]
+        session.dispatch(CardEvent.started())
+        session.dispatch(CardEvent(
+            type=CardEventType.TASK_LIST_UPDATED,
+            payload={"tasks": tasks_payload, "current_task_id": _FINAL_SUMMARY_TASK_ID},
+        ))
+        block_id = "_final_summary"
+        session.dispatch(CardEvent.text_started(block_id))
+        session.dispatch(CardEvent.text_delta(block_id, summary))
+        session.dispatch(CardEvent.text_done(block_id))
+        session.dispatch(CardEvent.failed(summary) if failed else CardEvent.completed(summary=summary))
+
+    def _shutdown_close_executor(self) -> None:
+        if self._close_executor is None:
+            return
+        _executor = self._close_executor
+        self._close_executor = None
+        _shutdown_done = threading.Event()
+
+        def _timed_shutdown():
+            _executor.shutdown(wait=True, cancel_futures=True)
+            _shutdown_done.set()
+
+        t = threading.Thread(target=_timed_shutdown, daemon=True)
+        t.start()
+        if not _shutdown_done.wait(timeout=2.0):
+            logger.warning(
+                "TaskOrchestrator: executor shutdown timed out (2s), "
+                "orphan threads may still be running for chat_id=%s",
+                self._chat_id,
+            )
+
     def close(self) -> None:
         """Close all sessions and clean up.
 
@@ -1185,31 +1336,25 @@ class TaskOrchestrator:
             return
         self._closed_event.set()
 
-        # Cancel pending broadcast timer
-        with self._lock:
-            if self._broadcast_timer is not None:
-                self._broadcast_timer.cancel()
-                self._broadcast_timer = None
+        self._cancel_broadcast_timer()
 
         # Unsubscribe from registry
         self._registry.unsubscribe(self._on_registry_status_change)
 
         # Close all task sessions and bridges
         with self._lock:
-            sessions = list(self._sessions.values())
+            sessions = list(self._sessions.items())
             bridges = list(self._bridges.values())
             self._sessions.clear()
             self._bridges.clear()
+            finalized = set(self._finalized_task_ids)
 
-        # Close open blocks on all bridges (with timeout protection)
-        for bridge in bridges:
-            try:
-                self._run_with_timeout(bridge.close_open_blocks, timeout=5.0)
-            except Exception:
-                logger.debug("Error closing bridge", exc_info=True)
+        self._close_bridges(bridges)
 
         completed_event = CardEvent.completed()
-        for session in sessions:
+        for task_id, session in sessions:
+            if task_id in finalized:
+                continue
             try:
                 self._run_with_timeout(
                     lambda s=session: s.dispatch(completed_event),  # type: ignore[misc]
@@ -1220,25 +1365,7 @@ class TaskOrchestrator:
 
         self._fallback_session = None
 
-        # Shutdown the close executor thread pool
-        if self._close_executor is not None:
-            _executor = self._close_executor
-            self._close_executor = None
-            # Use a timer to enforce a 2s deadline on shutdown
-            _shutdown_done = threading.Event()
-
-            def _timed_shutdown():
-                _executor.shutdown(wait=True, cancel_futures=True)
-                _shutdown_done.set()
-
-            t = threading.Thread(target=_timed_shutdown, daemon=True)
-            t.start()
-            if not _shutdown_done.wait(timeout=2.0):
-                logger.warning(
-                    "TaskOrchestrator: executor shutdown timed out (2s), "
-                    "orphan threads may still be running for chat_id=%s",
-                    self._chat_id,
-                )
+        self._shutdown_close_executor()
 
         logger.info("TaskOrchestrator: closed for chat_id=%s", self._chat_id)
 

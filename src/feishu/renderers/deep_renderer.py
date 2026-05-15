@@ -170,21 +170,6 @@ class DeepRenderer(BaseRenderer):
                     if _multi_card_enabled:
                         orchestrator.handle_plan_update(event, stream_bridge)
 
-            # Dispatch progress event on tool call start
-            if event.event_type == ACPEventType.TOOL_CALL_START:
-                label = UI_TEXT["deep_phase_executing"] if _phase[0] == "executing" else UI_TEXT["deep_phase_planning"]
-                progress_event = CardEvent.progress_updated(
-                    current=_tool_count[0],
-                    total=max(_plan_steps[0], _tool_count[0]),
-                    label=label,
-                )
-                if orchestrator.has_plan and not orchestrator.is_fallback_mode:
-                    task_id = orchestrator.resolver.resolve(event) if orchestrator.resolver else ""
-                    if task_id:
-                        orchestrator.dispatch_to_task(task_id, progress_event)
-                else:
-                    session.dispatch(progress_event)
-
             # Route ACP event content to the correct session/bridge.
             # Skip PLAN_UPDATE in multi-card mode: the orchestrator already
             # handles plan state via broadcast_status_change / TASK_LIST_UPDATED.
@@ -194,6 +179,26 @@ class DeepRenderer(BaseRenderer):
                 pass  # already handled above
             else:
                 orchestrator.route_or_fallback(event, stream_bridge)
+
+            # Dispatch progress after routing so agent/subagent TOOL_CALL_START has
+            # already materialized its child session and does not patch the parent.
+            if event.event_type == ACPEventType.TOOL_CALL_START:
+                label = UI_TEXT["deep_phase_executing"] if _phase[0] == "executing" else UI_TEXT["deep_phase_planning"]
+                progress_event = CardEvent.progress_updated(
+                    current=_tool_count[0],
+                    total=max(_plan_steps[0], _tool_count[0]),
+                    label=label,
+                )
+                if orchestrator.has_plan and not orchestrator.is_fallback_mode:
+                    task_id = ""
+                    if TaskOrchestrator.is_agent_task_event(event):
+                        task_id = str(getattr(event.tool_call, "id", "") or "")
+                    elif orchestrator.resolver:
+                        task_id = orchestrator.resolver.resolve(event)
+                    if task_id:
+                        orchestrator.dispatch_to_task(task_id, progress_event)
+                else:
+                    session.dispatch(progress_event)
 
             # Check for warning banner based on elapsed time
             elapsed = time.time() - _start_time[0]
@@ -209,8 +214,10 @@ class DeepRenderer(BaseRenderer):
             summary = UI_TEXT["deep_exec_completed"].format(tool_calls_count=tool_calls_count)
 
             if orchestrator.has_plan and not orchestrator.is_fallback_mode:
-                # Close orchestrator (dispatches COMPLETED to all task sessions)
-                orchestrator.close()
+                if deep_project.status == DeepProjectStatus.COMPLETED:
+                    orchestrator.finish_with_summary(summary)
+                else:
+                    orchestrator.finish_with_summary(UI_TEXT["deep_exec_incomplete"], failed=True)
             else:
                 # Dispatch completion with summary (hooks fire automatically via CardSession)
                 if deep_project.status == DeepProjectStatus.COMPLETED:

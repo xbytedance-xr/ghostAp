@@ -904,6 +904,7 @@ UI_TEXT = {
     "orch_overflow_separator_first": "---\n📌 以下任务合并展示\n\n---\n📎 {status_emoji} **{task_name}**\n",
     "orch_overflow_collapsed": "---\n📌 …及 {count} 项更多任务合并展示\n",
     "orch_rotation_failed_notice": "⚠️ 内容过长无法创建新卡片，后续内容将继续在本卡片追加",
+    "orch_final_summary_task_name": "任务总结",
     # --- Task status prefixes ---
     "orch_task_status_pending": "⏳",
     "orch_task_status_running": "🔄",

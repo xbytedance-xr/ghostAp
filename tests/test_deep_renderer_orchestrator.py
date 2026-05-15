@@ -277,6 +277,45 @@ class TestDeepRendererMultiCard:
             ]
             assert len(completed_calls) >= 1
 
+    def test_project_done_creates_final_summary_card_after_task_cards_stop(self):
+        """Deep multi-card completion starts a fresh summary card instead of patching task cards."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = renderer.create_deep_callbacks(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project=None,
+        )
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        callbacks.on_event(_make_plan_event([
+            ("Task A", "in_progress"),
+            ("Task B", "in_progress"),
+        ]))
+        assert tracker.create_card_count == 3
+
+        dp.status = DeepProjectStatus.COMPLETED
+        callbacks.on_project_done(dp)
+
+        assert tracker.create_card_count == 4
+        summary_session = tracker.sessions_created[-1]
+        summary_events = [
+            call.args[0]
+            for call in summary_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type")
+        ]
+        assert [event.type for event in summary_events][-2:] == [
+            CardEventType.TEXT_DONE,
+            CardEventType.COMPLETED,
+        ]
+        assert any(
+            event.type == CardEventType.TEXT_DELTA and "执行完成" in event.payload.get("text", "")
+            for event in summary_events
+        )
+
     def test_agent_tool_call_creates_independent_child_card(self):
         """Agent/subagent tool calls create and complete a separate Deep child card."""
         renderer, tracker = self._setup_renderer()
@@ -296,6 +335,8 @@ class TestDeepRendererMultiCard:
             ("Task B", "in_progress"),
         ]))
         assert tracker.create_card_count == 3
+        for task_session in tracker.sessions_created[1:3]:
+            task_session.dispatch.reset_mock()
 
         callbacks.on_event(ACPEvent(
             event_type=ACPEventType.TOOL_CALL_START,
@@ -339,6 +380,15 @@ class TestDeepRendererMultiCard:
         assert CardEventType.TOOL_DELTA in child_event_types
         assert CardEventType.TOOL_DONE in child_event_types
         assert CardEventType.COMPLETED in child_event_types
+
+        for parent_session in tracker.sessions_created[1:3]:
+            parent_event_types = [
+                call.args[0].type
+                for call in parent_session.dispatch.call_args_list
+                if call.args and hasattr(call.args[0], "type")
+            ]
+            assert CardEventType.PROGRESS_UPDATED not in parent_event_types
+            assert CardEventType.TOOL_MODEL_CHANGED not in parent_event_types
 
     def test_error_closes_orchestrator_in_multi_card(self):
         """on_error calls orchestrator.close() in multi-card mode."""

@@ -324,11 +324,46 @@ class TestAgentTaskRouting:
         assert completed.payload["summary"] == "子任务完成：发现路由缺口"
         assert not bridge.events
 
-        parent_summary_events = sessions["t1"].events_of_type(CardEventType.TOOL_MODEL_CHANGED)
-        assert parent_summary_events
-        subagents = parent_summary_events[-1].payload["subagents"]
-        assert subagents[0]["status"] == "completed"
-        assert subagents[0]["tool"] == "Explore"
+        assert not sessions["t1"].events_of_type(CardEventType.TOOL_MODEL_CHANGED)
+
+    def test_agent_tool_call_does_not_patch_parent_task_card(self):
+        """Subagent progress belongs only to the child card after the child card starts."""
+        from src.acp.models import ACPEventType
+
+        orch, _, sessions = _make_orchestrator()
+        tasks = [{"task_id": "t1", "name": "Main"}, {"task_id": "t2", "name": "Other"}]
+        orch.on_plan_received(tasks)
+        _trigger_all(orch, tasks)
+        orch.resolver.mark_active("t1")
+
+        parent = sessions["t1"]
+        parent.dispatched_events.clear()
+
+        bridge = FakeStreamBridge()
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="agent_child",
+                content="检查卡片更新\n子代理：Explore",
+            ),
+            bridge,
+        )
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_UPDATE,
+                tool_id="agent_child",
+                title="shell",
+                content="正在读取文件",
+            ),
+            bridge,
+        )
+
+        assert "agent_child" in sessions
+        assert any(
+            event.type == CardEventType.TOOL_DELTA
+            for event in sessions["agent_child"].dispatched_events
+        )
+        assert not parent.dispatched_events
 
     def test_two_agent_tool_calls_do_not_share_task_session(self):
         """Parallel agent tool calls keep separate child sessions by tool_call id."""
@@ -636,6 +671,45 @@ class TestHandlePlanUpdate:
         for task_id, sess in sessions.items():
             has_update = any(e.type == CardEventType.TASK_LIST_UPDATED for e in sess.dispatched_events)
             assert has_update, f"Session {task_id} did not receive TASK_LIST_UPDATED"
+
+    def test_completed_task_card_is_frozen_before_later_task_updates(self):
+        """Once a task completes, later task status changes do not patch its card."""
+        orch, _, sessions = _make_orchestrator()
+        thinking = FakeSession("thinking")
+        orch.set_thinking_session(thinking)
+        bridge = FakeStreamBridge()
+
+        with patch("src.card.orchestrator._BROADCAST_DEBOUNCE_MS", 0):
+            orch.handle_plan_update(
+                self._make_plan_event([
+                    self._make_entry("A", "in_progress"),
+                    self._make_entry("B", "pending"),
+                ]),
+                bridge,
+            )
+            assert "step_0" in sessions
+
+            orch.handle_plan_update(
+                self._make_plan_event([
+                    self._make_entry("A", "completed"),
+                    self._make_entry("B", "in_progress"),
+                ]),
+                bridge,
+            )
+
+            completed_events = sessions["step_0"].events_of_type(CardEventType.COMPLETED)
+            assert len(completed_events) == 1
+            frozen_count = sessions["step_0"].event_count
+
+            orch.handle_plan_update(
+                self._make_plan_event([
+                    self._make_entry("A", "completed"),
+                    self._make_entry("B", "completed"),
+                ]),
+                bridge,
+            )
+
+        assert sessions["step_0"].event_count == frozen_count
 
     def test_ignores_non_plan_events(self):
         """handle_plan_update ignores events that aren't PLAN_UPDATE."""

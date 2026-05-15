@@ -66,10 +66,16 @@ class TaskRegistry:
             self._tasks[task_id] = item
         return item
 
-    def update_status(self, task_id: str, status: TaskStatus) -> TaskItem | None:
+    def update_status(
+        self,
+        task_id: str,
+        status: TaskStatus,
+        *,
+        notify: bool = True,
+    ) -> TaskItem | None:
         """Update task status. Returns updated item or None if not found.
 
-        Notifies subscribers after status change.
+        Notifies subscribers after status change unless notify=False.
         """
         with self._lock:
             if task_id not in self._tasks:
@@ -79,7 +85,7 @@ class TaskRegistry:
                 return old
             updated = replace(old, status=status)
             self._tasks[task_id] = updated
-            subscribers = self._subscribers.copy()
+            subscribers = self._subscribers.copy() if notify else []
 
         # Notify outside lock to avoid deadlock
         for cb in subscribers:
