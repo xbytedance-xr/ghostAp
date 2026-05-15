@@ -19,6 +19,36 @@ from src.spec_engine.retry_status import RetryStatus
 from src.spec_engine.models import SpecPhase
 
 
+def _make_processor_for_spec_artifact_tests():
+    reporter = MagicMock()
+    reporter.format_phase_done_content.return_value = "phase done"
+    reporter.format_phase_subtitle.return_value = "第 1 轮 · Phase"
+    reporter._extract_phase_summary.return_value = "summary"
+
+    spec_project = MagicMock()
+    spec_project.cycle_count_total = 3
+
+    renderer = MagicMock()
+    renderer.ctx.spec_engine_manager.snapshot.return_value = MagicMock(ext={"project": spec_project})
+    renderer.get_ui_state.return_value = {}
+
+    rotator = MagicMock()
+    processor = SpecStreamProcessor(
+        rotator=rotator,
+        reporter=reporter,
+        metadata=CardMetadata(engine_type="spec", mode_name="Spec · Coco", mode_emoji="📋"),
+        hooks=(),
+        budget=RenderBudget(engine_cmd="/spec"),
+        spec_project_id="p1",
+        message_id="msg1",
+        chat_id="chat1",
+        renderer=renderer,
+        project_root_path="/tmp/p1",
+        throttle=MagicMock(),
+    )
+    return processor, rotator
+
+
 class TestOnPhaseRetryUsesUIText:
     """AC-R03: on_phase_retry callback must use UI_TEXT, not hardcoded strings."""
 
@@ -142,6 +172,54 @@ class TestOnReviewRetryAllStatuses:
 
 
 class TestSpecStreamProcessorUnifiedCycleCard:
+    def test_plan_phase_done_dispatches_structured_plan_panel_event(self):
+        processor, rotator = _make_processor_for_spec_artifact_tests()
+        plan_output = """```json
+{
+  "architecture": "通过结构化事件展示方案规划，保持卡片正文整洁。",
+  "tech_stack": ["CardEvent", "CardState"],
+  "steps": ["解析 PLAN 产物", "渲染方案规划面板"],
+  "file_changes": ["src/card/events/types.py"],
+  "test_plan": ["覆盖 Spec PLAN phase_done"],
+  "risks": []
+}
+```"""
+
+        processor.on_phase_done(1, SpecPhase.PLAN, plan_output)
+
+        dispatched_events = [call.args[0] for call in rotator.dispatch.call_args_list]
+        plan_events = [
+            event for event in dispatched_events
+            if event.type == CardEventType.SPEC_PLAN_UPDATED
+        ]
+        assert len(plan_events) == 1
+        plan = plan_events[0].payload["plan"]
+        assert plan["architecture"] == "通过结构化事件展示方案规划，保持卡片正文整洁。"
+        assert plan["steps"] == ["解析 PLAN 产物", "渲染方案规划面板"]
+
+    def test_task_phase_done_dispatches_all_tasks_with_full_descriptions(self):
+        processor, rotator = _make_processor_for_spec_artifact_tests()
+        task_1 = "调整 Spec 卡片任务分解展示，任务 1 的完整说明必须保留，避免 build 阶段说任务 1 时上下文丢失"
+        task_3 = "新增任务 3 的独立展示块，确保后续说任务 3 时能直接对应到这条完整任务描述"
+        task_output = f"""1. {task_1} (依赖: 无)
+2. 补充方案规划结构化面板 (依赖: 无)
+3. {task_3} (依赖: 1,2)
+"""
+
+        processor.on_phase_done(1, SpecPhase.TASK, task_output)
+
+        dispatched_events = [call.args[0] for call in rotator.dispatch.call_args_list]
+        task_events = [
+            event for event in dispatched_events
+            if event.type == CardEventType.SPEC_TASKS_UPDATED
+        ]
+        assert len(task_events) == 1
+        tasks = task_events[0].payload["tasks"]
+        assert [task["task_id"] for task in tasks] == [1, 2, 3]
+        assert tasks[0]["description"] == task_1
+        assert tasks[2]["description"] == task_3
+        assert tasks[2]["dependencies"] == [1, 2]
+
     def test_review_done_dispatches_structured_role_panels(self):
         reporter = MagicMock()
         reporter.format_review_result.return_value = "legacy review markdown"

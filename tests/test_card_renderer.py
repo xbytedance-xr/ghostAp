@@ -170,6 +170,87 @@ class TestUnifiedCardSections:
             for el in cards[0]._card_json["body"]["elements"]
         )
 
+    def test_spec_plan_and_tasks_render_as_structured_panels_without_task_truncation(self):
+        task_1 = "梳理 Spec phase_done 的结构化产物来源，并在同一卡片中展示方案规划，保留完整描述"
+        task_2 = "新增 reducer，把任务分解转成一项任务一个 block，避免多个任务挤进同一段文本被截断"
+        task_3 = "新增渲染器，把任务 3 的完整说明展示出来，确保后续模型提到任务 3 时用户能对应"
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="spec_plan",
+                    block_id="spec_plan_1",
+                    data={
+                        "cycle_num": 1,
+                        "architecture": "复用 CardSession 结构化事件，只展示整理后的方案规划，不恢复 raw JSON。",
+                        "tech_stack": ["CardEvent", "CardState", "Feishu Schema 2.0"],
+                        "steps": ["解析 PLAN 产物", "派发结构化事件", "渲染方案规划面板"],
+                        "file_changes": ["src/card/events/types.py", "src/card/render/spec_artifacts.py"],
+                        "test_plan": ["事件、reducer、renderer、Spec callback 回归"],
+                        "risks": [],
+                    },
+                ),
+                ContentBlock(kind="spec_task", block_id="spec_task_1_1", data={"cycle_num": 1, "task_id": 1, "description": task_1, "dependencies": []}),
+                ContentBlock(kind="spec_task", block_id="spec_task_1_2", data={"cycle_num": 1, "task_id": 2, "description": task_2, "dependencies": []}),
+                ContentBlock(kind="spec_task", block_id="spec_task_1_3", data={"cycle_num": 1, "task_id": 3, "description": task_3, "dependencies": [1, 2]}),
+            ),
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec", mode_emoji="📋"),
+        )
+
+        cards = render_card(state, RenderBudget())
+        body = cards[0]._card_json["body"]["elements"]
+        def _header_content(panel):
+            return panel.get("header", {}).get("title", {}).get("content", "")
+
+        plan_panels = [
+            el for el in body
+            if el.get("tag") == "collapsible_panel" and "🏗️ **方案规划**" in _header_content(el)
+        ]
+        task_panels = [
+            el for el in body
+            if el.get("tag") == "collapsible_panel" and _header_content(el).startswith("📝 **任务 ")
+        ]
+
+        assert len(plan_panels) == 1
+        assert "解析 PLAN 产物" in str(plan_panels[0])
+        assert len(task_panels) == 3
+        assert all(panel["expanded"] is True for panel in task_panels)
+        assert task_1 in str(task_panels[0])
+        assert task_3 in str(task_panels[2])
+        assert "任务 1、任务 2" in str(task_panels[2])
+        assert "及其他" not in str(task_panels)
+        assert "已截断" not in str(task_panels)
+
+    def test_spec_task_panels_paginate_without_dropping_later_tasks(self):
+        blocks = tuple(
+            ContentBlock(
+                kind="spec_task",
+                block_id=f"spec_task_1_{idx}",
+                data={
+                    "cycle_num": 1,
+                    "task_id": idx,
+                    "description": f"任务 {idx} 的完整说明必须保留在卡片分页中，不能因为任务很多就被合并截断",
+                    "dependencies": [idx - 1] if idx > 1 else [],
+                },
+            )
+            for idx in range(1, 35)
+        )
+        state = CardState(
+            blocks=blocks,
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec", mode_emoji="📋"),
+        )
+
+        cards = render_card(state, RenderBudget(byte_budget=6000, node_budget=42))
+        all_elements = [el for card in cards for el in card._card_json["body"]["elements"]]
+        task_panels = [
+            el for el in all_elements
+            if el.get("tag") == "collapsible_panel"
+            and el.get("header", {}).get("title", {}).get("content", "").startswith("📝 **任务 ")
+        ]
+
+        assert len(cards) > 1
+        assert len(task_panels) == 34
+        assert "任务 34 的完整说明必须保留在卡片分页中" in str(task_panels[-1])
+
     def test_bridge_phrase_is_prepended_to_first_text_body_atom(self):
         state = CardState(
             blocks=(ContentBlock(kind="text", block_id="t1", content="继续执行正文"),),

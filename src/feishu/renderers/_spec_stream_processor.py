@@ -20,6 +20,7 @@ from ...card.stream_bridge import ACPStreamBridge
 from ...card.task_registry import tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...spec_engine import SpecEngineCallbacks
+from ...spec_engine.artifact_display import build_plan_display_payload, build_task_display_payloads
 from ...spec_engine.models import (
     ReviewResult,
     SpecCycle,
@@ -410,6 +411,13 @@ class SpecStreamProcessor:
             summary = self._reporter._extract_phase_summary(phase, output)
             done_text = UI_TEXT["spec_build_done"].format(summary=summary) if summary else UI_TEXT["spec_build_done_plain"]
             _dispatch_text_block(self._rotator, f"_phase_done_{cycle_num}_{phase.value}", done_text)
+        elif phase == SpecPhase.PLAN:
+            plan_payload = build_plan_display_payload(output, cycle_num)
+            self._rotator.dispatch(CardEvent.spec_plan_updated(cycle_num, plan_payload))
+        elif phase == SpecPhase.TASK:
+            task_payloads = build_task_display_payloads(output, cycle_num)
+            if task_payloads:
+                self._rotator.dispatch(CardEvent.spec_tasks_updated(cycle_num, task_payloads))
 
     def on_phase_retry(self, attempt: int, max_attempts: int, detail: str) -> None:
         """Push phase-level retry status."""

@@ -1521,7 +1521,7 @@ class TestAtomRendererRegistry:
             "criteria_panel", "phase_panel", "warning_banner",
             "progress_bar", "worktree_panel", "task_list",
             "phase_banner", "subagent_dispatch", "activity_digest",
-            "review_role",
+            "review_role", "spec_plan", "spec_task",
         }
         assert expected_kinds == set(_ATOM_RENDERERS.keys())
 

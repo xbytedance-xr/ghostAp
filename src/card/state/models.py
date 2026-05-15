@@ -326,12 +326,42 @@ class ReviewRoleBlock:
             object.__setattr__(self, "data", copy.deepcopy(self.data))
 
 
+@dataclass(frozen=True)
+class SpecPlanBlock:
+    """Spec PLAN artifact rendered as a structured plan panel."""
+    _atom_kind: ClassVar[str] = "spec_plan"
+    kind: Literal["spec_plan"] = "spec_plan"
+    block_id: str = ""
+    data: dict | None = None
+    element_id: str | None = None
+    status: BlockStatus = "completed"
+
+    def __post_init__(self) -> None:
+        if self.data is not None:
+            object.__setattr__(self, "data", copy.deepcopy(self.data))
+
+
+@dataclass(frozen=True)
+class SpecTaskBlock:
+    """One Spec TASK artifact item rendered as a complete task panel."""
+    _atom_kind: ClassVar[str] = "spec_task"
+    kind: Literal["spec_task"] = "spec_task"
+    block_id: str = ""
+    data: dict | None = None
+    element_id: str | None = None
+    status: BlockStatus = "completed"
+
+    def __post_init__(self) -> None:
+        if self.data is not None:
+            object.__setattr__(self, "data", copy.deepcopy(self.data))
+
+
 # Tagged-union type alias
 AnyContentBlock: TypeAlias = Union[
     TextBlock, ToolBlock, ReasoningBlock, PlanBlock, PhaseBlock, CriteriaBlock,
     WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
     WorktreeMergeBlock, WorktreeCleanupBlock, TaskListBlock, SeparatorBlock,
-    ReviewRoleBlock,
+    ReviewRoleBlock, SpecPlanBlock, SpecTaskBlock,
 ]
 """Union of all content block types. Use isinstance() for type-safe dispatch."""
 
@@ -351,6 +381,8 @@ _BLOCK_KIND_MAP: dict[str, type] = {
     "task_list": TaskListBlock,
     "separator": SeparatorBlock,
     "review_role": ReviewRoleBlock,
+    "spec_plan": SpecPlanBlock,
+    "spec_task": SpecTaskBlock,
 }
 
 # Import-time completeness check: every AnyContentBlock subtype must be registered

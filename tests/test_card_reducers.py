@@ -139,6 +139,44 @@ class TestReviewRoleReducer:
         assert state.blocks[1].data["title"] == "体验设计师"
 
 
+class TestSpecArtifactReducers:
+    def test_spec_plan_updated_creates_structured_plan_block(self):
+        event = CardEvent.spec_plan_updated(
+            1,
+            {
+                "architecture": "保持 Spec 阶段产物结构化展示，避免 raw JSON 直接入卡。",
+                "tech_stack": ["CardSession", "Feishu Schema 2.0"],
+                "steps": ["添加事件", "添加 reducer", "添加 renderer"],
+                "file_changes": ["src/card/events/types.py", "src/card/render/spec_artifacts.py"],
+                "test_plan": ["覆盖事件、状态、渲染"],
+                "risks": ["飞书 payload 过大时依赖分页"],
+            },
+        )
+
+        state = reduce_card_state(_base_state(), event)
+
+        assert [block.kind for block in state.blocks] == ["spec_plan"]
+        assert state.blocks[0].data["cycle_num"] == 1
+        assert state.blocks[0].data["steps"] == ["添加事件", "添加 reducer", "添加 renderer"]
+
+    def test_spec_tasks_updated_creates_one_block_per_task_without_truncating_description(self):
+        full_description = "调整 Spec 卡片任务分解展示，任务 1 的完整说明必须保留，避免 build 阶段说任务 1 时上下文丢失"
+        event = CardEvent.spec_tasks_updated(
+            2,
+            [
+                {"task_id": 1, "description": full_description, "dependencies": []},
+                {"task_id": 2, "description": "补充方案规划展示", "dependencies": []},
+                {"task_id": 3, "description": "补充任务分解逐项展示", "dependencies": [1, 2]},
+            ],
+        )
+
+        state = reduce_card_state(_base_state(), event)
+
+        assert [block.kind for block in state.blocks] == ["spec_task", "spec_task", "spec_task"]
+        assert state.blocks[0].data["description"] == full_description
+        assert state.blocks[2].data["dependencies"] == [1, 2]
+
+
 class TestLifecycleReducer:
     def test_started(self):
         s = reduce_lifecycle(_base_state(), CardEvent.started())

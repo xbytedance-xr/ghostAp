@@ -23,7 +23,7 @@ class TestValidatePayloadFlag:
 
 class TestCardEventCreation:
     def test_all_event_types_exist(self):
-        assert len(CardEventType) == 43
+        assert len(CardEventType) == 45
 
     def test_started_factory(self):
         e = CardEvent.started()
@@ -66,6 +66,36 @@ class TestCardEventCreation:
         assert e.type == CardEventType.REVIEW_RESULT_UPDATED
         assert e.payload["cycle_num"] == 1
         assert e.payload["roles"][0]["title"] == "测试工程师"
+
+    def test_spec_plan_updated_factory(self):
+        e = CardEvent.spec_plan_updated(
+            1,
+            {
+                "architecture": "复用 CardSession 结构化事件，不恢复 raw JSON 流。",
+                "steps": ["新增 PLAN 展示事件", "渲染方案规划面板"],
+                "file_changes": ["src/card/events/factories.py"],
+                "test_plan": ["新增卡片渲染回归"],
+                "risks": [],
+            },
+        )
+
+        assert e.type == CardEventType.SPEC_PLAN_UPDATED
+        assert e.payload["cycle_num"] == 1
+        assert e.payload["plan"]["steps"] == ["新增 PLAN 展示事件", "渲染方案规划面板"]
+
+    def test_spec_tasks_updated_factory_preserves_full_descriptions(self):
+        full_description = "任务 1 需要完整显示从事件层传来的描述，避免后续 build 阶段提到任务 1 时用户不知道对应内容"
+        e = CardEvent.spec_tasks_updated(
+            1,
+            [
+                {"task_id": 1, "description": full_description, "dependencies": []},
+                {"task_id": 3, "description": "任务 3 也必须保留完整说明", "dependencies": [1]},
+            ],
+        )
+
+        assert e.type == CardEventType.SPEC_TASKS_UPDATED
+        assert e.payload["tasks"][0]["description"] == full_description
+        assert e.payload["tasks"][1]["dependencies"] == [1]
 
     def test_text_delta_factory(self):
         e = CardEvent.text_delta("b1", "hello")

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 有 1 个开放配置可发现性条目。
 ## 2026-05-16
+- **Spec 方案规划与任务分解结构化入卡** — `/spec` PLAN/TASK 完成后新增 `SPEC_PLAN_UPDATED`、`SPEC_TASKS_UPDATED`、`SpecPlanBlock`、`SpecTaskBlock` 和结构化渲染面板；方案规划以独立展开框展示架构/步骤/文件变更/测试计划，任务分解改为每个任务一个展开框并完整保留 `任务 N：描述` 与依赖，避免 Build 阶段提到“任务 1/任务 3”时用户找不到映射。cycle done 任务摘要也不再使用“及其他”截断。相关回归 `22 + 137 + 560 passed`，全量 `6567 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-16.md)
 - **Spec 多角色 Review 面板与 task 简介展示** — `/spec` review 完成后不再把所有角色审查结果压进一段长 markdown；新增 `REVIEW_RESULT_UPDATED`、`ReviewRoleBlock`、role panel renderer 和 review display payload，每个角色独立可展开框展示状态、工具/模型、结论和具体建议，并用不同浅色背景/边框区分，Review 阶段文案同步为“多角色审查”。Spec 运行态与 review 查看页复用同一结构化 payload；active `task` 行改为 `task：任务简介`，late `TOOL_DELTA`/`TOOL_DONE` 会回填真实任务摘要。相关回归 `7 + 195 + 265 + 1012 passed`，全量 `6559 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-16.md)
 - **多页飞书卡片历史页冻结** — 同一个 `CardSession` 渲染成多条飞书消息后，历史 page 不再跟随 live ticker/runtime 被 PATCH；`CardDelivery` 在已有 binding 且当前为多页时直接 skip 非最后一页，只让最后一页继续 create/update/element update，从而保证一个话题里同一时刻主要只有最新飞书消息保持实时更新。最新页 stale binding 仍会丢弃整组 binding，page shrink 清理保持原逻辑；相关回归 `1 + 125 + 288 passed`，Memory/docs `21 passed`，`--validate` 通过 → [详细记录](2026-05-16.md)
 ## 2026-05-15

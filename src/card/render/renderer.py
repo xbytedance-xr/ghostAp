@@ -18,6 +18,7 @@ from src.card.render.layout import SectionLayout, paginate_layout
 from src.card.render.plan import render_plan_panel
 from src.card.render.reasoning import render_reasoning_panel
 from src.card.render.review import render_review_role_panel
+from src.card.render.spec_artifacts import render_spec_plan_panel, render_spec_task_panel
 from src.card.render.sticky_head import build_sticky_head
 from src.card.render.tools import build_subagent_dispatch_atom, render_tool_panel
 from src.card.render.worktree import render_worktree_panel
@@ -28,7 +29,7 @@ from src.card.ui_text import UI_TEXT
 logger = logging.getLogger(__name__)
 
 _STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
-_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "subagent_dispatch", "activity_digest", "tool_panel", "review_role"})
+_BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "subagent_dispatch", "activity_digest", "tool_panel", "review_role", "spec_plan", "spec_task"})
 _MIN_STREAMING_TEXT_CHARS = 2
 
 
@@ -386,6 +387,20 @@ def _render_atom_review_role(atom: RenderAtom, state: CardState, budget: RenderB
     return render_review_role_panel(block)
 
 
+def _render_atom_spec_plan(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    block = block_index.get(atom.block_id)
+    if block is None:
+        return {"tag": "markdown", "content": atom.content}
+    return render_spec_plan_panel(block)
+
+
+def _render_atom_spec_task(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    block = block_index.get(atom.block_id)
+    if block is None:
+        return {"tag": "markdown", "content": atom.content}
+    return render_spec_task_panel(block)
+
+
 def _render_atom_activity_digest(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict:
     """Render activity digest as a compact, mobile-readable markdown line."""
     if atom.elements:
@@ -410,6 +425,8 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "task_list": _render_atom_task_list,
     "activity_digest": _render_atom_activity_digest,
     "review_role": _render_atom_review_role,
+    "spec_plan": _render_atom_spec_plan,
+    "spec_task": _render_atom_spec_task,
 }
 
 # Validate AtomKind ↔ _ATOM_RENDERERS single source of truth at import time.

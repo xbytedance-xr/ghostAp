@@ -27,6 +27,8 @@ if TYPE_CHECKING:
         ReasoningBlockPayload,
         ReviewResultUpdatedPayload,
         ReviewRetryPayload,
+        SpecPlanUpdatedPayload,
+        SpecTasksUpdatedPayload,
         TextBlockPayload,
         ToolDeltaPayload,
         ToolDonePayload,
@@ -462,6 +464,30 @@ class CardEvent(Generic[P]):
         return cls(
             type=CardEventType.REVIEW_RESULT_UPDATED,
             payload={"cycle_num": cycle_num, "roles": [dict(role) for role in roles]},
+        )
+
+    @classmethod
+    def spec_plan_updated(cls, cycle_num: int, plan: Mapping[str, Any]) -> CardEvent[SpecPlanUpdatedPayload]:
+        """Render Spec PLAN output as a structured plan panel."""
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not isinstance(plan, Mapping):
+            raise TypeError(f"plan must be mapping, got {type(plan).__name__}")
+        return cls(
+            type=CardEventType.SPEC_PLAN_UPDATED,
+            payload={"cycle_num": cycle_num, "plan": dict(plan)},
+        )
+
+    @classmethod
+    def spec_tasks_updated(cls, cycle_num: int, tasks: list[dict]) -> CardEvent[SpecTasksUpdatedPayload]:
+        """Render Spec TASK output as one complete panel per task."""
+        if not isinstance(cycle_num, int):
+            raise TypeError(f"cycle_num must be int, got {type(cycle_num).__name__}")
+        if not isinstance(tasks, list):
+            raise TypeError(f"tasks must be list, got {type(tasks).__name__}")
+        return cls(
+            type=CardEventType.SPEC_TASKS_UPDATED,
+            payload={"cycle_num": cycle_num, "tasks": [dict(task) for task in tasks if isinstance(task, Mapping)]},
         )
 
     @classmethod

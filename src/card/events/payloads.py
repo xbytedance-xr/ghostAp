@@ -130,6 +130,18 @@ class PhaseDonePayload(TypedDict):
     subtitle: NotRequired[str]
 
 
+class SpecPlanUpdatedPayload(TypedDict):
+    """Payload for SPEC_PLAN_UPDATED event."""
+    cycle_num: int
+    plan: dict
+
+
+class SpecTasksUpdatedPayload(TypedDict):
+    """Payload for SPEC_TASKS_UPDATED event."""
+    cycle_num: int
+    tasks: list[dict]
+
+
 class ReviewResultUpdatedPayload(TypedDict):
     """Payload for REVIEW_RESULT_UPDATED event."""
     cycle_num: int

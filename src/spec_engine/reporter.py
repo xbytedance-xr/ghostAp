@@ -159,13 +159,9 @@ class SpecReporter:
         if cycle.tasks:
             completed = sum(1 for t in cycle.tasks if t.status == SpecTaskStatus.COMPLETED)
             total = len(cycle.tasks)
-            task_descs = [t.description for t in cycle.tasks[:3]]
             parts.append(f"📝 **任务分解**: {completed}/{total} 完成")
-            for desc in task_descs:
-                brief = desc[:60] + "..." if len(desc) > 60 else desc
-                parts.append(f"  - {brief}")
-            if total > 3:
-                parts.append(f"  - ...及其他 {total - 3} 个任务")
+            for task in cycle.tasks:
+                parts.append(f"  - 任务 {task.task_id}: {task.description}")
         elif cycle.tasks_total:
             parts.append(f"📝 **任务分解**: {cycle.tasks_total} 个任务")
 
