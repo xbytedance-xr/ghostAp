@@ -83,17 +83,11 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
 
     def notify_cycle_change(self, *, current_cycle: int, perspective: str | None) -> None:
         """Hook into the spec engine cycle/perspective lifecycle."""
-        changed_cycle = self._last_cycle is not None and current_cycle != self._last_cycle
-        changed_perspective = self._last_perspective is not None and perspective != self._last_perspective
-        if changed_cycle or changed_perspective:
-            session = self._current_session
-            if session is not None and not getattr(session, "closed", False):
-                persp = perspective or "—"
-                self.render_strategy.dispatch_card_split(
-                    session,
-                    reason="cycle_changed",
-                    hint=f"进入 cycle {current_cycle} · {persp}",
-                )
+        # Spec's SessionRotator owns card boundaries.  Phase/perspective changes
+        # must keep updating the current cycle card; sending CARD_SPLIT to the
+        # rotator terminalizes the current CardSession without rotating, which
+        # makes later phase updates disappear and can fire success reactions
+        # before the Spec project is complete.
         self._last_cycle = current_cycle
         self._last_perspective = perspective
 

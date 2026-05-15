@@ -1,4 +1,4 @@
-"""SpecRenderer cycle/perspective change split tests."""
+"""SpecRenderer cycle/perspective card-boundary tests."""
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -21,7 +21,7 @@ def _build_renderer() -> SpecRenderer:
     return SpecRenderer(handler)
 
 
-def test_spec_renderer_splits_on_cycle_change():
+def test_spec_renderer_does_not_card_split_on_cycle_change():
     renderer = _build_renderer()
     renderer._current_session = MagicMock(closed=False)
 
@@ -31,13 +31,12 @@ def test_spec_renderer_splits_on_cycle_change():
     renderer.notify_cycle_change(current_cycle=1, perspective="spec")
     renderer.notify_cycle_change(current_cycle=2, perspective="code")
 
-    assert any(reason == "cycle_changed" for reason, _, _ in captured)
-    matching = [hint for reason, hint, _ in captured if reason == "cycle_changed"]
-    assert any("cycle 2" in (hint or "") and "code" in (hint or "") for hint in matching)
-    assert any(bridge == "续接：" for reason, _, bridge in captured if reason == "cycle_changed")
+    assert captured == []
+    assert renderer._last_cycle == 2
+    assert renderer._last_perspective == "code"
 
 
-def test_spec_renderer_splits_on_perspective_change_within_cycle():
+def test_spec_renderer_does_not_card_split_on_perspective_change_within_cycle():
     renderer = _build_renderer()
     renderer._current_session = MagicMock(closed=False)
 
@@ -47,7 +46,9 @@ def test_spec_renderer_splits_on_perspective_change_within_cycle():
     renderer.notify_cycle_change(current_cycle=1, perspective="spec")
     renderer.notify_cycle_change(current_cycle=1, perspective="code")
 
-    assert any(reason == "cycle_changed" for reason, _, _ in captured)
+    assert captured == []
+    assert renderer._last_cycle == 1
+    assert renderer._last_perspective == "code"
 
 
 def test_spec_renderer_no_split_on_first_cycle():
