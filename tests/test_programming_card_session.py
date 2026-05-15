@@ -348,7 +348,7 @@ class TestProgrammingCardSession:
         assert reasoning_blocks[0].block_id == "_active_reasoning"
         assert reasoning_blocks[0].status == "completed"
 
-    def test_plan_block_moves_to_card_start_with_task_sections(self):
+    def test_plan_update_moves_to_task_list_at_card_start(self):
         from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
 
         pcs, _ = _make_programming_session()
@@ -366,10 +366,14 @@ class TestProgrammingCardSession:
         ))
 
         state = pcs.session.state
-        assert state.blocks[0].kind == "plan"
-        assert "整体任务列表" in state.blocks[0].content
-        assert "当前进行中" in state.blocks[0].content
-        assert "实现任务分卡" in state.blocks[0].content
+        assert state.blocks[0].kind == "task_list"
+        assert state.blocks[0].current_task_id == "step_1"
+        assert [task["name"] for task in state.blocks[0].tasks] == [
+            "梳理卡片链路",
+            "实现任务分卡",
+            "补充回归测试",
+        ]
+        assert not any(block.kind == "plan" for block in state.blocks)
 
     def test_plan_updates_stay_in_single_card(self):
         """Plan/task changes update the task list in place — no new card per task switch.
@@ -403,10 +407,12 @@ class TestProgrammingCardSession:
         # No extra cards created — same card, updated in place
         assert len(client.creates) == creates_after_start
         assert pcs.get_message_id() == first_message_id
-        # Plan block reflects the latest in-progress task
-        plan_block = pcs.session.state.blocks[0]
-        assert plan_block.kind == "plan"
-        assert "任务 B" in plan_block.content
+        # Task list reflects the latest in-progress task without adding an execution-plan block.
+        task_list = pcs.session.state.blocks[0]
+        assert task_list.kind == "task_list"
+        assert task_list.current_task_id == "step_1"
+        assert task_list.tasks[1]["name"] == "任务 B"
+        assert not any(block.kind == "plan" for block in pcs.session.state.blocks)
 
     def test_parallel_agent_tasks_open_independent_cards(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo

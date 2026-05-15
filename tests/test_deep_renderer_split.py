@@ -26,13 +26,12 @@ def _build_renderer() -> DeepRenderer:
     return renderer
 
 
-def test_deep_renderer_splits_on_task_done():
-    """In single-card mode (task_level_cards_enabled=False), card_split fires on task transitions."""
+def test_deep_renderer_does_not_split_on_task_done_in_single_card_mode():
+    """Single-card mode keeps task transitions inside the same Feishu card."""
     renderer = _build_renderer()
     captured: list[tuple[str, str | None, str | None]] = []
     renderer._dispatch_card_split = lambda sess, *, reason, hint=None, bridge_phrase=None: captured.append((reason, hint, bridge_phrase))
 
-    # Disable multi-card so _maybe_dispatch_task_done_split fires
     mock_settings = MagicMock()
     mock_settings.card.task_level_cards_enabled = False
 
@@ -56,25 +55,25 @@ def test_deep_renderer_splits_on_task_done():
     ])
     callbacks.on_event(ACPEvent(event_type=ACPEventType.PLAN_UPDATE, plan=updated_plan))
 
-    assert any(reason == "task_done" for reason, _, _ in captured)
-    matching_hints = [hint for reason, hint, _ in captured if reason == "task_done"]
-    assert any(hint is not None and "task 2" in hint for hint in matching_hints)
-    assert any(bridge == "续接：" for reason, _, bridge in captured if reason == "task_done")
+    assert captured == []
 
 
 def test_deep_renderer_no_split_in_multi_card_mode():
-    """In multi-card mode, _maybe_dispatch_task_done_split must NOT fire (orchestrator handles it)."""
+    """Multi-card mode must not use task_done card_split either."""
     renderer = _build_renderer()
     captured: list[tuple[str, str | None, str | None]] = []
     renderer._dispatch_card_split = lambda sess, *, reason, hint=None, bridge_phrase=None: captured.append((reason, hint, bridge_phrase))
 
-    # Default: task_level_cards_enabled=True
-    callbacks = renderer.create_deep_callbacks(
-        message_id="m1",
-        chat_id="c1",
-        project=None,
-        engine_name="Coco",
-    )
+    mock_settings = MagicMock()
+    mock_settings.card.task_level_cards_enabled = True
+
+    with patch("src.config.get_settings", return_value=mock_settings):
+        callbacks = renderer.create_deep_callbacks(
+            message_id="m1",
+            chat_id="c1",
+            project=None,
+            engine_name="Coco",
+        )
 
     initial_plan = PlanInfo(entries=[
         PlanEntryInfo(content="task 1", status="in_progress"),

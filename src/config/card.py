@@ -41,8 +41,8 @@ class CardSessionConfig(BaseModel):
         description="Live ticker 帧切换间隔（秒），对应 v2 设计中绿点动画节奏",
     )
     task_level_cards_enabled: bool = Field(
-        default=True,
-        description="启用后多步任务使用独立飞书卡片展示每个子任务，关闭则退化为单卡模式",
+        default=False,
+        description="启用后多步任务使用独立飞书卡片展示每个子任务；默认关闭以避免飞书消息刷屏",
     )
     max_task_cards: int = Field(
         default=8,

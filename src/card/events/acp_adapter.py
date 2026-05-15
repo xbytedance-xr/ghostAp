@@ -26,7 +26,7 @@ def card_event_from_acp(acp_event: "ACPEvent") -> CardEvent:
     - TOOL_CALL_START → TOOL_STARTED
     - TOOL_CALL_UPDATE → TOOL_DELTA
     - TOOL_CALL_DONE → TOOL_DONE / TOOL_FAILED
-    - PLAN_UPDATE → PLAN_UPDATED
+    - PLAN_UPDATE → TASK_LIST_UPDATED
     - (fallback) → TEXT_DELTA
     """
     from src.acp.models import ACPEventType as AET
@@ -74,26 +74,24 @@ def card_event_from_acp(acp_event: "ACPEvent") -> CardEvent:
             })
         case AET.PLAN_UPDATE:
             plan = acp_event.plan
+            tasks = []
+            current_task_id = ""
             if plan:
-                current_lines = []
-                overall_lines = []
-                for entry in plan.entries:
-                    icon = {"completed": "✅", "in_progress": "⏳", "pending": "○"}.get(entry.status, "○")
-                    line = f"{icon} {entry.content}"
-                    overall_lines.append(line)
-                    if entry.status == "in_progress":
-                        current_lines.append(f"- {entry.content}")
-                sections = ["📋 **整体任务列表**"]
-                sections.extend(overall_lines)
-                sections.extend([
+                from src.card.task_registry import tasks_from_plan_entries
+
+                tasks = tasks_from_plan_entries(plan.entries)
+                current_task_id = next(
+                    (
+                        str(task.get("task_id") or "")
+                        for task in tasks
+                        if task.get("status") == "in_progress"
+                    ),
                     "",
-                    "🚧 **当前进行中**",
-                ])
-                sections.extend(current_lines or ["- 暂无"])
-                content = "\n".join(sections)
-            else:
-                content = ""
-            return CardEvent(type=CardEventType.PLAN_UPDATED, payload={"content": content})
+                )
+            return CardEvent(
+                type=CardEventType.TASK_LIST_UPDATED,
+                payload={"tasks": tasks, "current_task_id": current_task_id},
+            )
         case _:
             return CardEvent(type=CardEventType.TEXT_DELTA, payload={
                 "block_id": "_active_text",

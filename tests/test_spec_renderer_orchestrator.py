@@ -1,13 +1,13 @@
-"""Integration tests: SpecRenderer + TaskOrchestrator multi-card behavior.
+"""Integration tests: SpecRenderer + TaskOrchestrator task-card behavior.
 
-Verifies that when the Spec engine's BUILD phase produces a plan with
-multiple tasks via PLAN_UPDATE, per-task cards are created.
+Verifies BUILD plan tasks stay in the main card by default and only create
+per-task cards when the feature flag is explicitly enabled.
 """
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -126,20 +126,27 @@ class TestSpecRendererMultiCard:
 
         return renderer, tracker
 
-    def test_multi_task_plan_in_build_creates_extra_cards(self):
-        """PLAN_UPDATE with 3 tasks in BUILD phase → 3 extra cards created."""
+    def _create_callbacks(self, renderer, *, task_level_cards_enabled: bool = False):
+        mock_settings = MagicMock()
+        mock_settings.card.task_level_cards_enabled = task_level_cards_enabled
+        mock_settings.card.max_task_cards = 8
+        with patch("src.config.get_settings", return_value=mock_settings):
+            return renderer.create_spec_callbacks(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project=None,
+            )
+
+    def test_multi_task_plan_in_build_stays_single_card_by_default(self):
+        """PLAN_UPDATE with multiple BUILD tasks stays in the main card by default."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_spec_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer)
 
         # Initial: 1 card (rotator)
         assert tracker.create_card_count == 1
 
-        # Simulate BUILD phase event with multi-task plan (all in_progress to trigger lazy build)
+        # Simulate BUILD phase event with multi-task plan.
         plan_event = _make_plan_event([
             ("Implement feature A", "in_progress"),
             ("Implement feature B", "in_progress"),
@@ -147,18 +154,30 @@ class TestSpecRendererMultiCard:
         ])
         callbacks.on_phase_event(1, SpecPhase.BUILD, plan_event)
 
-        # Should have 1 (rotator) + 3 (task sessions) = 4
+        assert tracker.create_card_count == 1
+
+    def test_multi_task_plan_in_build_creates_extra_cards_when_enabled(self):
+        """PLAN_UPDATE with 3 tasks creates extra cards only behind the feature flag."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
+
+        assert tracker.create_card_count == 1
+
+        plan_event = _make_plan_event([
+            ("Implement feature A", "in_progress"),
+            ("Implement feature B", "in_progress"),
+            ("Add error handling", "in_progress"),
+        ])
+        callbacks.on_phase_event(1, SpecPhase.BUILD, plan_event)
+
         assert tracker.create_card_count == 4
 
     def test_plan_in_non_build_phase_no_split(self):
         """PLAN_UPDATE in SPEC/PLAN phase doesn't trigger multi-card."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_spec_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer)
 
         plan_event = _make_plan_event([
             ("Step A", "pending"),
@@ -175,11 +194,7 @@ class TestSpecRendererMultiCard:
         """Single-step plan in BUILD doesn't trigger multi-card."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_spec_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer)
 
         plan_event = _make_plan_event([("Single task", "pending")])
         callbacks.on_phase_event(1, SpecPhase.BUILD, plan_event)
@@ -191,11 +206,7 @@ class TestSpecRendererMultiCard:
         """Without PLAN_UPDATE events, stays in single card."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_spec_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer)
 
         # Send text event in BUILD phase
         text_event = ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="coding...")
@@ -212,11 +223,7 @@ class TestSpecRendererMultiCard:
         """
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_spec_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
 
         task_count = 4
         plan_event = _make_plan_event([
@@ -240,11 +247,7 @@ class TestSpecRendererMultiCard:
 
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_spec_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
 
         # Send a multi-task plan first
         plan_event = _make_plan_event([
@@ -265,4 +268,3 @@ class TestSpecRendererMultiCard:
         with mock_patch.object(TaskOrchestrator, "route_acp_event", _spy):
             callbacks.on_phase_event(1, SpecPhase.BUILD, text_event)
             assert len(call_count) > 0, "route_acp_event was not called"
-

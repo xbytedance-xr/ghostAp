@@ -1,7 +1,7 @@
-"""Integration tests: DeepRenderer + TaskOrchestrator multi-card behavior.
+"""Integration tests: DeepRenderer + TaskOrchestrator task-card behavior.
 
-Verifies AC1: create_card called N+1 times (1 thinking + N tasks) when
-the Deep engine's plan contains multiple tasks.
+Verifies task-level cards stay disabled by default and only create N+1 cards
+when the feature flag is explicitly enabled.
 """
 from __future__ import annotations
 
@@ -147,29 +147,37 @@ class TestDeepRendererMultiCard:
 
         return renderer, tracker
 
-    def test_multi_task_plan_creates_n_plus_1_cards(self):
-        """AC1: 3 plan steps (all in_progress) → 4 create_card calls (1 thinking + 3 task cards).
+    def _create_callbacks(
+        self,
+        renderer,
+        *,
+        task_level_cards_enabled: bool = False,
+        project=None,
+        engine_name: str = "Coco",
+    ):
+        mock_settings = MagicMock()
+        mock_settings.card.task_level_cards_enabled = task_level_cards_enabled
+        mock_settings.card.max_task_cards = 8
+        with patch("src.config.get_settings", return_value=mock_settings):
+            return renderer.create_deep_callbacks(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project=project,
+                engine_name=engine_name,
+            )
 
-        Plan tasks are first-class cards once a multi-step plan is visible.
-        """
+    def test_multi_task_plan_stays_single_card_by_default(self):
+        """3 plan steps stay in one Feishu card by default."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-            engine_name="Coco",
-        )
+        callbacks = self._create_callbacks(renderer)
 
-        # 1) Analyzing done → starts the thinking session card
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
         callbacks.on_analyzing_done(dp)
 
-        # At this point: 1 session (thinking)
         assert tracker.create_card_count == 1
 
-        # 2) Emit a PLAN_UPDATE with 3 tasks already executing
         plan_event = _make_plan_event([
             ("Analyze requirements", "in_progress"),
             ("Write implementation", "in_progress"),
@@ -177,18 +185,34 @@ class TestDeepRendererMultiCard:
         ])
         callbacks.on_event(plan_event)
 
-        # Should now have 1 (thinking) + 3 (task sessions) = 4
+        assert tracker.create_card_count == 1
+
+    def test_multi_task_plan_creates_n_plus_1_cards_when_enabled(self):
+        """AC1: flag on + 3 plan steps → 4 create_card calls (1 thinking + 3 task cards)."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        assert tracker.create_card_count == 1
+
+        plan_event = _make_plan_event([
+            ("Analyze requirements", "in_progress"),
+            ("Write implementation", "in_progress"),
+            ("Run tests", "in_progress"),
+        ])
+        callbacks.on_event(plan_event)
+
         assert tracker.create_card_count == 4
 
     def test_single_step_plan_stays_single_card(self):
         """A plan with only 1 step stays in single-card mode (no split)."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer)
 
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
@@ -205,11 +229,7 @@ class TestDeepRendererMultiCard:
         """Without any PLAN_UPDATE, stays in single-card mode."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer)
 
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
@@ -226,11 +246,7 @@ class TestDeepRendererMultiCard:
         """Plan with empty entries (no content) stays single-card (fallback)."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer)
 
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
@@ -247,11 +263,7 @@ class TestDeepRendererMultiCard:
         """on_project_done calls orchestrator.close() in multi-card mode."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
 
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
@@ -281,11 +293,7 @@ class TestDeepRendererMultiCard:
         """Deep multi-card completion starts a fresh summary card instead of patching task cards."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
 
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
@@ -320,11 +328,7 @@ class TestDeepRendererMultiCard:
         """Agent/subagent tool calls create and complete a separate Deep child card."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
 
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
@@ -394,11 +398,7 @@ class TestDeepRendererMultiCard:
         """on_error calls orchestrator.close() in multi-card mode."""
         renderer, tracker = self._setup_renderer()
 
-        callbacks = renderer.create_deep_callbacks(
-            message_id="msg_1",
-            chat_id="chat_1",
-            project=None,
-        )
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
 
         from src.deep_engine.models import DeepProjectStatus
         dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)

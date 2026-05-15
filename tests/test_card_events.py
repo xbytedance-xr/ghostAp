@@ -127,10 +127,13 @@ class TestFromACP:
         ])
         acp = ACPEvent(event_type=ACPEventType.PLAN_UPDATE, plan=plan)
         ce = CardEvent.from_acp(acp)
-        assert ce.type == CardEventType.PLAN_UPDATED
-        assert "✅ Step 1" in ce.payload["content"]
-        assert "⏳ Step 2" in ce.payload["content"]
-        assert "○ Step 3" in ce.payload["content"]
+        assert ce.type == CardEventType.TASK_LIST_UPDATED
+        assert ce.payload["current_task_id"] == "step_1"
+        assert ce.payload["tasks"] == [
+            {"task_id": "step_0", "name": "Step 1", "status": "completed"},
+            {"task_id": "step_1", "name": "Step 2", "status": "in_progress"},
+            {"task_id": "step_2", "name": "Step 3", "status": "pending"},
+        ]
 
     def test_tool_call_update(self):
         tc = ToolCallInfo(id="tc1", title="bash", kind="execute", status="in_progress", content="partial output")

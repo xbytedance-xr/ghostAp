@@ -10,7 +10,6 @@ from ...card.orchestrator import TaskOrchestrator
 from ...card.render.budget import RenderBudget
 from ...card.state.models import CardMetadata
 from ...card.stream_bridge import ACPStreamBridge
-from ...card.task_registry import TaskRegistry, tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
@@ -25,10 +24,6 @@ if TYPE_CHECKING:
     from ..handlers.deep import DeepHandler
 
 logger = logging.getLogger(__name__)
-
-# Minimum plan steps to trigger multi-card mode
-_MIN_TASKS_FOR_MULTI_CARD = 2
-
 
 class DeepRenderer(BaseRenderer):
     """
@@ -126,7 +121,6 @@ class DeepRenderer(BaseRenderer):
         _tool_count = [0]
         _plan_steps = [0]
         _phase = ["analyzing"]  # "analyzing" | "executing"
-        _last_plan_statuses: list[dict[str, str]] = [{}]
 
         def on_analyzing_done(deep_project: DeepProject):
             # Start the card session
@@ -146,25 +140,13 @@ class DeepRenderer(BaseRenderer):
             if event.event_type == ACPEventType.TOOL_CALL_START:
                 _tool_count[0] += 1
 
-            # Detect PLAN_UPDATE and trigger multi-card split if applicable
+            # Detect PLAN_UPDATE and trigger task-level cards only when explicitly enabled.
             if event.event_type == ACPEventType.PLAN_UPDATE:
                 if event.plan and event.plan.entries:
                     steps = len(event.plan.entries)
                     if steps > 0:
                         _plan_steps[0] = steps
                         _phase[0] = "executing"
-
-                    # Only dispatch card_split on task transitions when NOT in
-                    # multi-card mode.  In multi-card mode the orchestrator
-                    # manages per-task sessions independently — sending
-                    # card_split to the thinking session would incorrectly
-                    # close it and create spurious continuation cards.
-                    if not (_multi_card_enabled and orchestrator.has_plan):
-                        self._maybe_dispatch_task_done_split(
-                            session,
-                            event.plan.entries,
-                            _last_plan_statuses,
-                        )
 
                     # Unified plan detection + status broadcast
                     if _multi_card_enabled:
@@ -241,33 +223,6 @@ class DeepRenderer(BaseRenderer):
             on_project_done=on_project_done,
             on_error=on_error,
         )
-
-    def _maybe_dispatch_task_done_split(
-        self,
-        session: "Dispatchable",
-        entries,
-        last_statuses: list[dict[str, str]],
-    ) -> None:
-        """Dispatch card_split when a plan task transitions to completed."""
-        prev_statuses = last_statuses[0]
-        new_statuses = {f"step_{idx}": entry.status for idx, entry in enumerate(entries)}
-
-        for task_id, new_status in new_statuses.items():
-            old_status = prev_statuses.get(task_id)
-            if old_status != "in_progress" or new_status != "completed":
-                continue
-            next_entry = next((entry for entry in entries if entry.status == "in_progress"), None)
-            hint = None
-            if next_entry is not None:
-                step_idx = next(
-                    (idx + 1 for idx, entry in enumerate(entries) if entry is next_entry),
-                    1,
-                )
-                hint = f"接续 task {step_idx}「{next_entry.content}」"
-            if not getattr(session, "closed", False):
-                self.render_strategy.dispatch_card_split(session, reason="task_done", hint=hint)
-
-        last_statuses[0] = new_statuses
 
     def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
         self._pending_split_hint = hint

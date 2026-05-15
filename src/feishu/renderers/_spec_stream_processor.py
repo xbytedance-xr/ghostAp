@@ -35,9 +35,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Minimum plan steps to trigger multi-card mode in Spec Build phase
-_MIN_TASKS_FOR_MULTI_CARD = 2
-
 # RetryStatus → UI_TEXT key mapping (class-level constant)
 _RETRY_STATUS_TEXT: dict[RetryStatus, str] = {
     RetryStatus.WAITING: "retry_waiting",
@@ -112,7 +109,7 @@ class SpecStreamProcessor:
         self._build_tool_count: int = 0
         self._build_file_set: set[str] = set()
 
-        # TaskOrchestrator for multi-card within a Spec cycle's Build phase
+        # TaskOrchestrator for optional task-level cards within a Spec cycle's Build phase
         def _task_session_creator(task_id: str):
             from dataclasses import replace as _replace
             task_item = self._orchestrator.registry.get(task_id)
@@ -346,7 +343,7 @@ class SpecStreamProcessor:
         if phase in _STRUCTURED_ARTIFACT_PHASES and event.event_type == ACPEventType.TEXT_CHUNK:
             return
 
-        # Detect PLAN_UPDATE for multi-card split in BUILD phase
+        # Detect PLAN_UPDATE for optional task-level cards in BUILD phase
         if self._multi_card_enabled and event.event_type == ACPEventType.PLAN_UPDATE and phase == SpecPhase.BUILD:
             self._orchestrator.handle_plan_update(event, self._stream_bridge)
 

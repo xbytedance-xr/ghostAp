@@ -2785,6 +2785,12 @@ class TestFromSettings:
         cfg = CardSessionConfig()
         assert cfg.max_task_cards == 8
 
+    def test_task_level_cards_disabled_by_default(self):
+        """Default keeps plan tasks in the main card to avoid Feishu message spam."""
+        from src.config import CardSessionConfig
+        cfg = CardSessionConfig()
+        assert cfg.task_level_cards_enabled is False
+
     def test_thinking_session_is_set(self):
         """Thinking session is correctly set by factory."""
         from unittest.mock import MagicMock, patch
