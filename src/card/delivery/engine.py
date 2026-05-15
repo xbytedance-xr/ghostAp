@@ -185,6 +185,9 @@ class CardDelivery:
             return []
         binding = self._bindings.get(session_id)
         outcomes: list[MutationOutcome] = []
+        rendered_indices = {card.page_index for card in rendered}
+        latest_page_idx = max(rendered_indices) if rendered_indices else 0
+        freeze_history_pages = binding is not None and len(rendered_indices) > 1
 
         if binding is None:
             binding = self._bindings.create(session_id, chat_id)
@@ -194,6 +197,9 @@ class CardDelivery:
         else:
             for card in rendered:
                 page_idx = card.page_index
+                if freeze_history_pages and page_idx < latest_page_idx:
+                    outcomes.append(MutationOutcome(kind="skipped", message="history_page_frozen"))
+                    continue
                 existing_page = binding.pages.get(page_idx)
 
                 if existing_page is None:
@@ -213,7 +219,6 @@ class CardDelivery:
                     break
 
             # Finalize stale pages (pages in binding but not in current rendered set)
-            rendered_indices = {card.page_index for card in rendered}
             for stale_idx in list(binding.pages.keys()):
                 if stale_idx not in rendered_indices:
                     self._finalize_page(session_id, binding.pages[stale_idx])

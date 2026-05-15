@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 有 1 个开放配置可发现性条目。
+## 2026-05-16
+- **多页飞书卡片历史页冻结** — 同一个 `CardSession` 渲染成多条飞书消息后，历史 page 不再跟随 live ticker/runtime 被 PATCH；`CardDelivery` 在已有 binding 且当前为多页时直接 skip 非最后一页，只让最后一页继续 create/update/element update，从而保证一个话题里同一时刻主要只有最新飞书消息保持实时更新。最新页 stale binding 仍会丢弃整组 binding，page shrink 清理保持原逻辑；相关回归 `1 + 125 + 288 passed`，Memory/docs `21 passed`，`--validate` 通过 → [详细记录](2026-05-16.md)
 ## 2026-05-15
 - **Deep 完成表情与工具调用路径去重修复** — Deep 整体任务完成后会在主卡 `completed` 投递成功后对原用户消息补 `PARTY` done 表情，作为整体完成标记；Deep session 的通用 success hook 用空 success emoji 禁用，避免重复发完成表情。工具调用摘要会从 `调用 <tool label>` 前缀中移除已由灰底代码 target 展示的 path，保留 `调用 Read `/path`` 结构，解决 `调用 Read /path` + 灰底 `/path` 双路径问题。定向回归 `3 passed`，相邻卡片/Deep/hook 套件 `118 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)
 - **Deep 子任务飞书卡片收敛到主卡任务列表** — Deep 不再为 `agent/subagent` 工具调用创建独立飞书消息卡片，即使显式打开 `task_level_cards_enabled` 也保持单主卡；`PLAN_UPDATE` 与子任务 start/update/done 统一维护主卡 `TASK_LIST_UPDATED`，复用 `/spec` 同款任务列表组件，后续同 tool id 的 `shell` update/done 仍能把任务置为完成。相关回归 `10 + 23 passed`，`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-15.md)

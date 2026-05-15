@@ -243,6 +243,48 @@ class TestMultiPage:
         assert outcomes[1].kind == "applied"
         assert len(client.creates) == 2  # 1 initial + 1 new page
 
+    def test_existing_history_pages_are_not_updated_after_continuation(self):
+        """Once a continuation page exists, only the latest page stays live."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        first = [
+            RenderedCard(
+                _card_json={"page": 0, "title": "old 1s"},
+                structure_signature="p0_t1",
+                page_index=0,
+                total_pages=2,
+            ),
+            RenderedCard(
+                _card_json={"page": 1, "title": "latest 1s"},
+                structure_signature="p1_t1",
+                page_index=1,
+                total_pages=2,
+            ),
+        ]
+        delivery.deliver("sess_1", "chat_abc", first)
+
+        second = [
+            RenderedCard(
+                _card_json={"page": 0, "title": "old 2s"},
+                structure_signature="p0_t2",
+                page_index=0,
+                total_pages=2,
+            ),
+            RenderedCard(
+                _card_json={"page": 1, "title": "latest 2s"},
+                structure_signature="p1_t2",
+                page_index=1,
+                total_pages=2,
+            ),
+        ]
+        outcomes = delivery.deliver("sess_1", "chat_abc", second)
+
+        assert [o.kind for o in outcomes] == ["skipped", "applied"]
+        assert len(client.updates) == 1
+        assert client.updates[0]["card_id"] == "card_2"
+        assert client.updates[0]["card_json"]["title"] == "latest 2s"
+
 
 class TestPageShrink:
     """Page shrink: stale pages cleaned up when page count decreases."""
@@ -447,7 +489,7 @@ class TestTransportError:
         ]
         outcomes = delivery.deliver("sess_stale", "chat_abc", rendered_v2)
 
-        assert [outcome.message for outcome in outcomes] == ["recreate:99992354"]
+        assert [outcome.message for outcome in outcomes] == ["history_page_frozen", "recreate:99992354"]
         assert update_attempts["n"] == 1
         assert delivery.get_binding("sess_stale") is None
 
