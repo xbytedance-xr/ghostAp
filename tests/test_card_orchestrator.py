@@ -103,6 +103,21 @@ class TestOnPlanReceived:
         assert registry.count == 3
         assert set(sessions.keys()) == {"t1", "t2", "t3"}
 
+    def test_pending_plan_tasks_create_cards_immediately(self):
+        """Plan items are first-class cards even before a subagent/tool starts."""
+        orch, registry, sessions = _make_orchestrator()
+        tasks = [
+            {"task_id": "step_0", "name": "依赖分析", "status": "pending"},
+            {"task_id": "step_1", "name": "代码质量", "status": "pending"},
+            {"task_id": "step_2", "name": "测试配置", "status": "pending"},
+        ]
+
+        orch.on_plan_received(tasks)
+
+        assert orch.active_session_count == 3
+        assert registry.count == 3
+        assert set(sessions.keys()) == {"step_0", "step_1", "step_2"}
+
     def test_sessions_receive_initial_task_list(self):
         """Each session gets an initial TASK_LIST_UPDATED on creation."""
         orch, _, sessions = _make_orchestrator()
@@ -359,6 +374,51 @@ class TestAgentTaskRouting:
             and event.payload["block_id"] == "task_parallel_1"
             for event in child_events
         )
+        assert not bridge.events
+
+    def test_task_tool_call_matching_plan_routes_to_plan_card(self):
+        """A task tool matching a plan item updates that item's Feishu card."""
+        from src.acp.models import ACPEventType
+
+        orch, _, sessions = _make_orchestrator()
+        tasks = [
+            {"task_id": "step_0", "name": "依赖分析", "status": "pending"},
+            {"task_id": "step_1", "name": "代码质量", "status": "pending"},
+            {"task_id": "step_2", "name": "测试配置", "status": "pending"},
+        ]
+        orch.on_plan_received(tasks)
+        for session in sessions.values():
+            session.dispatched_events.clear()
+
+        bridge = FakeStreamBridge()
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="task_tool_quality",
+                title="task",
+                content="代码质量",
+            ),
+            bridge,
+        )
+        orch.route_acp_event(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_DONE,
+                tool_id="task_tool_quality",
+                title="task",
+                status="completed",
+                content="代码质量检查完成",
+            ),
+            bridge,
+        )
+
+        assert "task_tool_quality" not in sessions
+        quality_events = sessions["step_1"].dispatched_events
+        quality_types = [event.type for event in quality_events]
+        assert CardEventType.TOOL_STARTED in quality_types
+        assert CardEventType.TOOL_DONE in quality_types
+        assert CardEventType.COMPLETED in quality_types
+        assert not sessions["step_0"].events_of_type(CardEventType.TOOL_STARTED)
+        assert not sessions["step_2"].events_of_type(CardEventType.TOOL_STARTED)
         assert not bridge.events
 
     def test_task_tool_call_before_plan_opens_child_card_not_parent(self):

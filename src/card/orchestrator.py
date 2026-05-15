@@ -178,6 +178,7 @@ class TaskOrchestrator:
         self._subagent_task_ids: set[str] = set()
         self._subagent_summaries: dict[str, dict] = {}
         self._finalized_task_ids: set[str] = set()
+        self._tool_task_bindings: dict[str, str] = {}
 
         # Debounce state for broadcast
         self._last_broadcast_time: float = 0
@@ -188,8 +189,8 @@ class TaskOrchestrator:
         self._overflow_target: dict[str, str] = {}  # overflow_task_id → target_task_id
         self._overflow_separator_sent: set[str] = set()  # tracks first dispatch per overflow task
 
-        # Lazy task-session creation (built on-demand when a task actually starts executing).
-        # Populated by on_plan_received(); drained by _ensure_task_session() as tasks become active.
+        # Registered plan tasks. Visible plan tasks get their own card as soon as
+        # the plan is known; overflow tasks are folded into the final visible card.
         self._plan_tasks_pending: list[dict] = []  # ordered list of {task_id,name,status} not yet built
         self._plan_visible_task_ids: list[str] = []  # first N (max_task_cards) task_ids that may build cards
         self._thinking_finalized: bool = False  # whether thinking session was archived already
@@ -282,6 +283,7 @@ class TaskOrchestrator:
             self._subagent_task_ids.clear()
             self._subagent_summaries.clear()
             self._finalized_task_ids.clear()
+            self._tool_task_bindings.clear()
 
         # Archive sessions OUTSIDE lock (I/O)
         for session in sessions_to_close:
@@ -326,13 +328,12 @@ class TaskOrchestrator:
             self._thinking_session.dispatch(event)
 
     def on_plan_received(self, plan_tasks: list[dict]) -> None:
-        """Handle plan reception — register tasks for lazy session creation.
+        """Handle plan reception — register tasks and create per-task cards.
 
-        Per user requirement "only build a Feishu card when a task actually starts
-        executing" (主/sub agent 都一样), this method now ONLY registers tasks and
-        computes overflow mapping; per-task CardSessions are created on-demand by
-        _ensure_task_session() when a task transitions to in_progress (or is the
-        first event target).
+        Plan tasks are first-class execution cards: as soon as the agent exposes
+        a multi-task plan, every visible plan item gets a Feishu message card.
+        Later ``task`` tool calls are bound back to these plan cards when their
+        label matches, instead of requiring a separate subagent identity.
 
         Falls back to single-session mode if plan is empty/invalid — in that case,
         the thinking session becomes the fallback session.
@@ -386,27 +387,24 @@ class TaskOrchestrator:
                 for t in valid_tasks[max_cards:]:
                     self._overflow_target[t["task_id"]] = overflow_target_id
 
-        # Eager exception: any task already in_progress at plan-reception time should
-        # have its card built right away (matches user intent — "executing" means visible).
         for t in valid_tasks[:max_cards]:
-            if (t.get("status") or "").lower() == "in_progress":
-                try:
-                    self._ensure_task_session(t["task_id"])
-                except Exception:
-                    logger.warning(
-                        "TaskOrchestrator: eager session for in_progress task_id=%s failed",
-                        t["task_id"], exc_info=True,
-                    )
-                    self._enter_fallback_mode()
-                    return
+            try:
+                self._ensure_task_session(t["task_id"])
+            except Exception:
+                logger.warning(
+                    "TaskOrchestrator: eager session for plan task_id=%s failed",
+                    t["task_id"], exc_info=True,
+                )
+                self._enter_fallback_mode()
+                return
 
         logger.info(
-            "TaskOrchestrator: plan registered with %d tasks (lazy session creation; %d visible, %d overflow)",
+            "TaskOrchestrator: plan registered with %d tasks (%d visible cards, %d overflow)",
             len(valid_tasks), len(visible_ids), max(0, len(valid_tasks) - len(visible_ids)),
         )
 
     def _ensure_task_session(self, task_id: str) -> bool:
-        """Lazily create a CardSession for ``task_id`` when it begins executing.
+        """Create a CardSession for ``task_id`` if it does not already exist.
 
         Returns True if a session exists (or was just created); False if the task is
         not in the registered plan, was an overflow target, or session creation failed.
@@ -418,8 +416,8 @@ class TaskOrchestrator:
         with self._lock:
             if task_id in self._sessions:
                 return True
-            # Overflow tasks never get their own session — their target session is built
-            # (lazily) when the visible target task itself becomes active.
+            # Overflow tasks never get their own session — their target visible
+            # session is created when the plan is received.
             if task_id in self._overflow_target:
                 return False
             if task_id not in self._plan_visible_task_ids:
@@ -460,7 +458,7 @@ class TaskOrchestrator:
                 except Exception:
                     logger.debug("Error dispatching flood notice for %s", ot_id)
 
-        # First lazy session created → archive thinking session with plan summary.
+        # First task session created → archive thinking session with plan summary.
         if should_finalize_thinking:
             with self._lock:
                 if self._thinking_finalized:
@@ -664,6 +662,8 @@ class TaskOrchestrator:
         if self._closed_event.is_set():
             return
 
+        if self._route_bound_tool_task_event(acp_event):
+            return
         if self._route_agent_task_event(acp_event):
             return
 
@@ -1139,6 +1139,80 @@ class TaskOrchestrator:
             except Exception:
                 logger.debug("Broadcast to subagent task_id=%s failed", task_id, exc_info=True)
 
+    def _route_bound_tool_task_event(self, acp_event: ACPEvent) -> bool:
+        """Route a tool_call already bound to a plan task back to that task card."""
+        from src.acp.models import ACPEventType
+        from src.card.events import card_event_from_acp
+
+        if acp_event.event_type not in {
+            ACPEventType.TOOL_CALL_START,
+            ACPEventType.TOOL_CALL_UPDATE,
+            ACPEventType.TOOL_CALL_DONE,
+        }:
+            return False
+        tool_call = getattr(acp_event, "tool_call", None)
+        tool_id = str(getattr(tool_call, "id", "") or "").strip()
+        if not tool_id:
+            return False
+
+        with self._lock:
+            bound_task_id = self._tool_task_bindings.get(tool_id)
+
+        if not bound_task_id and self._is_task_tool(tool_call):
+            bound_task_id = self._match_plan_task_for_tool(tool_call)
+            if bound_task_id:
+                with self._lock:
+                    self._tool_task_bindings[tool_id] = bound_task_id
+
+        if not bound_task_id:
+            return False
+
+        if acp_event.event_type == ACPEventType.TOOL_CALL_START:
+            self.broadcast_status_change(bound_task_id, "in_progress")
+            if self._resolver is not None:
+                self._resolver.mark_active(bound_task_id)
+
+        self.dispatch_to_task(bound_task_id, card_event_from_acp(acp_event))
+
+        if acp_event.event_type == ACPEventType.TOOL_CALL_DONE:
+            status = str(getattr(tool_call, "status", "") or "").strip().lower()
+            content = str(getattr(tool_call, "content", "") or "").strip()
+            self._finalize_task_session(
+                bound_task_id,
+                "failed" if status == "failed" else "completed",
+                summary=content,
+            )
+            with self._lock:
+                self._tool_task_bindings.pop(tool_id, None)
+        return True
+
+    def _match_plan_task_for_tool(self, tool_call) -> str:
+        """Best-effort bind a ``task`` tool call to an existing plan item."""
+        if not self._plan_received.is_set() or self._fallback_mode:
+            return ""
+        label = self._extract_agent_task_label(tool_call)
+        normalized_label = self._normalize_task_label(label)
+        if not normalized_label:
+            return ""
+
+        with self._lock:
+            candidate_ids = list(self._plan_visible_task_ids)
+        for snapshot in self._registry.get_snapshot():
+            if snapshot.task_id not in candidate_ids:
+                continue
+            if snapshot.task_id in self._subagent_task_ids:
+                continue
+            candidate = self._normalize_task_label(snapshot.name)
+            if not candidate:
+                continue
+            if candidate == normalized_label or candidate in normalized_label or normalized_label in candidate:
+                return snapshot.task_id
+        return ""
+
+    @staticmethod
+    def _normalize_task_label(value: str) -> str:
+        return "".join(ch for ch in str(value).lower() if ch.isalnum())
+
     def _apply_subagent_metadata(self, session: CardSession, task_id: str) -> None:
         """Mark orchestrator-created subagent sessions with v2 parent/sequence metadata."""
         task_item = self._registry.get(task_id)
@@ -1201,6 +1275,10 @@ class TaskOrchestrator:
         if title in _AGENT_TOOL_TITLES:
             return True
         return "子代理：" in content
+
+    @staticmethod
+    def _is_task_tool(tool_call) -> bool:
+        return str(getattr(tool_call, "title", "") or "").strip().lower() == "task"
 
     @staticmethod
     def _extract_agent_task_label(tool_call) -> str:
