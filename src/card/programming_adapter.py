@@ -21,6 +21,10 @@ from src.card.render.live_ticker import LiveTicker
 from src.card.session import CardSession
 from src.card.session.rotator import SessionRotator
 from src.card.state.models import CardMetadata
+from src.card.tool_display import (
+    extract_tool_call_label,
+    is_unhelpful_display_label,
+)
 
 if TYPE_CHECKING:
     from src.acp.models import ACPEvent, ToolCallInfo
@@ -39,6 +43,7 @@ _MODE_DISPLAY: dict[str, tuple[str, str]] = {
 }
 
 _AGENT_TOOL_TITLES = {"agent", "subagent", "task"}
+_GENERIC_TASK_LABELS = {"", "agent", "subagent", "task", "子任务"}
 
 
 def build_programming_metadata(
@@ -458,9 +463,11 @@ class ProgrammingCardSession:
             return False
 
         session = self._ensure_agent_task_session(tool_call)
+        event_name = getattr(acp_event, "event_type", None).name if getattr(acp_event, "event_type", None) else ""
+        if event_name != "TOOL_CALL_DONE" and self._rename_agent_task_from_tool_label(tool_call, session):
+            self._update_agent_summary(tool_call, status="running", session=session)
         card_event = CardEvent.from_acp(acp_event)
         session.dispatch(card_event)
-        event_name = getattr(acp_event, "event_type", None).name if getattr(acp_event, "event_type", None) else ""
         if event_name == "TOOL_CALL_DONE":
             if tool_call.status == "failed":
                 session.dispatch(CardEvent.failed(tool_call.content or tool_call.title))
@@ -510,13 +517,41 @@ class ProgrammingCardSession:
         self._update_agent_summary(tool_call, status="running", session=session)
         return session
 
+    def _rename_agent_task_from_tool_label(self, tool_call: "ToolCallInfo", session: CardSession) -> bool:
+        label = self._extract_agent_task_label(tool_call)
+        if self._is_generic_task_label(label):
+            return False
+
+        metadata = getattr(session, "_metadata", None)
+        current_label = ""
+        if session.state is not None:
+            current_label = session.state.metadata.unit_label or ""
+        if not current_label and metadata is not None:
+            current_label = metadata.unit_label or ""
+        if current_label == label or not self._is_generic_task_label(current_label):
+            return False
+
+        if metadata is not None:
+            session._metadata = replace(metadata, unit_label=label)
+        session.dispatch(CardEvent.tool_model_changed(unit_label=label))
+        return True
+
     def _update_agent_summary(self, tool_call: "ToolCallInfo", *, status: str, session: CardSession | None = None) -> None:
         existing = self._agent_summaries.get(tool_call.id, {})
         current_session = session or self._agent_sessions.get(tool_call.id)
         metadata = getattr(current_session, "_metadata", None)
+        label = self._extract_agent_task_label(tool_call)
+        existing_label = str(existing.get("label") or "").strip()
+        if (
+            existing_label
+            and not self._is_generic_task_label(existing_label)
+            and not is_unhelpful_display_label(existing_label)
+            and (self._is_generic_task_label(label) or is_unhelpful_display_label(label))
+        ):
+            label = existing_label
         summary = {
             **existing,
-            "label": self._extract_agent_task_label(tool_call),
+            "label": label,
             "tool": self._extract_agent_tool_name(tool_call),
             "status": status,
         }
@@ -560,13 +595,16 @@ class ProgrammingCardSession:
 
     @staticmethod
     def _extract_agent_task_label(tool_call: "ToolCallInfo") -> str:
-        content = (tool_call.content or "").strip()
-        if content:
-            first_line = content.splitlines()[0].strip()
-            if first_line:
-                return first_line[:60]
-        title = (tool_call.title or "").strip()
-        return title[:60] if title else "子任务"
+        return extract_tool_call_label(
+            tool_call,
+            generic_labels=_GENERIC_TASK_LABELS,
+            fallback="子任务",
+            max_chars=60,
+        )
+
+    @staticmethod
+    def _is_generic_task_label(value: str) -> bool:
+        return str(value or "").strip().lower() in _GENERIC_TASK_LABELS
 
     @staticmethod
     def _extract_agent_tool_name(tool_call: "ToolCallInfo") -> str:

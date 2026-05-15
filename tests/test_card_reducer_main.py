@@ -157,6 +157,23 @@ class TestMainReducer:
         # Tool/model info now shown in footer, header subtitle is None
         assert s.header.subtitle is None
 
+    def test_tool_model_changed_updates_unit_label_in_header(self):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
+
+        s = reduce_card_state(s, CardEvent.tool_model_changed(unit_label="梳理 Deep 任务列表展示问题"))
+
+        assert s.metadata.unit_label == "梳理 Deep 任务列表展示问题"
+        assert "梳理 Deep 任务列表展示问题" in s.header.title
+
+    def test_live_ticker_frame_does_not_bump_structural_version(self):
+        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
+        old_structural_version = s.structural_version
+
+        s = reduce_card_state(s, CardEvent.tool_model_changed(live_ticker_frame="⚪"))
+
+        assert s.metadata.live_ticker_frame == "⚪"
+        assert s.structural_version == old_structural_version
+
     def test_progress_updated(self):
         s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
         s = reduce_card_state(s, CardEvent.progress_updated(3, 6, "Build"))
@@ -261,6 +278,47 @@ class TestBlockedReducer:
         s = reduce_card_state(s, event)
         assert s.terminal == "blocked"
         assert s.footer.duration_seconds == 899.0
+
+    def test_completed_uses_session_start_for_total_duration_without_progress(self):
+        """Terminal total duration should cover the whole card session."""
+        metadata = CardMetadata(engine_type="deep", session_started_at=100.0)
+        s = reduce_card_state(
+            None,
+            CardEvent(type=CardEventType.STARTED, payload={"_now": 100.0}),
+            metadata=metadata,
+        )
+
+        s = reduce_card_state(
+            s,
+            CardEvent(type=CardEventType.COMPLETED, payload={"_now": 220.0}),
+        )
+
+        assert s.footer.duration_seconds == 120.0
+
+    def test_completed_total_duration_is_not_shortened_by_late_progress_start(self):
+        """Progress ETA start time is not the terminal total runtime start time."""
+        metadata = CardMetadata(engine_type="spec", session_started_at=100.0)
+        s = reduce_card_state(
+            None,
+            CardEvent(type=CardEventType.STARTED, payload={"_now": 100.0}),
+            metadata=metadata,
+        )
+        s = reduce_card_state(
+            s,
+            CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={
+                "current": 1,
+                "total": 3,
+                "timestamp": 190.0,
+                "_now": 190.0,
+            }),
+        )
+
+        s = reduce_card_state(
+            s,
+            CardEvent(type=CardEventType.COMPLETED, payload={"_now": 220.0}),
+        )
+
+        assert s.footer.duration_seconds == 120.0
 
 
 class TestReducerPurity:

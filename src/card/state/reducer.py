@@ -36,6 +36,8 @@ def _reduce_tool_model_changed(state: CardState, event: CardEvent) -> CardState:
         "tool_name": event.payload.get("tool_name") or state.metadata.tool_name,
         "model_name": event.payload.get("model_name") or state.metadata.model_name,
     }
+    if "unit_label" in event.payload:
+        changes["unit_label"] = event.payload.get("unit_label") or state.metadata.unit_label
     if "live_ticker_frame" in event.payload:
         changes["live_ticker_frame"] = event.payload.get("live_ticker_frame")
     if "subagents" in event.payload:
@@ -219,8 +221,8 @@ def _is_structural_event(event: CardEvent) -> bool:
         return True
     if event.type is CardEventType.TOOL_MODEL_CHANGED:
         payload = event.payload or {}
-        # Structural only when tool_name / model_name / subagents change (header/footer chips).
-        if any(k in payload for k in ("tool_name", "model_name", "subagents")):
+        # Structural only when header/footer metadata changes.
+        if any(k in payload for k in ("tool_name", "model_name", "unit_label", "subagents")):
             return True
         # Pure ticker frame → element_content only.
         return False

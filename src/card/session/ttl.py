@@ -161,9 +161,10 @@ class TTLHandler:
             if state is None or state.closed:
                 return
             try:
+                reason = getattr(state.state_snapshot, "terminal_reason", None) or "completed"
                 a.force_deliver(rendered)
                 a.mark_closed()
-                a.fire_terminal_hook("completed")
+                a.fire_terminal_hook(reason)
             except Exception as exc:
                 logger.error("CardSession %s: terminal retry failed: %s", state.session_id, repr(exc))
                 a.mark_closed()

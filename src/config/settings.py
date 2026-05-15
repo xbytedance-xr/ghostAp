@@ -651,6 +651,7 @@ class Settings(BaseSettings):
             "card_session_idle_warn_at_remaining": "session_idle_warn_at_remaining",
             "card_session_max_rotations": "session_max_rotations",
             "card_delivery_pool_max_workers": "delivery_pool_max_workers",
+            "card_delivery_api_timeout": "delivery_api_timeout",
             "card_action_dedup_ttl": "action_dedup_ttl",
             "card_action_dedup_max_size": "action_dedup_max_size",
             "card_action_dedup_cleanup_interval": "action_dedup_cleanup_interval",

@@ -1,6 +1,7 @@
 """Tests for src.card.orchestrator module."""
 from __future__ import annotations
 
+import json
 import threading
 import time
 import weakref
@@ -443,6 +444,127 @@ class TestAgentTaskRouting:
         child_events = sessions["task_pre_plan_1"].dispatched_events
         assert any(event.type == CardEventType.TASK_LIST_UPDATED for event in child_events)
         assert any(event.type == CardEventType.TOOL_STARTED for event in child_events)
+
+    def test_task_tool_call_updates_generic_label_when_description_arrives_late(self):
+        """A generic `task` start is renamed once the real task description arrives."""
+        from src.acp.models import ACPEventType
+
+        orch, registry, sessions = _make_orchestrator()
+        bridge = FakeStreamBridge()
+
+        orch.route_or_fallback(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="task_late_description",
+                title="task",
+                content="",
+            ),
+            bridge,
+        )
+        orch.route_or_fallback(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_UPDATE,
+                tool_id="task_late_description",
+                title="task",
+                content="梳理 Deep 任务列表展示问题",
+            ),
+            bridge,
+        )
+
+        assert registry.get("task_late_description").name == "梳理 Deep 任务列表展示问题"
+
+        task_list_events = sessions["task_late_description"].events_of_type(CardEventType.TASK_LIST_UPDATED)
+        assert task_list_events
+        latest_tasks = task_list_events[-1].payload["tasks"]
+        assert latest_tasks == [
+            {
+                "task_id": "task_late_description",
+                "name": "梳理 Deep 任务列表展示问题",
+                "status": "in_progress",
+            }
+        ]
+
+        metadata_events = sessions["task_late_description"].events_of_type(CardEventType.TOOL_MODEL_CHANGED)
+        assert metadata_events[-1].payload["unit_label"] == "梳理 Deep 任务列表展示问题"
+
+    def test_task_tool_structured_json_uses_readable_label_and_summary(self):
+        """Structured tool event JSON should not leak raw metadata/stdout into task cards."""
+        from src.acp.models import ACPEventType
+
+        orch, registry, sessions = _make_orchestrator()
+        bridge = FakeStreamBridge()
+        payload = json.dumps({
+            "call_id": "call_123",
+            "command": ["/usr/bin/zsh", "-lc", "nl -ba src/card/orchestrator.py"],
+            "parsed_cmd": [{
+                "type": "read",
+                "cmd": "nl -ba src/card/orchestrator.py",
+                "name": "orchestrator.py",
+                "path": "src/card/orchestrator.py",
+            }],
+            "stdout": "1290\\tlarge output that should not appear",
+            "stderr": "",
+        }, ensure_ascii=False, indent=2)
+
+        orch.route_or_fallback(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="task_structured_json",
+                title="task",
+                content=payload,
+            ),
+            bridge,
+        )
+        orch.route_or_fallback(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_DONE,
+                tool_id="task_structured_json",
+                title="task",
+                status="completed",
+                content=payload,
+            ),
+            bridge,
+        )
+
+        assert registry.get("task_structured_json").name == "读取 src/card/orchestrator.py"
+        child_events = sessions["task_structured_json"].dispatched_events
+        assert all("stdout" not in str(event.payload) for event in child_events)
+        completed = [event for event in child_events if event.type == CardEventType.COMPLETED][-1]
+        assert completed.payload["summary"] == "读取 src/card/orchestrator.py"
+
+    def test_generic_task_start_in_plan_mode_does_not_create_orphan_child_card(self):
+        """A generic task start should wait for a real label before creating a child card."""
+        from src.acp.models import ACPEventType
+
+        orch, registry, sessions = _make_orchestrator()
+        bridge = FakeStreamBridge()
+        orch.on_plan_received([
+            {"task_id": "step_0", "name": "梳理 Deep 任务列表展示问题", "status": "pending"},
+        ])
+
+        orch.route_or_fallback(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_START,
+                tool_id="task_late_description",
+                title="task",
+                content="",
+            ),
+            bridge,
+        )
+        orch.route_or_fallback(
+            self._tool_event(
+                ACPEventType.TOOL_CALL_UPDATE,
+                tool_id="task_late_description",
+                title="task",
+                content="梳理 Deep 任务列表展示问题",
+            ),
+            bridge,
+        )
+
+        assert set(sessions) == {"step_0"}
+        assert registry.get("step_0").status == "in_progress"
+        assert "task_late_description" not in sessions
+        assert sessions["step_0"].events_of_type(CardEventType.TOOL_DELTA)
 
     def test_parallel_task_tools_broadcast_full_task_list_to_existing_cards(self):
         """When task tools start together, existing child cards receive the expanded task block."""

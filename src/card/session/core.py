@@ -615,6 +615,16 @@ class CardSession:
                 if is_terminal:
                     self._coordinator.schedule_terminal_retry(rendered)
                 return
+            reconcile = [o for o in outcomes if o.kind == "reconcile"]
+            if reconcile:
+                reason = reconcile[0].message
+                self._coordinator.on_failure(
+                    RuntimeError(f"delivery reconcile required: {reason}"),
+                    rendered,
+                    is_terminal,
+                    engine_cmd=self.engine_cmd,
+                )
+                return
             # Delivery succeeded — update tracker and close if terminal
             with self._lock:
                 self._coordinator.on_success(is_terminal)

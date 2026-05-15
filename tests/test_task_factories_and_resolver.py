@@ -1,6 +1,7 @@
 """Tests for task factory helpers and TaskIdResolver."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -97,6 +98,21 @@ class TestTasksFromPlanEntries:
         entries = [FakePlanEntry(content="x" * 200)]
         result = tasks_from_plan_entries(entries)
         assert len(result[0]["name"]) == 120
+
+    def test_structured_json_content_uses_readable_name(self):
+        payload = json.dumps({
+            "command": ["/usr/bin/zsh", "-lc", "nl -ba src/card/orchestrator.py"],
+            "parsed_cmd": [{
+                "type": "read",
+                "path": "src/card/orchestrator.py",
+            }],
+            "stdout": "large output should not become a task name",
+        })
+        entries = [FakePlanEntry(content=payload)]
+
+        result = tasks_from_plan_entries(entries)
+
+        assert result[0]["name"] == "读取 src/card/orchestrator.py"
 
     def test_invalid_status_defaults_to_pending(self):
         entries = [FakePlanEntry(content="Task", status="unknown_status")]

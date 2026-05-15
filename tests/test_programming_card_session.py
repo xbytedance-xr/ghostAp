@@ -1,5 +1,7 @@
 """Tests for Programming Mode card session adapter."""
 
+import json
+
 import pytest
 
 from src.card.delivery.engine import CardDelivery
@@ -463,6 +465,81 @@ class TestProgrammingCardSession:
         assert state.metadata.is_subagent
         assert state.metadata.unit_label == "依赖分析"
         assert state.metadata.tool_name == "task"
+
+    def test_task_tool_updates_generic_label_when_description_arrives_late(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="task-tool-late",
+                title="task",
+                kind="other",
+                status="in_progress",
+                content="",
+            ),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_UPDATE,
+            tool_call=ToolCallInfo(
+                id="task-tool-late",
+                title="task",
+                kind="other",
+                status="in_progress",
+                content="梳理 Deep 任务列表展示问题",
+            ),
+        ))
+
+        state = pcs._agent_sessions["task-tool-late"].state
+        assert state.metadata.unit_label == "梳理 Deep 任务列表展示问题"
+
+    def test_task_tool_structured_json_uses_readable_label_without_stdout(self):
+        from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        payload = json.dumps({
+            "call_id": "call_123",
+            "command": ["/usr/bin/zsh", "-lc", "nl -ba src/card/orchestrator.py"],
+            "parsed_cmd": [{
+                "type": "read",
+                "cmd": "nl -ba src/card/orchestrator.py",
+                "name": "orchestrator.py",
+                "path": "src/card/orchestrator.py",
+            }],
+            "stdout": "1290\\tlarge output that should not appear",
+            "stderr": "",
+        }, ensure_ascii=False, indent=2)
+
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_START,
+            tool_call=ToolCallInfo(
+                id="task-tool-json",
+                title="task",
+                kind="other",
+                status="in_progress",
+                content=payload,
+            ),
+        ))
+        pcs.on_event(ACPEvent(
+            event_type=ACPEventType.TOOL_CALL_DONE,
+            tool_call=ToolCallInfo(
+                id="task-tool-json",
+                title="task",
+                kind="other",
+                status="completed",
+                content=payload,
+            ),
+        ))
+
+        state = pcs._agent_sessions["task-tool-json"].state
+        assert state.metadata.unit_label == "读取 src/card/orchestrator.py"
+        rendered_payload = str(state.blocks)
+        assert "stdout" not in rendered_payload
+        assert "1290" not in rendered_payload
 
     def test_parallel_agent_tasks_update_main_summary_panel(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo

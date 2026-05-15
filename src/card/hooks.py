@@ -262,6 +262,9 @@ class EmojiHook:
             logger.debug("EmojiHook: skipping reaction (no message_id, chat_id=%s)", self._chat_id)
             return
         if reason in ("completed", "completed_empty"):
+            if getattr(getattr(state, "metadata", None), "is_subagent", False) is True:
+                logger.debug("EmojiHook: skipping success reaction for subagent card")
+                return
             self._add_reaction(self._message_id, self._success_emoji)
         elif reason in ("failed",):
             self._add_reaction(self._message_id, self._error_emoji)

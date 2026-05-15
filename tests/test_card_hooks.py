@@ -1,5 +1,6 @@
 """Tests for CardSession lifecycle hook implementations (EmojiHook, ContextPersistenceHook)."""
 
+from dataclasses import replace
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -54,6 +55,22 @@ class TestEmojiHook:
         hook.on_terminal(state, "completed")
 
         add_reaction.assert_called_once_with("msg_123", "PARTY")
+
+    def test_subagent_completed_does_not_add_success_emoji(self):
+        """Child task completion should not send overall-task success reactions."""
+        add_reaction = MagicMock()
+        hook = EmojiHook(
+            add_reaction=add_reaction,
+            message_id="msg_child",
+            success_emoji="PARTY",
+            error_emoji="SOB",
+        )
+        state = _make_terminal_state("completed")
+        state = replace(state, metadata=CardMetadata(engine_type="deep", is_subagent=True))
+
+        hook.on_terminal(state, "completed")
+
+        add_reaction.assert_not_called()
 
     def test_failed_adds_error_emoji(self):
         """on_terminal(FAILED) adds error emoji."""

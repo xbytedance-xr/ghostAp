@@ -789,13 +789,15 @@ class ProgrammingModeHandler(BaseHandler):
         delivery = create_card_delivery(api_client)
         from src.card.session.config import SessionConfig
         config = SessionConfig(metadata=metadata, reply_to=message_id)
+        card_callbacks = SessionCallbacks(reply_text_fn=self.reply_text)
         card_session = CardSession(
             chat_id=chat_id,
             config=config,
             delivery=delivery,
+            callbacks=card_callbacks,
         )
         session_factory = CardSessionFactory(delivery)
-        subagent_callbacks = SessionCallbacks(reply_text_fn=self.reply_text)
+        subagent_callbacks = card_callbacks
 
         def _create_subagent(parent, *, branch_id: str, tool_name: str, metadata):
             return session_factory.create_subagent(
@@ -872,7 +874,7 @@ class ProgrammingModeHandler(BaseHandler):
             try:
                 prog_session.on_event(event)
             except Exception as e:
-                logger.debug("card session event处理失败: %s", str(e))
+                logger.warning("card session event处理失败: %s", str(e), exc_info=True)
 
         final_response = ""
         try:

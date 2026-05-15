@@ -10,6 +10,8 @@ import threading
 from dataclasses import dataclass, replace
 from typing import Callable, Literal, TYPE_CHECKING
 
+from src.card.tool_display import summarize_tool_call_content
+
 if TYPE_CHECKING:
     from src.acp.models import PlanEntryInfo
     from src.spec_engine.models import SpecTask
@@ -106,6 +108,21 @@ class TaskRegistry:
             self._tasks[task_id] = updated
         return updated
 
+    def update_name(self, task_id: str, name: str) -> TaskItem | None:
+        """Update the display name for a task."""
+        name = (name or "").strip()
+        if not name:
+            return None
+        with self._lock:
+            if task_id not in self._tasks:
+                return None
+            old = self._tasks[task_id]
+            if old.name == name:
+                return old
+            updated = replace(old, name=name)
+            self._tasks[task_id] = updated
+        return updated
+
     def get(self, task_id: str) -> TaskItem | None:
         """Get a single task by ID."""
         with self._lock:
@@ -169,9 +186,10 @@ def tasks_from_plan_entries(entries: list[PlanEntryInfo]) -> list[dict]:
             continue
         # Map PlanEntryInfo.status to TaskStatus
         status = entry.status if entry.status in ("pending", "in_progress", "completed", "failed") else "pending"
+        name = summarize_tool_call_content(content, max_chars=120) or content[:120]
         tasks.append({
             "task_id": f"step_{idx}",
-            "name": content[:120],  # Truncate long names for card display
+            "name": name,
             "status": status,
         })
     return tasks
@@ -190,9 +208,10 @@ def tasks_from_spec_tasks(spec_tasks: list[SpecTask]) -> list[dict]:
         # Map SpecTaskStatus to TaskStatus string
         status_map = {"pending": "pending", "in_progress": "in_progress", "completed": "completed", "failed": "failed"}
         status = status_map.get(t.status.value, "pending")
+        name = summarize_tool_call_content(desc, max_chars=120) or desc[:120]
         tasks.append({
             "task_id": f"spec_task_{t.task_id}",
-            "name": desc[:120],
+            "name": name,
             "status": status,
         })
     return tasks

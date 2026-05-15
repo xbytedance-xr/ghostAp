@@ -313,17 +313,22 @@ class CardEvent(Generic[P]):
         tool_name: str | None = None,
         model_name: str | None = None,
         *,
+        unit_label: str | None = None,
         live_ticker_frame: str | None = None,
         subagents: tuple[dict, ...] | None = None,
     ) -> CardEvent[ToolModelChangedPayload]:
-        """Update the tool/model metadata displayed in the card header.
+        """Update metadata displayed in the card header/footer.
 
-        Payload: {tool_name?: str | None, model_name?: str | None}
-        Triggered when: User switches tool or model mid-session (e.g. via TTADK).
+        Payload: {tool_name?: str | None, model_name?: str | None, unit_label?: str | None}
+        Triggered when: User switches tool/model or a task card gets a better label.
         """
-        payload = {
-            "tool_name": tool_name, "model_name": model_name,
-        }
+        payload = {}
+        if tool_name is not None:
+            payload["tool_name"] = tool_name
+        if model_name is not None:
+            payload["model_name"] = model_name
+        if unit_label is not None:
+            payload["unit_label"] = unit_label
         if live_ticker_frame is not None:
             payload["live_ticker_frame"] = live_ticker_frame
         if subagents is not None:

@@ -31,6 +31,10 @@ class CardSessionConfig(BaseModel):
     action_dedup_max_size: int = 5000
     action_dedup_cleanup_interval: int = 30
     delivery_pool_max_workers: int = 16
+    delivery_api_timeout: float = Field(
+        default=35.0,
+        description="Feishu card API hard timeout in seconds; should exceed the lark SDK timeout slightly.",
+    )
     ticker_interval: float = Field(
         default=1.2,
         gt=0,
@@ -96,6 +100,16 @@ class CardSessionConfig(BaseModel):
                 "CARD_SESSION_LOCK_TTL rounded up to %ds (from %s)", new_val, v
             )
             val = float(new_val)
+        return val
+
+    @field_validator("delivery_api_timeout", mode="before")
+    @classmethod
+    def _delivery_api_timeout_in_range(cls, v: float, info) -> float:
+        val = float(v)
+        if val < 1 or val > 300:
+            raise ValueError(
+                f"card_delivery_api_timeout 必须在 [1, 300] 范围内（秒）（当前值: {v}）"
+            )
         return val
 
     @field_validator("session_idle_timeout", mode="before")

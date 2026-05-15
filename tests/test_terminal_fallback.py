@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.card.delivery.engine import CardDelivery
+from src.card.delivery.engine import CardDelivery, MutationOutcome
 from src.card.events import CardEvent, CardEventType
 from src.card.session import CardSession
 from src.card.session.config import SessionCallbacks, SessionConfig
@@ -213,3 +213,83 @@ class TestNotifyRejectedIntegration:
         assert call_args[0] == "chat_int"  # chat_id
         # Message should contain relevant info
         assert len(call_args[1]) > 0
+
+    def test_terminal_reconcile_uses_reply_text_after_retry_failure(self):
+        """Terminal reconcile outcomes must not be treated as successful completion."""
+        reply_fn = MagicMock()
+
+        class ReconcileDelivery:
+            def __init__(self):
+                self.calls = 0
+                self.close_calls = 0
+
+            def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+                self.calls += 1
+                if self.calls == 1:
+                    return [MutationOutcome(kind="applied", message="created")]
+                return [MutationOutcome(kind="reconcile", message="api timeout")]
+
+            def close(self, session_id):
+                self.close_calls += 1
+
+        delivery = ReconcileDelivery()
+        metadata = CardMetadata(mode_name="Deep", tool_name="coco", engine_type="deep")
+        config = SessionConfig(metadata=metadata, reply_to="msg_origin", retry_delay=0.05)
+        callbacks = SessionCallbacks(reply_text_fn=reply_fn)
+        session = CardSession(
+            chat_id="chat_reconcile",
+            config=config,
+            delivery=delivery,
+            session_id="terminal_reconcile_sess",
+            callbacks=callbacks,
+        )
+
+        session.dispatch(CardEvent.started())
+        session.dispatch(CardEvent.completed(summary="done"))
+
+        import time
+        time.sleep(0.3)
+
+        reply_fn.assert_called()
+        call_args = reply_fn.call_args[0]
+        assert call_args[0] == "msg_origin"
+        assert "任务已结束" in call_args[1]
+
+    def test_terminal_retry_success_preserves_failed_reason(self):
+        """A failed terminal event should not fire completed hooks after retry succeeds."""
+        reasons: list[str] = []
+
+        class ReconcileOnceDelivery:
+            def __init__(self):
+                self.calls = 0
+
+            def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+                self.calls += 1
+                if self.calls == 2:
+                    return [MutationOutcome(kind="reconcile", message="api timeout")]
+                return [MutationOutcome(kind="applied", message="ok")]
+
+            def close(self, session_id):
+                pass
+
+        class Hook:
+            def on_terminal(self, state, reason):
+                reasons.append(reason)
+
+        metadata = CardMetadata(mode_name="Deep", tool_name="coco", engine_type="deep")
+        config = SessionConfig(metadata=metadata, reply_to="msg_origin", retry_delay=0.05)
+        session = CardSession(
+            chat_id="chat_retry_failed",
+            config=config,
+            delivery=ReconcileOnceDelivery(),
+            session_id="terminal_retry_failed_sess",
+            callbacks=SessionCallbacks(hooks=(Hook(),)),
+        )
+
+        session.dispatch(CardEvent.started())
+        session.dispatch(CardEvent.failed("boom"))
+
+        import time
+        time.sleep(0.3)
+
+        assert reasons == ["failed"]

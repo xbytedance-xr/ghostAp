@@ -37,16 +37,20 @@ _RETRY_CTA_TEXT: dict[str, str] = {
 
 
 def _compute_duration(state: CardState, now: float | None) -> float | None:
-    """Compute elapsed duration from progress_started_at to now.
+    """Compute terminal total duration from the card session start to now.
 
     Args:
         state: Current card state.
         now: Monotonic timestamp injected by CardSession (via event payload '_now').
     """
+    started_at = state.metadata.session_started_at
+    if started_at is not None and now is not None:
+        return max(0.0, float(now) - float(started_at))
+
     started_at = state.footer.progress_started_at
     if started_at is None or now is None:
         return None
-    return now - started_at
+    return max(0.0, float(now) - float(started_at))
 
 
 def _format_unified_error_block(error: str, *, engine_cmd: str) -> str:

@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from types import SimpleNamespace
+
+import pytest
 
 from src.card.delivery.feishu_client import FeishuCardAPIClient
 
@@ -68,3 +72,37 @@ def test_send_card_reference_sets_feishu_uuid() -> None:
     body = message_api.created_request.request_body
     assert json.loads(body.content) == {"type": "card", "data": {"card_id": "card_1"}}
     assert body.uuid == "idem-3"
+
+
+def test_call_api_times_out_without_waiting_for_stuck_sdk_call(monkeypatch) -> None:
+    message_api = _FakeMessageApi()
+    client = FeishuCardAPIClient(_client_for(message_api))
+    release = threading.Event()
+
+    monkeypatch.setattr(client, "_api_timeout_seconds", lambda: 0.01)
+
+    started_at = time.monotonic()
+    with pytest.raises(TimeoutError):
+        client._call_api("slow.test", lambda: release.wait(timeout=1.0))
+
+    assert time.monotonic() - started_at < 0.5
+    release.set()
+
+
+def test_call_api_rejects_when_worker_slots_are_exhausted(monkeypatch) -> None:
+    message_api = _FakeMessageApi()
+    client = FeishuCardAPIClient(_client_for(message_api))
+    release = threading.Event()
+    slots = threading.BoundedSemaphore(1)
+
+    monkeypatch.setattr(FeishuCardAPIClient, "_worker_slots", slots)
+    monkeypatch.setattr(client, "_api_timeout_seconds", lambda: 0.01)
+
+    with pytest.raises(TimeoutError):
+        client._call_api("slow.first", lambda: release.wait(timeout=1.0))
+
+    started_at = time.monotonic()
+    with pytest.raises(TimeoutError, match="worker slots exhausted"):
+        client._call_api("slow.second", lambda: "late")
+    assert time.monotonic() - started_at < 0.5
+    release.set()

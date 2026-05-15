@@ -1074,22 +1074,32 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
     ):
         """Execute a shell command via SandboxExecutor and reply with the result."""
         from ...sandbox import SandboxExecutor
+        from ...repo_lock import LockConflictError
 
-        executor = SandboxExecutor()
-        # Smart mode shell execution: disable interactive mode to avoid .bashrc noise and job control errors
-        result = executor.execute(cmd, cwd=working_dir, interactive=False, chat_id=chat_id)
-        msg_type, card_content = CardBuilder.build_shell_result_card(
-            cmd,
-            result,
-            working_dir,
-            project,
-        )
-        self.reply_card(message_id, card_content)
-        if result.success:
-            self.add_reaction(message_id, EmojiReaction.on_shell_executed())
-        else:
-            self.add_reaction(message_id, EmojiReaction.on_error())
-        return result
+        lock_root_path = getattr(project, "root_path", None) or working_dir
+
+        def _run_shell():
+            executor = SandboxExecutor()
+            # Smart mode shell execution: disable interactive mode to avoid .bashrc noise and job control errors
+            result = executor.execute(cmd, cwd=working_dir, interactive=False, chat_id=chat_id)
+            msg_type, card_content = CardBuilder.build_shell_result_card(
+                cmd,
+                result,
+                working_dir,
+                project,
+            )
+            self.reply_card(message_id, card_content)
+            if result.success:
+                self.add_reaction(message_id, EmojiReaction.on_shell_executed())
+            else:
+                self.add_reaction(message_id, EmojiReaction.on_error())
+            return result
+
+        try:
+            return self._with_repo_lock(lock_root_path, chat_id, _run_shell)
+        except LockConflictError as err:
+            self.send_lock_conflict_card(err, message_id, cmd, chat_id=chat_id)
+            return None
 
     def submit_shell_command(
         self,

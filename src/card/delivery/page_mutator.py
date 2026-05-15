@@ -136,6 +136,11 @@ class PageMutator:
             if card.active_element:
                 self._bindings.update_text(session_id, page.page_index, card.active_element.text)
             return MutationOutcome(kind="applied", message=f"updated:{page.card_id}")
+        except TimeoutError as e:
+            logger.warning("Card update timed out on %s; dropping binding to avoid stale late writes: %s", page.card_id, str(e))
+            self._bindings.remove_page(session_id, page.page_index)
+            self._sequences.reset(page.card_id)
+            return MutationOutcome(kind="reconcile", message="recreate:timeout")
         except SequenceConflictError as e:
             self._sequences.raise_floor(page.card_id, e.next_floor)
             logger.debug("Sequence conflict on %s, raised floor to %d", page.card_id, e.next_floor)
@@ -190,6 +195,11 @@ class PageMutator:
                 return MutationOutcome(kind="reconcile", message=f"recreate:{e.code}")
             logger.debug("Element update failed (%s), falling back to full update", str(e))
             return self.update_page(session_id, page, card)
+        except TimeoutError as e:
+            logger.warning("Element update timed out on %s; dropping binding to avoid stale late writes: %s", page.card_id, str(e))
+            self._bindings.remove_page(session_id, page.page_index)
+            self._sequences.reset(page.card_id)
+            return MutationOutcome(kind="reconcile", message="recreate:timeout")
         except Exception as e:
             logger.debug("Element update failed (%s), falling back to full update", str(e))
             return self.update_page(session_id, page, card)

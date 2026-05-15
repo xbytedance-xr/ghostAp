@@ -24,6 +24,11 @@ from src.card.hooks import BackfillHook
 from src.card.nav_link import format_task_continuation_link
 from src.card.task_registry import TaskRegistry, TaskStatus
 from src.card.ui_text import UI_TEXT
+from src.card.tool_display import (
+    extract_tool_call_label,
+    is_unhelpful_display_label,
+    summarize_tool_call_content,
+)
 
 if TYPE_CHECKING:
     from src.acp.models import ACPEvent
@@ -42,6 +47,7 @@ _BROADCAST_DEBOUNCE_MS = 800
 # Minimum number of tasks for multi-card split
 _MIN_TASKS_FOR_MULTI_CARD = 2
 _AGENT_TOOL_TITLES = {"agent", "subagent", "task"}
+_GENERIC_TASK_LABELS = {"", "agent", "subagent", "task", "子任务"}
 _FINAL_SUMMARY_TASK_ID = "__final_summary__"
 
 
@@ -1086,12 +1092,23 @@ class TaskOrchestrator:
         if finalized:
             return True
 
+        if (
+            not known_subagent
+            and self._plan_received.is_set()
+            and self._is_task_tool(tool_call)
+            and self._is_generic_task_label(self._extract_agent_task_label(tool_call))
+        ):
+            return False
+
         if not known_subagent:
             self.create_subagent_session(tool_id, self._extract_agent_task_label(tool_call))
             with self._lock:
                 known_subagent = tool_id in self._subagent_task_ids
             if not known_subagent:
                 return False
+
+        if acp_event.event_type != ACPEventType.TOOL_CALL_DONE:
+            self._rename_task_from_tool_label(tool_id, tool_call)
 
         self.dispatch_to_task(tool_id, card_event_from_acp(acp_event))
 
@@ -1102,11 +1119,15 @@ class TaskOrchestrator:
                 self._finalize_task_session(
                     tool_id,
                     "failed",
-                    summary=content or self._extract_agent_task_label(tool_call),
+                    summary=summarize_tool_call_content(content, fallback=self._extract_agent_task_label(tool_call)),
                 )
                 self._publish_subagent_summary(tool_call, status="failed")
             else:
-                self._finalize_task_session(tool_id, "completed", summary=content)
+                self._finalize_task_session(
+                    tool_id,
+                    "completed",
+                    summary=summarize_tool_call_content(content),
+                )
                 self._publish_subagent_summary(tool_call, status="completed")
         else:
             self._publish_subagent_summary(tool_call, status="running")
@@ -1126,6 +1147,36 @@ class TaskOrchestrator:
             self._subagent_task_ids.add(task_id)
         self._create_task_session(task_id, is_subagent=True)
         self._broadcast_subagent_task_list()
+
+    def _rename_task_from_tool_label(self, task_id: str, tool_call) -> bool:
+        """Update a task card label when a later tool event reveals the real description."""
+        label = self._extract_agent_task_label(tool_call)
+        if self._is_generic_task_label(label):
+            return False
+
+        current = self._registry.get(task_id)
+        if current is None or current.name == label:
+            return False
+        if not self._is_generic_task_label(current.name):
+            return False
+
+        updated = self._registry.update_name(task_id, label)
+        if updated is None:
+            return False
+
+        with self._lock:
+            session = self._sessions.get(task_id)
+        if session is not None:
+            try:
+                session.dispatch(CardEvent.tool_model_changed(unit_label=label))
+            except Exception:
+                logger.debug("TaskOrchestrator: failed to update task card label for %s", task_id, exc_info=True)
+
+        if task_id in self._subagent_task_ids:
+            self._broadcast_subagent_task_list()
+        else:
+            self._schedule_broadcast({task_id})
+        return True
 
     def _broadcast_subagent_task_list(self) -> None:
         """Refresh task-list blocks only on child task cards.
@@ -1182,7 +1233,7 @@ class TaskOrchestrator:
         if not bound_task_id:
             return False
 
-        if acp_event.event_type == ACPEventType.TOOL_CALL_START:
+        if acp_event.event_type in {ACPEventType.TOOL_CALL_START, ACPEventType.TOOL_CALL_UPDATE}:
             self.broadcast_status_change(bound_task_id, "in_progress")
             if self._resolver is not None:
                 self._resolver.mark_active(bound_task_id)
@@ -1195,7 +1246,7 @@ class TaskOrchestrator:
             self._finalize_task_session(
                 bound_task_id,
                 "failed" if status == "failed" else "completed",
-                summary=content,
+                summary=summarize_tool_call_content(content),
             )
             with self._lock:
                 self._tool_task_bindings.pop(tool_id, None)
@@ -1268,7 +1319,13 @@ class TaskOrchestrator:
         label = self._extract_agent_task_label(tool_call)
         tool = self._extract_agent_tool_name(tool_call)
         if existing:
-            label = str(existing.get("label") or label)
+            existing_label = str(existing.get("label") or "").strip()
+            if (
+                existing_label
+                and not self._is_generic_task_label(existing_label)
+                and not is_unhelpful_display_label(existing_label)
+            ):
+                label = existing_label
             if tool == "subagent":
                 tool = str(existing.get("tool") or tool)
         summary = {
@@ -1297,13 +1354,16 @@ class TaskOrchestrator:
 
     @staticmethod
     def _extract_agent_task_label(tool_call) -> str:
-        content = str(getattr(tool_call, "content", "") or "").strip()
-        if content:
-            first_line = content.splitlines()[0].strip()
-            if first_line:
-                return first_line[:60]
-        title = str(getattr(tool_call, "title", "") or "").strip()
-        return title[:60] if title else "子任务"
+        return extract_tool_call_label(
+            tool_call,
+            generic_labels=_GENERIC_TASK_LABELS,
+            fallback="子任务",
+            max_chars=60,
+        )
+
+    @staticmethod
+    def _is_generic_task_label(value: str) -> bool:
+        return str(value or "").strip().lower() in _GENERIC_TASK_LABELS
 
     @staticmethod
     def _extract_agent_tool_name(tool_call) -> str:

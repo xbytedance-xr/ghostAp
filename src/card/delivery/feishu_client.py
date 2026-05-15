@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
+import threading
 import uuid as _uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -14,6 +17,8 @@ from src.card.delivery.types import SequenceConflictError, TransportError
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_API_TIMEOUT_SECONDS = 35.0
 
 
 class FeishuCardAPIClient:
@@ -30,9 +35,57 @@ class FeishuCardAPIClient:
     separate card_id at the message-level API.
     """
 
+    _worker_slots = threading.BoundedSemaphore(64)
+
     def __init__(self, client: "lark.Client") -> None:
         self._client = client
         self._settings = get_settings()
+
+    def _api_timeout_seconds(self) -> float:
+        try:
+            return float(getattr(self._settings.card, "delivery_api_timeout", _DEFAULT_API_TIMEOUT_SECONDS))
+        except Exception:
+            return _DEFAULT_API_TIMEOUT_SECONDS
+
+    def _call_api(self, operation: str, fn: Callable[[], object]) -> object:
+        """Run one Feishu SDK request with a hard deadline.
+
+        The lark client is configured with its own timeout, but a stuck SDK call
+        must not hold CardDelivery's per-session lock forever. A daemon worker
+        lets the delivery path fail fast and release that lock even if the SDK
+        call does not return.
+        """
+        result: "queue.Queue[tuple[bool, object]]" = queue.Queue(maxsize=1)
+        slots = type(self)._worker_slots
+        if not slots.acquire(blocking=False):
+            raise TimeoutError(f"Feishu API {operation} worker slots exhausted")
+
+        def _target() -> None:
+            try:
+                result.put((True, fn()), block=False)
+            except Exception as exc:
+                result.put((False, exc), block=False)
+            finally:
+                slots.release()
+
+        worker = threading.Thread(
+            target=_target,
+            name=f"feishu-api-{operation}",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except Exception:
+            slots.release()
+            raise
+        timeout = self._api_timeout_seconds()
+        try:
+            ok, value = result.get(timeout=timeout)
+        except queue.Empty as exc:
+            raise TimeoutError(f"Feishu API {operation} timed out after {timeout:.1f}s") from exc
+        if ok:
+            return value
+        raise value
 
     def create_card(
         self,
@@ -71,7 +124,10 @@ class FeishuCardAPIClient:
                 )
                 .build()
             )
-            response = self._client.im.v1.message.reply(request)
+            response = self._call_api(
+                "im.message.reply",
+                lambda: self._client.im.v1.message.reply(request),
+            )
         else:
             request = (
                 CreateMessageRequest.builder()
@@ -86,7 +142,10 @@ class FeishuCardAPIClient:
                 )
                 .build()
             )
-            response = self._client.im.v1.message.create(request)
+            response = self._call_api(
+                "im.message.create",
+                lambda: self._client.im.v1.message.create(request),
+            )
 
         if not response.success():
             raise TransportError(
@@ -118,7 +177,10 @@ class FeishuCardAPIClient:
             .build()
         )
 
-        response = self._client.im.v1.message.patch(request)
+        response = self._call_api(
+            "im.message.patch",
+            lambda: self._client.im.v1.message.patch(request),
+        )
 
         if not response.success():
             if response.code == 300317:
@@ -151,7 +213,10 @@ class FeishuCardAPIClient:
             .build()
         )
 
-        response = self._client.cardkit.v1.card_element.content(request)
+        response = self._call_api(
+            "cardkit.card_element.content",
+            lambda: self._client.cardkit.v1.card_element.content(request),
+        )
 
         if not response.success():
             if response.code == 300317:  # Sequence conflict
@@ -187,7 +252,10 @@ class FeishuCardAPIClient:
             .build()
         )
 
-        response = self._client.cardkit.v1.card.create(request)
+        response = self._call_api(
+            "cardkit.card.create",
+            lambda: self._client.cardkit.v1.card.create(request),
+        )
 
         if not response.success():
             raise TransportError(
@@ -232,7 +300,10 @@ class FeishuCardAPIClient:
                 )
                 .build()
             )
-            response = self._client.im.v1.message.reply(request)
+            response = self._call_api(
+                "im.message.reply",
+                lambda: self._client.im.v1.message.reply(request),
+            )
         else:
             request = (
                 CreateMessageRequest.builder()
@@ -247,7 +318,10 @@ class FeishuCardAPIClient:
                 )
                 .build()
             )
-            response = self._client.im.v1.message.create(request)
+            response = self._call_api(
+                "im.message.create",
+                lambda: self._client.im.v1.message.create(request),
+            )
 
         if not response.success():
             raise TransportError(

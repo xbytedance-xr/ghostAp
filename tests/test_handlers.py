@@ -2036,6 +2036,34 @@ class TestHelpCategoryPatch:
             h.reply_card.assert_called_once()
 
 
+class TestSystemHandlerShellRepoLock:
+    def test_execute_shell_sends_conflict_card_without_running_when_repo_locked(self):
+        from src.repo_lock import LockConflictError
+
+        ctx = _make_handler_context()
+        h = SystemHandler(ctx)
+        h.reply_card = MagicMock()
+        h.add_reaction = MagicMock()
+        h.send_lock_conflict_card = MagicMock()
+
+        err = LockConflictError(
+            "repo locked",
+            holder_chat_id="other-chat",
+            locked_since=1.0,
+            root_path="/repo",
+            last_active_time=1.0,
+        )
+        h.lock_helper._with_repo_lock = MagicMock(side_effect=err)
+
+        with patch("src.sandbox.executor.SandboxExecutor.execute") as mock_execute:
+            result = h.execute_shell_and_reply("msg-1", "chat-1", "pwd", "/repo", None)
+
+        assert result is None
+        mock_execute.assert_not_called()
+        h.send_lock_conflict_card.assert_called_once_with(err, "msg-1", "pwd", chat_id="chat-1")
+        h.reply_card.assert_not_called()
+
+
 # ======================================================================
 # AC-16: _with_repo_lock signature (no message_id/sender_id)
 # ======================================================================

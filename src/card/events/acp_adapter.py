@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from .factories import CardEvent
 from .types import CardEventType
+from src.card.tool_display import sanitize_tool_event_content
 
 if TYPE_CHECKING:
     from src.acp.models import ACPEvent
@@ -43,21 +44,23 @@ def card_event_from_acp(acp_event: "ACPEvent") -> CardEvent:
             })
         case AET.TOOL_CALL_START:
             tc = acp_event.tool_call
+            content = sanitize_tool_event_content(tc.content if tc else "", fallback=tc.title if tc else "")
             return CardEvent(type=CardEventType.TOOL_STARTED, payload={
                 "block_id": tc.id if tc else "",
                 "tool_name": tc.title if tc else "",
-                "tool_input": tc.content if tc else "",
+                "tool_input": content,
             })
         case AET.TOOL_CALL_UPDATE:
             tc = acp_event.tool_call
+            content = sanitize_tool_event_content(tc.content if tc else "", fallback=tc.title if tc else "")
             return CardEvent(type=CardEventType.TOOL_DELTA, payload={
                 "block_id": tc.id if tc else "",
-                "content": tc.content if tc else "",
+                "content": content,
             })
         case AET.TOOL_CALL_DONE:
             tc = acp_event.tool_call
             summary = tc.title if tc else ""
-            output = tc.content if tc else ""
+            output = sanitize_tool_event_content(tc.content if tc else "", fallback=summary)
             status = tc.status if tc else "completed"
             if status == "failed":
                 return CardEvent(type=CardEventType.TOOL_FAILED, payload={

@@ -249,12 +249,15 @@ class TTLActuator:
     def force_deliver(self, rendered: list) -> None:
         """Deliver rendered payload directly without tracking (for force-close path)."""
         ctx = self._ctx
-        ctx.delivery.deliver(
+        outcomes = ctx.delivery.deliver(
             session_id=ctx.session_id,
             chat_id=ctx.chat_id,
             rendered=rendered,
             reply_to=ctx.reply_to,
         )
+        failed = [o for o in outcomes if o.kind in {"rejected", "reconcile"}]
+        if failed:
+            raise RuntimeError(f"terminal retry delivery failed: {failed[0].kind}:{failed[0].message}")
 
     def close_delivery(self) -> None:
         """Close the delivery channel for this session."""

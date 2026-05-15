@@ -741,6 +741,7 @@ class TestDeliveryTimeout:
         outcomes = delivery.deliver("sess_1", "chat_abc", r2)
 
         assert outcomes[0].kind == "reconcile"
+        assert delivery.get_binding("sess_1") is None
 
 
 class TestPartialMultipageFailure:
