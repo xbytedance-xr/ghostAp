@@ -35,7 +35,11 @@ class EmojiType:
 
 
 class EmojiReaction:
-    _ALLOWED_AUTO_REACTIONS = {EmojiType.TYPING}
+    _ALLOWED_AUTO_REACTIONS = {
+        EmojiType.TYPING,
+        EmojiType.GET,
+        EmojiType.PARTY,
+    }
 
     @staticmethod
     def should_send(emoji_type: str) -> bool:

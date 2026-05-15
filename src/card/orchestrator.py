@@ -430,7 +430,7 @@ class TaskOrchestrator:
             self._create_task_session(task_id)
         except Exception:
             logger.warning(
-                "TaskOrchestrator: lazy _create_task_session failed for task_id=%s, entering fallback",
+                "TaskOrchestrator: _create_task_session failed for task_id=%s, entering fallback",
                 task_id, exc_info=True,
             )
             self._enter_fallback_mode()
@@ -492,12 +492,11 @@ class TaskOrchestrator:
         resolved_id = self._overflow_target.get(task_id, task_id)
         is_overflow = task_id in self._overflow_target
 
-        # Lazy session creation: if the resolved (visible) task has no session yet,
-        # build it on-demand. This is the core "card built only when task executes"
-        # contract — events ARE execution signals.
+        # Idempotent safety net: visible plan tasks are normally created when
+        # the plan arrives; late dynamic tasks may still need materialization.
         self._ensure_task_session(resolved_id)
 
-        # Re-check fallback (lazy creation may have triggered _enter_fallback_mode on failure)
+        # Re-check fallback (session creation may have triggered _enter_fallback_mode on failure)
         if self._fallback_mode:
             if self._fallback_session is not None:
                 self._fallback_session.dispatch(event)
@@ -634,7 +633,7 @@ class TaskOrchestrator:
             for idx, entry in enumerate(entries):
                 entry_task_id = f"step_{idx}"
                 if entry.status == "in_progress":
-                    # Lazy-build the card exactly when a task starts executing.
+                    # Ensure the visible card exists, then mark the task running.
                     # Overflow tasks route to their target; _ensure_task_session handles both.
                     resolved_id = self._overflow_target.get(entry_task_id, entry_task_id)
                     self._ensure_task_session(resolved_id)
@@ -682,9 +681,8 @@ class TaskOrchestrator:
             fallback_bridge.on_event(acp_event)
             return
 
-        # Lazy-build the per-task session (and its bridge) if this task has started
-        # producing events but hasn't been materialized yet. Covers routing paths where
-        # dispatch_to_task's own lazy hook wouldn't fire (bridge-first routing).
+        # Ensure the per-task session (and its bridge) exists before routing.
+        # Covers bridge-first routing paths and late dynamic task materialization.
         # NOTE: only ensure the *visible* (non-overflow) session here; overflow events
         # still flow through dispatch_to_task below to keep separator insertion correct.
         if task_id not in self._overflow_target:

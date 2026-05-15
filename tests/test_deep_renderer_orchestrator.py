@@ -150,7 +150,7 @@ class TestDeepRendererMultiCard:
     def test_multi_task_plan_creates_n_plus_1_cards(self):
         """AC1: 3 plan steps (all in_progress) → 4 create_card calls (1 thinking + 3 task cards).
 
-        Lazy mode: tasks with status=in_progress trigger eager card creation.
+        Plan tasks are first-class cards once a multi-step plan is visible.
         """
         renderer, tracker = self._setup_renderer()
 

@@ -169,11 +169,9 @@ class DeepHandler(BaseEngineHandler):
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.progress_reporter
 
-        # NOTE: per user requirement "card built only when a task starts executing",
-        # we no longer push a static "planning" card here. The Deep renderer's thinking
-        # session (created by `create_deep_callbacks`) becomes the single entry surface,
-        # and TaskOrchestrator's lazy mode builds per-task cards only when each task
-        # actually transitions to in_progress (or its first event arrives).
+        # Deep renderer owns the thinking card and task-card orchestration.
+        # Visible plan items become first-class cards when the plan arrives;
+        # later task/agent events are routed back to those cards.
         model_name = self._get_model_name(chat_id, project) or None
         engine = self.ctx.deep_engine_manager.get_or_create(
             chat_id,

@@ -74,12 +74,11 @@ def _make_orchestrator(session_creator=None, max_task_cards: int = 5):
 
 
 def _trigger_all(orch, tasks):
-    """Trigger lazy session creation for every valid task in plan.
+    """Ensure every valid plan task has a session.
 
-    In lazy mode (new default), `on_plan_received` only registers tasks;
-    sessions are built on-demand when tasks actually execute. Tests that
-    want eager session creation (old semantics) call this helper after
-    `on_plan_received` to simulate "all tasks have started executing".
+    This helper is idempotent. Current behavior creates visible task cards
+    during `on_plan_received`; older assertions still call this to exercise
+    the same path explicitly.
     """
     for t in tasks or []:
         tid = (t or {}).get("task_id") if isinstance(t, dict) else None

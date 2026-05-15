@@ -469,7 +469,7 @@ class BaseHandler:
         from ..emoji import EmojiReaction
 
         if not EmojiReaction.should_send(emoji_type):
-            logger.debug("跳过非输入中表情: %s", emoji_type)
+            logger.debug("跳过非保留自动表情: %s", emoji_type)
             return
         try:
             self.im_client.add_reaction(message_id, emoji_type)

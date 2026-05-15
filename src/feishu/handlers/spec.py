@@ -372,11 +372,9 @@ class SpecHandler(BaseEngineHandler):
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         reporter = self.ctx.spec_reporter
 
-        # NOTE: per user requirement "card built only when a task starts executing",
-        # we no longer push a startup "分析中" card here. The Spec renderer's first
-        # rotator session (created lazily by `create_spec_callbacks` → engine first
-        # frame) becomes the entry surface, and TaskOrchestrator's lazy mode builds
-        # per-task cards only when each task actually transitions to in_progress.
+        # Spec renderer owns the first runtime card and task-card orchestration.
+        # Visible plan items become first-class cards when the plan arrives;
+        # later task/agent events are routed back to those cards.
         model_name = self._get_model_name(chat_id, project) or None
         engine = self.ctx.spec_engine_manager.get_or_create(
             chat_id,

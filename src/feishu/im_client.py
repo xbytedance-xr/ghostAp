@@ -129,7 +129,7 @@ class FeishuIMClient:
     def add_reaction(self, message_id: str, emoji_type: str) -> None:
         """Add a reaction to a message."""
         if not EmojiReaction.should_send(emoji_type):
-            logger.debug("跳过非输入中表情: %s", emoji_type)
+            logger.debug("跳过非保留自动表情: %s", emoji_type)
             return
 
         client = self.api_client_factory()
