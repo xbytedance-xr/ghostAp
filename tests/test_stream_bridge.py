@@ -207,3 +207,31 @@ class TestACPStreamBridgeBehavior:
         assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 1
         text_started = [e for e in disp.events if e.type == CardEventType.TEXT_STARTED]
         assert [e.payload["block_id"] for e in text_started] == ["_active_text", "_turn_2_text"]
+
+    def test_interleaved_text_chunks_from_different_sources_use_separate_blocks(self):
+        """Concurrent agent text streams must not append into the same text block."""
+        from src.acp.models import ACPEvent, ACPEventType
+
+        disp = FakeDispatchable()
+        bridge = ACPStreamBridge(disp)
+
+        bridge.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="Alpha ", source_id="agent-a"))
+        bridge.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="甲", source_id="agent-b"))
+        bridge.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="Beta", source_id="agent-a"))
+        bridge.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="乙", source_id="agent-b"))
+
+        text_started = [e for e in disp.events if e.type == CardEventType.TEXT_STARTED]
+        text_deltas = [e for e in disp.events if e.type == CardEventType.TEXT_DELTA]
+
+        assert len(text_started) == 2
+        assert len({e.payload["block_id"] for e in text_started}) == 2
+
+        chunks_by_block: dict[str, list[str]] = {}
+        for event in text_deltas:
+            chunks_by_block.setdefault(event.payload["block_id"], []).append(event.payload["text"])
+
+        assert sorted("".join(chunks) for chunks in chunks_by_block.values()) == ["Alpha Beta", "甲乙"]
+
+        bridge.close_open_blocks()
+
+        assert sum(e.type == CardEventType.TEXT_DONE for e in disp.events) == 2

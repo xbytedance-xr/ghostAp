@@ -61,6 +61,7 @@ class ACPEvent:
     text: Optional[str] = None
     tool_call: Optional[ToolCallInfo] = None
     plan: Optional[PlanInfo] = None
+    source_id: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
 
 

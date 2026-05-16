@@ -358,6 +358,32 @@ def _parse_plan(update: AgentPlanUpdate) -> PlanInfo:
     return PlanInfo(entries=entries)
 
 
+def _extract_update_source_id(update: Any) -> str | None:
+    """Best-effort source identifier for streaming chunks.
+
+    ACP does not expose a first-class source field for text chunks today, but
+    some providers attach agent/task identity through dynamic attributes or
+    ``_meta``. Keep that identity so concurrent streams do not share one card
+    text block.
+    """
+    candidates = ("source_id", "source", "agent_id", "task_id", "tool_call_id", "id")
+
+    def _from_obj(obj: Any) -> str | None:
+        for key in candidates:
+            value = getattr(obj, key, None)
+            if value:
+                return str(value)
+        meta = getattr(obj, "_meta", None) or getattr(obj, "field_meta", None)
+        if isinstance(meta, dict):
+            for key in candidates:
+                value = meta.get(key)
+                if value:
+                    return str(value)
+        return None
+
+    return _from_obj(update) or _from_obj(getattr(update, "content", None))
+
+
 class GhostAPClient(Client):
     """ACP Client implementation — processes agent session updates."""
 
@@ -411,6 +437,7 @@ class GhostAPClient(Client):
                 ACPEvent(
                     event_type=ACPEventType.TEXT_CHUNK,
                     text=content.text,
+                    source_id=_extract_update_source_id(update),
                 )
             )
 
@@ -421,6 +448,7 @@ class GhostAPClient(Client):
                 ACPEvent(
                     event_type=ACPEventType.THOUGHT_CHUNK,
                     text=content.text,
+                    source_id=_extract_update_source_id(update),
                 )
             )
 

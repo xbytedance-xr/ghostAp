@@ -461,6 +461,24 @@ class TestGhostAPClient:
         assert result.outcome.outcome == "selected"
         assert result.outcome.option_id == "opt1"
 
+    def test_message_chunk_preserves_source_from_meta(self):
+        """AgentMessageChunk source metadata is copied into ACPEvent."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+        from src.acp.models import ACPEventType
+
+        update = AgentMessageChunk(
+            sessionUpdate="agent_message_chunk",
+            _meta={"source_id": "agent-a"},
+            content=TextContentBlock(type="text", text="hello"),
+        )
+
+        self.client._handle_message_chunk(update)
+
+        assert len(self.events) == 1
+        assert self.events[0].event_type == ACPEventType.TEXT_CHUNK
+        assert self.events[0].text == "hello"
+        assert self.events[0].source_id == "agent-a"
+
 
 def test_read_write_text_file(tmp_path: Path):
     root = str(tmp_path)
