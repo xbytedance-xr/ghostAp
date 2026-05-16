@@ -23,6 +23,7 @@ from src.card.render.sticky_head import build_sticky_head
 from src.card.render.tools import build_subagent_dispatch_atom, render_tool_panel
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import CardState, ContentBlock
+from src.card.text_stream import soft_join_text_fragments
 from src.card.themes import PANEL_STYLES
 from src.card.types import ActiveElement, RenderedCard
 from src.card.ui_text import UI_TEXT
@@ -489,19 +490,17 @@ def _coalesce_adjacent_text_fragments(atoms: list[RenderAtom]) -> list[RenderAto
 
     merged: list[RenderAtom] = []
     for atom in atoms:
-        if (
-            atom.kind == "text"
-            and merged
-            and merged[-1].kind == "text"
-            and _visible_text_len(merged[-1].content) == 1
-            and atom.content
-            and not atom.content[0].isspace()
-        ):
+        if atom.kind == "text" and merged and merged[-1].kind == "text":
             previous = merged.pop()
+            content = soft_join_text_fragments(previous.content, atom.content)
+            if content is None:
+                merged.append(previous)
+                merged.append(atom)
+                continue
             stitched = RenderAtom(
                 kind="text",
                 block_id=atom.block_id or previous.block_id,
-                content=f"{previous.content}{atom.content}",
+                content=content,
                 splittable=previous.splittable or atom.splittable,
                 node_count=1,
             )

@@ -474,6 +474,21 @@ class TestGhostAPClient:
         assert self.events[0].text == "hello"
         assert self.events[0].source_id == "agent-a"
 
+    def test_message_chunk_ignores_generic_chunk_id_as_source(self):
+        """Per-chunk ids must not split one assistant stream into text blocks."""
+        from acp.schema import AgentMessageChunk, TextContentBlock
+
+        update = AgentMessageChunk(
+            sessionUpdate="agent_message_chunk",
+            _meta={"id": "chunk-1"},
+            content=TextContentBlock(type="text", text="现在让"),
+        )
+
+        self.client._handle_message_chunk(update)
+
+        assert len(self.events) == 1
+        assert self.events[0].source_id is None
+
 
 def test_read_write_text_file(tmp_path: Path):
     root = str(tmp_path)

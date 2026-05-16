@@ -605,6 +605,51 @@ class TestActiveElement:
         assert "数字很大，需要继续分析。" in markdown
         assert "数" not in markdown
 
+    def test_adjacent_short_stream_fragments_are_coalesced_into_active_element(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(kind="text", block_id="t1", content="现在让", status="active", element_id="el_1"),
+                ContentBlock(kind="text", block_id="t2", content="我查", status="active", element_id="el_2"),
+                ContentBlock(kind="text", block_id="t3", content="看飞书channel", status="active", element_id="el_3"),
+                ContentBlock(kind="text", block_id="t4", content="的主", status="active", element_id="el_4"),
+                ContentBlock(kind="text", block_id="t5", content="要实现文件。", status="active", element_id="el_5"),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown" and "现在" in str(el.get("content", ""))
+        ]
+
+        assert len(markdown) == 1
+        assert markdown[0]["content"] == "现在让我查看飞书channel 的主要实现文件。"
+        assert markdown[0]["element_id"] == "el_5"
+        assert cards[0].active_element is not None
+        assert cards[0].active_element.element_id == "el_5"
+        assert cards[0].active_element.text == "现在让我查看飞书channel 的主要实现文件。"
+
+    def test_adjacent_completed_sentence_text_blocks_remain_separate(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(kind="text", block_id="t1", content="第一段。", status="completed"),
+                ContentBlock(kind="text", block_id="t2", content="第二段。", status="completed"),
+            ),
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el.get("content", "")
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ]
+
+        assert "第一段。第二段。" not in markdown
+        assert "第一段。" in markdown
+        assert "第二段。" in markdown
+
     def test_no_active_element_when_completed(self):
         state = CardState(
             blocks=(

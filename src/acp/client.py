@@ -366,7 +366,7 @@ def _extract_update_source_id(update: Any) -> str | None:
     ``_meta``. Keep that identity so concurrent streams do not share one card
     text block.
     """
-    candidates = ("source_id", "source", "agent_id", "task_id", "tool_call_id", "id")
+    candidates = ("source_id", "source", "agent_id", "task_id", "tool_call_id")
 
     def _from_obj(obj: Any) -> str | None:
         for key in candidates:

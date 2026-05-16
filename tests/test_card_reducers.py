@@ -53,6 +53,14 @@ class TestTextReducer:
 
         assert s.blocks[0].content == "Now let me read"
 
+    def test_text_delta_collapses_double_newline_between_short_stream_chunks(self):
+        s = _base_state()
+        s = reduce_text(s, CardEvent.text_started("b1"))
+        for chunk in ("现在让\n\n", "我查\n\n", "看飞书channel\n\n", "的主要实现文件。"):
+            s = reduce_text(s, CardEvent.text_delta("b1", chunk))
+
+        assert s.blocks[0].content == "现在让我查看飞书channel 的主要实现文件。"
+
     def test_text_delta_auto_creates(self):
         s = reduce_text(_base_state(), CardEvent.text_delta("b1", "hi"))
         assert len(s.blocks) == 1
