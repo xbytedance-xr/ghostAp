@@ -605,7 +605,7 @@ class TestActiveElement:
         assert "数字很大，需要继续分析。" in markdown
         assert "数" not in markdown
 
-    def test_adjacent_short_stream_fragments_are_coalesced_into_active_element(self):
+    def test_adjacent_short_active_text_blocks_remain_separate(self):
         state = CardState(
             blocks=(
                 ContentBlock(kind="text", block_id="t1", content="现在让", status="active", element_id="el_1"),
@@ -621,15 +621,53 @@ class TestActiveElement:
         markdown = [
             el
             for el in cards[0]._card_json["body"]["elements"]
-            if el.get("tag") == "markdown" and "现在" in str(el.get("content", ""))
+            if el.get("tag") == "markdown"
         ]
 
-        assert len(markdown) == 1
-        assert markdown[0]["content"] == "现在让我查看飞书channel 的主要实现文件。"
-        assert markdown[0]["element_id"] == "el_5"
+        assert [el["content"] for el in markdown] == [
+            "现在让",
+            "我查",
+            "看飞书channel",
+            "的主",
+            "要实现文件。",
+        ]
         assert cards[0].active_element is not None
-        assert cards[0].active_element.element_id == "el_5"
-        assert cards[0].active_element.text == "现在让我查看飞书channel 的主要实现文件。"
+        assert cards[0].active_element.element_id == "el_1"
+        assert cards[0].active_element.text == "现在让"
+
+    def test_adjacent_active_text_blocks_from_different_sources_remain_separate(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="_turn_1_text_agent-a",
+                    content="Alpha Beta",
+                    status="active",
+                    element_id="el_agent_a",
+                ),
+                ContentBlock(
+                    kind="text",
+                    block_id="_turn_1_text_agent-b",
+                    content="甲乙",
+                    status="active",
+                    element_id="el_agent_b",
+                ),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ]
+
+        assert [el["content"] for el in markdown] == ["Alpha Beta", "甲乙"]
+        assert [el.get("element_id") for el in markdown] == ["el_agent_a", "el_agent_b"]
+        assert cards[0].active_element is not None
+        assert cards[0].active_element.element_id == "el_agent_a"
+        assert cards[0].active_element.text == "Alpha Beta"
 
     def test_adjacent_completed_sentence_text_blocks_remain_separate(self):
         state = CardState(

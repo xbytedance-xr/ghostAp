@@ -490,7 +490,14 @@ def _coalesce_adjacent_text_fragments(atoms: list[RenderAtom]) -> list[RenderAto
 
     merged: list[RenderAtom] = []
     for atom in atoms:
-        if atom.kind == "text" and merged and merged[-1].kind == "text":
+        if (
+            atom.kind == "text"
+            and merged
+            and merged[-1].kind == "text"
+            and _visible_text_len(merged[-1].content) == 1
+            and atom.content
+            and not atom.content[0].isspace()
+        ):
             previous = merged.pop()
             content = soft_join_text_fragments(previous.content, atom.content)
             if content is None:
