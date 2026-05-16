@@ -38,6 +38,7 @@ def test_build_subagent_dispatch_atom_renders_through_registry():
     atom = build_subagent_dispatch_atom(_subagents())
 
     assert atom is not None
+    assert atom.node_count == 4
     elements = _render_atoms_to_elements([atom], CardState(), RenderBudget(), {})
 
     assert len(elements) == 1

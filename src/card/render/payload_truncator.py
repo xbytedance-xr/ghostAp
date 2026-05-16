@@ -23,6 +23,7 @@ _TABLE_WARNING_CONTENT = (
 )
 _FENCE_PREFIXES = ("```", "~~~")
 _TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
+_FEISHU_CARD_CONTENT_MAX_BYTES = 30 * 1024
 
 
 def count_tagged_nodes(obj: Any) -> int:
@@ -192,6 +193,7 @@ def check_and_truncate_payload(
     """
     if max_size is None:
         max_size = THRESHOLDS["CARD_BYTE_BUDGET"]
+    node_budget = THRESHOLDS["CARD_NODE_BUDGET"]
 
     if len(card_content.encode("utf-8")) <= max_size:
         # Still check node count even if byte size is OK
@@ -199,8 +201,7 @@ def check_and_truncate_payload(
             card_check = json.loads(card_content)
             table_guarded_card, table_guarded = _guard_feishu_table_limit(card_check)
             if table_guarded:
-                return json.dumps(table_guarded_card, ensure_ascii=False)
-            node_budget = THRESHOLDS["CARD_NODE_BUDGET"]
+                card_check = table_guarded_card
             if count_tagged_nodes(card_check) > node_budget:
                 logger.warning(
                     "Card node count %d exceeds budget %d, will truncate",
@@ -209,6 +210,8 @@ def check_and_truncate_payload(
                 )
                 # Fall through to truncation logic
             else:
+                if table_guarded:
+                    return json.dumps(table_guarded_card, ensure_ascii=False)
                 return card_content
         except (json.JSONDecodeError, Exception):
             return card_content
@@ -216,9 +219,11 @@ def check_and_truncate_payload(
         pass  # Fall through to truncation logic
 
     logger.warning(
-        "Card payload size %d exceeds limit %d, attempting truncation",
+        "Card payload exceeds Feishu guard budget: size=%d/%d bytes nodes=%s/%d; attempting truncation",
         len(card_content.encode("utf-8")),
         max_size,
+        _safe_count_nodes(card_content),
+        node_budget,
     )
 
     try:
@@ -288,36 +293,85 @@ def check_and_truncate_payload(
 
         truncated_content = json.dumps(truncated_card, ensure_ascii=False)
 
-        # Double check size after smart truncation
-        if len(truncated_content.encode("utf-8")) > max_size:
-            # If still too big, try more aggressive truncation
-            summary_text = UI_TEXT["truncation_fallback_prefix"]
-            try:
-                extracted = _extract_text(card)
-                if extracted:
-                    summary_text = extracted[:2000] + UI_TEXT["truncation_fallback_suffix"]
-            except Exception:
-                logger.debug("failed to extract summary text", exc_info=True)
-
-            fallback_card = {
-                "schema": "2.0",
-                "config": {**card.get("config", {"wide_screen_mode": True}), "update_multi": True},
-                "header": card.get("header", {"title": {"tag": "plain_text", "content": UI_TEXT["truncation_card_header"]}}),
-                "body": {
-                    "elements": [
-                        {
-                            "tag": "markdown",
-                            "content": summary_text,
-                        }
-                    ]
-                },
-            }
-            return json.dumps(fallback_card, ensure_ascii=False)
+        # Double check official Feishu limits after smart truncation. Element
+        # overflow is not fixed by shortening text, so fallback to a compact
+        # one-markdown card if nested components still exceed the budget.
+        if (
+            len(truncated_content.encode("utf-8")) > max_size
+            or count_tagged_nodes(truncated_card) > node_budget
+        ):
+            fallback_card = _build_limit_fallback_card(card, engine_type=engine_type)
+            fallback_content = json.dumps(fallback_card, ensure_ascii=False)
+            if (
+                len(fallback_content.encode("utf-8")) > max_size
+                or len(fallback_content.encode("utf-8")) > _FEISHU_CARD_CONTENT_MAX_BYTES
+                or count_tagged_nodes(fallback_card) > node_budget
+            ):
+                fallback_card["body"]["elements"][0]["content"] = UI_TEXT["truncation_fallback_prefix"]
+                fallback_content = json.dumps(fallback_card, ensure_ascii=False)
+            return fallback_content
 
         return truncated_content
     except Exception as e:
         logger.error("Failed to truncate payload: %s", get_error_detail(e))
         return card_content
+
+
+def _safe_count_nodes(card_content: str) -> int | str:
+    try:
+        return count_tagged_nodes(json.loads(card_content))
+    except Exception:
+        return "unknown"
+
+
+def _build_limit_fallback_card(card: dict, *, engine_type: str | None = None) -> dict:
+    """Build a tiny card guaranteed to stay below Feishu element and byte caps."""
+    summary_text = UI_TEXT["truncation_fallback_prefix"]
+    try:
+        extracted = _extract_text(card)
+        if extracted:
+            summary_text = extracted[:2000] + UI_TEXT["truncation_fallback_suffix"]
+    except Exception:
+        logger.debug("failed to extract summary text", exc_info=True)
+
+    cmd_hint = engine_type_to_cmd(engine_type, fallback="")
+    if cmd_hint:
+        trunc_msg = UI_TEXT["truncation_warning_with_cmd"].format(cmd_hint=cmd_hint)
+    else:
+        trunc_msg = UI_TEXT["truncation_warning_generic"]
+    summary_text = f"{summary_text}\n\n{trunc_msg}"
+
+    return {
+        "schema": "2.0",
+        "config": {
+            **(card.get("config") if isinstance(card.get("config"), dict) else {"wide_screen_mode": True}),
+            "update_multi": True,
+        },
+        "header": _compact_header(card),
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": summary_text,
+                }
+            ]
+        },
+    }
+
+
+def _compact_header(card: dict) -> dict:
+    header = card.get("header")
+    title_content = UI_TEXT["truncation_card_header"]
+    template = "yellow"
+    if isinstance(header, dict):
+        template = str(header.get("template") or template)
+        title = header.get("title")
+        if isinstance(title, dict) and isinstance(title.get("content"), str):
+            title_content = title["content"][:80] or title_content
+    return {
+        "template": template,
+        "title": {"tag": "plain_text", "content": title_content},
+    }
 
 
 def _extract_text(obj: Any, limit: int = 2000) -> str:

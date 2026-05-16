@@ -78,7 +78,7 @@ def flatten_to_atoms(
                 content=str(digest_panel["header"]["title"].get("content", "")),
                 elements=[digest_panel],
                 splittable=False,
-                node_count=1,
+                node_count=4,
             )
             atom.byte_size = estimate_atom_size(atom)
             atoms.append(atom)
@@ -101,7 +101,7 @@ def flatten_to_atoms(
                     block_id=block.block_id,
                     content=active_text,
                     splittable=False,
-                    node_count=1,
+                    node_count=3,
                 )
                 atom.byte_size = estimate_atom_size(atom)
                 atoms.append(atom)

@@ -180,7 +180,7 @@ def build_subagent_dispatch_atom(subagents: list[dict]) -> RenderAtom | None:
         block_id="_subagent_dispatch",
         content=str(panel),
         splittable=False,
-        node_count=1,
+        node_count=4,
     )
     atom.byte_size = estimate_atom_size(atom)
     return atom

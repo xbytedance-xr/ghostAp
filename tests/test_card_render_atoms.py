@@ -43,6 +43,7 @@ class TestFlattenToAtoms:
         assert atom.splittable is False
         assert atom.block_id == "t1"
         assert "read_file" in atom.content
+        assert atom.node_count == 3
 
     def test_reasoning_block_to_atom(self) -> None:
         """reasoning → atom with kind='reasoning'."""
@@ -78,6 +79,7 @@ class TestFlattenToAtoms:
         atom = atoms[0]
         assert atom.kind == "activity_digest"
         assert "4 次其他调用" in atom.content
+        assert atom.node_count == 4
 
     def test_few_completed_tools_become_activity_digest(self) -> None:
         """≤2 completed tools → single activity_digest atom (not individual tool_panels)."""
@@ -116,6 +118,7 @@ class TestFlattenToAtoms:
         assert atoms[0].kind == "activity_digest"
         assert atoms[1].kind == "tool_panel"
         assert "running" in atoms[1].content
+        assert atoms[1].node_count == 3
 
     def test_estimate_atom_size(self) -> None:
         """estimate > 0, reasonable range."""

@@ -89,3 +89,30 @@ def test_extreme_state_continuation_pages_have_sticky():
         first = body[0]
         assert first.get("tag") == "markdown"
         assert "Deep" in first.get("content", ""), f"page {i} missing sticky banner"
+
+
+def test_many_active_tool_lines_paginate_under_official_element_limit():
+    blocks = tuple(
+        ContentBlock(
+            kind="tool_call",
+            block_id=f"active-{idx}",
+            tool_name="Read",
+            tool_input=f'{{"path": "src/module_{idx}.py"}}',
+            status="active",
+            is_latest_active=idx == 79,
+        )
+        for idx in range(80)
+    )
+    state = CardState(
+        metadata=CardMetadata(mode_name="Coco", mode_emoji="🛠️", engine_type="normal"),
+        header=HeaderState(title="Many tools"),
+        blocks=blocks,
+        terminal="running",
+    )
+
+    pages = render_card(state, RenderBudget())
+
+    assert len(pages) > 1
+    for i, page in enumerate(pages):
+        nodes = count_tagged_nodes(page._card_json)
+        assert nodes <= 200, f"page {i} has {nodes} nodes > 200"

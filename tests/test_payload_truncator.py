@@ -172,6 +172,34 @@ class TestCheckAndTruncatePayload:
         # Should have been modified (truncated or warning added)
         assert result != content
 
+    def test_node_count_guard_returns_card_under_feishu_limit(self):
+        """Node overflow fallback must not itself exceed Feishu's 200-element cap."""
+        elements = [
+            {
+                "tag": "collapsible_panel",
+                "header": {
+                    "title": {"tag": "markdown", "content": f"tool {idx}"},
+                    "icon": {"tag": "standard_icon", "token": "down-small-ccm_outlined"},
+                },
+                "elements": [{"tag": "markdown", "content": f"detail {idx}"}],
+            }
+            for idx in range(55)
+        ]
+        card = {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True, "update_multi": True},
+            "header": {"title": {"tag": "plain_text", "content": "Overflow"}},
+            "body": {"elements": elements},
+        }
+        content = json.dumps(card, ensure_ascii=False)
+        assert count_tagged_nodes(card) > 200
+
+        result = check_and_truncate_payload(content, max_size=1_000_000)
+        parsed = json.loads(result)
+
+        assert count_tagged_nodes(parsed) <= 180
+        assert len(result.encode("utf-8")) <= 30 * 1024
+
     def test_valid_json_always_returned(self):
         """Result should always be valid JSON regardless of input size."""
         big_text = "Z" * 50000
