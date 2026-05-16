@@ -138,16 +138,11 @@ def render_card(
         # Detect active element for streaming
         active_element = _find_active_element(page_atoms, block_index)
 
-        # Determine streaming mode. CardKit streaming is only reliable for a
-        # single markdown element. Rich GhostAP cards have header/status/footer
-        # structure, so they use ordinary card PATCH updates to keep markdown
-        # layout stable in Feishu.
+        # Determine streaming mode. Feishu CardKit's official element content
+        # API streams full text into a markdown/plain_text element identified by
+        # element_id, regardless of the rest of the card structure.
         is_running = state.terminal == "running"
-        streaming = (
-            active_element is not None
-            and is_running
-            and _supports_cardkit_streaming(body_elements, active_element)
-        )
+        streaming = active_element is not None and is_running
         if not streaming:
             active_element = None
             _strip_streaming_element_ids(body_elements)
@@ -647,17 +642,6 @@ def _find_active_element(
 
 def _is_streaming_text_ready(content: str) -> bool:
     return _visible_text_len(content) >= _MIN_STREAMING_TEXT_CHARS
-
-
-def _supports_cardkit_streaming(body_elements: list[dict], active_element: ActiveElement | None) -> bool:
-    """Return True only for the CardKit-safe single-markdown streaming shape."""
-    if active_element is None or len(body_elements) != 1:
-        return False
-    element = body_elements[0]
-    return (
-        element.get("tag") == "markdown"
-        and element.get("element_id") == active_element.element_id
-    )
 
 
 def _strip_streaming_element_ids(nodes: list[dict]) -> None:

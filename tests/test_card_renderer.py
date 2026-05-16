@@ -329,7 +329,7 @@ class TestStreamingMode:
         cards = render_card(state, RenderBudget())
         assert cards[0]._card_json["config"].get("streaming_mode") is True
 
-    def test_rich_running_card_uses_full_card_updates_not_cardkit_streaming(self):
+    def test_rich_running_card_uses_official_cardkit_element_streaming(self):
         state = CardState(
             blocks=(
                 ContentBlock(
@@ -353,16 +353,18 @@ class TestStreamingMode:
         cards = render_card(state, RenderBudget(engine_cmd="/deep"))
         card_json = cards[0]._card_json
 
-        assert "streaming_mode" not in card_json["config"]
-        assert cards[0].active_element is None
+        assert card_json["config"].get("streaming_mode") is True
+        assert cards[0].active_element is not None
+        assert cards[0].active_element.element_id == "el_1"
+        assert cards[0].active_element.text == "分析这是一个代码质量审查任务，需要完整展示正文。"
         markdown_elements = [
             node
             for node in _iter_dict_nodes(card_json["body"]["elements"])
             if node.get("tag") == "markdown"
         ]
-        assert not any(node.get("element_id") for node in markdown_elements)
+        assert any(node.get("element_id") == "el_1" for node in markdown_elements)
 
-    def test_rich_running_card_text_changes_update_signature_beyond_prefix(self):
+    def test_rich_running_streaming_text_changes_do_not_patch_full_card(self):
         prefix = "分析" * 40
         base_blocks = (
             ContentBlock(
@@ -403,7 +405,11 @@ class TestStreamingMode:
         card_a = render_card(state_a, RenderBudget(engine_cmd="/deep"))[0]
         card_b = render_card(state_b, RenderBudget(engine_cmd="/deep"))[0]
 
-        assert card_a.structure_signature != card_b.structure_signature
+        assert card_a.active_element is not None
+        assert card_b.active_element is not None
+        assert card_a.active_element.text.endswith("A")
+        assert card_b.active_element.text.endswith("B")
+        assert card_a.structure_signature == card_b.structure_signature
 
     def test_streaming_disabled_when_completed(self):
         state = CardState(

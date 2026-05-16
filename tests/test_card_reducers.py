@@ -28,6 +28,31 @@ class TestTextReducer:
         s = reduce_text(s, CardEvent.text_delta("b1", "world"))
         assert s.blocks[0].content == "hello world"
 
+    def test_text_delta_collapses_soft_streaming_newlines(self):
+        s = _base_state()
+        s = reduce_text(s, CardEvent.text_started("b1"))
+        for chunk in ("让我先\n", "了解\n", "飞书\n", "channel\n", "的实\n", "现文件。"):
+            s = reduce_text(s, CardEvent.text_delta("b1", chunk))
+
+        assert s.blocks[0].content == "让我先了解飞书 channel 的实现文件。"
+
+    def test_text_delta_preserves_markdown_structural_newlines(self):
+        s = _base_state()
+        s = reduce_text(s, CardEvent.text_started("b1"))
+        for chunk in ("计划：\n", "1. 检查实现\n", "2. 补充测试\n\n", "第二段"):
+            s = reduce_text(s, CardEvent.text_delta("b1", chunk))
+
+        assert s.blocks[0].content == "计划：\n1. 检查实现\n2. 补充测试\n\n第二段"
+
+    def test_text_delta_collapses_leading_soft_newline(self):
+        s = _base_state()
+        s = reduce_text(s, CardEvent.text_started("b1"))
+        s = reduce_text(s, CardEvent.text_delta("b1", "Now"))
+        s = reduce_text(s, CardEvent.text_delta("b1", "\nlet"))
+        s = reduce_text(s, CardEvent.text_delta("b1", "\nme read"))
+
+        assert s.blocks[0].content == "Now let me read"
+
     def test_text_delta_auto_creates(self):
         s = reduce_text(_base_state(), CardEvent.text_delta("b1", "hi"))
         assert len(s.blocks) == 1
