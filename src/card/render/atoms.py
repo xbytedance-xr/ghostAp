@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from src.card.render.budget import RenderBudget
@@ -65,6 +65,7 @@ def flatten_to_atoms(
     atoms: list[RenderAtom] = []
     pending_tools: list[ContentBlock] = []
     handlers = _get_block_kind_handlers()
+    current_task_name = _extract_current_task_name(blocks)
 
     def _flush_pending() -> None:
         """Flush accumulated completed/failed tools as a single activity_digest atom."""
@@ -95,7 +96,8 @@ def flatten_to_atoms(
                 # Flush any pending completed tools first
                 _flush_pending()
                 # Active tool: emit compact one-line indicator in body
-                active_text = render_active_tool_line(block)
+                display_block = _with_current_task_summary(block, current_task_name)
+                active_text = render_active_tool_line(display_block)
                 atom = RenderAtom(
                     kind="tool_panel",
                     block_id=block.block_id,
@@ -145,6 +147,52 @@ def _block_to_text_atom(block: ContentBlock) -> RenderAtom:
     )
     atom.byte_size = estimate_atom_size(atom)
     return atom
+
+
+def _extract_current_task_name(blocks: tuple[ContentBlock, ...]) -> str:
+    """Return the active task name from the task list block, if available."""
+    for block in blocks:
+        if getattr(block, "kind", "") != "task_list":
+            continue
+        tasks = tuple(getattr(block, "tasks", ()) or ())
+        current_task_id = str(getattr(block, "current_task_id", "") or "").strip()
+        if current_task_id:
+            for task in tasks:
+                if _task_field(task, "task_id") == current_task_id:
+                    name = _task_field(task, "name")
+                    if name:
+                        return name
+        for task in tasks:
+            if _task_field(task, "status") == "in_progress":
+                name = _task_field(task, "name")
+                if name:
+                    return name
+    return ""
+
+
+def _with_current_task_summary(block: ContentBlock, current_task_name: str) -> ContentBlock:
+    if not current_task_name:
+        return block
+    if not _is_task_tool_name(getattr(block, "tool_name", "")):
+        return block
+    if _is_helpful_task_text(getattr(block, "tool_summary", "")):
+        return block
+    return replace(block, tool_summary=current_task_name)
+
+
+def _task_field(task: object, key: str) -> str:
+    if isinstance(task, dict):
+        return str(task.get(key) or "").strip()
+    return str(getattr(task, key, "") or "").strip()
+
+
+def _is_task_tool_name(tool_name: str | None) -> bool:
+    return str(tool_name or "").strip().lower() == "task"
+
+
+def _is_helpful_task_text(value: str | None) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and text.lower() not in {"task", "任务", "{", "}", "[", "]"}
 
 
 def _block_to_reasoning_atom(block: ContentBlock) -> RenderAtom:

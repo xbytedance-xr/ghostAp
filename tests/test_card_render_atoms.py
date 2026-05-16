@@ -120,6 +120,25 @@ class TestFlattenToAtoms:
         assert "running" in atoms[1].content
         assert atoms[1].node_count == 3
 
+    def test_active_task_tool_uses_current_task_name_when_input_is_generic(self) -> None:
+        """A generic active task tool should show the task list's current task name."""
+        blocks = (
+            ContentBlock(
+                kind="task_list",
+                tasks=(
+                    {"task_id": "t1", "name": "梳理 Spec 思考块渲染路径", "status": "in_progress"},
+                    {"task_id": "t2", "name": "补充回归测试", "status": "pending"},
+                ),
+                current_task_id="t1",
+            ),
+            ContentBlock(kind="tool_call", block_id="task-tool", status="active", tool_name="task"),
+        )
+
+        atoms = flatten_to_atoms(blocks, RenderBudget())
+        active_tool = next(atom for atom in atoms if atom.kind == "tool_panel")
+
+        assert active_tool.content == "⏳ **task：梳理 Spec 思考块渲染路径**"
+
     def test_estimate_atom_size(self) -> None:
         """estimate > 0, reasonable range."""
         # Atom with content
