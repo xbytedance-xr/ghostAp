@@ -411,6 +411,40 @@ class TestStreamingMode:
         assert card_b.active_element.text.endswith("B")
         assert card_a.structure_signature == card_b.structure_signature
 
+    def test_active_element_id_change_updates_structure_signature(self):
+        """Switching active stream targets must PATCH the card before element updates."""
+        state_a = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content="第一段",
+                    element_id="el_1",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+        state_b = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content="第一段",
+                    element_id="el_2",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        card_a = render_card(state_a, RenderBudget(engine_cmd="/deep"))[0]
+        card_b = render_card(state_b, RenderBudget(engine_cmd="/deep"))[0]
+
+        assert card_a.active_element.element_id == "el_1"
+        assert card_b.active_element.element_id == "el_2"
+        assert card_a.structure_signature != card_b.structure_signature
+
     def test_streaming_disabled_when_completed(self):
         state = CardState(
             blocks=(

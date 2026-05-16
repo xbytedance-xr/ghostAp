@@ -240,6 +240,22 @@ class TestCheckAndTruncatePayload:
         assert "note" not in _collect_tags(parsed)
         assert "/deep" in result
 
+    def test_truncated_markdown_closes_open_code_fence(self):
+        """Truncating a markdown node must not leave following text inside code."""
+        big_text = "前置说明\n```go\n" + ("fmt.Println(\"x\")\n" * 700)
+        card = {
+            "schema": "2.0",
+            "body": {"elements": [{"tag": "markdown", "content": big_text}]},
+        }
+        content = json.dumps(card, ensure_ascii=False)
+
+        result = check_and_truncate_payload(content, max_size=9000, engine_type="deep")
+        parsed = json.loads(result)
+        markdown = parsed["body"]["elements"][0]["content"]
+
+        assert markdown.count("```") % 2 == 0
+        assert "\n```\n\n…(内容过长已截断)" in markdown
+
     def test_aggressive_fallback_card_keeps_schema_v2_identity(self):
         """Aggressive truncation fallback must remain a Schema V2 card."""
         big_text = "X" * 50000

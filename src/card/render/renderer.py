@@ -215,7 +215,12 @@ def render_card(
                 # Including it causes repeated full patches while content[:64] changes,
                 # then a jarring switch to stream_element that produces a visual newline
                 # artifact in Feishu CardKit.
-                if not elem.get("element_id"):
+                element_id = elem.get("element_id")
+                if element_id:
+                    # The target element itself is structural. If it changes,
+                    # delivery must PATCH the card before sending element_content.
+                    page_sig_parts.append(f"element_id:{element_id}")
+                else:
                     page_sig_parts.append(_content_signature(elem.get("content", "")))
             elif tag == "collapsible_panel":
                 header = elem.get("header")

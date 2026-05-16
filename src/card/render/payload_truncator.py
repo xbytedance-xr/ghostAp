@@ -252,7 +252,7 @@ def check_and_truncate_payload(
                         # Only truncate when truly large — small strings are
                         # labels/buttons and should never be mangled.
                         if isinstance(v, str) and len(v) > 8000:
-                            obj[k] = v[:8000] + UI_TEXT["truncation_suffix"]
+                            obj[k] = _truncate_markdown_text(v, 8000, suffix=UI_TEXT["truncation_suffix"])
                         else:
                             obj[k] = truncate_recursive(v, depth + 1)
                     else:
@@ -267,7 +267,7 @@ def check_and_truncate_payload(
             elif isinstance(obj, str):
                 # Fallback for strings in other locations
                 if len(obj) > 10000:
-                    return obj[:10000] + UI_TEXT["truncation_suffix"]
+                    return _truncate_markdown_text(obj, 10000, suffix=UI_TEXT["truncation_suffix"])
             return obj
 
         # First pass: try smart truncation on deep content
@@ -324,13 +324,42 @@ def _safe_count_nodes(card_content: str) -> int | str:
         return "unknown"
 
 
+def _truncate_markdown_text(text: str, limit: int, *, suffix: str) -> str:
+    """Truncate markdown without leaving an open fenced code block."""
+    truncated = text[:limit].rstrip()
+    closing = _open_fence_closer(truncated)
+    if closing:
+        truncated = f"{truncated}\n{closing}"
+    separator = "" if suffix.startswith("\n") else "\n"
+    return truncated + separator + suffix
+
+
+def _open_fence_closer(text: str) -> str:
+    """Return the closing fence needed for text, or an empty string."""
+    open_fence = ""
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            fence = "```"
+        elif stripped.startswith("~~~"):
+            fence = "~~~"
+        else:
+            continue
+        open_fence = "" if open_fence == fence else fence
+    return open_fence
+
+
 def _build_limit_fallback_card(card: dict, *, engine_type: str | None = None) -> dict:
     """Build a tiny card guaranteed to stay below Feishu element and byte caps."""
     summary_text = UI_TEXT["truncation_fallback_prefix"]
     try:
         extracted = _extract_text(card)
         if extracted:
-            summary_text = extracted[:2000] + UI_TEXT["truncation_fallback_suffix"]
+            summary_text = _truncate_markdown_text(
+                extracted,
+                len(extracted),
+                suffix=UI_TEXT["truncation_fallback_suffix"],
+            )
     except Exception:
         logger.debug("failed to extract summary text", exc_info=True)
 

@@ -28,6 +28,50 @@ def _guard_payload(card_payload: dict) -> dict:
     return json.loads(guarded)
 
 
+def _find_element_content(payload: dict, element_id: str | None) -> tuple[bool, str]:
+    """Return whether element_id exists and its actual markdown/plain_text content."""
+    if not element_id:
+        return False, ""
+
+    def walk(node) -> str | None:
+        if isinstance(node, dict):
+            if node.get("element_id") == element_id and isinstance(node.get("content"), str):
+                return node["content"]
+            for value in node.values():
+                found = walk(value)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for item in node:
+                found = walk(item)
+                if found is not None:
+                    return found
+        return None
+
+    found = walk(payload)
+    return found is not None, found or ""
+
+
+def _has_rendered_body_elements(payload: dict) -> bool:
+    body = payload.get("body") if isinstance(payload, dict) else None
+    elements = body.get("elements") if isinstance(body, dict) else None
+    return isinstance(elements, list) and bool(elements)
+
+
+def _actual_active_text(card: RenderedCard, payload: dict) -> str:
+    if card.active_element is None:
+        return ""
+    found, text = _find_element_content(payload, card.active_element.element_id)
+    if found:
+        return text
+    # Some tests and legacy callers pass skeletal RenderedCard payloads. Real
+    # renderer output has body.elements; only fall back when there is no payload
+    # body to inspect. Guard fallback/truncation cards must not poison last_text.
+    if not _has_rendered_body_elements(payload):
+        return card.active_element.text
+    return ""
+
+
 def _fallback_invalid_card(reason: str) -> dict:
     """Small known-good card used when Feishu rejects the rendered card JSON."""
     return {
@@ -110,7 +154,7 @@ class PageMutator:
                     chat_id, card_payload, reply_to=reply_to, idempotency_key=idempotency_key
                 )
 
-            last_text = card.active_element.text if card.active_element else ""
+            last_text = _actual_active_text(card, card_payload)
             self._bindings.set_page(
                 session_id=session_id,
                 page_index=card.page_index,
@@ -131,10 +175,11 @@ class PageMutator:
 
         try:
             seq = self._sequences.next_sequence(page.card_id)
-            self._client.update_card(page.card_id, _guard_payload(card.to_feishu_json()), sequence=seq)
+            card_payload = _guard_payload(card.to_feishu_json())
+            self._client.update_card(page.card_id, card_payload, sequence=seq)
             self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
             if card.active_element:
-                self._bindings.update_text(session_id, page.page_index, card.active_element.text)
+                self._bindings.update_text(session_id, page.page_index, _actual_active_text(card, card_payload))
             return MutationOutcome(kind="applied", message=f"updated:{page.card_id}")
         except TimeoutError as e:
             logger.warning("Card update timed out on %s; dropping binding to avoid stale late writes: %s", page.card_id, str(e))

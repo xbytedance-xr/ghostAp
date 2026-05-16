@@ -1,6 +1,6 @@
 """Unit tests for PageMutator: card create/update/stream/finalize operations."""
 
-
+from unittest.mock import patch
 
 from src.card.delivery.binding import BindingStore
 from src.card.delivery.page_mutator import PageMutator
@@ -65,6 +65,17 @@ def _make_card(*, page_index=0, signature="sig_1", text="hello", streaming=False
     )
 
 
+def _make_streaming_payload(content: str) -> dict:
+    return {
+        "config": {"streaming_mode": True},
+        "body": {
+            "elements": [
+                {"tag": "markdown", "element_id": "el_1", "content": content}
+            ]
+        },
+    }
+
+
 class TestCreatePage:
     def test_create_page_success(self):
         client = MockClient()
@@ -96,6 +107,32 @@ class TestCreatePage:
         outcome = mutator.create_page("sess_1", "chat_1", card)
 
         assert outcome.kind == "applied"
+
+    def test_create_page_records_guarded_active_text(self):
+        """Binding cache must match the text actually present in the sent card."""
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        card = RenderedCard(
+            _card_json=_make_streaming_payload("full active text"),
+            structure_signature="sig_1",
+            page_index=0,
+            total_pages=1,
+            active_element=ActiveElement(element_id="el_1", text="full active text"),
+        )
+
+        with patch(
+            "src.card.delivery.page_mutator._guard_payload",
+            return_value=_make_streaming_payload("guarded active text"),
+        ):
+            outcome = mutator.create_page("sess_1", "chat_1", card)
+
+        assert outcome.kind == "applied"
+        binding = bindings.get("sess_1")
+        assert binding.pages[0].last_text == "guarded active text"
 
     def test_create_page_streaming_fallback_to_im(self):
         """When streaming creation fails, should fall back to IM create API."""
@@ -147,6 +184,33 @@ class TestUpdatePage:
 
         assert outcome.kind == "applied"
         assert "updated:" in outcome.message
+
+    def test_update_page_records_guarded_active_text(self):
+        """Full PATCH truncation must not poison last_text with unsent content."""
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "old_sig", "old_text")
+        page = bindings.get("sess_1").pages[0]
+        card = RenderedCard(
+            _card_json=_make_streaming_payload("full active text"),
+            structure_signature="new_sig",
+            page_index=0,
+            total_pages=1,
+            active_element=ActiveElement(element_id="el_1", text="full active text"),
+        )
+
+        with patch(
+            "src.card.delivery.page_mutator._guard_payload",
+            return_value=_make_streaming_payload("guarded active text"),
+        ):
+            outcome = mutator.update_page("sess_1", page, card)
+
+        assert outcome.kind == "applied"
+        assert bindings.get("sess_1").pages[0].last_text == "guarded active text"
 
     def test_update_page_sequence_conflict_raises_floor(self):
         """On SequenceConflictError, should raise floor and return reconcile."""
