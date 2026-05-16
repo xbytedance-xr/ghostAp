@@ -110,7 +110,7 @@ def _make_split_atoms(
     atom: RenderAtom, first_content: str, rest_content: str
 ) -> list[RenderAtom]:
     """Create split atom parts from content pieces."""
-    if atom.kind == "text":
+    if atom.kind in {"text", "reasoning"}:
         first_content, rest_content = _stabilize_markdown_split(first_content, rest_content)
 
     first_atom = RenderAtom(

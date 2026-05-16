@@ -4,7 +4,22 @@ from __future__ import annotations
 
 from src.card.render.budget import RenderBudget
 from src.card.state.models import ContentBlock
+from src.card.themes import PANEL_STYLES
 from src.card.ui_text import UI_TEXT
+
+REASONING_COMPACT_CHARS = 222
+
+
+def truncate_reasoning_for_compact(content: str, *, max_chars: int = REASONING_COMPACT_CHARS) -> str:
+    """Return a compact reasoning preview capped to ``max_chars`` visible chars."""
+    content = str(content or "")
+    if max_chars <= 0:
+        return ""
+    if len(content) <= max_chars:
+        return content
+    if max_chars == 1:
+        return "…"
+    return content[: max_chars - 1] + "…"
 
 
 def render_reasoning_panel(
@@ -12,11 +27,13 @@ def render_reasoning_panel(
     budget: RenderBudget | None = None,
     *,
     content_override: str | None = None,
+    compact: bool = False,
 ) -> dict:
-    """Render reasoning/thinking as a compact grey left-aligned panel.
+    """Render reasoning/thinking as a tool-like collapsible panel.
 
-    Always visible (no collapsible). Active reasoning shows full content;
-    completed reasoning keeps tail truncation via reasoning_tail_chars.
+    Active reasoning is expanded while completed reasoning follows tool-call
+    panels and starts collapsed. Full mode preserves the complete text; compact
+    mode shows a bounded preview.
 
     Args:
         block: The reasoning block (used for status/char_count metadata).
@@ -25,44 +42,45 @@ def render_reasoning_panel(
             Needed when block_index maps to the *last* block with a shared
             block_id but the atom carries the correct per-block content.
     """
-    if budget is None:
-        budget = RenderBudget()
+    _ = budget
 
     is_active = block.status == "active"
     raw_content = content_override if content_override is not None else block.content
     raw_content = raw_content or ""
+    original_content = block.content or raw_content
 
     if is_active:
         title_text = UI_TEXT["reasoning_panel_thinking"]
-        content = raw_content
     else:
-        char_count = block.char_count or len(raw_content)
+        char_count = block.char_count or len(original_content)
         title_text = UI_TEXT["reasoning_panel_done"].format(char_count=char_count)
-        content = raw_content
-        if len(content) > budget.reasoning_tail_chars:
-            content = "…" + content[-budget.reasoning_tail_chars:]
 
-    # Build content: title line + reasoning body
-    display_content = f"**{title_text}**\n{content}" if content else f"**{title_text}**"
+    content = truncate_reasoning_for_compact(raw_content) if compact else raw_content
+    elements = [
+        {
+            "tag": "markdown",
+            "content": content,
+            "text_size": "normal",
+            "text_align": "left",
+        }
+    ] if content else []
 
     return {
-        "tag": "column_set",
-        "flex_mode": "none",
-        "background_style": "grey",
-        "columns": [
-            {
-                "tag": "column",
-                "width": "weighted",
-                "weight": 1,
-                "vertical_align": "top",
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": display_content,
-                        "text_size": "normal",
-                        "text_align": "left",
-                    },
-                ],
+        "tag": "collapsible_panel",
+        "expanded": is_active,
+        "header": {
+            "title": {"tag": "markdown", "content": title_text},
+            "vertical_align": "center",
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
             },
-        ],
+            "icon_position": "follow_text",
+            "icon_expanded_angle": -180,
+        },
+        "border": {"color": PANEL_STYLES["border_normal"], "corner_radius": PANEL_STYLES["corner_radius"]},
+        "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+        "padding": PANEL_STYLES["padding_compact"] if compact else PANEL_STYLES["padding_standard"],
+        "elements": elements,
     }

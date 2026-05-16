@@ -526,8 +526,14 @@ body {
         </div>
       </div>
 
-      <div class="slim-reasoning">
-        第一轮审查发现一个真实竞态：terminal 更新应覆盖 pending 的普通更新，否则结束后仍可能回刷旧内容。
+      <div class="panel panel-grey">
+        <div class="panel-header collapsed">
+          <span class="arrow">▼</span>
+          <span class="panel-title">💭 <strong>思考完成</strong> · 612 字</span>
+        </div>
+        <div class="panel-content hidden">
+          第一轮审查发现一个真实竞态：terminal 更新应覆盖 pending 的普通更新，否则结束后仍可能回刷旧内容。这个边界需要在 session 派发层处理，避免终态卡片被旧的普通更新覆盖…
+        </div>
       </div>
 
       <div class="panel panel-green">

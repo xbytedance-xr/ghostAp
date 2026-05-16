@@ -137,47 +137,54 @@ class TestToolSummary:
 
 class TestReasoningPanel:
     def test_reasoning_active(self):
-        """Active reasoning → grey, left-aligned content panel."""
+        """Active reasoning → expanded collapsible panel with left-aligned content."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="thinking...")
         result = render_reasoning_panel(block)
-        assert result["tag"] == "column_set"
-        assert result["background_style"] == "grey"
-        assert len(result["columns"]) == 1
-        markdown = result["columns"][0]["elements"][0]
+        assert result["tag"] == "collapsible_panel"
+        assert result["expanded"] is True
+        assert result["border"]["color"] == "grey"
+        assert "深度思考中" in result["header"]["title"]["content"]
+        markdown = result["elements"][0]
         assert markdown["text_align"] == "left"
         md_content = markdown["content"]
-        assert "深度思考中" in md_content
         assert "thinking..." in md_content
 
     def test_reasoning_done(self):
-        """Done reasoning → column_set, shows char count in title."""
+        """Done reasoning → collapsed collapsible panel, shows char count in title."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="completed",
                            content="full thought", char_count=1500)
         result = render_reasoning_panel(block)
-        assert result["tag"] == "column_set"
-        assert len(result["columns"]) == 1
-        md_content = result["columns"][0]["elements"][0]["content"]
-        assert "1500" in md_content
-        assert "思考完成" in md_content
+        assert result["tag"] == "collapsible_panel"
+        assert result["expanded"] is False
+        title = result["header"]["title"]["content"]
+        assert "1500" in title
+        assert "思考完成" in title
+        assert result["elements"][0]["content"] == "full thought"
 
-    def test_reasoning_done_truncated(self):
-        """Long reasoning shows tail only."""
+    def test_reasoning_done_full_mode_does_not_truncate(self):
+        """Full mode keeps the complete reasoning text."""
         long_content = "a" * 1000
         block = ContentBlock(kind="reasoning", block_id="r1", status="completed",
                            content=long_content, char_count=1000)
         budget = RenderBudget(reasoning_tail_chars=500)
         result = render_reasoning_panel(block, budget=budget)
-        md_content = result["columns"][0]["elements"][0]["content"]
-        # Extract just the reasoning body (after title line)
-        body = md_content.split("\n", 1)[1] if "\n" in md_content else md_content
-        assert body.startswith("…")
-        assert len(body) <= 502  # 500 + "…"
+        assert result["elements"][0]["content"] == long_content
+
+    def test_reasoning_compact_truncates_to_222_chars(self):
+        """Compact mode keeps a bounded preview of the reasoning text."""
+        long_content = "a" * 260
+        block = ContentBlock(kind="reasoning", block_id="r1", status="completed",
+                           content=long_content, char_count=260)
+        result = render_reasoning_panel(block, compact=True)
+        body = result["elements"][0]["content"]
+        assert len(body) == 222
+        assert body == ("a" * 221) + "…"
 
     def test_reasoning_content_override(self):
         """content_override replaces block.content for per-atom correctness."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="original")
         result = render_reasoning_panel(block, content_override="overridden text")
-        md_content = result["columns"][0]["elements"][0]["content"]
+        md_content = result["elements"][0]["content"]
         assert "overridden text" in md_content
         assert "original" not in md_content
 
@@ -185,29 +192,27 @@ class TestReasoningPanel:
         """content=None should not raise TypeError (AC-22)."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content=None)
         result = render_reasoning_panel(block)
-        assert result["tag"] == "column_set"
+        assert result["tag"] == "collapsible_panel"
 
     def test_reasoning_panel_empty_content(self):
-        """content='' should render title only, no body text (AC-22)."""
+        """content='' should render header only, no empty markdown body (AC-22)."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="")
         result = render_reasoning_panel(block)
-        md_content = result["columns"][0]["elements"][0]["content"]
-        assert "深度思考中" in md_content
-        # Empty content → title only, no trailing newline with body text
-        assert "\n" not in md_content
+        assert "深度思考中" in result["header"]["title"]["content"]
+        assert result["elements"] == []
 
-    def test_reasoning_panel_has_grey_background(self):
-        """column_set should keep background_style='grey' for quote visual (AC-22)."""
+    def test_reasoning_panel_has_grey_border(self):
+        """Reasoning panel should keep the neutral grey visual treatment."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="test")
         result = render_reasoning_panel(block)
-        assert result["background_style"] == "grey"
+        assert result["border"]["color"] == "grey"
 
-    def test_reasoning_panel_omits_unsupported_column_set_corner_radius(self):
-        """Feishu Schema 2.0 rejects top-level corner_radius on column_set."""
+    def test_reasoning_panel_omits_unsupported_collapsible_background_style(self):
+        """Feishu Schema 2.0 rejects background_style on collapsible_panel."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="test")
         result = render_reasoning_panel(block)
-        assert result["tag"] == "column_set"
-        assert "corner_radius" not in result
+        assert result["tag"] == "collapsible_panel"
+        assert "background_style" not in result
 
 
 class TestPlanPanel:

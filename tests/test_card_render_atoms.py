@@ -56,9 +56,9 @@ class TestFlattenToAtoms:
         assert len(atoms) == 1
         atom = atoms[0]
         assert atom.kind == "reasoning"
-        assert atom.splittable is False
+        assert atom.splittable is True
         assert atom.content == "thinking..."
-        assert atom.node_count == 3
+        assert atom.node_count == 4
 
     def test_completed_tools_become_activity_digest(self) -> None:
         """≥3 completed tools → single activity_digest atom (compact summary)."""

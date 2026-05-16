@@ -17,7 +17,7 @@ from src.card.render.footer import render_footer
 from src.card.render.header import render_header
 from src.card.render.layout import SectionLayout, paginate_layout
 from src.card.render.plan import render_plan_panel
-from src.card.render.reasoning import render_reasoning_panel
+from src.card.render.reasoning import render_reasoning_panel, truncate_reasoning_for_compact
 from src.card.render.review import render_review_role_panel
 from src.card.render.spec_artifacts import render_spec_plan_panel, render_spec_task_panel
 from src.card.render.sticky_head import build_sticky_head
@@ -129,6 +129,8 @@ def render_card(
 
     # 1. Flatten blocks to atoms and build SectionLayout skeleton.
     atoms = flatten_to_atoms(state.blocks, budget)
+    if state.metadata and state.metadata.compact:
+        atoms = _compact_reasoning_atoms(atoms)
     subagent_atom = build_subagent_dispatch_atom(list(state.metadata.subagents)) if state.metadata.subagents else None
     if subagent_atom is not None:
         atoms.insert(0, subagent_atom)
@@ -229,6 +231,9 @@ def render_card(
                     page_sig_parts.append(str(title_obj.get("content", ""))[:32])
                 elif isinstance(header, str):
                     page_sig_parts.append(header[:32])
+                for item in elem.get("elements", []) or []:
+                    if isinstance(item, dict) and item.get("tag") == "markdown":
+                        page_sig_parts.append(_content_signature(item.get("content", "")))
             elif tag == "column_set":
                 for col in elem.get("columns", []):
                     for item in col.get("elements", []):
@@ -374,7 +379,8 @@ def _render_atom_reasoning(atom: RenderAtom, state: CardState, budget: RenderBud
         # Use atom.content (per-block correct content) instead of block.content.
         # block_index maps shared block_ids (e.g. "_active_reasoning") to the LAST
         # block, so without override all atoms would render the last block's content.
-        return render_reasoning_panel(block, budget, content_override=atom.content)
+        compact = bool(state.metadata and state.metadata.compact)
+        return render_reasoning_panel(block, budget, content_override=atom.content, compact=compact)
     return {"tag": "markdown", "content": atom.content}
 
 
@@ -514,6 +520,27 @@ def _render_atoms_to_elements(
             elements.append({"tag": "markdown", "content": fallback_text})
 
     return elements
+
+
+def _compact_reasoning_atoms(atoms: list[RenderAtom]) -> list[RenderAtom]:
+    """Apply compact-mode reasoning truncation before pagination."""
+    compacted: list[RenderAtom] = []
+    for atom in atoms:
+        if atom.kind != "reasoning":
+            compacted.append(atom)
+            continue
+        compact_content = truncate_reasoning_for_compact(atom.content)
+        compact_atom = RenderAtom(
+            kind=atom.kind,
+            elements=atom.elements,
+            block_id=atom.block_id,
+            content=compact_content,
+            splittable=False,
+            node_count=atom.node_count,
+        )
+        compact_atom.byte_size = estimate_atom_size(compact_atom)
+        compacted.append(compact_atom)
+    return compacted
 
 
 def _coalesce_adjacent_text_fragments(atoms: list[RenderAtom]) -> list[RenderAtom]:

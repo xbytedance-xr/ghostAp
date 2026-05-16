@@ -262,8 +262,8 @@ class TestUnifiedCardSections:
             if el.get("tag") == "markdown"
         )
 
-    def test_bridge_phrase_prepended_to_reasoning_column_set(self):
-        """Bridge phrase prepends into the left-aligned reasoning panel content."""
+    def test_bridge_phrase_prepended_to_reasoning_collapsible_panel(self):
+        """Bridge phrase prepends into the left-aligned reasoning panel body."""
         state = CardState(
             blocks=(ContentBlock(kind="reasoning", block_id="r1", content="分析中...", status="active"),),
             metadata=CardMetadata(bridge_phrase="续接："),
@@ -272,13 +272,12 @@ class TestUnifiedCardSections:
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
 
-        # Find the column_set (reasoning panel)
-        col_sets = [el for el in body if el.get("tag") == "column_set" and el.get("background_style") == "grey"]
-        assert len(col_sets) >= 1
-        # The reasoning panel is a single content column so Feishu keeps quote text left-aligned.
-        assert len(col_sets[0]["columns"]) == 1
-        content_col = col_sets[0]["columns"][0]
-        markdown = content_col["elements"][0]
+        panels = [
+            el for el in body
+            if el.get("tag") == "collapsible_panel" and "深度思考中" in str(el.get("header", {}))
+        ]
+        assert len(panels) == 1
+        markdown = panels[0]["elements"][0]
         assert markdown["text_align"] == "left"
         md_content = markdown["content"]
         assert md_content.startswith("续接：")
@@ -870,10 +869,10 @@ class TestActiveElement:
 
 
 class TestColumnSetSignature:
-    """column_set content changes should affect page signature."""
+    """Reasoning panel content changes should affect page signature."""
 
     def test_column_set_content_change_updates_signature(self):
-        """Reasoning panel (column_set) with different content should produce different signatures."""
+        """Reasoning panel with different content should produce different signatures."""
         s1 = CardState(
             blocks=(ContentBlock(kind="reasoning", block_id="r1", content="thought A", status="active"),),
             terminal="running",
@@ -985,7 +984,54 @@ class TestMultipleBlockTypes:
         )
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
-        assert any(el.get("tag") == "column_set" and el.get("background_style") == "grey" for el in body)
+        assert any(el.get("tag") == "collapsible_panel" and "深度思考中" in str(el) for el in body)
+
+    def test_spec_reasoning_full_mode_keeps_complete_text(self):
+        long_content = "完整思考内容" * 120
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="reasoning",
+                    block_id="spec_reasoning",
+                    content=long_content,
+                    status="completed",
+                    char_count=len(long_content),
+                ),
+            ),
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec", mode_emoji="📋", compact=False),
+        )
+
+        cards = render_card(state, RenderBudget(reasoning_tail_chars=200))
+        body = str(cards[0]._card_json["body"]["elements"])
+
+        assert long_content in body
+        assert "…完整思考内容" not in body
+
+    def test_spec_reasoning_compact_mode_truncates_to_222_chars(self):
+        long_content = "a" * 260
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="reasoning",
+                    block_id="spec_reasoning",
+                    content=long_content,
+                    status="completed",
+                    char_count=len(long_content),
+                ),
+            ),
+            metadata=CardMetadata(engine_type="spec", mode_name="Spec", mode_emoji="📋", compact=True),
+        )
+
+        cards = render_card(state, RenderBudget())
+        panels = [
+            el for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "collapsible_panel" and "思考完成" in str(el.get("header", {}))
+        ]
+
+        assert len(panels) == 1
+        body = panels[0]["elements"][0]["content"]
+        assert len(body) == 222
+        assert body == ("a" * 221) + "…"
 
     def test_reasoning_blocks_paginate_under_feishu_node_limit(self):
         """Reasoning node estimates should keep rendered pages below the hard Feishu cap."""

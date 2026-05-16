@@ -149,8 +149,8 @@ def _block_to_text_atom(block: ContentBlock) -> RenderAtom:
 
 def _block_to_reasoning_atom(block: ContentBlock) -> RenderAtom:
     atom = RenderAtom(
-        kind="reasoning", block_id=block.block_id, content=block.content,
-        splittable=False, node_count=3,
+        kind="reasoning", block_id=block.block_id, content=block.content or "",
+        splittable=True, node_count=4,
     )
     atom.byte_size = estimate_atom_size(atom)
     return atom
