@@ -107,6 +107,32 @@ class TestPaginateAtoms:
         # Total content should be preserved
         assert result[0].content + result[1].content == content
 
+    def test_text_split_inside_code_fence_makes_each_part_parseable(self) -> None:
+        content = "```go\nline one\nline two\nline three\n```\nafter"
+        atom = RenderAtom(kind="text", content=content, splittable=True, node_count=1)
+        atom.byte_size = estimate_atom_size(atom)
+
+        result = split_atom(atom, remaining_bytes=150)
+
+        assert result is not None
+        assert result[0].content.endswith("\n```")
+        assert result[1].content.startswith("```\n")
+        assert result[0].content.count("```") % 2 == 0
+        assert result[1].content.count("```") % 2 == 0
+
+    def test_text_split_inside_inline_code_makes_each_part_parseable(self) -> None:
+        content = "`" + ("x" * 3200) + "` after"
+        atom = RenderAtom(kind="text", content=content, splittable=True, node_count=1)
+        atom.byte_size = estimate_atom_size(atom)
+
+        result = split_atom(atom, remaining_bytes=200)
+
+        assert result is not None
+        assert result[0].content.endswith("`")
+        assert result[1].content.startswith("`")
+        assert result[0].content.count("`") % 2 == 0
+        assert result[1].content.count("`") % 2 == 0
+
     def test_no_content_lost(self) -> None:
         """All paragraph text is preserved after pagination (split separators at page boundaries are not duplicated)."""
         paragraphs = [f"Paragraph {i} with some content." for i in range(20)]

@@ -1082,6 +1082,33 @@ class TestPagination:
                 f"Multi-page · 页 {card.page_index + 1}/{card.total_pages}"
             )
 
+    def test_split_code_fence_pages_are_independently_parseable(self):
+        big_code = "```go\n" + ("fmt.Println(\"hello\")\n" * 700) + "```\nDone"
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content=big_code,
+                    element_id="el_stream",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget(byte_budget=5000))
+
+        assert len(cards) > 1
+        for card in cards:
+            markdown = [
+                el.get("content", "")
+                for el in card._card_json["body"]["elements"]
+                if el.get("tag") == "markdown" and "fmt.Println" in el.get("content", "")
+            ]
+            assert markdown
+            assert all(text.count("```") % 2 == 0 for text in markdown)
+
     def test_section_layout_repeats_sticky_phase_banner_on_every_page(self):
         big_text = "line\n" * 5000
         state = CardState(
