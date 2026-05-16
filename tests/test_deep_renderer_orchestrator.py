@@ -206,6 +206,41 @@ class TestDeepRendererSingleCard:
             for event in events
         )
 
+    def test_deep_start_card_dispatches_on_analyzing_start(self):
+        """Deep should create the first visible card before waiting for model output."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = self._create_callbacks(renderer)
+        assert callbacks.on_analyzing_start is not None
+
+        callbacks.on_analyzing_start("investigate startup latency")
+
+        assert tracker.create_card_count == 1
+        main_session = tracker.sessions_created[0]
+        events = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type")
+        ]
+        event_types = [event.type for event in events]
+
+        assert CardEventType.STARTED in event_types
+        assert CardEventType.CYCLE_STARTED in event_types
+        assert CardEventType.PHASE_STARTED in event_types
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        events_after_done = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type")
+        ]
+        assert [event.type for event in events_after_done].count(CardEventType.STARTED) == 1
+        assert [event.type for event in events_after_done].count(CardEventType.CYCLE_STARTED) == 1
+        assert [event.type for event in events_after_done].count(CardEventType.PHASE_STARTED) == 1
+
     def test_deep_plan_update_transitions_to_spec_style_build_phase(self):
         """Deep plan updates should switch from analyzing to the shared build phase panel."""
         renderer, tracker = self._setup_renderer()

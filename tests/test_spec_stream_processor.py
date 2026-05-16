@@ -33,6 +33,7 @@ def _make_processor(**overrides):
     rotator.current.delivered_message_id = "msg_delivered_1"
 
     reporter = MagicMock()
+    reporter.format_analyzing_start = MagicMock(return_value="analysis started")
     reporter.format_analyzing_done = MagicMock(return_value="analysis done")
     reporter.format_phase_start_content = MagicMock(return_value="phase started")
     reporter.format_phase_done_content = MagicMock(return_value="phase done")
@@ -95,10 +96,29 @@ class TestSpecStreamProcessorInit:
         proc, _ = _make_processor()
         cbs = proc.build_callbacks()
         assert isinstance(cbs, SpecEngineCallbacks)
+        assert cbs.on_analyzing_start is not None
         assert cbs.on_analyzing_done is not None
         assert cbs.on_error is not None
         assert cbs.on_phase_event is not None
         assert cbs.on_review_retry is not None
+
+    def test_on_analyzing_start_dispatches_first_visible_card(self):
+        proc, deps = _make_processor()
+
+        proc.on_analyzing_start("implement startup progress")
+
+        calls = [c.args[0] for c in deps["rotator"].dispatch.call_args_list]
+        types = [c.type for c in calls]
+        assert CardEventType.STARTED in types
+        assert CardEventType.TEXT_DELTA in types
+        text_delta = next(c for c in calls if c.type == CardEventType.TEXT_DELTA)
+        assert text_delta.payload["block_id"] == "_main"
+        assert text_delta.payload["text"] == "analysis started"
+
+        proc.on_analyzing_done(MagicMock())
+
+        calls_after_done = [c.args[0] for c in deps["rotator"].dispatch.call_args_list]
+        assert [c.type for c in calls_after_done].count(CardEventType.STARTED) == 1
 
 
 class TestRotateSession:

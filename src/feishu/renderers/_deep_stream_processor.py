@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...acp import ACPEvent, ACPEventRenderer, ACPEventType
@@ -50,16 +51,30 @@ class DeepStreamProcessor:
         self._plan_steps = 0
         self._phase = "analyzing"
         self._current_task_id = ""
+        self._started_dispatched = False
 
     def build_callbacks(self) -> DeepEngineCallbacks:
         return DeepEngineCallbacks(
+            on_analyzing_start=self.on_analyzing_start,
             on_analyzing_done=self.on_analyzing_done,
             on_event=self.on_event,
             on_project_done=self.on_project_done,
             on_error=self.on_error,
         )
 
+    def on_analyzing_start(self, _requirement_text: str) -> None:
+        self._dispatch_start()
+
     def on_analyzing_done(self, deep_project: DeepProject) -> None:
+        self._dispatch_start(deep_project)
+
+    def _dispatch_start(self, deep_project: DeepProject | None = None) -> None:
+        if self._started_dispatched:
+            return
+        self._started_dispatched = True
+
+        project_name = self._resolve_project_name(deep_project)
+        root_path = self._resolve_root_path(deep_project)
         self._rotator.dispatch(CardEvent.started())
         self._rotator.dispatch(CardEvent.cycle_started(self._CYCLE, 1))
         self._rotator.dispatch(CardEvent.phase_started(
@@ -67,11 +82,30 @@ class DeepStreamProcessor:
             "analyzing",
             subtitle=UI_TEXT["deep_spec_style_subtitle_analyzing"],
             content=UI_TEXT["deep_exec_start"].format(
-                project_name=deep_project.name,
-                root_path=deep_project.root_path,
+                project_name=project_name,
+                root_path=root_path,
             ),
         ))
         self._phase = "analyzing"
+
+    def _resolve_project_name(self, deep_project: DeepProject | None) -> str:
+        if deep_project and deep_project.name:
+            return deep_project.name
+        if self._project and getattr(self._project, "project_name", None):
+            return self._project.project_name
+        root_path = self._resolve_root_path(deep_project)
+        if root_path:
+            return Path(root_path).name or "deep"
+        return "deep"
+
+    def _resolve_root_path(self, deep_project: DeepProject | None) -> str:
+        if deep_project and deep_project.root_path:
+            return deep_project.root_path
+        if self._root_path:
+            return self._root_path
+        if self._project and getattr(self._project, "root_path", None):
+            return self._project.root_path
+        return ""
 
     def on_event(self, event: ACPEvent) -> None:
         """Process ACP events and dispatch Spec-style card events."""

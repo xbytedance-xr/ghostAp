@@ -106,6 +106,7 @@ class SpecStreamProcessor:
         self._last_phase_content: str = ""
         self._current_cycle: int = 0
         self._stream_bridge = ACPStreamBridge(self._rotator)
+        self._started_dispatched: bool = False
         # Build phase tool tracking
         self._build_tool_count: int = 0
         self._build_file_set: set[str] = set()
@@ -178,11 +179,23 @@ class SpecStreamProcessor:
     # Callback methods
     # ------------------------------------------------------------------
 
+    def on_analyzing_start(self, requirement: str) -> None:
+        self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
+        self._dispatch_started_once()
+        content = self._reporter.format_analyzing_start(requirement)
+        self._rotator.dispatch(CardEvent.text_delta("_main", content))
+
     def on_analyzing_done(self, spec_project: SpecProject) -> None:
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
-        self._rotator.dispatch(CardEvent.started())
+        self._dispatch_started_once()
         content = self._reporter.format_analyzing_done(spec_project)
         self._rotator.dispatch(CardEvent.text_delta("_main", content))
+
+    def _dispatch_started_once(self) -> None:
+        if self._started_dispatched:
+            return
+        self._started_dispatched = True
+        self._rotator.dispatch(CardEvent.started())
 
     def on_cycle_start(self, current: int, max_cycles: int) -> None:
         self._max_cycles = max_cycles
@@ -467,6 +480,7 @@ class SpecStreamProcessor:
     def build_callbacks(self) -> SpecEngineCallbacks:
         """Assemble a SpecEngineCallbacks bound to this processor's methods."""
         return SpecEngineCallbacks(
+            on_analyzing_start=self.on_analyzing_start,
             on_analyzing_done=self.on_analyzing_done,
             on_cycle_start=self.on_cycle_start,
             on_phase_start=self.on_phase_start,
