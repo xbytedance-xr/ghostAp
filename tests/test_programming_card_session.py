@@ -297,6 +297,21 @@ class TestProgrammingCardSession:
         assert [b.block_id for b in text_blocks] == ["_active_text", "_turn_2_text"]
         assert [b.kind for b in blocks[:3]] == ["text", "tool_call", "text"]
 
+    def test_acp_text_from_different_sources_uses_separate_blocks(self):
+        from src.acp.models import ACPEvent, ACPEventType
+
+        pcs, _ = _make_programming_session()
+        pcs.start()
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="Alpha ", source_id="agent-a"))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="甲", source_id="agent-b"))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="Beta", source_id="agent-a"))
+        pcs.on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="乙", source_id="agent-b"))
+        pcs._flush_now()
+
+        text_blocks = [b for b in pcs.session.state.blocks if b.kind == "text" and b.content]
+        assert [b.content for b in text_blocks] == ["Alpha Beta", "甲乙"]
+        assert len({b.block_id for b in text_blocks}) == 2
+
     def test_acp_turn_text_block_ids_are_monotonic_after_renderer_reset(self):
         from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo
 

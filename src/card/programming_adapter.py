@@ -8,6 +8,7 @@ Coco/Claude/Aiden/Codex/Gemini/TTADK.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import replace
@@ -106,11 +107,16 @@ class ProgrammingCardSession:
         self._pending_text_block_id: str | None = None
         self._reasoning_active = False
         self._active_reasoning_block_id = "_active_reasoning"
+        self._text_blocks_by_source: dict[str, str] = {}
+        self._reasoning_blocks_by_source: dict[str, str] = {}
+        self._active_text_sources: set[str] = set()
+        self._active_reasoning_sources: set[str] = set()
         self._reasoning_turn_seq = 0
         self._last_reasoning_boundary_seq = 0
         self._flush_interval = flush_interval or self._DEFAULT_FLUSH_INTERVAL
         # Text batching state
         self._pending_text = ""
+        self._pending_text_by_block: dict[str, str] = {}
         self._flush_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._flush_lock_holder = threading.local()  # per-thread flag for lock ownership assertion
         self._flush_timer: threading.Timer | None = None
@@ -146,6 +152,9 @@ class ProgrammingCardSession:
         self._rotator.dispatch(CardEvent.started())
         self._rotator.dispatch(CardEvent.text_started("_active_text"))
         self._text_active = True
+        self._text_turn_seq = max(self._text_turn_seq, 1)
+        self._text_blocks_by_source["main"] = "_active_text"
+        self._active_text_sources.add("main")
         self._start_ticker()
 
     def on_event(self, acp_event: "ACPEvent") -> None:
@@ -171,23 +180,15 @@ class ProgrammingCardSession:
         if card_event.type == CardEventType.TEXT_DELTA:
             text = card_event.payload.get("text", "")
             if text:
+                source_key = self._source_key(acp_event)
                 if self._reasoning_active:
-                    self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
-                    self._reasoning_active = False
-                block_id = self._current_text_block_id()
+                    self._close_reasoning_blocks()
                 with self._flush_lock:
                     self._flush_lock_holder.held = True
                     try:
-                        if self._text_active and self._active_text_block_id != block_id:
-                            self._flush_now()
-                            self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
-                            self._text_active = False
-                        if not self._text_active:
-                            self._active_text_block_id = block_id
-                            self._rotator.dispatch(CardEvent.text_started(block_id))
-                            self._text_active = True
-                        self._pending_text_block_id = self._active_text_block_id
-                        self._pending_text += text
+                        block_id = self._ensure_text_block(source_key)
+                        self._pending_text_block_id = block_id
+                        self._pending_text_by_block[block_id] = self._pending_text_by_block.get(block_id, "") + text
                         self._schedule_flush()
                     finally:
                         self._flush_lock_holder.held = False
@@ -195,15 +196,12 @@ class ProgrammingCardSession:
 
         if card_event.type == CardEventType.REASONING_DELTA:
             self._flush_now()
-            if not self._reasoning_active:
-                block_id = self._current_reasoning_block_id()
-                self._active_reasoning_block_id = block_id
-                self._rotator.dispatch(CardEvent.reasoning_started(block_id))
-                self._reasoning_active = True
+            source_key = self._source_key(acp_event)
+            block_id = self._ensure_reasoning_block(source_key)
             # Override the block_id in the delta to match the current reasoning block
             card_event = CardEvent(
                 type=card_event.type,
-                payload={**card_event.payload, "block_id": self._active_reasoning_block_id},
+                payload={**card_event.payload, "block_id": block_id},
             )
             self._rotator.dispatch(card_event)
             return
@@ -212,20 +210,22 @@ class ProgrammingCardSession:
         self._flush_now()
 
         if card_event.type == CardEventType.TOOL_STARTED and self._reasoning_active:
-            self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
-            self._reasoning_active = False
+            self._close_reasoning_blocks()
 
         # Tool events mark text as inactive and bump reasoning boundary
         if card_event.type == CardEventType.TOOL_STARTED:
             self._last_tool_boundary_seq += 1
             self._last_reasoning_boundary_seq += 1
             if self._text_active:
-                self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
-                self._text_active = False
+                self._close_text_blocks()
 
         # Text resumed after tool
         if card_event.type == CardEventType.TEXT_STARTED:
             self._text_active = True
+            block_id = card_event.payload.get("block_id") or self._active_text_block_id
+            self._active_text_block_id = block_id
+            self._text_blocks_by_source["main"] = block_id
+            self._active_text_sources.add("main")
 
         self._rotator.dispatch(card_event)
 
@@ -235,12 +235,11 @@ class ProgrammingCardSession:
             with self._flush_lock:
                 self._flush_lock_holder.held = True
                 try:
-                    if not self._text_active:
-                        self._active_text_block_id = "_active_text"
-                        self._rotator.dispatch(CardEvent.text_started(self._active_text_block_id))
-                        self._text_active = True
-                    self._pending_text_block_id = self._active_text_block_id
-                    self._pending_text += text
+                    block_id = self._ensure_text_block("main")
+                    self._pending_text_block_id = block_id
+                    self._pending_text_by_block[block_id] = (
+                        self._pending_text_by_block.get(block_id, "") + text
+                    )
                     self._schedule_flush()
                 finally:
                     self._flush_lock_holder.held = False
@@ -255,11 +254,9 @@ class ProgrammingCardSession:
         """
         self._flush_now()
         if self._reasoning_active:
-            self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
-            self._reasoning_active = False
+            self._close_reasoning_blocks()
         if self._text_active:
-            self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
-            self._text_active = False
+            self._close_text_blocks()
         self._finish_agent_sessions(failed=False)
         # If no text was streamed into the card, use fallback_text as completion
         # summary so the user sees the answer instead of a blank card.
@@ -276,21 +273,10 @@ class ProgrammingCardSession:
         """Mark the session as failed."""
         self._cancel_timer()
         if self._text_active:
-            # Flush any pending text before failing
-            pending = ""
-            pending_block_id = self._active_text_block_id
-            with self._flush_lock:
-                pending = self._pending_text
-                pending_block_id = self._pending_text_block_id or self._active_text_block_id
-                self._pending_text = ""
-                self._pending_text_block_id = None
-            if pending:
-                self._rotator.dispatch(CardEvent.text_delta(pending_block_id, pending))
-            self._rotator.dispatch(CardEvent.text_done(self._active_text_block_id))
-            self._text_active = False
+            self._flush_now()
+            self._close_text_blocks()
         if self._reasoning_active:
-            self._rotator.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
-            self._reasoning_active = False
+            self._close_reasoning_blocks()
         self._finish_agent_sessions(failed=True, error=error)
         self._rotator.dispatch(CardEvent.failed(error))
         self._stop_ticker()
@@ -345,24 +331,68 @@ class ProgrammingCardSession:
         self._cancel_timer()
         pending = ""
         block_id = self._active_text_block_id
+        pending_by_block: dict[str, str] = {}
         with self._flush_lock:
             pending = self._pending_text
             block_id = self._pending_text_block_id or self._active_text_block_id
+            pending_by_block = dict(self._pending_text_by_block)
             self._pending_text = ""
             self._pending_text_block_id = None
-        if pending and not self._rotator.current.closed:
-            self._rotator.dispatch(CardEvent.text_delta(block_id, pending))
+            self._pending_text_by_block.clear()
+        if pending and block_id not in pending_by_block:
+            pending_by_block[block_id] = pending
+        if not self._rotator.current.closed:
+            for pending_block_id, pending_text in pending_by_block.items():
+                if pending_text:
+                    self._rotator.dispatch(CardEvent.text_delta(pending_block_id, pending_text))
 
-    def _current_text_block_id(self) -> str:
+    def _ensure_text_block(self, source_key: str) -> str:
+        """Open or reuse the current logical text block for one source."""
+        if source_key in self._active_text_sources:
+            return self._text_blocks_by_source.get(source_key, self._active_text_block_id)
+        block_id = self._current_text_block_id(source_key)
+        self._active_text_block_id = block_id
+        self._text_blocks_by_source[source_key] = block_id
+        self._rotator.dispatch(CardEvent.text_started(block_id))
+        self._active_text_sources.add(source_key)
+        self._text_active = True
+        return block_id
+
+    def _ensure_reasoning_block(self, source_key: str) -> str:
+        """Open or reuse the current logical reasoning block for one source."""
+        if source_key in self._active_reasoning_sources:
+            return self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
+        block_id = self._current_reasoning_block_id(source_key)
+        self._active_reasoning_block_id = block_id
+        self._reasoning_blocks_by_source[source_key] = block_id
+        self._rotator.dispatch(CardEvent.reasoning_started(block_id))
+        self._active_reasoning_sources.add(source_key)
+        self._reasoning_active = True
+        return block_id
+
+    def _close_text_blocks(self) -> None:
+        for source_key in list(self._active_text_sources):
+            block_id = self._text_blocks_by_source.get(source_key, self._active_text_block_id)
+            self._rotator.dispatch(CardEvent.text_done(block_id))
+        self._active_text_sources.clear()
+        self._text_active = False
+
+    def _close_reasoning_blocks(self) -> None:
+        for source_key in list(self._active_reasoning_sources):
+            block_id = self._reasoning_blocks_by_source.get(source_key, self._active_reasoning_block_id)
+            self._rotator.dispatch(CardEvent.reasoning_done(block_id))
+        self._active_reasoning_sources.clear()
+        self._reasoning_active = False
+
+    def _current_text_block_id(self, source_key: str = "main") -> str:
         """Return the stable text block ID for the current ACP turn."""
         if self._text_turn_seq == 0:
             self._text_turn_seq = 1
-            return "_active_text"
         if self._last_tool_boundary_seq >= self._text_turn_seq:
             self._text_turn_seq = self._last_tool_boundary_seq + 1
-        return f"_turn_{self._text_turn_seq}_text"
+        return self._block_id("text", self._text_turn_seq, source_key)
 
-    def _current_reasoning_block_id(self) -> str:
+    def _current_reasoning_block_id(self, source_key: str = "main") -> str:
         """Return a unique reasoning block ID for the current ACP turn.
 
         Mirrors ``_current_text_block_id`` to ensure each reasoning segment
@@ -372,10 +402,26 @@ class ProgrammingCardSession:
         """
         if self._reasoning_turn_seq == 0:
             self._reasoning_turn_seq = 1
-            return "_active_reasoning"
         if self._last_reasoning_boundary_seq >= self._reasoning_turn_seq:
             self._reasoning_turn_seq = self._last_reasoning_boundary_seq + 1
-        return f"_turn_{self._reasoning_turn_seq}_reasoning"
+        return self._block_id("reasoning", self._reasoning_turn_seq, source_key)
+
+    @staticmethod
+    def _source_key(acp_event: "ACPEvent") -> str:
+        source_id = getattr(acp_event, "source_id", None)
+        if source_id and isinstance(source_id, str):
+            return source_id.strip() or "main"
+        return "main"
+
+    @staticmethod
+    def _safe_source_suffix(source_key: str) -> str:
+        suffix = re.sub(r"[^a-zA-Z0-9_-]+", "_", source_key).strip("_")
+        return suffix[:40] or "main"
+
+    def _block_id(self, kind: str, seq: int, source_key: str) -> str:
+        if source_key == "main":
+            return f"_turn_{seq}_{kind}" if seq > 1 else f"_active_{kind}"
+        return f"_turn_{seq}_{kind}_{self._safe_source_suffix(source_key)}"
 
     def _cancel_timer(self) -> None:
         """Cancel any pending flush timer."""
