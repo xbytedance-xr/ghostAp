@@ -13,15 +13,10 @@ def render_reasoning_panel(
     *,
     content_override: str | None = None,
 ) -> dict:
-    """Render reasoning/thinking as a column_set with grey left border.
+    """Render reasoning/thinking as a compact grey left-aligned panel.
 
     Always visible (no collapsible). Active reasoning shows full content;
     completed reasoning keeps tail truncation via reasoning_tail_chars.
-
-    The left narrow column uses ``background_style="grey"`` to approximate
-    the UX mockup's ``border-left: 3px solid #b9c0c8``.  Feishu Schema 2.0
-    does not support CSS border properties on columns, so this is the closest
-    achievable visual under current schema constraints.
 
     Args:
         block: The reasoning block (used for status/char_count metadata).
@@ -60,21 +55,13 @@ def render_reasoning_panel(
                 "width": "weighted",
                 "weight": 1,
                 "vertical_align": "top",
-                "background_style": "grey",
-                # Narrow spacer column approximating the UX mockup's left border.
-                # Must stay a non-markdown element so the bridge-phrase injector
-                # (renderer._prepend_bridge_phrase) lands in the content column below.
                 "elements": [
-                    {"tag": "div", "text": {"tag": "plain_text", "content": " "}},
-                ],
-            },
-            {
-                "tag": "column",
-                "width": "weighted",
-                "weight": 20,
-                "vertical_align": "top",
-                "elements": [
-                    {"tag": "markdown", "content": display_content, "text_size": "normal"},
+                    {
+                        "tag": "markdown",
+                        "content": display_content,
+                        "text_size": "normal",
+                        "text_align": "left",
+                    },
                 ],
             },
         ],

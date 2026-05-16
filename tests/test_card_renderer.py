@@ -267,7 +267,7 @@ class TestUnifiedCardSections:
         )
 
     def test_bridge_phrase_prepended_to_reasoning_column_set(self):
-        """Bridge phrase prepends into column_set's second column (reasoning panel)."""
+        """Bridge phrase prepends into the left-aligned reasoning panel content."""
         state = CardState(
             blocks=(ContentBlock(kind="reasoning", block_id="r1", content="分析中...", status="active"),),
             metadata=CardMetadata(bridge_phrase="续接："),
@@ -279,9 +279,12 @@ class TestUnifiedCardSections:
         # Find the column_set (reasoning panel)
         col_sets = [el for el in body if el.get("tag") == "column_set" and el.get("background_style") == "grey"]
         assert len(col_sets) >= 1
-        # Bridge phrase should be in the content column (second column, weight=20)
-        content_col = col_sets[0]["columns"][1]
-        md_content = content_col["elements"][0]["content"]
+        # The reasoning panel is a single content column so Feishu keeps quote text left-aligned.
+        assert len(col_sets[0]["columns"]) == 1
+        content_col = col_sets[0]["columns"][0]
+        markdown = content_col["elements"][0]
+        assert markdown["text_align"] == "left"
+        md_content = markdown["content"]
         assert md_content.startswith("续接：")
 
     def test_programming_card_does_not_inject_activity_summary_panel(self):
@@ -668,6 +671,27 @@ class TestMultipleBlockTypes:
         cards = render_card(state, RenderBudget())
         body = cards[0]._card_json["body"]["elements"]
         assert any(el.get("tag") == "column_set" and el.get("background_style") == "grey" for el in body)
+
+    def test_reasoning_blocks_paginate_under_feishu_node_limit(self):
+        """Reasoning node estimates should keep rendered pages below the hard Feishu cap."""
+        state = CardState(
+            blocks=tuple(
+                ContentBlock(
+                    kind="reasoning",
+                    block_id=f"r{idx}",
+                    content=f"thinking about item {idx}",
+                    status="completed",
+                )
+                for idx in range(80)
+            ),
+        )
+
+        cards = render_card(state, RenderBudget(node_budget=60))
+
+        assert len(cards) > 1
+        for card in cards:
+            node_count = sum(1 for node in _iter_dict_nodes(card._card_json) if "tag" in node)
+            assert node_count <= 200
 
     def test_plan_block_renders(self):
         state = CardState(

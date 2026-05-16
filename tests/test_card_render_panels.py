@@ -136,27 +136,26 @@ class TestToolSummary:
 
 class TestReasoningPanel:
     def test_reasoning_active(self):
-        """Active reasoning → column_set with grey background, 2 columns (border + content)."""
+        """Active reasoning → grey, left-aligned content panel."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="thinking...")
         result = render_reasoning_panel(block)
         assert result["tag"] == "column_set"
         assert result["background_style"] == "grey"
-        assert len(result["columns"]) == 2
-        # First column is narrow border spacer (weight=1)
-        assert result["columns"][0]["weight"] == 1
-        # Second column is content (weight=20)
-        md_content = result["columns"][1]["elements"][0]["content"]
+        assert len(result["columns"]) == 1
+        markdown = result["columns"][0]["elements"][0]
+        assert markdown["text_align"] == "left"
+        md_content = markdown["content"]
         assert "深度思考中" in md_content
         assert "thinking..." in md_content
 
     def test_reasoning_done(self):
-        """Done reasoning → column_set, shows char count in title, content in second column."""
+        """Done reasoning → column_set, shows char count in title."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="completed",
                            content="full thought", char_count=1500)
         result = render_reasoning_panel(block)
         assert result["tag"] == "column_set"
-        assert len(result["columns"]) == 2
-        md_content = result["columns"][1]["elements"][0]["content"]
+        assert len(result["columns"]) == 1
+        md_content = result["columns"][0]["elements"][0]["content"]
         assert "1500" in md_content
         assert "思考完成" in md_content
 
@@ -167,7 +166,7 @@ class TestReasoningPanel:
                            content=long_content, char_count=1000)
         budget = RenderBudget(reasoning_tail_chars=500)
         result = render_reasoning_panel(block, budget=budget)
-        md_content = result["columns"][1]["elements"][0]["content"]
+        md_content = result["columns"][0]["elements"][0]["content"]
         # Extract just the reasoning body (after title line)
         body = md_content.split("\n", 1)[1] if "\n" in md_content else md_content
         assert body.startswith("…")
@@ -177,7 +176,7 @@ class TestReasoningPanel:
         """content_override replaces block.content for per-atom correctness."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="original")
         result = render_reasoning_panel(block, content_override="overridden text")
-        md_content = result["columns"][1]["elements"][0]["content"]
+        md_content = result["columns"][0]["elements"][0]["content"]
         assert "overridden text" in md_content
         assert "original" not in md_content
 
@@ -191,13 +190,13 @@ class TestReasoningPanel:
         """content='' should render title only, no body text (AC-22)."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="")
         result = render_reasoning_panel(block)
-        md_content = result["columns"][1]["elements"][0]["content"]
+        md_content = result["columns"][0]["elements"][0]["content"]
         assert "深度思考中" in md_content
         # Empty content → title only, no trailing newline with body text
         assert "\n" not in md_content
 
-    def test_reasoning_panel_left_column_has_grey_background(self):
-        """column_set should have background_style='grey' for left border visual (AC-22)."""
+    def test_reasoning_panel_has_grey_background(self):
+        """column_set should keep background_style='grey' for quote visual (AC-22)."""
         block = ContentBlock(kind="reasoning", block_id="r1", status="active", content="test")
         result = render_reasoning_panel(block)
         assert result["background_style"] == "grey"

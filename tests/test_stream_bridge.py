@@ -139,3 +139,71 @@ class TestACPStreamBridgeBehavior:
 
         bridge.on_event(evt)
         assert disp.events[0].type == CardEventType.REASONING_STARTED
+
+    def test_soft_text_reasoning_alternation_reuses_logical_blocks(self):
+        """Interleaved text/reasoning chunks should not become tiny card blocks."""
+        from unittest.mock import MagicMock
+        from src.acp import ACPEventType
+
+        disp = FakeDispatchable()
+        bridge = ACPStreamBridge(disp)
+
+        def _event(event_type, text):
+            evt = MagicMock()
+            evt.event_type = event_type
+            evt.text = text
+            evt.tool = None
+            evt.plan = None
+            return evt
+
+        bridge.on_event(_event(ACPEventType.TEXT_CHUNK, "正文第一段"))
+        bridge.on_event(_event(ACPEventType.THOUGHT_CHUNK, "引用第一段"))
+        bridge.on_event(_event(ACPEventType.TEXT_CHUNK, "正文第二段"))
+        bridge.on_event(_event(ACPEventType.THOUGHT_CHUNK, "引用第二段"))
+
+        text_started = [e for e in disp.events if e.type == CardEventType.TEXT_STARTED]
+        reasoning_started = [e for e in disp.events if e.type == CardEventType.REASONING_STARTED]
+        text_done = [e for e in disp.events if e.type == CardEventType.TEXT_DONE]
+        reasoning_done = [e for e in disp.events if e.type == CardEventType.REASONING_DONE]
+        text_deltas = [e for e in disp.events if e.type == CardEventType.TEXT_DELTA]
+        reasoning_deltas = [e for e in disp.events if e.type == CardEventType.REASONING_DELTA]
+
+        assert len(text_started) == 1
+        assert len(reasoning_started) == 1
+        assert text_done == []
+        assert reasoning_done == []
+        assert {e.payload["block_id"] for e in text_deltas} == {"_active_text"}
+        assert {e.payload["block_id"] for e in reasoning_deltas} == {"_active_reasoning"}
+
+        bridge.close_open_blocks()
+
+        assert sum(e.type == CardEventType.TEXT_DONE for e in disp.events) == 1
+        assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 1
+
+    def test_tool_call_start_is_hard_boundary_for_open_blocks(self):
+        """Tool starts close active text/reasoning so later output gets new block IDs."""
+        from unittest.mock import MagicMock
+        from src.acp import ACPEventType
+
+        disp = FakeDispatchable()
+        bridge = ACPStreamBridge(disp)
+
+        def _event(event_type, text=""):
+            evt = MagicMock()
+            evt.event_type = event_type
+            evt.text = text
+            evt.tool = "Read" if event_type == ACPEventType.TOOL_CALL_START else None
+            evt.tool_call = None
+            evt.plan = None
+            evt.args = {"file_path": "src/app.py"} if event_type == ACPEventType.TOOL_CALL_START else None
+            return evt
+
+        bridge.on_event(_event(ACPEventType.TEXT_CHUNK, "正文"))
+        bridge.on_event(_event(ACPEventType.THOUGHT_CHUNK, "引用"))
+        bridge.on_event(_event(ACPEventType.TOOL_CALL_START))
+        bridge.on_event(_event(ACPEventType.TEXT_CHUNK, "工具后的正文"))
+
+        assert sum(e.type == CardEventType.TEXT_DONE for e in disp.events) == 1
+        assert sum(e.type == CardEventType.REASONING_DONE for e in disp.events) == 1
+        text_started = [e for e in disp.events if e.type == CardEventType.TEXT_STARTED]
+        assert [e.payload["block_id"] for e in text_started] == ["_active_text", "_turn_2_text"]

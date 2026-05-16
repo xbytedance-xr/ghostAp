@@ -32,8 +32,10 @@ class ACPStreamBridge:
         self._dispatchable: Dispatchable = dispatchable
         self._text_active: bool = False
         self._reasoning_active: bool = False
-        # Per-turn counters to generate unique block IDs and avoid
-        # block_index last-wins collisions across multiple turns.
+        # Per-turn counters generate unique block IDs at hard stream
+        # boundaries. Soft alternation between text and reasoning keeps the
+        # same logical blocks so Feishu cards do not fragment into one-token
+        # markdown/panel rows.
         self._text_turn_seq: int = 0
         self._reasoning_turn_seq: int = 0
         self._active_text_block_id: str = "_active_text"
@@ -54,25 +56,9 @@ class ACPStreamBridge:
 
         with self._lock:
             if acp_event.event_type == ACPEventType.THOUGHT_CHUNK:
-                if self._text_active:
-                    self._dispatchable.dispatch(CardEvent.text_done(self._active_text_block_id))
-                    self._text_active = False
-                if not self._reasoning_active:
-                    self._reasoning_turn_seq += 1
-                    bid = f"_turn_{self._reasoning_turn_seq}_reasoning" if self._reasoning_turn_seq > 1 else "_active_reasoning"
-                    self._active_reasoning_block_id = bid
-                    self._dispatchable.dispatch(CardEvent.reasoning_started(bid))
-                    self._reasoning_active = True
+                self._ensure_reasoning_block_locked()
             elif acp_event.event_type == ACPEventType.TEXT_CHUNK:
-                if self._reasoning_active:
-                    self._dispatchable.dispatch(CardEvent.reasoning_done(self._active_reasoning_block_id))
-                    self._reasoning_active = False
-                if not self._text_active:
-                    self._text_turn_seq += 1
-                    bid = f"_turn_{self._text_turn_seq}_text" if self._text_turn_seq > 1 else "_active_text"
-                    self._active_text_block_id = bid
-                    self._dispatchable.dispatch(CardEvent.text_started(bid))
-                    self._text_active = True
+                self._ensure_text_block_locked()
             elif acp_event.event_type == ACPEventType.TOOL_CALL_START:
                 self._close_open_blocks_locked()
 
@@ -99,3 +85,35 @@ class ACPStreamBridge:
         if self._text_active:
             self._dispatchable.dispatch(CardEvent.text_done(self._active_text_block_id))
             self._text_active = False
+
+    def _ensure_text_block_locked(self) -> None:
+        """Open the current logical text block if needed."""
+        from src.card.events import CardEvent
+
+        if self._text_active:
+            return
+        self._text_turn_seq += 1
+        bid = (
+            f"_turn_{self._text_turn_seq}_text"
+            if self._text_turn_seq > 1
+            else "_active_text"
+        )
+        self._active_text_block_id = bid
+        self._dispatchable.dispatch(CardEvent.text_started(bid))
+        self._text_active = True
+
+    def _ensure_reasoning_block_locked(self) -> None:
+        """Open the current logical reasoning block if needed."""
+        from src.card.events import CardEvent
+
+        if self._reasoning_active:
+            return
+        self._reasoning_turn_seq += 1
+        bid = (
+            f"_turn_{self._reasoning_turn_seq}_reasoning"
+            if self._reasoning_turn_seq > 1
+            else "_active_reasoning"
+        )
+        self._active_reasoning_block_id = bid
+        self._dispatchable.dispatch(CardEvent.reasoning_started(bid))
+        self._reasoning_active = True
