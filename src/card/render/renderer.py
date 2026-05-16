@@ -138,10 +138,19 @@ def render_card(
         # Detect active element for streaming
         active_element = _find_active_element(page_atoms, block_index)
 
-        # Determine streaming mode
-        has_active_text = active_element is not None
+        # Determine streaming mode. CardKit streaming is only reliable for a
+        # single markdown element. Rich GhostAP cards have header/status/footer
+        # structure, so they use ordinary card PATCH updates to keep markdown
+        # layout stable in Feishu.
         is_running = state.terminal == "running"
-        streaming = has_active_text and is_running
+        streaming = (
+            active_element is not None
+            and is_running
+            and _supports_cardkit_streaming(body_elements, active_element)
+        )
+        if not streaming:
+            active_element = None
+            _strip_streaming_element_ids(body_elements)
 
         # Build the full card JSON
         card_json = _assemble_card_json(
@@ -176,7 +185,7 @@ def render_card(
                 # then a jarring switch to stream_element that produces a visual newline
                 # artifact in Feishu CardKit.
                 if not elem.get("element_id"):
-                    page_sig_parts.append(str(elem.get("content", ""))[:64])
+                    page_sig_parts.append(_content_signature(elem.get("content", "")))
             elif tag == "collapsible_panel":
                 header = elem.get("header")
                 if isinstance(header, dict):
@@ -188,7 +197,7 @@ def render_card(
                 for col in elem.get("columns", []):
                     for item in col.get("elements", []):
                         if item.get("tag") == "markdown":
-                            page_sig_parts.append(str(item.get("content", ""))[:64])
+                            page_sig_parts.append(_content_signature(item.get("content", "")))
                             break
         page_signature = hashlib.md5(
             "|".join(page_sig_parts).encode("utf-8")
@@ -638,6 +647,38 @@ def _find_active_element(
 
 def _is_streaming_text_ready(content: str) -> bool:
     return _visible_text_len(content) >= _MIN_STREAMING_TEXT_CHARS
+
+
+def _supports_cardkit_streaming(body_elements: list[dict], active_element: ActiveElement | None) -> bool:
+    """Return True only for the CardKit-safe single-markdown streaming shape."""
+    if active_element is None or len(body_elements) != 1:
+        return False
+    element = body_elements[0]
+    return (
+        element.get("tag") == "markdown"
+        and element.get("element_id") == active_element.element_id
+    )
+
+
+def _strip_streaming_element_ids(nodes: list[dict]) -> None:
+    """Remove element_id markers when a card will be updated via full PATCH."""
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node.pop("element_id", None)
+        child_elements = node.get("elements")
+        if isinstance(child_elements, list):
+            _strip_streaming_element_ids(child_elements)
+        columns = node.get("columns")
+        if isinstance(columns, list):
+            _strip_streaming_element_ids(columns)
+        actions = node.get("actions")
+        if isinstance(actions, list):
+            _strip_streaming_element_ids(actions)
+
+
+def _content_signature(content: object) -> str:
+    return hashlib.md5(str(content or "").encode("utf-8")).hexdigest()
 
 
 def _assemble_card_json(

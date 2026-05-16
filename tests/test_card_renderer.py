@@ -329,6 +329,82 @@ class TestStreamingMode:
         cards = render_card(state, RenderBudget())
         assert cards[0]._card_json["config"].get("streaming_mode") is True
 
+    def test_rich_running_card_uses_full_card_updates_not_cardkit_streaming(self):
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="task_list",
+                    tasks=(
+                        {"task_id": "1", "name": "检查模块", "status": "in_progress"},
+                    ),
+                    current_task_id="1",
+                ),
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content="分析这是一个代码质量审查任务，需要完整展示正文。",
+                    element_id="el_1",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget(engine_cmd="/deep"))
+        card_json = cards[0]._card_json
+
+        assert "streaming_mode" not in card_json["config"]
+        assert cards[0].active_element is None
+        markdown_elements = [
+            node
+            for node in _iter_dict_nodes(card_json["body"]["elements"])
+            if node.get("tag") == "markdown"
+        ]
+        assert not any(node.get("element_id") for node in markdown_elements)
+
+    def test_rich_running_card_text_changes_update_signature_beyond_prefix(self):
+        prefix = "分析" * 40
+        base_blocks = (
+            ContentBlock(
+                kind="task_list",
+                tasks=(
+                    {"task_id": "1", "name": "检查模块", "status": "in_progress"},
+                ),
+                current_task_id="1",
+            ),
+        )
+        state_a = CardState(
+            blocks=base_blocks
+            + (
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content=prefix + "A",
+                    element_id="el_1",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+        state_b = CardState(
+            blocks=base_blocks
+            + (
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content=prefix + "B",
+                    element_id="el_1",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        card_a = render_card(state_a, RenderBudget(engine_cmd="/deep"))[0]
+        card_b = render_card(state_b, RenderBudget(engine_cmd="/deep"))[0]
+
+        assert card_a.structure_signature != card_b.structure_signature
+
     def test_streaming_disabled_when_completed(self):
         state = CardState(
             blocks=(
