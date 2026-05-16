@@ -391,7 +391,7 @@ def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
     searched = 0
     edited = 0
     commands = 0
-    other = 0
+    tool_calls = 0
     failed = 0
 
     for b in blocks:
@@ -408,7 +408,7 @@ def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
         elif name in _COMMAND_TOOLS:
             commands += 1
         else:
-            other += 1
+            tool_calls += 1
 
     parts: list[str] = []
     if explored:
@@ -419,8 +419,8 @@ def render_activity_digest_line(blocks: list[ContentBlock]) -> str:
         parts.append(f"已编辑 {edited} 个文件")
     if commands:
         parts.append(f"已运行 {commands} 条命令")
-    if other:
-        parts.append(f"{other} 次其他调用")
+    if tool_calls:
+        parts.append(f"{tool_calls} 次工具调用")
     if failed:
         parts.append(f"{failed} 项失败")
 

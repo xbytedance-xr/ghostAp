@@ -81,11 +81,11 @@ class TestRenderActivityDigestLine:
         # Failed Read should NOT be counted in explored
         assert "已探索" not in result
 
-    def test_unknown_tool_counted_as_other(self):
+    def test_unknown_tool_counted_as_tool_call(self):
         from src.card.render.tools import render_activity_digest_line
         blocks = [self._make_block("CustomTool")]
         result = render_activity_digest_line(blocks)
-        assert "1 次其他调用" in result
+        assert "1 次工具调用" in result
 
     def test_failed_tool_not_double_counted(self):
         """A failed tool counts only in 'failed', not in its category."""
@@ -99,18 +99,18 @@ class TestRenderActivityDigestLine:
         assert "1 项失败" in result
 
     def test_tool_name_none(self):
-        """tool_name=None falls into 'other' category without error."""
+        """tool_name=None falls into the generic tool-call category without error."""
         from src.card.render.tools import render_activity_digest_line
         block = ContentBlock(kind="tool_call", block_id="b-none", tool_name=None, status="completed")
         result = render_activity_digest_line([block])
-        assert "1 次其他调用" in result
+        assert "1 次工具调用" in result
 
     def test_tool_name_empty_string(self):
-        """Empty tool_name falls into 'other' category."""
+        """Empty tool_name falls into the generic tool-call category."""
         from src.card.render.tools import render_activity_digest_line
         block = ContentBlock(kind="tool_call", block_id="b-empty", tool_name="", status="completed")
         result = render_activity_digest_line([block])
-        assert "1 次其他调用" in result
+        assert "1 次工具调用" in result
 
 
 class TestRenderActivityDigestPanel:

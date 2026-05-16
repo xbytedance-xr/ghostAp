@@ -78,7 +78,7 @@ class TestFlattenToAtoms:
         assert len(atoms) == 1
         atom = atoms[0]
         assert atom.kind == "activity_digest"
-        assert "4 次其他调用" in atom.content
+        assert "4 次工具调用" in atom.content
         assert atom.node_count == 4
 
     def test_few_completed_tools_become_activity_digest(self) -> None:
@@ -99,7 +99,7 @@ class TestFlattenToAtoms:
         # New behavior: all completed tools grouped into one activity_digest
         assert len(atoms) == 1
         assert atoms[0].kind == "activity_digest"
-        assert "2 次其他调用" in atoms[0].content
+        assert "2 次工具调用" in atoms[0].content
 
     def test_active_tool_never_folded(self) -> None:
         """Active tool stays independent even among completed tools."""
