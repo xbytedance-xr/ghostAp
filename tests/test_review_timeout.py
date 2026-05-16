@@ -12,36 +12,30 @@ Covers:
 import concurrent.futures
 import logging
 import threading
-import types
-from dataclasses import dataclass, field
-from typing import Optional
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from src.card.ui_text import UI_TEXT
+from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from src.spec_engine.convergence import detect_convergence
 from src.spec_engine.models import (
     CriteriaTracker,
     SpecCycle,
-    SpecCycleMetrics,
     SpecProject,
 )
-from types import SimpleNamespace
 from src.spec_engine.review import (
     PipelineRetryContext,
     ReviewCircuitState,
+    _conduct_review_pipeline,
     attempt_pipeline_retry,
     build_retry_diagnostics,
-    _conduct_review_pipeline,
-    handle_pipeline_errors_with_retry,
-    outcomes_to_review_result,
     build_review_exception_diagnostics,
     conduct_review,
-    normalize_review_diagnostics,
+    handle_pipeline_errors_with_retry,
+    outcomes_to_review_result,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -323,7 +317,6 @@ class TestCircuitBreaker:
         for cycle in range(1, 4):
             self._run_review_cycle(settings, project, circuit, cycle)
 
-        open_until = circuit.review_circuit_open_until_cycle
 
         # Cycle within cooldown should be skipped (no prompt sent)
         send_called = False
@@ -379,7 +372,7 @@ class TestCircuitBreaker:
 
         with patch("src.spec_engine.review.logger.info", side_effect=capture_info):
             with patch("src.utils.metrics_exporter.get_metrics_exporter", side_effect=ImportError("test")):
-                result = conduct_review(
+                conduct_review(
                     session=MagicMock(),
                     settings=settings,
                     project=project,
@@ -964,7 +957,7 @@ class TestNormalizeDiagnosticsErrorTextTruncation:
 class TestPipelineAllTimeoutIncrementsCircuit:
     """When all workers in the pipeline path fail with TIMEOUT,
     circuit.consecutive_timeouts and review_failure_consecutive must increment.
-    
+
     With auto-retry enabled (default), the pipeline retries once before
     incrementing the circuit counters.
     """
@@ -1045,8 +1038,7 @@ class TestBudgetSecondsWithMaxParallel3:
     """Verify budget_seconds formula with max_parallel=3."""
 
     def test_budget_seconds_with_max_parallel_3(self):
-        import math
-        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
+        from src.spec_engine.perspective_worker import PerspectiveOutcome
         from src.spec_engine.review_artifacts import ReviewArtifacts
 
         settings = _make_settings(
@@ -1707,7 +1699,7 @@ class TestLowDelayRetryStarting:
     skips WAITING and emits EXECUTING directly."""
 
     def test_low_delay_sends_executing_directly(self):
-        from src.spec_engine.retry_status import RetryStatus, RetryEvent
+        from src.spec_engine.retry_status import RetryEvent, RetryStatus
 
         circuit = ReviewCircuitState()
         status_messages = []
@@ -1746,6 +1738,7 @@ class TestSettingsMaxDelayValidation:
 
     def test_zero_raises_validation_error(self):
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError):
@@ -1753,6 +1746,7 @@ class TestSettingsMaxDelayValidation:
 
     def test_negative_raises_validation_error(self):
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError):
@@ -1765,6 +1759,7 @@ class TestSettingsCrossFieldValidation:
     def test_max_delay_exceeds_timeout_raises(self):
         """spec_review_retry_max_delay > spec_review_timeout must fail."""
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError, match="spec_review_retry_max_delay"):
@@ -1777,6 +1772,7 @@ class TestSettingsCrossFieldValidation:
     def test_timeout_zero_raises(self):
         """spec_review_timeout=0 must fail field validator."""
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError, match="spec_review_timeout"):
@@ -1785,6 +1781,7 @@ class TestSettingsCrossFieldValidation:
     def test_min_timeout_negative_raises(self):
         """spec_review_min_timeout=-1 must fail field validator."""
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError, match="spec_review_min_timeout"):
@@ -1793,6 +1790,7 @@ class TestSettingsCrossFieldValidation:
     def test_hard_floor_zero_raises(self):
         """spec_review_hard_floor=0 must fail field validator."""
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError, match="spec_review_hard_floor"):
@@ -1801,6 +1799,7 @@ class TestSettingsCrossFieldValidation:
     def test_hard_floor_exceeds_min_timeout_raises(self):
         """hard_floor > min_timeout must fail model validator."""
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError, match="spec_review_hard_floor"):
@@ -1814,6 +1813,7 @@ class TestSettingsCrossFieldValidation:
     def test_total_retry_budget_exceeds_limit_raises(self):
         """max_delay * max_attempts > timeout * 2 must fail."""
         from pydantic import ValidationError
+
         from src.config import Settings
 
         with pytest.raises(ValidationError, match="请减小 SPEC_REVIEW_RETRY_MAX_ATTEMPTS 或 SPEC_REVIEW_RETRY_MAX_DELAY"):
@@ -2372,7 +2372,9 @@ class TestConfigMaxAttemptsUpperBound:
     def test_max_attempts_over_10_raises(self):
         """Settings rejects spec_review_retry_max_attempts > 10."""
         import os
+
         from pydantic import ValidationError
+
         from src.config import Settings
 
         env = {
@@ -2398,7 +2400,9 @@ class TestConfigMaxAttemptsNegative:
     def test_max_attempts_negative_raises_value_error(self):
         """Settings rejects spec_review_retry_max_attempts = -1."""
         import os
+
         from pydantic import ValidationError
+
         from src.config import Settings
 
         env = {
@@ -2460,6 +2464,7 @@ class TestCancelEventMidMultiRetry:
     def test_cancel_event_mid_multi_retry(self):
         """max_attempts=3, cancel_event set after first call — total calls <= 2."""
         import threading
+
         from src.spec_engine.cycle_budget import CycleBudget
 
         circuit = ReviewCircuitState()
@@ -2674,8 +2679,8 @@ class TestBuildRetryDiagnosticsBranches:
         return circuit
 
     def _make_outcomes(self, error_code):
-        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
         from src.engine_base import PerspectiveReview, ReviewPerspective
+        from src.spec_engine.perspective_worker import PerspectiveOutcome
         p = ReviewPerspective.ARCHITECT
         return [
             PerspectiveOutcome(
@@ -2694,8 +2699,8 @@ class TestBuildRetryDiagnosticsBranches:
     @pytest.mark.parametrize("max_attempts", [1, 3])
     def test_retry_exhausted_branches(self, max_attempts):
         """Branch: all_timeout=True, retry_attempted=True."""
-        from src.spec_engine.perspective_worker import ReviewErrorCode
         from src.card.ui_text import UI_TEXT
+        from src.spec_engine.perspective_worker import ReviewErrorCode
         from src.utils.text import format_friendly_duration
 
         expected_text = UI_TEXT["retry_exhausted"].format(
@@ -2731,8 +2736,8 @@ class TestBuildRetryDiagnosticsBranches:
 
     def test_timeout_worker_busy_no_retry(self):
         """Branch: all_timeout=True, retry_attempted=False, max_attempts=0."""
-        from src.spec_engine.perspective_worker import ReviewErrorCode
         from src.card.ui_text import UI_TEXT
+        from src.spec_engine.perspective_worker import ReviewErrorCode
 
         outcomes = self._make_outcomes(ReviewErrorCode.TIMEOUT)
         circuit = self._make_circuit()
@@ -2756,12 +2761,12 @@ class TestBuildRetryDiagnosticsBranches:
 
     def test_timeout_worker_busy_with_retry_enabled(self):
         """Branch: all_timeout=True, retry_attempted=False, max_attempts>0.
-        
+
         Even though max_attempts > 0, since retry was not attempted,
         we should see retry_no_retry (not retry_exhausted).
         """
-        from src.spec_engine.perspective_worker import ReviewErrorCode
         from src.card.ui_text import UI_TEXT
+        from src.spec_engine.perspective_worker import ReviewErrorCode
 
         outcomes = self._make_outcomes(ReviewErrorCode.TIMEOUT)
         circuit = self._make_circuit()
@@ -2785,9 +2790,9 @@ class TestBuildRetryDiagnosticsBranches:
 
     def test_partial_timeout_branch(self):
         """Branch: all_timeout=False, first failed worker has TIMEOUT error_code."""
-        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
-        from src.engine_base import PerspectiveReview, ReviewPerspective
         from src.card.ui_text import UI_TEXT
+        from src.engine_base import PerspectiveReview, ReviewPerspective
+        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
 
         p = ReviewPerspective.ARCHITECT
         failed = [PerspectiveOutcome(
@@ -2936,7 +2941,6 @@ class TestRetryMaxAttemptsZeroDisablesRetry:
 
     def test_max_attempts_zero_no_retry_via_pipeline(self):
         """With max_attempts=0, pipeline_fn should NOT be called a second time."""
-        from unittest.mock import patch
 
         circuit = ReviewCircuitState()
         settings = _make_retry_settings(

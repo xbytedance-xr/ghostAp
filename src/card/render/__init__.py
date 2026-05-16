@@ -7,7 +7,7 @@ Public API:
 """
 
 from src.card.render.budget import RenderBudget
-from src.card.render.renderer import render_card, compute_structure_signature
+from src.card.render.renderer import compute_structure_signature, render_card
 from src.card.types import ActiveElement, RenderedCard
 
 __all__ = [

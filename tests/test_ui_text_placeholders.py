@@ -79,7 +79,7 @@ class TestUITextPlaceholderConsistency:
             for placeholder in found:
                 if placeholder in _DEPRECATED_PLACEHOLDERS:
                     violations.append(f"{key}: found deprecated placeholder {{{placeholder}}}")
-        assert violations == [], f"Deprecated placeholders found:\n" + "\n".join(violations)
+        assert violations == [], "Deprecated placeholders found:\n" + "\n".join(violations)
 
     def test_all_format_strings_renderable(self):
         """All UI_TEXT entries with {placeholders} can be .format() without KeyError."""
@@ -101,7 +101,7 @@ class TestUITextPlaceholderConsistency:
                 value.format(**kwargs)
             except (KeyError, IndexError, ValueError) as exc:
                 failures.append(f"{key}: {exc}")
-        assert failures == [], f"Format failures:\n" + "\n".join(failures)
+        assert failures == [], "Format failures:\n" + "\n".join(failures)
 
 
 class TestDurationPlaceholders:
@@ -130,6 +130,22 @@ class TestCleanupButtonConsistency:
 
     def test_system_worktree_btn_cleanup_uses_broom_emoji(self):
         assert "🧹" in UI_TEXT["system_worktree_btn_cleanup"]
+
+    def test_removed_system_worktree_alias_keys_do_not_return(self):
+        removed_aliases = {
+            "system_worktree_confirm_title",
+            "system_worktree_confirm_header",
+            "system_worktree_confirm_banner",
+            "system_worktree_btn_confirm",
+            "system_worktree_btn_reselect",
+            "system_worktree_progress_title",
+            "system_worktree_progress_header",
+            "system_worktree_progress_banner",
+            "system_worktree_btn_execute",
+            "system_worktree_btn_retry",
+        }
+
+        assert removed_aliases.isdisjoint(UI_TEXT)
 
 
 class TestTTLPrewarningText:

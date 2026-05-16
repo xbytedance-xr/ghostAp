@@ -3,7 +3,7 @@
 
 class TestThemes:
     def test_import_from_new_module(self):
-        from src.card.themes import ProjectTheme, THEMES, DARK_THEME_NAMES, ENGINE_STYLES, PANEL_STYLES, get_theme
+        from src.card.themes import DARK_THEME_NAMES, ENGINE_STYLES, THEMES, ProjectTheme, get_theme
         assert len(THEMES) >= 18
         assert isinstance(DARK_THEME_NAMES, (set, frozenset))
         assert "default" in ENGINE_STYLES
@@ -11,7 +11,7 @@ class TestThemes:
         assert isinstance(theme, ProjectTheme)
 
     def test_get_available_themes(self):
-        from src.card.themes import get_available_themes, DARK_THEME_NAMES
+        from src.card.themes import DARK_THEME_NAMES, get_available_themes
         light_themes = get_available_themes(include_dark=False)
         all_themes = get_available_themes(include_dark=True)
         assert len(all_themes) >= 18
@@ -54,7 +54,7 @@ class TestButtonsConfig:
 
 class TestTerminal:
     def test_import_from_new_module(self):
-        from src.card.terminal import TERMINAL_MARKERS, FOOTER_STATUS
+        from src.card.terminal import FOOTER_STATUS, TERMINAL_MARKERS
         assert isinstance(TERMINAL_MARKERS, dict)
         assert isinstance(FOOTER_STATUS, dict)
         assert "completed" in TERMINAL_MARKERS or "success" in TERMINAL_MARKERS

@@ -21,7 +21,6 @@ from src.card.builders.lock import (
     verify_command_sig,
 )
 
-
 # ---------------------------------------------------------------------------
 # format_elapsed_ago
 # ---------------------------------------------------------------------------
@@ -404,6 +403,7 @@ class TestP2PFallbackNoteInRepoCard:
 
     def test_fallback_note_present_with_app_id(self):
         import time
+
         from src.card.styles_lock import LOCK_UI_TEXT
 
         markdown, _ = build_repo_lock_card(
@@ -414,6 +414,7 @@ class TestP2PFallbackNoteInRepoCard:
 
     def test_fallback_note_absent_without_app_id(self):
         import time
+
         from src.card.styles_lock import LOCK_UI_TEXT
 
         markdown, _ = build_repo_lock_card(
@@ -448,6 +449,7 @@ class TestSendLockConflictCard:
 
     def test_sends_card_on_normal_path(self):
         import time
+
         from src.repo_lock import LockConflictError
 
         handler, ctx = self._make_handler()
@@ -471,6 +473,7 @@ class TestSendLockConflictCard:
         import json
         import time
         from unittest.mock import patch
+
         from src.repo_lock import LockConflictError
 
         handler, ctx = self._make_handler()
@@ -498,6 +501,7 @@ class TestSendLockConflictCard:
     def test_no_ctx_managers_still_works(self):
         """When chat_lock_manager / repo_lock_manager are None, card is still sent."""
         import time
+
         from src.repo_lock import LockConflictError
 
         handler, ctx = self._make_handler()
@@ -514,7 +518,8 @@ class TestSendLockConflictCard:
     def test_does_not_raise_on_internal_error(self):
         """If card building fails internally, fallback text is sent (AC-17)."""
         import time
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from src.repo_lock import LockConflictError
 
         handler, ctx = self._make_handler()
@@ -542,7 +547,8 @@ class TestSendLockConflictCard:
     def test_fallback_text_contains_lock_emoji(self):
         """AC-17: when both card and fallback fail, no exception propagates."""
         import time
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from src.repo_lock import LockConflictError
 
         handler, ctx = self._make_handler()
@@ -775,6 +781,7 @@ class TestAC15ThrottledTextReply:
     def test_throttled_branch_calls_throttled_reply(self):
         """When card action is blocked AND throttled, ChatLockGate delegates to handler.send_chat_lock_throttled_reply."""
         from unittest.mock import MagicMock
+
         from src.feishu.chat_lock_gate import ChatLockGate
         from src.feishu.message_cache import MessageCache
 
@@ -813,6 +820,7 @@ class TestThrottledReplyContainsName:
     def test_throttled_reply_contains_formatted_name(self):
         """Formatted throttled reply must match '群已被 .+ 锁定' regex."""
         import re
+
         from src.card.ui_text import UI_TEXT
         text = UI_TEXT["chat_locked_throttled_reply"].format(name="张三")
         assert re.search(r"群已被 .+ 锁定", text), f"Text did not match: {text}"
@@ -820,6 +828,7 @@ class TestThrottledReplyContainsName:
     def test_throttled_reply_fallback_name(self):
         """When name is empty, fallback 'Bot 管理员' should still match the pattern."""
         import re
+
         from src.card.ui_text import UI_TEXT
         text = UI_TEXT["chat_locked_throttled_reply"].format(name="Bot 管理员")
         assert re.search(r"群已被 .+ 锁定", text), f"Text did not match: {text}"
@@ -1012,8 +1021,8 @@ class TestVerifyCommandSig:
     def test_legacy_sha256_sig_accepted_within_window(self):
         """Plain SHA-256 signature is accepted when within the compat window."""
         import hashlib
-        from unittest.mock import MagicMock
         from datetime import date
+        from unittest.mock import MagicMock
 
         cmd = "/status"
         plain_sig = hashlib.sha256(cmd.encode("utf-8")).hexdigest()
@@ -1032,8 +1041,8 @@ class TestVerifyCommandSig:
     def test_legacy_sha256_sig_rejected_outside_window(self):
         """Plain SHA-256 signature is rejected when outside the compat window."""
         import hashlib
-        from unittest.mock import MagicMock
         from datetime import date, timedelta
+        from unittest.mock import MagicMock
 
         cmd = "/status"
         plain_sig = hashlib.sha256(cmd.encode("utf-8")).hexdigest()
@@ -1102,7 +1111,6 @@ class TestGetSigningKeyWarning:
 
     def test_logs_warning_on_settings_exception(self):
         """When get_settings raises, _get_signing_key should log a warning."""
-        import logging
         with patch("src.config.get_settings", side_effect=RuntimeError("boom")):
             with patch("src.utils.signing.logger") as mock_logger:
                 result = _get_signing_key()
@@ -1390,6 +1398,7 @@ class TestRepoLockCardConceptNote:
 
     def test_concept_note_in_card_markdown(self):
         import time
+
         from src.card.styles_lock import LOCK_UI_TEXT
 
         markdown, _ = build_repo_lock_card("/home/user/my-repo", time.monotonic() - 10)
@@ -1407,6 +1416,7 @@ class TestStatusNoLockExplain:
 
     def test_no_lock_shows_explain(self):
         from unittest.mock import MagicMock
+
         from src.card.styles_lock import LOCK_UI_TEXT
 
         handler = MagicMock()

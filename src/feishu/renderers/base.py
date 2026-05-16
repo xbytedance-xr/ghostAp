@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
+from src.card.render.payload_truncator import check_and_truncate_payload as _check_and_truncate
 from src.card.render.throttle import StreamThrottle
 from src.card.thresholds import THRESHOLDS
-from ...utils.errors import get_error_detail
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
+    from ...card.render.budget import RenderBudget
     from ...card.session import CardSession
     from ..handlers.base import BaseHandler
 
@@ -93,16 +94,6 @@ class _ACPStreamBridge:
 
     def close_open_blocks(self) -> None:
         self._impl.close_open_blocks()
-
-
-# ---------------------------------------------------------------------------
-# CardSession factory — event-driven pipeline
-# ---------------------------------------------------------------------------
-
-
-from src.card.render.payload_truncator import check_and_truncate_payload as _check_and_truncate
-from src.card.render.payload_truncator import count_tagged_nodes as _count_tagged_nodes
-
 
 
 class BaseRenderer:
@@ -245,9 +236,9 @@ class BaseRenderer:
             notify_callback: Optional (chat_id, text) callable for OOB notifications.
             cancel_callback: Optional () callable for terminal cancellation cleanup.
         """
+        from ...card.actions.dispatch import build_common_action_registry
         from ...card.session.config import SessionCallbacks
         from ...card.state.models import CardMetadata
-        from ...card.actions.dispatch import build_common_action_registry
 
         meta = metadata if isinstance(metadata, CardMetadata) else CardMetadata()
         # Merge common actions (mode toggle, engine stop) with any engine-specific registry

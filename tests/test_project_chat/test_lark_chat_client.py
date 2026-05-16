@@ -1,9 +1,10 @@
 """Tests for LarkChatClient — Feishu chat API wrapper."""
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
 
-from src.project_chat.lark_chat_client import LarkChatClient, CreateChatResult
+import pytest
+
 from src.project_chat.errors import CreateChatError
+from src.project_chat.lark_chat_client import CreateChatResult, LarkChatClient
 
 
 @pytest.fixture

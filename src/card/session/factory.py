@@ -76,7 +76,6 @@ class CardSessionFactory:
                 "capacity-exhaustion rejections would be silently lost."
             )
 
-        import time
         from dataclasses import asdict
 
         from src.config import get_settings

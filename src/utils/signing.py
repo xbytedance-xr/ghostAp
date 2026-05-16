@@ -116,6 +116,7 @@ def _verify_legacy_sha256_fallback(command_text: str, sig: str) -> VerifyResult:
     # Then check the compat window.
     try:
         from datetime import date, timedelta
+
         from src.config import get_settings
         settings = get_settings()
         deploy_str = settings.sig_compat_deploy_date.strip()

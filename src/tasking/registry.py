@@ -3,17 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from typing import Dict, List, Optional, Set, Any
+from typing import List, Set
 
 logger = logging.getLogger(__name__)
 
 class TaskRegistry:
     """追踪后台 asyncio 任务，支持优雅停机协议。
-    
+
     该类提供了一个中心化的容器，用于追踪所有异步协程任务。
     在系统关闭时，可以安全地取消所有正在运行的任务并等待它们完成。
     """
-    
+
     def __init__(self) -> None:
         self._tasks: Set[asyncio.Task] = set()
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
@@ -25,7 +25,7 @@ class TaskRegistry:
             if self._is_closing:
                 task.cancel()
                 return task
-            
+
             self._tasks.add(task)
             # 任务完成后自动从注册表中移除
             task.add_done_callback(self._on_task_done)
@@ -56,7 +56,7 @@ class TaskRegistry:
             await asyncio.wait(active_tasks, timeout=timeout)
         except Exception as e:
             logger.warning("TaskRegistry: 等待任务关闭时发生异常: %s", str(e))
-            
+
         remaining = [t for t in active_tasks if not t.done()]
         if remaining:
             logger.warning("TaskRegistry: 仍有 %d 个任务未能在 %.1fs 内关闭", len(remaining), timeout)

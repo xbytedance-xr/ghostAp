@@ -1,9 +1,10 @@
 """Protocol compliance tests: verify CardSession and SessionRotator satisfy Dispatchable."""
 
 import inspect
+
+from src.card.engine_snapshot import Snapshotable
 from src.card.protocols import Dispatchable
 from src.card.render.worktree import WorktreeCallbacks
-from src.card.engine_snapshot import Snapshotable
 
 
 class TestDispatchableProtocol:
@@ -11,6 +12,7 @@ class TestDispatchableProtocol:
 
     def test_card_session_is_dispatchable(self):
         from unittest.mock import MagicMock
+
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
         from src.card.session.config import SessionConfig
@@ -29,6 +31,7 @@ class TestDispatchableProtocol:
 
     def test_session_rotator_is_dispatchable(self):
         from unittest.mock import MagicMock
+
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
         from src.card.session.config import SessionConfig
@@ -106,7 +109,6 @@ class TestNegativeProtocolCompliance:
 
     def test_plain_object_not_dispatchable(self):
         from src.card.protocols import Dispatchable
-        from src.card.render.worktree import WorktreeCallbacks
 
         class NotDispatchable:
             pass
@@ -115,7 +117,6 @@ class TestNegativeProtocolCompliance:
 
     def test_wrong_dispatch_name_not_dispatchable(self):
         from src.card.protocols import Dispatchable
-        from src.card.render.worktree import WorktreeCallbacks
 
         class WrongMethod:
             def send(self, event) -> None:
@@ -146,6 +147,7 @@ class TestTTLProtocolCompliance:
 
     def test_card_session_has_all_ttl_interface_methods(self):
         from unittest.mock import MagicMock
+
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
         from src.card.session._ttl_mixin import TTLActuator
@@ -191,6 +193,7 @@ class TestTTLProtocolCompliance:
 
     def test_get_ttl_state_returns_named_tuple(self):
         from unittest.mock import MagicMock
+
         from src.card.delivery.engine import CardDelivery
         from src.card.protocols import TTLState
         from src.card.session import CardSession
@@ -218,6 +221,7 @@ class TestTTLProtocolCompliance:
 
     def test_engine_cmd_and_name_properties(self):
         from unittest.mock import MagicMock
+
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
         from src.card.session.config import SessionConfig

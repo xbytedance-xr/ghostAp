@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from unittest.mock import patch
 
 import src.acp.providers as providers_mod
-from src.acp.providers import get_providers, GenericACPProvider
+from src.acp.providers import GenericACPProvider, get_providers
 
 
 def _reset_providers_cache() -> None:
@@ -16,9 +16,12 @@ def _reset_providers_cache() -> None:
 
 
 def _fake_checker_tuple() -> tuple:
-    noop = lambda: True
-    noop_loader = lambda: ""
-    noop_clear = lambda: None
+    def noop():
+        return True
+    def noop_loader():
+        return ""
+    def noop_clear():
+        return None
     return (noop, noop_loader, noop_clear)
 
 

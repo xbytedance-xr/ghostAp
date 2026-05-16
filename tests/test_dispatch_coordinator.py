@@ -1,13 +1,9 @@
 """Tests for DispatchDeliveryCoordinator deliver/failure/rejected paths."""
 
-import time
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from src.card.dispatch_coordinator import DispatchDeliveryCoordinator
 from src.card.delivery.tracker import DeliveryTracker
+from src.card.dispatch_coordinator import DispatchDeliveryCoordinator
 
 
 def _make_coordinator(

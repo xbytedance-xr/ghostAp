@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-
-from src.card.delivery.types import MutationOutcome, SequenceConflictError, TransportError
-from src.card.protocols import CardAPIClient
 
 from src.card.delivery.binding import BindingStore, PageBinding
 from src.card.delivery.lock_pool import SessionLockPool
@@ -15,6 +11,8 @@ from src.card.delivery.page_mutator import PageMutator
 from src.card.delivery.registry import DeliveryRegistry, delivery_registry
 from src.card.delivery.sequence import SequenceManager
 from src.card.delivery.ttl_set import TTLSet
+from src.card.delivery.types import MutationOutcome, SequenceConflictError, TransportError
+from src.card.protocols import CardAPIClient
 from src.card.types import RenderedCard
 
 logger = logging.getLogger(__name__)

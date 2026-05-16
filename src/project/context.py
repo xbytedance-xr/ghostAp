@@ -1,5 +1,4 @@
 import os
-import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -9,7 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from ..utils.lock_order import LockLevel, ordered_lock
 
 if TYPE_CHECKING:
-    from ..worktree_engine.models import WorktreeRuntimeState
+    pass
 
 # Sentinel returned by add_chat_id() when the chat cannot be added
 # (capacity full and all entries are owner).  Callers must check for

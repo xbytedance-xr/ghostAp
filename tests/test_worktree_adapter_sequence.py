@@ -5,22 +5,20 @@ WorktreeRenderer → CardSession.dispatch() → CardDelivery.deliver()
 for the full worktree interaction flow.
 """
 
-import pytest
 
 from src.card.delivery.engine import CardDelivery
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEvent
 from src.card.events.worktree import (
-    worktree_tool_select,
-    worktree_confirm,
-    worktree_progress,
     worktree_cleanup,
-    worktree_merge,
     worktree_completed_no_change,
+    worktree_confirm,
+    worktree_merge,
+    worktree_progress,
+    worktree_tool_select,
 )
 from src.card.session import CardSession
 from src.card.session.config import SessionConfig
 from src.card.state.models import CardMetadata
-
 from tests.conftest import TrackingClient
 
 

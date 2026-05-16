@@ -1,8 +1,10 @@
 """Text block sub-reducer."""
 from __future__ import annotations
+
 from dataclasses import replace
-from ..models import CardState, TextBlock, FooterState
+
 from ...events import CardEvent, CardEventType
+from ..models import CardState, TextBlock
 
 
 def reduce_text(state: CardState, event: CardEvent) -> CardState:

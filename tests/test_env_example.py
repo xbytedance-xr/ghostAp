@@ -89,7 +89,7 @@ class TestEnvExampleContents:
                 if i > 0:
                     prev = lines[i - 1].strip()
                     assert prev.startswith("#"), (
-                        f"SANDBOX_STRICT_LOCK_MODE missing description comment"
+                        "SANDBOX_STRICT_LOCK_MODE missing description comment"
                     )
                     assert "true" in prev.lower() or "拒绝" in prev or "冲突" in prev, (
                         f"SANDBOX_STRICT_LOCK_MODE comment doesn't describe behavior: {prev}"

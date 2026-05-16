@@ -1,6 +1,6 @@
 """Tests for CardDelivery __enter__/__exit__ context manager protocol."""
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

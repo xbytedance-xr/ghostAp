@@ -9,12 +9,6 @@ from ...card.render.budget import RenderBudget
 from ...card.state.models import CardMetadata
 from ...card.ui_text import UI_TEXT
 from ...spec_engine import SpecEngineCallbacks
-from ...spec_engine.models import (
-    ReviewResult,
-    SpecCycle,
-    SpecPhase,
-    SpecProject,
-)
 from ...spec_engine.review_display import build_review_role_payloads, format_review_overview
 from ._rotating_mixin import EngineView, RotatingRendererMixin
 from ._spec_stream_processor import SpecStreamProcessor
@@ -25,7 +19,6 @@ if TYPE_CHECKING:
     from ...card.session import CardSession
     from ...card.session.rotator import SessionRotator
     from ...project import ProjectContext
-    from ..handlers.base import BaseHandler
     from ..handlers.spec import SpecHandler
 
 logger = logging.getLogger(__name__)
@@ -105,7 +98,7 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"],
         engine_name: str = "Coco", model_name: str = "",
     ) -> SpecEngineCallbacks:
-        request_id = self.handler.ensure_request_id(
+        self.handler.ensure_request_id(
             message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
         )
         reporter = self.ctx.spec_reporter

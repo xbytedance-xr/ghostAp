@@ -95,8 +95,8 @@ class TestExhaustedEmittedOnRetryFailure:
         return circuit
 
     def _make_outcomes(self):
-        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
         from src.engine_base import PerspectiveReview, ReviewPerspective
+        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
         p = ReviewPerspective.ARCHITECT
         return [
             PerspectiveOutcome(
@@ -109,9 +109,9 @@ class TestExhaustedEmittedOnRetryFailure:
 
     def test_exhausted_emitted_on_retry_failure(self):
         """When all retry attempts fail, EXHAUSTED is emitted via on_retry_status."""
-        from src.spec_engine.review_retry import PipelineRetryContext, handle_pipeline_errors_with_retry
-        from src.engine_base import ReviewResult
         from src.card.ui_text import UI_TEXT
+        from src.engine_base import ReviewResult
+        from src.spec_engine.review_retry import PipelineRetryContext, handle_pipeline_errors_with_retry
 
         outcomes = self._make_outcomes()
         review_result = ReviewResult(reviews=[o.review for o in outcomes], iteration=1)
@@ -178,8 +178,8 @@ class TestNoRetryEmittedWhenDisabled:
         return circuit
 
     def _make_outcomes(self):
-        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
         from src.engine_base import PerspectiveReview, ReviewPerspective
+        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
         p = ReviewPerspective.ARCHITECT
         return [
             PerspectiveOutcome(
@@ -192,9 +192,9 @@ class TestNoRetryEmittedWhenDisabled:
 
     def test_no_retry_emitted_when_disabled(self):
         """When max_attempts=0, NO_RETRY is emitted without attempting retry."""
-        from src.spec_engine.review_retry import PipelineRetryContext, handle_pipeline_errors_with_retry
-        from src.engine_base import ReviewResult
         from src.card.ui_text import UI_TEXT
+        from src.engine_base import ReviewResult
+        from src.spec_engine.review_retry import PipelineRetryContext, handle_pipeline_errors_with_retry
 
         outcomes = self._make_outcomes()
         review_result = ReviewResult(reviews=[o.review for o in outcomes], iteration=1)
@@ -241,11 +241,11 @@ class TestBuildDiagnosticsNoFalseExhausted:
     """AC-R04: retry_attempted=False + max_attempts>0 should NOT use retry_exhausted."""
 
     def test_no_false_exhausted(self):
-        from src.spec_engine.review_retry import build_retry_diagnostics
-        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
-        from src.spec_engine.review_types import ReviewCircuitState
-        from src.engine_base import PerspectiveReview, ReviewPerspective
         from src.card.ui_text import UI_TEXT
+        from src.engine_base import PerspectiveReview, ReviewPerspective
+        from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
+        from src.spec_engine.review_retry import build_retry_diagnostics
+        from src.spec_engine.review_types import ReviewCircuitState
 
         p = ReviewPerspective.ARCHITECT
         outcomes = [
@@ -284,11 +284,12 @@ class TestBuildDiagnosticsRetryTextsFromUIText:
 
     def test_no_retry_text_from_ui(self):
         from types import SimpleNamespace
-        from src.spec_engine.review_retry import build_retry_diagnostics
-        from src.spec_engine.review_types import ReviewCircuitState
+
+        from src.card.ui_text import UI_TEXT
         from src.engine_base import ReviewPerspective
         from src.spec_engine.perspective_worker import PerspectiveOutcome, PerspectiveReview, ReviewErrorCode
-        from src.card.ui_text import UI_TEXT
+        from src.spec_engine.review_retry import build_retry_diagnostics
+        from src.spec_engine.review_types import ReviewCircuitState
 
         p = ReviewPerspective.ARCHITECT
         outcomes = [

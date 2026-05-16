@@ -1,10 +1,9 @@
 """Tests for delivery sequence and binding management."""
 
-import pytest
 import threading
 
+from src.card.delivery.binding import BindingStore
 from src.card.delivery.sequence import SequenceManager
-from src.card.delivery.binding import BindingStore, DeliveryBinding, PageBinding
 
 
 class TestSequenceManager:

@@ -6,7 +6,7 @@ Covers:
 """
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.card.ui_text import UI_TEXT
 
@@ -110,8 +110,8 @@ class TestSkipRetryEventShortensWait:
         """Setting skip_retry_event during wait makes retry proceed without full delay."""
         import time
         from unittest.mock import MagicMock
-        from src.spec_engine.review_retry import attempt_pipeline_retry, PipelineRetryContext
-        from src.spec_engine.retry_status import RetryEvent, RetryStatus
+
+        from src.spec_engine.review_retry import PipelineRetryContext, attempt_pipeline_retry
         from src.spec_engine.review_types import ReviewCircuitState
 
         # Create a mock circuit
@@ -183,8 +183,9 @@ class TestRetrySuccessCallbackSequence:
     def test_callback_sequence_on_success(self):
         """Successful retry emits WAITING, EXECUTING, SUCCEEDED in order."""
         from unittest.mock import MagicMock
-        from src.spec_engine.review_retry import attempt_pipeline_retry, PipelineRetryContext
+
         from src.spec_engine.retry_status import RetryEvent, RetryStatus
+        from src.spec_engine.review_retry import PipelineRetryContext, attempt_pipeline_retry
         from src.spec_engine.review_types import ReviewCircuitState
 
         circuit = MagicMock(spec=ReviewCircuitState)

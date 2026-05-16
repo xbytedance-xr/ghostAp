@@ -13,10 +13,9 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Optional
-
-import logging
 
 from ..config import get_settings
 from ..utils.errors import get_error_detail
@@ -25,7 +24,6 @@ from .models import (
     is_invalid_model_error,
     is_stdin_not_tty_error,
     redact_and_truncate,
-    strict_truncate,
 )
 
 logger = logging.getLogger(__name__)

@@ -1,7 +1,6 @@
 import threading
 import time
 
-
 from .errors import GhostAPError
 
 

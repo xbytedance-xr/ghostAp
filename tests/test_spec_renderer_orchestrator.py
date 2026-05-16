@@ -6,15 +6,10 @@ per-task cards when the feature flag is explicitly enabled.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo
-from src.card.events import CardEvent, CardEventType
 from src.spec_engine.models import SpecPhase
-
 
 # ---------------------------------------------------------------------------
 # Fakes
@@ -243,6 +238,7 @@ class TestSpecRendererMultiCard:
     def test_route_or_fallback_called_in_build(self):
         """After plan reception in BUILD phase, events are routed through route_acp_event."""
         from unittest.mock import patch as mock_patch
+
         from src.card.orchestrator import TaskOrchestrator
 
         renderer, tracker = self._setup_renderer()

@@ -1,5 +1,6 @@
 """Tests for worktree reducer and event dispatch flow."""
 import json
+
 from src.card.events import CardEvent, CardEventType
 from src.card.events.worktree import (
     worktree_cleanup,
@@ -337,9 +338,9 @@ class TestWorktreeCancelAction:
 # Phase 6: WorktreeRuntimeState round-trip & reporter end-to-end (AC27, AC28)
 # ---------------------------------------------------------------------------
 
+from src.card.render.worktree import _render_worktree_merge
 from src.worktree_engine.models import WorktreeRuntimeState, WorktreeUnit, WorktreeUnitStatus
 from src.worktree_engine.reporter import WorktreeReporter
-from src.card.render.worktree import _render_worktree_merge
 
 
 class TestWorktreeStateRoundTrip:
@@ -465,8 +466,8 @@ class TestWorktreeProgressSilentBranch:
     """Test that silent=True progress events use worktree_footer_silent text."""
 
     def test_silent_progress_uses_silent_footer(self):
-        from src.card.ui_text import UI_TEXT
         from src.card.events.worktree import worktree_progress
+        from src.card.ui_text import UI_TEXT
 
         state = _base_state()
         event = worktree_progress(
@@ -481,8 +482,8 @@ class TestWorktreeProgressSilentBranch:
         assert new.footer.status_text == UI_TEXT["worktree_footer_silent"]
 
     def test_non_silent_progress_has_no_silent_footer(self):
-        from src.card.ui_text import UI_TEXT
         from src.card.events.worktree import worktree_progress
+        from src.card.ui_text import UI_TEXT
 
         state = _base_state()
         event = worktree_progress(

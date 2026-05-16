@@ -1,6 +1,5 @@
 """Tests for DeliveryTracker: failure tracking, recovery banner, and mutual exclusion."""
 
-import pytest
 
 from src.card.delivery.tracker import DeliveryTracker, PendingAction
 

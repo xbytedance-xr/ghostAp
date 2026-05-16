@@ -17,33 +17,33 @@ from __future__ import annotations
 import subprocess  # noqa: F401
 import uuid  # noqa: F401
 
-from .protocol import SyncSession
 from .claude_cli import ClaudeCLIConfig, SyncClaudeCLISession
-from .ttadk_cli import (
-    SyncTTADKCLISession,
-    _JSONTextExtractor,
-    _is_ttadk_preamble_line,
-    _build_ttadk_passthrough_prompt,
+from .factory import (
+    EphemeralReviewSession,
+    close_session_safely,
+    create_engine_session,
+    create_review_session,
+    create_sync_session,
+    create_sync_session_for_worktree,
+    resolve_ttadk_engine_startup_model,
 )
 from .model_diagnostics import (
-    classify_model_failure,
+    _apply_compaction_once,
     _build_generic_error_blob,
     _detect_rate_limit,
     _extract_model_from_agent_args,
-    _replace_model_in_agent_args,
     _remove_model_in_agent_args,
-    _apply_compaction_once,
+    _replace_model_in_agent_args,
+    classify_model_failure,
 )
-from .wrappers import RateLimitAwareSession, ModelFailureAwareSession
-from .factory import (
-    close_session_safely,
-    resolve_ttadk_engine_startup_model,
-    create_sync_session,
-    create_engine_session,
-    create_review_session,
-    create_sync_session_for_worktree,
-    EphemeralReviewSession,
+from .protocol import SyncSession
+from .ttadk_cli import (
+    SyncTTADKCLISession,
+    _build_ttadk_passthrough_prompt,
+    _is_ttadk_preamble_line,
+    _JSONTextExtractor,
 )
+from .wrappers import ModelFailureAwareSession, RateLimitAwareSession
 
 # Legacy compat alias
 TTADK_STARTUP_ERROR = None  # legacy alias; do not use

@@ -1,12 +1,11 @@
-import json
 import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.card.engine_snapshot import EngineSnapshot
-from src.feishu.handlers.spec import SpecHandler
 from src.feishu.handlers.base import CardActionContext
+from src.feishu.handlers.spec import SpecHandler
 from src.feishu.renderers.spec_renderer import SpecRenderer
 from src.feishu.ws_client import FeishuWSClient
 from src.spec_engine.engine import SpecEngineCallbacks
@@ -127,7 +126,7 @@ if __name__ == "__main__":
 
 def test_spec_error_card_contains_keywords_and_retry_button():
     """验收：on_error dispatches FAILED event with error message containing keywords."""
-    from src.card.events import CardEvent, CardEventType
+    from src.card.events import CardEventType
 
     mock_handler = MagicMock()
     mock_handler.ctx = MagicMock()
@@ -178,7 +177,7 @@ def test_spec_error_card_contains_keywords_and_retry_button():
 
 def test_spec_status_card_shows_resume_when_paused():
     """Verify _render_status_view dispatches events when spec project is paused."""
-    from src.card.events import CardEvent, CardEventType
+    from src.card.events import CardEventType
 
     mock_handler = MagicMock()
     mock_handler.ctx = MagicMock()
@@ -213,7 +212,7 @@ def test_spec_status_card_shows_resume_when_paused():
 
 def test_spec_card_buttons_keep_project_id_separate_from_ui_state_key():
     """Verify _render_status_view dispatches correct events for running spec project."""
-    from src.card.events import CardEvent, CardEventType
+    from src.card.events import CardEventType
 
     state = {
         "compact": False,
@@ -255,6 +254,7 @@ def test_spec_card_buttons_keep_project_id_separate_from_ui_state_key():
 
 
 def test_format_cycle_phase_details_full():
+    from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
     from src.spec_engine.models import (
         PlanArtifact,
         SpecArtifact,
@@ -262,7 +262,6 @@ def test_format_cycle_phase_details_full():
         SpecTask,
         SpecTaskStatus,
     )
-    from src.engine_base import ReviewResult, PerspectiveReview, ReviewPerspective
 
     reporter = SpecReporter()
     cycle = SpecCycle(cycle_number=1)
@@ -337,7 +336,7 @@ def test_format_cycle_done_includes_phase_details():
 
 def test_cycle_done_card_no_buttons():
     """Verify on_cycle_done dispatches correct events (cycle_done + new session rotation)."""
-    from src.card.events import CardEvent, CardEventType
+    from src.card.events import CardEventType
 
     renderer_handler = MagicMock()
     renderer_handler.ctx = MagicMock()

@@ -9,10 +9,8 @@
 import re
 import threading
 import time
-from typing import Literal, TypedDict
 
 from src.utils.time_ago import IdleHealth, TimeAgoBucket, compute_time_ago_bucket
-
 
 _TASK_ID_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _TASK_ID_SEQ = 0

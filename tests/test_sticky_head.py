@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from src.card.render.sticky_head import STICKY_HEAD_MAX_NODES, build_sticky_head
 from src.card.events import CardEvent, CardEventType
+from src.card.render.sticky_head import STICKY_HEAD_MAX_NODES, build_sticky_head
 from src.card.state.models import CardMetadata, CardState
 from src.card.state.reducer import reduce_card_state
 from src.card.state.runtime_stats import RuntimeStats

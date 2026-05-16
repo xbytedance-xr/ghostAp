@@ -1,4 +1,4 @@
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from .unified_context import UnifiedProjectContext
@@ -51,14 +51,14 @@ def resolve_diff_range(arg: str, versions: list) -> tuple[bool, Optional[int], O
             return False, None, None, False, "diag_diff_usage_hint"
         from_vnum = v
         show_current = True
-    
+
     return True, from_vnum, to_vnum, show_current, None
 
 def filter_context_entries(ctx: "UnifiedProjectContext", from_vnum: Optional[int], to_vnum: Optional[int], show_current: bool = False):
     """Filter context entries based on version range."""
     from_v = ctx.get_version(from_vnum) if from_vnum is not None else None
     to_v = ctx.get_version(to_vnum) if to_vnum is not None else None
-    
+
     if not from_v:
         return None, None, []
 
@@ -90,5 +90,5 @@ def filter_context_entries(ctx: "UnifiedProjectContext", from_vnum: Optional[int
         else:
             start_idx = min(max(start_idx, 0), len(all_entries))
             entries = list(all_entries[start_idx:])
-            
+
     return from_v, to_v, entries

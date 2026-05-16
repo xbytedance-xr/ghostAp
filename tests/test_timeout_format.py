@@ -10,8 +10,6 @@ Covers edge cases:
 
 from __future__ import annotations
 
-import pytest
-
 from src.card.render.footer import _format_idle_timeout
 
 

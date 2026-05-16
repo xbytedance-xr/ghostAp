@@ -11,7 +11,6 @@ from src.worktree_engine.dispatcher import WorktreeDispatcher
 from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.models import WorktreeUnit
 
-
 # ---------------------------------------------------------------------------
 # Fake session for testing
 # ---------------------------------------------------------------------------

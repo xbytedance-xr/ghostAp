@@ -6,20 +6,18 @@ Tasks 27-36 from the card pipeline migration cleanup.
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from src.card.session.ttl import TTLHandler
 from src.card.delivery.engine import CardDelivery
 from src.card.events import CardEvent, CardEventType
 from src.card.protocols import TTLState
-from src.card.types import RenderedCard
 from src.card.session import CardSession
 from src.card.session.config import SessionConfig
 from src.card.session.rotator import SessionRotator
-from src.card.state.models import CardMetadata, CardState
-
+from src.card.session.ttl import TTLHandler
+from src.card.state.models import CardMetadata
 
 # ---------------------------------------------------------------------------
 # Shared helpers

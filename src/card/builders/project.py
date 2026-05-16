@@ -4,15 +4,15 @@ import json
 from typing import TYPE_CHECKING, Optional
 from urllib.parse import quote
 
-from src.project.context import ProjectStatus
 from src.mode.manager import InteractionMode
+from src.project.context import ProjectStatus
 
-from ..ui_text import UI_TEXT
 from ..shared import (
     apply_compact_style,
     build_responsive_layout,
     get_theme,
 )
+from ..ui_text import UI_TEXT
 from .core import CoreBuilder
 
 if TYPE_CHECKING:
@@ -198,7 +198,7 @@ class ProjectBuilder:
         """Build the Markdown content for context restoration info."""
         if not restore_info.get("has_context"):
             return ""
-        
+
         content = UI_TEXT["project_restore_info"].format(
             count=restore_info['entry_count']
         )
@@ -239,7 +239,7 @@ class ProjectBuilder:
                 effective_mode = InteractionMode.GEMINI
             elif getattr(project, "coco_mode", False):
                 effective_mode = InteractionMode.COCO
-                
+
         return ProjectBuilder._build_response_card_inner(
             project,
             title,
@@ -655,9 +655,9 @@ class ProjectBuilder:
 
         content = (
             UI_TEXT["project_resume_detected"].format(mode=mode_name) + "\n\n"
-            f"• " + UI_TEXT["project_resume_session_id"].format(id=snapshot.session_id) + "\n"
-            f"• " + UI_TEXT["project_resume_query_count"].format(count=snapshot.query_count) + "\n"
-            f"• " + UI_TEXT["project_resume_last_query"].format(query=snapshot.last_query)
+            "• " + UI_TEXT["project_resume_session_id"].format(id=snapshot.session_id) + "\n"
+            "• " + UI_TEXT["project_resume_query_count"].format(count=snapshot.query_count) + "\n"
+            "• " + UI_TEXT["project_resume_last_query"].format(query=snapshot.last_query)
         )
 
         resume_action = f"resume_{mode}"
@@ -696,7 +696,7 @@ class ProjectBuilder:
             effective_mode = InteractionMode.CLAUDE
         elif is_coco:
             effective_mode = InteractionMode.COCO
-            
+
         header_title = CoreBuilder._build_header_title(project, mode=effective_mode)
 
         elements = [
@@ -734,7 +734,7 @@ class ProjectBuilder:
 
         content = UI_TEXT["project_create_success"].format(
             name=project.project_name, path=project.root_path
-        ) + f"\n• " + UI_TEXT["project_id_label"].format(id=project.project_id) + \
+        ) + "\n• " + UI_TEXT["project_id_label"].format(id=project.project_id) + \
             f"\n• {UI_TEXT['system_theme_color_label']}{project.emoji_prefix} {project.theme_color}"
 
         buttons = [
@@ -779,7 +779,7 @@ class ProjectBuilder:
     ) -> tuple[str, str]:
         """Consolidates switch message, context restoration info, and resume session logic."""
         context_info = ProjectBuilder.build_restore_info_content(restore_info)
-        
+
         if project.coco_session_snapshot and project.coco_session_snapshot.is_resumable:
             return ProjectBuilder.build_coco_resume_card(project)
         elif project.claude_session_snapshot and project.claude_session_snapshot.is_resumable:

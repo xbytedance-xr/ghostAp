@@ -15,12 +15,12 @@ from src.card.actions.dispatch import (
     ENGINE_STOP,
     MODE_COMPACT,
     MODE_FULL,
+    REJECT_ACTION,
     SHOW_STATUS,
     SHOW_WORKTREE_MENU,
     SPEC_RESUME,
     SPEC_SKIP_RETRY,
     SPEC_STOP,
-    REJECT_ACTION,
     WORKTREE_CANCEL,
     WORKTREE_CLEANUP,
     WORKTREE_CONFIRM_START,
@@ -29,7 +29,7 @@ from src.card.actions.dispatch import (
     WORKTREE_RETRY_ALL,
     WORKTREE_RETRY_FAILED,
 )
-from src.card.engine_meta import ENGINE_LABELS, ENGINE_LABEL_DEFAULT
+from src.card.engine_meta import ENGINE_LABEL_DEFAULT, ENGINE_LABELS
 from src.card.render.budget import RenderBudget
 from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import ButtonSpec, CardState

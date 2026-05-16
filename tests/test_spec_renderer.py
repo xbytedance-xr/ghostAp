@@ -3,8 +3,6 @@
 from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.card.session.rotator import SessionRotator
 from src.card.state.models import CardMetadata
 

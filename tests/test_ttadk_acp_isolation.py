@@ -1,9 +1,9 @@
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.acp.manager import ACPSessionManager
-from src.agent_session import SyncTTADKCLISession
 
 
 class _FakeTTADKManager:
@@ -29,27 +29,27 @@ class _FakeTTADKManager:
 @patch('src.ttadk.startup_common.precheck_ttadk_startup_model')
 def test_manager_ttadk_force_cli_session(mock_precheck, mock_session_cls, mock_acp_cls):
     """Verify that using a ttadk_ prefix forces CLI session, even for tools that might support ACP."""
-    
+
     # Setup mocks
     mock_precheck.return_value = {"model": "gpt-4"}
-    
+
     mock_session_instance = MagicMock()
     mock_session_instance.start.return_value = "test-session-123"
     mock_session_instance.describe_agent.return_value = "ttadk_aiden"
     mock_session_cls.return_value = mock_session_instance
-    
+
     manager = ACPSessionManager("ttadk")
-    
+
     # Test with aiden (which we know supports ACP through the provider)
     # The key is that the prefix 'ttadk_' forces it through the TTADK CLI path
     session = manager.start_session(
         chat_id="chat123",
         agent_type_override="ttadk_aiden"
     )
-    
+
     # Verify SyncTTADKCLISession was used
     mock_session_cls.assert_called_once_with(
-        agent_type="ttadk_aiden", 
+        agent_type="ttadk_aiden",
         cwd=str(Path.cwd()),
         model_name="gpt-4"
     )
@@ -66,40 +66,40 @@ def test_manager_ttadk_force_cli_session(mock_precheck, mock_session_cls, mock_a
 @patch('src.ttadk.startup_common.precheck_ttadk_startup_model')
 def test_manager_ttadk_codex_force_cli_session(mock_precheck, mock_session_cls, mock_acp_cls):
     """Verify TTADK codex requests force CLI session."""
-    
+
     # Setup mocks
     mock_precheck.return_value = {"model": "default"}
-    
+
     mock_session_instance = MagicMock()
     mock_session_instance.start.return_value = "test-session-456"
     mock_session_cls.return_value = mock_session_instance
-    
+
     manager = ACPSessionManager("ttadk")
-    
+
     # Test with codex
     session = manager.start_session(
         chat_id="chat456",
         agent_type_override="ttadk_codex"
     )
-    
+
     # Verify SyncTTADKCLISession was used
     mock_session_cls.assert_called_once_with(
-        agent_type="ttadk_codex", 
+        agent_type="ttadk_codex",
         cwd=str(Path.cwd()),
         model_name="default"
     )
 
     # Must not construct ACP session at all
     mock_acp_cls.assert_not_called()
-    
+
     assert session is mock_session_instance
 
 
 def test_ttadk_startup_failure_does_not_fallback_to_coco_acp(monkeypatch):
     """TTADK startup failure must surface diagnostics instead of creating coco ACP."""
-    from src.ttadk import startup as startup_mod
-    import src.ttadk as ttadk_pkg
     import src.acp.sync_adapter as sync_adapter
+    import src.ttadk as ttadk_pkg
+    from src.ttadk import startup as startup_mod
 
     monkeypatch.setattr(ttadk_pkg, "get_ttadk_manager", lambda: _FakeTTADKManager())
 
@@ -121,8 +121,8 @@ def test_ttadk_startup_failure_does_not_fallback_to_coco_acp(monkeypatch):
 
 def test_ttadk_engine_session_default_fallback_does_not_start_coco_acp(monkeypatch):
     """Engine-session default fallback returns degraded diagnostics without coco ACP."""
-    from src.ttadk.engine_session import start_ttadk_engine_session
     import src.acp.sync_adapter as sync_adapter
+    from src.ttadk.engine_session import start_ttadk_engine_session
 
     mock_coco_start = MagicMock(name="start_session_with_retry")
     monkeypatch.setattr(sync_adapter, "start_session_with_retry", mock_coco_start)
@@ -158,9 +158,9 @@ def test_ttadk_engine_session_default_fallback_does_not_start_coco_acp(monkeypat
 
 def test_ttadk_runtime_invalid_model_does_not_replace_session_with_coco_acp(monkeypatch):
     """Runtime self-healing may report degraded state but must not create coco ACP."""
-    from src.agent_session.wrappers import ModelFailureAwareSession
     import src.acp.sync_adapter as sync_adapter
     import src.ttadk.models as ttadk_models
+    from src.agent_session.wrappers import ModelFailureAwareSession
 
     class _Inner:
         session_id = "ttadk-session"

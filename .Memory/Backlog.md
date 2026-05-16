@@ -16,6 +16,6 @@
 
 | ID | 日期 | Gap 描述 | Severity | 来源 | 状态 | 解决 Commit |
 |----|------|----------|----------|------|------|-------------|
-| B019 | 2026-05-15 | `CARD_DELIVERY_API_TIMEOUT` 已进入 `Settings.card` 映射和 Memory 记录，但尚未同步到 `.env.example` / README / `--validate` 高级参数输出；配置可发现性不足。 | Medium | 今日代码巡检 | Open | — |
+| — | — | 当前无开放 Backlog 条目。 | — | — | — | — |
 
-> **注**: B001-B005、B014-B018 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。
+> **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。

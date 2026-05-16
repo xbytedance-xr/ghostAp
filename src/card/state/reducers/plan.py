@@ -1,8 +1,10 @@
 """Plan sub-reducer."""
 from __future__ import annotations
+
 from dataclasses import replace
-from ..models import CardState, PlanBlock
+
 from ...events import CardEvent, CardEventType
+from ..models import CardState, PlanBlock
 
 PLAN_BLOCK_ID = "_plan"
 

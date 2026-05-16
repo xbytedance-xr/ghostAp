@@ -10,9 +10,6 @@ Covers:
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
-import threading
-
-import pytest
 
 from src.card.events import CardEvent, CardEventType
 
@@ -22,10 +19,10 @@ class TestStopEscalation:
 
     def _make_session(self):
         """Create a minimal CardSession for testing stop escalation."""
-        from src.card.session.factory import CardSessionFactory
-        from src.card.session.config import SessionCallbacks
-        from src.card.state.models import CardMetadata
         from src.card.delivery.engine import CardDelivery
+        from src.card.session.config import SessionCallbacks
+        from src.card.session.factory import CardSessionFactory
+        from src.card.state.models import CardMetadata
 
         delivery = MagicMock(spec=CardDelivery)
         delivery.acquire_session_lock = MagicMock(return_value=True)

@@ -6,17 +6,17 @@ Covers:
 - AC-R12: on_phase_retry and on_review_retry independent unit tests
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.acp import ACPEventType
-from src.card.ui_text import UI_TEXT
 from src.card.events import CardEventType
 from src.card.render.budget import RenderBudget
 from src.card.state.models import CardMetadata
+from src.card.ui_text import UI_TEXT
 from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
-from src.spec_engine.retry_status import RetryStatus
 from src.spec_engine.models import SpecPhase
+from src.spec_engine.retry_status import RetryStatus
 
 
 def _make_processor_for_spec_artifact_tests():

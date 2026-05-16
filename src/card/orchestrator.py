@@ -23,12 +23,12 @@ from src.card.events import CardEvent, CardEventType
 from src.card.hooks import BackfillHook
 from src.card.nav_link import format_task_continuation_link
 from src.card.task_registry import TaskRegistry, TaskStatus
-from src.card.ui_text import UI_TEXT
 from src.card.tool_display import (
     extract_tool_call_label,
     is_unhelpful_display_label,
     summarize_tool_call_content,
 )
+from src.card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
     from src.acp.models import ACPEvent
@@ -923,7 +923,6 @@ class TaskOrchestrator:
         rotation_count: int,
     ) -> None:
         """Phase 3: Archive old session with continuation navigation text."""
-        new_msg_id = ""  # deep-link will be backfilled asynchronously
         msg = format_task_continuation_link(
             task_name=task_name,
             rotation_count=rotation_count,

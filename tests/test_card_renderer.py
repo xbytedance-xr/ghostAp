@@ -2,12 +2,8 @@
 
 import time
 
-import pytest
-
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import (
-    ActiveElement,
-    RenderedCard,
     _assemble_card_json,
     compute_structure_signature,
     render_card,

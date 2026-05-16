@@ -18,16 +18,16 @@ from ...card.shared import build_responsive_layout
 from ...card.themes import PANEL_STYLES, get_theme
 from ...card.ui_text import UI_TEXT
 from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
-from ...spec_engine.review_agents import ReviewAgentBinding
 from ...spec_engine.models import SpecProjectStatus
+from ...spec_engine.review_agents import ReviewAgentBinding
 from ...spec_engine.storage import SpecRunSummary, delete_spec_run, list_spec_runs, state_path_for_run
 from ...spec_engine.task_persistence import list_pending_tasks, load_task_state
 from ...tasking import TaskPriority, TaskSpec
 from ...utils.errors import fmt_error, get_error_detail
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
-from .engine_base import BaseEngineHandler
 from .base import CardActionContext
+from .engine_base import BaseEngineHandler
 
 if TYPE_CHECKING:
     from ...card.protocols import RendererProtocol
@@ -373,7 +373,6 @@ class SpecHandler(BaseEngineHandler):
             message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
         )
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
-        reporter = self.ctx.spec_reporter
 
         # Spec renderer owns the first runtime card and task-card orchestration.
         # Visible plan items become first-class cards when the plan arrives;

@@ -263,8 +263,9 @@ class TestFactoryRetryOnCapacityExhaustion:
 
     def test_retry_all_fail_raises(self):
         """Factory raises after all retry attempts exhausted."""
-        import pytest
         from unittest.mock import patch
+
+        import pytest
 
         factory = _make_factory()
         metadata = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🔵")
@@ -281,8 +282,9 @@ class TestFactoryRetryOnCapacityExhaustion:
 
     def test_non_capacity_error_no_retry(self):
         """Non-capacity RuntimeError is raised immediately without retry."""
-        import pytest
         from unittest.mock import patch
+
+        import pytest
 
         factory = _make_factory()
         metadata = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🔵")

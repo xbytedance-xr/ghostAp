@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import select
 import subprocess
@@ -16,7 +17,6 @@ import time
 from typing import Callable, Optional
 
 from .env_sandbox import build_ttadk_subprocess_env
-import logging
 
 logger = logging.getLogger(__name__)
 

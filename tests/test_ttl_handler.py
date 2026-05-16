@@ -4,13 +4,12 @@ Tests each TTLHandler code path (expired, force-close, prewarning, retry)
 through the method-level interface without requiring a real CardSession.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from src.card.session.ttl import TTLHandler
-from src.card.events import CardEvent
 from src.card.protocols import TTLState
+from src.card.session.ttl import TTLHandler
 
 
 def _make_mock_session(**overrides) -> MagicMock:

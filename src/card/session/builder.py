@@ -7,7 +7,6 @@ call ``build()`` once, assign the returned namespace to the session instance.
 
 from __future__ import annotations
 
-import weakref
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -22,11 +21,9 @@ from src.card.timers.manager import SessionTimerManager
 if TYPE_CHECKING:
     from src.card.delivery.engine import CardDelivery
     from src.card.dispatch_coordinator import DispatchDeliveryCoordinator
-    from src.card.hooks import SessionHook
     from src.card.render.budget import RenderBudget
     from src.card.session.config import SessionCallbacks
     from src.card.state.models import CardMetadata
-    from src.card.timers.scheduler import TimerHandle
 
 
 @dataclass(slots=True)

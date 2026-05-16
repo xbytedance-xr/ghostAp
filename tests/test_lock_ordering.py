@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import logging
-import threading
 
 import pytest
 
 from src.utils.lock_order import (
     LockLevel,
     _get_held,
-    _on_acquire,
-    _on_release,
     disable_lock_order_check,
     enable_lock_order_check,
     ordered_lock,
@@ -125,7 +122,7 @@ class TestIntegrationWithRealManagers:
 
     def test_repo_lock_manager_lock_level(self):
         """RepoLockManager._mu should be at level 4."""
-        from src.repo_lock import RepoLockManager, _reset_repo_lock_manager_for_testing
+        from src.repo_lock import RepoLockManager
         try:
             mgr = RepoLockManager(idle_timeout=999, cleanup_interval=999, hard_timeout=9999)
             assert mgr._mu._level == int(LockLevel.REPO_LOCK)
@@ -173,8 +170,8 @@ class TestLeafLockAnnotationScan:
 
     def test_all_leaf_locks_annotated(self):
         """Scan all .py files under src/ for un-annotated leaf locks."""
-        from pathlib import Path
         import re
+        from pathlib import Path
 
         src_dir = Path(__file__).resolve().parent.parent / "src"
         lock_pattern = re.compile(r"threading\.(Lock|RLock)\(\)")

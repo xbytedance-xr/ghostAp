@@ -236,7 +236,7 @@ def test_resolve_agent_spec_ttadk_adds_pty_flag_when_enabled(monkeypatch):
     cmd, args = resolve_agent_spec("ttadk_codex", model_name=None, ttadk_use_pty=True)
     assert cmd in ("python3", "python")
     # TTADK wrapper should be launched via module mode to avoid script/import drift.
-    assert args[:2] == ["-m", "src.utils.ttadk_wrapper"]
+    assert args[:2] == ["-m", "src.ttadk.wrapper"]
     assert "--pty" in args
 
 
@@ -322,7 +322,7 @@ def test_ttadk_wrapper_filters_banner_and_passes_json(tmp_path):
     cmd = [
         sys.executable,
         "-m",
-        "src.utils.ttadk_wrapper",
+        "src.ttadk.wrapper",
         "--pty",
         sys.executable,
         "-c",
@@ -479,7 +479,7 @@ def test_ttadk_wrapper_emits_banner_tail_on_failure(tmp_path):
     cmd = [
         sys.executable,
         "-m",
-        "src.utils.ttadk_wrapper",
+        "src.ttadk.wrapper",
         sys.executable,
         "-c",
         'import sys; sys.stdout.write("BANNER\\n"); sys.exit(2)',

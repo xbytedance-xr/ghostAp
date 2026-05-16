@@ -5,10 +5,9 @@ network errors (TimeoutError, ConnectionError) by returning
 MutationOutcome(kind="reconcile") instead of propagating exceptions.
 """
 
-import pytest
 
-from src.card.delivery.binding import BindingStore, PageBinding
-from src.card.delivery.engine import MutationOutcome, SequenceConflictError, TransportError
+from src.card.delivery.binding import BindingStore
+from src.card.delivery.engine import SequenceConflictError, TransportError
 from src.card.delivery.page_mutator import PageMutator
 from src.card.delivery.sequence import SequenceManager
 from src.card.types import ActiveElement, RenderedCard

@@ -234,8 +234,8 @@ class TestRetryDispatchProtocol:
 
     def test_adapter_satisfies_protocol(self):
         """_RetryDispatchAdapter must pass isinstance check."""
-        from src.feishu.retry_handler import RetryDispatchProtocol
         from src.feishu.action_registry import _RetryDispatchAdapter
+        from src.feishu.retry_handler import RetryDispatchProtocol
 
         mock_client = MagicMock()
         adapter = _RetryDispatchAdapter(mock_client)

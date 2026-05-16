@@ -9,12 +9,10 @@ Covers:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from unittest.mock import ANY, MagicMock, patch
-
-import pytest
+from unittest.mock import ANY, MagicMock
 
 from src.card.delivery.binding import BindingStore, PageBinding
-from src.card.delivery.engine import MutationOutcome, SequenceConflictError
+from src.card.delivery.engine import SequenceConflictError
 from src.card.delivery.page_mutator import PageMutator
 from src.card.delivery.sequence import SequenceManager
 from src.card.delivery.types import TransportError

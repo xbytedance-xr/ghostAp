@@ -4,7 +4,7 @@ Re-exports public API for backward compatibility.
 """
 
 from src.card.timers.manager import SessionTimerManager
-from src.card.timers.scheduler import TimerHandle, TimerScheduler, get_timer_scheduler, _reset_global_scheduler
+from src.card.timers.scheduler import TimerHandle, TimerScheduler, _reset_global_scheduler, get_timer_scheduler
 
 __all__ = [
     "SessionTimerManager",

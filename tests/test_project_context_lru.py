@@ -1,8 +1,7 @@
 """Tests for ProjectContext.allowed_chat_ids true LRU semantics."""
 
-import time
 from collections import OrderedDict
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 

@@ -15,8 +15,8 @@ from __future__ import annotations
 import logging
 from typing import Callable, List, Optional
 
-from ..engine_base import ReviewPerspective
 from ..agent_session import EphemeralReviewSession
+from ..engine_base import ReviewPerspective
 from .cycle_budget import CycleBudget, run_with_budget
 from .lint_gate import LintGateDecision, build_lint_gate_outcomes, evaluate_lint_gate
 from .perspective_worker import PerspectiveOutcome, PerspectiveWorker, WorkerBinding

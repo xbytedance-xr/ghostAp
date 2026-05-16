@@ -1,6 +1,6 @@
 import os
 import sys
-from unittest.mock import Mock, MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -146,13 +146,13 @@ class TestSandboxExecutorBlacklist:
 
 class TestSandboxExecutorDependencyInjection:
     """测试 SandboxExecutor 的依赖注入功能"""
-    
+
     def test_settings_injection(self):
         """测试注入自定义 settings"""
         custom_settings = Settings(sandbox_timeout=10)
         executor = SandboxExecutor(settings=custom_settings)
         assert executor.settings.sandbox_timeout == 10
-    
+
     def test_subprocess_executor_injection(self):
         """测试注入自定义 subprocess_executor"""
         # 创建模拟的 subprocess_executor
@@ -162,10 +162,10 @@ class TestSandboxExecutorDependencyInjection:
         mock_result.stdout = "test output"
         mock_result.stderr = ""
         mock_executor.run.return_value = mock_result
-        
+
         executor = SandboxExecutor(subprocess_executor=mock_executor)
         result = executor.execute("echo test")
-        
+
         # 验证 mock_executor 被调用
         assert mock_executor.run.called
         assert result.success is True
@@ -174,38 +174,38 @@ class TestSandboxExecutorDependencyInjection:
 
 class TestSandboxExecutorWhitelist:
     """测试 SandboxExecutor 的白名单机制"""
-    
+
     def setup_method(self):
         # 创建启用白名单的 settings
         self.settings = Settings(
             sandbox_use_whitelist=True,
             sandbox_command_whitelist="ls,echo,git status"
         )
-    
+
     def test_whitelist_enabled_allow_listed_command(self):
         """测试白名单模式下允许白名单中的命令"""
         executor = SandboxExecutor(settings=self.settings)
-        
+
         # 完全匹配的命令
         is_safe, reason = executor.is_command_safe("ls")
         assert is_safe is True, f"命令'ls'应该被允许，但失败原因: {reason}"
-        
+
         # 带参数的命令
         is_safe, reason = executor.is_command_safe("ls -la")
         assert is_safe is True, f"命令'ls -la'应该被允许，但失败原因: {reason}"
-        
+
         # 其他白名单命令
         is_safe, reason = executor.is_command_safe("echo hello")
         assert is_safe is True, f"命令'echo hello'应该被允许，但失败原因: {reason}"
-    
+
     def test_whitelist_enabled_reject_non_listed_command(self):
         """测试白名单模式下拒绝白名单外的命令"""
         executor = SandboxExecutor(settings=self.settings)
-        
+
         is_safe, reason = executor.is_command_safe("rm -rf /tmp")
         assert is_safe is False
         assert "不在白名单中" in reason
-    
+
     def test_whitelist_enabled_empty_whitelist(self):
         """测试白名单模式下但白名单为空时拒绝所有命令"""
         settings = Settings(
@@ -213,11 +213,11 @@ class TestSandboxExecutorWhitelist:
             sandbox_command_whitelist=""
         )
         executor = SandboxExecutor(settings=settings)
-        
+
         is_safe, reason = executor.is_command_safe("ls")
         assert is_safe is False
         assert "白名单为空" in reason
-    
+
     def test_whitelist_disabled_uses_blacklist(self):
         """测试白名单模式禁用时使用黑名单"""
         settings = Settings(
@@ -225,15 +225,15 @@ class TestSandboxExecutorWhitelist:
             sandbox_command_whitelist="ls,echo"
         )
         executor = SandboxExecutor(settings=settings)
-        
+
         # 不在白名单但在安全列表中的命令应该被允许
         is_safe, reason = executor.is_command_safe("date")
         assert is_safe is True, f"白名单禁用时，命令'date'应该被允许，但失败原因: {reason}"
-        
+
         # 危险命令应该被拒绝
         is_safe, reason = executor.is_command_safe("rm -rf /")
         assert is_safe is False
-    
+
     def test_whitelist_still_checks_dangerous_patterns(self):
         """测试白名单模式下仍会检查危险模式（额外安全层）"""
         settings = Settings(
@@ -241,12 +241,12 @@ class TestSandboxExecutorWhitelist:
             sandbox_command_whitelist="rm"  # 即使 rm 在白名单中
         )
         executor = SandboxExecutor(settings=settings)
-        
+
         # 危险的 rm 命令仍应被拒绝
         is_safe, reason = executor.is_command_safe("rm -rf /")
         assert is_safe is False
         assert "危险操作模式" in reason
-    
+
     def test_whitelist_rejects_compound_commands(self):
         """测试白名单模式下拒绝复合命令（如 ls; date）"""
         settings = Settings(
@@ -254,14 +254,14 @@ class TestSandboxExecutorWhitelist:
             sandbox_command_whitelist="ls,echo"
         )
         executor = SandboxExecutor(settings=settings)
-        
+
         # 单一的白名单命令应该被允许
         is_safe, reason = executor.is_command_safe("ls -la")
         assert is_safe is True
-        
+
         is_safe, reason = executor.is_command_safe("echo hello")
         assert is_safe is True
-        
+
         # 复合命令应该被拒绝（使用非危险的命令 date，以便测试白名单而不是危险模式）
         compound_commands = [
             "ls; date",
@@ -275,7 +275,7 @@ class TestSandboxExecutorWhitelist:
             'ls;whoami',
             'ls&&whoami',
         ]
-        
+
         for cmd in compound_commands:
             is_safe, reason = executor.is_command_safe(cmd)
             assert is_safe is False, f"复合命令'{cmd}'应该被拒绝，但被允许了"

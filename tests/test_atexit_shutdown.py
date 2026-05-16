@@ -11,9 +11,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.utils.shutdown import (
+    _reset_shutdown_state,
     graceful_shutdown,
     is_shutting_down,
-    _reset_shutdown_state,
 )
 
 
@@ -87,6 +87,7 @@ class TestAtexitShutdown(unittest.TestCase):
     def test_registry_no_module_level_atexit(self):
         """delivery_registry must NOT register atexit at module import time."""
         import inspect
+
         import src.card.delivery.registry as registry_module
         source = inspect.getsource(registry_module)
         # The old pattern was: atexit.register(delivery_registry.shutdown_all) at module level

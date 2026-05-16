@@ -7,6 +7,7 @@
 import json
 import logging
 import re
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -15,8 +16,8 @@ from typing import Optional
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from .env_sandbox import build_ttadk_subprocess_env
-from .models import TTADKModel, is_invalid_model_error, parse_models_cache_json, redact_and_truncate
 from .model_fetching import FetchDiagnostics, FetchResult, TTADKRunResult
+from .models import TTADKModel, is_invalid_model_error, parse_models_cache_json, redact_and_truncate
 from .strategies import (
     InteractiveStrategy,
     LocalConfigModelsStrategy,

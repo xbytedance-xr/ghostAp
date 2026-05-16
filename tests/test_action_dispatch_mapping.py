@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from src.card.actions.dispatch import build_worktree_action_registry
 from src.card.actions import dispatch as action_ids
-from src.card.events import CardEvent
+from src.card.actions.dispatch import build_worktree_action_registry
 from src.card.error_diagnostics import error_diagnostic_store
+from src.card.events import CardEvent
 
 
 class _RegistryCaptureClient:

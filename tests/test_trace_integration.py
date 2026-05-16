@@ -1,9 +1,8 @@
-import pytest
 from unittest.mock import MagicMock, patch
-import time
-from src.spec_engine.engine import SpecEngine
+
 from src.deep_engine.engine import DeepEngine
-from src.utils.trace import TraceContext
+from src.spec_engine.engine import SpecEngine
+
 
 class TestTraceIntegration:
     @patch("src.spec_engine.engine.TraceContext")
@@ -19,25 +18,25 @@ class TestTraceIntegration:
         mock_settings.spec_discovery_enabled = False
         mock_settings.spec_max_cycles_limit = 5000  # Fix: Ensure this is an int
         mock_get_settings.return_value = mock_settings
-        
+
         mock_session = MagicMock()
         mock_create_session.return_value = mock_session
-        
+
         mock_trace_ctx_instance = MagicMock()
         mock_trace_context.return_value = mock_trace_ctx_instance
-        
+
         engine = SpecEngine(chat_id="test_chat", root_path="/tmp/test_spec")
-        
+
         # Patch internal methods to avoid actual execution logic
         with patch.object(engine, '_run_cycle_loop', return_value="success"):
             # Execute
             engine.execute(requirement_text="test requirement", task_id="test_task_id")
-            
+
         # Verify TraceContext initialization
         mock_trace_context.assert_called_once()
         call_args = mock_trace_context.call_args
         assert call_args.kwargs.get('request_id') == "test_task_id"
-        
+
         # Verify TraceContext usage as context manager
         mock_trace_ctx_instance.__enter__.assert_called_once()
         mock_trace_ctx_instance.__exit__.assert_called_once()
@@ -50,26 +49,26 @@ class TestTraceIntegration:
         mock_settings = MagicMock()
         mock_settings.deep_memory_threshold = 80.0
         mock_get_settings.return_value = mock_settings
-        
+
         # Mock session to raise exception to stop execution immediately after entering context
         mock_create_session.side_effect = RuntimeError("Stop execution for test")
-        
+
         mock_trace_ctx_instance = MagicMock()
         mock_trace_context.return_value = mock_trace_ctx_instance
-        
+
         engine = DeepEngine(chat_id="test_chat", root_path="/tmp/test_deep")
-        
+
         # Execute
         # DeepEngine catches Exception and fails the project
         engine.plan_and_execute(requirement_text="test requirement", task_id="test_task_id")
-            
+
         # Verify TraceContext initialization
         mock_trace_context.assert_called_once()
         call_args = mock_trace_context.call_args
         # DeepEngine uses trace_id
         trace_id = call_args.kwargs.get('trace_id') or call_args.kwargs.get('request_id')
         assert trace_id == "test_task_id"
-        
+
         # Verify TraceContext usage as context manager
         mock_trace_ctx_instance.__enter__.assert_called_once()
         mock_trace_ctx_instance.__exit__.assert_called_once()

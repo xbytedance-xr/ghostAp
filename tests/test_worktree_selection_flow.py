@@ -1,6 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.project.context import ProjectContext
 from src.worktree_engine.manager import WorktreeManager

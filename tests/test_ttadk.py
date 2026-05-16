@@ -1,12 +1,10 @@
-import sys
 import time
 from unittest.mock import MagicMock
 
 import pytest
 
-from src.ttadk import TTADKManager, TTADKModel, TTADKModelFetcher, TTADKTool, get_ttadk_manager
+from src.ttadk import TTADKManager, TTADKModel, TTADKModelFetcher
 from src.ttadk.models import is_stdin_not_tty_error
-from src.ttadk.strategies import InteractiveStrategy
 
 # Real-world ttadk outputs sampled from local environment (ttadk 0.3.8)
 _SAMPLE_INVALID_MODEL_CODEX = (

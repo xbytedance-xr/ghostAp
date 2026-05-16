@@ -24,17 +24,17 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective
-from .constants import SPEC_UI_TEXT
 from ..utils.errors import classify_timeout, get_error_detail
 from ..utils.retry import RetryPolicy
-from ..utils.spec_utils import parse_review_output_strict_tolerant
+from .constants import SPEC_UI_TEXT
 from .prompts import build_single_perspective_review_prompt
 from .review_artifacts import ReviewArtifacts
+from .utils import parse_review_output_strict_tolerant
 
 logger = logging.getLogger(__name__)
 
@@ -128,25 +128,24 @@ class PerspectiveWorker:
         for r in reviews:
             if r.perspective == self.perspective:
                 return r
-        
+
         # 如果没有找到，尝试更宽松的解析模式
-        from ..utils.spec_utils import parse_review_output_loose
+        from .utils import parse_review_output_loose
         reviews = parse_review_output_loose(raw or "", 0)
         for r in reviews:
             if r.perspective == self.perspective:
                 return r
-        
+
         # 如果还是找不到，尝试从整个文本中推断一个通用的审查结果
-        from ..utils.spec_utils import normalize_review_verdict, extract_suggestions_from_body, _LOOSE_PERSPECTIVE_KEYWORDS, _match_verdict_in_text
-        
-        # 检查文本中是否有针对当前视角的关键词
-        perspective_keywords = [k for k, v in _LOOSE_PERSPECTIVE_KEYWORDS.items() if v == self.perspective]
-        has_perspective_keyword = any(kw in raw.lower() for kw in perspective_keywords)
-        
+        from .utils import (
+            extract_suggestions_from_body,
+            normalize_review_verdict,
+        )
+
         # 无论如何都尝试提取信息，即使没有视角关键词
         verdict = normalize_review_verdict(raw)
         suggestions = extract_suggestions_from_body(raw, limit=5)
-        
+
         if verdict == "PASS":
             return PerspectiveReview(
                 perspective=self.perspective,
@@ -161,7 +160,7 @@ class PerspectiveWorker:
                 suggestions=suggestions if suggestions else [SPEC_UI_TEXT["worker_suggestion_default"]],
                 summary=SPEC_UI_TEXT["worker_summary_n_suggestions"].format(n=len(suggestions)) if suggestions else SPEC_UI_TEXT["worker_summary_has_suggestions"],
             )
-        
+
         # Fallback: parse failure — use config-driven default (fail-safe)
         _passed = self.parse_failure_default == "pass"
         return PerspectiveReview(
@@ -304,7 +303,7 @@ def run_workers_parallel(
             # Some futures did not complete within per_worker_timeout.
             # Synthesize FAIL outcomes for all unfinished bindings.
             unprocessed_futures = set(future_to_binding.keys()) - processed_futures
-            
+
             # Use domain semantics, disregarding the stdlib's internal format
             err = SPEC_UI_TEXT["retry_no_retry"]
 

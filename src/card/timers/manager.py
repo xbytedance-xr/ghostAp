@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from src.card.timers.scheduler import TimerHandle, get_timer_scheduler
 
 if TYPE_CHECKING:
-    from src.card.state.models import CardState
+    pass
 
 logger = logging.getLogger(__name__)
 

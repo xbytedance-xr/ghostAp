@@ -12,12 +12,9 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from src.card.delivery.engine import CardDelivery, MutationOutcome
+from src.card.delivery.engine import CardDelivery
 from src.card.types import RenderedCard
 
 
@@ -88,7 +85,6 @@ class TestDeliveryPerSessionLock:
         delivery = CardDelivery(client)
 
         call_order = []
-        original_create = client.create_card
 
         t1_entered = threading.Event()
 

@@ -1,6 +1,6 @@
 import json
-from types import SimpleNamespace
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from src import __version__

@@ -1,8 +1,8 @@
 from __future__ import annotations
+
 import enum
 import logging
 import threading
-import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Type, TypeVar, Union, cast
 
@@ -21,13 +21,13 @@ class ServiceLifecycle(enum.Enum):
 
 class ServiceRegistry:
     """轻量级服务注册与依赖注入容器。
-    
+
     支持单例模式与工厂模式注册，提供线程安全的延迟加载能力。
     支持 Scoped Registry (分层容器) 查找。
     支持 Transient 生命周期（每次 get 都创建新实例）。
     支持 close() 安全释放所有持有 close/cleanup 方法的单例实例。
     """
-    
+
     def __init__(self, parent: Optional[ServiceRegistry] = None, name: str = "root") -> None:
         self.name = name
         self.parent = parent
@@ -97,14 +97,14 @@ class ServiceRegistry:
 
     def get(self, key: Union[str, Type[T]], default: Any = _SENTINEL) -> T:
         """获取服务实例。如果是工厂注册，则在第一次调用时实例化。
-        
+
         Transient 工厂每次调用都创建新实例。
         如果当前容器未找到，则递归向上在 parent 中查找。
         """
         with self._lock:
             if key in self._instances:
                 return cast(T, self._instances[key])
-            
+
             if key in self._factories:
                 factory = self._factories[key]
                 instance = factory()
@@ -114,14 +114,14 @@ class ServiceRegistry:
             if key in self._transient_factories:
                 factory = self._transient_factories[key]
                 return cast(T, factory())
-        
+
         # 向上级容器查找
         if self.parent:
             return self.parent.get(key, default=default)
-                
+
         if default is not _SENTINEL:
             return default
-                
+
         raise KeyError(f"Service {key} not found in registry '{self.name}' (nor in its parents)")
 
     def has(self, key: Union[str, Type], local_only: bool = False) -> bool:
@@ -176,7 +176,7 @@ class ServiceRegistry:
 
     def close(self) -> None:
         """安全关闭所有持有 close/cleanup 方法的单例实例（反序释放）。
-        
+
         仅关闭当前容器的实例，不触及 parent。幂等：多次调用安全。
         """
         with self._lock:
@@ -209,7 +209,7 @@ def get_registry() -> ServiceRegistry:
 @dataclass(frozen=True, order=True)
 class CleanupTask:
     """A task to be executed during cleanup.
-    
+
     Priority: Lower values run first (default 100).
     """
     priority: int = field(default=100)
@@ -222,9 +222,9 @@ class CleanupRegistry:
     """Deterministic resource cleanup registry.
 
     Allows components to register cleanup functions that will be executed
-    in order of priority (lower values first, then reverse registration order for same priority) 
+    in order of priority (lower values first, then reverse registration order for same priority)
     when cleanup() is called.
-    
+
     Each task has a timeout — if a cleanup function exceeds its timeout,
     execution is abandoned (best-effort) and the next task proceeds.
     """
@@ -243,7 +243,7 @@ class CleanupRegistry:
 
     def register(self, name: str, cleanup_fn: Callable[[], Any], priority: int = 100, timeout: float = 5.0) -> Callable[[], None]:
         """Register a cleanup function with a name, priority and timeout.
-        
+
         Returns a callable that can be used to unregister this task.
         """
         with self._lock:
@@ -273,12 +273,14 @@ class CleanupRegistry:
 
     def cleanup(self) -> None:
         """Execute all registered cleanup functions in order of priority.
-        
+
         Each task is executed with a hard timeout using a thread pool.
         Tasks that exceed their timeout are logged and skipped.
         """
         import logging
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import TimeoutError as FutureTimeoutError
+
         from .errors import get_error_detail
 
         logger = logging.getLogger(__name__)

@@ -6,9 +6,9 @@ import functools
 import hashlib
 import logging
 from collections.abc import Callable
+from typing import get_args as _get_args
 
 from src.card.engine_meta import engine_type_to_cmd
-from src.card.types import ActiveElement, RenderedCard
 from src.card.render.atoms import AtomKind, RenderAtom, estimate_atom_size, flatten_to_atoms
 from src.card.render.budget import RenderBudget
 from src.card.render.buttons import render_buttons
@@ -24,6 +24,7 @@ from src.card.render.tools import build_subagent_dispatch_atom, render_tool_pane
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import CardState, ContentBlock
 from src.card.themes import PANEL_STYLES
+from src.card.types import ActiveElement, RenderedCard
 from src.card.ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
@@ -429,9 +430,6 @@ _ATOM_RENDERERS: dict[str, Callable[[RenderAtom, CardState, RenderBudget, dict],
     "spec_task": _render_atom_spec_task,
 }
 
-# Validate AtomKind ↔ _ATOM_RENDERERS single source of truth at import time.
-# Uses typing.get_args to extract literals from the AtomKind type alias.
-from typing import get_args as _get_args
 _atom_kind_literals = set(_get_args(AtomKind))
 _atom_renderer_keys = set(_ATOM_RENDERERS.keys())
 if _atom_kind_literals != _atom_renderer_keys:

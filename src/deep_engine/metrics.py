@@ -1,7 +1,7 @@
-import time
 import logging
+import time
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -14,17 +14,17 @@ class DeepEngineMetrics:
     project_id: str
     start_time: float = field(default_factory=time.time)
     end_time: Optional[float] = None
-    
+
     # Execution statistics
     tool_calls_total: int = 0
     tool_calls_by_kind: Dict[str, int] = field(default_factory=dict)
     text_chunks_total: int = 0
     plan_updates_total: int = 0
-    
+
     # Outcome
     status: str = "unknown"
     error_type: Optional[str] = None
-    
+
     @property
     def duration(self) -> float:
         end = self.end_time or time.time()

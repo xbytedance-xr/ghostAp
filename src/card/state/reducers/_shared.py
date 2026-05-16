@@ -4,9 +4,10 @@ Public functions here are shared infrastructure used across multiple sub-reducer
 """
 from __future__ import annotations
 
-from ..models import CardMetadata, HeaderState
-from src.card.themes import TERMINAL_TEMPLATES, MODE_TEMPLATES
+from src.card.themes import MODE_TEMPLATES, TERMINAL_TEMPLATES
+
 from ...ui_text import UI_TEXT
+from ..models import CardMetadata, HeaderState
 
 
 def build_header(metadata: CardMetadata, terminal: str) -> HeaderState:

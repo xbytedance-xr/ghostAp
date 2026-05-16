@@ -15,21 +15,18 @@ import pytest
 
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
-from src.feishu.handlers.engine_base import BaseEngineHandler
 from src.feishu.handlers.deep import DeepHandler
-from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.handlers.diagnostics import DiagnosticsHandler
+from src.feishu.handlers.engine_base import BaseEngineHandler
 from src.feishu.handlers.programming import (
     ClaudeModeHandler,
     CocoModeHandler,
-    AidenModeHandler,
-    CodexModeHandler,
-    GeminiModeHandler,
     ProgrammingModeHandler,
     TTADKModeHandler,
 )
 from src.feishu.handlers.project import ProjectHandler
 from src.feishu.handlers.system import SystemHandler
+from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.mode.manager import InteractionMode
 from src.ttadk.models import TTADKModel, TTADKTool
@@ -1917,7 +1914,7 @@ class TestACPSessionManagerProjectIsolation:
         assert mgr._session_key("chat1") == "chat1:_default_"
 
     def test_parse_session_key_roundtrip_basic_and_thread(self):
-        from src.acp.manager import ACPSessionManager, _DEFAULT_PROJECT
+        from src.acp.manager import _DEFAULT_PROJECT, ACPSessionManager
 
         # 显式 project + 线程维度
         key = ACPSessionManager._session_key("chat-1", "proj-1", thread_id="thread-9")
@@ -2251,6 +2248,7 @@ class TestSpecHandlerLockIntegration:
     def test_scheduled_run_catches_lock_conflict(self):
         """LockConflictError from _with_repo_lock triggers conflict card."""
         import time
+
         from src.repo_lock import LockConflictError
 
         h, ctx, mock_project = self._make_spec_handler()
@@ -2627,6 +2625,7 @@ class TestNonStreamingHeartbeat:
     def _make_handler_and_mocks(self):
         """Create a minimal CocoModeHandler with mocked dependencies."""
         from unittest.mock import MagicMock, PropertyMock, patch
+
         from src.feishu.handlers.programming import CocoModeHandler
 
         ctx = MagicMock()
@@ -2712,7 +2711,7 @@ class TestNonStreamingHeartbeat:
     def test_heartbeat_thread_joined_on_success(self):
         """AC-R06: Heartbeat thread is stopped (Event.set + join) after send_prompt returns."""
         import threading as _threading
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         handler, mock_session, mock_renderer, mock_streaming_mgr, ctx = self._make_handler_and_mocks()
 
@@ -2755,7 +2754,7 @@ class TestNonStreamingHeartbeat:
     def test_heartbeat_thread_joined_on_exception(self):
         """AC-R06: Heartbeat thread is stopped even when send_prompt raises."""
         import threading as _threading
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         handler, mock_session, mock_renderer, mock_streaming_mgr, ctx = self._make_handler_and_mocks()
 
@@ -2795,7 +2794,7 @@ class TestNonStreamingHeartbeat:
     def test_no_heartbeat_thread_when_no_lock_mgr(self):
         """No heartbeat thread is started when _repo_lock_mgr is None."""
         import threading as _threading
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
 
         handler, mock_session, mock_renderer, mock_streaming_mgr, ctx = self._make_handler_and_mocks()
 

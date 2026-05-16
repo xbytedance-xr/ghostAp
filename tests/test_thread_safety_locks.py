@@ -10,10 +10,7 @@ import threading
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.engine_base import EngineRunState
-
 
 # ---------------------------------------------------------------------------
 # Task 1: SpecEngine.execute() lock protection
@@ -141,8 +138,8 @@ class TestSessionHandlerThreadSafety:
     """Verify concurrent handler set/dispatch does not crash."""
 
     def test_concurrent_handler_set_and_dispatch(self):
-        from src.acp.session import ACPSession
         from src.acp.models import ACPEvent, ACPEventType
+        from src.acp.session import ACPSession
 
         session = ACPSession.__new__(ACPSession)
         session._event_handler = None

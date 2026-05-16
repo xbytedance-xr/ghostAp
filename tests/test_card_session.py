@@ -4,8 +4,6 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.card.delivery.engine import CardDelivery, MutationOutcome
 from src.card.events import CardEvent, CardEventType
 from src.card.events.worktree import (
@@ -15,13 +13,13 @@ from src.card.events.worktree import (
     worktree_progress,
     worktree_tool_select,
 )
-from src.card.types import RenderedCard
 from src.card.session import CardSession
 from src.card.session.config import SessionCallbacks, SessionConfig
 from src.card.session.factory import CardSessionFactory
 from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import CardMetadata, CardState, ContentBlock
 from src.card.state.reducer import reduce_card_state
+from src.card.types import RenderedCard
 
 
 class MockDeliveryClient:
@@ -694,7 +692,6 @@ class TestPendingActionToEvent:
     def test_max_failures_maps_to_warning_event(self):
         from src.card.delivery.tracker import DeliveryTracker, PendingAction
         from src.card.session import _pending_action_to_event
-        from src.card.ui_text import UI_TEXT
 
         tracker = DeliveryTracker()
         # Simulate a failure to capture timestamp
@@ -771,8 +768,6 @@ class TestDispatchExceptionProtection:
 # Phase 6: Terminal retry, TTL, concurrency guard, empty render tests
 # ---------------------------------------------------------------------------
 
-import time
-from unittest.mock import MagicMock, patch
 
 
 class CountingDelivery:
@@ -872,12 +867,10 @@ class TestRetryConcurrentClose:
         session.dispatch(CardEvent.completed())  # fails, schedules retry
 
         # Now close() before retry fires
-        timer = session._timers.retry_timer
         session.close()
 
         # Timer should have been cancelled; even if we manually call retry logic:
         # the guard should prevent delivery
-        deliver_before = delivery.deliver_calls
         # Simulate _retry being called after close
         with session._lock:
             already_closed = session._closed.is_set()
@@ -1209,7 +1202,6 @@ class TestTTLToastDistinguishesReason:
 
     def test_ttl_closed_returns_ttl_specific_toast(self):
         """After TTL expiry, inbound_action returns TTL-specific toast."""
-        from src.card.ui_text import UI_TEXT
 
         now = [0.0]
         session = self._make_session(now)
@@ -1263,7 +1255,6 @@ class TestTTLReduceRollback:
         session = self._make_session(now)
         session._reset_ttl_timer = lambda: None
         session.dispatch(CardEvent.started())
-        state_before = session.state
         assert not session.closed
 
         # Make reduce_card_state raise on TTL path
@@ -1392,7 +1383,6 @@ class TestCancelledRetainsTimeoutText:
 
     def test_ttl_cancel_preserves_warning_text(self):
         """After TTL cancel, state.footer.warning_banner has TTL text."""
-        from src.card.ui_text import UI_TEXT
 
         now = [0.0]
         client = MockDeliveryClient()
@@ -1820,7 +1810,6 @@ class TestMaxFailuresBannerFormatting:
             def update_element(self, card_id, element_id, content, *, sequence=0):
                 raise ConnectionError("always fail")
 
-        from src.card.delivery.tracker import DeliveryTracker
 
         delivery = CardDelivery(FailingClient())
         metadata = CardMetadata(mode_name="Test", engine_type="deep")
@@ -1987,8 +1976,8 @@ class TestWorktreeRetryAllButton:
     """All-completed worktree progress shows retry_all instead of retry_failed."""
 
     def test_all_completed_shows_retry_all(self):
-        from src.card.state.reducers.worktree import reduce_worktree
         from src.card.state.models import CardState, EngineExtState
+        from src.card.state.reducers.worktree import reduce_worktree
 
         state = CardState(
             metadata=CardMetadata(engine_type="worktree"),
@@ -2015,7 +2004,6 @@ class TestCardDeliveryConcurrentCloseDeliver:
         delivery = CardDelivery(client)
 
         # First, do a normal deliver to establish binding
-        from src.card.types import RenderedCard
         card = RenderedCard(
             _card_json={"body": {"elements": []}},
             structure_signature="sig1",
@@ -2587,8 +2575,8 @@ class TestCreatePageDoubleFailure:
 
     def test_streaming_and_fallback_both_fail(self):
         """Both streaming and IM create_card fail → reconcile outcome."""
-        from src.card.delivery.engine import CardDelivery, MutationOutcome
-        from src.card.types import RenderedCard, ActiveElement
+        from src.card.delivery.engine import CardDelivery
+        from src.card.types import ActiveElement
 
         client = MagicMock()
         client.create_streaming_card.side_effect = RuntimeError("streaming fail")
@@ -2621,9 +2609,9 @@ class TestStreamElementSequenceConflictFallback:
     """SequenceConflictError in _stream_element should fallback to _update_page."""
 
     def test_sequence_conflict_falls_back_to_update(self):
-        from src.card.delivery.engine import CardDelivery, SequenceConflictError
         from src.card.delivery.binding import PageBinding
-        from src.card.types import RenderedCard, ActiveElement
+        from src.card.delivery.engine import CardDelivery, SequenceConflictError
+        from src.card.types import ActiveElement
 
         client = MagicMock()
         # update_element raises SequenceConflictError
@@ -2663,7 +2651,6 @@ class TestToFeishuJsonIsolation:
     """Verify that delivery receives a copy; mutating it doesn't affect RenderedCard."""
 
     def test_payload_mutation_does_not_affect_rendered_card(self):
-        from src.card.types import RenderedCard
 
         original_json = {"header": {"title": "Test"}, "body": [{"tag": "div"}]}
         card = RenderedCard(_card_json=original_json, structure_signature="s1", content_hash="h1")
@@ -2685,13 +2672,13 @@ class TestTTLKeepAliveConcurrentWrite:
         """Multiple threads calling inbound_action(TTL_KEEP_ALIVE) must not corrupt state."""
         import threading
         import time
+        from unittest.mock import MagicMock
 
         from src.card.actions.dispatch import TTL_KEEP_ALIVE
+        from src.card.render.budget import RenderBudget
+        from src.card.session.config import SessionConfig
         from src.card.session.core import CardSession
         from src.card.state.models import CardMetadata
-        from src.card.session.config import SessionConfig
-        from src.card.render.budget import RenderBudget
-        from unittest.mock import MagicMock
 
         delivery = MagicMock()
         config = SessionConfig(

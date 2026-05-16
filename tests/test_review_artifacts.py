@@ -6,8 +6,6 @@ import json
 import os
 import types
 
-import pytest
-
 from src.spec_engine.review_artifacts import (
     ReviewArtifacts,
     collect_review_artifacts,

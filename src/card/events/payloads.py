@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Literal, NotRequired, TypedDict
 
-
 # ---------------------------------------------------------------------------
 # Lifecycle payload TypedDicts
 # ---------------------------------------------------------------------------

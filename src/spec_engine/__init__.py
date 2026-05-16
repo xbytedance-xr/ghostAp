@@ -4,6 +4,12 @@ Follows spec-kit methodology: spec → plan → task → build → review,
 with review-driven iteration cycles.
 """
 
+# ---------------------------------------------------------------------------
+# Inject perspective display names into engine_base (dependency direction:
+# spec_engine → engine_base, never the reverse).
+# ---------------------------------------------------------------------------
+from ..engine_base import ReviewPerspective as _ReviewPerspective
+from .constants import SPEC_UI_TEXT as _SPEC_UI_TEXT
 from .engine import SpecEngine, SpecEngineCallbacks
 from .manager import SpecEngineManager
 from .models import (
@@ -25,13 +31,6 @@ from .task_persistence import (
     save_task_state,
 )
 from .tracker import PhaseTracker
-
-# ---------------------------------------------------------------------------
-# Inject perspective display names into engine_base (dependency direction:
-# spec_engine → engine_base, never the reverse).
-# ---------------------------------------------------------------------------
-from ..engine_base import ReviewPerspective as _ReviewPerspective
-from .constants import SPEC_UI_TEXT as _SPEC_UI_TEXT
 
 _ReviewPerspective.register_display_names(
     {k: v for k, v in _SPEC_UI_TEXT.items() if k.startswith("perspective_")}

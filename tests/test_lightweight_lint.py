@@ -2,11 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import textwrap
 from unittest.mock import patch
-
-import pytest
 
 from src.utils.lightweight_lint import (
     LintResult,

@@ -1,6 +1,5 @@
 """Tests for src/card/builders/lock_common.py — format_undo_window boundary cases."""
 
-import pytest
 
 from src.card.builders.lock_common import format_undo_window
 

@@ -1,7 +1,5 @@
 """Tests for DeliveryTracker failure tracking and recovery banner logic."""
 
-import time
-from unittest.mock import patch
 
 import pytest
 

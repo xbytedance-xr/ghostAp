@@ -1,5 +1,4 @@
 """Tests for src/card/nav_link.py — full branch coverage."""
-import pytest
 from src.card.nav_link import (
     format_back_link,
     format_navigation_link,

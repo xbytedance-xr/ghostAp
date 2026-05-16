@@ -1,5 +1,5 @@
 from src.acp.provider import ACPProvider, ToolRegistry
-from src.acp.providers import CocoProvider, ClaudeProvider
+from src.acp.providers import ClaudeProvider, CocoProvider
 
 
 class MockProvider(ACPProvider):
@@ -29,7 +29,7 @@ class MockProvider(ACPProvider):
 def test_registry_registration():
     registry = ToolRegistry()
     provider = MockProvider("test_tool")
-    
+
     registry.register(provider)
     assert registry.get_provider("test_tool") is provider
     assert registry.get_provider("TEST_TOOL") is provider  # case insensitive
@@ -40,7 +40,7 @@ def test_registry_get_serve_command_available():
     registry = ToolRegistry()
     provider = MockProvider("test_tool", available=True)
     registry.register(provider)
-    
+
     cmd, args = registry.get_serve_command("test_tool", model_name="gpt-4")
     assert cmd == "test_tool"
     assert args == ["mock", "serve", "-m", "gpt-4"]
@@ -50,7 +50,7 @@ def test_registry_get_serve_command_fallback():
     registry = ToolRegistry()
     provider = MockProvider("test_tool", available=False)
     registry.register(provider)
-    
+
     cmd, args = registry.get_serve_command("test_tool")
     assert cmd == "test_tool"
     assert args == ["fallback"]
@@ -69,7 +69,7 @@ def test_registry_rechecks_stale_negative_cache_for_hot_tool():
 
 def test_registry_get_serve_command_unregistered_fallback():
     registry = ToolRegistry()
-    
+
     cmd, args = registry.get_serve_command("unknown_tool")
     assert cmd == "unknown_tool"
     assert args == ["acp", "serve"]
@@ -78,11 +78,11 @@ def test_registry_get_serve_command_unregistered_fallback():
 def test_coco_provider():
     provider = CocoProvider()
     assert provider.name == "coco"
-    
+
     cmd, args = provider.get_serve_command(model_name="test-model")
     assert cmd == "coco"
     assert args == ["acp", "serve", "-c", "model.name=test-model"]
-    
+
     cmd, args = provider.get_serve_command()
     assert cmd == "coco"
     assert args == ["acp", "serve"]
@@ -91,7 +91,7 @@ def test_coco_provider():
 def test_claude_provider():
     provider = ClaudeProvider()
     assert provider.name == "claude"
-    
+
     cmd, args = provider.get_serve_command(model_name="test-model")
     assert cmd == "claude"
     assert args == ["acp", "serve"]

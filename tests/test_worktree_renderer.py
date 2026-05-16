@@ -4,14 +4,10 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from src.card.hooks import EmojiHook
 from src.card.events import CardEvent, CardEventType
-from src.card.session import CardSession
-from src.card.session.factory import CardSessionFactory
-from src.card.state.reducer import reduce_card_state
+from src.card.hooks import EmojiHook
 from src.card.state.models import CardMetadata
+from src.card.state.reducer import reduce_card_state
 from src.feishu.renderers.worktree_renderer import WorktreeRenderer
 
 

@@ -1,12 +1,9 @@
 """Tests for _HookExecutorManager timeout recovery and executor rebuild."""
 
-import concurrent.futures
 import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from src.card.hooks import _HookExecutorManager, _MAX_CONSECUTIVE_TIMEOUTS
+from src.card.hooks import _MAX_CONSECUTIVE_TIMEOUTS, _HookExecutorManager
 
 
 class TestHookExecutorManagerBasic:
@@ -107,14 +104,14 @@ class TestHookTimeoutEndToEnd:
 
     def test_slow_hook_does_not_block_pipeline(self, monkeypatch):
         """A hook sleeping longer than HOOK_TIMEOUT_SECONDS should be timed out gracefully."""
-        import time
         import threading
-        from unittest.mock import MagicMock
+        import time
+
+        import src.card.hooks as hooks_mod
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
         from src.card.session.config import SessionConfig
-        from src.card.state.models import CardMetadata, CardState
-        import src.card.hooks as hooks_mod
+        from src.card.state.models import CardMetadata
 
         # Speed up test by reducing the timeout constant
         monkeypatch.setattr(hooks_mod, "HOOK_TIMEOUT_SECONDS", 1.0)
@@ -166,7 +163,7 @@ class TestHookExecutorTwoPhaseShutdown:
 
         mgr = _HookExecutorManager()
         # Submit a task that takes a moment
-        future = mgr.submit(lambda: (time.sleep(0.1), results.append("done")))
+        mgr.submit(lambda: (time.sleep(0.1), results.append("done")))
 
         # shutdown should wait for it
         mgr.shutdown()

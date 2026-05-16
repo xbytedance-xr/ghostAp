@@ -240,9 +240,9 @@ class ProjectHandler(BaseHandler):
 
     def handle_new_chat_project(self, message_id: str, chat_id: str, data: dict) -> None:
         """Handle /new-chat command: create project + dedicated Feishu group."""
-        from ...thread.manager import get_current_sender_id
         from ...project_chat import ProjectChatService
         from ...project_chat.lark_chat_client import LarkChatClient
+        from ...thread.manager import get_current_sender_id
 
         sender_open_id = get_current_sender_id() or ""
         if not sender_open_id:

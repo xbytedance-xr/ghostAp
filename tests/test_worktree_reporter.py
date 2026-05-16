@@ -165,8 +165,9 @@ class TestWorktreeRendererGC:
 
     def test_session_removed_on_terminal(self):
         """When a session fires on_terminal, it's removed from _sessions dict."""
-        from unittest.mock import MagicMock, patch
-        from src.feishu.renderers.worktree_renderer import _WorktreeGCHook, WorktreeRenderer
+        from unittest.mock import MagicMock
+
+        from src.feishu.renderers.worktree_renderer import WorktreeRenderer, _WorktreeGCHook
 
         handler = MagicMock()
         handler._handler = handler
@@ -190,7 +191,8 @@ class TestWorktreeRendererGC:
     def test_gc_hook_idempotent(self):
         """Firing on_terminal twice doesn't crash."""
         from unittest.mock import MagicMock
-        from src.feishu.renderers.worktree_renderer import _WorktreeGCHook, WorktreeRenderer
+
+        from src.feishu.renderers.worktree_renderer import WorktreeRenderer, _WorktreeGCHook
 
         renderer = WorktreeRenderer.__new__(WorktreeRenderer)
         renderer._sessions = {"proj1": MagicMock()}

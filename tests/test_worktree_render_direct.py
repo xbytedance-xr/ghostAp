@@ -2,22 +2,21 @@
 
 Covers boundary cases: data=None, empty lists, missing fields, unknown kinds.
 """
-import pytest
 
-from src.card.events import CardEvent
 from src.card.events.worktree import worktree_tool_select
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import render_card
-from src.card.state.models import CardMetadata, CardState
-from src.card.state.reducer import reduce_card_state
 from src.card.render.worktree import render_worktree_panel
 from src.card.state.models import (
-    WorktreeSelectBlock,
-    WorktreeConfirmBlock,
-    WorktreeUnitsBlock,
-    WorktreeMergeBlock,
+    CardMetadata,
+    CardState,
     WorktreeCleanupBlock,
+    WorktreeConfirmBlock,
+    WorktreeMergeBlock,
+    WorktreeSelectBlock,
+    WorktreeUnitsBlock,
 )
+from src.card.state.reducer import reduce_card_state
 
 
 def _collect_buttons(node):
@@ -391,7 +390,6 @@ class TestRenderWorktreeToolSelectInteractions:
 
     def test_tool_select_subtitle_uses_tool_select_text(self):
         """工具选择阶段 header subtitle 文案保持为'选择工具'。"""
-        from src.card.events import CardEvent
         from src.card.render.budget import RenderBudget
         from src.card.render.renderer import render_card
         from src.card.state.models import CardMetadata, CardState
@@ -491,7 +489,6 @@ class TestRenderWorktreeToolSelectInteractions:
 
     def test_model_select_subtitle_uses_model_select_text(self):
         """模型选择阶段 header subtitle 必须显示为'选择模型'，与工具选择视觉区分。"""
-        from src.card.events import CardEvent
         from src.card.render.budget import RenderBudget
         from src.card.render.renderer import render_card
         from src.card.state.models import CardMetadata, CardState

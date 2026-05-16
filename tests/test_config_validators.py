@@ -155,11 +155,12 @@ class TestSessionConfigBudgetClamp:
 
     def test_budget_exceeds_card_max_chars_is_clamped(self, caplog):
         """When visible_chars > card_max_chars, factory clamps it during session creation."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from src.card.render.budget import RenderBudget
         from src.card.session.config import SessionCallbacks
-        from src.card.state.models import CardMetadata
         from src.card.session.factory import CardSessionFactory
+        from src.card.state.models import CardMetadata
 
         mock_settings = MagicMock()
         mock_settings.card.max_chars = 20000
@@ -182,11 +183,12 @@ class TestSessionConfigBudgetClamp:
 
     def test_budget_within_limit_unchanged(self):
         """When visible_chars <= card_max_chars, budget remains unchanged."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from src.card.render.budget import RenderBudget
         from src.card.session.config import SessionCallbacks
-        from src.card.state.models import CardMetadata
         from src.card.session.factory import CardSessionFactory
+        from src.card.state.models import CardMetadata
 
         mock_settings = MagicMock()
         mock_settings.card.max_chars = 28000

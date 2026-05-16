@@ -12,8 +12,6 @@ import time
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.spec_engine.retry_status import RetryEvent, RetryStatus
 from src.spec_engine.review_retry import PipelineRetryContext, attempt_pipeline_retry
 from src.spec_engine.review_types import ReviewCircuitState
@@ -126,7 +124,7 @@ class TestSkipRetryEventShortensWait:
         t.start()
 
         start = time.monotonic()
-        result = attempt_pipeline_retry(
+        attempt_pipeline_retry(
             circuit=circuit, settings=settings, cycle=1, ctx=ctx,
         )
         elapsed = time.monotonic() - start

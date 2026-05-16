@@ -5,15 +5,13 @@ SpecRenderer callbacks through the SessionRotator → CardSession pipeline,
 including cycle rotation scenarios.
 """
 
-import pytest
 
 from src.card.delivery.engine import CardDelivery
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEvent
 from src.card.session import CardSession
 from src.card.session.config import SessionConfig
 from src.card.session.rotator import SessionRotator
 from src.card.state.models import CardMetadata
-
 from tests.conftest import TrackingClient
 
 

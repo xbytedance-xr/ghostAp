@@ -4,16 +4,13 @@ Validates the correct ordering of CardEvents dispatched by
 DeepRenderer callbacks through the CardSession pipeline.
 """
 
-from unittest.mock import MagicMock, patch
 
-import pytest
 
 from src.card.delivery.engine import CardDelivery
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEvent
 from src.card.session import CardSession
 from src.card.session.config import SessionConfig
 from src.card.state.models import CardMetadata
-
 from tests.conftest import TrackingClient
 
 

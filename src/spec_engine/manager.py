@@ -3,13 +3,13 @@ import logging
 import os
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 from ..engine_base import BaseEngineManager
 from ..utils.engine_identity import resolve_engine_identity
 from .engine import SpecEngine
 from .models import SpecProject
 from .storage import state_path_candidates
+
+logger = logging.getLogger(__name__)
 
 
 class SpecEngineManager(BaseEngineManager["SpecEngine"]):
@@ -62,8 +62,8 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
         if normalized_agent:
             return SpecEngine._infer_engine_name(normalized_agent), normalized_agent, model_name
 
-        from ..ttadk import get_ttadk_manager
         from ..mode import InteractionMode
+        from ..ttadk import get_ttadk_manager
 
         if normalized_name.lower() == "ttadk":
             ttadk_manager = get_ttadk_manager()
@@ -181,7 +181,7 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
         *,
         engine_name: str,
     ) -> "SpecEngine":
-        seed_engine = self.get_or_create(chat_id, root_path, engine_name=engine_name)
+        self.get_or_create(chat_id, root_path, engine_name=engine_name)
         persisted_project = None
         persisted_runtime = None
         persisted_saved_at = None

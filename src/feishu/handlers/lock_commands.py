@@ -11,7 +11,6 @@ from ...card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
     from ...chat_lock import ChatLockResult
-    from ...project import ProjectContext
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +39,9 @@ class LockCommandsMixin:
 
         Both /lock and /unlock execute directly (symmetric behaviour).
         """
-        from ...thread import get_current_sender_id, get_current_is_p2p, get_current_sender_name
         from ...card.builders.lock import build_lock_success_card
         from ...config import get_settings as _get_settings
+        from ...thread import get_current_is_p2p, get_current_sender_id, get_current_sender_name
 
         _settings = _get_settings()
         _lock_undo_window = _settings.lock_undo_window_seconds
@@ -202,8 +201,8 @@ class LockCommandsMixin:
 
         Returns True if expired (caller should return early), False otherwise.
         """
-        from ...config import get_settings
         from ...card.builders.project import ProjectBuilder
+        from ...config import get_settings
 
         timestamp = value.get("_ts") or value.get("timestamp", 0)
         try:

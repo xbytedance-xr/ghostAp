@@ -1,3 +1,4 @@
+import argparse
 import json
 import logging
 import os
@@ -20,15 +21,14 @@ try:
 except Exception:  # pragma: no cover
     pty = None
 
-import argparse
-
 # ANSI/control sequences may appear in PTY mode. We strip them before checking JSON start.
 _ANSI_ESCAPE_RE = re.compile(rb"\x1b\[[\?0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b[()][AB012]")
 """TTADK wrapper runtime.
 
 IMPORTANT:
-- This module is intended to be launched via module mode:
-  `python -m src.utils.ttadk_wrapper [--pty] <command> [args...]`
+- New subprocess launchers should use:
+  `python -m src.ttadk.wrapper [--pty] <command> [args...]`
+- This legacy module path remains executable/importable for compatibility.
 - Do NOT add `sys.path` runtime injection here. Import/package correctness
   must be guaranteed by the caller (SSOT: `src.acp.sync_adapter.resolve_agent_spec`).
 

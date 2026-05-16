@@ -4,9 +4,6 @@ Verifies atomic rotation, close-during-rotate race, and dispatch-after-close.
 """
 
 import threading
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.card.events import CardEvent, CardEventType
 from src.card.session.rotator import SessionRotator

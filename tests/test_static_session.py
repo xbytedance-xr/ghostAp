@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -39,7 +39,7 @@ class TestStaticSessionLifecycle:
         delivery = FakeDelivery()
         session = StaticCardSession(delivery=delivery, chat_id="chat1")
 
-        result = session.send({"header": {"title": "Test"}})
+        session.send({"header": {"title": "Test"}})
         assert len(delivery.deliver_calls) == 1
         assert delivery.deliver_calls[0]["chat_id"] == "chat1"
 
@@ -88,7 +88,7 @@ class TestStaticSessionJsonParsing:
         session = StaticCardSession(delivery=delivery, chat_id="chat1")
 
         card_dict = {"header": {"title": "Test"}, "body": []}
-        result = session.send(json.dumps(card_dict))
+        session.send(json.dumps(card_dict))
 
         assert len(delivery.deliver_calls) == 1
         rendered = delivery.deliver_calls[0]["rendered"][0]

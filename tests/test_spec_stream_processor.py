@@ -10,18 +10,16 @@ Covers:
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.acp import ACPEventType
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEventType
 from src.card.render.budget import RenderBudget
 from src.card.render.throttle import StreamThrottle
 from src.card.state.models import CardMetadata
-from src.card.ui_text import UI_TEXT, _MUTABLE_UI_TEXT
-from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
+from src.card.ui_text import _MUTABLE_UI_TEXT, UI_TEXT
 from src.engine_base import ReviewResult
+from src.feishu.renderers._spec_stream_processor import SpecStreamProcessor
 from src.spec_engine import SpecEngineCallbacks
-from src.spec_engine.models import SpecPhase, SpecProject, SpecProjectStatus
+from src.spec_engine.models import SpecPhase
 from src.spec_engine.reporter import SpecReporter
 from src.spec_engine.retry_status import RetryEvent, RetryStatus
 

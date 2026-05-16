@@ -1,5 +1,4 @@
 """Tests for group naming validation and formatting."""
-import pytest
 from src.project_chat.group_naming import format_group_name, validate_name_part
 
 

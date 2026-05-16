@@ -1,17 +1,17 @@
-import pytest
-from src.acp.renderer import ACPEventRenderer
 from src.acp.models import ACPEvent, ACPEventType
+from src.acp.renderer import ACPEventRenderer
+
 
 def test_renderer_registry_dispatch():
     renderer = ACPEventRenderer()
-    
+
     # Test text chunk
     event = ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="Hello world")
     content = renderer.process_event(event)
     assert "Hello world" in content
-    
+
     # Test plan update
-    from src.acp.models import PlanInfo, PlanEntryInfo
+    from src.acp.models import PlanEntryInfo, PlanInfo
     plan = PlanInfo(entries=[PlanEntryInfo(content="Task 1", status="completed")])
     event = ACPEvent(event_type=ACPEventType.PLAN_UPDATE, plan=plan)
     content = renderer.process_event(event)
@@ -23,7 +23,7 @@ def test_renderer_reset():
     event = ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="Hello")
     renderer.process_event(event)
     assert "Hello" in renderer.text_content
-    
+
     renderer.reset()
     assert renderer.text_content == ""
     assert renderer.completed_tool_count == 0
@@ -36,7 +36,7 @@ def test_renderer_reset_all_fields():
     are non-default before reset(), then assert each one returns to its
     initial value after reset().
     """
-    from src.acp.models import PlanInfo, PlanEntryInfo, ToolCallInfo
+    from src.acp.models import PlanEntryInfo, PlanInfo, ToolCallInfo
 
     renderer = ACPEventRenderer()
 

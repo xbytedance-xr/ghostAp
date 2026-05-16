@@ -1,6 +1,5 @@
 """Tests for src/card/truncation.py — unified truncation utilities."""
 
-import pytest
 
 from src.card.truncation import (
     cap_reasoning_tail,
@@ -8,7 +7,6 @@ from src.card.truncation import (
     truncate_card_string,
     truncate_terminal_message,
 )
-
 
 # ── truncate_card_string ──────────────────────────────────────
 

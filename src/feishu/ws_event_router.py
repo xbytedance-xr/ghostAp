@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
-
-import logging
-import time
-
 
 logger = logging.getLogger(__name__)
 

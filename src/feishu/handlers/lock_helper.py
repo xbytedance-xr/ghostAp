@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Optional, Protocol, runtime_checkable
 from ...card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
-    from ...feishu.handler_context import HandlerContext
     from ...repo_lock import LockConflictError
 
 logger = logging.getLogger(__name__)

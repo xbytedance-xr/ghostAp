@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-
 SYSTEM_CARD_ACTIONS = {
     "show_status",
     "switch_project",

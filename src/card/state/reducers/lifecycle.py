@@ -1,15 +1,17 @@
 """Lifecycle sub-reducer."""
 from __future__ import annotations
+
 from dataclasses import replace
 from typing import cast
-from ..models import CardState, HeaderState, FooterState, ButtonSpec, TextBlock, EngineExtState
-from ...events import CardEvent, CardEventType, CompletedPayload, FailedPayload
-from ..button_intent import ButtonIntent
-from src.card.themes import TERMINAL_TEMPLATES
-from ...engine_meta import ENGINE_CMD_MAP
-from ...ui_text import UI_TEXT
-from ._shared import build_header
 
+from src.card.themes import TERMINAL_TEMPLATES
+
+from ...engine_meta import ENGINE_CMD_MAP
+from ...events import CardEvent, CardEventType, CompletedPayload, FailedPayload
+from ...ui_text import UI_TEXT
+from ..button_intent import ButtonIntent
+from ..models import ButtonSpec, CardState, EngineExtState, FooterState, HeaderState, TextBlock
+from ._shared import build_header
 
 # Retry button action IDs per engine type
 _RETRY_ACTIONS: dict[str, str] = {

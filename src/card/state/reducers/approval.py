@@ -1,10 +1,12 @@
 """Approval sub-reducer."""
 from __future__ import annotations
+
 from dataclasses import replace
-from ..models import CardState, FooterState, ButtonSpec
+
 from ...events import CardEvent, CardEventType
-from ..button_intent import ButtonIntent
 from ...ui_text import UI_TEXT
+from ..button_intent import ButtonIntent
+from ..models import ButtonSpec, CardState, FooterState
 from ._shared import build_header
 
 # Reuse retry actions for restart button on rejection
@@ -20,7 +22,7 @@ def reduce_approval(state: CardState, event: CardEvent) -> CardState:
     if event.type == CardEventType.APPROVAL_REQUESTED:
         header = build_header(state.metadata, "awaiting_approval")
         tool_name = event.payload.get("tool_name", "")
-        description = event.payload.get("description", "")
+        event.payload.get("description", "")
         status_text = "⏳ 等待审批"
         if tool_name:
             status_text += f": {tool_name}"

@@ -8,8 +8,6 @@ bindings remain and no exceptions are raised.
 import threading
 import time
 
-import pytest
-
 from src.card.delivery.engine import CardDelivery, MutationOutcome
 from src.card.types import RenderedCard
 

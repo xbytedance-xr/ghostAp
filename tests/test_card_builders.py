@@ -1,20 +1,19 @@
 import json
-from typing import Optional
 
 import pytest
 
 from src.card.builder import CardBuilder
 from src.card.builders.core import CoreBuilder
-from src.card.builders.project import ProjectBuilder
-from src.card.ui_text import UI_TEXT
-from src.card.builders.system import SystemBuilder
 from src.card.builders.deep import DeepBuilder
+from src.card.builders.project import ProjectBuilder
+from src.card.builders.system import SystemBuilder
 from src.card.models import (
     EngineCardState,
     EngineStatusEntry,
     ModelOptionView,
     ToolOptionView,
 )
+from src.card.ui_text import UI_TEXT
 from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
 from src.project.context import ProjectContext
 
@@ -138,14 +137,14 @@ def test_project_builder_with_banner():
     project = ProjectContext(project_id="p1", project_name="P1", root_path="/tmp/p1")
     message = "Successfully added Claude"
     banner = CoreBuilder._build_banner_element(message, type="success")
-    
+
     msg_type, card_json = ProjectBuilder.build_project_response_card(
         project, "Title", "Content", banner=banner
     )
-    
+
     assert msg_type == "interactive"
     card = json.loads(card_json)
-    
+
     # Banner should be the third element (Directory, HR, Banner, HR, Content, Buttons)
     elements = card["body"]["elements"]
     assert elements[2]["tag"] == "column_set"
@@ -1070,7 +1069,7 @@ class TestStopButtonConfirmDialogs:
 
     def _make_executing_state(self):
         """Create an EngineCardState that is executing."""
-        from src.card.builders.deep import DeepBuilder, EngineCardState
+        from src.card.builders.deep import EngineCardState
         return EngineCardState(
             is_executing=True,
             is_paused=False,
@@ -1257,7 +1256,6 @@ class TestHelpCardTimeoutNotePosition:
 
         # Find positions of key elements
         timeout_note_idx = None
-        tips_idx = None
         quick_entry_idx = None
         for i, el in enumerate(body_elements):
             content = el.get("content", "")
@@ -1266,7 +1264,7 @@ class TestHelpCardTimeoutNotePosition:
             if "system_help_tips" in content or "/help" in content:
                 # tips is a notation-size markdown at the bottom
                 if el.get("text_size") == "notation" and "发送" in content:
-                    tips_idx = i
+                    pass
             if "快速入口" in content or "system_help_quick_entry" in content:
                 quick_entry_idx = i
 

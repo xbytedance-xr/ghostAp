@@ -5,7 +5,6 @@ WARNING level (not ERROR), and produces error messages containing '超时'.
 """
 
 import logging
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,7 +14,6 @@ from src.deep_engine.models import DeepProjectStatus
 from src.engine_base import EngineRunState
 from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
 from src.spec_engine.models import SpecProjectStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers

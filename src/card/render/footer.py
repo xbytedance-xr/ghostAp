@@ -9,6 +9,7 @@ import time
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.state.models import CardMetadata, CardState, ContentBlock
 from src.card.ui_text import UI_TEXT
+
 from .budget import RenderBudget
 from .progress import MOBILE_SEGMENTS, render_progress_bar
 

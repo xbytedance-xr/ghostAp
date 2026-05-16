@@ -21,9 +21,9 @@ from src.card.delivery.tracker import DeliveryTracker
 from src.card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
-    from src.card.session.ttl import TTLHandler
     from src.card.delivery.engine import CardDelivery
     from src.card.hooks import HookFirer
+    from src.card.session.ttl import TTLHandler
     from src.card.state.models import CardState
 
 logger = logging.getLogger(__name__)

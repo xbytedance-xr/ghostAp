@@ -1,9 +1,14 @@
 """Tests for card state models."""
-import pytest
 from dataclasses import replace
+
+import pytest
+
 from src.card.state.models import (
-    CardState, ContentBlock, HeaderState, FooterState,
-    CardMetadata, ButtonSpec,
+    ButtonSpec,
+    CardMetadata,
+    CardState,
+    ContentBlock,
+    HeaderState,
 )
 
 

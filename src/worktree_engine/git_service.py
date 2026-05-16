@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
-from .models import DeleteWarning, WorktreeInfo, WorktreeSelectionItem, WorktreeUnit
+from .models import DeleteWarning, WorktreeInfo, WorktreeUnit
 
 logger = logging.getLogger(__name__)
 

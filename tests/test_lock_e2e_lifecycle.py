@@ -10,11 +10,9 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config import Settings
 from src.repo_lock import (
     AcquireResult,
     LockConflictError,

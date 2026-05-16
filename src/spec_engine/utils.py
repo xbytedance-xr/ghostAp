@@ -8,4 +8,3 @@ from ``src.spec_engine`` without expanding the generic utils surface.
 from __future__ import annotations
 
 from ..utils.spec_utils import *  # noqa: F401,F403 - compatibility facade
-

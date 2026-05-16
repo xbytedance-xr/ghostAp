@@ -197,7 +197,7 @@ class DeepEngine(BaseEngine):
 
         # Initialize TraceContext for the execution
         trace_ctx = TraceContext(trace_id=task_id or f"deep-{int(time.time())}")
-        
+
         try:
             with trace_ctx:
                 # Create session

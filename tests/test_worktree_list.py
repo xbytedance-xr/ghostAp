@@ -105,7 +105,7 @@ def test_format_worktree_table_alignment(tmp_path):
 
     # All lines should have the same number of columns (split by double-space)
     # Check that each data row is properly aligned (same column positions)
-    header_line = lines[0]
+    lines[0]
     for data_line in lines[2:]:
         # Status column should start at the same position
         assert len(data_line.rstrip()) > 0

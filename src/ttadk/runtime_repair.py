@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable, Optional
 
@@ -23,7 +24,6 @@ from .models import (
     resolve_model_id,
 )
 from .models import build_invalid_model_context as _build_invalid_model_context_ssot
-import logging
 
 logger = logging.getLogger(__name__)
 

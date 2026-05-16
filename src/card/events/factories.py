@@ -6,19 +6,20 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar, TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .types import CardEventType
 
 if TYPE_CHECKING:
     from src.acp.models import ACPEvent
+
     from .payloads import (
         BlockedPayload,
+        CardSplitPayload,
         CompletedPayload,
         CriteriaUpdatedPayload,
         CycleDonePayload,
         CycleStartedPayload,
-        CardSplitPayload,
         FailedPayload,
         PhaseDonePayload,
         PhaseStartedPayload,

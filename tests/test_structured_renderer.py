@@ -211,7 +211,7 @@ class TestProcessEventStructured:
         ]
         for e in events:
             self.renderer._ingest_event(e)
-        legacy = self.renderer._render()
+        self.renderer._render()
         structured = self.renderer._render_structured()
         # Structured markdown should contain text content
         sm = structured.to_markdown()

@@ -7,6 +7,8 @@ from src.spec_engine.models import SpecProject
 from src.spec_engine.persistence import artifact_root_dir, get_state_path, save_engine_state
 from src.spec_engine.storage import (
     artifact_root_dir as storage_artifact_root_dir,
+)
+from src.spec_engine.storage import (
     delete_spec_run,
     list_spec_runs,
     project_cache_root,
@@ -102,7 +104,7 @@ def test_list_spec_runs_uses_project_state_when_run_state_missing(tmp_path):
     project = SpecProject.create(root_path=str(project_root))
     project.requirement = "recover from project state"
 
-    state_path = save_engine_state(
+    save_engine_state(
         project=project,
         settings=settings,
         root_path=str(project_root),

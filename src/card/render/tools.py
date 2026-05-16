@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES

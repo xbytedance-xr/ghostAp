@@ -391,6 +391,7 @@ _get_gemini_acp_serve_help_blob.cache_clear = lambda: _get_checker("gemini")[2](
 
 
 __all__ = [
+    "ACPProvider",
     "ToolRegistry",
     "tool_registry",
     "get_providers",

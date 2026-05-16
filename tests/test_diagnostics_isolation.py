@@ -331,6 +331,7 @@ class TestTraceProjectIsolation:
     @staticmethod
     def _make_diagnostics_handler():
         import threading
+
         from src.feishu.handler_context import HandlerContext
         from src.feishu.handlers.diagnostics import DiagnosticsHandler
 

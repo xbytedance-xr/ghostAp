@@ -7,7 +7,7 @@ construction logic lives here.
 
 from __future__ import annotations
 
-from .factories import CardEvent, VALIDATE_PAYLOAD
+from .factories import VALIDATE_PAYLOAD, CardEvent
 from .payloads import (
     WorktreeCleanupPayload,
     WorktreeCompletedNoChangePayload,

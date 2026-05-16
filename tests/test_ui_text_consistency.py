@@ -156,9 +156,9 @@ class TestUiTextKeyConflictAssertion:
 
     def test_no_actual_conflicts_at_import(self):
         """Importing aggregate UI_TEXT should succeed with no production key conflicts."""
+        from src.card.styles_lock import LOCK_UI_TEXT
         from src.card.ui_text import UI_TEXT
         from src.spec_engine.constants import SPEC_UI_TEXT
-        from src.card.styles_lock import LOCK_UI_TEXT
 
         # All SPEC keys should be present in UI_TEXT
         for key in SPEC_UI_TEXT:

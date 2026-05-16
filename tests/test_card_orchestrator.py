@@ -887,6 +887,7 @@ class TestHandlePlanUpdate:
     def _make_plan_event(self, entries):
         """Create a fake ACPEvent with PLAN_UPDATE type."""
         from unittest.mock import MagicMock
+
         from src.acp.models import ACPEventType
 
         evt = MagicMock()
@@ -999,6 +1000,7 @@ class TestHandlePlanUpdate:
     def test_ignores_non_plan_events(self):
         """handle_plan_update ignores events that aren't PLAN_UPDATE."""
         from unittest.mock import MagicMock
+
         from src.acp.models import ACPEventType
 
         orch, _, _ = _make_orchestrator()
@@ -2245,7 +2247,6 @@ class TestWeakrefBackfill:
         _trigger_all(orch, tasks)
 
         # Track weak references to old sessions
-        weak_refs = []
         rotation_sessions = []
 
         def _creator(task_id):
@@ -2408,7 +2409,9 @@ class TestRouteOrFallback:
     def setup(self):
         """Common setup for route_or_fallback tests."""
         from unittest.mock import MagicMock
-        from src.acp.models import ACPEvent, ACPEventType as ACPEvType
+
+        from src.acp.models import ACPEvent
+        from src.acp.models import ACPEventType as ACPEvType
 
         orch, registry, sessions = _make_orchestrator()
         fake_bridge = MagicMock()
@@ -2869,7 +2872,9 @@ class TestPlanReceivedThreadSafety:
     def test_concurrent_on_plan_received_and_route_or_fallback(self):
         """Multiple threads calling on_plan_received + route_or_fallback concurrently: no exceptions."""
         from unittest.mock import MagicMock
-        from src.acp.models import ACPEvent, ACPEventType as ACPEvType
+
+        from src.acp.models import ACPEvent
+        from src.acp.models import ACPEventType as ACPEvType
 
         orch, registry, sessions = _make_orchestrator()
         thinking = FakeSession("thinking")
@@ -2946,7 +2951,9 @@ class TestRouteOrFallbackCorrectnessUnderConcurrency:
     def test_concurrent_fallback_routing_correctness(self):
         """5 threads × 100 calls in fallback_mode=True: all return False, bridge receives all."""
         from unittest.mock import MagicMock
-        from src.acp.models import ACPEvent, ACPEventType as ACPEvType
+
+        from src.acp.models import ACPEvent
+        from src.acp.models import ACPEventType as ACPEvType
 
         orch, _, _ = _make_orchestrator()
         thinking = FakeSession("thinking")
@@ -2993,7 +3000,9 @@ class TestEnterFallbackConcurrentWithRoute:
     def test_no_event_lost_during_fallback_entry(self):
         """2 threads: one enters fallback, other routes — no exceptions, events not lost."""
         from unittest.mock import MagicMock
-        from src.acp.models import ACPEvent, ACPEventType as ACPEvType
+
+        from src.acp.models import ACPEvent
+        from src.acp.models import ACPEventType as ACPEvType
 
         orch, _, _ = _make_orchestrator()
         thinking = FakeSession("thinking")

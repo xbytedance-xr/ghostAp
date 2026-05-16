@@ -3,7 +3,6 @@ import subprocess
 import time
 from typing import Optional
 
-from .base import ModelFetchStrategy
 from ..env_sandbox import build_ttadk_subprocess_env
 from ..models import (
     TTADKModel,
@@ -11,6 +10,7 @@ from ..models import (
     strip_ansi,
     truncate_snippet,
 )
+from .base import ModelFetchStrategy
 
 logger = logging.getLogger(__name__)
 

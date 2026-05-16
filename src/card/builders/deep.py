@@ -4,13 +4,13 @@ import json
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from ..buttons_config import BUTTON_CONFIG
 from ..models import EngineCardState
 from ..shared import (
     apply_compact_style,
     build_responsive_layout,
     get_theme,
 )
-from ..buttons_config import BUTTON_CONFIG
 from ..themes import ENGINE_STYLES
 from ..thresholds import THRESHOLDS
 from ..ui_text import UI_TEXT
@@ -228,8 +228,8 @@ class DeepBuilder:
         project: Optional[ProjectContext],
         state: EngineCardState,
     ) -> tuple[str, str]:
-        from .layout import UnifiedCardLayout
         from ..models import CardLayoutSpec
+        from .layout import UnifiedCardLayout
 
         # ---- 1. 状态判断（用于颜色映射） ----
         status_key = "running"

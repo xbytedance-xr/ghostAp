@@ -6,8 +6,6 @@ the session should gracefully fall back to synchronous delivery without crashing
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.card.delivery.engine import CardDelivery
 from src.card.events import CardEvent, CardEventType
 from src.card.session import CardSession

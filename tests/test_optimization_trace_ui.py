@@ -1,7 +1,7 @@
 import json
 import logging
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.card.builders.project import ProjectBuilder
 from src.feishu.handlers.base import BaseHandler

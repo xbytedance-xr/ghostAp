@@ -1,8 +1,7 @@
 """Tests for card theme completeness — ensures all engine types and terminal states are covered."""
 
+
 from src.card.themes import MODE_TEMPLATES, TERMINAL_TEMPLATES
-from src.card.state.models import TerminalStatus
-from typing import get_args
 
 
 class TestTerminalTemplatesComplete:

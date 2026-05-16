@@ -1,8 +1,10 @@
 """Task list sub-reducer."""
 from __future__ import annotations
+
 from dataclasses import replace
-from ..models import CardState, TaskListBlock
+
 from ...events import CardEvent, CardEventType
+from ..models import CardState, TaskListBlock
 
 TASK_LIST_BLOCK_ID = "_task_list"
 

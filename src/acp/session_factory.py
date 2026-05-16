@@ -6,7 +6,7 @@ Decouples the manager from concrete session implementations (ACP, CLI, TTADK).
 from __future__ import annotations
 
 import logging
-from typing import Optional, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional, Protocol
 
 if TYPE_CHECKING:
     from ..agent_session import SyncSession
@@ -42,7 +42,7 @@ class DefaultACPSessionFactory:
         model_name: Optional[str] = None,
     ) -> SyncSession:
         """Create a session by agent_type.
-        
+
         - claude: SyncClaudeCLISession (CLI)
         - ttadk_*: SyncTTADKCLISession (CLI bridge)
         - others: SyncACPSession (ACP)
@@ -51,9 +51,9 @@ class DefaultACPSessionFactory:
             SyncClaudeCLISession,
             SyncTTADKCLISession,
         )
-        from .sync_adapter import SyncACPSession
         from ..coco_model import get_coco_model_manager
         from ..utils.path import normalize_ttadk_cwd
+        from .sync_adapter import SyncACPSession
 
         agent_type = (agent_type or "").lower()
         raw_cwd = cwd

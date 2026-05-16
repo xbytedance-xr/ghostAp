@@ -7,9 +7,6 @@ values, and validates that Settings can parse the result without exceptions.
 import re
 from pathlib import Path
 
-import pytest
-
-
 ENV_EXAMPLE_PATH = Path(__file__).parent.parent / ".env.example"
 
 # Minimum required environment variables with valid dummy values.

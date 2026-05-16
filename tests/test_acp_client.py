@@ -15,14 +15,10 @@ from src.sandbox.executor import SandboxExecutor
 
 
 def test_acp_manager_retries_start_failure(monkeypatch, caplog):
-    import time as _time
     from types import SimpleNamespace
 
-    from tests.helpers import FakeSessionBase
-
     from src.acp import manager as mgr
-    from src.acp.startup_utils import StartupOperationalError
-    from src.acp.startup_utils import StartupOperationalError
+    from tests.helpers import FakeSessionBase
 
     calls = {"start": 0}
 
@@ -58,13 +54,11 @@ def test_acp_manager_retries_start_failure(monkeypatch, caplog):
 
 def test_acp_manager_ttadk_start_failure_no_coco_acp_fallback(monkeypatch, caplog):
     """TTADK 必须坚持 CLI 路径：启动失败时直接报错，不降级到 Coco ACP。"""
-    import time as _time
     from types import SimpleNamespace
-
-    from tests.helpers import FakeSessionBase
 
     from src.acp import manager as mgr
     from src.acp.startup_utils import StartupOperationalError
+    from tests.helpers import FakeSessionBase
 
     class FakeFailCLISession(FakeSessionBase):
         def describe_agent(self):
@@ -464,6 +458,7 @@ class TestGhostAPClient:
     def test_message_chunk_preserves_source_from_meta(self):
         """AgentMessageChunk source metadata is copied into ACPEvent."""
         from acp.schema import AgentMessageChunk, TextContentBlock
+
         from src.acp.models import ACPEventType
 
         update = AgentMessageChunk(

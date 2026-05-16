@@ -13,7 +13,6 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from src.engine_base import EngineRunState
 from src.spec_engine.review import ReviewOrchestrator
 
 
@@ -44,7 +43,7 @@ class TestResetCancelEventConcurrency:
 
         for i in range(ITERATIONS):
             orch = ReviewOrchestrator()
-            lock = threading.RLock()
+            threading.RLock()
             barrier = threading.Barrier(2, timeout=5)
             is_running_box = [True]
 
@@ -71,7 +70,7 @@ class TestResetCancelEventConcurrency:
                 if not orch.cancel_event.is_set():
                     failures.append(f"Iteration {i}: cancel_event not set after stop")
 
-        assert not failures, f"Race condition detected:\n" + "\n".join(failures)
+        assert not failures, "Race condition detected:\n" + "\n".join(failures)
 
     def test_concurrent_reset_with_running_state(self):
         """When state remains RUNNING, reset_cancel_event clears the event."""

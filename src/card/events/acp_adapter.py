@@ -9,9 +9,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from src.card.tool_display import sanitize_tool_event_content
+
 from .factories import CardEvent
 from .types import CardEventType
-from src.card.tool_display import sanitize_tool_event_content
 
 if TYPE_CHECKING:
     from src.acp.models import ACPEvent

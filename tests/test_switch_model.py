@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from src.project.context import ProjectContext
+
 
 # ---------------------------------------------------------------------------
 # ACPSession.set_model()
@@ -109,8 +111,9 @@ class TestEnsureSessionModelMismatch(unittest.TestCase):
 
     def test_model_mismatch_triggers_restart(self):
         """ensure_session with a new model_name restarts non-TTADK sessions."""
-        from src.acp.manager import ACPSessionManager
         import time
+
+        from src.acp.manager import ACPSessionManager
 
         mgr = self._make_manager()
 
@@ -141,8 +144,9 @@ class TestEnsureSessionModelMismatch(unittest.TestCase):
 
     def test_same_model_no_restart(self):
         """ensure_session with the SAME model does NOT restart."""
-        from src.acp.manager import ACPSessionManager
         import time
+
+        from src.acp.manager import ACPSessionManager
 
         mgr = self._make_manager()
 
@@ -195,13 +199,13 @@ class TestSwitchModelACPPath(unittest.TestCase):
 
     def test_acp_switch_success_sends_reply(self):
         handler = _make_coco_handler()
-    
+
         fake_session = MagicMock()
         fake_session.set_model = MagicMock(return_value=True)
-    
+
         mgr_mock = MagicMock()
         mgr_mock.get_session.return_value = fake_session
-    
+
         project = MagicMock(spec=ProjectContext)
         project.project_id = "p1"
         project.coco_mode = True
@@ -210,10 +214,10 @@ class TestSwitchModelACPPath(unittest.TestCase):
         project.theme_color = "blue"
         project.root_path = "/tmp/p1"
         project.project_name = "P1"
-    
+
         with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
             handler.switch_model("msg1", "chat1", "claude-3.7-sonnet", project=project)
-    
+
         fake_session.set_model.assert_called_once_with("claude-3.7-sonnet")
         mgr_mock.end_session.assert_not_called()
         handler.reply_card.assert_called_once()
@@ -227,17 +231,17 @@ class TestSwitchModelFallbackPath(unittest.TestCase):
 
     def test_fallback_restarts_session_and_replies(self):
         handler = _make_coco_handler()
-    
+
         fake_session = MagicMock()
         fake_session.set_model = MagicMock(return_value=False)  # ACP switch fails
-    
+
         new_session = MagicMock()
         new_session.session_id = "new-sess"
-    
+
         mgr_mock = MagicMock()
         mgr_mock.get_session.return_value = fake_session
         mgr_mock.ensure_session.return_value = new_session
-    
+
         project = MagicMock(spec=ProjectContext)
         project.project_id = "p1"
         project.coco_mode = True
@@ -246,10 +250,10 @@ class TestSwitchModelFallbackPath(unittest.TestCase):
         project.theme_color = "blue"
         project.root_path = "/tmp/p1"
         project.project_name = "P1"
-    
+
         with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
             handler.switch_model("msg1", "chat1", "gpt-5.2", project=project)
-    
+
         mgr_mock.end_session.assert_called_once_with("chat1", project_id="p1")
         mgr_mock.ensure_session.assert_called_once()
         call_kwargs = mgr_mock.ensure_session.call_args

@@ -1,13 +1,13 @@
 """Tests for CardSession lifecycle hook implementations (EmojiHook, ContextPersistenceHook)."""
 
 from dataclasses import replace
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
 from src.card.events import CardEvent, CardEventType
 from src.card.hooks import ContextPersistenceHook, EmojiHook, SessionHook
-from src.card.session.config import SessionCallbacks, SessionConfig
+from src.card.session.config import SessionConfig
 from src.card.state.models import CardMetadata, CardState
 
 
@@ -225,8 +225,8 @@ class TestHookExceptionIsolation:
         This tests the _fire_hooks_terminal wrapper in CardSession which
         wraps each hook call in try/except.
         """
-        from src.card.session import CardSession
         from src.card.delivery.engine import CardDelivery
+        from src.card.session import CardSession
 
         class BrokenHook:
             def on_dispatched(self, event, state):
@@ -268,8 +268,8 @@ class TestEmojiHookAddReactionFailure:
     def test_add_reaction_connection_error_isolated_by_session(self):
         """When add_reaction raises ConnectionError inside EmojiHook,
         CardSession's _fire_hooks_terminal catches it — no leak to dispatch caller."""
-        from src.card.session import CardSession
         from src.card.delivery.engine import CardDelivery
+        from src.card.session import CardSession
 
         add_reaction = MagicMock(side_effect=ConnectionError("network down"))
 
@@ -301,8 +301,8 @@ class TestEmojiHookAddReactionFailure:
 
     def test_add_reaction_runtime_error_isolated_by_session(self):
         """When add_reaction raises RuntimeError, dispatch still completes normally."""
-        from src.card.session import CardSession
         from src.card.delivery.engine import CardDelivery
+        from src.card.session import CardSession
 
         add_reaction = MagicMock(side_effect=RuntimeError("API rate limited"))
 
@@ -338,10 +338,11 @@ class TestOnDispatchedExceptionIsolation:
     def test_broken_dispatched_hook_does_not_block_pipeline(self):
         """A hook raising in on_dispatched should not prevent state updates."""
         from unittest.mock import MagicMock
+
         from src.card.delivery.engine import CardDelivery
+        from src.card.events import CardEvent, CardEventType
         from src.card.session import CardSession
         from src.card.state.models import CardMetadata
-        from src.card.events import CardEvent, CardEventType
 
         class BrokenDispatchedHook:
             def on_dispatched(self, event, state):
@@ -375,10 +376,11 @@ class TestOnDispatchedExceptionIsolation:
     def test_multiple_hooks_one_broken_dispatched(self):
         """If first hook raises in on_dispatched, second hook should still be called."""
         from unittest.mock import MagicMock
+
         from src.card.delivery.engine import CardDelivery
+        from src.card.events import CardEvent, CardEventType
         from src.card.session import CardSession
         from src.card.state.models import CardMetadata
-        from src.card.events import CardEvent, CardEventType
 
         class BrokenHook:
             def on_dispatched(self, event, state):
@@ -427,6 +429,7 @@ class TestHookConcurrentStress:
         """20 sessions completing concurrently: every hook is called exactly once."""
         import threading
         import time
+
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
 
@@ -490,6 +493,7 @@ class TestHookConcurrentStress:
         """Slow hooks should not block other sessions' hooks (thread pool isolation)."""
         import threading
         import time
+
         from src.card.delivery.engine import CardDelivery
         from src.card.session import CardSession
 
@@ -564,8 +568,9 @@ class TestHookFirerBackpressure:
 
     def test_backpressure_returns_none(self):
         """When semaphore exhausted, submit() returns None."""
-        from src.card.hooks import _HookExecutorManager
         import threading
+
+        from src.card.hooks import _HookExecutorManager
 
         mgr = _HookExecutorManager()
         # Exhaust all semaphore slots
@@ -631,6 +636,7 @@ class TestHookFirerFilterNone:
     def test_fire_terminal_skips_none_futures_gracefully(self):
         """Even if all hooks hit backpressure, fire_terminal does not crash."""
         from unittest.mock import patch
+
         from src.card.hooks import HookFirer, _hook_executor_manager
 
         class DummyHook:
@@ -658,7 +664,7 @@ class TestHookExecutorRebuild:
 
     def test_rebuild_after_consecutive_timeouts(self):
         """After _MAX_CONSECUTIVE_TIMEOUTS, executor is rebuilt."""
-        from src.card.hooks import _HookExecutorManager, _MAX_CONSECUTIVE_TIMEOUTS
+        from src.card.hooks import _MAX_CONSECUTIVE_TIMEOUTS, _HookExecutorManager
 
         mgr = _HookExecutorManager()
         old_executor = mgr._executor
@@ -672,7 +678,7 @@ class TestHookExecutorRebuild:
 
     def test_success_resets_timeout_counter(self):
         """record_success() resets consecutive timeout counter."""
-        from src.card.hooks import _HookExecutorManager, _MAX_CONSECUTIVE_TIMEOUTS
+        from src.card.hooks import _HookExecutorManager
 
         mgr = _HookExecutorManager()
         mgr.record_timeout()  # 1 timeout
@@ -687,9 +693,10 @@ class TestOnDispatchedHookTimeout:
 
     def test_slow_hook_does_not_block_dispatch(self):
         """A hook that sleeps should not prevent dispatch from completing within timeout."""
-        import time
         import threading
-        from src.card.hooks import HookFirer, DISPATCHED_HOOK_TIMEOUT
+        import time
+
+        from src.card.hooks import DISPATCHED_HOOK_TIMEOUT, HookFirer
 
         state = _make_terminal_state("completed")
         cancel = threading.Event()
@@ -718,7 +725,8 @@ class TestResetHookExecutorShutdown:
 
     def test_reset_shuts_down_old_executor(self):
         """_reset_hook_executor should call shutdown() on the old manager before replacing."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock
+
         import src.card.hooks as hooks_mod
 
         # Capture the old manager
@@ -763,7 +771,8 @@ class TestFireFirstDeliveredTimeout:
     def test_slow_hook_does_not_block(self):
         """A hook sleeping 5s should be cancelled within DISPATCHED_HOOK_TIMEOUT (3s)."""
         import time
-        from src.card.hooks import HookFirer, DISPATCHED_HOOK_TIMEOUT
+
+        from src.card.hooks import DISPATCHED_HOOK_TIMEOUT, HookFirer
 
         class SlowHook:
             def on_first_delivered(self, session_id: str, msg_id: str) -> None:
@@ -873,6 +882,7 @@ class TestAppendHookIntegration:
     def test_appended_hook_reached_by_fire_dispatched(self):
         """fire_dispatched calls on_dispatched on a hook added via append_hook."""
         import time
+
         from src.card.hooks import HookFirer
 
         calls = []
@@ -900,6 +910,7 @@ class TestAppendHookIntegration:
     def test_appended_hook_reached_by_fire_terminal(self):
         """fire_terminal calls on_terminal on a hook added via append_hook."""
         import time
+
         from src.card.hooks import HookFirer
 
         calls = []
@@ -926,6 +937,7 @@ class TestAppendHookIntegration:
     def test_appended_hook_reached_by_fire_first_delivered(self):
         """fire_first_delivered calls on_first_delivered on a hook added via append_hook."""
         import time
+
         from src.card.hooks import HookFirer
 
         calls = []
@@ -959,6 +971,7 @@ class TestAppendHookConcurrency:
         """10 threads concurrently append hooks + fire_first_delivered — all hooks reached."""
         import threading
         import time
+
         from src.card.hooks import HookFirer
 
         NUM_THREADS = 10

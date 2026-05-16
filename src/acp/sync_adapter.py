@@ -12,7 +12,6 @@ import concurrent.futures
 import contextlib
 import json
 import logging
-import os
 import subprocess
 import threading
 import time
@@ -21,6 +20,7 @@ from typing import Any, Callable, Optional
 
 from ..config import get_settings
 from ..ttadk.env_sandbox import build_ttadk_subprocess_env
+from ..utils.errors import get_error_detail, sanitize_futures_msg
 from .client import ACPHistoryStore
 from .diagnostics import (
     DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT,
@@ -35,7 +35,6 @@ from .diagnostics import (
 from .models import ACPEvent, PromptResult
 from .session import ACPSession, ACPStartupError
 from .startup_utils import initial_startup_diagnostics, safe_float_or_none
-from ..utils.errors import ACPError, get_error_detail, sanitize_futures_msg
 
 logger = logging.getLogger(__name__)
 
@@ -809,7 +808,7 @@ def resolve_agent_spec(
 
         # Use wrapper module to filter out TTADK banner (which breaks JSON-RPC).
         # IMPORTANT: use `-m` to avoid script/relative-import drift.
-        wrapper_module = "src.utils.ttadk_wrapper"
+        wrapper_module = "src.ttadk.wrapper"
 
         # SSOT: TTADK 侧要求透传真实 model_id；这里做最后一道 best-effort 归一化，
         # 防止上游误把 display/alias 直接透传到 -m 导致 invalid model。

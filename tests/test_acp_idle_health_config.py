@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from src.acp.telemetry import (
     IdleHealthConfig,
     TelemetryAdapter,
     build_idle_health_config_for_manager,
-    _get_idle_health_service_for_manager,
-    _get_idle_health_telemetry_for_manager,
 )
 from src.acp.telemetry import _DefaultIdleHealthTelemetry as DefaultIdleHealthTelemetry
 from src.acp.telemetry import _IdleHealthServiceProtocol as IdleHealthServiceProtocol

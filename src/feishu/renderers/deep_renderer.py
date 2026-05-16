@@ -16,11 +16,10 @@ from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
 from ..emoji import EmojiReaction
-from .base import BaseRenderer, _dispatch_text_block, _StreamThrottle
+from .base import BaseRenderer, _dispatch_text_block
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
-    from ...card.session import CardSession
     from ...project import ProjectContext
     from ..handlers.deep import DeepHandler
 
@@ -49,7 +48,7 @@ class DeepRenderer(BaseRenderer):
         root_path: Optional[str] = None,
         initial_message_id: Optional[str] = None,
     ) -> DeepEngineCallbacks:
-        request_id = self.handler.ensure_request_id(
+        self.handler.ensure_request_id(
             message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
         )
         # Build lifecycle hooks for side effects (emoji, context persistence)
@@ -331,7 +330,7 @@ class DeepRenderer(BaseRenderer):
 
         engine_name = snap.engine_name
         deep_project = snap.ext.get("project")
-        deep_progress = snap.ext.get("progress")
+        snap.ext.get("progress")
 
         if project is None:
             try:

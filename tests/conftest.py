@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import subprocess
 import threading
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -129,8 +129,7 @@ def make_card_session():
             delivery = CardDelivery(client)
             deliveries.append(delivery)
         metadata = CardMetadata(engine_type=engine_type, mode_name=mode_name)
-        from src.card.session.config import SessionConfig
-        from src.card.session.config import SessionCallbacks
+        from src.card.session.config import SessionCallbacks, SessionConfig
         config = SessionConfig(metadata=metadata, sync_delivery=True)
         session = CardSession(
             chat_id=chat_id,

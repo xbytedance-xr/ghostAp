@@ -5,11 +5,8 @@ import json
 from dataclasses import dataclass, field
 from enum import Enum
 
-import pytest
-
 from src.card.orchestrator import TaskIdResolver
 from src.card.task_registry import tasks_from_plan_entries, tasks_from_spec_tasks
-
 
 # ---------------------------------------------------------------------------
 # Fake models for testing (avoid importing full ACP/Spec dependencies)
@@ -205,7 +202,7 @@ class TestTaskIdResolver:
 
         # Simulate PLAN_UPDATE with second step in_progress
         # We need to patch ACPEventType for the resolve method
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         # Create a mock that mimics the real ACPEvent structure
         mock_event = MagicMock()

@@ -1,4 +1,13 @@
-from .context import ClaudeSessionSnapshot, CocoSessionSnapshot, AidenSessionSnapshot, CodexSessionSnapshot, GeminiSessionSnapshot, ProjectContext, ProjectStatus, SessionSnapshot
+from .context import (
+    AidenSessionSnapshot,
+    ClaudeSessionSnapshot,
+    CocoSessionSnapshot,
+    CodexSessionSnapshot,
+    GeminiSessionSnapshot,
+    ProjectContext,
+    ProjectStatus,
+    SessionSnapshot,
+)
 from .manager import ProjectManager
 from .mapper import MessageLinker, MessageProjectMapper
 from .unified_context import (

@@ -86,7 +86,6 @@ def _fetch_display_name(
         return fallback
 
     try:
-        import lark_oapi as lark
         from lark_oapi.api.contact.v3 import GetUserRequest
 
         client = api_client_factory()

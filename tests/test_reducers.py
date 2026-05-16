@@ -1,17 +1,23 @@
 """Unit tests for card state reducers: criteria, cycle, phase, lifecycle."""
-import pytest
 from dataclasses import replace
+
+import pytest
 
 from src.card.events import CardEvent, CardEventType
 from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import (
-    CardState, CardMetadata, ContentBlock, FooterState, EngineExtState, ButtonSpec,
+    ButtonSpec,
+    CardMetadata,
+    CardState,
+    ContentBlock,
+    EngineExtState,
+    FooterState,
 )
 from src.card.state.reducer import reduce_card_state
 from src.card.state.reducers.criteria import reduce_criteria
 from src.card.state.reducers.cycle import reduce_cycle
-from src.card.state.reducers.phase import reduce_phase
 from src.card.state.reducers.lifecycle import reduce_lifecycle
+from src.card.state.reducers.phase import reduce_phase
 
 
 def _base_state(**kwargs) -> CardState:
@@ -479,8 +485,8 @@ class TestTextDeltaAutoCreate:
 
     def test_text_delta_appends_to_existing_block(self):
         """TEXT_DELTA with existing block_id appends text."""
-        from src.card.state.reducers.text import reduce_text
         from src.card.state.models import TextBlock
+        from src.card.state.reducers.text import reduce_text
         block = TextBlock(block_id="b1", content="hello ", status="active")
         state = _base_state(blocks=(block,))
         event = CardEvent(type=CardEventType.TEXT_DELTA, payload={
@@ -493,8 +499,8 @@ class TestTextDeltaAutoCreate:
 
     def test_text_delta_existing_does_not_update_footer(self):
         """Appending to existing block does NOT change footer."""
-        from src.card.state.reducers.text import reduce_text
         from src.card.state.models import TextBlock
+        from src.card.state.reducers.text import reduce_text
         block = TextBlock(block_id="b1", content="x", status="active")
         state = _base_state(blocks=(block,), footer=FooterState(status="tool_running", status_text="🔧 running"))
         event = CardEvent(type=CardEventType.TEXT_DELTA, payload={
@@ -736,8 +742,8 @@ class TestSlidingWindowGating:
 
     def _state_with_excess_completed_tools(self) -> CardState:
         """Create a state with >MAX_COMPLETED_TOOL_BLOCKS completed tools."""
-        from src.card.state.reducer import MAX_COMPLETED_TOOL_BLOCKS
         from src.card.state.models import ToolBlock
+        from src.card.state.reducer import MAX_COMPLETED_TOOL_BLOCKS
 
         blocks = []
         for i in range(MAX_COMPLETED_TOOL_BLOCKS + 5):
@@ -753,7 +759,7 @@ class TestSlidingWindowGating:
 
     def test_text_delta_does_not_trigger_trim(self):
         """TEXT_DELTA on state with excess completed tools should NOT trim."""
-        from src.card.state.reducer import reduce_card_state, MAX_COMPLETED_TOOL_BLOCKS
+        from src.card.state.reducer import reduce_card_state
 
         state = self._state_with_excess_completed_tools()
         initial_block_count = len(state.blocks)
@@ -767,8 +773,8 @@ class TestSlidingWindowGating:
 
     def test_tool_done_triggers_trim(self):
         """TOOL_DONE on state with excess completed tools should trigger trim."""
-        from src.card.state.reducer import reduce_card_state, MAX_COMPLETED_TOOL_BLOCKS
         from src.card.state.models import ToolBlock
+        from src.card.state.reducer import MAX_COMPLETED_TOOL_BLOCKS, reduce_card_state
 
         state = self._state_with_excess_completed_tools()
         # Add a running tool to complete
@@ -785,8 +791,8 @@ class TestSlidingWindowGating:
 
     def test_tool_failed_triggers_trim(self):
         """TOOL_FAILED on state with excess completed tools should trigger trim."""
-        from src.card.state.reducer import reduce_card_state, MAX_COMPLETED_TOOL_BLOCKS
         from src.card.state.models import ToolBlock
+        from src.card.state.reducer import MAX_COMPLETED_TOOL_BLOCKS, reduce_card_state
 
         state = self._state_with_excess_completed_tools()
         running_tool = ToolBlock(kind="tool_call", block_id="tool_running", content="running", status="running")

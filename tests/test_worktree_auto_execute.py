@@ -11,13 +11,10 @@ Covers:
 """
 from __future__ import annotations
 
-import json
-import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-from src.card import CardBuilder
-from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.handlers.system import SystemHandler
+from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.project.context import ProjectContext
 from src.worktree_engine.manager import WorktreeManager
@@ -26,12 +23,10 @@ from src.worktree_engine.models import (
     WorktreeJourneyStatus,
     WorktreeRuntimeState,
     WorktreeSelectionItem,
-    WorktreeSelectionState,
     WorktreeUnit,
     transition_journey_state,
 )
 from src.worktree_engine.selection import WorktreeToolOption
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -169,7 +164,7 @@ def test_wt_command_with_goal_parsed():
 
     # Verify a session was created (CardSession dispatched tool_select event)
     assert "p-auto" in handler._renderer._sessions
-    
+
 
 def test_apply_journey_event_updates_runtime_state_journey():
     """WorktreeManager.apply_journey_event 应通过 transition_journey_state 更新 journey。"""
@@ -626,7 +621,7 @@ def test_goal_persistence_across_selection():
     assert state.selection.pending_goal == "实现搜索功能"
 
     # Step 2: select tool — goal should persist (goal no longer in card value)
-    with patch.object(handler, "_get_models_for_tool", return_value=[{"name": "sonnet", "display_name": "Sonnet", "is_default": True}, 
+    with patch.object(handler, "_get_models_for_tool", return_value=[{"name": "sonnet", "display_name": "Sonnet", "is_default": True},
                                                                       {"name": "opus", "display_name": "Opus", "is_default": False}]), \
          patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
          patch.object(handler, "_get_or_create_session", return_value=mock_session):

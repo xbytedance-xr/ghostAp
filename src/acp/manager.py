@@ -7,42 +7,40 @@ suffix is used for backward compatibility.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import threading
 import time
-import logging
-import contextlib
-from typing import Callable, Optional, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Optional
 
-from ..agent_session import SyncClaudeCLISession, SyncSession, SyncTTADKCLISession
 from .. import agent_session as _agent_session_mod
+from ..agent_session import SyncClaudeCLISession, SyncSession, SyncTTADKCLISession
 from ..config import get_settings
 from ..utils.errors import get_error_detail
-from .helper import SessionKeyCodec
+from . import startup_utils as _startup_utils
 from .diagnostics import (
-    format_startup_failure_log_line,
     get_diagnostics_config,
     redact_text,
     truncate_text,
 )
+from .helper import SessionKeyCodec
+from .sync_adapter import SyncACPSession, build_startup_diagnostics
 from .telemetry import (
+    IdleHealthConfig,
     IdleHealthTelemetryContext,
     TelemetryAdapter,
-    DefaultSessionTelemetryAdapter,
-    IdleHealthConfig,
-    build_idle_health_config_for_manager,
     classify_manager_idle_health,
     resolve_idle_health_collaborators_for_manager,
 )
-from .sync_adapter import SyncACPSession, build_startup_diagnostics
-from . import startup_utils as _startup_utils
 
 logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
     # 仅用于类型检查：避免在运行时将内部协议/实现暴露为公开 API。
-    from .telemetry import _IdleHealthTelemetry as IdleHealthTelemetry
+    from ..utils.time_ago import IdleHealth, TimeAgoBucket
     from .telemetry import _IdleHealthServiceProtocol as IdleHealthServiceProtocol
+    from .telemetry import _IdleHealthTelemetry as IdleHealthTelemetry
 
 
 # Preserve the original TTADK CLI session class so that we can
@@ -62,12 +60,12 @@ def _format_error_type_and_repr(err: object) -> tuple[str, str]:
     """
     try:
         err_type = type(err).__name__
-    except Exception as e:
+    except Exception:
         logger.warning("Error while formatting error type", exc_info=True)
         err_type = "Exception"
     try:
         err_repr = repr(err)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while formatting error representation", exc_info=True)
         err_repr = ""
     if not (err_repr or "").strip():
@@ -89,7 +87,7 @@ def _format_ttadk_startup_attempts(diagnostics: object, *, per_item_limit: int =
         return format_attempts_summary(
             attempts, per_item_limit=per_item_limit, total_limit=total_limit, get_settings_fn=get_settings
         )
-    except Exception as e:
+    except Exception:
         logger.warning("Error while formatting TTADK startup attempts", exc_info=True)
         return ""
 
@@ -109,7 +107,7 @@ def _sanitize_startup_detail(text: str) -> str:
             )
         lim = int(getattr(cfg, "snippet_limit", 240) or 240)
         s = truncate_text(s, max(1, lim))
-    except (AttributeError, TypeError, ValueError) as e:
+    except (AttributeError, TypeError, ValueError):
         logger.warning("Error while sanitizing startup detail", exc_info=True)
     return s
 
@@ -132,7 +130,7 @@ def _build_startup_diagnostics(
             error=error,
             timeout_s=float(timeout or 0),
         )
-    except Exception as e:
+    except Exception:
         logger.warning("Error while building startup diagnostics", exc_info=True)
         # 极端兜底：保证返回可序列化 dict
         return {
@@ -231,7 +229,7 @@ class ACPSessionManager:
                     "请优先通过 idle_health_config=IdleHealthConfig(...) 或"
                     "build_idle_health_config_for_manager(...) 注入 IdleHealth 协作者。"
                 )
-        except Exception as e:
+        except Exception:
             logger.warning("Error while logging deprecated parameters warning", exc_info=True)
             # 不因日志问题影响核心逻辑。
             pass
@@ -334,9 +332,9 @@ class ACPSessionManager:
                                         (session.session_id or "none")[:8],
                                     )
                                     self._end_session_unlocked(key)
-                    except Exception as e:
+                    except Exception:
                         logger.debug("[ACP:%s] Keepalive check error for key=%s", self._agent_type.upper(), key[-16:], exc_info=True)
-            except Exception as e:
+            except Exception:
                 logger.debug("[ACP:%s] Keepalive loop iteration error", self._agent_type.upper(), exc_info=True)
 
     @staticmethod
@@ -505,7 +503,7 @@ class ACPSessionManager:
         # Load local persisted history (best-effort)
         try:
             session.load_local_history(session.session_id)
-        except Exception as e:
+        except Exception:
             logger.warning("Error while loading local history", exc_info=True)
             pass
 
@@ -521,7 +519,7 @@ class ACPSessionManager:
                 backend_kind=backend_kind,
                 model_name=model_name,
             )
-        except Exception as e:
+        except Exception:
             logger.debug("[ACP:%s] session telemetry on_session_start error", self._agent_type.upper(), exc_info=True)
         return session
 
@@ -589,7 +587,7 @@ class ACPSessionManager:
                                 cwd=cwd or ".",
                                 model_name=model_name,
                             )
-                        except Exception as e:
+                        except Exception:
                             logger.warning("Error while prechecking TTADK startup model", exc_info=True)
                             target_model = None
 
@@ -743,7 +741,7 @@ class ACPSessionManager:
                     reason=None,
                     extra=None,
                 )
-            except Exception as e:
+            except Exception:
                 logger.debug("[ACP:%s] session telemetry on_session_end error", self._agent_type.upper(), exc_info=True)
             del self._sessions[key]
             if remove_key_lock:
@@ -759,7 +757,7 @@ class ACPSessionManager:
                     session.close()
                 except Exception as e:
                     logger.debug("Error closing ACP session: %s", get_error_detail(e))
-            
+
             threading.Thread(target=_close_bg, daemon=True, name=f"acp-close-{key[-8:]}").start()
             return snapshot
         return None
@@ -781,7 +779,7 @@ class ACPSessionManager:
             if existing is not None:
                 try:
                     self._end_session_unlocked(new_key)
-                except Exception as e:
+                except Exception:
                     logger.debug("Error cleaning existing session at %s during rebind", new_key[-16:])
             self._sessions[new_key] = session
             del self._sessions[old_key]
@@ -855,7 +853,7 @@ class ACPSessionManager:
                         "idle_health": idle_health,
                     }
                 )
-            except Exception as e:
+            except Exception:
                 logger.warning("Error while building session status", exc_info=True)
                 continue
         return out

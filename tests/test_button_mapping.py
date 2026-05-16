@@ -1,6 +1,5 @@
 """Tests for ButtonIntent → action_id mapping completeness and correctness."""
 
-import pytest
 
 from src.card.render.buttons import INTENT_TO_ACTION_ID
 from src.card.state.button_intent import ButtonIntent
@@ -96,6 +95,7 @@ class TestResolveActionIdFallback:
     def test_unknown_intent_logs_warning(self, caplog):
         """Unknown ButtonIntent logs a warning message."""
         import logging
+
         from src.card.render.buttons import _resolve_action_id
         from src.card.state.models import ButtonSpec
 

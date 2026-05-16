@@ -7,13 +7,13 @@ statements continue to work without modification.
 from .card import CardSessionConfig
 from .errors import ConfigurationError
 from .settings import Settings
-from .spec import SpecReviewConfig
 from .singleton import (
-    get_settings,
-    set_settings,
     _post_validate_warnings,
     _reset_settings_for_testing,
+    get_settings,
+    set_settings,
 )
+from .spec import SpecReviewConfig
 
 __all__ = [
     "CardSessionConfig",

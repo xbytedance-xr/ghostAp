@@ -1,5 +1,5 @@
 import logging
-from typing import Any, TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .ws_client import FeishuWSClient

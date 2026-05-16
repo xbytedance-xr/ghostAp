@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from src.feishu.ws_client import FeishuWSClient
 from src.worktree_engine.manager import WorktreeManager
-from src.worktree_engine.models import WorktreeRuntimeState, WorktreeJourneyState, WorktreeJourneyStatus
+from src.worktree_engine.models import WorktreeJourneyState, WorktreeJourneyStatus, WorktreeRuntimeState
 
 
 def _dummy_callback(message_id: str, chat_id: str, text: str, parent_id: str | None) -> None:

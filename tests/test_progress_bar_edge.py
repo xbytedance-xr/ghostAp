@@ -10,8 +10,6 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
-
 from src.card.render.progress import render_progress_bar
 
 

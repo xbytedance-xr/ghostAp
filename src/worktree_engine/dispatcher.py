@@ -6,12 +6,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Callable, Iterable, Optional
 
-from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
-from .reporter import REASON_DISPLAY_MAP
 from ..config import get_settings
 from ..ttadk.models import is_invalid_model_error
 from ..utils.callbacks import safe_invoke
-from ..utils.errors import classify_timeout, get_error_detail, sanitize_futures_msg
+from ..utils.errors import classify_timeout, get_error_detail
+from .models import WorktreeSelectionItem, WorktreeUnit, WorktreeUnitStatus
+from .reporter import REASON_DISPLAY_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class WorktreeDispatcher:
         for unit, (tool, role_info) in zip(planned_units, assignments):
             title, role_prompt = role_info
             is_main = tool is main_tool and unit is planned_units[0]
-            
+
             # 动态绑定工具
             unit.provider = tool.provider
             unit.agent_name = tool.agent_name
@@ -97,7 +97,7 @@ class WorktreeDispatcher:
             unit.model_name = tool.model_name
             unit.metadata["worktree_main_agent"] = is_main
             unit.metadata["worktree_main_selection_key"] = main_tool.selection_key if main_tool else ""
-            
+
             unit.task_title = title
             unit.task_prompt = (
                 f"用户目标：{normalized_goal}\n"
@@ -197,7 +197,7 @@ class WorktreeDispatcher:
         unit.status = WorktreeUnitStatus.RUNNING
         unit.metadata["started_at"] = time.time()
         safe_invoke(on_unit_update, unit, label="on_unit_update")
-        
+
         # 如果尚未分配具体工具（理论上 plan 阶段已完成分配，这里做安全检查）
         if not all([unit.provider, unit.tool_name]):
             self._fail_unit(unit, "工作单元未绑定执行工具", on_unit_update=on_unit_update)

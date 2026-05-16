@@ -7,7 +7,6 @@ Verifies the timeout_display formatting in build_system_help_card:
 Also covers the underlying format_friendly_duration utility.
 """
 
-import pytest
 
 from src.utils.text import format_friendly_duration
 

@@ -12,7 +12,11 @@ from ..utils.errors import get_error_detail
 from .models import SpecProject, SpecWorkItem, SpecWorkItemStatus
 from .storage import (
     artifact_root_dir as _storage_artifact_root_dir,
+)
+from .storage import (
     get_state_path as _storage_get_state_path,
+)
+from .storage import (
     run_state_path as _storage_run_state_path,
 )
 
@@ -229,7 +233,7 @@ def save_failed_task(
     phase,
     callbacks,
 ) -> tuple[str, Optional[str], Optional[tuple[int, str, str]]]:
-    from .task_persistence import generate_task_id, save_task_state, SpecTaskState
+    from .task_persistence import SpecTaskState, generate_task_id, save_task_state
 
     error = str(error or "")
     task_id_override = None

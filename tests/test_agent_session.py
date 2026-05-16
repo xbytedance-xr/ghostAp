@@ -17,7 +17,6 @@ import pytest
 
 # Import acp.models first to break circular import chain
 from src.acp.models import ACPEvent, ACPEventType
-
 from src.agent_session import (
     SyncClaudeCLISession,
     SyncTTADKCLISession,
@@ -26,7 +25,6 @@ from src.agent_session import (
     _JSONTextExtractor,
     classify_model_failure,
 )
-
 
 # ── SyncClaudeCLISession ─────────────────────────────────────────────
 

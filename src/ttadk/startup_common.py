@@ -9,12 +9,12 @@
 from __future__ import annotations
 
 import importlib
+import logging
 import threading
 import time
 from typing import Callable, Optional
 
 from ..config import get_settings
-import logging
 
 logger = logging.getLogger(__name__)
 

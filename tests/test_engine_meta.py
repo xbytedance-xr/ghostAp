@@ -1,11 +1,10 @@
 """Tests for src.card.engine_meta — centralized engine metadata."""
 
-import pytest
 
 from src.card.engine_meta import (
     ENGINE_CMD_MAP,
-    ENGINE_LABELS,
     ENGINE_LABEL_DEFAULT,
+    ENGINE_LABELS,
     ENGINE_NAME_MAP,
     engine_type_to_cmd,
     engine_type_to_name,

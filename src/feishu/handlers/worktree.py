@@ -11,7 +11,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Optional
 
-from ...card.events import CardEvent, CardEventType
+from ...card.events import CardEvent
 from ...card.events.worktree import (
     worktree_cleanup,
     worktree_completed_no_change,
@@ -22,9 +22,9 @@ from ...card.events.worktree import (
 )
 from ...card.ui_text import UI_TEXT
 from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
-from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ...repo_lock import LockConflictError
 from ...utils.errors import get_error_detail
+from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ..slash_command_parser import CommandMatch, SlashCommandParser
 from .base import BaseHandler
 

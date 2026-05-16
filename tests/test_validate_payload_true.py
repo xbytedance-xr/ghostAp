@@ -1,5 +1,4 @@
 """Task 25: Tests that CardEvent payload validation rejects invalid inputs."""
-import pytest
 
 from src.card.events import CardEvent, CardEventType
 from src.card.events.worktree import worktree_merge, worktree_progress

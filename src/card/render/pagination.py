@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from src.card.render.atoms import RenderAtom, estimate_atom_size
-from src.card.render.budget import RenderBudget
 
 # Approximate overhead for card config/header/footer skeleton
 BASE_OVERHEAD = 500

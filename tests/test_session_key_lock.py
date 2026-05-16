@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -258,7 +257,6 @@ class TestKeyLockExceptionRecovery:
         mgr = ACPSessionManager(agent_type="test", session_starter=_make_starter(0.01))
         try:
             # Patch _start_session_inner to force a raise
-            original = mgr._start_session_inner
             mgr._start_session_inner = lambda *args, **kw: patched_inner(mgr, *args, **kw)
 
             # First call should fail

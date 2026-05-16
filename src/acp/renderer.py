@@ -541,7 +541,7 @@ class ACPEventRenderer:
                 loc_str = f" `{loc}`" if loc else ""
                 lines.append(f"{icon} {title}{loc_str}...")
             else:
-                locs = [l for _, l in items if l]
+                locs = [location for _, location in items if location]
                 shown = locs if locs else [t for t, _ in items]
                 sample = ", ".join(f"`{s}`" if locs else s for s in shown[:3])
                 more = f" (+{len(shown) - 3})" if len(shown) > 3 else ""

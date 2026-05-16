@@ -3,9 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Optional
 
-from src.card.ui_text import UI_TEXT
-from src.card.builders.core import CoreBuilder
 from src.card.models import EngineStatusEntry
+from src.card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:
     from src.tasking.scheduler import TaskState
@@ -53,12 +52,12 @@ class DiagnosticsBuilder:
                             proj_name = p.project_name
                     except Exception:
                         logger.debug("failed to get project name", exc_info=True)
-                
+
                 id_info = UI_TEXT["diag_project_id_fmt"].format(id=pid) if pid else ""
                 lines.append(UI_TEXT["diag_project_header"].format(
                     name=proj_name, id_info=id_info
                 ))
-                
+
                 for st in items[:10]:
                     emoji = DiagnosticsBuilder._get_status_emoji(st.status)
                     pct = UI_TEXT["diag_task_pct_fmt"].format(pct=st.progress_percent) if st.progress_percent is not None else ""
@@ -322,19 +321,19 @@ class DiagnosticsBuilder:
     def build_message_trace_content(data: dict) -> str:
         """Build the Markdown content for message trace results."""
         lines = []
-        
+
         # Origin info
         origin = data.get("origin_id")
         req_id = data.get("request_id")
         pid = data.get("project_id")
-        
+
         if origin:
             lines.append(f"{UI_TEXT['diag_label_origin_id']}: `{origin}`")
         if req_id:
             lines.append(f"{UI_TEXT['diag_label_request_id']}: `{req_id}`")
         if pid:
             lines.append(f"{UI_TEXT['diag_label_project_id']}: `{pid}`")
-            
+
         # Replies
         replies = data.get("replies", [])
         if replies:
@@ -342,7 +341,7 @@ class DiagnosticsBuilder:
             lines.append(UI_TEXT["diag_trace_replies_header"].format(count=len(replies)))
             for rid in replies:
                 lines.append(f"- `{rid}`")
-                
+
         # Run IDs
         runs = data.get("run_ids", [])
         if runs:
@@ -350,5 +349,5 @@ class DiagnosticsBuilder:
             lines.append(UI_TEXT["diag_trace_runs_header"].format(count=len(runs)))
             for run_id in runs:
                 lines.append(f"- `{run_id}`")
-                
+
         return "\n".join(lines)

@@ -3,7 +3,6 @@
 Key naming conventions:
 - `worktree_*` — canonical keys used by the new CardSession pipeline (reducers/render).
 - `system_worktree_*` — keys used by legacy WorktreeHandler message flows.
-  Where values are identical, system_worktree_* is an alias pointing to worktree_*.
 - `wt_btn_*` — short-form button labels for worktree card actions.
 - `system_*` — general system/handler messages (non-card pipeline).
 - `<engine>_*` (deep_*, spec_*) — engine-specific card content.
@@ -202,16 +201,6 @@ UI_TEXT = {
     "system_worktree_retry_starting": "🔄 正在重试失败单元…",
     "system_worktree_retry_completed": "重试完成",
     "system_worktree_retry_goal": "重试执行",
-    "system_worktree_confirm_title": "🌳 Worktree — 确认组合",
-    "system_worktree_confirm_header": "**即将启动以下工具-模型组合：**\n",
-    "system_worktree_confirm_banner": "点击 🚀 开始执行 按钮启动任务",
-    "system_worktree_btn_confirm": "确认并开始执行",
-    "system_worktree_btn_reselect": "重新选择",
-    "system_worktree_progress_title": "🌳 Worktree — {status}",
-    "system_worktree_progress_header": "**执行进度：**\n",
-    "system_worktree_progress_banner": "所有单元已就绪，请录入总任务目标并开始执行",
-    "system_worktree_btn_execute": "🚀 开始并行执行",
-    "system_worktree_btn_retry": "🔄 重试失败单元",
     "system_worktree_btn_merge": "🔀 合并到 {base}",
     "system_worktree_btn_cleanup": "🧹 清理 Worktree",
     "system_worktree_merge_title": "🌳 Worktree — 合并结果",
@@ -545,7 +534,6 @@ UI_TEXT = {
     "worktree_executing": "⏳ 正在并行执行: {goal}",
     "worktree_still_running": "⏳ 仍在执行中（{elapsed} 分钟），请耐心等待…",
     "worktree_executing_live": "🔄 执行中: {goal}",
-    "worktree_completed_no_change": "执行完成（无可合并的变更）\n\n可能原因：目标描述不够具体，或工具未产生文件修改。建议检查目标后重试。",
     "worktree_auto_executing_banner": "🚀 正在启动并执行任务…",
     # ── Deep Engine Card Prompts ──
     "deep_error_no_detail": "任务异常中断，发送 {engine_cmd} 重试",
@@ -924,23 +912,6 @@ UI_TEXT = {
     "spec_build_done": "🔨 **构建完成**  {summary}",
     "spec_build_done_plain": "🔨 **构建完成**",
 }
-
-# DEPRECATED since v0.9, removal: 2026-06-01
-# system_worktree_* aliases will be removed; use canonical worktree_* keys directly.
-_WORKTREE_ALIASES = {
-    "system_worktree_confirm_title": "worktree_confirm_title",
-    "system_worktree_confirm_header": "worktree_confirm_header",
-    "system_worktree_confirm_banner": "worktree_confirm_banner",
-    "system_worktree_btn_confirm": "worktree_btn_confirm",
-    "system_worktree_btn_reselect": "worktree_btn_reselect",
-    "system_worktree_progress_title": "worktree_progress_title",
-    "system_worktree_progress_header": "worktree_progress_header",
-    "system_worktree_progress_banner": "worktree_ready_banner",
-    "system_worktree_btn_execute": "worktree_btn_execute",
-    "system_worktree_btn_retry": "worktree_btn_retry",
-}
-for _alias, _canonical in _WORKTREE_ALIASES.items():
-    UI_TEXT[_alias] = UI_TEXT[_canonical]
 
 # Merge spec-engine UI text from the shared utils layer (avoids card→engine reverse dep)
 from ..utils.ui_text import SPEC_UI_TEXT  # noqa: E402

@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import MagicMock
-from src.utils.registry import ServiceRegistry, ServiceLifecycle, CleanupRegistry
+
+from src.utils.registry import CleanupRegistry, ServiceRegistry
+
 
 class TestServiceRegistry(unittest.TestCase):
     def setUp(self):
@@ -20,11 +22,11 @@ class TestServiceRegistry(unittest.TestCase):
 
         self.registry.register_factory("lazy_service", factory)
         self.assertEqual(call_count, 0)
-        
+
         inst1 = self.registry.get("lazy_service")
         self.assertEqual(inst1["instance"], 1)
         self.assertEqual(call_count, 1)
-        
+
         inst2 = self.registry.get("lazy_service")
         self.assertEqual(inst2, inst1)
         self.assertEqual(call_count, 1)
@@ -140,7 +142,7 @@ class TestCleanupRegistry(unittest.TestCase):
         registry.register("first", lambda: log.append(1))
         registry.register("second", lambda: log.append(2))
         registry.register("third", lambda: log.append(3))
-        
+
         registry.cleanup()
         self.assertEqual(log, [3, 2, 1])
 
@@ -148,7 +150,7 @@ class TestCleanupRegistry(unittest.TestCase):
         log = []
         registry = CleanupRegistry()
         registry.register("only", lambda: log.append(1))
-        
+
         registry.cleanup()
         registry.cleanup()
         self.assertEqual(log, [1])
@@ -157,7 +159,7 @@ class TestCleanupRegistry(unittest.TestCase):
         log = []
         registry = CleanupRegistry()
         registry.cleanup()
-        
+
         # should execute immediately
         registry.register("late", lambda: log.append(1))
         self.assertEqual(log, [1])
@@ -165,14 +167,14 @@ class TestCleanupRegistry(unittest.TestCase):
     def test_cleanup_exception_isolation(self):
         log = []
         registry = CleanupRegistry()
-        
+
         def bad():
             raise ValueError("fail")
-            
+
         registry.register("first", lambda: log.append(1))
         registry.register("bad", bad)
         registry.register("third", lambda: log.append(3))
-        
+
         # bad() should not block "first" from being cleaned up
         registry.cleanup()
         self.assertEqual(log, [3, 1])

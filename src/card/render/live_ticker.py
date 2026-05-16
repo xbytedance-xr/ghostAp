@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from src.card.timers.scheduler import TimerHandle, TimerScheduler, get_timer_scheduler
+from src.card.timers.scheduler import TimerHandle, get_timer_scheduler
 
 DEFAULT_TICKER_FRAMES: tuple[str, ...] = ("🟢", "⚪")
 # v2 design: 1.2 s frame interval matches the CSS `animation: blink 1.2s infinite` in UX mockups.

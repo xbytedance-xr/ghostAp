@@ -1,6 +1,7 @@
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
+
 from src.feishu.session_hub import SessionManagerHub
+
 
 class TestSessionManagerHub:
     def test_initialization(self):
@@ -9,11 +10,11 @@ class TestSessionManagerHub:
         settings.claude_session_timeout = 7200
         settings.acp_keepalive_interval = 0  # Use real int to avoid TypeError
         settings.acp_session_idle_healthcheck_s = 60.0
-        
+
         idle_health_cfg = MagicMock()
-        
+
         hub = SessionManagerHub(settings, idle_health_cfg)
-        
+
         # Verify all managers are initialized
         assert hub.coco._agent_type == "coco"
         assert hub.claude._agent_type == "claude"
@@ -21,7 +22,7 @@ class TestSessionManagerHub:
         assert hub.codex._agent_type == "codex"
         assert hub.gemini._agent_type == "gemini"
         assert hub.ttadk._agent_type == "ttadk"
-        
+
         # Verify some settings are passed
         assert hub.coco._session_timeout == 3600
         assert hub.claude._session_timeout == 7200
@@ -30,9 +31,9 @@ class TestSessionManagerHub:
         settings = MagicMock()
         settings.acp_keepalive_interval = 0
         idle_health_cfg = MagicMock()
-        
+
         hub = SessionManagerHub(settings, idle_health_cfg)
-        
+
         # Mock cleanup_all for all managers
         hub.coco.cleanup_all = MagicMock()
         hub.claude.cleanup_all = MagicMock()
@@ -40,9 +41,9 @@ class TestSessionManagerHub:
         hub.codex.cleanup_all = MagicMock()
         hub.gemini.cleanup_all = MagicMock()
         hub.ttadk.cleanup_all = MagicMock()
-        
+
         hub.cleanup_all()
-        
+
         hub.coco.cleanup_all.assert_called_once()
         hub.claude.cleanup_all.assert_called_once()
         hub.aiden.cleanup_all.assert_called_once()
@@ -54,15 +55,15 @@ class TestSessionManagerHub:
         settings = MagicMock()
         settings.acp_keepalive_interval = 0
         idle_health_cfg = MagicMock()
-        
+
         hub = SessionManagerHub(settings, idle_health_cfg)
-        
+
         # Mock cleanup_all to raise exception for one manager
         hub.coco.cleanup_all = MagicMock(side_effect=RuntimeError("cleanup failed"))
         hub.claude.cleanup_all = MagicMock()
-        
+
         # Should not raise exception
         hub.cleanup_all()
-        
+
         # Verify other managers are still cleaned up
         hub.claude.cleanup_all.assert_called_once()

@@ -9,9 +9,8 @@ from typing import TYPE_CHECKING, Optional
 
 from ...card import CardBuilder
 from ...card.ui_text import UI_TEXT
-from ...project import ContextEntryType, context_helper
+from ...project import context_helper
 from ...tasking import TaskPriority, TaskSpec
-from ...utils.text import format_duration
 from ...utils.errors import get_error_detail
 from .base import BaseHandler
 from .diagnostics_helper import DiagnosticsHelper
@@ -96,6 +95,7 @@ class DiagnosticsHandler(BaseHandler):
         appended when present.
         """
         from datetime import datetime
+
         from ...card.builders.lock import format_elapsed_ago, format_friendly_duration, format_lock_duration
         from ...card.ui_text import UI_TEXT
 

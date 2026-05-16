@@ -1,9 +1,11 @@
 """Tool call sub-reducer."""
 from __future__ import annotations
+
 from dataclasses import replace
-from ..models import CardState, ToolBlock, FooterState
+
 from ...events import CardEvent, CardEventType
 from ...ui_text import UI_TEXT
+from ..models import CardState, ToolBlock
 
 
 def _is_task_tool_name(tool_name: str | None) -> bool:

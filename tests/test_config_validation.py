@@ -12,8 +12,6 @@ Covers:
 - AC-R31: cross-field validation errors use '[跨字段校验]' label when loc is empty
 """
 
-import sys
-from io import StringIO
 from unittest.mock import patch
 
 import pytest
@@ -144,7 +142,7 @@ class TestGetSettingsFriendlyErrorWithDefaults:
 
     def test_friendly_error_includes_default_value(self):
         """When config validation fails, ConfigurationError should include the field's default value."""
-        from src.config import get_settings, ConfigurationError
+        from src.config import ConfigurationError, get_settings
 
         # Patch environment to produce an invalid value for spec_review_max_parallel
         env_override = {"SPEC_REVIEW_MAX_PARALLEL": "999"}
@@ -165,7 +163,7 @@ class TestCrossFieldErrorIncludesRecommendedValues:
     """AC-R12: cross-field validation error output includes recommended combination values."""
 
     def test_cross_field_error_includes_recommended_combination(self):
-        from src.config import get_settings, ConfigurationError
+        from src.config import ConfigurationError, get_settings
 
         # hard_floor > min_timeout triggers cross-field validation
         env_override = {
@@ -188,6 +186,7 @@ class TestMainCatchesConfigurationError:
 
     def test_main_prints_error_and_exits(self):
         from unittest.mock import patch
+
         from src.config import ConfigurationError
 
         with patch("src.main.Application", side_effect=ConfigurationError("test config error")):
@@ -202,7 +201,7 @@ class TestCrossFieldValidationLabel:
     """AC-R31: cross-field validation errors use '[跨字段校验]' label when loc is empty."""
 
     def test_cross_field_error_uses_label(self):
-        from src.config import get_settings, ConfigurationError
+        from src.config import ConfigurationError, get_settings
 
         # hard_floor > min_timeout triggers @model_validator (cross-field, empty loc)
         env_override = {
@@ -282,6 +281,7 @@ class TestPostValidateWarnings:
     def test_post_validate_warnings_emits_info_log(self, caplog):
         """When (retry_max_delay + timeout) * max_attempts > timeout * 2, an INFO note is emitted."""
         import logging
+
         from src.config import _post_validate_warnings
 
         # Construct settings where realistic_budget > budget_limit but within hard validator:

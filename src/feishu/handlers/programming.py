@@ -17,11 +17,11 @@ from ...acp.manager import ACPSessionManager
 from ...agent_session import SyncSession
 from ...card import CardBuilder
 from ...card.ui_text import UI_TEXT
+from ...mode import InteractionMode
 from ...project import ContextSourceMode
 from ...utils.errors import get_error_detail, log_exception
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
-from ...mode import InteractionMode
 from .base import BaseHandler
 
 if TYPE_CHECKING:
@@ -390,7 +390,7 @@ class ProgrammingModeHandler(BaseHandler):
                 if self.mode_name == "TTADK":
                     mode_hint = UI_TEXT["mode_resume_hint_ttadk"]
                 content = UI_TEXT["mode_resume_msg"].format(name=self.mode_name, session_id=session.session_id, query_count=snapshot.query_count, hint=mode_hint)
-                
+
                 banner = CardBuilder._build_banner_element(UI_TEXT["mode_resume_banner"].format(name=self.mode_name), type="success")
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
@@ -411,7 +411,7 @@ class ProgrammingModeHandler(BaseHandler):
                 content = UI_TEXT["mode_enter_msg"].format(emoji=self.mode_emoji, name=self.mode_name)
                 if self.mode_name == "TTADK":
                     content += UI_TEXT["ttadk_extra_hint"]
-                
+
                 banner = CardBuilder._build_banner_element(UI_TEXT["mode_enter_banner"].format(name=self.mode_name), type="success")
                 msg_type, card_content = CardBuilder.build_project_response_card(
                     project,
@@ -473,7 +473,7 @@ class ProgrammingModeHandler(BaseHandler):
                 try:
                     if set_model_fn(model_name):
                         logger.info("[%s] Model switched via ACP protocol: %s", self.mode_name, model_name)
-                        
+
                         banner = CardBuilder._build_banner_element(UI_TEXT["mode_model_switched_banner"].format(name=self.mode_name, model=model_name), type="success")
                         msg_type, card_content = CardBuilder.build_project_response_card(
                             project,
@@ -501,7 +501,7 @@ class ProgrammingModeHandler(BaseHandler):
                 agent_type_override=agent_type_override,
                 model_name=model_name,
             )
-            
+
             display_model = model_name or UI_TEXT["system_acp_default_model_option"]
             banner = CardBuilder._build_banner_element(UI_TEXT["mode_model_switched_banner"].format(name=self.mode_name, model=display_model), type="success")
             msg_type, card_content = CardBuilder.build_project_response_card(
@@ -624,7 +624,7 @@ class ProgrammingModeHandler(BaseHandler):
                     content = UI_TEXT["mode_exit_msg"].format(name=self.mode_name)
                     if is_pending_slot or is_mode_only_exit:
                         content = UI_TEXT["mode_exit_pending_msg"].format(name=self.mode_name)
-                    
+
                     banner = CardBuilder._build_banner_element(UI_TEXT["mode_exit_banner"].format(name=self.mode_name), type="info")
                     msg_type, card_content = CardBuilder.build_project_response_card(
                         project,
@@ -761,7 +761,7 @@ class ProgrammingModeHandler(BaseHandler):
         project_id = project.project_id if project else None
 
         with self.ctx.pending_image_lock:
-            image_keys = self.ctx.pending_image_keys.get(message_id)
+            self.ctx.pending_image_keys.get(message_id)
 
         logger.info("开始 %s 输出: project=%s, path=%s", self.mode_name, project_name, project_path)
 

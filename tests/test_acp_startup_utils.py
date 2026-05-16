@@ -44,7 +44,8 @@ def test_startup_collaborators_are_independently_testable():
     assert select_startup_backend("claude") == StartupBackend.CLI
     assert select_startup_backend("ttadk_coco") == StartupBackend.TTADK_CLI
     assert select_startup_backend("coco") == StartupBackend.ACP
-    starter = lambda **kwargs: None
+    def starter(**kwargs):
+        return None
     assert should_try_injected_starter("coco", starter=starter) is True
     assert should_try_injected_starter("ttadk_coco", starter=starter) is False
 

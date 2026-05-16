@@ -1,20 +1,23 @@
 from __future__ import annotations
 
-import threading
 import time
 from unittest.mock import MagicMock
 
 import pytest
 
+import src.acp.telemetry as telemetry_mod
 from src.acp.manager import ACPSessionManager
 from src.acp.telemetry import (
-    _DefaultIdleHealthTelemetry as DefaultIdleHealthTelemetry,
     IdleHealthConfig,
     IdleHealthTelemetryContext,
+)
+from src.acp.telemetry import (
+    _DefaultIdleHealthTelemetry as DefaultIdleHealthTelemetry,
+)
+from src.acp.telemetry import (
     _IdleHealthServiceProtocol as IdleHealthServiceProtocol,
 )
 from src.utils.time_ago import IdleHealth
-import src.acp.telemetry as telemetry_mod
 
 
 def _make_mock_session(*, last_active: float = 0.0, server_running: bool = True) -> MagicMock:

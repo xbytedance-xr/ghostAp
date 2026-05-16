@@ -5,12 +5,8 @@ and concurrent refresh safety.
 """
 
 import threading
-import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from src.card.events import CardEvent
 from src.card.protocols import TTLState
 from src.card.session.ttl import TTLHandler
 

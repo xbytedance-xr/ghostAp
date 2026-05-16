@@ -10,8 +10,6 @@ Validates that:
 
 from __future__ import annotations
 
-import os
-import tempfile
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -157,7 +155,7 @@ class TestAddChatIdLRU:
     """add_chat_id respects max_allowed_chat_ids and evicts non-owner entries."""
 
     def test_add_chat_id_basic(self):
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
         ctx = ProjectContext(project_id="p1", project_name="t", root_path="/tmp/t",
                              owner_chat_id="owner", allowed_chat_ids=[("owner", 1.0)])
 
@@ -175,7 +173,7 @@ class TestAddChatIdLRU:
         assert ctx._chat_id_set() == {"owner"}
 
     def test_add_chat_id_evicts_when_full(self):
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
         ctx = ProjectContext(project_id="p1", project_name="t", root_path="/tmp/t",
                              owner_chat_id="owner",
                              allowed_chat_ids=[("owner", 1.0), ("c1", 2.0), ("c2", 3.0)])
@@ -191,7 +189,7 @@ class TestAddChatIdLRU:
         assert "c3" in ctx._chat_id_set()
 
     def test_add_chat_id_preserves_owner(self):
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
         ctx = ProjectContext(project_id="p1", project_name="t", root_path="/tmp/t",
                              owner_chat_id="owner", allowed_chat_ids=[("owner", 1.0)])
 
@@ -213,6 +211,7 @@ class TestCardActionCrossChatIsolation:
     def _make_handler():
         """Build a CocoModeHandler with mocked context for card-action tests."""
         import threading
+
         from src.feishu.handler_context import HandlerContext
         from src.feishu.handlers.programming import CocoModeHandler
         from src.mode.manager import InteractionMode
@@ -370,7 +369,8 @@ class TestHintEvictedVsNeverBound:
         assert "已自动解绑" not in hint
 
     def test_evicted_hint(self, pm, tmp_path):
-        from unittest.mock import patch as mock_patch, MagicMock
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
         mock_settings = MagicMock()
         mock_settings.max_allowed_chat_ids = 2
         mock_settings.ttadk_yolo_default_enabled = False
@@ -390,7 +390,8 @@ class TestOnEvictionCallback:
     """Tests for ProjectManager.on_eviction fire-and-forget callback."""
 
     def test_on_eviction_called_on_lru_eviction(self, pm, tmp_path):
-        from unittest.mock import MagicMock, patch as mock_patch
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
 
         mock_settings = MagicMock()
         mock_settings.max_allowed_chat_ids = 2
@@ -423,7 +424,8 @@ class TestOnEvictionCallback:
         callback.assert_not_called()
 
     def test_on_eviction_error_does_not_propagate(self, pm, tmp_path):
-        from unittest.mock import MagicMock, patch as mock_patch
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
 
         mock_settings = MagicMock()
         mock_settings.max_allowed_chat_ids = 2
@@ -442,7 +444,8 @@ class TestGetActiveProjectAfterEviction:
     """AC-15: get_active_project returns None for an evicted chat_id."""
 
     def test_evicted_chat_returns_none(self, pm, tmp_path):
-        from unittest.mock import MagicMock, patch as mock_patch
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
 
         mock_settings = MagicMock()
         mock_settings.max_allowed_chat_ids = 2
@@ -459,7 +462,8 @@ class TestGetActiveProjectAfterEviction:
         assert result is None
 
     def test_non_evicted_chat_still_visible(self, pm, tmp_path):
-        from unittest.mock import MagicMock, patch as mock_patch
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mock_patch
 
         mock_settings = MagicMock()
         mock_settings.max_allowed_chat_ids = 3

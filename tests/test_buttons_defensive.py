@@ -8,12 +8,16 @@ Dependencies on private API (document for maintainability):
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import pytest
 
 import src.card.render.buttons as buttons_module
-from src.card.render.buttons import _is_stop_intent, _STOP_INTENTS, _DESTRUCTIVE_ACTIONS, _render_button, INTENT_TO_ACTION_ID
+from src.card.render.buttons import (
+    _DESTRUCTIVE_ACTIONS,
+    _STOP_INTENTS,
+    INTENT_TO_ACTION_ID,
+    _is_stop_intent,
+    _render_button,
+)
 from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import ButtonSpec
 
@@ -115,9 +119,13 @@ class TestDestructiveConfirm:
     def test_destructive_actions_set_completeness(self):
         """Guard: _DESTRUCTIVE_ACTIONS must contain the expected set."""
         from src.card.actions.dispatch import (
-            ENGINE_STOP, DEEP_STOP, SPEC_STOP,
-            WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
             APPROVE_ACTION,
+            DEEP_STOP,
+            ENGINE_STOP,
+            SPEC_STOP,
+            WORKTREE_CANCEL,
+            WORKTREE_CLEANUP,
+            WORKTREE_MERGE,
         )
         expected = frozenset({
             ENGINE_STOP, DEEP_STOP, SPEC_STOP,

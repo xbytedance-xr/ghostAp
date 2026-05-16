@@ -50,13 +50,13 @@ class ProgressReporter:
             summary_parts.append("⏱️ 操作超时，请检查网络或稍后重试")
         if internal:
             summary_parts.append(internal)
-            
+
         summary_line = ""
         if summary_parts:
             summary_line = "\n\n" + "\n".join([f"- {p}" for p in summary_parts]) + "\n"
-            
+
         advice = "建议您稍后点击重试。" if is_timeout else "请检查错误信息后重试。"
-        
+
         return f"""❌ **Deep Agent 错误**{summary_line}
 ```
 {err}

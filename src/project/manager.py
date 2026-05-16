@@ -2,7 +2,6 @@ import fcntl
 import json
 import logging
 import os
-import threading
 import time
 from collections import OrderedDict
 from contextlib import contextmanager

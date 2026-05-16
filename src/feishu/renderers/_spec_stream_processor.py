@@ -17,7 +17,6 @@ from ...card.render.budget import RenderBudget
 from ...card.render.throttle import StreamThrottle
 from ...card.state.models import CardMetadata
 from ...card.stream_bridge import ACPStreamBridge
-from ...card.task_registry import tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...spec_engine import SpecEngineCallbacks
 from ...spec_engine.artifact_display import build_plan_display_payload, build_task_display_payloads
@@ -27,8 +26,8 @@ from ...spec_engine.models import (
     SpecPhase,
     SpecProject,
 )
-from ...spec_engine.review_display import build_review_role_payloads, format_review_overview
 from ...spec_engine.retry_status import RetryEvent, RetryStatus
+from ...spec_engine.review_display import build_review_role_payloads, format_review_overview
 from .base import _dispatch_text_block
 
 if TYPE_CHECKING:

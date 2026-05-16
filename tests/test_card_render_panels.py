@@ -1,10 +1,11 @@
 """Tests for tool/reasoning/plan panel rendering."""
 import pytest
-from src.card.state.models import ContentBlock
-from src.card.render.tools import render_tool_panel, generate_tool_summary
-from src.card.render.reasoning import render_reasoning_panel
-from src.card.render.plan import render_plan_panel
+
 from src.card.render.budget import RenderBudget
+from src.card.render.plan import render_plan_panel
+from src.card.render.reasoning import render_reasoning_panel
+from src.card.render.tools import generate_tool_summary, render_tool_panel
+from src.card.state.models import ContentBlock
 
 
 class TestToolPanel:

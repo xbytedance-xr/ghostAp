@@ -9,46 +9,26 @@ and all review perspectives pass.
 import json
 import logging
 import os
-import re
 import threading
 import time
 from collections import namedtuple
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from ..acp import ACPEvent, ACPEventType
+from pydantic import ValidationError
+
+from ..acp import ACPEvent
 from ..agent_session import create_engine_session
 from ..engine_base import (
     BaseEngine,
     EngineRunState,
     PerspectiveReview,
-    ReviewPerspective,
     ReviewResult,
 )
 from ..utils.acp_prompt import prompt_via_acp
 from ..utils.errors import get_error_detail
+from ..utils.retry import RetryPolicy
 from ..utils.trace import TraceContext
-from .validation import SpecInput
-from pydantic import ValidationError
-from ..utils.spec_utils import (
-    extract_json_blob,
-)
-from .models import (
-    SpecCycle,
-    SpecPhase,
-    SpecProject,
-    SpecProjectStatus,
-    SpecWorkItem,
-    SpecWorkItemStatus,
-)
-from .prompts import (
-    build_build_prompt,
-    build_plan_prompt,
-    build_refinement_input,
-    build_spec_prompt,
-    build_task_prompt,
-    format_criteria_status,
-)
 from .artifacts import (
     merge_acceptance_criteria,
     parse_acceptance_criteria,
@@ -56,23 +36,6 @@ from .artifacts import (
     parse_spec_artifact,
     parse_tasks,
 )
-from ..utils.retry import RetryPolicy
-from .task_persistence import SpecTaskState, delete_task_state
-from .tracker import PhaseTracker
-from .review import (
-    ReviewCircuitState,
-    ReviewOrchestrator,
-    build_review_exception_diagnostics,
-    extract_reviews_from_llm_response,
-    format_review_exception_log_line,
-    normalize_review_diagnostics,
-    parse_review_output as _parse_review_output_impl,
-    parse_review_with_llm as _parse_review_with_llm_impl,
-    review_result_to_text,
-)
-from .review_strategy import ReviewContext, select_review_strategy
-from .review_agents import ReviewAgentBinding, normalize_review_agents
-from .retry_status import RetryEvent, RetryStatus
 from .convergence import (
     ContinuationPolicy,
     compute_cycle_metrics,
@@ -82,38 +45,117 @@ from .convergence import (
 )
 from .criteria import (
     decompose_criteria_with_llm as _decompose_criteria_with_llm_impl,
+)
+from .criteria import (
     evaluate_criteria as _evaluate_criteria_impl,
+)
+from .discovery import (
+    build_input_from_spec_file as _build_input_from_spec_file,
+)
+from .discovery import (
+    discover_optimization_questions as _discover_optimization_questions,
+)
+from .discovery import (
+    generate_specs_from_discovery as _generate_specs_from_discovery,
+)
+from .discovery import (
+    pick_next_work_item as _pick_next_work_item,
+)
+from .discovery import (
+    should_load_spec_directly as _should_load_spec_directly,
+)
+from .models import (
+    SpecCycle,
+    SpecPhase,
+    SpecProject,
+    SpecProjectStatus,
+    SpecWorkItem,
+    SpecWorkItemStatus,
 )
 from .persistence import (
     append_history_event as _append_history_event,
+)
+from .persistence import (
     cleanup_generated_specs as _cleanup_generated_specs,
+)
+from .persistence import (
     cleanup_old_cycle_artifacts as _cleanup_old_cycle_artifacts,
+)
+from .persistence import (
     get_state_path as _get_state_path,
+)
+from .persistence import (
     load_engine_state as _load_engine_state,
+)
+from .persistence import (
     persist_cycle_artifact as _persist_cycle_artifact,
+)
+from .persistence import (
     persist_state_best_effort as _persist_state_best_effort,
+)
+from .persistence import (
     project_to_compact_dict as _project_to_compact_dict_impl,
+)
+from .persistence import (
     read_text_file_best_effort as _read_text_file_best_effort,
+)
+from .persistence import (
     save_engine_state as _save_engine_state,
+)
+from .persistence import (
     save_failed_task as _save_failed_task_impl,
+)
+from .persistence import (
     truncate_output as _truncate_output,
 )
-from .storage import state_path_candidates as _state_path_candidates
-from .discovery import (
-    build_input_from_spec_file as _build_input_from_spec_file,
-    discover_optimization_questions as _discover_optimization_questions,
-    generate_specs_from_discovery as _generate_specs_from_discovery,
-    pick_next_work_item as _pick_next_work_item,
-    should_load_spec_directly as _should_load_spec_directly,
+from .prompts import (
+    build_build_prompt,
+    build_plan_prompt,
+    build_refinement_input,
+    build_spec_prompt,
+    build_task_prompt,
+    format_criteria_status,
 )
+from .retry_status import RetryEvent
+from .review import (
+    ReviewCircuitState,
+    ReviewOrchestrator,
+    build_review_exception_diagnostics,
+    extract_reviews_from_llm_response,
+    format_review_exception_log_line,
+    normalize_review_diagnostics,
+    review_result_to_text,
+)
+from .review import (
+    parse_review_output as _parse_review_output_impl,
+)
+from .review import (
+    parse_review_with_llm as _parse_review_with_llm_impl,
+)
+from .review_agents import ReviewAgentBinding, normalize_review_agents
+from .review_strategy import ReviewContext, select_review_strategy
 from .session_utils import (
     build_runtime_context as _build_runtime_context,
+)
+from .session_utils import (
     initialize_model_context as _initialize_model_context,
+)
+from .session_utils import (
     recreate_session_best_effort as _recreate_session_best_effort,
+)
+from .session_utils import (
     restore_runtime_context as _restore_runtime_context,
+)
+from .session_utils import (
     send_prompt_with_retry as _send_prompt_with_retry,
+)
+from .session_utils import (
     try_switch_model as _try_switch_model,
 )
+from .storage import state_path_candidates as _state_path_candidates
+from .task_persistence import SpecTaskState, delete_task_state
+from .tracker import PhaseTracker
+from .validation import SpecInput
 
 logger = logging.getLogger(__name__)
 

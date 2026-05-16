@@ -2,13 +2,13 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from .base import ModelFetchStrategy
 from ..env_sandbox import build_ttadk_subprocess_env
 from ..models import (
     TTADKModel,
     parse_ttadk_models_from_output_to_models,
     truncate_snippet,
 )
+from .base import ModelFetchStrategy
 
 
 class TTADKProjectMetaError(RuntimeError):

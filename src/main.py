@@ -7,17 +7,24 @@ import threading
 from typing import Optional
 
 try:
-    from config import get_settings, ConfigurationError
-    from feishu.message_formatter import FeishuMessageFormatter as fmt
-    from feishu.ws_client import EmojiReaction, FeishuWSClient
+    from config import ConfigurationError, get_settings
     from utils.errors import get_error_detail
 except ImportError:
-    from .config import get_settings, ConfigurationError
-    from .feishu.message_formatter import FeishuMessageFormatter as fmt
-    from .feishu.ws_client import EmojiReaction, FeishuWSClient
+    from .config import ConfigurationError, get_settings
     from .utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)
+
+
+def _load_feishu_runtime():
+    """Load Feishu runtime dependencies only when the service actually starts."""
+    try:
+        from feishu.message_formatter import FeishuMessageFormatter as fmt
+        from feishu.ws_client import EmojiReaction, FeishuWSClient
+    except ImportError:
+        from .feishu.message_formatter import FeishuMessageFormatter as fmt
+        from .feishu.ws_client import EmojiReaction, FeishuWSClient
+    return fmt, EmojiReaction, FeishuWSClient
 
 
 def _format_duration(seconds: int) -> str:
@@ -32,6 +39,16 @@ def _format_duration(seconds: int) -> str:
     # Non-exact minutes: approximate with ceiling
     approx_min = math.ceil(seconds / 60)
     return f"{seconds} 秒（~{approx_min} 分钟）"
+
+
+def _format_seconds(value: float) -> str:
+    """Format integer-like second values with duration suffixes while preserving fractional timeouts."""
+    seconds = float(value)
+    if seconds < 60:
+        return f"{seconds:g} 秒"
+    if seconds.is_integer():
+        return _format_duration(int(seconds))
+    return f"{seconds:g} 秒"
 
 
 def _get_version() -> str:
@@ -79,6 +96,7 @@ def _print_validate_summary(settings) -> None:
     # Group 3: 高级参数
     print("[高级参数]")
     print(f"  CARD_DELIVERY_POOL_MAX_WORKERS = {settings.card.delivery_pool_max_workers} (threads)")
+    print(f"  CARD_DELIVERY_API_TIMEOUT      = {_format_seconds(settings.card.delivery_api_timeout)}")
     print(f"  CARD_MAX_CHARS                 = {settings.card.max_chars} chars")
     print(f"  CARD_SESSION_LOCK_TTL          = {_format_duration(int(settings.card.session_lock_ttl))}")
     print(f"  CARD_SESSION_LOCK_MAX          = {settings.card.session_lock_max}")
@@ -87,7 +105,7 @@ def _print_validate_summary(settings) -> None:
 class Application:
     def __init__(self):
         self.settings = get_settings()
-        self.feishu_client: Optional[FeishuWSClient] = None
+        self.feishu_client: Optional[object] = None
         self._shutdown_once = threading.Event()
 
     def _install_signal_handlers(self):
@@ -136,6 +154,7 @@ class Application:
         except Exception as e:
             logger.error("处理命令异常: %s", get_error_detail(e))
             try:
+                fmt, EmojiReaction, _FeishuWSClient = _load_feishu_runtime()
                 self.feishu_client.add_reaction(message_id, EmojiReaction.on_error())
                 self.feishu_client.reply(message_id, fmt.format_error(get_error_detail(e)), chat_id=chat_id)
             except Exception:
@@ -201,6 +220,7 @@ class Application:
 
         self._install_signal_handlers()
 
+        _fmt, _EmojiReaction, FeishuWSClient = _load_feishu_runtime()
         self.feishu_client = FeishuWSClient(message_callback=self.handle_message)
 
         logger.info("启动飞书长连接服务...")

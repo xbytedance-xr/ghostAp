@@ -10,7 +10,6 @@ import threading
 from typing import TYPE_CHECKING
 
 from ...card.actions.dispatch import build_worktree_action_registry
-from ...card.events import CardEvent, CardEventType
 from ...card.render.budget import RenderBudget
 from ...card.state.models import CardMetadata
 from .base import BaseRenderer

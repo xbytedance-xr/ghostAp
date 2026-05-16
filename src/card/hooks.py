@@ -21,8 +21,7 @@ import weakref
 from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from src.card.engine_meta import engine_type_to_cmd
-
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEvent
 from src.card.nav_link import format_task_continuation_link
 from src.card.state.models import CardState, TerminalReason
 from src.card.ui_text import UI_TEXT

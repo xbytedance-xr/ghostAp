@@ -148,6 +148,7 @@ class TestCircuitStateSerialization:
 class TestHandleReviewExceptionOutcome:
     def test_timeout_records_timeout_outcome(self):
         from dataclasses import dataclass, field
+
         from src.utils.review_helpers import handle_review_exception
 
         @dataclass
@@ -178,6 +179,7 @@ class TestHandleReviewExceptionOutcome:
 
     def test_regular_error_records_error_outcome(self):
         from dataclasses import dataclass, field
+
         from src.utils.review_helpers import handle_review_exception
 
         @dataclass
@@ -214,6 +216,7 @@ class TestSlidingWindowCircuitTrigger:
     def test_sliding_window_triggers_before_max_consecutive(self):
         """If window is full and rate is low, circuit opens before max_consecutive."""
         from dataclasses import dataclass, field
+
         from src.utils.review_helpers import handle_review_exception
 
         @dataclass
@@ -252,6 +255,7 @@ class TestSlidingWindowCircuitTrigger:
     def test_consecutive_fallback_still_works(self):
         """If window is not full, consecutive still triggers."""
         from dataclasses import dataclass, field
+
         from src.utils.review_helpers import handle_review_exception
 
         @dataclass

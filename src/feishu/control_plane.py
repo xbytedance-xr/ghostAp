@@ -3,7 +3,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Optional, Any
+from typing import Deque, Optional
 
 from ..tasking import TaskEvent, TaskPriority, TaskSpec, TaskStatus
 
@@ -23,18 +23,18 @@ class ControlPlane:
         self._scheduler = scheduler
         self._project_manager = project_manager
         self._exit_handler_fn = exit_handler_fn
-        
+
         self._pending_exit_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._pending_exits: dict[str, _PendingExit] = {}  # key -> pending exit
-        
+
         self._event_q: Deque[str] = deque()
         self._event_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._wakeup = threading.Event()
         self._stop_event = threading.Event()
-        
+
         self._system_cmd_gate_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._system_cmd_inflight_by_chat: dict[str, int] = {}
-        
+
         self._thread = threading.Thread(
             target=self._loop,
             name="control_plane",

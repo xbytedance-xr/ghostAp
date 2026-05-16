@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.worktree_engine.dispatcher import WorktreeDispatcher
-from src.worktree_engine.models import WorktreeUnit, WorktreeSelectionItem
+from src.worktree_engine.models import WorktreeSelectionItem, WorktreeUnit
 
 
 def test_dispatcher_plans_and_executes_units_without_cross_contamination(tmp_path):
@@ -215,7 +215,7 @@ def test_timeout_error_empty_message_unit_has_friendly_error(tmp_path):
     d.mkdir()
     unit = WorktreeUnit(unit_id="u0", worktree_path=str(d))
     tool = WorktreeSelectionItem(provider="acp", tool_name="coco", display_name="Coco")
-    
+
     session_cls = _make_timeout_session_class(TimeoutError(""))
     dispatcher = WorktreeDispatcher(session_factory=lambda **kw: session_cls(**kw))
     planned = dispatcher.plan_user_goal("test", [unit], [tool])

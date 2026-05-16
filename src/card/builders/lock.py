@@ -9,6 +9,6 @@ This module re-exports everything so that existing ``from ...card.builders.lock 
 statements continue to work without modification.
 """
 
+from .lock_chat import *  # noqa: F401,F403
 from .lock_common import *  # noqa: F401,F403
-from .lock_repo import *    # noqa: F401,F403
-from .lock_chat import *    # noqa: F401,F403
+from .lock_repo import *  # noqa: F401,F403

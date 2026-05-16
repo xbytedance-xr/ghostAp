@@ -3,9 +3,7 @@
 import threading
 import time
 
-import pytest
-
-from src.card.delivery.throttle import DeliveryThrottle, DELIVERY_INTERVAL_MS
+from src.card.delivery.throttle import DeliveryThrottle
 from src.card.types import RenderedCard
 
 

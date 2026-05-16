@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import traceback
-from typing import Optional
+
+from .errors import _has_timeout_in_chain  # unified implementation
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +58,6 @@ def _safe_str(x: object) -> str:
         return str(x)
     except Exception:
         return ""
-
-
-from .errors import _has_timeout_in_chain  # unified implementation
-
 
 # ---------------------------------------------------------------------------
 # Public API

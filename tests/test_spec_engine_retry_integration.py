@@ -5,10 +5,7 @@ the _on_retry_status closure to callbacks.on_review_retry, ensuring the
 RetryEvent dataclass is correctly forwarded.
 """
 
-import threading
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.engine_base import EngineRunState, ReviewResult
 from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
@@ -124,6 +121,7 @@ class TestRetryFullCallbackSequence:
     def test_retry_full_callback_sequence(self):
         """max_attempts=2 all timeout → sequence: WAITING(1)→EXECUTING(1)→WAITING(2)→EXECUTING(2)→EXHAUSTED."""
         from unittest.mock import patch as _patch
+
         from src.spec_engine.review_retry import (
             PipelineRetryContext,
             handle_pipeline_errors_with_retry,
@@ -212,6 +210,7 @@ class TestRetrySuccessCallbackSequence:
     def test_retry_success_callback_sequence(self):
         """pipeline_fn succeeds on first attempt → WAITING→EXECUTING→SUCCEEDED."""
         from unittest.mock import patch as _patch
+
         from src.spec_engine.review_retry import (
             PipelineRetryContext,
             attempt_pipeline_retry,

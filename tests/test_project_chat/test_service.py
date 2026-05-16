@@ -1,13 +1,14 @@
 """Tests for ProjectChatService — the /new-chat orchestrator."""
 import json
 import os
-import pytest
 from unittest.mock import MagicMock, patch
 
-from src.project_chat.service import ProjectChatService
-from src.project_chat.lark_chat_client import CreateChatResult
-from src.project_chat.errors import CreateChatError
+import pytest
+
 from src.project.manager import ProjectManager
+from src.project_chat.errors import CreateChatError
+from src.project_chat.lark_chat_client import CreateChatResult
+from src.project_chat.service import ProjectChatService
 
 
 @pytest.fixture

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import logging
 import time
+from typing import Any
 
 from ..utils.errors import get_error_detail
-
 
 logger = logging.getLogger(__name__)
 

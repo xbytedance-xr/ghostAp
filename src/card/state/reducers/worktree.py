@@ -5,15 +5,23 @@ Formatting (emoji, markdown) is deferred to the render layer.
 Buttons use ButtonIntent values — mapped to action_ids by the render layer.
 """
 from __future__ import annotations
+
 from dataclasses import replace
-from ..models import (
-    CardState, FooterState, ButtonSpec, HeaderState,
-    WorktreeSelectBlock, WorktreeConfirmBlock, WorktreeUnitsBlock,
-    WorktreeMergeBlock, WorktreeCleanupBlock,
-)
+
 from ...events import CardEvent, CardEventType
-from ..button_intent import ButtonIntent
 from ...ui_text import UI_TEXT
+from ..button_intent import ButtonIntent
+from ..models import (
+    ButtonSpec,
+    CardState,
+    FooterState,
+    HeaderState,
+    WorktreeCleanupBlock,
+    WorktreeConfirmBlock,
+    WorktreeMergeBlock,
+    WorktreeSelectBlock,
+    WorktreeUnitsBlock,
+)
 from ._shared import build_header
 
 

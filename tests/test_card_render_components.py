@@ -1,9 +1,8 @@
 """Tests for header/footer/buttons rendering."""
-import pytest
-from src.card.state.models import CardState, HeaderState, FooterState, ButtonSpec, CardMetadata, TextBlock
-from src.card.render.header import render_header
-from src.card.render.footer import render_footer
 from src.card.render.buttons import render_buttons
+from src.card.render.footer import render_footer
+from src.card.render.header import render_header
+from src.card.state.models import ButtonSpec, CardMetadata, CardState, FooterState, HeaderState, TextBlock
 
 
 class TestRenderHeader:
@@ -277,6 +276,7 @@ class TestFooterWarningAndProgressCoexist:
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import render_card
 
+
 class TestBannerUnifiedPosition:
     """All banner types (error/warning/info/success) render at body_elements[0]."""
 
@@ -322,16 +322,17 @@ class TestBannerUnifiedPosition:
 # Phase 6: Worktree render functions unit tests
 # ---------------------------------------------------------------------------
 
+import json
+
 from src.card.render.worktree import (
-    render_worktree_panel,
-    _render_worktree_tool_select,
-    _render_worktree_confirm,
-    _render_worktree_units,
-    _render_worktree_merge,
     _render_worktree_cleanup,
+    _render_worktree_confirm,
+    _render_worktree_merge,
+    _render_worktree_tool_select,
+    _render_worktree_units,
+    render_worktree_panel,
 )
 from src.card.state.models import ContentBlock
-import json
 
 
 class TestRenderWorktreeToolSelect:
@@ -746,9 +747,9 @@ class TestCriteriaPanelIcon:
     """Verify criteria panel has standard collapsible icon config."""
 
     def test_criteria_panel_has_icon_config(self):
-        from src.card.render.renderer import _render_criteria_panel
         from src.card.render.atoms import RenderAtom
-        from src.card.state.models import CardState, CardMetadata
+        from src.card.render.renderer import _render_criteria_panel
+        from src.card.state.models import CardMetadata, CardState
 
         atom = RenderAtom(kind="criteria", content="- [x] Passes")
         state = CardState(metadata=CardMetadata(expand_ac=True))
@@ -765,7 +766,7 @@ class TestWorktreeStepperTotal:
     """Verify stepper total is 4 (merge+cleanup merged into one step)."""
 
     def test_stepper_total_is_4(self):
-        from src.card.render.worktree import _TOTAL_STEPS, _STEP_MAP
+        from src.card.render.worktree import _STEP_MAP, _TOTAL_STEPS
         assert _TOTAL_STEPS == 4
         # merge and cleanup share the same step index
         assert _STEP_MAP["worktree_merge"] == _STEP_MAP["worktree_cleanup"]
@@ -820,9 +821,9 @@ class TestFooterBlockedReason:
     """Footer renders blocked reason via UI_TEXT key."""
 
     def test_blocked_reason_renders_in_footer(self):
+
         from src.card.render.footer import render_footer
-        from src.card.state.models import CardState, FooterState, EngineExtState, CardMetadata, HeaderState
-        from dataclasses import replace
+        from src.card.state.models import CardMetadata, CardState, EngineExtState, FooterState, HeaderState
 
         meta = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🔍")
         state = CardState(

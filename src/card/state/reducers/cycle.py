@@ -1,9 +1,11 @@
 """Cycle lifecycle sub-reducer for Spec engine."""
 from __future__ import annotations
+
 import logging
 from dataclasses import replace
-from ..models import CardState, FooterState, HeaderState
+
 from ...events import CardEvent, CardEventType
+from ..models import CardState
 from ._shared import build_header
 
 logger = logging.getLogger(__name__)

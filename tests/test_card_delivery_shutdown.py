@@ -1,7 +1,6 @@
 """Tests for CardDelivery shutdown_all, shutdown idempotency, registry lifecycle, and to_feishu_json."""
 
 import threading
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -332,7 +331,6 @@ class TestDrainInFlightClassmethod:
 
     def test_drain_in_flight_multiple_instances(self):
         """drain_in_flight iterates over all instances."""
-        import time
         inst1 = CardDelivery(_MockClient())
         inst2 = CardDelivery(_MockClient())
         # No in-flight deliveries → drain returns immediately
@@ -349,7 +347,6 @@ class TestDrainPartialAcquireFailure:
 
     def test_drain_returns_false_on_single_acquire_timeout(self):
         """If in-flight delivery is stuck, drain should return False."""
-        import time
         delivery = CardDelivery(_MockClient(), max_session_locks=100, session_lock_ttl=600)
         try:
             # Simulate a stuck delivery

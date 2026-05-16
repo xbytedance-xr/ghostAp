@@ -2,8 +2,8 @@
 
 from src.card.render.atoms import RenderAtom, estimate_atom_size
 from src.card.render.budget import RenderBudget
-from src.card.render.pagination import split_atom
 from src.card.render.layout import SectionLayout, paginate_layout
+from src.card.render.pagination import split_atom
 
 
 def _paginate_body(atoms: list[RenderAtom], budget: RenderBudget) -> list[list[RenderAtom]]:

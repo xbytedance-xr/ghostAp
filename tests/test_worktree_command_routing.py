@@ -3,11 +3,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from src.card.ui_text import UI_TEXT
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.handlers.worktree import WorktreeHandler
-from src.card.ui_text import UI_TEXT
-from src.card.builder import CardBuilder
 from src.feishu.slash_command_parser import SlashCommandParser
+from src.feishu.ws_client import FeishuWSClient
 from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.models import (
     WorktreeJourneyStatus,
@@ -15,7 +15,6 @@ from src.worktree_engine.models import (
     WorktreeUnit,
     WorktreeUnitStatus,
 )
-from src.feishu.ws_client import FeishuWSClient
 
 
 class TestWorktreeCommandRouting(unittest.TestCase):
@@ -512,7 +511,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         project.project_id = "p1"
         handler.project_manager.get_project.return_value = project
         handler.project_manager.get_project_for_chat.return_value = project
-    
+
         handler._worktree_manager = MagicMock()
         mock_state = MagicMock()
         mock_state.last_error = None
@@ -520,9 +519,9 @@ class TestWorktreeCommandRouting(unittest.TestCase):
         mock_state.selection.selected_items = []
         handler._worktree_manager().ensure_worktrees.return_value = mock_state
         handler._worktree_manager().get_state.return_value = mock_state
-    
+
         handler.handle_worktree_execute = MagicMock()
-    
+
         value = {"action": "worktree_confirm_start", "worktree_goal": "Refactor everything"}
         handler.handle_worktree_confirm_start("msg-1", "chat-1", project_id="p1", value=value)
 

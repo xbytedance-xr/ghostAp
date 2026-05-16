@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from ..engine_base import EngineRunState
+from ..engine_base import EngineRunState  # noqa: F401 — compatibility re-export
 
 
 class DeepProjectStatus(Enum):

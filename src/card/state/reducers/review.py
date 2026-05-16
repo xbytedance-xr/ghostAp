@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..models import CardState, ReviewRoleBlock
 from ...events import CardEvent
+from ..models import CardState, ReviewRoleBlock
 
 
 def reduce_review_result(state: CardState, event: CardEvent) -> CardState:

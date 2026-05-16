@@ -1,12 +1,12 @@
 """Verify that _reset_*_for_testing() functions properly reset global singletons."""
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class TestSettingsReset:
     def test_reset_produces_new_instance(self):
-        from src.config import get_settings, _reset_settings_for_testing
+        from src.config import _reset_settings_for_testing, get_settings
 
         with patch("src.config.Settings") as MockSettings:
             MockSettings.return_value = MagicMock(name="settings_a")
@@ -24,8 +24,8 @@ class TestSettingsReset:
 class TestCocoModelManagerReset:
     def test_reset_produces_new_instance(self):
         from src.coco_model.manager import (
-            get_coco_model_manager,
             _reset_coco_model_manager_for_testing,
+            get_coco_model_manager,
         )
 
         with patch("src.coco_model.manager.CocoModelManager") as MockCls:
@@ -43,8 +43,8 @@ class TestCocoModelManagerReset:
 class TestThreadManagerReset:
     def test_reset_produces_new_instance(self):
         from src.thread.manager import (
-            get_thread_manager,
             _reset_thread_manager_for_testing,
+            get_thread_manager,
         )
 
         with patch("src.thread.manager.ThreadContextManager") as MockCls:
@@ -107,10 +107,9 @@ class TestChatLockManagerSingletonInterface:
 class TestProvidersReset:
     def test_reset_clears_and_allows_rebuild(self):
         from src.acp.providers import (
-            get_providers,
             _reset_providers_for_testing,
+            get_providers,
         )
-        from src.acp.providers import _providers as _pre_check
 
         # Force a build (may be a no-op if already built by another test)
         with patch("src.acp.providers._make_resolve_checker", return_value=lambda: True), \
@@ -156,6 +155,7 @@ class TestToolRegistryResetForTesting:
     def test_reset_acquires_lock(self):
         """Confirm _reset_for_testing uses self._lock (via mock)."""
         from unittest.mock import MagicMock
+
         from src.acp.provider import ToolRegistry
 
         reg = ToolRegistry()

@@ -1,11 +1,13 @@
 """Criteria/warning/review-retry sub-reducer for Spec engine."""
 from __future__ import annotations
+
 import logging
 from dataclasses import replace
-from ..models import CardState, CriteriaBlock, FooterState, ButtonSpec, EngineExtState
+
 from ...events import CardEvent, CardEventType
-from ..button_intent import ButtonIntent
 from ...ui_text import UI_TEXT
+from ..button_intent import ButtonIntent
+from ..models import ButtonSpec, CardState, CriteriaBlock
 
 logger = logging.getLogger(__name__)
 

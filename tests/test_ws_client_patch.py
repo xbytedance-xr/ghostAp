@@ -2,10 +2,10 @@ import json
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-from src.agent.intent_recognizer import IntentType, TaskStep
 
-from src.feishu.ws_client import FeishuWSClient
+from src.agent.intent_recognizer import IntentType, TaskStep
 from src.feishu.slash_command_parser import SlashCommandParser
+from src.feishu.ws_client import FeishuWSClient
 from src.mode import InteractionMode
 
 
@@ -1560,7 +1560,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
             patch("src.feishu.ws_client.get_settings") as mock_get_settings,
             patch("src.feishu.ws_client.ACPSessionManager"),
             patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager") as mock_pm,
+            patch("src.feishu.ws_client.ProjectManager"),
             patch("src.feishu.ws_client.MessageProjectMapper"),
             patch("src.feishu.ws_client.DeepEngineManager"),
             patch("src.feishu.ws_client.ProgressReporter"),

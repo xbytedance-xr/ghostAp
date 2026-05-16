@@ -1,12 +1,10 @@
 """Tests for separator reducer and atom rendering (AC-R17)."""
 from __future__ import annotations
 
-import pytest
-
 from src.card.events import CardEvent, CardEventType
-from src.card.state.models import CardState, SeparatorBlock, CardMetadata, HeaderState, FooterState
-from src.card.state.reducers.separator import reduce_separator
 from src.card.render.atoms import _block_to_separator_atom
+from src.card.state.models import CardMetadata, CardState, FooterState, HeaderState, SeparatorBlock
+from src.card.state.reducers.separator import reduce_separator
 
 
 def _make_empty_state() -> CardState:
@@ -142,6 +140,7 @@ class TestOverflowFoldingInOrchestrator:
     def test_four_overflow_tasks_only_two_separators(self):
         """With 4 overflow tasks, only 2 get full SECTION_SEPARATOR; rest get collapsed."""
         import threading
+
         from src.card.orchestrator import TaskOrchestrator
         from src.card.task_registry import TaskRegistry
 

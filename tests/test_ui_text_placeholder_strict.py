@@ -79,7 +79,7 @@ class TestUITextPlaceholderStrict(unittest.TestCase):
             closes = stripped.count("}")
             if opens != closes:
                 unbalanced.append(f"{key}: opens={opens}, closes={closes}")
-        self.assertEqual(unbalanced, [], f"Unbalanced braces:\n" + "\n".join(unbalanced))
+        self.assertEqual(unbalanced, [], "Unbalanced braces:\n" + "\n".join(unbalanced))
 
     def test_format_strings_renderable_with_canonical_values(self):
         """All entries with placeholders can be formatted without error."""
@@ -95,7 +95,7 @@ class TestUITextPlaceholderStrict(unittest.TestCase):
                 value.format(**kwargs)
             except (KeyError, IndexError, ValueError) as exc:
                 failures.append(f"{key}: {exc}")
-        self.assertEqual(failures, [], f"Format failures:\n" + "\n".join(failures))
+        self.assertEqual(failures, [], "Format failures:\n" + "\n".join(failures))
 
 
 if __name__ == "__main__":

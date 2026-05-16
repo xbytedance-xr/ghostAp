@@ -6,9 +6,7 @@ Verifies that:
 3. The undo button value contains the correct _ue expiry timestamp
 """
 
-import math
-import time
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 

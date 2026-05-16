@@ -1,5 +1,5 @@
-from concurrent.futures import TimeoutError
 import logging
+from concurrent.futures import TimeoutError
 
 from src.card.ui_text import UI_TEXT
 
@@ -7,14 +7,19 @@ _RETRY_NO_RETRY = UI_TEXT["retry_no_retry"]
 
 
 def test_run_workers_parallel_timeout():
-    from src.spec_engine.perspective_worker import run_workers_parallel, PerspectiveWorker, ReviewArtifacts, WorkerBinding
     from src.engine_base import ReviewPerspective
-    
+    from src.spec_engine.perspective_worker import (
+        PerspectiveWorker,
+        ReviewArtifacts,
+        WorkerBinding,
+        run_workers_parallel,
+    )
+
     def slow_runner(prompt, on_event, timeout):
         import time
         time.sleep(0.5)
         return "slow"
-        
+
     artifacts = ReviewArtifacts(
         cycle_number=1,
         cwd=".",
@@ -25,14 +30,14 @@ def test_run_workers_parallel_timeout():
         plan_output="test plan",
         build_output="test build"
     )
-    
+
     b1 = WorkerBinding(
         worker=PerspectiveWorker(perspective=ReviewPerspective.ARCHITECT, timeout=0.1),
         prompt_runner=slow_runner
     )
-    
+
     outcomes = run_workers_parallel([b1], artifacts, max_workers=1, per_worker_timeout=0.1)
-    
+
     assert len(outcomes) == 1
     assert not outcomes[0].review.passed
     assert outcomes[0].error == _RETRY_NO_RETRY
@@ -44,9 +49,9 @@ def test_run_workers_parallel_timeout():
 
 def test_worker_run_timeout_with_futures_unfinished_message():
     """PerspectiveWorker.run() sanitizes TimeoutError('N (of M) futures unfinished') in suggestions."""
+    from src.engine_base import ReviewPerspective
     from src.spec_engine.perspective_worker import PerspectiveWorker, ReviewErrorCode
     from src.spec_engine.review_artifacts import ReviewArtifacts
-    from src.engine_base import ReviewPerspective
 
     def raising_runner(prompt, on_event, timeout):
         raise TimeoutError("1 (of 5) futures unfinished")
@@ -75,9 +80,9 @@ def test_worker_run_timeout_with_futures_unfinished_message():
 
 def test_run_workers_parallel_inner_worker_timeout_sanitized():
     """run_workers_parallel inner except: worker raising TimeoutError produces clean suggestions."""
-    from src.spec_engine.perspective_worker import run_workers_parallel, PerspectiveWorker, WorkerBinding
-    from src.spec_engine.review_artifacts import ReviewArtifacts
     from src.engine_base import ReviewPerspective
+    from src.spec_engine.perspective_worker import PerspectiveWorker, WorkerBinding, run_workers_parallel
+    from src.spec_engine.review_artifacts import ReviewArtifacts
 
     def raising_runner(prompt, on_event, timeout):
         raise TimeoutError("2 (of 5) futures unfinished")
@@ -112,9 +117,9 @@ def test_run_workers_parallel_inner_worker_timeout_sanitized():
 
 def test_worker_timeout_log_contains_structured_fields(caplog):
     """PerspectiveWorker.run() timeout log must include elapsed_ms and configured_timeout."""
+    from src.engine_base import ReviewPerspective
     from src.spec_engine.perspective_worker import PerspectiveWorker, ReviewErrorCode
     from src.spec_engine.review_artifacts import ReviewArtifacts
-    from src.engine_base import ReviewPerspective
 
     def raising_runner(prompt, on_event, timeout):
         raise TimeoutError("test timeout")
@@ -145,10 +150,11 @@ def test_worker_timeout_log_contains_structured_fields(caplog):
 
 def test_run_workers_parallel_timeout_summary_log(caplog):
     """run_workers_parallel outer TimeoutError path must produce a summary log with unfinished count."""
-    from src.spec_engine.perspective_worker import run_workers_parallel, PerspectiveWorker, WorkerBinding
-    from src.spec_engine.review_artifacts import ReviewArtifacts
-    from src.engine_base import ReviewPerspective
     import time
+
+    from src.engine_base import ReviewPerspective
+    from src.spec_engine.perspective_worker import PerspectiveWorker, WorkerBinding, run_workers_parallel
+    from src.spec_engine.review_artifacts import ReviewArtifacts
 
     def slow_runner(prompt, on_event, timeout):
         time.sleep(1.0)

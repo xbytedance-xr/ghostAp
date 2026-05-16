@@ -1,10 +1,12 @@
 """Phase lifecycle sub-reducer for Spec engine."""
 from __future__ import annotations
+
 import logging
 from dataclasses import replace
-from ..models import CardState, PhaseBlock, FooterState
+
 from ...events import CardEvent, CardEventType
 from ...ui_text import UI_TEXT
+from ..models import CardState, PhaseBlock
 
 logger = logging.getLogger(__name__)
 

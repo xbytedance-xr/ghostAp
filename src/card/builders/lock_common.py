@@ -7,7 +7,6 @@ chat-lock card modules.
 from __future__ import annotations
 
 import logging
-from ..ui_text import UI_TEXT
 
 # -- Re-exported signing utilities (canonical implementation in src.utils.signing) --
 from src.utils.signing import (  # noqa: F401 — re-export for backward compatibility
@@ -16,6 +15,8 @@ from src.utils.signing import (  # noqa: F401 — re-export for backward compati
     _verify_legacy_sha256_fallback,
     verify_command_sig,
 )
+
+from ..ui_text import UI_TEXT
 
 logger = logging.getLogger(__name__)
 

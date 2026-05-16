@@ -1,13 +1,12 @@
 """Tests for sub-reducers."""
-from dataclasses import replace
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEvent
+from src.card.state.models import CardMetadata, CardState
 from src.card.state.reducer import reduce_card_state
-from src.card.state.models import CardState, CardMetadata, ContentBlock, FooterState, HeaderState
+from src.card.state.reducers.lifecycle import reduce_lifecycle
+from src.card.state.reducers.plan import reduce_plan
+from src.card.state.reducers.reasoning import reduce_reasoning
 from src.card.state.reducers.text import reduce_text
 from src.card.state.reducers.tool import reduce_tool
-from src.card.state.reducers.reasoning import reduce_reasoning
-from src.card.state.reducers.plan import reduce_plan
-from src.card.state.reducers.lifecycle import reduce_lifecycle
 
 
 def _base_state() -> CardState:

@@ -179,23 +179,16 @@ class TestHasOnErrorProtocol:
         assert isinstance(cb, HasOnError)
 
     def test_deep_engine_callbacks_satisfies_protocol(self):
-        from src.engine_base import HasOnError
         from src.deep_engine.engine import DeepEngineCallbacks
+        from src.engine_base import HasOnError
 
         cb = DeepEngineCallbacks()
-        assert isinstance(cb, HasOnError)
-
-    def test_spec_engine_callbacks_satisfies_protocol(self):
-        from src.engine_base import HasOnError
-        from src.spec_engine.engine import SpecEngineCallbacks
-
-        cb = SpecEngineCallbacks()
         assert isinstance(cb, HasOnError)
 
     def test_format_engine_error_calls_on_error(self):
         """on_error callback should be invoked with the formatted message."""
         from dataclasses import dataclass, field
-        from typing import Optional, Callable
+        from typing import Callable, Optional
 
         from src.engine_base import BaseEngine
 
@@ -230,7 +223,7 @@ class TestHasOnErrorProtocol:
     def test_format_engine_error_on_error_none(self):
         """callbacks with on_error=None should not raise."""
         from dataclasses import dataclass
-        from typing import Optional, Callable
+        from typing import Callable, Optional
 
         from src.engine_base import BaseEngine
 

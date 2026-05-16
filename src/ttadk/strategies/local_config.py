@@ -4,13 +4,13 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from .base import ModelFetchStrategy
 from ...utils.errors import get_error_detail
 from ..models import (
     TTADKModel,
     is_model_token,
     truncate_snippet,
 )
+from .base import ModelFetchStrategy
 
 logger = logging.getLogger(__name__)
 

@@ -2,16 +2,16 @@
 from pathlib import Path
 
 import pytest
-from src.card.events import CardEvent, CardEventType, VALIDATE_PAYLOAD
+
+from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
+from src.card.events import VALIDATE_PAYLOAD, CardEvent, CardEventType
 from src.card.events.worktree import (
     worktree_cleanup,
-    worktree_completed_no_change,
     worktree_confirm,
     worktree_merge,
     worktree_progress,
     worktree_tool_select,
 )
-from src.acp.models import ACPEvent, ACPEventType, ToolCallInfo, PlanInfo, PlanEntryInfo
 
 
 class TestValidatePayloadFlag:

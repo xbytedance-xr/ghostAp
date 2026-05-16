@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from ..config import get_settings
 from ..utils.env import is_test_environment
@@ -23,6 +23,18 @@ from ..utils.errors import get_error_detail
 from .cache import TTADKModelCache
 from .command_exec import (
     TTADKCommandRunner,
+)
+from .engine_session import precheck_ttadk_startup_model as precheck_ttadk_startup_model
+from .engine_session import start_ttadk_engine_session as start_ttadk_engine_session
+from .model_fetcher import TTADKModelFetcher
+from .models import (
+    ModelListResult,
+    ResolvedModelResult,
+    ToolListResult,
+    TTADKModel,
+    TTADKTool,
+    build_model_list_diagnostics,
+    resolve_model_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -38,32 +50,13 @@ from .startup_common import _runtime_invalid_model_stub_set_last_ts as _runtime_
 from .startup_common import _runtime_invalid_model_stub_store as _runtime_invalid_model_stub_store
 from .startup_common import _runtime_invalid_model_stub_store_unlocked as _runtime_invalid_model_stub_store_unlocked
 from .startup_common import _StubCooldownStore as _StubCooldownStore
-from .model_fetcher import TTADKModelFetcher
-from .models import (
-    ModelListResult,
-    ResolvedModelResult,
-    ToolListResult,
-    TTADKModel,
-    TTADKTool,
-    build_model_list_diagnostics,
-    resolve_model_id,
-)
-
-logger = logging.getLogger(__name__)
-
-
-# Re-exported from startup_errors (backward compat)
-from .startup_errors import TTADKStartupError as TTADKStartupError
-
-# Re-exported from engine_session (backward compat)
-from .engine_session import start_ttadk_engine_session as start_ttadk_engine_session
-from .engine_session import precheck_ttadk_startup_model as precheck_ttadk_startup_model
-
-# Re-exported from startup_errors (backward compat)
 from .startup_errors import TTADK_PRECHECK_DECISIONS as TTADK_PRECHECK_DECISIONS
 from .startup_errors import TTADK_PRECHECK_FAIL_PHASES as TTADK_PRECHECK_FAIL_PHASES
 from .startup_errors import TTADK_STARTUP_LOG_FMT as TTADK_STARTUP_LOG_FMT
 from .startup_errors import TTADK_STARTUP_LOG_RESUME_FMT as TTADK_STARTUP_LOG_RESUME_FMT
+from .startup_errors import TTADKStartupError as TTADKStartupError
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_TOOLS = [
     TTADKTool(name="claude", description="Claude AI Assistant"),
@@ -1289,17 +1282,17 @@ _ttadk_update_lock = threading.Lock()  # leaf lock: never held while acquiring a
 
 
 def set_ttadk_manager(
-    manager: TTADKManager, 
-    *, 
+    manager: TTADKManager,
+    *,
     is_test_env_check: Optional[Callable[[], bool]] = None
 ) -> None:
     """Set the global TTADKManager singleton. For dependency injection/testing.
-    
+
     Args:
         manager: The TTADKManager instance to use globally
         is_test_env_check: Optional custom function to check if we're in a test environment.
                            If not provided, uses the default `is_test_environment()` function.
-    
+
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """
@@ -1448,15 +1441,15 @@ def get_ttadk_manager(default_tool: Optional[str] = None, default_model: Optiona
 
 
 def _reset_ttadk_manager_for_testing(
-    *, 
+    *,
     is_test_env_check: Optional[Callable[[], bool]] = None
 ) -> None:
     """Reset the global TTADKManager singleton and update flag. **Test-only.**
-    
+
     Args:
         is_test_env_check: Optional custom function to check if we're in a test environment.
                            If not provided, uses the default `is_test_environment()` function.
-    
+
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """

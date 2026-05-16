@@ -5,8 +5,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
-
 from src.engine_base import ReviewPerspective
 from src.spec_engine.perspective_worker import (
     PerspectiveWorker,

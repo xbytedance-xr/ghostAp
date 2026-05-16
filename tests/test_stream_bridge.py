@@ -1,6 +1,5 @@
 """Tests for ACPStreamBridge (src/card/stream_bridge.py)."""
 
-import pytest
 
 from src.card.events import CardEvent, CardEventType
 from src.card.protocols import StreamBridge
@@ -52,6 +51,7 @@ class TestACPStreamBridgeBehavior:
     def test_text_chunk_starts_text_block(self):
         """TEXT_CHUNK event opens a text block and dispatches events."""
         from unittest.mock import MagicMock
+
         from src.acp import ACPEventType
 
         disp = FakeDispatchable()
@@ -72,6 +72,7 @@ class TestACPStreamBridgeBehavior:
     def test_close_open_blocks_closes_text(self):
         """close_open_blocks emits text_done if text was active."""
         from unittest.mock import MagicMock
+
         from src.acp import ACPEventType
 
         disp = FakeDispatchable()
@@ -92,6 +93,7 @@ class TestACPStreamBridgeBehavior:
     def test_bind_rebinds_and_closes_blocks(self):
         """bind() closes open blocks on old dispatchable and rebinds."""
         from unittest.mock import MagicMock
+
         from src.acp import ACPEventType
 
         old_disp = FakeDispatchable()
@@ -126,6 +128,7 @@ class TestACPStreamBridgeBehavior:
     def test_thought_chunk_opens_reasoning(self):
         """THOUGHT_CHUNK opens a reasoning block."""
         from unittest.mock import MagicMock
+
         from src.acp import ACPEventType
 
         disp = FakeDispatchable()
@@ -143,6 +146,7 @@ class TestACPStreamBridgeBehavior:
     def test_soft_text_reasoning_alternation_reuses_logical_blocks(self):
         """Interleaved text/reasoning chunks should not become tiny card blocks."""
         from unittest.mock import MagicMock
+
         from src.acp import ACPEventType
 
         disp = FakeDispatchable()
@@ -183,6 +187,7 @@ class TestACPStreamBridgeBehavior:
     def test_tool_call_start_is_hard_boundary_for_open_blocks(self):
         """Tool starts close active text/reasoning so later output gets new block IDs."""
         from unittest.mock import MagicMock
+
         from src.acp import ACPEventType
 
         disp = FakeDispatchable()

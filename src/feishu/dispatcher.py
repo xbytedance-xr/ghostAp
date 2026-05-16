@@ -1,28 +1,20 @@
-import json
 import logging
-import time
 import os
-import asyncio
+import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Optional
 
 if TYPE_CHECKING:
-    from .ws_client import FeishuWSClient
     from ..agent.intent_recognizer import IntentResult, TaskStep
     from ..project import ProjectContext
 
-import lark_oapi as lark
-from lark_oapi.event.callback.model.p2_card_action_trigger import (
-    P2CardActionTrigger,
-    P2CardActionTriggerResponse,
-)
 
 from ..agent.intent_recognizer import IntentType
+from ..card.ui_text import UI_TEXT
 from ..utils.errors import get_error_detail
 from .emoji import EmojiReaction
 from .message_formatter import FeishuMessageFormatter as fmt
-from ..card.ui_text import UI_TEXT
 from .slash_command_parser import CommandMatch
 
 logger = logging.getLogger(__name__)
@@ -94,7 +86,6 @@ class MessageDispatcher:
         shell_fast_tracked: bool = False,
     ):
         """SMART mode routing logic."""
-        from ..mode import InteractionMode
         from .slash_command_parser import SlashCommandParser
 
         _pid = project.project_id if project else None

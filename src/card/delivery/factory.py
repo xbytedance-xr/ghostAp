@@ -17,6 +17,7 @@ def create_card_delivery(client: "CardAPIClient") -> "CardDelivery":
     regardless of where they are instantiated.
     """
     from src.config import get_settings
+
     from .engine import CardDelivery
 
     settings = get_settings()

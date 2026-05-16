@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX_PATH = ROOT / ".Memory" / "2026-05-11.md"
 TODAY_MEMORY_PATH = ROOT / ".Memory" / "2026-05-12.md"

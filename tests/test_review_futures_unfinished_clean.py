@@ -2,10 +2,10 @@ from unittest.mock import patch
 
 
 def test_review_futures_unfinished_cleaned(monkeypatch):
-    from src.spec_engine.review import _conduct_review_pipeline, ReviewCircuitState
-    from src.spec_engine.review_artifacts import ReviewArtifacts
-    from src.spec_engine.perspective_worker import PerspectiveOutcome, PerspectiveReview
     from src.engine_base import ReviewPerspective
+    from src.spec_engine.perspective_worker import PerspectiveOutcome, PerspectiveReview
+    from src.spec_engine.review import ReviewCircuitState, _conduct_review_pipeline
+    from src.spec_engine.review_artifacts import ReviewArtifacts
 
     circuit = ReviewCircuitState()
 
@@ -42,7 +42,7 @@ def test_review_futures_unfinished_cleaned(monkeypatch):
         return {}
 
     with patch("src.spec_engine.review_retry.time.sleep", return_value=None):
-        res = _conduct_review_pipeline(
+        _conduct_review_pipeline(
             artifacts=artifacts,
             settings=Settings(),
             circuit=circuit,

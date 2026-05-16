@@ -7,13 +7,13 @@ import re
 from typing import TYPE_CHECKING, Optional
 
 from ..utils.errors import get_error_detail
+from .models import PlanArtifact, SpecArtifact, SpecTask
 from .utils import (
     extract_json_blob,
     normalize_list,
     validate_plan_artifact_dict,
     validate_spec_artifact_dict,
 )
-from .models import PlanArtifact, SpecArtifact, SpecTask
 
 if TYPE_CHECKING:
     from .models import SpecProject

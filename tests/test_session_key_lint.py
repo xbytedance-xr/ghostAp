@@ -7,9 +7,8 @@ from typing import Iterable, List, Tuple
 
 import pytest
 
-from src.utils.text import render_violation_report
 from src.acp.helper import SessionKeyCodec
-
+from src.utils.text import render_violation_report
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT_DIR / "src"

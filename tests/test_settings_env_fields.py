@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
-import pytest
-
 
 class TestSettingsEnvFields:
     """Verify new fields have correct defaults and can be overridden via env."""

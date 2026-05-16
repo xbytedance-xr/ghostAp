@@ -7,8 +7,6 @@ import os
 import tempfile
 from unittest.mock import patch
 
-import pytest
-
 from src.utils.metrics_exporter import (
     JsonLinesExporter,
     LoggerExporter,
@@ -186,6 +184,7 @@ class TestHandleReviewExceptionIntegration:
     def test_handle_review_exception_uses_exporter(self, tmp_path):
         """Metrics go through exporter when called from handle_review_exception."""
         from dataclasses import dataclass, field
+
         from src.utils.review_helpers import handle_review_exception
 
         @dataclass

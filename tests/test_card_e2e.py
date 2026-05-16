@@ -1,13 +1,9 @@
 """End-to-end integration tests: simulates Handler → CardSession → API flow."""
 
-import time
 import threading
-
-import pytest
 
 from src.card.delivery.engine import CardDelivery
 from src.card.events import CardEvent, CardEventType
-from src.card.hooks import SessionHook
 from src.card.render.budget import RenderBudget
 from src.card.session import CardSession
 from src.card.session.config import SessionCallbacks, SessionConfig
@@ -401,7 +397,6 @@ class TestTTLAutoClose:
         clock_value[0] = 15.0
 
         # Trigger TTL check manually (the timer handler)
-        from src.card.session.ttl import TTLHandler
         ttl_handler = session._ttl_handler
         ttl_handler.on_ttl_expired()
 
@@ -453,7 +448,6 @@ class TestTTLExpiredRestart:
         clock_value[0] = 15.0
 
         # Trigger TTL expiry
-        from src.card.session.ttl import TTLHandler
         ttl_handler = session._ttl_handler
         ttl_handler.on_ttl_expired()
 

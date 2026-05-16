@@ -22,4 +22,5 @@ __all__ = [
     "SessionRotator",
     "StaticCardSession",
     "TTLHandler",
+    "_pending_action_to_event",
 ]

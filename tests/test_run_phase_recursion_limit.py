@@ -72,7 +72,7 @@ def test_run_phase_succeeds_within_depth_limit(monkeypatch):
     callbacks.on_phase_event = None
 
     # Should not raise — succeeds on second attempt (depth=1)
-    result = eng._run_phase(
+    eng._run_phase(
         cycle_num=1,
         phase=SpecPhase.BUILD,
         prompt="test",

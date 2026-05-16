@@ -11,12 +11,11 @@
 """
 
 import asyncio
-from collections import OrderedDict
 import json
 import logging
-import os
 import threading
 import time
+from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 import lark_oapi as lark
@@ -34,9 +33,7 @@ except (ImportError, AttributeError):  # pragma: no cover
 
 from ..acp.manager import ACPSessionManager
 from ..acp.telemetry import build_idle_health_config_for_manager
-from ..agent.intent_recognizer import IntentRecognizer, IntentResult, IntentType, TaskStep
-from ..card import CardBuilder
-
+from ..agent.intent_recognizer import IntentRecognizer, IntentResult, TaskStep
 from ..card.ui_text import UI_TEXT
 from ..config import get_settings
 from ..deep_engine import DeepEngineManager, ProgressReporter
@@ -49,10 +46,10 @@ from ..project import (
     ProjectManager,
 )
 from ..spec_engine import SpecEngineManager, SpecReporter
-from ..thread import ThreadContextManager, get_current_thread_id, get_thread_manager
 from ..tasking import TaskPriority, TaskScheduler, TaskSpec
+from ..thread import get_current_thread_id, get_thread_manager
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
-from ..utils.errors import get_error_detail, log_exception
+from ..utils.errors import get_error_detail
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
 from ..utils.trace import TraceContext, configure_logging_with_trace
 from ..worktree_engine.manager import WorktreeManager
@@ -60,31 +57,30 @@ from .action_dispatcher import ActionDispatcher
 from .emoji import EmojiReaction
 from .handler_context import HandlerContext
 from .handlers import (
+    AidenModeHandler,
     ClaudeModeHandler,
     CocoModeHandler,
-    AidenModeHandler,
     CodexModeHandler,
-    GeminiModeHandler,
     DeepHandler,
     DiagnosticsHandler,
+    GeminiModeHandler,
     ProjectHandler,
     SpecHandler,
     SystemHandler,
     TTADKModeHandler,
 )
 from .handlers.worktree import WorktreeHandler
+from .image_handler import FeishuImageHandler
+from .message_cache import MessageCache
 from .renderers.deep_renderer import DeepRenderer
 from .renderers.spec_renderer import SpecRenderer
 from .renderers.worktree_renderer import WorktreeRenderer
-from .image_handler import FeishuImageHandler
-from .message_cache import MessageCache
-from .message_formatter import FeishuMessageFormatter as fmt
+from .slash_command_parser import CommandMatch, SlashCommandParser
 from .ws_card_action_handler import CardActionInspector, classify_card_action_error
 from .ws_event_router import MessageIngressGuard, classify_ws_error
+from .ws_health import WSHealthMonitor
 from .ws_lifecycle import ObservedLarkWSClient
 from .ws_resource_manager import EngineResourceGroup
-from .ws_health import WSHealthMonitor
-from .slash_command_parser import CommandMatch, SlashCommandParser
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +330,7 @@ class FeishuWSClient:
             def _notify_hard_timeout_reclaim(root_path: str, holder_chat_id: str) -> None:
                 try:
                     from pathlib import Path as _Path
+
                     from ..card.builders.lock import build_lock_reclaim_notify_card
                     repo_name = _Path(root_path).name or root_path
                     _send_card(
@@ -356,8 +353,9 @@ class FeishuWSClient:
                 try:
                     import json as _json
                     from pathlib import Path as _Path
-                    from ..card.ui_text import UI_TEXT
+
                     from ..card.builders.lock_common import _compute_command_sig
+                    from ..card.ui_text import UI_TEXT
                     repo_name = _Path(root_path).name or root_path
                     _text = UI_TEXT["repo_lock_released_notify"].format(repo_name=repo_name)
                     _btn = {
@@ -941,7 +939,7 @@ class FeishuWSClient:
 
         大致流程：校验 → 解析文本/图片 → 解析项目上下文 → 路由到对应模式/引擎。
         """
-        from ..thread import set_current_thread_id, set_current_sender_id, set_current_is_p2p, set_current_sender_name
+        from ..thread import set_current_is_p2p, set_current_sender_id, set_current_sender_name, set_current_thread_id
 
         try:
             event = data.event
@@ -1118,8 +1116,8 @@ class FeishuWSClient:
         """
         message_id = message.message_id
         chat_id = message.chat_id
-        parent_id = getattr(message, "parent_id", None)
-        root_id = getattr(message, "root_id", None)
+        getattr(message, "parent_id", None)
+        getattr(message, "root_id", None)
 
         with self._pending_image_lock:
             self._pending_image_keys[message_id] = image_keys
@@ -1688,7 +1686,7 @@ class FeishuWSClient:
         该方法会把 `action.value` normalize 为 dict，提取 `action/project_id`，并通过
         `ActionDispatcher` 做 exact/prefix 路由。
         """
-        from ..thread import set_current_thread_id, set_current_sender_id, set_current_is_p2p, set_current_sender_name
+        from ..thread import set_current_is_p2p, set_current_sender_id, set_current_sender_name, set_current_thread_id
 
         try:
             start_time = time.perf_counter()

@@ -3,12 +3,9 @@
 import threading
 import time
 
-import pytest
-
 from src.thread.manager import (
     ThreadContextManager,
     _current_thread_id,
-    _manager_lock,
     get_current_thread_id,
     get_thread_manager,
     set_current_thread_id,
@@ -402,8 +399,8 @@ class TestOnEvictCallback:
         evicted = []
         mgr = self._make_manager(on_evict=lambda ctx: evicted.append(ctx))
         try:
-            ctx1 = mgr.register("root1", "chatA", "proj1")
-            ctx2 = mgr.register("root2", "chatA", "proj1")
+            mgr.register("root1", "chatA", "proj1")
+            mgr.register("root2", "chatA", "proj1")
             mgr.remove_by_chat("chatA")
             assert len(evicted) == 2
             evicted_ids = {c.thread_root_id for c in evicted}

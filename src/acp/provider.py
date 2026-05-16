@@ -7,9 +7,9 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import OrderedDict
-import threading
 from typing import Iterable, Optional, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
@@ -288,7 +288,6 @@ class ToolRegistry:
                 if self._preheated:
                     return
                 self._preheated = True
-            import threading
 
             targets = [n.lower() for n in (names or ["coco", "aiden", "codex"])]
             # fan-out probes

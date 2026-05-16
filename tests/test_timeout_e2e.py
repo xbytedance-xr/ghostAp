@@ -7,14 +7,12 @@ output always contains a meaningful Chinese-friendly message.
 
 import asyncio
 import json
-import logging
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.utils.errors import fmt_error, fmt_exception, get_error_detail
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -512,15 +510,16 @@ class TestConcurrentFuturesTimeoutE2EChain:
     def test_should_retry_accepts_bare_futures_timeout(self):
         """Layer 1: should_retry recognises concurrent.futures.TimeoutError."""
         import concurrent.futures
+
         from src.utils.retry import should_retry
         assert should_retry(concurrent.futures.TimeoutError()) is True
 
     def test_prompt_with_retry_retries_futures_timeout(self):
         """Layer 2: prompt_with_retry retries on concurrent.futures.TimeoutError."""
         import concurrent.futures
-        import threading
-        from src.utils.retry import RetryPolicy, prompt_with_retry
         from unittest.mock import MagicMock
+
+        from src.utils.retry import RetryPolicy, prompt_with_retry
 
         action = MagicMock(side_effect=[concurrent.futures.TimeoutError(), "ok"])
         cancel = threading.Event()
@@ -532,6 +531,7 @@ class TestConcurrentFuturesTimeoutE2EChain:
     def test_diagnostics_no_empty_text_for_futures_timeout(self):
         """Layer 3: build_review_exception_diagnostics produces non-empty error_text."""
         import concurrent.futures
+
         from src.utils.review_diagnostics import build_review_exception_diagnostics
         diag = build_review_exception_diagnostics(
             concurrent.futures.TimeoutError(), cycle=1,
@@ -543,6 +543,7 @@ class TestConcurrentFuturesTimeoutE2EChain:
     def test_normalize_no_empty_text_for_futures_timeout(self):
         """Layer 4: normalize_review_diagnostics guarantees non-empty error_text."""
         import concurrent.futures
+
         from src.utils.review_diagnostics import (
             build_review_exception_diagnostics,
             normalize_review_diagnostics,
@@ -566,8 +567,9 @@ class TestConcurrentFuturesTimeoutE2EChain:
         produces non-empty suggestion_text and correct metrics."""
         import concurrent.futures
         from unittest.mock import MagicMock
-        from src.utils.review_helpers import handle_review_exception
+
         from src.spec_engine.review import ReviewCircuitState
+        from src.utils.review_helpers import handle_review_exception
 
         exc = concurrent.futures.TimeoutError()
         circuit = ReviewCircuitState()

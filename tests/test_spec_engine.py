@@ -13,22 +13,13 @@ import pytest
 
 from src.acp.models import ACPEvent, ACPEventType, PlanInfo, ToolCallInfo
 from src.engine_base import EngineRunState, PerspectiveReview, ReviewPerspective, ReviewResult
-from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
-from src.spec_engine.manager import SpecEngineManager
-from src.spec_engine.prompts import (
-    build_build_prompt,
-    build_plan_prompt,
-    build_refinement_input,
-    build_review_prompt,
-    build_spec_prompt,
-    build_task_prompt,
-    format_criteria_status,
-)
 from src.spec_engine.artifacts import (
     extract_criteria_from_llm_response,
     parse_acceptance_criteria,
     parse_tasks,
 )
+from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
+from src.spec_engine.manager import SpecEngineManager
 from src.spec_engine.models import (
     PlanArtifact,
     SpecArtifact,
@@ -39,10 +30,19 @@ from src.spec_engine.models import (
     SpecTask,
     SpecTaskStatus,
 )
+from src.spec_engine.prompts import (
+    build_build_prompt,
+    build_plan_prompt,
+    build_refinement_input,
+    build_review_prompt,
+    build_spec_prompt,
+    build_task_prompt,
+    format_criteria_status,
+)
 from src.spec_engine.reporter import SpecReporter
 from src.spec_engine.task_persistence import SpecTaskState, load_task_state
 from src.spec_engine.tracker import PhaseTracker
-from src.utils.spec_utils import parse_review_output_loose
+from src.spec_engine.utils import parse_review_output_loose
 
 
 def test_spec_engine_run_phase_fallback_to_send_prompt_when_retry_method_missing():
@@ -3195,10 +3195,6 @@ class TestSpecEngineExecution:
             """```json\n[{"id":"Q-1","question":"如何提升错误提示可用性？","why":"用户体验","priority":"P1"}]\n```"""
         )
         gen1 = """```json\n[{"id":"Q-1","spec":{"goals":["提升错误提示"],"functional_spec":["完善错误提示"],"non_functional_requirements":[],"acceptance_criteria":["错误提示清晰可读"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}}]\n```"""
-        discovery2 = (
-            """```json\n[{"id":"Q-2","question":"如何补齐关键测试覆盖？","why":"质量保证","priority":"P1"}]\n```"""
-        )
-        gen2 = """```json\n[{"id":"Q-2","spec":{"goals":["补齐测试"],"functional_spec":["新增单元测试"],"non_functional_requirements":[],"acceptance_criteria":["关键路径有单测"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}}]\n```"""
 
         # Cycle 1: spec, plan, task, build, criteria(FAIL), discovery, gen
         # Cycle 2: (spec loaded from file), plan, task, build, criteria(PASS)
@@ -3778,40 +3774,40 @@ class TestSpecReporterNewMethods:
         assert "→" in result
 
 def test_save_failed_task_idempotency(monkeypatch):
+
     from src.spec_engine.engine import SpecEngine, SpecEngineCallbacks
     from src.spec_engine.models import SpecPhase, SpecProject
-    import time
-    
+
     mock_settings = type("MockSettings", (), {
         "spec_max_retries": 1,
         "spec_allow_resume_from_disk": False,
         "spec_state_filename": ".spec_state"
     })()
-    
+
     engine = SpecEngine("chat1", "/tmp", "coco", mock_settings)
     engine._project = SpecProject(project_id="test_proj_id", name="test", root_path="/tmp", task_id="test-task-123")
-    
+
     call_count = 0
-    
+
     def mock_save_task_state(state):
         nonlocal call_count
         call_count += 1
         return f"/tmp/saved_{call_count}.json"
-        
+
     monkeypatch.setattr("src.spec_engine.task_persistence.save_task_state", mock_save_task_state)
-    
+
     callbacks = SpecEngineCallbacks()
-    
+
     # First save
     task_id1 = engine._save_failed_task("Error 1", 1, SpecPhase.BUILD, callbacks)
     assert call_count == 1
     assert task_id1 == "test-task-123"
-    
+
     # Second save, same cycle, phase, and task_id (from project), but different error
     task_id2 = engine._save_failed_task("Error 2 - different", 1, SpecPhase.BUILD, callbacks)
     assert call_count == 1 # Should be idempotent, so no new save
     assert task_id2 == task_id1
-    
+
     # Third save, different phase
     task_id3 = engine._save_failed_task("Error 1", 1, SpecPhase.REVIEW, callbacks)
     assert call_count == 2
@@ -3911,7 +3907,7 @@ def test_spec_review_timeout_passed_to_send_prompt(monkeypatch):
 
 def test_timeout_fallback_review_result_has_friendly_suggestion():
     """TimeoutError 触发的 fallback ReviewResult 应包含 '审查超时' 而非 'empty message'。"""
-    from src.spec_engine.review import ReviewCircuitState, conduct_review, build_review_exception_diagnostics
+    from src.spec_engine.review import ReviewCircuitState, build_review_exception_diagnostics, conduct_review
 
     def fake_send(prompt, on_event=None, timeout=0, **kw):
         raise TimeoutError()
@@ -3946,7 +3942,7 @@ def test_timeout_fallback_review_result_has_friendly_suggestion():
 
 def test_non_timeout_fallback_review_result_keeps_generic_format():
     """非 timeout 异常的 fallback ReviewResult 仍使用 '审查执行异常: ...' 格式。"""
-    from src.spec_engine.review import ReviewCircuitState, conduct_review, build_review_exception_diagnostics
+    from src.spec_engine.review import ReviewCircuitState, build_review_exception_diagnostics, conduct_review
 
     def fake_send(prompt, on_event=None, timeout=0, **kw):
         raise ValueError("bad input")
@@ -3988,7 +3984,7 @@ class TestReviewCircuitStatePersistence:
 
     def test_save_load_roundtrip(self, tmp_path):
         """Circuit counters survive save_engine_state → load_engine_state."""
-        from src.spec_engine.persistence import save_engine_state, load_engine_state
+        from src.spec_engine.persistence import load_engine_state, save_engine_state
         from src.spec_engine.review import ReviewCircuitState
 
         # Prepare a minimal SpecProject
@@ -4274,7 +4270,6 @@ class TestSpecEngineCycleResilience:
         mock_settings.return_value = s
 
         call_count = [0]
-        review_text = "[ARCHITECT]\nPASS\n[PRODUCT]\nPASS\n[USER]\nPASS\n[TESTER]\nPASS\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
         def fake_send(prompt, on_event=None, timeout=None, **kw):
@@ -4440,7 +4435,7 @@ class TestSpecEngineCycleResilience:
 
         engine._recreate_session_best_effort = tracked_recreate
 
-        project = engine.execute("- 实现功能")
+        engine.execute("- 实现功能")
 
         # At least one recreate call after cycle 1 failure
         assert len(recreate_calls) >= 1

@@ -5,7 +5,6 @@ from __future__ import annotations
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES
 
-
 _TASK_STYLES: tuple[tuple[str, str], ...] = (
     ("wathet", "wathet"),
     ("green", "green"),

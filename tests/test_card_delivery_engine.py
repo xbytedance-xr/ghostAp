@@ -2,12 +2,8 @@
 
 import unittest.mock
 
-import pytest
-
 from src.card.delivery.engine import (
     CardDelivery,
-    CardAPIClient,
-    MutationOutcome,
     SequenceConflictError,
     TransportError,
 )
@@ -512,8 +508,6 @@ class TestTransportError:
         delivery.deliver("sess_1", "chat_abc", r1)
 
         # Element update will fail, but fallback to full update should succeed
-        call_count = {"n": 0}
-        original_update = client.update_element
 
         def failing_element(*args, **kwargs):
             raise TransportError("element push failed")
@@ -540,7 +534,6 @@ class TestCreateCardFailure:
         delivery = CardDelivery(client)
 
         # Make create_card fail
-        original_create = client.create_card
         def failing_create(*args, **kwargs):
             raise RuntimeError("API unavailable")
         client.create_card = failing_create
@@ -746,7 +739,6 @@ class TestDeliveryTimeout:
 
     def test_deliver_timeout_on_slow_api(self):
         """A client that hangs (simulated with TimeoutError) should result in reconcile outcome."""
-        import time as _time
 
         client = MockCardClient()
         delivery = CardDelivery(client)
@@ -995,7 +987,6 @@ class TestSessionLockEviction:
 
     def test_session_lock_timestamps_refreshed_on_access(self):
         """Accessing a session lock refreshes its timestamp."""
-        import time as _time
 
         client, delivery = self._make_delivery(max_locks=100, lock_ttl=600.0)
         inspector = DeliveryInspector.from_delivery(delivery)
@@ -1019,8 +1010,8 @@ class TestSessionLockEviction:
 
     def test_batch_cap_evicts_stale_entries(self):
         """Two-phase eviction removes stale zombie entries."""
-        import time as _time
         import threading
+        import time as _time
 
         # Use max_locks=60 so 65 entries are well above 50% threshold (triggers eviction)
         client, delivery = self._make_delivery(max_locks=60, lock_ttl=600.0)
@@ -1292,7 +1283,7 @@ class TestDeliverRejectedAtCapacity:
             assert result[0].kind == "applied"
 
         # Disable LRU eviction to force capacity exhaustion path
-        delivery._lock_pool._lru_evict_oldest = lambda: None  # noqa: internal test hook
+        delivery._lock_pool._lru_evict_oldest = lambda: None
 
         # Next new session gets an ephemeral lock (no-op degradation) — delivery still proceeds
         result = delivery.deliver("session_overflow", "chat_1", rendered)
@@ -1402,7 +1393,7 @@ class TestEvictionTOCTOUProtection:
             def patched_eviction():
                 # Phase 1: collects sess_toctou as candidate (old timestamp)
                 with inspector.lock:
-                    now = time.monotonic()
+                    time.monotonic()
                     candidates = [("sess_toctou", inspector.timestamps["sess_toctou"])]
 
                 # Simulate session reuse between phases — update timestamp
@@ -1674,6 +1665,7 @@ class TestSessionLockPoolFullScan:
     def test_full_scan_cleans_stale_locks_below_threshold(self):
         """Locks below 50% capacity are cleaned by full scan."""
         import time
+
         from src.card.delivery.lock_pool import SessionLockPool
 
         pool = SessionLockPool(
@@ -1702,6 +1694,7 @@ class TestSessionLockPoolFullScan:
     def test_full_scan_respects_interval(self):
         """Full scan doesn't run if interval hasn't elapsed."""
         import time
+
         from src.card.delivery.lock_pool import SessionLockPool
 
         pool = SessionLockPool(
@@ -1724,6 +1717,7 @@ class TestSessionLockPoolFullScan:
     def test_full_scan_skips_active_bindings(self):
         """Full scan preserves locks with active bindings."""
         import time
+
         from src.card.delivery.lock_pool import SessionLockPool
 
         pool = SessionLockPool(

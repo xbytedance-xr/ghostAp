@@ -6,8 +6,6 @@ AC8: When only tool_output is empty (tool_input non-empty) → renders panel wit
 
 from __future__ import annotations
 
-import pytest
-
 from src.card.render.tools import render_tool_panel
 from src.card.state.models import ToolBlock
 

@@ -1,9 +1,9 @@
 import asyncio
 import time
 
+import src.acp.helper as _helper_mod
 from src.acp.helper import fetch_acp_models
 from src.coco_model.manager import DEFAULT_MODELS
-import src.acp.helper as _helper_mod
 
 
 def test_fetch_acp_models_times_out_and_returns_current_model(monkeypatch, tmp_path):

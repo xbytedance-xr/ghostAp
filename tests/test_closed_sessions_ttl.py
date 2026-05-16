@@ -12,7 +12,6 @@ from src.card.delivery.engine import CardDelivery
 from src.card.delivery.ttl_set import TTLSet as _TTLSet
 from src.card.types import RenderedCard
 
-
 # ---------------------------------------------------------------------------
 # _TTLSet unit tests
 # ---------------------------------------------------------------------------

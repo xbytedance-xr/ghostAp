@@ -17,7 +17,6 @@
 from enum import Enum
 from typing import Literal, TypedDict
 
-
 TimeAgoKind = Literal["seconds", "minutes", "hours", "days"]
 
 

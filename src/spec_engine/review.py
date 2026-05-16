@@ -3,18 +3,18 @@
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Callable, List, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
-from .constants import SPEC_UI_TEXT
 from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from ..utils.retry import RetryPolicy
 from ..utils.review_diagnostics import (
-    build_review_exception_diagnostics,
+    build_review_exception_diagnostics,  # noqa: F401 — re-exported for engine.py
     format_review_exception_log_line,  # noqa: F401 — re-exported for engine.py
     normalize_review_diagnostics,
 )
 from ..utils.review_helpers import compute_adaptive_timeout
-from .retry_status import RetryEvent, RetryStatus
+from .constants import SPEC_UI_TEXT
+from .retry_status import RetryEvent
 from .review_parsing import (  # noqa: F401 — re-export for backward compat
     extract_reviews_from_llm_response,
     parse_review_output,
@@ -33,6 +33,7 @@ from .review_types import ReviewCircuitState, ReviewPipelineConfig  # noqa: F401
 
 if TYPE_CHECKING:
     from ..config import Settings
+    from .review_artifacts import ReviewArtifacts
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,6 @@ def conduct_review(
 
     enabled = settings.spec_review_failure_circuit_enabled
     max_consecutive = max(1, settings.spec_review_failure_max_consecutive)
-    cooldown_cycles = max(0, settings.spec_review_failure_cooldown_cycles)
 
     # ---- Circuit breaker skip (unchanged) ----
     if (
@@ -215,6 +215,7 @@ def conduct_review(
         }
         try:
             import json as _json
+
             from ..utils.metrics_exporter import get_metrics_exporter
             _exporter_type = getattr(settings, "review_metrics_exporter_type", "logger") or "logger"
             _exporter_kwargs: dict = {}

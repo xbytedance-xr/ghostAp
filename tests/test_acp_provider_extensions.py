@@ -4,8 +4,8 @@ from unittest.mock import patch
 import pytest
 
 from src.acp.providers import (
-    AidenProvider,
     CODEX_ACP_NPM_PACKAGE,
+    AidenProvider,
     CodexProvider,
     GeminiProvider,
     _get_aiden_acp_serve_help_blob,

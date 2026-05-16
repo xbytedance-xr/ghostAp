@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from src.card.render.payload_truncator import (
     check_and_truncate_payload,
     count_markdown_table_blocks,

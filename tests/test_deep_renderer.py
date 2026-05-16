@@ -208,7 +208,7 @@ class TestDeepRenderer:
             callbacks.on_analyzing_done(dp)
 
             # Simulate a tool call event
-            from src.acp import ACPEvent, ACPEventType
+            from src.acp import ACPEventType
             tool_event = MagicMock()
             tool_event.event_type = ACPEventType.TOOL_CALL_START
             tool_event.tool_name = "write_file"

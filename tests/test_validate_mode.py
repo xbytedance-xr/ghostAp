@@ -34,6 +34,7 @@ class TestValidateModeSuccess:
         mock_settings.card.session_idle_warn_at_remaining = 300
         mock_settings.lock_undo_window_seconds = 300
         mock_settings.card.delivery_pool_max_workers = 4
+        mock_settings.card.delivery_api_timeout = 35
         mock_settings.card.max_chars = 28000
         return mock_settings
 
@@ -107,6 +108,7 @@ class TestMainAcceptsArgv:
         mock_settings.card.session_idle_warn_at_remaining = 300
         mock_settings.lock_undo_window_seconds = 300
         mock_settings.card.delivery_pool_max_workers = 4
+        mock_settings.card.delivery_api_timeout = 35
         mock_settings.card.max_chars = 28000
 
         with patch("src.main.get_settings", return_value=mock_settings):
@@ -143,6 +145,7 @@ class TestValidateFeishuCheck:
         mock_settings.card.session_idle_warn_at_remaining = 300
         mock_settings.lock_undo_window_seconds = 300
         mock_settings.card.delivery_pool_max_workers = 4
+        mock_settings.card.delivery_api_timeout = 35
         mock_settings.card.max_chars = 28000
 
         with patch("src.main.get_settings", return_value=mock_settings):
@@ -162,6 +165,7 @@ class TestValidateParameterSummary:
         mock_settings.card.session_idle_warn_at_remaining = overrides.get("warn_at", 300)
         mock_settings.lock_undo_window_seconds = overrides.get("undo_window", 300)
         mock_settings.card.delivery_pool_max_workers = overrides.get("pool_workers", 4)
+        mock_settings.card.delivery_api_timeout = overrides.get("api_timeout", 35)
         mock_settings.card.max_chars = overrides.get("max_chars", 28000)
         mock_settings.card.session_lock_ttl = overrides.get("lock_ttl", 600)
         mock_settings.card.session_lock_max = overrides.get("lock_max", 10000)
@@ -195,6 +199,20 @@ class TestValidateParameterSummary:
         captured = capsys.readouterr()
         assert "CARD_DELIVERY_POOL_MAX_WORKERS" in captured.out
         assert "8" in captured.out
+
+    def test_validate_prints_delivery_api_timeout(self, capsys):
+        from src.main import main
+
+        mock_settings = self._make_mock_settings(api_timeout=35)
+
+        with patch("src.main.get_settings", return_value=mock_settings):
+            with pytest.raises(SystemExit) as exc_info:
+                main(["--validate"])
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "CARD_DELIVERY_API_TIMEOUT" in captured.out
+        assert "35 秒" in captured.out
 
     def test_validate_prints_version_header(self, capsys):
         from src.main import main
@@ -238,6 +256,7 @@ class TestValidateParameterSummary:
         captured = capsys.readouterr()
         assert "CARD_SESSION_IDLE_WARN_AT_REMAINING" in captured.out
         assert "LOCK_UNDO_WINDOW_SECONDS" in captured.out
+        assert "CARD_DELIVERY_API_TIMEOUT" in captured.out
         assert "CARD_MAX_CHARS" in captured.out
 
     def test_validate_prints_lock_pool_params(self, capsys):
@@ -313,7 +332,7 @@ class TestValidateNoTombstoneTrigger:
         env["DOTENV_PATH"] = "/dev/null"
 
         result = subprocess.run(
-            ["uv", "run", "python", "-m", "src.main", "--validate"],
+            [sys.executable, "-m", "src.main", "--validate"],
             capture_output=True,
             text=True,
             timeout=30,
@@ -387,7 +406,6 @@ class TestConfigCrossFieldValidation:
     )
     def test_lock_undo_window_seconds_boundaries(self, value, should_pass, monkeypatch):
         """Boundary values for lock_undo_window_seconds."""
-        from pydantic import ValidationError
 
         from src.config import Settings, _reset_settings_for_testing
 
@@ -396,11 +414,9 @@ class TestConfigCrossFieldValidation:
         # We test the field_validator directly via CardSessionConfig doesn't own it;
         # it's on Settings. Use Settings validator approach.
         # The validator is on Settings class, so we test through the validator function.
-        from src.config import CardSessionConfig  # noqa: F811
 
         # lock_undo_window_seconds is on Settings, not CardSessionConfig.
         # Test the validator directly.
-        validator_fn = Settings.__pydantic_validator__
 
         # Simpler approach: just call the validator classmethod directly
         cls = Settings
@@ -412,4 +428,3 @@ class TestConfigCrossFieldValidation:
         else:
             with pytest.raises(ValueError):
                 validator(value, None)
-

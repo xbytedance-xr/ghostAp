@@ -183,11 +183,10 @@ class TestLockOrderingViolation:
 
     def test_reverse_order_logs_warning(self):
         """Acquiring a lower-level lock while holding a higher-level one triggers warning."""
-        import logging
         from src.utils.lock_order import (
             LockLevel,
-            enable_lock_order_check,
             disable_lock_order_check,
+            enable_lock_order_check,
             ordered_rlock,
         )
 
@@ -210,8 +209,8 @@ class TestLockOrderingViolation:
         """Acquiring locks in correct ascending order does not trigger warning."""
         from src.utils.lock_order import (
             LockLevel,
-            enable_lock_order_check,
             disable_lock_order_check,
+            enable_lock_order_check,
             ordered_rlock,
         )
 
@@ -347,7 +346,8 @@ class TestReviewPerspectiveDisplayName:
 
     def test_no_spec_engine_import_in_engine_base(self):
         """AC-R01: engine_base.py must not import from spec_engine."""
-        import pathlib, re
+        import pathlib
+        import re
         content = pathlib.Path("src/engine_base.py").read_text()
         # Match actual import statements referencing spec_engine
         imports = re.findall(r"^\s*(from\s+\S*spec_engine|import\s+\S*spec_engine)", content, re.MULTILINE)

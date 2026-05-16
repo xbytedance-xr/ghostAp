@@ -3,7 +3,6 @@
 from src.card.buttons_config import BUTTON_CONFIG
 from src.card.ui_text import UI_TEXT
 
-
 # Mapping: BUTTON_CONFIG key → UI_TEXT key (for buttons that have a corresponding UI_TEXT entry)
 _BUTTON_TO_UI_TEXT_KEY = {
     "mode_full": "card_btn_mode_full",

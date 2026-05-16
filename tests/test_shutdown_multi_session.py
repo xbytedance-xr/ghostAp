@@ -1,14 +1,11 @@
 """Integration test: graceful_shutdown with multiple active CardSessions."""
 import threading
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.card.delivery.engine import CardDelivery
 from src.card.delivery.registry import delivery_registry
 from src.card.events import CardEvent
 from src.card.session import CardSession
-from src.card.session.config import SessionConfig, SessionCallbacks
+from src.card.session.config import SessionCallbacks, SessionConfig
 from src.card.state.models import CardMetadata
 
 

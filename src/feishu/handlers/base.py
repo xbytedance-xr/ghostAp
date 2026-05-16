@@ -13,7 +13,12 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass as _dataclass
-from typing import TYPE_CHECKING, Callable, Optional, Any
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+from ...card.ui_text import UI_TEXT
+from ...utils.engine_identity import resolve_engine_identity
+from ...utils.errors import get_error_detail
+from ..im_client import FeishuIMClient
 
 
 @_dataclass
@@ -30,14 +35,10 @@ class CardActionContext:
     switch_mode_method: "Optional[Callable]" = None
     project: "Optional[Any]" = None
 
-from ...card.ui_text import UI_TEXT
-from ..im_client import FeishuIMClient
-from ...utils.engine_identity import resolve_engine_identity
-from ...utils.errors import get_error_detail
-
 if TYPE_CHECKING:
-    from ...repo_lock import LockConflictError
+    from ...acp.manager import ACPSessionManager
     from ...project import ContextSourceMode, ProjectContext
+    from ...repo_lock import LockConflictError
     from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)

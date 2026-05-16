@@ -2,9 +2,10 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Callable, Optional
+from typing import Optional
 
 from lark_oapi.ws import client as lark_ws_client_impl
+
 from ..utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)

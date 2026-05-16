@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..models import CardState, SeparatorBlock
 from ...events import CardEvent, CardEventType
+from ..models import CardState, SeparatorBlock
 
 
 def reduce_separator(state: CardState, event: CardEvent) -> CardState:

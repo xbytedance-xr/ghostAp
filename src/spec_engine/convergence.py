@@ -5,10 +5,10 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 from .models import SpecCycleMetrics, SpecProject, SpecWorkItemStatus
 from .review import normalize_review_diagnostics
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass

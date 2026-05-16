@@ -7,11 +7,7 @@ per invocation, even when many more are eligible.
 import threading
 import time
 
-import pytest
-
-from src.card.delivery.engine import CardDelivery
 from src.card.delivery.lock_pool import SessionLockPool
-from tests.helpers.delivery_internals import DeliveryInspector
 
 
 class TestEvictionBatchCap:

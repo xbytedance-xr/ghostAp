@@ -1,6 +1,5 @@
 """Tests for StreamThrottle: check_throttle and check_plan_throttle boundary cases."""
 import time
-from unittest.mock import patch
 
 from src.card.render.throttle import StreamThrottle
 

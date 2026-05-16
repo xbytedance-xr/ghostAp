@@ -2,9 +2,9 @@
 
 import logging as _logging
 import shlex
-from typing import Literal, Optional
+from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .card import CardSessionConfig
@@ -421,7 +421,7 @@ class Settings(BaseSettings):
     # - min_chars: minimum new characters accumulated before updating (unless forced/interval passed)
     deep_stream_interval: float = 1.5
     deep_stream_min_chars: int = 350
-    
+
     # Deep engine memory monitoring (percentage)
     deep_memory_threshold: float = 80.0
 
@@ -716,7 +716,7 @@ class Settings(BaseSettings):
     @property
     def command_blacklist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_blacklist.split(",") if cmd.strip()]
-    
+
     @property
     def command_whitelist(self) -> list[str]:
         return [cmd.strip() for cmd in self.sandbox_command_whitelist.split(",") if cmd.strip()]

@@ -114,12 +114,12 @@ class SpecReporter:
                 return "方案已规划"
             return ""
         elif phase == SpecPhase.TASK:
-            task_lines = [l for l in output.split("\n") if re.match(r"^\s*\d+\s*[.、)]", l)]
+            task_lines = [line for line in output.split("\n") if re.match(r"^\s*\d+\s*[.、)]", line)]
             if task_lines:
                 return f"共 {len(task_lines)} 个任务"
             return ""
         elif phase == SpecPhase.BUILD:
-            line_count = len([l for l in output.split("\n") if l.strip()])
+            line_count = len([line for line in output.split("\n") if line.strip()])
             return f"构建输出 {line_count} 行"
         return ""
 
@@ -166,7 +166,7 @@ class SpecReporter:
             parts.append(f"📝 **任务分解**: {cycle.tasks_total} 个任务")
 
         if cycle.build_output:
-            line_count = len([l for l in cycle.build_output.split("\n") if l.strip()])
+            line_count = len([line for line in cycle.build_output.split("\n") if line.strip()])
             parts.append(f"🔨 **执行构建**: 输出 {line_count} 行")
 
         if cycle.review_result:

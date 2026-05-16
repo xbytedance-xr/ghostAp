@@ -22,10 +22,10 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Callable, Optional
 
-logger = logging.getLogger(__name__)
-
-from ..utils.errors import get_error_detail
 from ..config import get_settings as _default_get_settings
+from ..utils.errors import get_error_detail
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DIAGNOSTICS_ARGS_LIMIT = 600
 DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT = 240
@@ -100,22 +100,22 @@ def get_diagnostics_config(*, get_settings_fn: Optional[Callable[[], object]] = 
         args_limit = _safe_int(getattr(s, "acp_diagnostics_args_limit", args_limit), args_limit)
         snippet_limit = _safe_int(getattr(s, "acp_diagnostics_snippet_limit", snippet_limit), snippet_limit)
         total_limit = _safe_int(getattr(s, "acp_diagnostics_total_limit", total_limit), total_limit)
-    except Exception as e:
+    except Exception:
         logger.debug("diagnostics config resolution failed, using defaults", exc_info=True)
 
     try:
         args_limit = int(args_limit)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting args limit to int", exc_info=True)
         args_limit = DEFAULT_DIAGNOSTICS_ARGS_LIMIT
     try:
         snippet_limit = int(snippet_limit)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting snippet limit to int", exc_info=True)
         snippet_limit = DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
     try:
         total_limit = int(total_limit)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting total limit to int", exc_info=True)
         total_limit = DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
@@ -148,7 +148,7 @@ def _compile_redaction_patterns(patterns: tuple[str, ...]) -> tuple[re.Pattern, 
             if not p:
                 continue
             out.append(re.compile(p))
-        except Exception as e:
+        except Exception:
             logger.warning("Error while compiling redaction pattern", exc_info=True)
             continue
     return tuple(out)
@@ -163,11 +163,11 @@ def _safe_str(x: object) -> str:
         return get_error_detail(x)
     try:
         return str(x) if x is not None else ""
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting to str in safe_str", exc_info=True)
         try:
             return repr(x)
-        except Exception as e:
+        except Exception:
             logger.warning("Error while converting to repr in safe_str", exc_info=True)
             return ""
 
@@ -179,7 +179,7 @@ def _truncate_text(text: str, limit: int) -> str:
     """
     try:
         limit = int(limit or 0)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting limit to int in truncate_text", exc_info=True)
         limit = 0
     if limit <= 0:
@@ -195,7 +195,7 @@ def _truncate_text(text: str, limit: int) -> str:
 def _safe_bool(value: object, default: bool) -> bool:
     try:
         return value if isinstance(value, bool) else default
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting to bool in safe_bool", exc_info=True)
         return default
 
@@ -224,7 +224,7 @@ def _safe_int(value: object, default: int) -> int:
             v = int(value.strip() or "0")
             return v if v >= 0 else default
         return default
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting to int in safe_int", exc_info=True)
         return default
 
@@ -253,7 +253,7 @@ def _truncate_args(args: list[str], limit: int) -> list[str]:
     """
     try:
         limit = int(limit or 0)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting limit to int in truncate_args", exc_info=True)
         limit = 0
     if limit <= 0:
@@ -293,7 +293,7 @@ def _resolve_diag_config(
         args_limit = int(cfg.args_limit or 0) if int(cfg.args_limit or 0) > 0 else DEFAULT_DIAGNOSTICS_ARGS_LIMIT
         snippet_limit = int(cfg.snippet_limit or 0) if int(cfg.snippet_limit or 0) > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
         total_limit = int(cfg.total_limit or 0) if int(cfg.total_limit or 0) > 0 else DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
-    except Exception as e:
+    except Exception:
         logger.warning("Error while resolving diagnostics config", exc_info=True)
         enabled, patterns, repl, args_limit, snippet_limit, total_limit = (
             True,
@@ -325,7 +325,7 @@ def _init_diag_container(diag: object) -> dict:
             out["error"] = "(empty)"
         else:
             out["error"] = _truncate_text(_safe_str(diag), 400)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while initializing diagnostics container", exc_info=True)
         out["error"] = "format_error"
     return out
@@ -339,7 +339,7 @@ def _normalize_fields(out: dict) -> None:
         if not isinstance(xs, list):
             xs = list(xs or [])
         out["args"] = [str(x) for x in (xs or [])]
-    except Exception as e:
+    except Exception:
         logger.warning("Error while normalizing args field", exc_info=True)
         out["args"] = []
 
@@ -351,7 +351,7 @@ def _normalize_fields(out: dict) -> None:
             out["rc"] = None
         else:
             out["rc"] = int(rc)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while normalizing rc field", exc_info=True)
         out["rc"] = None
 
@@ -361,7 +361,7 @@ def _normalize_fields(out: dict) -> None:
     if out.get("agent_spec") is not None:
         try:
             out["agent_spec"] = _safe_str(out.get("agent_spec") or "")
-        except Exception as e:
+        except Exception:
             logger.warning("Error while normalizing agent_spec field", exc_info=True)
             out["agent_spec"] = ""
     out["error"] = _safe_str(out.get("error") or "")
@@ -374,7 +374,7 @@ def _apply_fallbacks(out: dict) -> None:
     if not fr:
         try:
             fr = _safe_str(out.get("fail_phase") or "").strip()
-        except Exception as e:
+        except Exception:
             logger.warning("Error while applying fail_reason fallback", exc_info=True)
             fr = ""
     out["fail_reason"] = fr or "start_failed"
@@ -406,26 +406,26 @@ def _apply_redaction(out: dict, enabled: bool, patterns: list[str], repl: str) -
         if "agent_spec" in out:
             out["agent_spec"] = redact_text(out.get("agent_spec") or "", patterns, repl)
         out["args"] = [redact_text(str(x), patterns, repl) for x in (out.get("args") or [])]
-    except Exception as e:
+    except Exception:
         logger.debug("redaction pass failed", exc_info=True)
 
 
 def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limit: int) -> None:
     try:
         out["args"] = truncate_args([str(x) for x in (out.get("args") or [])], args_limit)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while truncating args", exc_info=True)
         out["args"] = [str(x) for x in (out.get("args") or [])]
 
     try:
         out["cmd"] = _truncate_text(_safe_str(out.get("cmd") or ""), snippet_limit)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while truncating cmd field", exc_info=True)
         out["cmd"] = _safe_str(out.get("cmd") or "")
     try:
         out["stdout_snippet"] = _truncate_text(_safe_str(out.get("stdout_snippet") or ""), snippet_limit)
         out["stderr_snippet"] = _truncate_text(_safe_str(out.get("stderr_snippet") or ""), snippet_limit)
-    except Exception as e:
+    except Exception:
         logger.debug("snippet truncation failed", exc_info=True)
     try:
         out["error_text"] = (
@@ -434,7 +434,7 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
             )
             or "(empty)"
         )
-    except Exception as e:
+    except Exception:
         logger.warning("Error while truncating error_text field", exc_info=True)
         out["error_text"] = _safe_str(out.get("error_text") or "") or "(empty)"
     try:
@@ -442,19 +442,19 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
             _truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT)
             or out["error_text"]
         )
-    except Exception as e:
+    except Exception:
         logger.warning("Error while truncating error field", exc_info=True)
         out["error"] = _safe_str(out.get("error") or "") or out.get("error_text") or "(empty)"
     try:
         out["fail_reason"] = _truncate_text(_safe_str(out.get("fail_reason") or ""), 80) or "start_failed"
-    except Exception as e:
+    except Exception:
         logger.warning("Error while truncating fail_reason field", exc_info=True)
         out["fail_reason"] = _safe_str(out.get("fail_reason") or "") or "start_failed"
     try:
         out["spec"] = _truncate_text(
             _safe_str(out.get("spec") or ""), min(400, total_limit) if total_limit > 0 else 400
         )
-    except Exception as e:
+    except Exception:
         logger.warning("Error while truncating spec field", exc_info=True)
         out["spec"] = _safe_str(out.get("spec") or "")
     try:
@@ -462,7 +462,7 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
             out["agent_spec"] = _truncate_text(
                 _safe_str(out.get("agent_spec") or ""), min(400, total_limit) if total_limit > 0 else 400
             )
-    except Exception as e:
+    except Exception:
         logger.debug("agent_spec truncation failed", exc_info=True)
 
 
@@ -552,14 +552,14 @@ def redact_text(text: str, patterns: list[str], replacement: str) -> str:
 
     try:
         compiled = _compile_redaction_patterns(pats)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while compiling redaction patterns in redact_text", exc_info=True)
         compiled = ()
 
     for cre in compiled:
         try:
             s = cre.sub(rep, s)
-        except Exception as e:
+        except Exception:
             logger.warning("Error while applying redaction pattern", exc_info=True)
             continue
     return s
@@ -589,7 +589,7 @@ def format_attempts_summary(
         repl = _safe_str(cfg.redact_replacement or "***REDACTED***") or "***REDACTED***"
         cfg_snip = int(cfg.snippet_limit or 0)
         cfg_total = int(cfg.total_limit or 0)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while getting diagnostics config in format_attempts_summary", exc_info=True)
         enabled, patterns, repl, cfg_snip, cfg_total = (
             True,
@@ -601,12 +601,12 @@ def format_attempts_summary(
 
     try:
         per_lim = int(per_item_limit) if per_item_limit is not None else int(cfg_snip or 0)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting per_item_limit to int", exc_info=True)
         per_lim = int(cfg_snip or 0)
     try:
         total_lim = int(total_limit) if total_limit is not None else int(cfg_total or 0)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting total_limit to int", exc_info=True)
         total_lim = int(cfg_total or 0)
 
@@ -626,7 +626,7 @@ def format_attempts_summary(
 
     try:
         items = list(attempts or []) if isinstance(attempts, (list, tuple)) else []
-    except Exception as e:
+    except Exception:
         logger.warning("Error while parsing attempts list", exc_info=True)
         items = []
     if not items:
@@ -670,14 +670,14 @@ def format_attempts_summary(
         import json
 
         s = json.dumps(out, ensure_ascii=False, sort_keys=True)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while serializing attempts to JSON", exc_info=True)
         s = _safe_str(out)
 
     if enabled:
         try:
             s = redact_text(s, patterns, repl)
-        except Exception as e:
+        except Exception:
             logger.debug("redaction pass failed in format_attempts_summary", exc_info=True)
     return _truncate_text(s, total_lim)
 
@@ -712,14 +712,14 @@ def format_startup_diagnostics_summary(
             base.update(nd)
         else:
             base["error"] = _truncate_text(_safe_str(nd), 400)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while normalizing startup diagnostics in summary", exc_info=True)
         try:
             if isinstance(diag, dict):
                 base.update(diag)
             else:
                 base["error"] = _truncate_text(_safe_str(diag), 400)
-        except Exception as e:
+        except Exception:
             logger.warning("Error while applying diagnostic fallback in summary", exc_info=True)
             base["error"] = "format_error"
 
@@ -729,7 +729,7 @@ def format_startup_diagnostics_summary(
         patterns = list(cfg.redact_patterns or [])
         repl = str(cfg.redact_replacement or "***REDACTED***")
         cfg_total = int(cfg.total_limit or 0)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while getting diagnostics config in summary", exc_info=True)
         enabled, patterns, repl, cfg_total = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", DEFAULT_DIAGNOSTICS_TOTAL_LIMIT
 
@@ -739,21 +739,21 @@ def format_startup_diagnostics_summary(
             tl = int(total_limit)
             if tl > 0:
                 eff_total = min(eff_total, tl)
-        except Exception as e:
+        except Exception:
             logger.debug("total_limit parsing failed", exc_info=True)
 
     try:
         import json
 
         s = json.dumps(base, ensure_ascii=False, sort_keys=True)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while serializing diagnostics summary to JSON", exc_info=True)
         s = _safe_str(base)
 
     if enabled:
         try:
             s = redact_text(s, patterns, repl)
-        except Exception as e:
+        except Exception:
             logger.debug("redaction pass failed in normalize_startup_diagnostics", exc_info=True)
     return _truncate_text(s, eff_total)
 
@@ -785,23 +785,23 @@ def format_startup_failure_log_line(
     r = retries
     try:
         a = int(a) if a is not None else None
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting attempt to int", exc_info=True)
         a = None
     try:
         r = int(r) if r is not None else None
-    except Exception as e:
+    except Exception:
         logger.warning("Error while converting retries to int", exc_info=True)
         r = None
 
     try:
         err_type = type(error).__name__
-    except Exception as e:
+    except Exception:
         logger.warning("Error while getting error type", exc_info=True)
         err_type = "Exception"
     try:
         err_repr = repr(error)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while getting error repr", exc_info=True)
         err_repr = ""
     if not (err_repr or "").strip():
@@ -813,14 +813,14 @@ def format_startup_failure_log_line(
         patterns = list(cfg.redact_patterns or [])
         repl = str(cfg.redact_replacement or "***REDACTED***")
         lim = int(cfg.snippet_limit or 0)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while getting diagnostics config in log line", exc_info=True)
         enabled, patterns, repl, lim = True, list(_DEFAULT_REDACT_PATTERNS), "***REDACTED***", DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
 
     if enabled:
         try:
             err_repr = redact_text(err_repr, patterns, repl)
-        except Exception as e:
+        except Exception:
             logger.debug("redaction pass failed in format_startup_failure_log_line", exc_info=True)
     if lim > 0:
         err_repr = _truncate_text(err_repr, lim) or f"<{err_type}>"
@@ -839,7 +839,7 @@ def format_startup_failure_log_line(
                 },
                 get_settings_fn=get_settings_fn,
             )
-    except Exception as e:
+    except Exception:
         logger.warning("Error while normalizing diagnostics in log line", exc_info=True)
         d = {
             "fail_reason": "start_failed",
@@ -862,7 +862,7 @@ def format_startup_failure_log_line(
         has_diag = bool(cmd or args or (rc is not None) or out_snip or err_snip or spec)
         if has_diag:
             diagnostics_summary = format_startup_diagnostics_summary(d, get_settings_fn=get_settings_fn)
-    except Exception as e:
+    except Exception:
         logger.warning("Error while formatting diagnostics summary in log line", exc_info=True)
         diagnostics_summary = ""
 
@@ -875,7 +875,7 @@ def format_startup_failure_log_line(
             or (isinstance(diag, dict) and ("attempts" in diag))
             or (str(agent_type or "").startswith("ttadk_"))
         )
-    except Exception as e:
+    except Exception:
         logger.warning("Error while determining include_attempts_summary", exc_info=True)
         include_attempts_summary = bool(str(agent_type or "").startswith("ttadk_"))
 
@@ -884,7 +884,7 @@ def format_startup_failure_log_line(
         try:
             if attempts:
                 attempts_summary = format_attempts_summary(attempts, get_settings_fn=get_settings_fn)
-        except Exception as e:
+        except Exception:
             logger.warning("Error while formatting attempts summary", exc_info=True)
             attempts_summary = ""
         if not attempts_summary:

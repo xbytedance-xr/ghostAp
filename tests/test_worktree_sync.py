@@ -94,10 +94,10 @@ def test_sync_with_remote_updates(tmp_path):
     service = WorktreeGitService()
     _, units = service.create_units(root_path=str(local), count=1)
     wt_path = units[0].worktree_path
-    wt_branch = units[0].branch_name
+    units[0].branch_name
 
     # Record initial HEAD
-    initial_head = _run_git(Path(wt_path), "rev-parse", "HEAD").stdout.strip()
+    _run_git(Path(wt_path), "rev-parse", "HEAD").stdout.strip()
 
     # Push a new commit to bare via local main
     (local / "new_file.py").write_text("new\n", encoding="utf-8")

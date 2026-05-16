@@ -30,7 +30,7 @@ class WorktreeSelectionController:
         return self._state_getter(project)
 
     def start_selection(self, project: ProjectContext, goal: str = "") -> WorktreeRuntimeState:
-        from .models import WorktreeJourneyState, transition_journey_state
+        from .models import transition_journey_state
         state = self._get_state(project)
         # Reset journey to IDLE to avoid reusing stale goal / error from a previous run.
         state.journey = transition_journey_state(state.journey, event="reset")

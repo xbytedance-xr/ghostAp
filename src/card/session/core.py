@@ -17,11 +17,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from src.card.session._constants import ENGINE_CMD_MAP, ENGINE_NAME_MAP
 from src.card.delivery.tracker import PendingAction
-from src.card.events import CardEvent, CardEventType, VALIDATE_PAYLOAD
+from src.card.events import VALIDATE_PAYLOAD, CardEvent, CardEventType
 from src.card.render.fallback import render_fallback_card
 from src.card.render.renderer import render_card
+from src.card.session._constants import ENGINE_CMD_MAP, ENGINE_NAME_MAP
 from src.card.session.config import SessionCallbacks
 from src.card.session.ttl_activity import has_active_card_work
 from src.card.state.reducer import reduce_card_state
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from src.card.delivery.engine import CardDelivery
     from src.card.hooks import SessionHook
     from src.card.session.config import SessionConfig
-    from src.card.state.models import CardMetadata, CardState
+    from src.card.state.models import CardState
     from src.card.timers.scheduler import TimerHandle
 
 logger = logging.getLogger(__name__)

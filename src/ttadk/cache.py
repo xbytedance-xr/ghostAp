@@ -18,9 +18,9 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from ..utils.errors import get_error_detail
 from .model_fetcher import TTADKModelFetcher
 from .models import ModelListResult, TTADKModel, build_model_list_diagnostics
-from ..utils.errors import get_error_detail
 
 logger = logging.getLogger(__name__)
 

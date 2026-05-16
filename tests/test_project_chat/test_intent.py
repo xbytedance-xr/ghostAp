@@ -1,5 +1,6 @@
 """Tests for /new-chat intent recognition."""
 import pytest
+
 from src.agent.intent_recognizer import IntentRecognizer, IntentType
 
 

@@ -1,9 +1,11 @@
 """Reasoning sub-reducer."""
 from __future__ import annotations
+
 from dataclasses import replace
-from ..models import CardState, ReasoningBlock, FooterState
+
 from ...events import CardEvent, CardEventType
 from ...ui_text import UI_TEXT
+from ..models import CardState, ReasoningBlock
 
 
 def reduce_reasoning(state: CardState, event: CardEvent) -> CardState:

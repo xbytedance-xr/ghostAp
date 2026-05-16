@@ -7,8 +7,8 @@ from typing import Callable, Optional
 from ..acp import ACPEvent, ACPEventType
 from ..utils.errors import get_error_detail
 from ..utils.retry import RetryPolicy
-from ..utils.spec_utils import CRITERIA_PATTERNS as _CRITERIA_PATTERNS
 from .artifacts import extract_criteria_from_llm_response
+from .utils import CRITERIA_PATTERNS as _CRITERIA_PATTERNS
 
 logger = logging.getLogger(__name__)
 

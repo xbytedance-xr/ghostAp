@@ -5,7 +5,7 @@ import json
 import pytest
 
 from src.card.delivery.engine import CardDelivery
-from src.card.events import CardEvent, CardEventType
+from src.card.events import CardEventType
 from src.card.programming_adapter import (
     ProgrammingCardSession,
     build_programming_metadata,
@@ -712,8 +712,8 @@ class TestProgrammingCardSession:
         assert "后续正文继续更新。" in rendered_text
 
     def test_completed_header_does_not_show_stale_ticker_frame(self):
-        from src.card.render.renderer import render_card
         from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import render_card
 
         pcs, _ = _make_programming_session()
         pcs.start()
@@ -810,6 +810,7 @@ class TestNonStreamingFallback:
     def test_result_text_used_as_primary_response(self):
         """When send_prompt returns result.text, it should be the final response."""
         from dataclasses import dataclass
+
         from src.acp.renderer import ACPEventRenderer
 
         @dataclass
@@ -830,8 +831,9 @@ class TestNonStreamingFallback:
     def test_fallback_to_renderer_when_result_text_empty(self):
         """When result.text is empty, renderer.get_final_content() is used."""
         from dataclasses import dataclass
-        from src.acp.renderer import ACPEventRenderer
+
         from src.acp.models import ACPEvent, ACPEventType
+        from src.acp.renderer import ACPEventRenderer
 
         @dataclass
         class FakeResult:
@@ -851,6 +853,7 @@ class TestNonStreamingFallback:
     def test_fallback_to_placeholder_when_both_empty(self):
         """When both result.text and renderer are empty, placeholder is used."""
         from dataclasses import dataclass
+
         from src.acp.renderer import ACPEventRenderer
 
         @dataclass
@@ -870,6 +873,7 @@ class TestNonStreamingFallback:
     def test_result_text_stripped(self):
         """result.text should be stripped of whitespace."""
         from dataclasses import dataclass
+
         from src.acp.renderer import ACPEventRenderer
 
         @dataclass

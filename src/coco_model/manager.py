@@ -125,7 +125,6 @@ class CocoModelManager:
         """
         try:
             import asyncio
-            import os
 
             from src.acp.client import GhostAPClient
 

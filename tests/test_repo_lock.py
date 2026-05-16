@@ -385,7 +385,8 @@ class TestIsP2PThreadLocalPropagation:
 
     def test_programming_handle_message_reads_threadlocal_p2p(self):
         """handle_message() without explicit is_p2p should read thread-local."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
+
         from src.thread import set_current_is_p2p
 
         set_current_is_p2p(True)
@@ -435,6 +436,7 @@ class TestIsP2PThreadLocalPropagation:
     def test_programming_handle_message_threadlocal_false(self):
         """Thread-local is_p2p=False should call repo_lock_mgr.acquire()."""
         from unittest.mock import MagicMock
+
         from src.thread import set_current_is_p2p
 
         # is_p2p is now purely thread-local; no explicit parameter on handle_message
@@ -483,6 +485,7 @@ class TestIsP2PThreadLocalPropagation:
     def test_engine_base_reads_threadlocal_p2p(self):
         """_safe_execute_engine() without explicit is_p2p should read thread-local."""
         from unittest.mock import MagicMock
+
         from src.thread import set_current_is_p2p
 
         set_current_is_p2p(True)
@@ -527,6 +530,7 @@ class TestIsP2PThreadLocalPropagation:
     def test_system_worktree_execute_reads_threadlocal_p2p(self):
         """handle_worktree_execute() without explicit is_p2p should read thread-local."""
         from unittest.mock import MagicMock
+
         from src.thread import set_current_is_p2p
 
         set_current_is_p2p(True)
@@ -575,6 +579,7 @@ class TestIsP2PThreadLocalPropagation:
     def test_default_threadlocal_is_false(self):
         """When thread-local is not set, is_p2p should default to False."""
         from unittest.mock import MagicMock
+
         from src.thread import set_current_is_p2p
         from src.thread.manager import _current_is_p2p
 
@@ -622,7 +627,8 @@ class TestIsP2PThreadLocalPropagation:
         After the refactor, SandboxExecutor only logs a warning sentinel if the
         lock is held by a different chat — it no longer calls hold().
         """
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
+
         from src.sandbox.executor import SandboxExecutor
 
         mock_lock_mgr = MagicMock()
@@ -658,7 +664,7 @@ class TestRepoLockHold:
         # hold() with empty path should not raise; body can execute freely.
         body = MagicMock(return_value="ok")
         with mgr.hold("", "chat_A") as lock_result:
-            result = body() if lock_result.success else None
+            body() if lock_result.success else None
         # Empty path → acquire returns success immediately (no-op lock)
         assert body.called
 
@@ -798,7 +804,7 @@ class TestRepoLockConcurrency:
         results = []
 
         def run(idx):
-            with mgr.hold(f"{_TMP}/repo_{idx}", f"chat_{idx}") as lock_result:
+            with mgr.hold(f"{_TMP}/repo_{idx}", f"chat_{idx}"):
                 results.append(idx)
 
         threads = [threading.Thread(target=run, args=(i,)) for i in range(10)]
@@ -1323,7 +1329,7 @@ class TestSingletonThreadSafety:
     """get_repo_lock_manager() must return the same instance from concurrent threads."""
 
     def test_concurrent_get_returns_same_instance(self):
-        from src.repo_lock import get_repo_lock_manager, _reset_repo_lock_manager_for_testing
+        from src.repo_lock import _reset_repo_lock_manager_for_testing, get_repo_lock_manager
 
         _reset_repo_lock_manager_for_testing()
         try:

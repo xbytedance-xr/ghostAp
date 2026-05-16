@@ -4,9 +4,7 @@ Verifies the full chain: dispatch terminal event → delivery.deliver called →
 EmojiHook.on_terminal fired → session correctly closed.
 """
 
-from unittest.mock import MagicMock, call
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.card.delivery.engine import CardDelivery
 from src.card.events import CardEvent, CardEventType

@@ -23,13 +23,15 @@ class TestFindByBoundChatId(unittest.TestCase):
         return ProjectManager(storage_path=str(tmp_path / "projects.json"))
 
     def test_find_returns_none_before_binding(self):
-        import tempfile, pathlib
+        import pathlib
+        import tempfile
         with tempfile.TemporaryDirectory() as td:
             mgr = self._mgr(pathlib.Path(td))
             self.assertIsNone(mgr.find_by_bound_chat_id("oc_nope"))
 
     def test_find_returns_project_after_binding(self):
-        import tempfile, pathlib
+        import pathlib
+        import tempfile
         with tempfile.TemporaryDirectory() as td:
             mgr = self._mgr(pathlib.Path(td))
             ok, _, ctx = mgr.create_project(None, "proj", td, chat_id="oc_main")
@@ -42,7 +44,8 @@ class TestFindByBoundChatId(unittest.TestCase):
             self.assertEqual(hit.project_id, ctx.project_id)
 
     def test_find_returns_none_after_close(self):
-        import tempfile, pathlib
+        import pathlib
+        import tempfile
         with tempfile.TemporaryDirectory() as td:
             mgr = self._mgr(pathlib.Path(td))
             ok, _, ctx = mgr.create_project(None, "proj", td, chat_id="oc_main")
@@ -53,7 +56,8 @@ class TestFindByBoundChatId(unittest.TestCase):
             self.assertIsNone(mgr.find_by_bound_chat_id("oc_group_1"))
 
     def test_empty_chat_id_returns_none(self):
-        import tempfile, pathlib
+        import pathlib
+        import tempfile
         with tempfile.TemporaryDirectory() as td:
             mgr = self._mgr(pathlib.Path(td))
             self.assertIsNone(mgr.find_by_bound_chat_id(""))

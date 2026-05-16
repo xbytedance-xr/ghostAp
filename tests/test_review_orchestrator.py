@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.engine_base import EngineRunState, PerspectiveReview, ReviewPerspective, ReviewResult
+from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from src.spec_engine.review import ReviewOrchestrator
 from src.spec_engine.review_types import ReviewCircuitState
 
@@ -234,8 +234,8 @@ class TestOnRetryStatusClosureInvoked:
     def test_on_retry_status_receives_no_retry_when_disabled(self):
         """When retry is disabled (max_attempts=0) and a timeout occurs,
         on_retry_status should receive NO_RETRY through the full orchestrator path."""
-        from src.spec_engine.retry_status import RetryStatus
         from src.spec_engine.perspective_worker import PerspectiveOutcome, ReviewErrorCode
+        from src.spec_engine.retry_status import RetryStatus
 
         orch = ReviewOrchestrator()
 
@@ -276,7 +276,7 @@ class TestOnRetryStatusClosureInvoked:
         with patch("src.spec_engine.review_pipeline.run_review_pipeline") as mock_pipeline:
             mock_pipeline.return_value = [timeout_outcome]
 
-            result = orch.conduct_review(
+            orch.conduct_review(
                 session=MagicMock(),
                 settings=settings,
                 project=MagicMock(),

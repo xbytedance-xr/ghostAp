@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
+
 from src.mode.manager import InteractionMode
 
 from .builders.core import CoreBuilder
@@ -9,7 +10,6 @@ from .builders.project import ProjectBuilder
 from .builders.spec_review import SpecReviewBuilder
 from .builders.system import SystemBuilder
 from .models import EngineCardState
-from .shared import apply_compact_style
 
 if TYPE_CHECKING:
     from ..project.context import ProjectContext

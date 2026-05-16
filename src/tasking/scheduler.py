@@ -5,10 +5,10 @@ import time
 import uuid
 from collections import defaultdict, deque
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
-from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum, IntEnum
 from typing import Any, Callable, Deque, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException, CircuitState
 from ..utils.errors import get_error_detail
@@ -378,7 +378,7 @@ class TaskScheduler:
             self._by_chat[spec.chat_id].append(run_id)
             if spec.project_id:
                 self._by_project[str(spec.project_id)].append(run_id)
-            q = self._queues[key]
+            self._queues[key]
 
             # Capture current context
             ctx = contextvars.copy_context()

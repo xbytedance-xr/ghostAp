@@ -1,11 +1,11 @@
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from ..acp.manager import ACPSessionManager
 
 if TYPE_CHECKING:
-    from ..config import Settings
     from ..acp.telemetry import IdleHealthConfig
+    from ..config import Settings
 
 logger = logging.getLogger(__name__)
 

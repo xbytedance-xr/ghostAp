@@ -5,7 +5,7 @@ Import pattern: ``from src.card.events import CardEvent, CardEventType``
 """
 
 from src.card.events.acp_adapter import card_event_from_acp
-from src.card.events.factories import CardEvent, VALIDATE_PAYLOAD
+from src.card.events.factories import VALIDATE_PAYLOAD, CardEvent
 from src.card.events.payloads import (
     BlockedPayload,
     CompletedPayload,

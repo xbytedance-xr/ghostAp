@@ -6,10 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.worktree_engine.dispatcher import WorktreeDispatcher
-from src.worktree_engine.models import WorktreeUnit, WorktreeUnitStatus, WorktreeSelectionItem
+from src.worktree_engine.models import WorktreeUnit, WorktreeUnitStatus
 
 
 @dataclass
@@ -249,8 +247,8 @@ class TestTTADKProcKillEscalation:
         build_ttadk_subprocess_env to raise, forcing the finally block to run
         with a "still running" process.
         """
-        from unittest.mock import MagicMock, patch
         import subprocess as _subprocess
+        from unittest.mock import MagicMock
 
         from src.agent_session.ttadk_cli import SyncTTADKCLISession
 
@@ -282,7 +280,7 @@ class TestTTADKProcKillEscalation:
         # Patch build_ttadk_subprocess_env to raise an OSError,
         # which triggers the finally block with _proc still set
         with patch("src.agent_session.ttadk_cli.build_ttadk_subprocess_env", side_effect=OSError("env build failed")):
-            result = session.send_prompt("test prompt")
+            session.send_prompt("test prompt")
 
         # The finally block should have attempted terminate → wait (timeout) → kill
         mock_proc.terminate.assert_called()

@@ -4,9 +4,7 @@ import threading
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
-from src.card.timers.manager import SessionTimerManager, _MAX_TTL_RETRIES
+from src.card.timers.manager import _MAX_TTL_RETRIES, SessionTimerManager
 
 
 class TestTimerManagerBasic:

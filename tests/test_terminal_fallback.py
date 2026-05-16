@@ -7,10 +7,7 @@ Verifies that when card delivery fails at terminal time:
 """
 
 import logging
-import threading
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.card.delivery.engine import CardDelivery, MutationOutcome
 from src.card.events import CardEvent, CardEventType
@@ -146,7 +143,6 @@ class TestTerminalRetryFallback:
 # FS-9: _notify_rejected session integration test (dispatch → rejected → notify)
 # ---------------------------------------------------------------------------
 
-from src.card.delivery.engine import MutationOutcome
 
 
 class RejectingDeliveryClient:

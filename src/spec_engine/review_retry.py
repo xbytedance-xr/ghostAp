@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, List, Optional, Type
 
 from ..engine_base import ReviewResult
-from ..utils.text import format_friendly_duration
 from ..utils.review_diagnostics import normalize_review_diagnostics
 from ..utils.review_helpers import compute_adaptive_timeout, compute_retry_delay
+from ..utils.text import format_friendly_duration
 from .retry_status import RetryEvent, RetryStatus
 from .review_types import RetryTexts, ReviewCircuitState
 

@@ -1,34 +1,41 @@
-import logging
-from typing import Any, Callable, Optional
-from ..utils.registry import ServiceRegistry, get_registry
-from ..config import get_settings
+from typing import Any, Callable
+
+from ..utils.registry import ServiceRegistry
 
 
 def register_default_class_types(registry: ServiceRegistry) -> None:
     """Register default class types as DI pivot points.
-    
+
     These registrations allow tests to override specific classes by pre-registering
     different classes before FeishuWSClient initialization.
     Uses register_instance_if_absent to preserve any pre-registered overrides.
     """
     from ..agent.intent_recognizer import IntentRecognizer
-    from ..tasking import TaskScheduler
-    from ..project import ProjectManager, MessageProjectMapper, MessageLinker, ProjectContextManager
-    from ..mode import ModeManager
-    from ..thread import get_thread_manager
     from ..deep_engine import DeepEngineManager, ProgressReporter
+    from ..mode import ModeManager
+    from ..project import MessageLinker, MessageProjectMapper, ProjectContextManager, ProjectManager
     from ..spec_engine import SpecEngineManager, SpecReporter
-    from .handlers import (
-        CocoModeHandler, ClaudeModeHandler, AidenModeHandler, CodexModeHandler,
-        GeminiModeHandler, TTADKModeHandler, DeepHandler,
-        SpecHandler, ProjectHandler, SystemHandler, DiagnosticsHandler
-    )
-    from .router import HandlerDispatcher, MessageRouter
-    from .dispatcher import MessageDispatcher
+    from ..tasking import TaskScheduler
+    from ..thread import get_thread_manager
     from .action_dispatcher import ActionDispatcher
     from .control_plane import ControlPlane
-    from .ws_health import WSHealthMonitor
+    from .dispatcher import MessageDispatcher
+    from .handlers import (
+        AidenModeHandler,
+        ClaudeModeHandler,
+        CocoModeHandler,
+        CodexModeHandler,
+        DeepHandler,
+        DiagnosticsHandler,
+        GeminiModeHandler,
+        ProjectHandler,
+        SpecHandler,
+        SystemHandler,
+        TTADKModeHandler,
+    )
     from .image_handler import FeishuImageHandler
+    from .router import HandlerDispatcher, MessageRouter
+    from .ws_health import WSHealthMonitor
 
     # Class type registrations — these serve as DI override points for tests.
     # Using register_instance (override=True) ensures current module-level classes
@@ -69,58 +76,66 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
         registry.register_instance(key, cls, override=True)
 
 def setup_feishu_services(
-    registry: ServiceRegistry, 
-    settings: Any, 
+    registry: ServiceRegistry,
+    settings: Any,
     message_callback: Callable,
     ws_client: Any = None
 ) -> None:
     """Register all Feishu-related services to the registry."""
     from ..acp.telemetry import build_idle_health_config_for_manager
-    from .session_hub import SessionManagerHub
     from ..agent.intent_recognizer import IntentRecognizer
-    from .message_cache import MessageCache
-    from ..tasking import TaskScheduler
-    from ..utils.rate_limit import RateLimiter
-    from ..utils.circuit_breaker import CircuitBreaker
-    from ..project import ProjectManager, MessageProjectMapper, MessageLinker, ProjectContextManager
-    from ..mode import ModeManager
-    from ..thread import get_thread_manager
     from ..deep_engine import DeepEngineManager, ProgressReporter
+    from ..mode import ModeManager
+    from ..project import MessageLinker, MessageProjectMapper, ProjectContextManager, ProjectManager
     from ..spec_engine import SpecEngineManager, SpecReporter
-    from .handler_context import HandlerContext
-    from .handlers import (
-        CocoModeHandler, ClaudeModeHandler, AidenModeHandler, CodexModeHandler,
-        GeminiModeHandler, TTADKModeHandler, DeepHandler,
-        SpecHandler, ProjectHandler, SystemHandler, DiagnosticsHandler
-    )
-    from .router import HandlerDispatcher, MessageRouter
-    from .dispatcher import MessageDispatcher, CardDispatcher
+    from ..tasking import TaskScheduler
+    from ..thread import get_thread_manager
+    from ..utils.circuit_breaker import CircuitBreaker
+    from ..utils.rate_limit import RateLimiter
     from .action_dispatcher import ActionDispatcher
     from .control_plane import ControlPlane
-    from .ws_health import WSHealthMonitor
+    from .dispatcher import CardDispatcher, MessageDispatcher
+    from .handler_context import HandlerContext
+    from .handlers import (
+        AidenModeHandler,
+        ClaudeModeHandler,
+        CocoModeHandler,
+        CodexModeHandler,
+        DeepHandler,
+        DiagnosticsHandler,
+        GeminiModeHandler,
+        ProjectHandler,
+        SpecHandler,
+        SystemHandler,
+        TTADKModeHandler,
+    )
     from .image_handler import FeishuImageHandler
+    from .message_cache import MessageCache
+    from .router import HandlerDispatcher, MessageRouter
+    from .session_hub import SessionManagerHub
+    from .ws_health import WSHealthMonitor
 
     # 1. Base instances
     registry.register_instance("settings", settings, override=True)
     registry.register_instance("message_callback", message_callback, override=True)
-    
+
     # 2. Managers & Utils
     registry.register_factory_if_absent("idle_health_cfg", build_idle_health_config_for_manager)
-    
+
     def create_session_hub():
         return SessionManagerHub(registry.get("settings"), registry.get("idle_health_cfg"))
     registry.register_factory_if_absent("session_hub", create_session_hub)
-    
+
     registry.register_factory_if_absent("coco_manager", lambda: registry.get("session_hub").coco)
     registry.register_factory_if_absent("claude_manager", lambda: registry.get("session_hub").claude)
     registry.register_factory_if_absent("aiden_manager", lambda: registry.get("session_hub").aiden)
     registry.register_factory_if_absent("codex_manager", lambda: registry.get("session_hub").codex)
     registry.register_factory_if_absent("gemini_manager", lambda: registry.get("session_hub").gemini)
     registry.register_factory_if_absent("ttadk_manager", lambda: registry.get("session_hub").ttadk)
-    
+
     intent_recognizer_cls = registry.get("IntentRecognizer", default=IntentRecognizer)
     registry.register_factory_if_absent("intent_recognizer", lambda: intent_recognizer_cls(settings=registry.get("settings")))
-    
+
     s = registry.get("settings")
     registry.register_factory_if_absent("message_cache", lambda: MessageCache(ttl=s.message_cache_ttl, max_size=s.message_cache_max_size, cleanup_interval=s.message_cache_cleanup_interval))
     registry.register_factory_if_absent("card_event_cache", lambda: MessageCache(ttl=s.message_cache_ttl, max_size=s.message_cache_max_size, cleanup_interval=s.message_cache_cleanup_interval))
@@ -141,27 +156,27 @@ def setup_feishu_services(
         )
         return sched
     registry.register_factory_if_absent("scheduler", create_scheduler)
-    
+
     from ..tasking.registry import get_task_registry
     registry.register_instance_if_absent("task_registry", get_task_registry())
-    
+
     registry.register_factory_if_absent("project_manager", lambda: registry.get("ProjectManager", default=ProjectManager)())
     registry.register_factory_if_absent("message_mapper", lambda: registry.get("MessageProjectMapper", default=MessageProjectMapper)())
     registry.register_factory_if_absent("message_linker", lambda: registry.get("MessageLinker", default=MessageLinker)())
-    
+
     registry.register_factory_if_absent("mode_manager", lambda: registry.get("ModeManager", default=ModeManager)())
-    
+
     registry.register_factory_if_absent("thread_manager", lambda: registry.get("get_thread_manager", default=get_thread_manager)())
-    
+
     registry.register_factory_if_absent("deep_engine_manager", lambda: registry.get("DeepEngineManager", default=DeepEngineManager)())
     registry.register_factory_if_absent("progress_reporter", lambda: registry.get("ProgressReporter", default=ProgressReporter)())
     registry.register_factory_if_absent("spec_engine_manager", lambda: registry.get("SpecEngineManager", default=SpecEngineManager)())
     registry.register_factory_if_absent("spec_reporter", lambda: registry.get("SpecReporter", default=SpecReporter)())
     registry.register_factory_if_absent("context_manager", lambda: registry.get("ProjectContextManager", default=ProjectContextManager)())
-    
+
     # 3. Handler Context
     registry.register_factory_if_absent("handler_ctx", lambda: HandlerContext(registry))
-    
+
     # 4. Handlers
     registry.register_factory_if_absent("coco_handler", lambda: registry.get("CocoModeHandler", default=CocoModeHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("claude_handler", lambda: registry.get("ClaudeModeHandler", default=ClaudeModeHandler)(registry.get("handler_ctx")))
@@ -174,14 +189,14 @@ def setup_feishu_services(
     registry.register_factory_if_absent("project_handler", lambda: registry.get("ProjectHandler", default=ProjectHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("system_handler", lambda: registry.get("SystemHandler", default=SystemHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("diagnostics_handler", lambda: registry.get("DiagnosticsHandler", default=DiagnosticsHandler)(registry.get("handler_ctx")))
-    
+
     # 5. Dispatchers & Router
     registry.register_factory_if_absent("handler_dispatcher", lambda: registry.get("HandlerDispatcher", default=HandlerDispatcher)(registry.get("handler_ctx"), dispatcher=ws_client))
     registry.register_factory_if_absent("router", lambda: registry.get("MessageRouter", default=MessageRouter)(registry.get("handler_ctx"), dispatcher=ws_client))
     registry.register_factory_if_absent("message_dispatcher", lambda: registry.get("MessageDispatcher", default=MessageDispatcher)(ws_client))
     registry.register_factory_if_absent("card_dispatcher", lambda: registry.get("CardDispatcher", default=CardDispatcher)(ws_client))
     registry.register_factory_if_absent("action_dispatcher", lambda: registry.get("ActionDispatcher", default=ActionDispatcher)())
-    
+
     # 6. Control Plane & Health
     control_plane_cls = registry.get("ControlPlane", default=ControlPlane)
     def create_control_plane():
@@ -191,15 +206,15 @@ def setup_feishu_services(
             exit_handler_fn=lambda *args, **kwargs: ws_client._exit_current_mode(*args, **kwargs) if ws_client else None,
         )
     registry.register_factory_if_absent("control_plane", create_control_plane)
-    
+
     ws_health_monitor_cls = registry.get("WSHealthMonitor", default=WSHealthMonitor)
     def create_ws_health_monitor():
         return ws_health_monitor_cls(ws_client, registry.get("settings"))
     registry.register_factory_if_absent("ws_health_monitor", create_ws_health_monitor)
-    
+
     feishu_image_handler_cls = registry.get("FeishuImageHandler", default=FeishuImageHandler)
     def create_image_handler():
-        # Requires api_client_factory which will be registered later if needed, 
+        # Requires api_client_factory which will be registered later if needed,
         # but FeishuWSClient has _get_api_client
         return feishu_image_handler_cls(ws_client._get_api_client if ws_client else None, registry.get("settings"))
     registry.register_factory_if_absent("image_handler", create_image_handler)

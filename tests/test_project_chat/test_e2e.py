@@ -1,13 +1,13 @@
 """End-to-end test: /new-chat from intent recognition through to project creation."""
 import os
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 from src.agent.intent_recognizer import IntentRecognizer, IntentType
 from src.project.manager import ProjectManager
-from src.project_chat.service import ProjectChatService
 from src.project_chat.lark_chat_client import CreateChatResult
-from src.project_chat.errors import CreateChatError
+from src.project_chat.service import ProjectChatService
 
 
 @pytest.fixture

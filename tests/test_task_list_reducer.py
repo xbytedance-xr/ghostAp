@@ -1,9 +1,9 @@
 """Tests for task_list reducer."""
 from __future__ import annotations
 
-from src.card.state.models import CardState, CardMetadata, TaskListBlock, PlanBlock
-from src.card.state.reducer import reduce_card_state
 from src.card.events import CardEvent, CardEventType
+from src.card.state.models import CardMetadata, CardState, PlanBlock, TaskListBlock
+from src.card.state.reducer import reduce_card_state
 
 
 def _make_task_list_event(tasks, current_task_id="t1"):

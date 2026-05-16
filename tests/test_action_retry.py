@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from unittest.mock import MagicMock, patch, call
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------
 # Helpers — minimal mock client + registry bootstrap

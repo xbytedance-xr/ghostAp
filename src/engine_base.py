@@ -1,7 +1,6 @@
 import json
 import logging
 import os
-import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum

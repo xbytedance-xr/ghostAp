@@ -2,9 +2,9 @@
 
 import time
 
+import src.acp.telemetry as telemetry_mod
 from src.acp.models import ACPEvent, ACPEventType, ACPSessionState, PlanEntryInfo, PlanInfo, PromptResult, ToolCallInfo
 from src.acp.renderer import render_prompt_result_markdown
-import src.acp.telemetry as telemetry_mod
 
 
 class TestACPEventType:

@@ -5,9 +5,7 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
-
-from src.card.task_registry import TaskRegistry, TaskItem, TaskSnapshot
+from src.card.task_registry import TaskRegistry, TaskSnapshot
 
 
 class TestTaskRegistryCRUD:
@@ -104,7 +102,8 @@ class TestTaskRegistrySubscribe:
         reg = TaskRegistry()
         reg.register("t1", "Task")
         notifications = []
-        cb = lambda tid, status: notifications.append((tid, status))
+        def cb(tid, status):
+            return notifications.append((tid, status))
         reg.subscribe(cb)
         reg.unsubscribe(cb)
         reg.update_status("t1", "completed")

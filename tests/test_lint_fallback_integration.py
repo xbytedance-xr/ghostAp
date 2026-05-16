@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.spec_engine.review import ReviewCircuitState, conduct_review
-from src.utils.review_diagnostics import normalize_review_diagnostics
 
 
 def _make_settings(**overrides):

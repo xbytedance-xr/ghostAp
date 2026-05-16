@@ -1,8 +1,8 @@
 """Verify TaskScheduler._reap_completed_states evicts terminal states correctly."""
 from __future__ import annotations
 
-import time
 import threading
+import time
 
 from src.tasking.scheduler import TaskScheduler, TaskSpec, TaskStatus
 

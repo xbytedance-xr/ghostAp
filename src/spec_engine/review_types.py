@@ -7,10 +7,10 @@ import it at module top-level without circular dependencies.
 from __future__ import annotations
 
 import logging
-import time
 import threading
+import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, NotRequired, Optional, TypedDict
+from typing import TYPE_CHECKING, Callable, Optional, TypedDict
 
 from .retry_status import RetryEvent
 

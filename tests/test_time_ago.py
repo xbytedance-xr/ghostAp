@@ -9,6 +9,7 @@
 import logging
 
 import pytest
+
 from src.acp.manager import ACPSessionManager
 from src.acp.telemetry import IdleHealthTelemetryContext, _classify_idle_health_with_fallback
 from src.utils.time_ago import IdleHealth, classify_idle_health_from_bucket, compute_time_ago_bucket

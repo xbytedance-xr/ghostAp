@@ -5,8 +5,6 @@ from __future__ import annotations
 import types
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.engine_base import ReviewPerspective, ReviewResult
 from src.spec_engine.review import ReviewCircuitState
 from src.spec_engine.review_strategy import (

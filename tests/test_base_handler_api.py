@@ -8,13 +8,10 @@ from __future__ import annotations
 
 import json
 import threading
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
-
 
 # ---------------------------------------------------------------------------
 # Helpers

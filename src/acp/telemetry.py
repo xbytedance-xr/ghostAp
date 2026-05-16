@@ -45,9 +45,10 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Protocol, TYPE_CHECKING, TypedDict
+from typing import Optional, Protocol, TypedDict
 
 from src.utils.time_ago import IdleHealth, TimeAgoBucket, compute_time_ago_bucket
+
 from .helper import SessionKeyCodec
 
 # 模块公开 API 面：其余未在 __all__ 中列出的符号视为内部实现细节或测试工具。

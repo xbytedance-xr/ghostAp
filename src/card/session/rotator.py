@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Callable
 
 from src.card.events import CardEvent
 from src.card.events.types import CardEventType
-from src.card.protocols import Session  # noqa: F401 — structural compliance
 from src.card.nav_link import format_navigation_link
+from src.card.protocols import Session  # noqa: F401 — structural compliance
 from src.card.ui_text import UI_TEXT
 
 if TYPE_CHECKING:

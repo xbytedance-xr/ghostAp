@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, replace
-from typing import Callable, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, Literal
 
 from src.card.tool_display import summarize_tool_call_content
 

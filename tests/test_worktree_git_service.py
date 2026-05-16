@@ -360,8 +360,9 @@ def test_no_remote_operations_during_lifecycle(tmp_path, monkeypatch):
     project_root.mkdir()
     _init_repo(project_root)
 
-    from src.worktree_engine.models import WorktreeSelectionItem
     from unittest.mock import patch
+
+    from src.worktree_engine.models import WorktreeSelectionItem
 
     # Track all git commands
     git_commands: list[list[str]] = []

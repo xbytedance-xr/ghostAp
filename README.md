@@ -223,6 +223,7 @@ SPEC_EXECUTION_TIMEOUT=7200            # 单次 Spec 执行超时（秒）
 # 卡片
 CARD_BUTTON_LAYOUT=responsive         # 按钮布局：desktop / mobile / responsive
 STREAMING_ENABLED=true                # 启用流式卡片
+CARD_DELIVERY_API_TIMEOUT=35          # 飞书卡片 API 单次调用硬超时（秒）
 
 # 任务调度
 TASK_SCHEDULER_MAX_CONCURRENT=10      # 全局最大并发数

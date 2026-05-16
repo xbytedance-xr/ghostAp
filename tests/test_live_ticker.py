@@ -1,4 +1,10 @@
-from src.card.render.live_ticker import DEFAULT_TICKER_FRAMES, DEFAULT_TICKER_INTERVAL, FROZEN_FRAME, LiveTicker, frame_for_tick
+from src.card.render.live_ticker import (
+    DEFAULT_TICKER_FRAMES,
+    DEFAULT_TICKER_INTERVAL,
+    FROZEN_FRAME,
+    LiveTicker,
+    frame_for_tick,
+)
 
 
 class FakeHandle:

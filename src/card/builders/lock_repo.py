@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import time as _time
+from typing import Optional
 
 from ..ui_text import UI_TEXT
 from .lock_common import (

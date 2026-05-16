@@ -344,7 +344,7 @@ class SystemBuilder:
         # project info is handled by project_response_card if needed, but build_error_card
         # is often used for generic errors. Original code had optional project.
         # We'll stick to a simpler interactive card here or wrap it.
-        
+
         if severity == "degraded":
             degraded_mode = SystemBuilder._resolve_degraded_mode(continue_action, context)
             if degraded_mode:
@@ -715,7 +715,7 @@ class SystemBuilder:
             )
             for model in models
         ]
-            
+
         elements.append(
             SystemBuilder._build_select_static(
                 placeholder_key="system_ttadk_select_model_placeholder",
@@ -1260,7 +1260,7 @@ class SystemBuilder:
             InteractionMode.GEMINI: UI_TEXT["system_mode_gemini"],
             InteractionMode.TTADK: UI_TEXT["system_mode_ttadk"],
         }
-        
+
         current_mode_str = mode_emoji.get(current_mode, UI_TEXT["system_mode_smart"])
 
         # Extract primitives for caching

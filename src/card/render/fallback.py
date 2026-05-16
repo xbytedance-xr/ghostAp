@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from src.card.engine_meta import ENGINE_LABELS, ENGINE_LABEL_DEFAULT, engine_type_to_cmd
+from src.card.engine_meta import ENGINE_LABEL_DEFAULT, ENGINE_LABELS, engine_type_to_cmd
 from src.card.types import RenderedCard
 
 if TYPE_CHECKING:

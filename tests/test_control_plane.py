@@ -1,8 +1,6 @@
 """Tests for src.feishu.control_plane module."""
 from __future__ import annotations
 
-import threading
-import time
 from unittest.mock import MagicMock
 
 from src.feishu.control_plane import ControlPlane

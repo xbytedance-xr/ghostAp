@@ -624,7 +624,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("ttadk_coco") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp", "-a", "serve"],
+            ["-m", "src.ttadk.wrapper", "ttadk", "code", "-t", "coco", "-a", "acp", "-a", "serve"],
         )
 
     def test_ttadk_claude_no_model(self, monkeypatch):
@@ -632,7 +632,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("ttadk_claude") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "claude", "-a", "acp", "-a", "serve"],
+            ["-m", "src.ttadk.wrapper", "ttadk", "code", "-t", "claude", "-a", "acp", "-a", "serve"],
         )
 
     def test_ttadk_with_model(self, monkeypatch):
@@ -640,7 +640,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("ttadk_coco", model_name="gpt-4") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-m", "gpt-4", "-a", "acp", "-a", "serve"],
+            ["-m", "src.ttadk.wrapper", "ttadk", "code", "-t", "coco", "-m", "gpt-4", "-a", "acp", "-a", "serve"],
         )
 
     def test_ttadk_case_insensitive(self, monkeypatch):
@@ -648,7 +648,7 @@ class TestResolveAgentSpec:
         monkeypatch.setattr(sa, "get_settings", lambda: _fake_settings())
         assert sa.resolve_agent_spec("TTADK_COCO") == (
             "python3",
-            ["-m", "src.utils.ttadk_wrapper", "ttadk", "code", "-t", "coco", "-a", "acp", "-a", "serve"],
+            ["-m", "src.ttadk.wrapper", "ttadk", "code", "-t", "coco", "-a", "acp", "-a", "serve"],
         )
 
 

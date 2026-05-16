@@ -1,15 +1,12 @@
 """Tests for CardSession weakref.finalize safety net (ResourceWarning on GC without close)."""
 
-import gc
 import warnings
 import weakref
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.card.delivery.engine import CardDelivery
-from src.card.session.core import CardSession, _release_lock
 from src.card.session.config import SessionConfig
+from src.card.session.core import CardSession, _release_lock
 from src.card.state.models import CardMetadata
 
 

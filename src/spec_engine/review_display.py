@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from src.engine_base import PerspectiveReview, ReviewResult
 
-
 _ROLE_STYLES: tuple[tuple[str, str], ...] = (
     ("wathet", "wathet"),
     ("green", "green"),

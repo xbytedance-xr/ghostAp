@@ -8,7 +8,6 @@ import threading
 import time
 from dataclasses import dataclass
 
-
 EXPIRED_DIAGNOSTIC_MESSAGE = "⚠️ 诊断详情已过期或不存在，请重新触发操作获取最新摘要。"
 UNAUTHORIZED_DIAGNOSTIC_MESSAGE = "⚠️ 无法查看该诊断详情：当前会话与原始错误卡不匹配，请重新触发操作获取最新摘要。"
 

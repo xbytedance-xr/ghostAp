@@ -6,17 +6,17 @@ cannot acquire the session lock after max retries.
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from src.card.delivery.engine import CardDelivery
-from src.card.events import CardEvent, CardEventType
-from src.card.types import RenderedCard
+from src.card.events import CardEvent
 from src.card.session import CardSession
-from src.card.session.config import SessionCallbacks, SessionConfig
 from src.card.session._ttl_mixin import TTLActuator
+from src.card.session.config import SessionCallbacks, SessionConfig
 from src.card.state.models import CardMetadata
+from src.card.types import RenderedCard
 
 
 @pytest.fixture(autouse=True)

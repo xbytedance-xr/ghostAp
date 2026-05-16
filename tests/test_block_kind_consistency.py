@@ -8,8 +8,8 @@ def test_block_kind_map_consistent_with_handlers():
     tool_call which is handled by lookahead logic) matches exactly
     _get_block_kind_handlers() keys.
     """
-    from src.card.state.models import _BLOCK_KIND_MAP
     from src.card.render.atoms import _get_block_kind_handlers
+    from src.card.state.models import _BLOCK_KIND_MAP
 
     model_keys = set(_BLOCK_KIND_MAP.keys()) - {"tool_call"}
     handler_keys = set(_get_block_kind_handlers().keys())
@@ -22,8 +22,8 @@ def test_block_kind_map_consistent_with_handlers():
 
 def test_all_handler_keys_are_valid_block_kinds():
     """Every key in _get_block_kind_handlers corresponds to a real block dataclass."""
-    from src.card.state.models import _BLOCK_KIND_MAP
     from src.card.render.atoms import _get_block_kind_handlers
+    from src.card.state.models import _BLOCK_KIND_MAP
 
     for kind in _get_block_kind_handlers():
         assert kind in _BLOCK_KIND_MAP, f"Handler key '{kind}' not in _BLOCK_KIND_MAP"
@@ -31,7 +31,6 @@ def test_all_handler_keys_are_valid_block_kinds():
 
 def test_import_time_no_handler_construction():
     """Importing atoms.py does not build the handler registry at import time."""
-    import importlib
     import src.card.render.atoms as atoms_mod
 
     # The lazy function uses functools.cache — verify it's callable

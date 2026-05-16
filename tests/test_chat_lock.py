@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -404,7 +404,8 @@ class TestLockConfirmationFlow:
     """Deprecated confirm_lock / cancel_lock callbacks now return deprecation hints."""
 
     def setup_method(self):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
+
         from src.chat_lock import ChatLockManager
         from src.feishu.handlers.system import SystemHandler
 
@@ -504,7 +505,7 @@ class TestHelpCardLockPlaceholderInjection:
 
     def test_lock_body_not_frozen_across_calls(self):
         """After lock/unlock, the help card must reflect the new state."""
-        from src.card.builders.system import SystemBuilder, _LOCK_BODY_PLACEHOLDER
+        from src.card.builders.system import _LOCK_BODY_PLACEHOLDER, SystemBuilder
 
         # The cached version must embed the placeholder, not real lock body
         _msg_type, card_json = SystemBuilder._build_help_card_cached(
@@ -522,7 +523,8 @@ class TestHelpCardLockPlaceholderInjection:
     def test_placeholder_replaced_in_build_help_card(self):
         """build_help_card (non-cached wrapper) should replace placeholder with live body."""
         from unittest.mock import MagicMock
-        from src.card.builders.system import SystemBuilder, _LOCK_BODY_PLACEHOLDER
+
+        from src.card.builders.system import _LOCK_BODY_PLACEHOLDER, SystemBuilder
 
         project = MagicMock()
         project.project_name = "test"
@@ -624,8 +626,8 @@ class TestResolveLockMessage:
         assert callable(SystemHandler.resolve_lock_message)
 
     def test_all_codes_return_nonempty(self):
-        from src.feishu.handlers.system import SystemHandler
         from src.chat_lock import ChatLockResult
+        from src.feishu.handlers.system import SystemHandler
         for code in ChatLockCode:
             params = self._CODES_NEEDING_PARAMS.get(code, {})
             result = ChatLockResult(success=True, code=code, format_params=params)
@@ -633,14 +635,14 @@ class TestResolveLockMessage:
             assert isinstance(msg, str) and msg, f"Empty string for {code!r}"
 
     def test_none_code_returns_empty(self):
-        from src.feishu.handlers.system import SystemHandler
         from src.chat_lock import ChatLockResult
+        from src.feishu.handlers.system import SystemHandler
         result = ChatLockResult(success=False, code=None)
         assert SystemHandler.resolve_lock_message(result) == ""
 
     def test_format_params_substitution(self):
-        from src.feishu.handlers.system import SystemHandler
         from src.chat_lock import ChatLockResult
+        from src.feishu.handlers.system import SystemHandler
         result = ChatLockResult(
             success=False,
             code=ChatLockCode.CONTACT_NAMED_UNLOCK,
@@ -726,6 +728,7 @@ class TestChatLockTTLAutoExpiry:
     def test_on_auto_unlock_callback_receives_entry(self):
         """on_auto_unlock callback receives (chat_id, ChatLockEntry)."""
         import time as _time
+
         from src.chat_lock import ChatLockEntry
         received = []
         mgr = ChatLockManager(
@@ -1138,8 +1141,8 @@ class TestCleanupConcurrency:
 
     def test_cleanup_with_concurrent_lock_no_runtime_error(self):
         """10 threads lock/unlock + 1 thread runs _cleanup_expired — no RuntimeError."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         mgr = ChatLockManager()
         # Use a very short max_duration so cleanup actually finds expired locks

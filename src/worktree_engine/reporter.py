@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit, WorktreeUnitStatus
-
 from ..utils.constants import STATUS_DISPLAY_MAP
 from ..utils.ui_text import SPEC_UI_TEXT
+from .models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit, WorktreeUnitStatus
 
 logger = logging.getLogger(__name__)
 

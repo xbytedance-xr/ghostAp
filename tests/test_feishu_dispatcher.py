@@ -1,13 +1,15 @@
-import logging
-
-import pytest
 import ast
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from src.feishu.dispatcher import MessageDispatcher
+
+import pytest
+
 from src.agent.intent_recognizer import IntentType
-from src.mode.manager import InteractionMode
+from src.feishu.dispatcher import MessageDispatcher
 from src.feishu.slash_command_parser import SlashCommandParser
+from src.mode.manager import InteractionMode
+
 
 class TestMessageDispatcher:
     def setup_method(self):
@@ -18,9 +20,9 @@ class TestMessageDispatcher:
         self.client._is_deep_command.return_value = True
         self.client._is_spec_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
-        
+
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
-        
+
         self.dispatcher.process_with_intent(
             "m1",
             "c1",
@@ -28,7 +30,7 @@ class TestMessageDispatcher:
             None,
             command_match=SlashCommandParser.parse("/deep task"),
         )
-        
+
         self.client._handle_deep_command.assert_called_once_with("m1", "c1", "/deep task", None)
         assert self.client._add_reaction.call_count >= 1
 
@@ -39,10 +41,10 @@ class TestMessageDispatcher:
         self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = False
         self.client.settings.thread_programming_enabled = False
-        
+
         # In COCO mode
         self.client._get_effective_mode.return_value = (InteractionMode.COCO, True)
-        
+
         mock_handler = MagicMock()
         self.client._get_mode_handler.return_value = mock_handler
 
@@ -82,9 +84,9 @@ class TestMessageDispatcher:
         self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = True
         self.client._control_plane.should_defer_exit.return_value = False
-        
+
         self.client._get_effective_mode.return_value = (InteractionMode.COCO, True)
-        
+
         self.dispatcher.process_with_intent(
             "m1",
             "c1",
@@ -92,16 +94,16 @@ class TestMessageDispatcher:
             None,
             command_match=SlashCommandParser.parse("/exit"),
         )
-        
+
         self.client._exit_current_mode.assert_called_once()
 
     def test_execute_single_task_enter_coco(self):
         task = MagicMock()
         task.intent = IntentType.ENTER_COCO
         self.client._mode_manager.is_coco_mode.return_value = False
-        
+
         self.dispatcher.execute_single_task("m1", "c1", task, "/coco", None)
-        
+
         self.client._system_handler.handle_select_acp_tool.assert_called_once()
 
     def test_execute_single_task_enter_codex_shows_model_select(self):
@@ -152,9 +154,9 @@ class TestMessageDispatcher:
         task.intent = IntentType.SHELL_COMMAND
         task.data = {"command": "ls"}
         self.client._get_working_dir.return_value = "/tmp"
-        
+
         self.dispatcher.execute_single_task("m1", "c1", task, "ls", None)
-        
+
         self.client._submit_shell_command.assert_called_once_with("m1", "c1", "ls", "/tmp", None)
 
     def test_execute_multi_tasks(self):
@@ -162,7 +164,7 @@ class TestMessageDispatcher:
         task1 = MagicMock(intent=IntentType.CHANGE_DIR, data={"path": "/tmp"}, description="cd /tmp")
         task2 = MagicMock(intent=IntentType.SHELL_COMMAND, data={"command": "ls"}, description="ls")
         intent_result.tasks = [task1, task2]
-        
+
         with patch.object(self.dispatcher, "execute_task_step", return_value=True) as mock_step:
             self.dispatcher.execute_multi_tasks("m1", "c1", intent_result, None)
             assert mock_step.call_count == 2
@@ -170,9 +172,9 @@ class TestMessageDispatcher:
     def test_execute_task_step_change_dir(self):
         task = MagicMock(intent=IntentType.CHANGE_DIR, data={"path": "/tmp"})
         self.client._set_working_dir.return_value = (True, "/tmp")
-        
+
         result = self.dispatcher.execute_task_step("m1", "c1", task, 1, 1, None)
-        
+
         assert result is True
         self.client._set_working_dir.assert_called_once_with("c1", "/tmp")
 
@@ -183,11 +185,11 @@ class TestMessageDispatcher:
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
         self.client._pending_image_lock = MagicMock()
         self.client._pending_image_only = set()
-        
+
         intent_result = MagicMock()
         intent_result.is_multi_task = False
         self.client._intent_recognizer.recognize.return_value = intent_result
-        
+
         with patch.object(self.dispatcher, "execute_single_task") as mock_exec:
             self.dispatcher.process_with_intent(
                 "m1",

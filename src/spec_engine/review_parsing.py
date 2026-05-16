@@ -2,12 +2,14 @@
 
 import json
 import logging
-from typing import Callable, List, Optional
+from typing import Callable, Optional
 
 from ..engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
 from .constants import SPEC_UI_TEXT
-from ..utils.spec_utils import (
+from .utils import (
     PERSPECTIVE_TAG_MAP as _PERSPECTIVE_TAG_MAP,
+)
+from .utils import (
     parse_review_output_loose,
     parse_review_output_strict_tolerant,
 )

@@ -1,6 +1,6 @@
 """Tests for main reducer orchestration."""
 from src.card.events import CardEvent, CardEventType
-from src.card.state.models import CardState, CardMetadata
+from src.card.state.models import CardMetadata
 from src.card.state.reducer import reduce_card_state
 
 
@@ -83,13 +83,11 @@ class TestMainReducer:
 
     def test_unknown_event_no_change(self):
         s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
-        v = s.version
         # Use a fabricated event type that no sub-reducer handles
-        fake_event = CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={})
+        CardEvent(type=CardEventType.PROGRESS_UPDATED, payload={})
         # PROGRESS_UPDATED with total=0 sets progress to None which may still differ,
         # so just craft a genuinely no-op scenario: same progress=None footer
-        s_before = reduce_card_state(s, CardEvent.completed())
-        v2 = s_before.version
+        reduce_card_state(s, CardEvent.completed())
         # Re-dispatch completed on an already-completed state — lifecycle returns same object
         # Actually let's just verify an event that hits else branch.
         # All CardEventType values are now routed, so we verify the else branch
@@ -327,6 +325,7 @@ class TestReducerPurity:
     def test_lifecycle_reducer_has_no_time_import(self):
         """lifecycle.py must not import time module (purity contract)."""
         import importlib
+
         import src.card.state.reducers.lifecycle as lifecycle_mod
         importlib.reload(lifecycle_mod)
         # Check that 'time' is not in the module's direct namespace as an import

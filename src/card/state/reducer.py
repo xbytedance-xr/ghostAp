@@ -6,24 +6,24 @@ import logging
 from collections.abc import Callable
 from dataclasses import replace
 
-from .models import CardState, CardMetadata, HeaderState, FooterState, EngineExtState
-from .runtime_stats import RuntimeStats
 from ..events import CardEvent, CardEventType
-from .reducers.text import reduce_text
-from .reducers.tool import reduce_tool
-from .reducers.reasoning import reduce_reasoning
-from .reducers.plan import reduce_plan
-from .reducers.lifecycle import reduce_lifecycle
+from .models import CardMetadata, CardState, EngineExtState
 from .reducers._shared import build_header
 from .reducers.approval import reduce_approval
-from .reducers.cycle import reduce_cycle
-from .reducers.phase import reduce_phase
 from .reducers.criteria import reduce_criteria
-from .reducers.worktree import reduce_worktree
-from .reducers.task_list import reduce_task_list
-from .reducers.separator import reduce_separator
+from .reducers.cycle import reduce_cycle
+from .reducers.lifecycle import reduce_lifecycle
+from .reducers.phase import reduce_phase
+from .reducers.plan import reduce_plan
+from .reducers.reasoning import reduce_reasoning
 from .reducers.review import reduce_review_result
+from .reducers.separator import reduce_separator
 from .reducers.spec_artifacts import reduce_spec_artifacts
+from .reducers.task_list import reduce_task_list
+from .reducers.text import reduce_text
+from .reducers.tool import reduce_tool
+from .reducers.worktree import reduce_worktree
+from .runtime_stats import RuntimeStats
 
 logger = logging.getLogger(__name__)
 

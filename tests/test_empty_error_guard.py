@@ -5,12 +5,10 @@ exceptions never produce empty user-facing strings.
 """
 import json
 import threading
-import time
 from dataclasses import dataclass
 from unittest.mock import MagicMock, patch
 
 from src.utils.errors import fmt_exception, get_error_detail
-
 
 # ---------------------------------------------------------------------------
 # Task 1: CardBuilder.build_error_card — empty guard
@@ -121,7 +119,7 @@ class TestSchedulerEmptyErrorGuard:
 
             # Wait for task to complete
             try:
-                result = handle.wait(timeout=5)
+                handle.wait(timeout=5)
             except Exception:
                 pass
 
@@ -145,7 +143,7 @@ class TestSchedulerEmptyErrorGuard:
             handle = scheduler.submit(spec, failing_task)
 
             try:
-                result = handle.wait(timeout=5)
+                handle.wait(timeout=5)
             except Exception:
                 pass
 
@@ -217,29 +215,29 @@ class TestWorktreeDispatcherGetErrorDetail:
 
     def test_bare_timeout_uses_get_error_detail(self, tmp_path):
         from src.worktree_engine.dispatcher import WorktreeDispatcher
-        from src.worktree_engine.models import WorktreeUnit, WorktreeSelectionItem
-    
+        from src.worktree_engine.models import WorktreeSelectionItem, WorktreeUnit
+
         d = tmp_path / "wt"
         d.mkdir()
-    
+
         @dataclass
         class FakeResult:
             stop_reason: str
             text: str
-    
+
         class TimeoutSession:
             def __init__(self, **kw):
                 pass
-    
+
             def start(self, startup_timeout=60):
                 return "ok"
-    
+
             def send_prompt(self, text, on_event=None, timeout=None):
                 raise TimeoutError()
-    
+
             def close(self):
                 pass
-    
+
         unit = WorktreeUnit(
             unit_id="u0",
             selection_key="acp:coco:d",
@@ -1001,9 +999,7 @@ class TestSpecReviewMetricsLog:
 
     def _run_conduct_review_with_error(self, exc: Exception):
         """Call conduct_review with a send_fn that raises *exc*, return captured log records."""
-        import json
         import logging
-        from dataclasses import dataclass, field
         from unittest.mock import MagicMock
 
         from src.spec_engine.review import ReviewCircuitState, conduct_review
@@ -1096,6 +1092,7 @@ class TestSpecReviewMetricsLog:
         # raises, the except block still has review_timeout = 0.
         # We verify by checking the sentinel pattern exists in the source.
         import inspect
+
         from src.spec_engine.review import conduct_review
         source = inspect.getsource(conduct_review)
         assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
@@ -1125,6 +1122,7 @@ class TestHandleReviewExceptionE2EEmptyMessage:
     def test_bare_asyncio_timeout_spec(self):
         """asyncio.TimeoutError() with empty message through Spec path."""
         import asyncio
+
         from src.utils.review_helpers import handle_review_exception
 
         exc = asyncio.TimeoutError()
@@ -1154,6 +1152,7 @@ class TestHandleReviewExceptionE2EEmptyMessage:
     def test_chained_timeout_empty(self):
         """RuntimeError wrapping asyncio.TimeoutError() — chain traversal."""
         import asyncio
+
         from src.utils.review_helpers import handle_review_exception
 
         inner = asyncio.TimeoutError()
@@ -1402,7 +1401,6 @@ class TestRunAsyncTimeoutWrapping:
 
     def test_timeout_with_existing_message_preserved(self):
         """If the underlying TimeoutError already has a message, preserve it."""
-        import asyncio
 
         adapter = self._make_adapter()
         try:
@@ -1460,11 +1458,11 @@ class TestTimeoutErrorE2EDetail:
             class MockTimeout(Exception):
                 pass
             MockTimeout.__name__ = tn
-            
+
             inner = MockTimeout("inner timeout")
             outer = RuntimeError("outer")
             outer.__cause__ = inner
-            
+
             result = get_error_detail(outer)
             assert "超时" in result, f"Failed for {tn}"
 
@@ -1502,7 +1500,8 @@ class TestLogExceptionEmptyTimeout:
     def test_log_exception_empty_timeout_uses_detail(self):
         import logging
         from unittest.mock import MagicMock
-        from src.utils.errors import log_exception, GhostAPError
+
+        from src.utils.errors import GhostAPError, log_exception
 
         mock_logger = MagicMock(spec=logging.Logger)
         # GhostAPError with empty message — goes through WARNING branch
@@ -1519,6 +1518,7 @@ class TestLogExceptionEmptyTimeout:
         """TimeoutError is not GhostAPError, so goes to logger.log() branch — no empty string concern."""
         import logging
         from unittest.mock import MagicMock
+
         from src.utils.errors import log_exception
 
         mock_logger = MagicMock(spec=logging.Logger)
@@ -1532,7 +1532,8 @@ class TestSpecHandlerResumeTimeoutLogNotEmpty:
 
     def test_restore_timeout_log_has_detail(self):
         import logging
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
+
         from src.utils.errors import get_error_detail
 
         # Simulate the logger call pattern used in spec.py:696

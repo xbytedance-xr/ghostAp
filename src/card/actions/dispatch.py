@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from src.card.events import CardEvent, CardEventType
+
 # ---------------------------------------------------------------------------
 # Approval actions
 # ---------------------------------------------------------------------------
@@ -111,13 +113,6 @@ CONFIRM_LOCK = "confirm_lock"  # Confirm acquiring a contested lock
 CANCEL_LOCK = "cancel_lock"  # Cancel lock acquisition request
 CONFIRM_FORCE_RELEASE = "confirm_force_release"  # Double-confirm force release (danger action)
 CANCEL_FORCE_RELEASE = "cancel_force_release"  # Cancel force release request
-
-
-# ---------------------------------------------------------------------------
-# Action registries
-# ---------------------------------------------------------------------------
-
-from src.card.events import CardEvent, CardEventType
 
 
 def build_common_action_registry() -> dict[str, Callable[[dict], CardEvent]]:

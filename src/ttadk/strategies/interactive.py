@@ -11,10 +11,10 @@ import termios
 import time
 from typing import Optional
 
-from .base import ModelFetchStrategy, _env_truthy, _in_ci_environment
-from ..env_sandbox import build_ttadk_subprocess_env
 from ...utils.errors import get_error_detail
+from ..env_sandbox import build_ttadk_subprocess_env
 from ..models import TTADKModel, strip_ansi
+from .base import ModelFetchStrategy, _env_truthy, _in_ci_environment
 
 logger = logging.getLogger(__name__)
 

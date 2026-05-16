@@ -11,15 +11,16 @@ from typing import TYPE_CHECKING, Optional
 from ...acp.helper import fetch_acp_models, list_acp_tools
 from ...acp.providers import tool_registry
 from ...card import CardBuilder
+from ...card.builders.project import ProjectBuilder
 from ...card.ui_text import UI_TEXT
 from ...coco_model import get_coco_model_manager
 from ...tasking import TaskPriority, TaskSpec
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
+from ..slash_command_parser import CommandMatch
 from .base import BaseHandler
 from .lock_commands import LockCommandsMixin
 from .ttadk_commands import TTADKCommandsMixin
-from ..slash_command_parser import CommandMatch
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
@@ -1073,8 +1074,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         project: Optional["ProjectContext"] = None,
     ):
         """Execute a shell command via SandboxExecutor and reply with the result."""
-        from ...sandbox import SandboxExecutor
         from ...repo_lock import LockConflictError
+        from ...sandbox import SandboxExecutor
 
         lock_root_path = getattr(project, "root_path", None) or working_dir
 

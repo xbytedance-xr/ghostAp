@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, patch
 
 from src.card.builders.system import SystemBuilder
 from src.feishu.handlers.system import SystemHandler
-from src.feishu.ws_client import FeishuWSClient
 from src.feishu.slash_command_parser import SlashCommandParser
+from src.feishu.ws_client import FeishuWSClient
 
 
 class TestRefactorRobustness(unittest.TestCase):
@@ -93,7 +93,7 @@ class TestRefactorRobustness(unittest.TestCase):
         """Test that SystemHandler correctly dispatches commands using the new registry."""
         mock_ctx = MagicMock()
         handler = SystemHandler(mock_ctx)
-    
+
         # Mock handlers in registry
         coco_mock = MagicMock()
         project_mock = MagicMock()
@@ -103,7 +103,7 @@ class TestRefactorRobustness(unittest.TestCase):
             "project": project_mock,
             "diagnostics": diagnostics_mock,
         }.get(k)
-    
+
         # Test exact match
         handler.handle_intercepted_command(
             "mid",
@@ -112,7 +112,7 @@ class TestRefactorRobustness(unittest.TestCase):
             command_match=SlashCommandParser.parse("/coco_info"),
         )
         coco_mock.show_info.assert_called_with("mid", "cid", None)
-    
+
         # Test prefix match
         handler.handle_intercepted_command(
             "mid",
@@ -121,7 +121,7 @@ class TestRefactorRobustness(unittest.TestCase):
             command_match=SlashCommandParser.parse("/status detail"),
         )
         diagnostics_mock.show_unified_status.assert_called_with("mid", "cid", "/status detail", None)
-    
+
         # Test fallback: unknown slash commands get a concise system reply
         # instead of rendering the full help card.
         with (

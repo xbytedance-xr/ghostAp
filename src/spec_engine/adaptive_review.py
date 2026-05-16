@@ -230,7 +230,7 @@ def _fallback_perspective(role: ReviewRoleSpec) -> ReviewPerspective:
 
 def _outcomes_to_review_result(outcomes: list[RoleReviewOutcome], iteration: int) -> AdaptiveReviewResult:
     aggregated = aggregate_role_outcomes(outcomes)
-    by_role = {outcome.role_id: outcome for outcome in outcomes}
+    {outcome.role_id: outcome for outcome in outcomes}
     reviews: list[PerspectiveReview] = []
     blocking_by_role: dict[str, list[str]] = {}
     observation_by_role: dict[str, list[str]] = {}

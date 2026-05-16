@@ -7,8 +7,6 @@ deliveries to complete, even with 12+ concurrent threads.
 import threading
 import time
 
-import pytest
-
 from src.card.delivery.lock_pool import SessionLockPool
 
 
@@ -28,7 +26,7 @@ class TestDrainHighConcurrency:
         pool = self._make_pool()
         num_threads = 12
         barrier = threading.Barrier(num_threads + 1, timeout=10)
-        delivery_done = threading.Event()
+        threading.Event()
 
         def delivery_worker(delay: float):
             pool.enter_delivery()

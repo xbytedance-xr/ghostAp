@@ -2,15 +2,15 @@
 
 import logging as _logging
 import threading
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 from pydantic import ValidationError
 
 from src.utils.env import is_test_environment
+
 from .card import CardSessionConfig
 from .errors import ConfigurationError
 from .settings import Settings
-
 
 _settings: Optional[Settings] = None
 _settings_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
@@ -120,17 +120,17 @@ def get_settings() -> Settings:
 
 
 def set_settings(
-    settings: Settings, 
-    *, 
+    settings: Settings,
+    *,
     is_test_env_check: Optional[Callable[[], bool]] = None
 ) -> None:
     """Set the global settings singleton. For dependency injection/testing.
-    
+
     Args:
         settings: The Settings instance to use globally
         is_test_env_check: Optional custom function to check if we're in a test environment.
                            If not provided, uses the default `is_test_environment()` function.
-    
+
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """
@@ -146,15 +146,15 @@ def set_settings(
 
 
 def _reset_settings_for_testing(
-    *, 
+    *,
     is_test_env_check: Optional[Callable[[], bool]] = None
 ) -> None:
     """Reset the global settings singleton. **Test-only.**
-    
+
     Args:
         is_test_env_check: Optional custom function to check if we're in a test environment.
                            If not provided, uses the default `is_test_environment()` function.
-    
+
     Raises:
         RuntimeError: If called in a production (non-test) environment
     """

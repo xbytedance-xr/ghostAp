@@ -7,10 +7,8 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
-
 from src.card.events import CardEvent, CardEventType
-from src.card.state.models import CardState, CardMetadata, FooterState
+from src.card.state.models import CardMetadata, CardState, FooterState
 from src.card.state.reducers.lifecycle import reduce_lifecycle
 
 

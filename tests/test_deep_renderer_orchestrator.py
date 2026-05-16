@@ -13,7 +13,6 @@ from unittest.mock import MagicMock, patch
 from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
 from src.card.events import CardEventType
 
-
 # ---------------------------------------------------------------------------
 # Fakes and Fixtures
 # ---------------------------------------------------------------------------

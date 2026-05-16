@@ -14,7 +14,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-
 _ALIAS_TO_CANONICAL: dict[str, str] = {
     # Worktree aliases
     "/wt": "/worktree",

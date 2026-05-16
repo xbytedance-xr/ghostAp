@@ -1,4 +1,5 @@
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
+
 from ...card import CardBuilder
 from ...card.models import EngineStatusEntry
 from ...card.ui_text import UI_TEXT
@@ -11,7 +12,7 @@ class DiagnosticsHelper:
     def get_all_engine_statuses(ctx: "HandlerContext", chat_id: str, include_done: bool = False) -> list[EngineStatusEntry]:
         """Collect and aggregate status entries from all engines (Deep, Spec)."""
         entries: list[EngineStatusEntry] = []
-        
+
         deep_label = UI_TEXT["diag_engine_deep"]
         spec_label = UI_TEXT["diag_engine_spec"]
 

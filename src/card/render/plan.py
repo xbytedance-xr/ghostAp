@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES
+
 from .budget import RenderBudget
 
 

@@ -3,7 +3,7 @@ import tempfile
 import time
 from collections import OrderedDict
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -632,8 +632,8 @@ class TestEvictionCallbackOutsideLock:
         self, temp_storage, project_dir
     ):
         """on_eviction callback calling get_all_projects() must not deadlock."""
-        from unittest.mock import patch, MagicMock
         import threading
+        from unittest.mock import MagicMock, patch
 
         settings = MagicMock()
         settings.max_allowed_chat_ids = 2
@@ -681,7 +681,7 @@ class TestEvictionCleansActiveProject:
     def test_evicted_chat_removed_from_active_project(
         self, temp_storage, project_dir
     ):
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         settings = MagicMock()
         settings.max_allowed_chat_ids = 2
@@ -717,7 +717,7 @@ class TestEvictionCleansActiveProject:
           - The conditional pop must NOT remove _active_project["chatB"]
             because it now points to "p2", not "p1".
         """
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         settings = MagicMock()
         settings.max_allowed_chat_ids = 2
@@ -759,7 +759,7 @@ class TestConcurrentSetActiveNoTOCTOU:
 
     def test_concurrent_set_active_no_toctou(self, temp_storage):
         import threading
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         settings = MagicMock()
         settings.max_allowed_chat_ids = 3

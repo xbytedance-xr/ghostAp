@@ -199,7 +199,7 @@ class TestTwoPhaseEvictionConcurrent(unittest.TestCase):
                 # Timestamps far in the past to ensure TTL expiry
                 inspector.timestamps[sid] = 0.0
 
-        barrier = threading.Barrier(2, timeout=5.0)
+        threading.Barrier(2, timeout=5.0)
         results = []
         errors = []
 
@@ -243,6 +243,7 @@ class TestEvictionLoopBoundary(unittest.TestCase):
         and the two-phase eviction runs outside the lock (by design).
         """
         from unittest.mock import patch
+
         from src.card.delivery.engine import CardDelivery
 
         class _Stub:

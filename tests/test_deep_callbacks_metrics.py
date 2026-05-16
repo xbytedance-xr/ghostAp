@@ -1,8 +1,6 @@
 """Tests for DeepEngineCallbacks and src.deep_engine.metrics modules."""
 from __future__ import annotations
 
-import time
-
 from src.deep_engine.metrics import DeepEngineMetrics
 
 
@@ -84,6 +82,7 @@ class TestDeepEngineCallbacks:
     def test_planning_setter_delegates(self):
         from src.deep_engine.engine import DeepEngineCallbacks
         cb = DeepEngineCallbacks()
-        sentinel = lambda: None
+        def sentinel():
+            return None
         cb.on_planning_start = sentinel
         assert cb.on_analyzing_start is sentinel

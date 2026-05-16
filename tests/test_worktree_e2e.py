@@ -6,14 +6,12 @@ Exercises the complete worktree lifecycle:
 
 from __future__ import annotations
 
-import pytest
-
 from src.card.events import CardEvent, CardEventType
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import render_card
+from src.card.state.button_intent import ButtonIntent
 from src.card.state.models import CardMetadata, CardState
 from src.card.state.reducer import reduce_card_state
-from src.card.state.button_intent import ButtonIntent
 
 
 def _reduce(state: CardState | None, event: CardEvent) -> CardState:

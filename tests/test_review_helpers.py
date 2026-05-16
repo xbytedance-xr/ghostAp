@@ -1,9 +1,10 @@
 """Unit tests for src/utils/review_helpers.py shared functions."""
 
-import pytest
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 from unittest.mock import MagicMock
+
+import pytest
 
 from src.utils.review_helpers import (
     ReviewExceptionResult,
@@ -14,7 +15,6 @@ from src.utils.review_helpers import (
     compute_retry_delay,
     handle_review_exception,
 )
-
 
 # ---------------------------------------------------------------------------
 # build_review_error_suggestion
@@ -468,7 +468,7 @@ class TestHandleReviewExceptionSpec:
 class TestHandleReviewExceptionElapsedMs:
     """Verify review_elapsed_ms flows into metrics['total_elapsed_ms'] and circuit."""
 
-    def test_metrics_contains_total_elapsed_ms_spec(self):
+    def test_metrics_contains_total_elapsed_ms_spec_timeout(self):
         circuit = _MockCircuitSpec()
         settings = _make_settings()
         result = handle_review_exception(

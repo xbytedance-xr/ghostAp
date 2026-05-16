@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional, Protocol
-
-import logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -832,7 +830,6 @@ class SessionStartupCoordinator:
             startup_timeout=float(request.startup_timeout or 60),
         )
         retries = int(retry_plan.attempts)
-        last_spec = ""
         cwd = request.cwd
         model_name = request.model_name
 
@@ -849,10 +846,9 @@ class SessionStartupCoordinator:
             session, actual_id, _diag = injected_result
             if session and actual_id:
                 try:
-                    last_spec = session.describe_agent()
+                    session.describe_agent()
                 except (AttributeError, TypeError):
                     logger.warning("Error while describing agent", exc_info=True)
-                    last_spec = ""
                 logger.info(
                     "[ACP:%s] Session started via injected starter: key=%s, session=%s",
                     effective_agent_type.upper(),
@@ -879,7 +875,7 @@ def normalize_startup_cwd(cwd: str, *, normalize_fn: Callable[[str], str | None]
     raw_cwd = cwd or "."
     try:
         normalized = normalize_fn(raw_cwd)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError):
         logger.warning("Error while normalizing startup cwd", exc_info=True)
         return raw_cwd
     return normalized or raw_cwd

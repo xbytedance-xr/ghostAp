@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 from ..config import get_settings
 from ..project.context import ProjectContext
 from ..project.manager import ProjectManager
-from .errors import BindError, CreateChatError, ProjectChatError
+from .errors import CreateChatError
 from .group_naming import format_group_name, validate_name_part
 from .lark_chat_client import LarkChatClient
 

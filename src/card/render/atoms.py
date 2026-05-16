@@ -60,7 +60,7 @@ def flatten_to_atoms(
 
     Uses a registry dispatch pattern for simple block→atom mappings.
     """
-    from src.card.render.tools import render_activity_digest_panel, render_active_tool_line
+    from src.card.render.tools import render_active_tool_line, render_activity_digest_panel
 
     atoms: list[RenderAtom] = []
     pending_tools: list[ContentBlock] = []

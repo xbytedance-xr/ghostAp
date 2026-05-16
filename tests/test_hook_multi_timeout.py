@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 import src.card.hooks as hooks_mod
 from src.card.hooks import HookFirer
 
-
 # Use a fast timeout for tests (patched below)
 _FAST_HOOK_TIMEOUT = 1.0
 

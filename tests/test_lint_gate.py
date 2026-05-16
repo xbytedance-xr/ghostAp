@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 from src.engine_base import ReviewPerspective
 from src.spec_engine.lint_gate import (
     LintGateSeverity,

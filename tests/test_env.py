@@ -2,16 +2,14 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from src.utils.env import (
+    _reset_env_for_testing,
+    build_clean_env,
+    get_test_environment_checker,
     is_test_environment,
     set_test_environment_checker,
-    get_test_environment_checker,
-    build_clean_env,
-    _reset_env_for_testing,
 )
 
 
@@ -31,7 +29,7 @@ class TestIsTestEnvironment:
     def test_default_with_testing_env_var_true(self):
         """Should return True when TESTING env var is set to a truthy value."""
         from src.utils.env import _default_is_test_environment
-        
+
         with patch.dict(os.environ, {}, clear=True):
             with patch("src.utils.env.sys.modules", {}):
                 os.environ["TESTING"] = "1"
@@ -40,7 +38,7 @@ class TestIsTestEnvironment:
     def test_default_with_test_env_var_false(self):
         """Should return False when TEST env var is set to a falsy value."""
         from src.utils.env import _default_is_test_environment
-        
+
         with patch.dict(os.environ, {}, clear=True):
             with patch("src.utils.env.sys.modules", {}):
                 os.environ["TEST"] = "0"
@@ -49,7 +47,7 @@ class TestIsTestEnvironment:
     def test_default_no_test_indicators(self):
         """Should return False when no test environment indicators are present."""
         from src.utils.env import _default_is_test_environment
-        
+
         with patch.dict(os.environ, {}, clear=True):
             with patch("src.utils.env.sys.modules", {}):
                 assert _default_is_test_environment() is False

@@ -6,7 +6,6 @@ import logging
 import threading
 from typing import Callable, Optional
 
-from ..acp.models import PromptResult
 from ..acp.sync_adapter import SyncACPSession
 from ..config import get_settings
 from ..utils.errors import get_error_detail

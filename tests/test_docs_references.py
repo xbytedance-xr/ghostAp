@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 from urllib.parse import urldefrag
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DOC_PATHS = [
     ROOT / "README.md",
@@ -14,6 +13,10 @@ DOC_PATHS = [
     *sorted((ROOT / "docs").glob("*.md")),
 ]
 
+ARCHIVED_DOC_PATHS = [
+    ROOT / ".plans",
+    ROOT / "docs" / "superpowers",
+]
 
 REMOVED_ARTIFACT_REFERENCES = {
     "2025-04-25-" + "multi-chat-isolation-design",
@@ -24,10 +27,23 @@ REMOVED_ARTIFACT_REFERENCES = {
     "card-migration-" + "faq.md",
     "docs/" + "plan.md",
     "docs/" + "superpowers",
+    ".plans",
+    "card-pipeline-review-fixes",
+    "card-migration-tasks",
+    "card-session-migration-tasks",
+    "card-cleanup-tasks",
+    "topic-scoped-engine-sessions",
+    "adaptive-spec-review-roles",
     "unified_card_" + "v1",
     "unified_card_" + "v2",
     "check_shim_" + "deadline",
 }
+
+
+def test_archived_doc_noise_paths_are_removed() -> None:
+    violations = [path.relative_to(ROOT).as_posix() for path in ARCHIVED_DOC_PATHS if path.exists()]
+
+    assert violations == []
 
 
 def test_retained_docs_do_not_reference_removed_cleanup_artifacts() -> None:

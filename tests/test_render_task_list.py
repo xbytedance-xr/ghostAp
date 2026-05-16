@@ -1,9 +1,8 @@
 """Tests for src.card.render.task_list module."""
 from __future__ import annotations
 
-import pytest
-from src.card.state.models import TaskListBlock
 from src.card.render.task_list import render_task_list_panel
+from src.card.state.models import TaskListBlock
 
 
 def _make_block(tasks, current_task_id="t1"):
@@ -205,9 +204,9 @@ class TestTaskListAtomOrdering:
     """Verify task_list atoms appear first in rendered card."""
 
     def test_task_list_first_in_status_section(self):
-        from src.card.render.atoms import flatten_to_atoms, RenderAtom
-        from src.card.render.renderer import _order_atoms_by_section
+        from src.card.render.atoms import flatten_to_atoms
         from src.card.render.budget import RenderBudget
+        from src.card.render.renderer import _order_atoms_by_section
         from src.card.state.models import ContentBlock, TaskListBlock
 
         blocks = (

@@ -1,13 +1,15 @@
-import pytest
 from unittest.mock import MagicMock, patch
-from src.spec_engine.review_pipeline import run_review_pipeline, _inject_lint_hints
-from src.spec_engine.review_artifacts import ReviewArtifacts
-from src.spec_engine.cycle_budget import CycleBudget
-from src.spec_engine.perspective_worker import PerspectiveOutcome
-from src.engine_base import PerspectiveReview, ReviewPerspective
-from src.spec_engine.lint_gate import LintGateDecision, LintGateSeverity
-from src.utils.lightweight_lint import LintIssue, LintResult
+
+import pytest
+
 from src.acp.models import PromptResult
+from src.engine_base import PerspectiveReview, ReviewPerspective
+from src.spec_engine.cycle_budget import CycleBudget
+from src.spec_engine.lint_gate import LintGateDecision, LintGateSeverity
+from src.spec_engine.perspective_worker import PerspectiveOutcome
+from src.spec_engine.review_artifacts import ReviewArtifacts
+from src.spec_engine.review_pipeline import _inject_lint_hints, run_review_pipeline
+from src.utils.lightweight_lint import LintIssue, LintResult
 
 
 @pytest.fixture

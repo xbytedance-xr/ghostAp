@@ -4,7 +4,6 @@ import logging
 import time
 from typing import TYPE_CHECKING, Optional
 
-from src.utils.text import format_time_ago
 from src.mode.manager import InteractionMode
 
 from ..shared import (
@@ -198,7 +197,7 @@ class CoreBuilder:
             thread_root_id = current_thread_id if isinstance(current_thread_id, str) else None
         except Exception:
             logger.debug("failed to get thread_id", exc_info=True)
-            
+
         effective_mode = mode
         if effective_mode is None and project:
             if getattr(project, "ttadk_mode", False):
@@ -268,8 +267,8 @@ class CoreBuilder:
         if diff < 0:
             diff = 0.0
 
-        from src.utils.time_ago import compute_time_ago_bucket
         from src.utils.text import format_time_ago_from_bucket
+        from src.utils.time_ago import compute_time_ago_bucket
 
         bucket = compute_time_ago_bucket(diff)
         return format_time_ago_from_bucket(bucket)

@@ -5,9 +5,7 @@ outside self._lock to avoid holding the lock during CPU-bound work.
 """
 from __future__ import annotations
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 def test_render_called_outside_lock():

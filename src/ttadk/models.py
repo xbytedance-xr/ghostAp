@@ -1,8 +1,8 @@
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-import logging
 
 from . import model_resolver as _model_resolver
 

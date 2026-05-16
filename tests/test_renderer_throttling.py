@@ -1,12 +1,10 @@
 import json
-import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.acp import ACPEventType
 from src.card.builder import CardBuilder
-from src.card.engine_snapshot import EngineSnapshot
 from src.deep_engine.models import DeepProjectStatus
 from src.feishu.renderers.deep_renderer import DeepRenderer
 

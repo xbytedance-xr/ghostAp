@@ -4,7 +4,7 @@ import shlex
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Callable, List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 from ..config import get_settings
 from ..utils.errors import get_error_detail
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 class SubprocessExecutor(ABC):
     """子进程执行抽象接口，便于测试模拟"""
-    
+
     @abstractmethod
     def run(
         self,
@@ -32,7 +32,7 @@ class SubprocessExecutor(ABC):
 
 class DefaultSubprocessExecutor(SubprocessExecutor):
     """默认的子进程执行实现，直接调用 subprocess.run"""
-    
+
     def run(
         self,
         cmd_args: List[str],
@@ -56,12 +56,12 @@ class DefaultSubprocessExecutor(SubprocessExecutor):
 
 class SecurityCheckStrategy(ABC):
     """安全检查策略抽象基类"""
-    
+
     @abstractmethod
     def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
         """
         检查命令是否安全
-        
+
         Returns:
             (is_safe, reason): 第一个元素表示是否安全，第二个元素表示拒绝原因（如果不安全）
         """
@@ -70,33 +70,33 @@ class SecurityCheckStrategy(ABC):
 
 class WhitelistCheckStrategy(SecurityCheckStrategy):
     """白名单检查策略"""
-    
+
     def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
         if not settings.sandbox_use_whitelist:
             return True, None
-        
+
         whitelist = settings.command_whitelist
         if not whitelist:
             return False, "白名单模式已启用但白名单为空"
-        
+
         # 首先检查是否包含 shell 控制字符，这些字符可能用于执行多个命令
         shell_control_chars = [';', '&&', '||', '|', '`', '$(']
         for char in shell_control_chars:
             if char in command:
                 return False, f"命令包含不允许的控制字符: {char}"
-        
+
         # 检查括号等特殊字符
         if '(' in command or ')' in command or '{' in command or '}' in command:
             return False, "命令包含不允许的括号字符"
-        
+
         try:
             # 使用 shlex.split() 安全解析命令，获取第一个 token（实际执行的命令）
             tokens = shlex.split(command.strip())
             if not tokens:
                 return False, "命令为空"
-            
+
             cmd_name = tokens[0].lower()
-            
+
             # 检查命令名是否匹配白名单
             for allowed in whitelist:
                 allowed_lower = allowed.strip().lower()
@@ -108,13 +108,13 @@ class WhitelistCheckStrategy(SecurityCheckStrategy):
         except ValueError as e:
             # shlex.split() 在处理不匹配的引号时会抛出 ValueError
             return False, f"命令解析失败: {str(e)}"
-        
+
         return True, None
 
 
 class DangerousPatternCheckStrategy(SecurityCheckStrategy):
     """危险模式检查策略"""
-    
+
     DANGEROUS_PATTERNS = [
         r"rm\s+(-[rf]+\s+)?/($|\s)",
         r"rm\s+(-[rf]+\s+)?/\*",
@@ -131,10 +131,10 @@ class DangerousPatternCheckStrategy(SecurityCheckStrategy):
         r"chmod\s+(-[rR]+\s+)?777\s+/",
         r"chown\s+.*\s+/($|\s)",
     ]
-    
+
     def __init__(self):
         self._compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.DANGEROUS_PATTERNS]
-    
+
     def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
         for pattern in self._compiled_patterns:
             if pattern.search(command):
@@ -144,12 +144,12 @@ class DangerousPatternCheckStrategy(SecurityCheckStrategy):
 
 class BlacklistCheckStrategy(SecurityCheckStrategy):
     """黑名单检查策略"""
-    
+
     def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
         # 仅在非白名单模式下强制检查黑名单
         if settings.sandbox_use_whitelist:
             return True, None
-        
+
         for blacklisted in settings.command_blacklist:
             if blacklisted in command:
                 return False, f"命令包含黑名单内容: {blacklisted}"
@@ -184,7 +184,7 @@ class SandboxExecutor:
     def __init__(self, settings=None, subprocess_executor: Optional[SubprocessExecutor] = None, security_strategies: Optional[List[SecurityCheckStrategy]] = None):
         self.settings = settings if settings is not None else get_settings()
         self.subprocess_executor = subprocess_executor if subprocess_executor is not None else DefaultSubprocessExecutor()
-        
+
         # 如果未提供策略，则使用默认策略链
         if security_strategies is None:
             self.security_strategies = [
@@ -216,8 +216,8 @@ class SandboxExecutor:
         # instead of just warning (AC-R05).
         if cwd and chat_id:
             try:
-                from ..repo_lock import get_repo_lock_manager, LockConflictError
                 from ..config import get_settings as _get_settings
+                from ..repo_lock import LockConflictError, get_repo_lock_manager
                 _rlm = get_repo_lock_manager()
                 _info = _rlm.get_lock_info(cwd)
                 if _info and _info.chat_id != chat_id:

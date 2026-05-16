@@ -7,13 +7,11 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
-
 from src.card.actions.dispatch import (
-    build_common_action_registry,
-    MODE_FULL,
-    MODE_COMPACT,
     ENGINE_STOP,
+    MODE_COMPACT,
+    MODE_FULL,
+    build_common_action_registry,
 )
 from src.card.events import CardEvent, CardEventType
 

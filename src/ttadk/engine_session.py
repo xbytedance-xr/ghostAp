@@ -5,13 +5,16 @@
 
 import logging
 import time
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from ..config import get_settings
 from ..utils.errors import get_error_detail
 from .startup_errors import TTADKStartupError
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .manager import TTADKManager as _TTADKManager
 
 
 def start_ttadk_engine_session(
