@@ -104,6 +104,43 @@ def render_spec_task_panel(block: ContentBlock) -> dict | None:
     )
 
 
+def render_spec_task_list_panel(blocks: list[ContentBlock] | tuple[ContentBlock, ...]) -> dict | None:
+    """Render Spec TASK items as one ordered collapsible list panel."""
+    rows: list[str] = []
+    for index, block in enumerate(blocks, start=1):
+        data = getattr(block, "data", None)
+        if not isinstance(data, dict):
+            continue
+
+        task_id = data.get("task_id") or data.get("task_index") or index
+        description = str(data.get("description") or "").strip()
+        if not description:
+            continue
+
+        dependencies = _dependencies(data.get("dependencies"))
+        status = str(data.get("status") or "pending").strip() or "pending"
+        output = str(data.get("output") or "").strip()
+        row = (
+            f"{task_id}. {description}"
+            f" · 依赖：{_format_dependencies(dependencies)}"
+            f" · 状态：{_STATUS_TEXT.get(status, status)}"
+        )
+        if output:
+            row = f"{row} · 输出：{output}"
+        rows.append(row)
+
+    if not rows:
+        return None
+
+    return _build_panel(
+        header=f"📝 **任务列表-{len(rows)}**",
+        body="\n".join(rows),
+        background_style="default",
+        border_color=PANEL_STYLES["border_normal"],
+        expanded=True,
+    )
+
+
 def _build_panel(
     *,
     header: str,

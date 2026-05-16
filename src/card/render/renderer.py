@@ -447,6 +447,8 @@ def _render_atom_spec_plan(atom: RenderAtom, state: CardState, budget: RenderBud
 
 
 def _render_atom_spec_task(atom: RenderAtom, state: CardState, budget: RenderBudget, block_index: dict) -> dict | None:
+    if atom.elements:
+        return atom.elements[0]
     block = block_index.get(atom.block_id)
     if block is None:
         return {"tag": "markdown", "content": atom.content}

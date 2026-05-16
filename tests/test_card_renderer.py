@@ -205,21 +205,26 @@ class TestUnifiedCardSections:
             el for el in body
             if el.get("tag") == "collapsible_panel" and _header_content(el).startswith("📝 **任务 ")
         ]
+        task_list_panels = [
+            el for el in body
+            if el.get("tag") == "collapsible_panel" and _header_content(el).startswith("📝 **任务列表-")
+        ]
 
         assert len(plan_panels) == 1
         assert "解析 PLAN 产物" in str(plan_panels[0])
         plan_body = plan_panels[0]["elements"][0]
         assert plan_body["background_style"] == "orange"
         assert plan_panels[0]["border"]["color"] == "orange"
-        assert len(task_panels) == 3
-        assert all(panel["expanded"] is True for panel in task_panels)
-        assert task_1 in str(task_panels[0])
-        assert task_3 in str(task_panels[2])
-        assert "任务 1、任务 2" in str(task_panels[2])
-        assert "及其他" not in str(task_panels)
-        assert "已截断" not in str(task_panels)
+        assert task_panels == []
+        assert len(task_list_panels) == 1
+        assert "任务列表-3" in _header_content(task_list_panels[0])
+        task_list_body = task_list_panels[0]["elements"][0]["columns"][0]["elements"][0]["content"]
+        assert f"1. {task_1} · 依赖：无 · 状态：待执行" in task_list_body
+        assert f"3. {task_3} · 依赖：任务 1、任务 2 · 状态：待执行" in task_list_body
+        assert "及其他" not in task_list_body
+        assert "已截断" not in task_list_body
 
-    def test_spec_task_panels_paginate_without_dropping_later_tasks(self):
+    def test_spec_task_list_panel_keeps_later_tasks_without_individual_cards(self):
         blocks = tuple(
             ContentBlock(
                 kind="spec_task",
@@ -240,15 +245,21 @@ class TestUnifiedCardSections:
 
         cards = render_card(state, RenderBudget(byte_budget=6000, node_budget=42))
         all_elements = [el for card in cards for el in card._card_json["body"]["elements"]]
-        task_panels = [
+        individual_task_panels = [
             el for el in all_elements
             if el.get("tag") == "collapsible_panel"
             and el.get("header", {}).get("title", {}).get("content", "").startswith("📝 **任务 ")
         ]
+        task_list_panels = [
+            el for el in all_elements
+            if el.get("tag") == "collapsible_panel"
+            and el.get("header", {}).get("title", {}).get("content", "").startswith("📝 **任务列表-")
+        ]
 
-        assert len(cards) > 1
-        assert len(task_panels) == 34
-        assert "任务 34 的完整说明必须保留在卡片分页中" in str(task_panels[-1])
+        assert individual_task_panels == []
+        assert len(task_list_panels) == 1
+        assert "任务列表-34" in str(task_list_panels[0])
+        assert "34. 任务 34 的完整说明必须保留在卡片分页中" in str(task_list_panels[0])
 
     def test_bridge_phrase_is_prepended_to_first_text_body_atom(self):
         state = CardState(

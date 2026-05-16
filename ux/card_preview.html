@@ -929,6 +929,39 @@ tests/test_tools.py::test_tool_history_fold PASSED
         </div>
       </div>
 
+      <!-- Spec Plan Artifact -->
+      <div class="panel panel-orange">
+        <div class="panel-header">
+          <span class="arrow">▼</span>
+          <span class="panel-title">🏗️ <strong>方案规划</strong> · 第 1 轮 · 7 步 · 1 处文件</span>
+        </div>
+        <div class="panel-content">
+          <strong>方案规划</strong><br>
+          <strong>架构/方案</strong>：复用 CardSession 结构化事件，只展示整理后的方案规划，不恢复 raw JSON。<br><br>
+          <strong>执行步骤</strong><br>
+          1. 解析 PLAN 产物<br>
+          2. 派发结构化事件<br>
+          3. 渲染方案规划面板
+        </div>
+      </div>
+
+      <!-- Spec Task Artifact List -->
+      <div class="panel panel-grey">
+        <div class="panel-header">
+          <span class="arrow">▼</span>
+          <span class="panel-title">📝 <strong>任务列表-7</strong></span>
+        </div>
+        <div class="panel-content">
+          1. 阅读 src/feishu/ 目录，总结接入层模块职责 · 依赖：无 · 状态：待执行<br>
+          2. 阅读 src/card/ 目录，总结卡片渲染管线 · 依赖：无 · 状态：待执行<br>
+          3. 阅读 src/acp/ 与 src/agent_session/ 目录，总结后端接入实现 · 依赖：无 · 状态：待执行<br>
+          4. 阅读 src/deep_engine/ 与 src/spec_engine/ 目录，总结执行引擎职责 · 依赖：无 · 状态：待执行<br>
+          5. 阅读项目/配置/锁模块，总结状态边界 · 依赖：无 · 状态：待执行<br>
+          6. 综合任务 1-5 的产出，编写结构化总结 · 依赖：任务 1、任务 2、任务 3、任务 4、任务 5 · 状态：待执行<br>
+          7. 对照验收标准自检，补齐遗漏内容 · 依赖：任务 6 · 状态：待执行
+        </div>
+      </div>
+
       <!-- Task List -->
       <div class="panel panel-indigo">
         <div class="panel-header">

@@ -111,6 +111,29 @@ def flatten_to_atoms(
                 # Completed or failed: accumulate for digest
                 pending_tools.append(block)
             i += 1
+        elif block.kind == "spec_task":
+            _flush_pending()
+            task_blocks = [block]
+            j = i + 1
+            while j < n and blocks[j].kind == "spec_task":
+                task_blocks.append(blocks[j])
+                j += 1
+
+            from src.card.render.spec_artifacts import render_spec_task_list_panel
+
+            task_panel = render_spec_task_list_panel(task_blocks)
+            if task_panel:
+                atom = RenderAtom(
+                    kind="spec_task",
+                    block_id=task_blocks[0].block_id,
+                    content=_spec_task_list_content(task_blocks),
+                    elements=[task_panel],
+                    splittable=False,
+                    node_count=6,
+                )
+                atom.byte_size = estimate_atom_size(atom)
+                atoms.append(atom)
+            i = j
         else:
             # Non-tool block: flush pending tools, then dispatch normally
             _flush_pending()
@@ -139,6 +162,22 @@ def flatten_to_atoms(
 
 
 # --- Block-to-atom handler functions (registered via _get_block_kind_handlers) ---
+
+def _spec_task_list_content(blocks: list[ContentBlock]) -> str:
+    content_parts: list[str] = []
+    for block in blocks:
+        data = getattr(block, "data", None) or {}
+        if not isinstance(data, dict):
+            continue
+        dependencies = data.get("dependencies") or []
+        content_parts.append(str(data.get("task_id") or ""))
+        content_parts.append(str(data.get("description") or ""))
+        if isinstance(dependencies, list):
+            content_parts.append(",".join(str(item) for item in dependencies))
+        else:
+            content_parts.append(str(dependencies))
+    return "\n".join(part for part in content_parts if part)
+
 
 def _block_to_text_atom(block: ContentBlock) -> RenderAtom:
     atom = RenderAtom(
