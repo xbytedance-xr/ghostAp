@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
+
 from src.card.state.models import ContentBlock
 from src.card.themes import PANEL_STYLES
 
 from .budget import RenderBudget
+
+_NUMBERED_PLAN_ITEM_RE = re.compile(r"(?<!\S)(?P<num>\d+)\s*[.．、]\s+")
 
 
 def render_plan_panel(
@@ -15,22 +19,20 @@ def render_plan_panel(
     phase: str = "running",
     content_override: str | None = None,
 ) -> dict:
-    """Render plan as a collapsible_panel.
+    """Render plan as an always-expanded panel.
 
     Args:
         block: The content block containing plan markdown.
-        budget: Render budget (provides plan_max_chars).
-        phase: Current engine phase. Panel auto-collapses when not 'running'.
+        budget: Unused for plan truncation; accepted for renderer API compatibility.
+        phase: Unused; plans stay expanded so each item remains visible.
         content_override: If provided, use this instead of block.content.
     """
-    max_chars = budget.plan_max_chars if budget else 2000
     content = content_override if content_override is not None else block.content
-    if len(content) > max_chars and phase != "running":
-        content = content[:max_chars] + "\n\n…(已截断，展开查看完整计划)"
+    content = _format_plan_content(content)
 
     return {
         "tag": "collapsible_panel",
-        "expanded": phase == "running",
+        "expanded": True,
         "header": {
             "title": {"tag": "markdown", "content": "📋 **执行计划**"},
             "vertical_align": "center",
@@ -47,3 +49,24 @@ def render_plan_panel(
         "padding": PANEL_STYLES["padding_standard"],
         "elements": [{"tag": "markdown", "content": content}],
     }
+
+
+def _format_plan_content(content: str) -> str:
+    """Normalize inline numbered plans into one visible item per line."""
+    raw = str(content or "").strip()
+    matches = list(_NUMBERED_PLAN_ITEM_RE.finditer(raw))
+    if len(matches) <= 1:
+        return raw
+
+    lines: list[str] = []
+    prefix = raw[:matches[0].start()].strip()
+    if prefix:
+        lines.append(prefix)
+
+    for index, match in enumerate(matches):
+        item_start = match.end()
+        item_end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
+        item = raw[item_start:item_end].strip()
+        if item:
+            lines.append(f"{match.group('num')}. {item}")
+    return "\n".join(lines)

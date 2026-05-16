@@ -212,7 +212,7 @@ class TestReasoningPanel:
 
 class TestPlanPanel:
     def test_plan_panel(self):
-        """Plan renders as indigo collapsible with step icons"""
+        """Plan renders as an expanded indigo panel with step icons."""
         content = "1. ✅ 分析需求\n2. ⏳ 编写代码\n3. ○ 运行测试"
         block = ContentBlock(kind="plan", block_id="p1", content=content)
         result = render_plan_panel(block)
@@ -221,6 +221,25 @@ class TestPlanPanel:
         assert result["border"]["color"] == "indigo"
         assert "执行计划" in result["header"]["title"]["content"]
         assert result["elements"][0]["content"] == content
+
+    def test_plan_panel_splits_inline_numbered_items_without_truncating(self):
+        """Inline numbered plans should render one item per line and stay complete."""
+        content = (
+            "1. 串行识别项目类型。 2 . 并行委托 3 个只读子任务。 "
+            "3. 保证每条问题都有 `file_path : line_number` 证据。 "
+            "4. 输出最终巡检报告。"
+        )
+        block = ContentBlock(kind="plan", block_id="p1", content=content)
+        result = render_plan_panel(block, phase="completed")
+
+        assert result["expanded"] is True
+        assert "已截断" not in result["elements"][0]["content"]
+        assert result["elements"][0]["content"] == "\n".join([
+            "1. 串行识别项目类型。",
+            "2. 并行委托 3 个只读子任务。",
+            "3. 保证每条问题都有 `file_path : line_number` 证据。",
+            "4. 输出最终巡检报告。",
+        ])
 
 
 class TestToolPanelEmptyData:
