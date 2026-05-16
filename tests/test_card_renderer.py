@@ -208,6 +208,9 @@ class TestUnifiedCardSections:
 
         assert len(plan_panels) == 1
         assert "解析 PLAN 产物" in str(plan_panels[0])
+        plan_body = plan_panels[0]["elements"][0]
+        assert plan_body["background_style"] == "orange"
+        assert plan_panels[0]["border"]["color"] == "orange"
         assert len(task_panels) == 3
         assert all(panel["expanded"] is True for panel in task_panels)
         assert task_1 in str(task_panels[0])

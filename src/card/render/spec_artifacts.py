@@ -12,6 +12,8 @@ _TASK_STYLES: tuple[tuple[str, str], ...] = (
     ("blue", "blue"),
     ("grey", "grey"),
 )
+_SPEC_PLAN_BACKGROUND_STYLE = "orange"
+_SPEC_PLAN_BORDER_COLOR = "orange"
 
 _STATUS_TEXT: dict[str, str] = {
     "pending": "待执行",
@@ -61,8 +63,8 @@ def render_spec_plan_panel(block: ContentBlock) -> dict | None:
     return _build_panel(
         header=" · ".join(header_parts),
         body="\n".join(body_lines),
-        background_style="wathet",
-        border_color=PANEL_STYLES["border_plan"],
+        background_style=_SPEC_PLAN_BACKGROUND_STYLE,
+        border_color=_SPEC_PLAN_BORDER_COLOR,
         expanded=True,
     )
 
