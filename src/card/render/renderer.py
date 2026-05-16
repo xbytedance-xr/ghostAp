@@ -657,6 +657,8 @@ def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock])
         element_id = block.element_id
 
     content = _normalize_text_markdown(atom.content)
+    if element_id:
+        content = _stabilize_active_markdown(content)
     el: dict = {"tag": "markdown", "content": content}
     # Only assign element_id when content is non-empty to prevent Feishu CardKit
     # from entering streaming state with an empty element (causes first-char newline).
@@ -680,7 +682,7 @@ def _find_active_element(
             continue
         block = block_index.get(atom.block_id)
         if block is not None and block.status == "active" and block.element_id:
-            content = _normalize_text_markdown(atom.content)
+            content = _stabilize_active_markdown(_normalize_text_markdown(atom.content))
             # Skip empty content: don't activate streaming until real text exists
             if not _is_streaming_text_ready(content):
                 continue
@@ -694,6 +696,81 @@ def _normalize_text_markdown(content: str) -> str:
         return content
     lines = str(content).splitlines(keepends=True)
     return "".join(_normalize_fence_line(line) for line in lines)
+
+
+def _stabilize_active_markdown(content: str) -> str:
+    """Close in-flight markdown delimiters so partial streaming frames render locally.
+
+    The engine may stream a markdown token before its closing delimiter. Feishu
+    reparses every element_content update, so an unclosed code fence or inline
+    code span makes all following text look like code until a later frame
+    happens to close it. Only active streaming text gets this presentation guard;
+    completed blocks keep the exact model output.
+    """
+    if not content:
+        return content
+
+    fence = _open_markdown_fence(content)
+    if fence:
+        suffix = "" if content.endswith("\n") else "\n"
+        return f"{content}{suffix}{fence}"
+
+    inline_tick = _last_unclosed_inline_code_tick(content)
+    if inline_tick:
+        return f"{content}{inline_tick}"
+
+    return content
+
+
+def _open_markdown_fence(content: str) -> str:
+    open_fence = ""
+    in_fence = False
+    for raw_line in str(content).splitlines():
+        line = raw_line.lstrip()
+        match = _FENCE_LINE_RE.match(line)
+        if not match:
+            continue
+        fence = match.group("fence")
+        if in_fence and open_fence and fence.startswith(open_fence[0] * min(len(open_fence), len(fence))):
+            in_fence = False
+            open_fence = ""
+            continue
+        if not in_fence:
+            in_fence = True
+            open_fence = fence[:3]
+    return open_fence if in_fence else ""
+
+
+def _last_unclosed_inline_code_tick(content: str) -> str:
+    last_unclosed = ""
+    in_fence = False
+    for raw_line in str(content).splitlines():
+        line = raw_line.lstrip()
+        match = _FENCE_LINE_RE.match(line)
+        if match:
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        for tick in _iter_unescaped_inline_backtick_runs(raw_line):
+            last_unclosed = "" if last_unclosed == tick else tick
+    return last_unclosed
+
+
+def _iter_unescaped_inline_backtick_runs(text: str):
+    i = 0
+    while i < len(text):
+        if text[i] != "`":
+            i += 1
+            continue
+        escaped = i > 0 and text[i - 1] == "\\"
+        j = i
+        while j < len(text) and text[j] == "`":
+            j += 1
+        run = text[i:j]
+        if not escaped and len(run) < 3:
+            yield run
+        i = j
 
 
 def _normalize_fence_line(line: str) -> str:

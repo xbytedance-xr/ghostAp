@@ -642,6 +642,86 @@ class TestActiveElement:
         assert cards[0].active_element is not None
         assert cards[0].active_element.text == markdown["content"]
 
+    def test_active_markdown_closes_unfinished_inline_code_span(self):
+        content = (
+            "### 🔴 Critical\n\n"
+            "**Issue:** `randH ex discards the screenshot error from crypto/rand.Read"
+        )
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content=content,
+                    element_id="el_stream",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ][0]
+
+        assert markdown["content"] == content + "`"
+        assert cards[0].active_element is not None
+        assert cards[0].active_element.text == content + "`"
+
+    def test_completed_markdown_preserves_unfinished_inline_code_span(self):
+        content = "**Issue:** `raw model output"
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content=content,
+                    element_id="el_stream",
+                    status="completed",
+                ),
+            ),
+            terminal="completed",
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ][0]
+
+        assert markdown["content"] == content
+        assert cards[0].active_element is None
+
+    def test_active_markdown_closes_unfinished_code_fence(self):
+        content = "Reviewing file\n\n```go\nfunc main() {\n"
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content=content,
+                    element_id="el_stream",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ][0]
+
+        assert markdown["content"] == content + "```"
+        assert cards[0].active_element is not None
+        assert cards[0].active_element.text == content + "```"
+
     def test_one_character_active_text_waits_before_streaming(self):
         state = CardState(
             blocks=(
