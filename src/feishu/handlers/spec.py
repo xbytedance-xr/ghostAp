@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -13,6 +14,8 @@ from ...card.actions.dispatch import (
     SPEC_REVIEW_SELECT_MODEL,
     SPEC_REVIEW_SELECT_TOOL,
 )
+from ...card.shared import build_responsive_layout
+from ...card.themes import PANEL_STYLES, get_theme
 from ...card.ui_text import UI_TEXT
 from ...model_selection import DEFAULT_MODEL_OPTION_VALUE, is_default_model_option
 from ...spec_engine.review_agents import ReviewAgentBinding
@@ -754,72 +757,41 @@ class SpecHandler(BaseEngineHandler):
         runs: list[SpecRunSummary],
     ) -> None:
         latest = runs[0]
-        lines = [
-            "📋 **Spec 缓存任务**",
-            "",
-            f"- 发现任务: `{len(runs)}` 个",
-            f"- 缓存根: `{os.path.dirname(os.path.dirname(latest.run_dir))}`",
-            "",
+        theme_color = getattr(project, "theme_color", None) if project else None
+        theme = get_theme(theme_color or "blue")
+        cache_root = os.path.dirname(os.path.dirname(latest.run_dir))
+        elements = [
+            CardBuilder._build_directory_element(project, root_path),
+            {"tag": "hr"},
+            {
+                "tag": "markdown",
+                "content": (
+                    "📋 **Spec 状态**\n\n"
+                    "**Spec 缓存任务**\n"
+                    f"- 发现任务: `{len(runs)}` 个\n"
+                    f"- 缓存根: `{cache_root}`"
+                ),
+            },
         ]
-        for run in runs[:5]:
-            updated = self._format_timestamp(run.saved_at or run.created_at)
-            req = (run.requirement or "").strip()
-            if len(req) > 56:
-                req = req[:56] + "..."
-            status = run.status or "未知"
-            cycle = f"{run.current_cycle}/{run.total_cycles}" if run.total_cycles else str(run.current_cycle or 0)
-            lines.append(f"**{run.run_id}** · {status} · cycle {cycle}")
-            if updated:
-                lines.append(f"- 更新时间: {updated}")
-            if req:
-                lines.append(f"- 目标: {req}")
-            if not run.state_path:
-                lines.append("- 状态: 仅发现目录，缺少可恢复 state.json")
-            lines.append("")
+        for index, run in enumerate(runs[:5], start=1):
+            elements.append(self._build_spec_cache_run_panel(run, project, root_path, index=index))
         if len(runs) > 5:
-            lines.append(f"... 还有 {len(runs) - 5} 个历史任务未展示")
-            lines.append("")
-
-        lines.append("点击下方按钮可恢复或删除缓存任务；如果状态为暂停/待澄清，会继续执行。")
-        buttons: list[dict] = []
-        for run in runs[:5]:
-            if run.state_path:
-                buttons.append({
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": f"🔄 恢复 {run.run_id}"},
-                    "type": "primary",
-                    "behaviors": [{
-                        "type": "callback",
-                        "value": {
-                            "action": "spec_restore_run",
-                            "project_id": project.project_id if project else "",
-                            "deep_project_id": root_path,
-                            "run_id": run.run_id,
-                        },
-                    }],
-                })
-            buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": f"🗑 删除 {run.run_id}"},
-                "type": "danger",
-                "behaviors": [{
-                    "type": "callback",
-                    "value": {
-                        "action": "spec_delete_run",
-                        "project_id": project.project_id if project else "",
-                        "deep_project_id": root_path,
-                        "run_id": run.run_id,
-                    },
-                }],
+            elements.append({
+                "tag": "markdown",
+                "content": f"... 还有 {len(runs) - 5} 个历史任务未展示",
+                "text_size": "notation",
             })
-        msg_type, card_content = CardBuilder._build_response_card_inner(
-            project=project,
-            title="📋 Spec 状态",
-            content="\n".join(lines),
-            working_dir=root_path,
-            show_buttons=False,
-            extra_buttons=buttons,
+        elements.append({
+            "tag": "markdown",
+            "content": "恢复或删除操作已放在对应任务面板内；暂停/待澄清任务恢复后会继续执行。",
+            "text_size": "notation",
+        })
+        card = CardBuilder._wrap_card(
+            CardBuilder._build_header_title(project),
+            theme.header_template,
+            elements,
         )
+        card_content = json.dumps(card, ensure_ascii=False)
         self.reply_card(message_id, card_content)
 
     @staticmethod
@@ -830,6 +802,129 @@ class SpecHandler(BaseEngineHandler):
             return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
         except Exception:
             return ""
+
+    def _build_spec_cache_run_panel(
+        self,
+        run: SpecRunSummary,
+        project: Optional["ProjectContext"],
+        root_path: str,
+        *,
+        index: int,
+    ) -> dict:
+        status = run.status or "未知"
+        cycle = f"{run.current_cycle}/{run.total_cycles}" if run.total_cycles else str(run.current_cycle or 0)
+        updated = self._format_timestamp(run.saved_at or run.created_at) or "未知"
+        requirement = (run.requirement or "").strip()
+        if len(requirement) > 120:
+            requirement = requirement[:120] + "..."
+        background_style, border_color = self._spec_cache_panel_style(index)
+        detail_lines = [
+            f"**任务 ID**：`{run.run_id}`",
+            f"**更新时间**：{updated}",
+            f"**状态**：{status}",
+            f"**Cycle**：{cycle}",
+        ]
+        if requirement:
+            detail_lines.append(f"**目标**：{requirement}")
+        if not run.state_path:
+            detail_lines.append("**恢复状态**：仅发现目录，缺少可恢复 `state.json`")
+
+        buttons: list[dict] = []
+        if run.state_path:
+            buttons.append(
+                self._build_spec_cache_action_button(
+                    text="🔄 恢复",
+                    button_type="primary",
+                    action="spec_restore_run",
+                    run_id=run.run_id,
+                    project=project,
+                    root_path=root_path,
+                )
+            )
+        buttons.append(
+            self._build_spec_cache_action_button(
+                text="🗑 删除",
+                button_type="danger",
+                action="spec_delete_run",
+                run_id=run.run_id,
+                project=project,
+                root_path=root_path,
+            )
+        )
+
+        return {
+            "tag": "collapsible_panel",
+            "expanded": True,
+            "header": {
+                "title": {"tag": "markdown", "content": f"**{run.run_id}** · {status} · cycle {cycle}"},
+                "vertical_align": "center",
+                "icon": {
+                    "tag": "standard_icon",
+                    "token": "down-small-ccm_outlined",
+                    "size": "16px 16px",
+                },
+                "icon_position": "follow_text",
+                "icon_expanded_angle": -180,
+            },
+            "border": {"color": border_color, "corner_radius": PANEL_STYLES["corner_radius"]},
+            "vertical_spacing": PANEL_STYLES["vertical_spacing"],
+            "padding": PANEL_STYLES["padding_standard"],
+            "elements": [
+                {
+                    "tag": "column_set",
+                    "flex_mode": "stretch",
+                    "background_style": background_style,
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "vertical_align": "center",
+                            "elements": [
+                                {"tag": "markdown", "content": "\n".join(detail_lines), "text_align": "left"}
+                            ],
+                        }
+                    ],
+                },
+                *build_responsive_layout(buttons, mobile_force_vertical=False),
+            ],
+        }
+
+    @staticmethod
+    def _spec_cache_panel_style(index: int) -> tuple[str, str]:
+        styles = (
+            ("wathet", "wathet"),
+            ("grey", PANEL_STYLES["border_normal"]),
+            ("yellow", "orange"),
+            ("green", "green"),
+            ("blue", PANEL_STYLES["border_history"]),
+        )
+        return styles[(index - 1) % len(styles)]
+
+    @staticmethod
+    def _build_spec_cache_action_button(
+        *,
+        text: str,
+        button_type: str,
+        action: str,
+        run_id: str,
+        project: Optional["ProjectContext"],
+        root_path: str,
+    ) -> dict:
+        return {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": text},
+            "type": button_type,
+            "behaviors": [{
+                "type": "callback",
+                "value": {
+                    "action": action,
+                    "project_id": project.project_id if project else "",
+                    "deep_project_id": root_path,
+                    "run_id": run_id,
+                },
+            }],
+        }
 
     def show_spec_history(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
         if project is None:

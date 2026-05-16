@@ -232,7 +232,98 @@ def test_spec_status_lists_cached_runs_with_restore_and_delete_buttons(monkeypat
         "run_id": "run123",
     } in values
     button_types = {button["text"]["content"]: button.get("type") for button in buttons}
-    assert button_types["🗑 删除 run123"] == "danger"
+    assert button_types["🔄 恢复"] == "primary"
+    assert button_types["🗑 删除"] == "danger"
+    panels = [element for element in card["body"]["elements"] if element.get("tag") == "collapsible_panel"]
+    assert any("run123" in panel["header"]["title"]["content"] for panel in panels)
+
+
+def test_spec_status_groups_restore_and_delete_buttons_with_each_cached_run(monkeypatch):
+    handler = _make_spec_handler()
+    project = MagicMock()
+    project.project_id = "p1"
+    project.project_name = "ghostAp"
+    project.root_path = "/repo/ghostAp"
+    restorable = SpecRunSummary(
+        run_id="run123",
+        run_dir="/cache/repo/ghostAp/.spec_engine/run123",
+        state_path="/cache/repo/ghostAp/.spec_engine/run123/state.json",
+        status="paused",
+        requirement="restore this spec",
+        current_cycle=3,
+        total_cycles=10,
+        saved_at=1_700_000_000,
+    )
+    orphaned = SpecRunSummary(
+        run_id="orphan456",
+        run_dir="/cache/repo/ghostAp/.spec_engine/orphan456",
+        state_path=None,
+        status="未知",
+        requirement="directory only",
+        current_cycle=0,
+        total_cycles=0,
+        saved_at=1_700_000_100,
+    )
+    monkeypatch.setattr("src.feishu.handlers.spec.list_spec_runs", lambda root, settings: [restorable, orphaned])
+    with patch.object(handler, "reply_card") as reply_card:
+        handler.show_spec_status("msg-status", "chat-status", project)
+
+    card = json.loads(reply_card.call_args[0][1])
+    panels = [
+        panel
+        for panel in card["body"]["elements"]
+        if panel.get("tag") == "collapsible_panel"
+    ]
+    assert len(panels) == 2
+
+    panel_by_run = {
+        panel["header"]["title"]["content"]: panel
+        for panel in panels
+    }
+    run123_panel = next(panel for title, panel in panel_by_run.items() if "run123" in title)
+    orphan_panel = next(panel for title, panel in panel_by_run.items() if "orphan456" in title)
+
+    run123_buttons = _collect_buttons(run123_panel)
+    run123_values = [
+        behavior.get("value")
+        for button in run123_buttons
+        for behavior in button.get("behaviors", [])
+        if behavior.get("type") == "callback"
+    ]
+    assert [button["text"]["content"] for button in run123_buttons] == ["🔄 恢复", "🗑 删除"]
+    assert {
+        "action": "spec_restore_run",
+        "project_id": "p1",
+        "deep_project_id": "/repo/ghostAp",
+        "run_id": "run123",
+    } in run123_values
+    assert {
+        "action": "spec_delete_run",
+        "project_id": "p1",
+        "deep_project_id": "/repo/ghostAp",
+        "run_id": "run123",
+    } in run123_values
+
+    orphan_buttons = _collect_buttons(orphan_panel)
+    orphan_values = [
+        behavior.get("value")
+        for button in orphan_buttons
+        for behavior in button.get("behaviors", [])
+        if behavior.get("type") == "callback"
+    ]
+    assert [button["text"]["content"] for button in orphan_buttons] == ["🗑 删除"]
+    assert {
+        "action": "spec_delete_run",
+        "project_id": "p1",
+        "deep_project_id": "/repo/ghostAp",
+        "run_id": "orphan456",
+    } in orphan_values
+
+    top_level_buttons = [
+        element for element in card["body"]["elements"]
+        if element.get("tag") == "column_set" and _collect_buttons(element)
+    ]
+    assert top_level_buttons == []
 
 
 def test_spec_recover_with_run_id_falls_back_to_cached_run_restore(monkeypatch):
