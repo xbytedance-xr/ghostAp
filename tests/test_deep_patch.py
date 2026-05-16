@@ -26,7 +26,7 @@ class TestDeepHandlerPatch:
         return handler
 
     def test_deep_callbacks_dispatches_started_on_analyzing_done(self, handler):
-        """Verify that on_analyzing_done dispatches STARTED + TEXT events to CardSession."""
+        """Verify on_analyzing_done dispatches STARTED + Spec-style phase events."""
         with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create:
             mock_session = MagicMock()
             mock_create.return_value = mock_session
@@ -42,13 +42,16 @@ class TestDeepHandlerPatch:
 
             callbacks.on_analyzing_done(mock_project)
 
-            # Should dispatch started + text_started + text_delta
+            # Deep runtime cards reuse the Spec-style cycle/phase structure.
             assert mock_session.dispatch.call_count >= 3
             calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
             types = [c.type.value for c in calls]
             assert "started" in types
-            assert "text_started" in types
-            assert "text_delta" in types
+            assert "cycle_started" in types
+            assert "phase_started" in types
+            assert "text_started" not in types
+            phase_event = next(c for c in calls if c.type.value == "phase_started")
+            assert phase_event.payload["phase"] == "analyzing"
 
     def test_deep_callbacks_dispatches_completed_on_project_done(self, handler):
         """Verify that on_project_done dispatches COMPLETED to CardSession."""

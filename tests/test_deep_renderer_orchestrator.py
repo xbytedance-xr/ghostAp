@@ -177,6 +177,67 @@ class TestDeepRendererSingleCard:
 
         assert tracker.create_card_count == 1
 
+    def test_deep_start_uses_spec_style_cycle_phase_events(self):
+        """Deep cards should use the same cycle/phase structure as Spec cards."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = self._create_callbacks(renderer)
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        assert tracker.create_card_count == 1
+        main_session = tracker.sessions_created[0]
+        events = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type")
+        ]
+        event_types = [event.type for event in events]
+
+        assert CardEventType.CYCLE_STARTED in event_types
+        phase_events = [event for event in events if event.type == CardEventType.PHASE_STARTED]
+        assert phase_events
+        assert phase_events[-1].payload["phase"] == "analyzing"
+        assert not any(
+            event.type == CardEventType.TEXT_STARTED
+            and event.payload.get("block_id") == "_main_text"
+            for event in events
+        )
+
+    def test_deep_plan_update_transitions_to_spec_style_build_phase(self):
+        """Deep plan updates should switch from analyzing to the shared build phase panel."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = self._create_callbacks(renderer)
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+        callbacks.on_event(_make_plan_event([
+            ("Analyze requirements", "completed"),
+            ("Write implementation", "in_progress"),
+        ]))
+
+        main_session = tracker.sessions_created[0]
+        events = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type")
+        ]
+
+        assert any(
+            event.type == CardEventType.PHASE_DONE
+            and event.payload["phase"] == "analyzing"
+            for event in events
+        )
+        assert any(
+            event.type == CardEventType.PHASE_STARTED
+            and event.payload["phase"] == "build"
+            for event in events
+        )
+
     def test_multi_task_plan_stays_single_card_even_when_task_cards_enabled(self):
         """Deep ignores task-card fanout and renders plan tasks on the main card."""
         renderer, tracker = self._setup_renderer()
@@ -334,6 +395,33 @@ class TestDeepRendererSingleCard:
             event.type == CardEventType.COMPLETED and "执行完成" in event.payload.get("summary", "")
             for event in summary_events
         )
+
+    def test_project_done_failed_formats_incomplete_summary(self):
+        """Deep incomplete terminal text should not leak format placeholders."""
+        renderer, tracker = self._setup_renderer()
+
+        callbacks = self._create_callbacks(renderer, task_level_cards_enabled=True)
+
+        from src.deep_engine.models import DeepProjectStatus
+        dp = FakeDeepProject(status=DeepProjectStatus.EXECUTING)
+        callbacks.on_analyzing_done(dp)
+
+        callbacks.on_event(_make_plan_event([
+            ("Task A", "completed"),
+            ("Task B", "in_progress"),
+        ]))
+        dp.status = DeepProjectStatus.FAILED
+        callbacks.on_project_done(dp)
+
+        main_session = tracker.sessions_created[0]
+        failed_events = [
+            call.args[0]
+            for call in main_session.dispatch.call_args_list
+            if call.args and hasattr(call.args[0], "type") and call.args[0].type == CardEventType.FAILED
+        ]
+        assert failed_events
+        assert "{completed}" not in failed_events[-1].payload["error"]
+        assert "已完成 1/2 步" in failed_events[-1].payload["error"]
 
     def test_agent_tool_call_updates_main_card_without_child_card(self):
         """Agent/subagent tool calls update the main card task list and tool panels."""

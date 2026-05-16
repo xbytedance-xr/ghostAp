@@ -1,22 +1,16 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Optional
 
-from ...acp import ACPEvent, ACPEventRenderer, ACPEventType
-from ...card.events import CardEvent, CardEventType
-from ...card.orchestrator import TaskOrchestrator
+from ...card.events import CardEvent
 from ...card.render.budget import RenderBudget
 from ...card.state.models import CardMetadata
-from ...card.stream_bridge import ACPStreamBridge
-from ...card.task_registry import TaskRegistry, tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...deep_engine import DeepEngineCallbacks
-from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ...project import ContextSourceMode
-from ..emoji import EmojiReaction
-from .base import BaseRenderer, _dispatch_text_block
+from ._deep_stream_processor import DeepStreamProcessor
+from .base import BaseRenderer
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
@@ -89,183 +83,23 @@ class DeepRenderer(BaseRenderer):
         )
         _deep_budget = RenderBudget(engine_cmd="/deep")
 
-        # Create thinking-phase session (the first card)
-        session: Dispatchable = self.create_session(chat_id, message_id, metadata, hooks=hooks, budget=_deep_budget)
-        self._current_session = session
-
-        # ACP event renderer for structured content
-        renderer = ACPEventRenderer()
-        stream_bridge = ACPStreamBridge(session)
-        task_registry = TaskRegistry()
-        # Progress tracking state
-        _start_time = [time.time()]
-        _tool_count = [0]
-        _plan_steps = [0]
-        _phase = ["analyzing"]  # "analyzing" | "executing"
-        _current_task_id = [""]
-
-        def _task_payload() -> list[dict]:
-            return [
-                {"task_id": s.task_id, "name": s.name, "status": s.status}
-                for s in task_registry.get_snapshot()
-            ]
-
-        def _pick_current_task_id(preferred: str = "") -> str:
-            snapshot = task_registry.get_snapshot()
-            if preferred:
-                for item in snapshot:
-                    if item.task_id == preferred and item.status == "in_progress":
-                        return preferred
-            for item in reversed(snapshot):
-                if item.status == "in_progress":
-                    return item.task_id
-            return ""
-
-        def _dispatch_task_list(preferred_current_id: str = "") -> None:
-            tasks = _task_payload()
-            if not tasks:
-                return
-            current = _pick_current_task_id(preferred_current_id or _current_task_id[0])
-            _current_task_id[0] = current
-            session.dispatch(CardEvent(
-                type=CardEventType.TASK_LIST_UPDATED,
-                payload={"tasks": tasks, "current_task_id": current},
-            ))
-
-        def _upsert_task(task_id: str, name: str, status: str) -> None:
-            task_id = str(task_id or "").strip()
-            name = str(name or "").strip()
-            if not task_id:
-                return
-            if status not in {"pending", "in_progress", "completed", "failed"}:
-                status = "pending"
-
-            existing = task_registry.get(task_id)
-            if existing is None:
-                task_registry.register(task_id=task_id, name=name or "子任务", status=status)
-                return
-
-            if (
-                name
-                and TaskOrchestrator._is_generic_task_label(existing.name)
-                and not TaskOrchestrator._is_generic_task_label(name)
-            ):
-                task_registry.update_name(task_id, name)
-            task_registry.update_status(task_id, status)
-
-        def _handle_plan_task_list(event: ACPEvent) -> bool:
-            if event.event_type != ACPEventType.PLAN_UPDATE or not event.plan:
-                return False
-            tasks = tasks_from_plan_entries(event.plan.entries)
-            if not tasks:
-                return False
-            current = ""
-            for task in tasks:
-                task_id = str(task.get("task_id") or "")
-                status = str(task.get("status") or "pending")
-                _upsert_task(task_id, str(task.get("name") or ""), status)
-                if not current and status == "in_progress":
-                    current = task_id
-            _dispatch_task_list(current)
-            return True
-
-        def _handle_agent_task_list(event: ACPEvent) -> bool:
-            if event.event_type not in {
-                ACPEventType.TOOL_CALL_START,
-                ACPEventType.TOOL_CALL_UPDATE,
-                ACPEventType.TOOL_CALL_DONE,
-            }:
-                return False
-            is_agent_task_event = TaskOrchestrator.is_agent_task_event(event)
-            tool_call = event.tool_call
-            task_id = str(getattr(tool_call, "id", "") or "").strip()
-            if not task_id:
-                return False
-            if not is_agent_task_event and task_registry.get(task_id) is None:
-                return False
-            if event.event_type == ACPEventType.TOOL_CALL_DONE:
-                raw_status = str(getattr(tool_call, "status", "") or "").strip().lower()
-                status = "failed" if raw_status == "failed" else "completed"
-            else:
-                status = "in_progress"
-            _upsert_task(task_id, TaskOrchestrator._extract_agent_task_label(tool_call), status)
-            _dispatch_task_list(task_id)
-            return True
-
-        def on_analyzing_done(deep_project: DeepProject):
-            # Start the card session
-            session.dispatch(CardEvent.started())
-            content = UI_TEXT["deep_exec_start"].format(project_name=deep_project.name, root_path=deep_project.root_path)
-            _dispatch_text_block(session, "_main_text", content)
-            _phase[0] = "executing"
-
-        def on_event(event: ACPEvent):
-            """Process ACP events and dispatch them to the main Deep CardSession."""
-            renderer.process_event(event)
-
-            # Track progress for progress_updated dispatch
-            if event.event_type == ACPEventType.TOOL_CALL_START:
-                _tool_count[0] += 1
-
-            # Detect PLAN_UPDATE and render the shared task-list component on
-            # the main Deep card. Deep intentionally stays single-card because
-            # Feishu cannot reliably keep multiple live cards updated in sync.
-            if event.event_type == ACPEventType.PLAN_UPDATE:
-                if event.plan and event.plan.entries:
-                    steps = len(event.plan.entries)
-                    if steps > 0:
-                        _plan_steps[0] = steps
-                        _phase[0] = "executing"
-
-                _handle_plan_task_list(event)
-            else:
-                if event.event_type != ACPEventType.TOOL_CALL_DONE:
-                    _handle_agent_task_list(event)
-                stream_bridge.on_event(event)
-                if event.event_type == ACPEventType.TOOL_CALL_DONE:
-                    _handle_agent_task_list(event)
-
-            # Dispatch progress on the main Deep card.
-            if event.event_type == ACPEventType.TOOL_CALL_START:
-                label = UI_TEXT["deep_phase_executing"] if _phase[0] == "executing" else UI_TEXT["deep_phase_planning"]
-                progress_event = CardEvent.progress_updated(
-                    current=_tool_count[0],
-                    total=max(_plan_steps[0], _tool_count[0]),
-                    label=label,
-                )
-                session.dispatch(progress_event)
-
-            # Check for warning banner based on elapsed time
-            elapsed = time.time() - _start_time[0]
-            warning = self.check_warning_banner(elapsed, is_executing=(_phase[0] == "executing"))
-            if warning:
-                session.dispatch(CardEvent.warning_updated(warning))
-
-        def on_project_done(deep_project: DeepProject):
-            stream_bridge.close_open_blocks()
-            # Build execution summary
-            snap = self._get_engine(chat_id, root_path, project)
-            tool_calls_count = snap.tool_calls_count if snap else _tool_count[0]
-            summary = UI_TEXT["deep_exec_completed"].format(tool_calls_count=tool_calls_count)
-
-            if deep_project.status == DeepProjectStatus.COMPLETED:
-                session.dispatch(CardEvent.completed(summary=summary))
-                self.handler.add_reaction(message_id, EmojiReaction.on_multi_task_done())
-            else:
-                session.dispatch(CardEvent.failed(UI_TEXT["deep_exec_incomplete"]))
-            self._current_session = None
-
-        def on_error(error: str):
-            stream_bridge.close_open_blocks()
-            session.dispatch(CardEvent.failed(error))
-            self._current_session = None
-
-        return DeepEngineCallbacks(
-            on_analyzing_done=on_analyzing_done,
-            on_event=on_event,
-            on_project_done=on_project_done,
-            on_error=on_error,
+        rotator = self._create_rotator(
+            chat_id,
+            message_id,
+            metadata,
+            hooks=hooks,
+            budget=_deep_budget,
         )
+        self._current_session = rotator
+
+        return DeepStreamProcessor(
+            rotator=rotator,
+            renderer=self,
+            message_id=message_id,
+            chat_id=chat_id,
+            root_path=root_path,
+            project=project,
+        ).build_callbacks()
 
     def _on_card_split_completed(self, reason: str, hint: str | None, bridge_phrase: str | None = None) -> None:
         self._pending_split_hint = hint

@@ -568,6 +568,46 @@ class TestActiveElement:
         assert cards[0].active_element.element_id == "el_stream"
         assert cards[0].active_element.text == "streaming text"
 
+    def test_escaped_dirty_code_fence_is_normalized_for_markdown(self):
+        content = (
+            "Summary\n\n"
+            "\\```ProgressCardAccumulator` class)python\n"
+            "from __future__ import annotations\n"
+            "# ---------------------------------------------------------------------------\n"
+            "# Structured event type\n"
+            "# ---------------------------------------------------------------------------\n"
+            "@dataclass\n"
+            "class ToolProgressEvent:\n"
+            "    pass\n"
+            "\\```"
+        )
+        state = CardState(
+            blocks=(
+                ContentBlock(
+                    kind="text",
+                    block_id="t1",
+                    content=content,
+                    element_id="el_stream",
+                    status="active",
+                ),
+            ),
+            terminal="running",
+        )
+
+        cards = render_card(state, RenderBudget())
+        markdown = [
+            el
+            for el in cards[0]._card_json["body"]["elements"]
+            if el.get("tag") == "markdown"
+        ][0]
+
+        assert "\\```" not in markdown["content"]
+        assert "```ProgressCardAccumulator` class)python" not in markdown["content"]
+        assert "```python\nfrom __future__ import annotations" in markdown["content"]
+        assert markdown["content"].rstrip().endswith("```")
+        assert cards[0].active_element is not None
+        assert cards[0].active_element.text == markdown["content"]
+
     def test_one_character_active_text_waits_before_streaming(self):
         state = CardState(
             blocks=(

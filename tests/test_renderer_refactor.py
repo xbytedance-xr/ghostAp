@@ -192,8 +192,9 @@ class TestSessionAutoCleanupOnTerminal(unittest.TestCase):
                 message_id="m1", chat_id="c1", project=None, engine_name="Coco"
             )
 
-        # Session should be active
-        self.assertIs(renderer.get_active_session(), mock_session)
+        # Deep runtime cards now expose the Spec-style rotator as the active session.
+        active_session = renderer.get_active_session()
+        self.assertIs(active_session.current, mock_session)
 
         # Trigger terminal: on_project_done with COMPLETED status
         deep_proj = MagicMock(spec=DeepProject)
@@ -219,7 +220,8 @@ class TestSessionAutoCleanupOnTerminal(unittest.TestCase):
                 message_id="m1", chat_id="c1", project=None, engine_name="Coco"
             )
 
-        self.assertIs(renderer.get_active_session(), mock_session)
+        active_session = renderer.get_active_session()
+        self.assertIs(active_session.current, mock_session)
         callbacks.on_error("Something failed")
         self.assertIsNone(renderer.get_active_session())
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import logging
+import re
 from collections.abc import Callable
 from typing import get_args as _get_args
 
@@ -33,6 +34,40 @@ logger = logging.getLogger(__name__)
 _STATUS_ATOM_KINDS = frozenset({"warning_banner", "progress_bar", "phase_panel", "criteria_panel", "task_list"})
 _BODY_ATOM_KINDS = frozenset({"text", "reasoning", "plan", "worktree_panel", "subagent_dispatch", "activity_digest", "tool_panel", "review_role", "spec_plan", "spec_task"})
 _MIN_STREAMING_TEXT_CHARS = 2
+_FENCE_LINE_RE = re.compile(r"^(?P<indent>\s{0,3})(?P<escaped>\\?)(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_FENCE_LANGUAGE_ALIASES = {
+    "bash": "bash",
+    "sh": "bash",
+    "shell": "bash",
+    "zsh": "bash",
+    "python": "python",
+    "py": "python",
+    "json": "json",
+    "yaml": "yaml",
+    "yml": "yaml",
+    "toml": "toml",
+    "markdown": "markdown",
+    "md": "markdown",
+    "diff": "diff",
+    "sql": "sql",
+    "html": "html",
+    "css": "css",
+    "javascript": "javascript",
+    "js": "javascript",
+    "typescript": "typescript",
+    "ts": "typescript",
+    "go": "go",
+    "rust": "rust",
+    "rs": "rust",
+    "java": "java",
+    "kotlin": "kotlin",
+    "swift": "swift",
+    "c": "c",
+    "cpp": "cpp",
+    "c++": "cpp",
+    "text": "text",
+    "txt": "text",
+}
 
 
 # Banner background color and icon by warning_type
@@ -616,10 +651,11 @@ def _render_text_element(atom: RenderAtom, block_index: dict[str, ContentBlock])
     if block is not None and block.element_id and block.status == "active":
         element_id = block.element_id
 
-    el: dict = {"tag": "markdown", "content": atom.content}
+    content = _normalize_text_markdown(atom.content)
+    el: dict = {"tag": "markdown", "content": content}
     # Only assign element_id when content is non-empty to prevent Feishu CardKit
     # from entering streaming state with an empty element (causes first-char newline).
-    if element_id and _is_streaming_text_ready(atom.content):
+    if element_id and _is_streaming_text_ready(content):
         el["element_id"] = element_id
     return el
 
@@ -639,11 +675,49 @@ def _find_active_element(
             continue
         block = block_index.get(atom.block_id)
         if block is not None and block.status == "active" and block.element_id:
+            content = _normalize_text_markdown(atom.content)
             # Skip empty content: don't activate streaming until real text exists
-            if not _is_streaming_text_ready(atom.content):
+            if not _is_streaming_text_ready(content):
                 continue
-            return ActiveElement(element_id=block.element_id, text=atom.content)
+            return ActiveElement(element_id=block.element_id, text=content)
     return None
+
+
+def _normalize_text_markdown(content: str) -> str:
+    """Repair common streamed fence shapes before Feishu markdown parses them."""
+    if not content:
+        return content
+    lines = str(content).splitlines(keepends=True)
+    return "".join(_normalize_fence_line(line) for line in lines)
+
+
+def _normalize_fence_line(line: str) -> str:
+    line_body = line[:-1] if line.endswith("\n") else line
+    newline = "\n" if line.endswith("\n") else ""
+    match = _FENCE_LINE_RE.match(line_body)
+    if not match:
+        return line
+
+    info = (match.group("info") or "").strip()
+    fence = match.group("fence")
+    escaped = bool(match.group("escaped"))
+    dirty_info = "`" in info or "~" in info
+    if not escaped and not dirty_info:
+        return line
+
+    language = _extract_fence_language(info) if info else ""
+    if dirty_info and not language:
+        language = "text"
+    return f"{match.group('indent')}{fence}{language}{newline}"
+
+
+def _extract_fence_language(info: str) -> str:
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9_+#.+-]*", info)
+    for token in reversed(tokens):
+        normalized = _FENCE_LANGUAGE_ALIASES.get(token.lower())
+        if normalized:
+            return normalized
+    return ""
 
 
 def _is_streaming_text_ready(content: str) -> bool:

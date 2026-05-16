@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.acp import ACPEvent, ACPEventType, ToolCallInfo
 from src.card.engine_snapshot import EngineSnapshot
 from src.deep_engine.models import DeepProject, DeepProjectStatus
 from src.feishu.renderers.deep_renderer import DeepRenderer
@@ -196,7 +197,7 @@ class TestDeepRenderer:
         mock_handler.ctx.deep_engine_manager.get.return_value = None
 
         with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create, \
-             patch("src.feishu.renderers.deep_renderer.ACPEventRenderer") as mock_renderer_cls:
+             patch("src.feishu.renderers._deep_stream_processor.ACPEventRenderer") as mock_renderer_cls:
             mock_session = MagicMock()
             mock_create.return_value = mock_session
             mock_renderer_cls.return_value = MagicMock()
@@ -208,12 +209,16 @@ class TestDeepRenderer:
             callbacks.on_analyzing_done(dp)
 
             # Simulate a tool call event
-            from src.acp import ACPEventType
-            tool_event = MagicMock()
-            tool_event.event_type = ACPEventType.TOOL_CALL_START
-            tool_event.tool_name = "write_file"
-            tool_event.tool_input = "{}"
-            tool_event.content = None
+            tool_event = ACPEvent(
+                event_type=ACPEventType.TOOL_CALL_START,
+                tool_call=ToolCallInfo(
+                    id="tool-1",
+                    title="write_file",
+                    kind="execute",
+                    status="in_progress",
+                    content="{}",
+                ),
+            )
 
             mock_session.dispatch.reset_mock()
             callbacks.on_event(tool_event)
