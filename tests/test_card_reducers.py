@@ -1,4 +1,6 @@
 """Tests for sub-reducers."""
+import pytest
+
 from src.card.events import CardEvent
 from src.card.state.models import CardMetadata, CardState
 from src.card.state.reducer import reduce_card_state
@@ -210,20 +212,28 @@ class TestSpecArtifactReducers:
 
 
 class TestLifecycleReducer:
-    def test_started(self):
-        s = reduce_lifecycle(_base_state(), CardEvent.started())
-        assert s.terminal == "running"
-        assert s.header.title == "🧠 Test · Deep Agent"
-
-    def test_completed_green(self):
-        s = reduce_lifecycle(_base_state(), CardEvent.completed())
-        assert s.terminal == "completed"
-        assert s.header.template == "green"
-
-    def test_failed_red(self):
-        s = reduce_lifecycle(_base_state(), CardEvent.failed("err"))
-        assert s.terminal == "failed"
-        assert s.header.template == "red"
+    @pytest.mark.parametrize(
+        "event_factory, expected_terminal, expected_template, expected_title",
+        [
+            (lambda: CardEvent.started(), "running", None, "🧠 Test · Deep Agent"),
+            (lambda: CardEvent.completed(), "completed", "green", None),
+            (lambda: CardEvent.failed("err"), "failed", "red", None),
+            (lambda: CardEvent.cancelled(), "cancelled", "grey", None),
+        ],
+        ids=[
+            "test_started",
+            "test_completed_green",
+            "test_failed_red",
+            "test_cancelled_grey",
+        ],
+    )
+    def test_lifecycle_event(self, event_factory, expected_terminal, expected_template, expected_title):
+        s = reduce_lifecycle(_base_state(), event_factory())
+        assert s.terminal == expected_terminal
+        if expected_template is not None:
+            assert s.header.template == expected_template
+        if expected_title is not None:
+            assert s.header.title == expected_title
 
     def test_failed_uses_unified_error_visual_contract(self):
         s = reduce_lifecycle(
@@ -258,8 +268,3 @@ class TestLifecycleReducer:
 
         assert not any(button.text == "查看详情" for button in s.buttons)
         assert any(button.text == "📋 查看状态" and button.action_id == "intent.global.show_status" for button in s.buttons)
-
-    def test_cancelled_grey(self):
-        s = reduce_lifecycle(_base_state(), CardEvent.cancelled())
-        assert s.terminal == "cancelled"
-        assert s.header.template == "grey"
