@@ -3,6 +3,8 @@
 import re
 import time
 
+import pytest
+
 from src.utils.text import (
     append_duration_to_title,
     format_duration,
@@ -20,40 +22,25 @@ from src.utils.time_ago import compute_time_ago_bucket
 
 
 class TestFormatDuration:
-    def test_zero(self):
-        assert format_duration(0) == "0 秒"
-
-    def test_fractional_rounds_down(self):
-        assert format_duration(0.9) == "0 秒"
-
-    def test_seconds_only(self):
-        assert format_duration(5) == "5 秒"
-        assert format_duration(59) == "59 秒"
-
-    def test_minutes_boundary(self):
-        assert format_duration(60) == "1 分钟 0 秒"
-
-    def test_minutes_and_seconds(self):
-        assert format_duration(225) == "3 分钟 45 秒"
-
-    def test_just_under_one_hour(self):
-        assert format_duration(3599) == "59 分钟 59 秒"
-
-    def test_one_hour_boundary(self):
-        assert format_duration(3600) == "1 小时 0 分钟 0 秒"
-
-    def test_hours_minutes_seconds(self):
-        assert format_duration(3661) == "1 小时 1 分钟 1 秒"
-
-    def test_large_value(self):
-        # 24 hours
-        assert format_duration(86400) == "24 小时 0 分钟 0 秒"
-
-    def test_negative_clamped_to_zero(self):
-        assert format_duration(-10) == "0 秒"
-
-    def test_very_small_positive(self):
-        assert format_duration(0.001) == "0 秒"
+    @pytest.mark.parametrize(
+        "seconds, expected",
+        [
+            (0, "0 秒"),
+            (0.9, "0 秒"),
+            (0.001, "0 秒"),
+            (-10, "0 秒"),
+            (5, "5 秒"),
+            (59, "59 秒"),
+            (60, "1 分钟 0 秒"),
+            (225, "3 分钟 45 秒"),
+            (3599, "59 分钟 59 秒"),
+            (3600, "1 小时 0 分钟 0 秒"),
+            (3661, "1 小时 1 分钟 1 秒"),
+            (86400, "24 小时 0 分钟 0 秒"),
+        ],
+    )
+    def test_format_duration(self, seconds, expected):
+        assert format_duration(seconds) == expected
 
 
 # ──────────────────────────────────────────────────────────────────────
