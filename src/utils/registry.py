@@ -201,10 +201,6 @@ class ServiceRegistry:
 # 全局默认注册表
 _default_registry = ServiceRegistry()
 
-def get_registry() -> ServiceRegistry:
-    """获取全局默认注册表。"""
-    return _default_registry
-
 
 @dataclass(frozen=True, order=True)
 class CleanupTask:
