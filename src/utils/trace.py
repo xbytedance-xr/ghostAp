@@ -18,27 +18,6 @@ def set_trace_id(trace_id: str) -> contextvars.Token[Optional[str]]:
     return _trace_id_ctx_var.set(trace_id)
 
 
-class TraceManager:
-    """Manager for Trace ID generation and context propagation."""
-
-    @staticmethod
-    def generate_trace_id() -> str:
-        return str(uuid.uuid4())
-
-    @classmethod
-    def get_current_trace_id(cls) -> str:
-        tid = get_trace_id()
-        if not tid:
-            tid = cls.generate_trace_id()
-            set_trace_id(tid)
-        return tid
-
-    @classmethod
-    def context(cls, trace_id: Optional[str] = None):
-        """Context manager for a trace scope."""
-        return TraceContext(request_id=trace_id)
-
-
 class TraceContext:
     """Context manager to set and clear request_id/trace_id."""
 
