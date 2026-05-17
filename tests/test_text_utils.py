@@ -7,7 +7,6 @@ from src.utils.text import (
     append_duration_to_title,
     format_duration,
     format_idle_health,
-    format_seconds_ago,
     format_time_ago,
     format_time_ago_from_bucket,
     generate_task_id,
@@ -234,15 +233,6 @@ class TestBucketAndFormatConsistency:
 
             assert from_bucket == direct
             assert from_helper == direct
-
-
-class TestFormatSecondsAgoCompat:
-    """兼容包装：确保行为与 format_time_ago 一致。"""
-
-    def test_delegates_to_format_time_ago(self):
-        # 这里不严格断言文案细节，只要与 format_time_ago 相同即可
-        for value in (0, 10, 59, 60, 3600, 86400, -5):
-            assert format_seconds_ago(value) == format_time_ago(value)
 
 
 class TestFormatIdleHealth:
