@@ -1,4 +1,6 @@
 """Tests for main reducer orchestration."""
+import pytest
+
 from src.card.events import CardEvent, CardEventType
 from src.card.state.models import CardMetadata
 from src.card.state.reducer import reduce_card_state
@@ -384,26 +386,32 @@ class TestDefensivePayload:
         # State should be unchanged
         assert s is before
 
-    def test_terminal_idempotency_completed_after_completed(self):
-        """Once state is terminal=completed, another COMPLETED event is a no-op."""
+    @pytest.mark.parametrize(
+        "initial_event_factory, follow_up_event_factory",
+        [
+            (
+                lambda: CardEvent.completed(summary="first"),
+                lambda: CardEvent.completed(summary="duplicate"),
+            ),
+            (
+                lambda: CardEvent.completed(),
+                lambda: CardEvent.failed(error="late error"),
+            ),
+            (
+                lambda: CardEvent.failed(error="oops"),
+                lambda: CardEvent(type=CardEventType.CANCELLED, payload={"reason": "ttl_expired"}),
+            ),
+        ],
+        ids=[
+            "test_terminal_idempotency_completed_after_completed",
+            "test_terminal_idempotency_failed_after_completed",
+            "test_terminal_idempotency_cancelled_after_failed",
+        ],
+    )
+    def test_terminal_idempotency(self, initial_event_factory, follow_up_event_factory):
+        """Once state is terminal, follow-up terminal events are no-ops."""
         s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
-        s = reduce_card_state(s, CardEvent.completed(summary="first"))
+        s = reduce_card_state(s, initial_event_factory())
         before = s
-        s = reduce_card_state(s, CardEvent.completed(summary="duplicate"))
-        assert s is before
-
-    def test_terminal_idempotency_failed_after_completed(self):
-        """Once state is terminal=completed, a FAILED event is a no-op."""
-        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
-        s = reduce_card_state(s, CardEvent.completed())
-        before = s
-        s = reduce_card_state(s, CardEvent.failed(error="late error"))
-        assert s is before
-
-    def test_terminal_idempotency_cancelled_after_failed(self):
-        """Once state is terminal=failed, a CANCELLED event is a no-op."""
-        s = reduce_card_state(None, CardEvent.started(), metadata=_meta())
-        s = reduce_card_state(s, CardEvent.failed(error="oops"))
-        before = s
-        s = reduce_card_state(s, CardEvent(type=CardEventType.CANCELLED, payload={"reason": "ttl_expired"}))
+        s = reduce_card_state(s, follow_up_event_factory())
         assert s is before
