@@ -6,14 +6,13 @@ import time
 from src.utils.text import (
     append_duration_to_title,
     format_duration,
-    format_idle_health,
     format_time_ago,
     format_time_ago_from_bucket,
     generate_task_id,
     render_time_ago_cn,
     render_violation_report,
 )
-from src.utils.time_ago import IdleHealth, compute_time_ago_bucket
+from src.utils.time_ago import compute_time_ago_bucket
 
 # ──────────────────────────────────────────────────────────────────────
 # format_duration
@@ -233,16 +232,6 @@ class TestBucketAndFormatConsistency:
 
             assert from_bucket == direct
             assert from_helper == direct
-
-
-class TestFormatIdleHealth:
-    def test_basic_mapping(self) -> None:
-        assert "健康" in format_idle_health(IdleHealth.HEALTHY)
-        assert "空闲" in format_idle_health(IdleHealth.IDLE)
-        assert "陈旧" in format_idle_health(IdleHealth.STALE)
-
-    def test_unknown_and_future_values(self) -> None:
-        assert format_idle_health(IdleHealth.UNKNOWN) == "未知"
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -108,25 +108,6 @@ def append_duration_to_title(title: str, duration_secs: float | None) -> str:
     return title
 
 
-def format_idle_health(health: IdleHealth) -> str:
-    """将 IdleHealth 枚举渲染为简短中文文案。
-
-    说明：
-    - 仅做文案层映射，不参与任何业务决策；
-    - 作为 IdleHealth → 文案 的 SSOT，避免在各处散落 magic string；
-    - 如需展示 emoji，可在调用方或后续扩展中统一更新本函数实现。
-    """
-
-    if health is IdleHealth.HEALTHY:
-        return "健康（近期活跃）"
-    if health is IdleHealth.IDLE:
-        return "空闲（可关注）"
-    if health is IdleHealth.STALE:
-        return "陈旧（可清理候选）"
-    # 包含 UNKNOWN 或未来扩展值
-    return "未知"
-
-
 def format_time_ago(seconds: float) -> str:
     """统一的相对时间文案（"X 时间前" 风格）。
 
