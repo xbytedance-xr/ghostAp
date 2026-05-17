@@ -1,4 +1,6 @@
 """Tests for header/footer/buttons rendering."""
+import pytest
+
 from src.card.render.buttons import render_buttons
 from src.card.render.footer import render_footer
 from src.card.render.header import render_header
@@ -181,50 +183,46 @@ from src.card.render.progress import render_progress_bar
 class TestRenderProgressBarBoundary:
     """Boundary value tests for render_progress_bar."""
 
-    def test_pct_zero(self):
-        result = render_progress_bar(0)
-        assert "▱▱▱▱▱" in result
-        assert "▰" not in result
-
-    def test_pct_hundred(self):
-        result = render_progress_bar(100)
-        assert "▰▰▰▰▰" in result
-        assert "▱" not in result
-
-    def test_pct_over_hundred_clamps(self):
-        result = render_progress_bar(150)
-        # Should clamp to 100%
-        assert "▰▰▰▰▰" in result
-
-    def test_pct_negative_clamps(self):
-        result = render_progress_bar(-10)
-        # Should clamp to 0%
-        assert "▱▱▱▱▱" in result
-
-    def test_pct_midpoint(self):
-        result = render_progress_bar(50)
-        assert "▰" in result
-        assert "▱" in result
-
-    def test_pct_one_shows_at_least_one_filled(self):
-        """AC13: pct>0 must show at least 1 filled block."""
-        result = render_progress_bar(1)
-        assert "▰" in result
-
-    def test_percentage_in_output(self):
-        """Progress bar should include percentage number."""
-        result = render_progress_bar(50)
-        assert "50%" in result
-
-    def test_total_segments_zero_returns_empty(self):
-        """total_segments=0 should return empty string without raising."""
-        result = render_progress_bar(50, total_segments=0)
-        assert result == ""
-
-    def test_total_segments_negative_returns_empty(self):
-        """total_segments<0 should return empty string without raising."""
-        result = render_progress_bar(100, total_segments=-5)
-        assert result == ""
+    @pytest.mark.parametrize(
+        "pct, total_segments_kwarg, expected_substrings, forbidden_substrings",
+        [
+            (0, None, ["▱▱▱▱▱"], ["▰"]),
+            (100, None, ["▰▰▰▰▰"], ["▱"]),
+            (150, None, ["▰▰▰▰▰"], []),
+            (-10, None, ["▱▱▱▱▱"], []),
+            (50, None, ["▰", "▱"], []),
+            (1, None, ["▰"], []),
+            (50, None, ["50%"], []),
+            (50, 0, [""], []),
+            (100, -5, [""], []),
+        ],
+        ids=[
+            "test_pct_zero",
+            "test_pct_hundred",
+            "test_pct_over_hundred_clamps",
+            "test_pct_negative_clamps",
+            "test_pct_midpoint",
+            "test_pct_one_shows_at_least_one_filled",
+            "test_percentage_in_output",
+            "test_total_segments_zero_returns_empty",
+            "test_total_segments_negative_returns_empty",
+        ],
+    )
+    def test_progress_bar_boundary(
+        self, pct, total_segments_kwarg, expected_substrings, forbidden_substrings
+    ):
+        if total_segments_kwarg is None:
+            result = render_progress_bar(pct)
+        else:
+            result = render_progress_bar(pct, total_segments=total_segments_kwarg)
+        # When expected substring is "", the result must be exactly empty string
+        if expected_substrings == [""]:
+            assert result == ""
+        else:
+            for sub in expected_substrings:
+                assert sub in result
+        for forbidden in forbidden_substrings:
+            assert forbidden not in result
 
 
 # ---------------------------------------------------------------------------
