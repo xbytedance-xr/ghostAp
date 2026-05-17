@@ -700,31 +700,28 @@ class TestBannerMultiPagePosition:
 class TestRenderButtonsStopIntent:
     """Verify that stop intent buttons produce flex_mode='none' (full-width layout)."""
 
-    def test_stop_intent_flex_mode_none(self):
-        """ButtonSpec with action_id='intent.engine.stop' → flex_mode='none'."""
+    @pytest.mark.parametrize(
+        "action_id, button_text",
+        [
+            ("intent.engine.stop", "停止"),
+            ("intent.deep.stop", "停止 Deep"),
+            ("some_other_action", "提交"),
+        ],
+        ids=[
+            "test_stop_intent_flex_mode_none",
+            "test_deep_stop_intent_flex_mode_none",
+            "test_non_stop_single_button_flex_mode_none",
+        ],
+    )
+    def test_single_button_flex_mode_none(self, action_id, button_text):
+        """Single button → flex_mode='none' (unified full-width for mobile)."""
         state = CardState(
-            buttons=(ButtonSpec(action_id="intent.engine.stop", text="停止"),),
+            buttons=(ButtonSpec(action_id=action_id, text=button_text),),
         )
         result = render_buttons(state)
         # 1 layout element (escalation hint is now managed by STOPPING reducer, not render_buttons)
         assert len(result) == 1
         assert result[0]["tag"] == "column_set"
-        assert result[0]["flex_mode"] == "none"
-
-    def test_deep_stop_intent_flex_mode_none(self):
-        """ButtonSpec with action_id='intent.deep.stop' → flex_mode='none'."""
-        state = CardState(
-            buttons=(ButtonSpec(action_id="intent.deep.stop", text="停止 Deep"),),
-        )
-        result = render_buttons(state)
-        assert result[0]["flex_mode"] == "none"
-
-    def test_non_stop_single_button_flex_mode_none(self):
-        """Non-stop single button → also flex_mode='none' (unified full-width for mobile)."""
-        state = CardState(
-            buttons=(ButtonSpec(action_id="some_other_action", text="提交"),),
-        )
-        result = render_buttons(state)
         assert result[0]["flex_mode"] == "none"
 
 
