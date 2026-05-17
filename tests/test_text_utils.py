@@ -51,29 +51,20 @@ class TestFormatDuration:
 class TestFooterFormatDuration:
     """Verify footer's _format_duration covers hours branch."""
 
-    def test_sub_second(self):
+    @pytest.mark.parametrize(
+        "seconds, expected",
+        [
+            (0, "< 1 秒"),
+            (1, "< 1 秒"),
+            (30, "30 秒"),
+            (125, "2 分钟 5 秒"),
+            (3600, "1 小时 0 分钟 0 秒"),
+            (7261, "2 小时 1 分钟 1 秒"),
+        ],
+    )
+    def test_footer_format_duration(self, seconds, expected):
         from src.card.render.footer import _format_duration
-        assert _format_duration(0) == "< 1 秒"
-        assert _format_duration(1) == "< 1 秒"
-
-    def test_seconds(self):
-        from src.card.render.footer import _format_duration
-        assert _format_duration(30) == "30 秒"
-
-    def test_minutes_seconds(self):
-        from src.card.render.footer import _format_duration
-        result = _format_duration(125)
-        assert result == "2 分钟 5 秒"
-
-    def test_one_hour_boundary(self):
-        from src.card.render.footer import _format_duration
-        result = _format_duration(3600)
-        assert result == "1 小时 0 分钟 0 秒"
-
-    def test_hours_minutes_seconds(self):
-        from src.card.render.footer import _format_duration
-        result = _format_duration(7261)
-        assert result == "2 小时 1 分钟 1 秒"
+        assert _format_duration(seconds) == expected
 
 
 class TestUITextDurationLiterals:
