@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
-from .models import WorktreeSelectionItem, WorktreeSelectionState
+from .models import WorktreeSelectionItem
 
 
 @dataclass(frozen=True)
