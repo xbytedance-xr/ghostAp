@@ -18,14 +18,6 @@ class WorktreeToolOption:
     skip_model_selection: bool = False
 
 
-@dataclass(frozen=True)
-class WorktreeModelOption:
-    name: str
-    display_name: str
-    description: str = ""
-    is_default: bool = False
-
-
 def provider_display_name(provider: str) -> str:
     normalized = str(provider or "").strip().lower()
     if normalized == "ttadk":
@@ -77,5 +69,3 @@ def format_selection_lines(items: Iterable[WorktreeSelectionItem]) -> list[str]:
     return lines
 
 
-def selection_state_has_items(state: Optional[WorktreeSelectionState]) -> bool:
-    return bool(state and state.selected_items)
