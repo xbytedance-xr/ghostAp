@@ -1,5 +1,7 @@
 """Tests for acp.renderer — ACPEventRenderer."""
 
+import pytest
+
 from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
 from src.acp.renderer import ACPEventRenderer
 
@@ -433,95 +435,119 @@ class TestACPEventRenderer:
 class TestParseToolCallTodoWrite:
     """Tests for _parse_tool_call with TodoWrite raw_input extraction."""
 
-    def test_todo_content_from_raw_input(self):
+    _MISSING = object()
+
+    @staticmethod
+    def _make_call(
+        *,
+        tool_call_id="tc",
+        title="TodoWrite",
+        kind="other",
+        status="completed",
+        locations=None,
+        raw_input=_MISSING,
+        raw_output=_MISSING,
+    ):
+        attrs = {
+            "tool_call_id": tool_call_id,
+            "title": title,
+            "kind": kind,
+            "status": status,
+            "locations": locations,
+        }
+        if raw_input is not TestParseToolCallTodoWrite._MISSING:
+            attrs["raw_input"] = raw_input
+        if raw_output is not TestParseToolCallTodoWrite._MISSING:
+            attrs["raw_output"] = raw_output
+        return type("MockToolCall", (), attrs)()
+
+    @pytest.mark.parametrize("call_kwargs, expected_substrings, not_expected_substrings, check_title", [
+        # test_todo_content_from_raw_input
+        (
+            {
+                "tool_call_id": "tc1",
+                "title": "TodoWrite",
+                "raw_input": {
+                    "todos": [
+                        {"content": "Research codebase", "status": "completed", "activeForm": "Researching codebase"},
+                        {"content": "Implement fix", "status": "in_progress", "activeForm": "Implementing fix"},
+                        {"content": "Run tests", "status": "pending", "activeForm": "Running tests"},
+                    ]
+                },
+            },
+            ["✅ Research codebase", "🔄 Implementing fix", "⏳ Run tests"],
+            [],
+            None,
+        ),
+        # test_todo_detected_by_raw_input_key
+        (
+            {
+                "tool_call_id": "tc3",
+                "title": "Update task list",
+                "raw_input": {
+                    "todos": [
+                        {"content": "Task A", "status": "completed", "activeForm": "Doing A"},
+                    ]
+                },
+            },
+            ["✅ Task A"],
+            [],
+            None,
+        ),
+        # test_todo_no_raw_input — no raw_input attribute (uses _MISSING)
+        (
+            {
+                "tool_call_id": "tc4",
+                "title": "TodoWrite",
+            },
+            [""],  # content == ""
+            [],
+            None,
+        ),
+        # test_non_todo_tool_no_content
+        (
+            {
+                "tool_call_id": "tc2",
+                "title": "Read file",
+                "kind": "read",
+                "status": "in_progress",
+                "raw_input": {"path": "/tmp/a.py"},
+            },
+            [""],  # content == ""
+            [],
+            None,
+        ),
+        # test_task_tool_extracts_description_for_child_card_label
+        (
+            {
+                "tool_call_id": "task_1",
+                "title": "task",
+                "status": "in_progress",
+                "raw_input": {
+                    "description": "依赖分析",
+                    "prompt": "检查 package.json 中的依赖是否有过时、安全或冲突问题",
+                },
+                "raw_output": None,
+            },
+            ["依赖分析", "检查 package.json"],
+            [],
+            "task",
+        ),
+    ])
+    def test_parse_tool_call(self, call_kwargs, expected_substrings, not_expected_substrings, check_title):
         from src.acp.client import _parse_tool_call
 
-        class MockTodoToolCall:
-            tool_call_id = "tc1"
-            title = "TodoWrite"
-            kind = "other"
-            status = "completed"
-            locations = None
-            raw_input = {
-                "todos": [
-                    {"content": "Research codebase", "status": "completed", "activeForm": "Researching codebase"},
-                    {"content": "Implement fix", "status": "in_progress", "activeForm": "Implementing fix"},
-                    {"content": "Run tests", "status": "pending", "activeForm": "Running tests"},
-                ]
-            }
-
-        tc = _parse_tool_call(MockTodoToolCall())
-        assert "✅ Research codebase" in tc.content
-        assert "🔄 Implementing fix" in tc.content
-        assert "⏳ Run tests" in tc.content
-
-    def test_non_todo_tool_no_content(self):
-        from src.acp.client import _parse_tool_call
-
-        class MockRegularToolCall:
-            tool_call_id = "tc2"
-            title = "Read file"
-            kind = "read"
-            status = "in_progress"
-            locations = None
-            raw_input = {"path": "/tmp/a.py"}
-
-        tc = _parse_tool_call(MockRegularToolCall())
-        assert tc.content == ""
-
-    def test_task_tool_extracts_description_for_child_card_label(self):
-        from src.acp.client import _parse_tool_call
-
-        class MockTaskToolCall:
-            tool_call_id = "task_1"
-            title = "task"
-            kind = "other"
-            status = "in_progress"
-            locations = None
-            raw_input = {
-                "description": "依赖分析",
-                "prompt": "检查 package.json 中的依赖是否有过时、安全或冲突问题",
-            }
-            raw_output = None
-
-        tc = _parse_tool_call(MockTaskToolCall())
-        assert tc.title == "task"
-        assert "依赖分析" in tc.content
-        assert "检查 package.json" in tc.content
-
-    def test_todo_detected_by_raw_input_key(self):
-        """Even if title doesn't say 'todo', raw_input with 'todos' key triggers extraction."""
-        from src.acp.client import _parse_tool_call
-
-        class MockToolCall:
-            tool_call_id = "tc3"
-            title = "Update task list"
-            kind = "other"
-            status = "completed"
-            locations = None
-            raw_input = {
-                "todos": [
-                    {"content": "Task A", "status": "completed", "activeForm": "Doing A"},
-                ]
-            }
-
-        tc = _parse_tool_call(MockToolCall())
-        assert "✅ Task A" in tc.content
-
-    def test_todo_no_raw_input(self):
-        """Tool without raw_input should have empty content."""
-        from src.acp.client import _parse_tool_call
-
-        class MockToolCall:
-            tool_call_id = "tc4"
-            title = "TodoWrite"
-            kind = "other"
-            status = "completed"
-            locations = None
-            # No raw_input attribute
-
-        tc = _parse_tool_call(MockToolCall())
-        assert tc.content == ""
+        tc = _parse_tool_call(self._make_call(**call_kwargs))
+        if check_title is not None:
+            assert tc.title == check_title
+        # Special handling: if expected is exactly [""], we assert content == ""
+        if expected_substrings == [""]:
+            assert tc.content == ""
+        else:
+            for sub in expected_substrings:
+                assert sub in tc.content
+        for sub in not_expected_substrings:
+            assert sub not in tc.content
 
     def test_todo_in_progress_prefers_active_form(self):
         """In-progress items should use activeForm for display."""
