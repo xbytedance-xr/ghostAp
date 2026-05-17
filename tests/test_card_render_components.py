@@ -291,28 +291,25 @@ class TestBannerUnifiedPosition:
         cards = render_card(state, RenderBudget())
         return cards[0]._card_json["body"]["elements"]
 
-    def test_error_banner_in_body_top(self):
-        elements = self._render_with_banner("error")
+    @pytest.mark.parametrize(
+        "warning_type, expected_style",
+        [
+            ("error", "red"),
+            ("warning", "yellow"),
+            ("info", "wathet"),
+            ("success", "green"),
+        ],
+        ids=[
+            "test_error_banner_in_body_top",
+            "test_warning_banner_in_body_top",
+            "test_info_banner_in_body_top",
+            "test_success_banner_in_body_top",
+        ],
+    )
+    def test_banner_in_body_top(self, warning_type, expected_style):
+        elements = self._render_with_banner(warning_type)
         assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "red"
-        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
-
-    def test_warning_banner_in_body_top(self):
-        elements = self._render_with_banner("warning")
-        assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "yellow"
-        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
-
-    def test_info_banner_in_body_top(self):
-        elements = self._render_with_banner("info")
-        assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "wathet"
-        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
-
-    def test_success_banner_in_body_top(self):
-        elements = self._render_with_banner("success")
-        assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "green"
+        assert elements[0]["background_style"] == expected_style
         assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
 
 
