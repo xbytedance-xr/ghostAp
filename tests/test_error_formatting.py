@@ -1,7 +1,24 @@
 import asyncio
 import json
 
-from src.utils.errors import classify_timeout, fmt_error, fmt_exception, get_error_detail
+import pytest
+
+from src.utils.errors import (
+    _has_timeout_in_chain,
+    classify_timeout,
+    fmt_error,
+    fmt_exception,
+    get_error_detail,
+)
+
+
+def _chain(outer, *, cause=None, context=None):
+    """Helper: attach __cause__/__context__ and return the outer exception."""
+    if cause is not None:
+        outer.__cause__ = cause
+    if context is not None:
+        outer.__context__ = context
+    return outer
 
 
 class TestErrorFormatting:
@@ -315,3 +332,140 @@ class TestErrorCardPathContract:
         assert "Traceback" not in rendered
         assert "/data00/home/alice" not in rendered
         assert "Claude 启动失败" in rendered
+
+
+class TestGetErrorDetailChain:
+    """Migrated from test_utils_errors_timeout.py — get_error_detail chain coverage."""
+
+    @pytest.mark.parametrize(
+        "exc_factory, expect_timeout, extra_substr",
+        [
+            pytest.param(
+                lambda: _chain(RuntimeError("wrapper"), cause=TimeoutError("inner timeout")),
+                True,
+                None,
+                id="wrapped_timeout_via_cause",
+            ),
+            pytest.param(
+                lambda: _chain(Exception("context wrap"), context=TimeoutError()),
+                True,
+                None,
+                id="wrapped_timeout_via_context",
+            ),
+            pytest.param(
+                lambda: _chain(
+                    Exception("outer"),
+                    context=_chain(RuntimeError("mid"), cause=TimeoutError("deep")),
+                ),
+                True,
+                None,
+                id="multi_level_chain",
+            ),
+            pytest.param(
+                lambda: _chain(RuntimeError("wrapper"), cause=ValueError("inner")),
+                False,
+                "wrapper",
+                id="no_timeout_in_chain",
+            ),
+        ],
+    )
+    def test_get_error_detail_chain(self, exc_factory, expect_timeout, extra_substr):
+        result = get_error_detail(exc_factory())
+        if expect_timeout:
+            assert "超时" in result
+        else:
+            assert "超时" not in result
+        if extra_substr is not None:
+            assert extra_substr in result
+
+    def test_get_error_detail_direct_timeout_regression(self):
+        """Regression: direct TimeoutError() still returns '超时' text."""
+        result = get_error_detail(TimeoutError())
+        assert "超时" in result
+        assert result == "操作超时，请稍后重试"
+
+
+class TestFmtErrorWrappedTimeout:
+    """Migrated from test_utils_errors_timeout.py — fmt_error wrapping behavior."""
+
+    def test_fmt_error_wrapped_timeout_via_cause(self):
+        """fmt_error with wrapped TimeoutError → timeout formatting."""
+        outer = _chain(RuntimeError("rte wrap"), cause=TimeoutError("inner"))
+        result = fmt_error("测试", outer)
+        assert "超时" in result
+        assert "rte wrap" in result
+
+    def test_fmt_error_wrapped_bare_timeout_empty_outer(self):
+        """fmt_error with wrapping exc that has empty str → fallback timeout text."""
+        outer = _chain(RuntimeError(), cause=TimeoutError())
+        result = fmt_error("测试", outer)
+        assert "超时" in result
+        assert "操作超时，请稍后重试" in result
+
+
+class TestHasTimeoutInChain:
+    """Migrated from test_utils_errors_timeout.py — _has_timeout_in_chain behavior."""
+
+    @pytest.mark.parametrize(
+        "exc_factory, expected",
+        [
+            pytest.param(
+                lambda: _chain(RuntimeError("wrap"), cause=asyncio.TimeoutError()),
+                True,
+                id="asyncio_timeout_via_cause",
+            ),
+            pytest.param(
+                lambda: _chain(RuntimeError("wrap"), context=TimeoutError("t")),
+                True,
+                id="builtin_timeout_via_context",
+            ),
+            pytest.param(
+                lambda: _chain(
+                    RuntimeError("wrap"),
+                    cause=type("TimeoutExpired", (Exception,), {})("cmd timed out"),
+                ),
+                True,
+                id="timeout_expired_by_name",
+            ),
+            pytest.param(
+                lambda: _chain(
+                    RuntimeError(),
+                    cause=type("ReadTimeout", (Exception,), {})(),
+                ),
+                True,
+                id="read_timeout_by_name",
+            ),
+            pytest.param(
+                lambda: _chain(
+                    RuntimeError(),
+                    context=type("ConnectTimeout", (IOError,), {})(),
+                ),
+                True,
+                id="connect_timeout_by_name",
+            ),
+            pytest.param(
+                lambda: _chain(RuntimeError("wrap"), cause=ValueError("v")),
+                False,
+                id="no_timeout_returns_false",
+            ),
+        ],
+    )
+    def test_has_timeout_in_chain(self, exc_factory, expected):
+        assert _has_timeout_in_chain(exc_factory()) is expected
+
+    def test_chain_depth_limit(self):
+        """Chain deeper than _CHAIN_MAX_DEPTH (10) does not recurse infinitely."""
+        # Build a 15-level chain ending with TimeoutError
+        current = TimeoutError("deep")
+        for _ in range(15):
+            parent = RuntimeError("level")
+            parent.__cause__ = current
+            current = parent
+        # Might or might not find it depending on depth — just must not hang/crash
+        _has_timeout_in_chain(current)
+
+    def test_chain_consistency_with_review_diagnostics(self):
+        """_has_timeout_in_chain from errors.py is the same function used by review_diagnostics."""
+        from src.utils.review_diagnostics import _has_timeout_in_chain as rd_fn
+
+        assert rd_fn is _has_timeout_in_chain

@@ -783,33 +783,28 @@ class TestWorktreeStepperTotal:
 class TestWorktreeMergeStatusChinese:
     """Verify merge status uses Chinese text, not English."""
 
-    def test_merge_status_ready_chinese(self):
-        """ready status should display 就绪."""
+    @pytest.mark.parametrize(
+        "status, expected_chinese, check_no_english",
+        [
+            ("ready", "就绪", True),
+            ("conflict", "冲突", False),
+            ("merged", "已合并", False),
+        ],
+        ids=[
+            "test_merge_status_ready_chinese",
+            "test_merge_status_conflict_chinese",
+            "test_merge_status_merged_chinese",
+        ],
+    )
+    def test_merge_status_chinese(self, status, expected_chinese, check_no_english):
         data = {
-            "merge_notes": [{"branch": "feat-1", "status": "ready", "summary": "ok"}],
+            "merge_notes": [{"branch": "feat-1", "status": status, "summary": "ok"}],
             "base_branch": "main",
         }
         result = _render_worktree_merge(data)
-        assert "就绪" in result["content"]
-        assert "ready" not in result["content"].lower().replace("worktree", "")
-
-    def test_merge_status_conflict_chinese(self):
-        """conflict status should display 冲突."""
-        data = {
-            "merge_notes": [{"branch": "feat-1", "status": "conflict"}],
-            "base_branch": "main",
-        }
-        result = _render_worktree_merge(data)
-        assert "冲突" in result["content"]
-
-    def test_merge_status_merged_chinese(self):
-        """merged status should display 已合并."""
-        data = {
-            "merge_notes": [{"branch": "feat-1", "status": "merged"}],
-            "base_branch": "main",
-        }
-        result = _render_worktree_merge(data)
-        assert "已合并" in result["content"]
+        assert expected_chinese in result["content"]
+        if check_no_english:
+            assert "ready" not in result["content"].lower().replace("worktree", "")
 
 
 class TestFooterBlockedReason:
