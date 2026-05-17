@@ -61,8 +61,21 @@ class TestFlattenToAtoms:
         assert atom.content == "thinking..."
         assert atom.node_count == 4
 
-    def test_completed_tools_become_activity_digest(self) -> None:
-        """≥3 completed tools → single activity_digest atom (compact summary)."""
+    @pytest.mark.parametrize(
+        "n, expected_count_substring, check_node_count",
+        [
+            (4, "4 次工具调用", True),
+            (2, "2 次工具调用", False),
+        ],
+        ids=[
+            "test_completed_tools_become_activity_digest",
+            "test_few_completed_tools_become_activity_digest",
+        ],
+    )
+    def test_completed_tools_activity_digest(
+        self, n, expected_count_substring, check_node_count
+    ) -> None:
+        """Completed tools → single activity_digest atom (compact summary)."""
         blocks = tuple(
             ContentBlock(
                 kind="tool_call",
@@ -71,7 +84,7 @@ class TestFlattenToAtoms:
                 tool_name=f"tool_{i}",
                 tool_summary=f"done_{i}",
             )
-            for i in range(4)
+            for i in range(n)
         )
         budget = RenderBudget()
         atoms = flatten_to_atoms(blocks, budget)
@@ -79,28 +92,9 @@ class TestFlattenToAtoms:
         assert len(atoms) == 1
         atom = atoms[0]
         assert atom.kind == "activity_digest"
-        assert "4 次工具调用" in atom.content
-        assert atom.node_count == 4
-
-    def test_few_completed_tools_become_activity_digest(self) -> None:
-        """≤2 completed tools → single activity_digest atom (not individual tool_panels)."""
-        blocks = tuple(
-            ContentBlock(
-                kind="tool_call",
-                block_id=f"t{i}",
-                status="completed",
-                tool_name=f"tool_{i}",
-                tool_summary=f"done_{i}",
-            )
-            for i in range(2)
-        )
-        budget = RenderBudget()
-        atoms = flatten_to_atoms(blocks, budget)
-
-        # New behavior: all completed tools grouped into one activity_digest
-        assert len(atoms) == 1
-        assert atoms[0].kind == "activity_digest"
-        assert "2 次工具调用" in atoms[0].content
+        assert expected_count_substring in atom.content
+        if check_node_count:
+            assert atom.node_count == n
 
     def test_active_tool_never_folded(self) -> None:
         """Active tool stays independent even among completed tools."""
