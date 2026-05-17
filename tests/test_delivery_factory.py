@@ -37,37 +37,16 @@ def test_create_card_delivery_uses_default_settings():
     assert delivery._session_lock_ttl == settings.card.session_lock_ttl
 
 
-def test_invalid_max_session_locks_zero():
-    """CardDelivery must reject max_session_locks=0 with ValueError."""
+@pytest.mark.parametrize("kwargs, match", [
+    ({"max_session_locks": 0},   "max_session_locks must be > 0"),
+    ({"session_lock_ttl": -1},   "session_lock_ttl must be > 0"),
+    ({"eviction_interval": 0},   "eviction_interval must be > 0"),
+    ({"eviction_interval": -1},  "eviction_interval must be > 0"),
+])
+def test_invalid_constructor_args(kwargs, match):
+    """CardDelivery must reject invalid constructor args with ValueError."""
     from src.card.delivery.engine import CardDelivery
 
     mock_client = MagicMock()
-    with pytest.raises(ValueError, match="max_session_locks must be > 0"):
-        CardDelivery(client=mock_client, max_session_locks=0)
-
-
-def test_invalid_session_lock_ttl_negative():
-    """CardDelivery must reject session_lock_ttl=-1 with ValueError."""
-    from src.card.delivery.engine import CardDelivery
-
-    mock_client = MagicMock()
-    with pytest.raises(ValueError, match="session_lock_ttl must be > 0"):
-        CardDelivery(client=mock_client, session_lock_ttl=-1)
-
-
-def test_invalid_eviction_interval_zero():
-    """CardDelivery must reject eviction_interval=0 with ValueError."""
-    from src.card.delivery.engine import CardDelivery
-
-    mock_client = MagicMock()
-    with pytest.raises(ValueError, match="eviction_interval must be > 0"):
-        CardDelivery(client=mock_client, eviction_interval=0)
-
-
-def test_invalid_eviction_interval_negative():
-    """CardDelivery must reject eviction_interval=-1 with ValueError."""
-    from src.card.delivery.engine import CardDelivery
-
-    mock_client = MagicMock()
-    with pytest.raises(ValueError, match="eviction_interval must be > 0"):
-        CardDelivery(client=mock_client, eviction_interval=-1)
+    with pytest.raises(ValueError, match=match):
+        CardDelivery(client=mock_client, **kwargs)
