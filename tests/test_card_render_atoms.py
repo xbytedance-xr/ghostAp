@@ -1,4 +1,5 @@
 """Tests for src/card/render/atoms.py — RenderAtom and flatten_to_atoms."""
+import pytest
 
 from src.card.render.atoms import RenderAtom, estimate_atom_size, flatten_to_atoms, invalidate_atom_handlers
 from src.card.render.budget import RenderBudget
@@ -313,42 +314,52 @@ class TestAtomKindHandlers:
         atom.byte_size = estimate_atom_size(atom)
         assert atom.byte_size > 0
 
-    def test_criteria_block_to_criteria_panel_atom(self):
-        """criteria block → criteria_panel atom."""
-        from src.card.state.models import CriteriaBlock
-
-        blocks = (CriteriaBlock(block_id="c1", content="- [x] 标准1\n- [ ] 标准2"),)
+    @pytest.mark.parametrize(
+        "block_factory, expected_kind, expected_block_id, expected_content_substring",
+        [
+            (
+                lambda: __import__("src.card.state.models", fromlist=["CriteriaBlock"]).CriteriaBlock(
+                    block_id="c1", content="- [x] 标准1\n- [ ] 标准2"
+                ),
+                "criteria_panel",
+                "c1",
+                "标准1",
+            ),
+            (
+                lambda: __import__("src.card.state.models", fromlist=["PhaseBlock"]).PhaseBlock(
+                    block_id="p1", content="Build 阶段", phase_name="build"
+                ),
+                "phase_panel",
+                "p1",
+                "Build",
+            ),
+            (
+                lambda: __import__("src.card.state.models", fromlist=["WorktreeUnitsBlock"]).WorktreeUnitsBlock(
+                    block_id="wt1", content="进度信息"
+                ),
+                "worktree_panel",
+                "wt1",
+                None,
+            ),
+        ],
+        ids=[
+            "test_criteria_block_to_criteria_panel_atom",
+            "test_phase_block_to_phase_panel_atom",
+            "test_worktree_block_to_worktree_panel_atom",
+        ],
+    )
+    def test_block_to_panel_atom(
+        self, block_factory, expected_kind, expected_block_id, expected_content_substring
+    ):
+        """block → panel atom with expected kind and properties."""
+        blocks = (block_factory(),)
         atoms = flatten_to_atoms(blocks, RenderBudget())
 
         assert len(atoms) == 1
-        assert atoms[0].kind == "criteria_panel"
-        assert atoms[0].block_id == "c1"
-        assert "标准1" in atoms[0].content
-        assert atoms[0].splittable is False
-
-    def test_phase_block_to_phase_panel_atom(self):
-        """phase block → phase_panel atom."""
-        from src.card.state.models import PhaseBlock
-
-        blocks = (PhaseBlock(block_id="p1", content="Build 阶段", phase_name="build"),)
-        atoms = flatten_to_atoms(blocks, RenderBudget())
-
-        assert len(atoms) == 1
-        assert atoms[0].kind == "phase_panel"
-        assert atoms[0].block_id == "p1"
-        assert "Build" in atoms[0].content
-        assert atoms[0].splittable is False
-
-    def test_worktree_block_to_worktree_panel_atom(self):
-        """worktree_units block → worktree_panel atom."""
-        from src.card.state.models import WorktreeUnitsBlock
-
-        blocks = (WorktreeUnitsBlock(block_id="wt1", content="进度信息"),)
-        atoms = flatten_to_atoms(blocks, RenderBudget())
-
-        assert len(atoms) == 1
-        assert atoms[0].kind == "worktree_panel"
-        assert atoms[0].block_id == "wt1"
+        assert atoms[0].kind == expected_kind
+        assert atoms[0].block_id == expected_block_id
+        if expected_content_substring is not None:
+            assert expected_content_substring in atoms[0].content
         assert atoms[0].splittable is False
 
     def test_engine_cmd_in_unknown_block_placeholder(self):
