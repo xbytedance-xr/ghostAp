@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.slock_engine.card_templates import (
     build_agent_message_card,
     build_status_panel_card,
@@ -15,6 +13,43 @@ from src.slock_engine.models import (
     SlockTask,
     TaskStatus,
 )
+
+
+def _collect_buttons(node: object) -> list[dict]:
+    if isinstance(node, dict):
+        buttons = [node] if node.get("tag") == "button" else []
+        for value in node.values():
+            buttons.extend(_collect_buttons(value))
+        return buttons
+    if isinstance(node, list):
+        buttons: list[dict] = []
+        for item in node:
+            buttons.extend(_collect_buttons(item))
+        return buttons
+    return []
+
+
+def _collect_tags(node: object) -> list[str]:
+    if isinstance(node, dict):
+        tags = [node["tag"]] if isinstance(node.get("tag"), str) else []
+        for value in node.values():
+            tags.extend(_collect_tags(value))
+        return tags
+    if isinstance(node, list):
+        tags: list[str] = []
+        for item in node:
+            tags.extend(_collect_tags(item))
+        return tags
+    return []
+
+
+def _status_column_sets(card: dict) -> list[dict]:
+    return [
+        element
+        for element in card["body"]["elements"]
+        if element.get("tag") == "column_set"
+        and element.get("background_style") in {"green", "yellow", "blue", "grey"}
+    ]
 
 
 class TestBuildAgentMessageCard:
@@ -71,8 +106,7 @@ class TestBuildStatusPanelCard:
         """AC-6: Status panel uses column_set components instead of plain markdown list."""
         agent = AgentIdentity(agent_id="a1", name="Alice", emoji="🤖", role="coder")
         card = build_status_panel_card([(agent, AgentStatus.IDLE)], team_name="Team")
-        body = card["body"]["elements"]
-        column_sets = [e for e in body if e["tag"] == "column_set"]
+        column_sets = _status_column_sets(card)
         assert len(column_sets) == 1
         # Verify agent info is inside the first column
         col = column_sets[0]["columns"][0]
@@ -114,17 +148,19 @@ class TestBuildStatusPanelCard:
         card = build_status_panel_card(
             [(a1, AgentStatus.IDLE), (a2, AgentStatus.RUNNING)]
         )
-        cs = [e for e in card["body"]["elements"] if e["tag"] == "column_set"]
+        cs = _status_column_sets(card)
         assert len(cs) == 2
         assert cs[0]["background_style"] == "green"
         assert cs[1]["background_style"] == "blue"
 
     def test_refresh_button_present(self):
         card = build_status_panel_card([])
-        body = card["body"]["elements"]
-        action_elements = [e for e in body if e["tag"] == "action"]
-        assert len(action_elements) == 1
-        assert action_elements[0]["actions"][0]["text"]["content"] == "🔄 Refresh"
+        buttons = _collect_buttons(card)
+        assert any(button["text"]["content"] == "🔄 Refresh" for button in buttons)
+
+    def test_status_panel_does_not_emit_schema_v2_unsupported_action_tag(self):
+        card = build_status_panel_card([], team_name="Alpha", channel_id="ch_alpha")
+        assert "action" not in _collect_tags(card)
 
     def test_default_title_without_team(self):
         card = build_status_panel_card([])
@@ -137,8 +173,7 @@ class TestBuildStatusPanelCard:
         card = build_status_panel_card(
             [(a1, AgentStatus.IDLE), (a2, AgentStatus.RUNNING)], team_name="Team"
         )
-        body = card["body"]["elements"]
-        column_sets = [e for e in body if e["tag"] == "column_set"]
+        column_sets = _status_column_sets(card)
         assert len(column_sets) == 2
 
         for cs in column_sets:

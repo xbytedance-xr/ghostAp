@@ -968,6 +968,19 @@ class TestSlockEngineTimeoutConfig:
 class TestStatusPanelStopButton:
     """Verify build_status_panel_card includes a Stop button with slock_stop action."""
 
+    def _collect_buttons(self, node):
+        if isinstance(node, dict):
+            buttons = [node] if node.get("tag") == "button" else []
+            for value in node.values():
+                buttons.extend(self._collect_buttons(value))
+            return buttons
+        if isinstance(node, list):
+            buttons = []
+            for item in node:
+                buttons.extend(self._collect_buttons(item))
+            return buttons
+        return []
+
     def test_stop_button_in_card(self):
         """Status panel card must contain a button with action 'slock_stop'."""
         from src.slock_engine.card_templates import build_status_panel_card
@@ -978,12 +991,7 @@ class TestStatusPanelStopButton:
             channel_id="ch_btn",
         )
 
-        # Find the action element
-        elements = card["body"]["elements"]
-        action_elements = [e for e in elements if e.get("tag") == "action"]
-        assert len(action_elements) >= 1
-
-        actions = action_elements[0]["actions"]
+        actions = self._collect_buttons(card)
         stop_buttons = [
             btn for btn in actions
             if btn.get("value", {}).get("action") == "slock_stop"
@@ -1002,9 +1010,7 @@ class TestStatusPanelStopButton:
             channel_id="ch_btn2",
         )
 
-        elements = card["body"]["elements"]
-        action_elements = [e for e in elements if e.get("tag") == "action"]
-        actions = action_elements[0]["actions"]
+        actions = self._collect_buttons(card)
         refresh_buttons = [
             btn for btn in actions
             if btn.get("value", {}).get("action") == "slock_refresh_status"

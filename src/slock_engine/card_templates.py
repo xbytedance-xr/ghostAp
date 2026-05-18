@@ -191,24 +191,24 @@ def build_status_panel_card(
             }
             elements.append(column_set)
 
-    # Action buttons: refresh + stop
-    elements.append({
-        "tag": "action",
-        "actions": [
-            {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "🔄 Refresh"},
-                "type": "primary_text",
-                "value": {"action": "slock_refresh_status", "channel_id": channel_id},
-            },
-            {
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": "⏹ Stop"},
-                "type": "danger",
-                "value": {"action": "slock_stop", "channel_id": channel_id},
-            },
-        ],
-    })
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "🔄 Refresh",
+                    "slock_refresh_status",
+                    channel_id=channel_id,
+                    button_type="primary_text",
+                ),
+                _build_callback_button(
+                    "⏹ Stop",
+                    "slock_stop",
+                    channel_id=channel_id,
+                    button_type="danger",
+                ),
+            ]
+        )
+    )
 
     header: dict = {
         "title": {"tag": "plain_text", "content": header_title},
@@ -328,3 +328,22 @@ def _build_chat_multi_url(chat_id: str) -> dict:
         "android_url": native,
         "ios_url": native,
     }
+
+
+def _build_callback_button(
+    text: str,
+    action: str,
+    *,
+    channel_id: str = "",
+    button_type: str = "default",
+) -> dict:
+    value = {"action": action, "channel_id": channel_id}
+    return apply_compact_style(
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": text},
+            "type": button_type,
+            "value": value,
+            "behaviors": [{"type": "callback", "value": value}],
+        }
+    )
