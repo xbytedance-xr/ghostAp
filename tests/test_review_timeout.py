@@ -771,52 +771,31 @@ class TestSpecAdaptiveTimeout:
 # ---------------------------------------------------------------------------
 
 
-class TestConsecutiveSkipsSerialization:
-    """consecutive_skips survives to_dict → from_dict round-trip."""
+class TestCircuitStateSerialization:
+    """Round-trip serialization for ReviewCircuitState fields."""
 
-    def test_round_trip_default(self):
-        circuit = ReviewCircuitState()
-        assert circuit.consecutive_skips == 0
+    @pytest.mark.parametrize("field,value", [
+        pytest.param("consecutive_skips", 0, id="skips_default"),
+        pytest.param("consecutive_skips", 7, id="skips_nonzero"),
+        pytest.param("last_review_elapsed_ms", 0, id="elapsed_default"),
+        pytest.param("last_review_elapsed_ms", 12345, id="elapsed_nonzero"),
+    ])
+    def test_round_trip(self, field, value):
+        circuit = ReviewCircuitState(**{field: value})
+        assert getattr(circuit, field) == value
         d = circuit.to_dict()
-        assert "consecutive_skips" in d
+        assert d[field] == value
         restored = ReviewCircuitState.from_dict(d)
-        assert restored.consecutive_skips == 0
+        assert getattr(restored, field) == value
 
-    def test_round_trip_nonzero(self):
-        circuit = ReviewCircuitState(consecutive_skips=7)
-        d = circuit.to_dict()
-        assert d["consecutive_skips"] == 7
-        restored = ReviewCircuitState.from_dict(d)
-        assert restored.consecutive_skips == 7
-
-    def test_from_dict_missing_key_defaults_zero(self):
-        """Backward compat: old persisted state without consecutive_skips."""
+    @pytest.mark.parametrize("field", [
+        pytest.param("consecutive_skips", id="skips_missing"),
+        pytest.param("last_review_elapsed_ms", id="elapsed_missing"),
+    ])
+    def test_from_dict_missing_key_defaults_zero(self, field):
+        """Backward compat: old persisted state without field defaults to 0."""
         restored = ReviewCircuitState.from_dict({"review_failure_consecutive": 2})
-        assert restored.consecutive_skips == 0
-
-
-class TestLastReviewElapsedMsSerialization:
-    """last_review_elapsed_ms survives to_dict → from_dict round-trip."""
-
-    def test_round_trip_default(self):
-        circuit = ReviewCircuitState()
-        assert circuit.last_review_elapsed_ms == 0
-        d = circuit.to_dict()
-        assert "last_review_elapsed_ms" in d
-        restored = ReviewCircuitState.from_dict(d)
-        assert restored.last_review_elapsed_ms == 0
-
-    def test_round_trip_nonzero(self):
-        circuit = ReviewCircuitState(last_review_elapsed_ms=12345)
-        d = circuit.to_dict()
-        assert d["last_review_elapsed_ms"] == 12345
-        restored = ReviewCircuitState.from_dict(d)
-        assert restored.last_review_elapsed_ms == 12345
-
-    def test_from_dict_missing_key_defaults_zero(self):
-        """Backward compat: old persisted state without last_review_elapsed_ms."""
-        restored = ReviewCircuitState.from_dict({"review_failure_consecutive": 2})
-        assert restored.last_review_elapsed_ms == 0
+        assert getattr(restored, field) == 0
 
 
 class TestSpecSkipOverrunProtection:
@@ -1736,93 +1715,58 @@ class TestLowDelayRetryStarting:
 class TestSettingsMaxDelayValidation:
     """AC-R07: spec_review_retry_max_delay must be > 0."""
 
-    def test_zero_raises_validation_error(self):
+    @pytest.mark.parametrize("value", [0, -5], ids=["zero", "negative"])
+    def test_invalid_raises_validation_error(self, value):
         from pydantic import ValidationError
 
         from src.config import Settings
 
         with pytest.raises(ValidationError):
-            Settings(spec_review_retry_max_delay=0, _env_file=None)
-
-    def test_negative_raises_validation_error(self):
-        from pydantic import ValidationError
-
-        from src.config import Settings
-
-        with pytest.raises(ValidationError):
-            Settings(spec_review_retry_max_delay=-5, _env_file=None)
+            Settings(spec_review_retry_max_delay=value, _env_file=None)
 
 
 class TestSettingsCrossFieldValidation:
     """AC-18/T-06/T-07: cross-field validators for spec_review timing parameters."""
 
-    def test_max_delay_exceeds_timeout_raises(self):
-        """spec_review_retry_max_delay > spec_review_timeout must fail."""
+    @pytest.mark.parametrize("kwargs,match", [
+        pytest.param(
+            dict(spec_review_retry_max_delay=250, spec_review_timeout=240),
+            "spec_review_retry_max_delay",
+            id="max_delay_exceeds_timeout",
+        ),
+        pytest.param(
+            dict(spec_review_timeout=0),
+            "spec_review_timeout",
+            id="timeout_zero",
+        ),
+        pytest.param(
+            dict(spec_review_min_timeout=-1),
+            "spec_review_min_timeout",
+            id="min_timeout_negative",
+        ),
+        pytest.param(
+            dict(spec_review_hard_floor=0),
+            "spec_review_hard_floor",
+            id="hard_floor_zero",
+        ),
+        pytest.param(
+            dict(spec_review_hard_floor=70, spec_review_min_timeout=60, spec_review_timeout=240),
+            "spec_review_hard_floor",
+            id="hard_floor_exceeds_min_timeout",
+        ),
+        pytest.param(
+            dict(spec_review_retry_max_delay=100, spec_review_retry_max_attempts=5, spec_review_timeout=240),
+            "请减小 SPEC_REVIEW_RETRY_MAX_ATTEMPTS 或 SPEC_REVIEW_RETRY_MAX_DELAY",
+            id="total_retry_budget_exceeds_limit",
+        ),
+    ])
+    def test_invalid_config_raises(self, kwargs, match):
         from pydantic import ValidationError
 
         from src.config import Settings
 
-        with pytest.raises(ValidationError, match="spec_review_retry_max_delay"):
-            Settings(
-                spec_review_retry_max_delay=250,
-                spec_review_timeout=240,
-                _env_file=None,
-            )
-
-    def test_timeout_zero_raises(self):
-        """spec_review_timeout=0 must fail field validator."""
-        from pydantic import ValidationError
-
-        from src.config import Settings
-
-        with pytest.raises(ValidationError, match="spec_review_timeout"):
-            Settings(spec_review_timeout=0, _env_file=None)
-
-    def test_min_timeout_negative_raises(self):
-        """spec_review_min_timeout=-1 must fail field validator."""
-        from pydantic import ValidationError
-
-        from src.config import Settings
-
-        with pytest.raises(ValidationError, match="spec_review_min_timeout"):
-            Settings(spec_review_min_timeout=-1, _env_file=None)
-
-    def test_hard_floor_zero_raises(self):
-        """spec_review_hard_floor=0 must fail field validator."""
-        from pydantic import ValidationError
-
-        from src.config import Settings
-
-        with pytest.raises(ValidationError, match="spec_review_hard_floor"):
-            Settings(spec_review_hard_floor=0, _env_file=None)
-
-    def test_hard_floor_exceeds_min_timeout_raises(self):
-        """hard_floor > min_timeout must fail model validator."""
-        from pydantic import ValidationError
-
-        from src.config import Settings
-
-        with pytest.raises(ValidationError, match="spec_review_hard_floor"):
-            Settings(
-                spec_review_hard_floor=70,
-                spec_review_min_timeout=60,
-                spec_review_timeout=240,
-                _env_file=None,
-            )
-
-    def test_total_retry_budget_exceeds_limit_raises(self):
-        """max_delay * max_attempts > timeout * 2 must fail."""
-        from pydantic import ValidationError
-
-        from src.config import Settings
-
-        with pytest.raises(ValidationError, match="请减小 SPEC_REVIEW_RETRY_MAX_ATTEMPTS 或 SPEC_REVIEW_RETRY_MAX_DELAY"):
-            Settings(
-                spec_review_retry_max_delay=100,
-                spec_review_retry_max_attempts=5,
-                spec_review_timeout=240,
-                _env_file=None,
-            )
+        with pytest.raises(ValidationError, match=match):
+            Settings(**kwargs, _env_file=None)
 
 
 # ---------------------------------------------------------------------------
