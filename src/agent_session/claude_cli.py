@@ -137,7 +137,41 @@ class SyncClaudeCLISession:
 
                 deadline = (time.monotonic() + timeout) if timeout else None
                 assert self._proc.stdout is not None
+
+                # Watchdog thread: terminates the process on timeout or cancel
+                # since blocking readline cannot check these conditions.
+                terminated_reason: list[str] = []
+                proc_ref = self._proc
+
+                def _watchdog():
+                    while True:
+                        try:
+                            if proc_ref.poll() is not None:
+                                return
+                        except Exception:
+                            return
+                        if self._cancel_event.is_set():
+                            terminated_reason.append("cancelled")
+                            try:
+                                proc_ref.terminate()
+                            except Exception:
+                                pass
+                            return
+                        if deadline and time.monotonic() > deadline:
+                            terminated_reason.append("timeout")
+                            try:
+                                proc_ref.terminate()
+                            except Exception:
+                                pass
+                            return
+                        self._cancel_event.wait(timeout=1.0)
+
+                watchdog_thread = threading.Thread(target=_watchdog, daemon=True)
+                watchdog_thread.start()
+
                 for line in self._proc.stdout:
+                    if terminated_reason:
+                        break
                     if self._cancel_event.is_set():
                         self._proc.terminate()
                         self._proc.wait(timeout=5)
@@ -151,6 +185,10 @@ class SyncClaudeCLISession:
                         on_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text=line))
 
                 self._proc.wait(timeout=30)
+
+                if terminated_reason:
+                    return (1, "".join(chunks), "", terminated_reason[0])
+
                 rc = int(self._proc.returncode or 0)
                 err = (self._proc.stderr.read() or "").strip("\n") if self._proc.stderr else ""
                 return (rc, "".join(chunks).strip("\n"), err, "ok")
