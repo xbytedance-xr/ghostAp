@@ -33,7 +33,7 @@ def _make_handler_ctx(tmp_path, *, api_client_factory=None, settings=None):
 
     # Settings
     s = MagicMock()
-    s.slock_team_name_prefix = ""
+    s.slock_team_name_prefix = "[Slock]"
     s.slock_workspace_base = ""
     s.slock_memory_base_path = str(tmp_path / "slock_memory")
     s.slock_execution_timeout = 3600
@@ -104,7 +104,7 @@ class TestCreateTeamHappyPath:
         # 1. Group created with correct params
         mock_lark.create_chat.assert_called_once()
         call_kwargs = mock_lark.create_chat.call_args
-        assert call_kwargs.kwargs["name"] == "TestTeam"
+        assert call_kwargs.kwargs["name"] == "[Slock] TestTeam"
         assert "ou_sender123" in call_kwargs.kwargs["user_id_list"]
 
         # 2. Sender promoted to manager
@@ -149,16 +149,36 @@ class TestCreateTeamHappyPath:
     def test_create_team_with_prefix(
         self, MockLarkChatClient, mock_sender, mock_session, tmp_path
     ):
-        ctx = _make_handler_ctx(tmp_path, settings={"slock_team_name_prefix": "[Slock] "})
+        ctx = _make_handler_ctx(tmp_path, settings={"slock_team_name_prefix": "Slock-"})
         handler = _make_slock_handler(ctx)
         handler.get_working_dir.return_value = str(tmp_path / "root")
 
         mock_lark = MockLarkChatClient.return_value
         mock_lark.create_chat.return_value = _FakeCreateChatResult(
-            chat_id="oc_prefixed", name="[Slock] Alpha"
+            chat_id="oc_prefixed", name="Slock-Alpha"
         )
 
         handler.create_team("msg2", "oc_origin", "Alpha")
+
+        call_kwargs = mock_lark.create_chat.call_args.kwargs
+        assert call_kwargs["name"] == "Slock-Alpha"
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_create_team_does_not_duplicate_existing_slock_marker(
+        self, MockLarkChatClient, mock_sender, mock_session, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        handler.get_working_dir.return_value = str(tmp_path / "root")
+
+        mock_lark = MockLarkChatClient.return_value
+        mock_lark.create_chat.return_value = _FakeCreateChatResult(
+            chat_id="oc_marked", name="[Slock] Alpha"
+        )
+
+        handler.create_team("msg3", "oc_origin", "[Slock] Alpha")
 
         call_kwargs = mock_lark.create_chat.call_args.kwargs
         assert call_kwargs["name"] == "[Slock] Alpha"
@@ -357,6 +377,7 @@ class TestActivateSlockManagedChat:
         assert "/task assign <任务> [角色]" in text
         assert "自动选择" in text
         assert "Kanban" in text
+        assert "[Slock]" in text
 
 
 # ==================================================================

@@ -210,3 +210,7 @@ class TestNewConfigDefaults:
     def test_spec_max_cycles_default(self):
         s = Settings()
         assert s.spec_max_cycles == 1000
+
+    def test_slock_team_name_prefix_default_marks_slock_groups(self):
+        s = Settings()
+        assert s.slock_team_name_prefix == "[Slock]"

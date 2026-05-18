@@ -284,7 +284,7 @@ class SlockHandler(BaseEngineHandler):
             "• `/slock status` — 查看团队状态\n"
             "• `/slock stop` — 停止协作\n\n"
             "**团队管理**\n"
-            "• `/new-team <名称>` — 创建团队\n"
+            "• `/new-team <名称>` — 创建带 `[Slock]` 标识的协作团队群\n"
             "• `/team list` — 查看团队列表\n"
             "• `/team status <名称>` — 查看团队详情\n"
             "• `/team dissolve <名称>` — 解散团队\n\n"
@@ -331,7 +331,7 @@ class SlockHandler(BaseEngineHandler):
             return
 
         settings = self.ctx.settings
-        group_name = f"{settings.slock_team_name_prefix}{name}" if settings.slock_team_name_prefix else name
+        group_name = self._format_slock_group_name(name, getattr(settings, "slock_team_name_prefix", "[Slock]"))
 
         # Step 1: Create Feishu group
         lark_client = LarkChatClient(api_client_factory=self.ctx.api_client_factory)
@@ -398,6 +398,18 @@ class SlockHandler(BaseEngineHandler):
             logger.error("create_team: 激活失败, 回滚建群 chat=%s err=%s", new_chat_id, str(e))
             lark_client.delete_chat(new_chat_id)
             self.reply_text(message_id, f"❌ 团队激活失败已回滚: {get_error_detail(e)}")
+
+    @staticmethod
+    def _format_slock_group_name(name: str, prefix: str = "[Slock]") -> str:
+        """Format Slock team group names with a visible marker."""
+        clean_name = (name or "").strip()
+        clean_prefix = (prefix or "").strip()
+        if not clean_prefix:
+            return clean_name
+        if clean_name.casefold().startswith(clean_prefix.casefold()):
+            return clean_name
+        separator = "" if prefix.endswith((" ", "-", "_", "/", "|", "｜", ":", "：")) else " "
+        return f"{prefix}{separator}{clean_name}"
 
     def list_teams(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """List all active Slock teams."""
