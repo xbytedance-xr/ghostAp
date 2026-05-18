@@ -129,8 +129,11 @@ def create_engine_session(
     on_rate_limit: Optional[Callable[[int], None]] = None,
     cancel_event: Optional[threading.Event] = None,
     model_name: Optional[str] = None,
+    *,
+    thread_id: Optional[str] = None,
+    auto_approve: bool = False,
 ) -> SyncSession:
-    """Create and start a session for Deep/Spec engines.
+    """Create and start a session for Deep/Spec/Slock engines.
 
     - Claude: CLI backend (no ACP retry needed)
     - ttadk_*: CLI backend (no ACP retry needed)
@@ -138,6 +141,10 @@ def create_engine_session(
 
     If rate_limit_retry_enabled is True in settings, the returned session
     is wrapped with RateLimitAwareSession for automatic retry on throttling.
+
+    Keyword args:
+        thread_id: Optional isolation key for concurrent sessions (e.g. slock agents).
+        auto_approve: If True, suppress interactive confirmation prompts (slock mode).
     """
     from ..acp.sync_adapter import start_session_with_retry
     from ..coco_model import get_coco_model_manager

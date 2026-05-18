@@ -9,15 +9,24 @@ from __future__ import annotations
 import logging
 import os
 import time
-from dataclasses import dataclass
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..agent_session import close_session_safely, create_engine_session
 from ..engine_base import BaseEngine, EngineRunState
 from .agent_registry import AgentRegistry
-from .card_templates import build_status_panel_card
+from .card_templates import build_escalation_card, build_status_panel_card
 from .memory_manager import MemoryManager, default_slock_storage_base
-from .models import AgentIdentity, AgentStatus, SlockChannel, SlockTask, TaskStatus
+from .models import (
+    AgentIdentity,
+    AgentStatus,
+    EscalationLevel,
+    EscalationRequest,
+    SlockChannel,
+    SlockTask,
+    TaskStatus,
+)
 from .mouthpiece import Mouthpiece
 from .task_router import TaskRouter
 
@@ -36,6 +45,120 @@ class SlockEngineCallbacks:
     on_task_claimed: Optional[Callable[[SlockTask, AgentIdentity], None]] = None
     on_message_routed: Optional[Callable[[str, AgentIdentity], None]] = None
     on_error: Optional[Callable[[str], None]] = None
+
+
+class SlockStreamProcessor:
+    """Builds a streaming progress card that updates as agents work.
+
+    Tracks agent state transitions and produces progressive card snapshots
+    that a handler can send/update to show real-time team activity.
+
+    Usage:
+        processor = SlockStreamProcessor(engine)
+        callbacks = processor.build_callbacks()
+        engine.execute_parallel(assignments, callbacks)
+        # Each callback triggers processor.get_progress_card() update
+    """
+
+    def __init__(self, engine: "SlockEngine", *, on_update: Optional[Callable[[dict], None]] = None):
+        self._engine = engine
+        self._on_update = on_update  # Called with card dict on each state change
+        self._start_time = time.time()
+        self._agent_activity: dict[str, str] = {}  # agent_id → last activity description
+        self._completed_count = 0
+        self._error_count = 0
+        self._total_tasks = 0
+
+    def build_callbacks(self) -> SlockEngineCallbacks:
+        """Build callbacks that feed into this stream processor."""
+        return SlockEngineCallbacks(
+            on_agent_wake=self._on_wake,
+            on_agent_thinking=self._on_thinking,
+            on_agent_running=self._on_running,
+            on_agent_done=self._on_done,
+            on_agent_error=self._on_agent_error,
+            on_error=self._on_error,
+        )
+
+    def set_total_tasks(self, count: int) -> None:
+        """Set the total task count for progress tracking."""
+        self._total_tasks = count
+
+    def _on_wake(self, agent: AgentIdentity) -> None:
+        self._agent_activity[agent.agent_id] = f"{agent.emoji} {agent.name}: waking..."
+        self._emit_update()
+
+    def _on_thinking(self, agent: AgentIdentity) -> None:
+        self._agent_activity[agent.agent_id] = f"{agent.emoji} {agent.name}: 💭 thinking..."
+        self._emit_update()
+
+    def _on_running(self, agent: AgentIdentity, task: str) -> None:
+        short_task = task[:60] + "..." if len(task) > 60 else task
+        self._agent_activity[agent.agent_id] = f"{agent.emoji} {agent.name}: 🔄 {short_task}"
+        self._emit_update()
+
+    def _on_done(self, agent: AgentIdentity, result: str) -> None:
+        self._agent_activity[agent.agent_id] = f"{agent.emoji} {agent.name}: ✅ done"
+        self._completed_count += 1
+        self._emit_update()
+
+    def _on_agent_error(self, agent: AgentIdentity, error: str) -> None:
+        short_err = error[:60] + "..." if len(error) > 60 else error
+        self._agent_activity[agent.agent_id] = f"{agent.emoji} {agent.name}: ❌ {short_err}"
+        self._error_count += 1
+        self._emit_update()
+
+    def _on_error(self, error_msg: str) -> None:
+        self._error_count += 1
+        self._emit_update()
+
+    def _emit_update(self) -> None:
+        """Emit a card update if a callback is registered."""
+        if self._on_update:
+            self._on_update(self.get_progress_card())
+
+    def get_progress_card(self) -> dict:
+        """Build the current progress card snapshot."""
+        elapsed = time.time() - self._start_time
+        channel = self._engine.channel
+        team_name = channel.team_name if channel else "Slock"
+
+        # Progress header
+        if self._total_tasks > 0:
+            progress_pct = int(self._completed_count / self._total_tasks * 100)
+            header_title = f"⚡ {team_name} — {progress_pct}% ({self._completed_count}/{self._total_tasks})"
+        else:
+            header_title = f"⚡ {team_name} — Running"
+
+        elements: list[dict] = []
+
+        # Agent activity lines
+        for activity in self._agent_activity.values():
+            elements.append({"tag": "markdown", "content": activity})
+
+        if not elements:
+            elements.append({"tag": "markdown", "content": "*Waiting for agents...*"})
+
+        # Footer with stats
+        stats_parts = [f"⏱ {elapsed:.0f}s"]
+        if self._completed_count:
+            stats_parts.append(f"✅ {self._completed_count}")
+        if self._error_count:
+            stats_parts.append(f"❌ {self._error_count}")
+        elements.append({
+            "tag": "note",
+            "elements": [{"tag": "plain_text", "content": " | ".join(stats_parts)}],
+        })
+
+        return {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": header_title},
+                "template": "blue",
+            },
+            "body": {"elements": elements},
+        }
 
 
 class SlockEngine(BaseEngine):
@@ -66,14 +189,20 @@ class SlockEngine(BaseEngine):
         storage_base_path = memory_base_path or default_slock_storage_base()
         self._registry = AgentRegistry(base_path=storage_base_path)
         self._memory = MemoryManager(base_path=storage_base_path)
-        self._router = TaskRouter()
+        claims_path = os.path.join(storage_base_path, "claims", f"{chat_id}.json")
+        self._router = TaskRouter(persist_path=claims_path)
         self._mouthpiece = Mouthpiece()
+
+        # Thread pool for parallel agent execution
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._max_parallel_agents = 4
 
         # Channel state
         self._channel: Optional[SlockChannel] = None
         self._tasks: list[SlockTask] = []
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._agent_sessions: dict[str, object] = {}
+        self._escalations: list[EscalationRequest] = []
 
     @property
     def registry(self) -> AgentRegistry:
@@ -497,6 +626,208 @@ class SlockEngine(BaseEngine):
         self._memory.write_task_board(channel_id, self._tasks)
 
     # ------------------------------------------------------------------
+    # Escalation Protocol
+    # ------------------------------------------------------------------
+
+    def escalate(
+        self,
+        agent: AgentIdentity,
+        reason: str,
+        *,
+        level: EscalationLevel = EscalationLevel.BLOCKED,
+        task_id: Optional[str] = None,
+        context: str = "",
+        options: Optional[list[str]] = None,
+        callbacks: Optional["SlockEngineCallbacks"] = None,
+    ) -> EscalationRequest:
+        """Raise an escalation request — pauses the agent and requests admin decision.
+
+        The agent is transitioned to IDLE (paused) and the escalation is stored.
+        Returns the EscalationRequest for the handler to send as a card.
+
+        Args:
+            agent: The agent requesting escalation.
+            reason: Human-readable description of the blocker.
+            level: Severity level (WARNING, BLOCKED, CRITICAL).
+            task_id: Optional task being worked on.
+            context: Additional context (error details, conversation snippet).
+            options: Resolution choices for the admin (defaults to Retry/Skip/Abort).
+            callbacks: Engine callbacks for error reporting.
+        """
+        escalation = EscalationRequest(
+            agent_id=agent.agent_id,
+            agent_name=agent.name,
+            task_id=task_id,
+            level=level,
+            reason=reason,
+            context=context[:2000],  # Truncate to prevent oversized cards
+            options=options or ["Retry", "Skip", "Abort"],
+        )
+
+        with self._lock:
+            self._escalations.append(escalation)
+
+        # Pause the agent
+        self.transition_agent(agent.agent_id, AgentStatus.IDLE)
+
+        logger.warning(
+            "Escalation raised: agent=%s level=%s reason=%s",
+            agent.name, level.value, reason[:100],
+        )
+
+        if callbacks and callbacks.on_error:
+            callbacks.on_error(f"Escalation [{level.value}] from {agent.name}: {reason}")
+
+        return escalation
+
+    def resolve_escalation(
+        self,
+        escalation_id: str,
+        resolution: str,
+    ) -> Optional[EscalationRequest]:
+        """Resolve a pending escalation with the admin's decision.
+
+        Returns the resolved EscalationRequest, or None if not found.
+        """
+        with self._lock:
+            for esc in self._escalations:
+                if esc.escalation_id == escalation_id and not esc.resolved:
+                    esc.resolved = True
+                    esc.resolution = resolution
+                    esc.resolved_at = time.time()
+                    logger.info(
+                        "Escalation resolved: id=%s resolution=%s",
+                        escalation_id, resolution,
+                    )
+                    return esc
+        return None
+
+    def get_pending_escalations(self) -> list[EscalationRequest]:
+        """Return all unresolved escalations."""
+        with self._lock:
+            return [e for e in self._escalations if not e.resolved]
+
+    def get_escalation_card(self, escalation: EscalationRequest) -> dict:
+        """Build the interactive card for an escalation request."""
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        return build_escalation_card(escalation, channel_id=channel_id)
+
+    # ------------------------------------------------------------------
+    # Parallel Execution
+    # ------------------------------------------------------------------
+
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """Lazy-initialize the thread pool executor."""
+        if self._executor is None or self._executor._shutdown:
+            self._executor = ThreadPoolExecutor(
+                max_workers=self._max_parallel_agents,
+                thread_name_prefix="slock-agent",
+            )
+        return self._executor
+
+    def execute_parallel(
+        self,
+        task_assignments: list[tuple[str, str]],
+        callbacks: Optional[SlockEngineCallbacks] = None,
+        *,
+        timeout: float = 300.0,
+    ) -> dict[str, Optional[str]]:
+        """Execute multiple tasks in parallel using ThreadPoolExecutor.
+
+        Args:
+            task_assignments: List of (task_id, agent_id) tuples to execute concurrently.
+            callbacks: Engine lifecycle callbacks.
+            timeout: Maximum wall-clock time for the batch (seconds).
+
+        Returns:
+            Dict mapping task_id → formatted result (or None on failure).
+        """
+        with self._lock:
+            if self._run_state == EngineRunState.STOPPING:
+                return {tid: None for tid, _ in task_assignments}
+            self._run_state = EngineRunState.RUNNING
+
+        executor = self._get_executor()
+        futures: dict[Future, str] = {}  # future → task_id
+        results: dict[str, Optional[str]] = {}
+
+        try:
+            for task_id, agent_id in task_assignments:
+                future = executor.submit(self.execute_task, task_id, agent_id, callbacks)
+                futures[future] = task_id
+
+            for future in as_completed(futures, timeout=timeout):
+                task_id = futures[future]
+                try:
+                    results[task_id] = future.result()
+                except Exception as e:
+                    logger.error("Parallel task %s failed: %s", task_id, repr(e))
+                    results[task_id] = None
+                    if callbacks and callbacks.on_error:
+                        callbacks.on_error(f"Task {task_id} failed: {e}")
+
+        except TimeoutError:
+            logger.warning("Parallel execution timed out after %.1fs", timeout)
+            # Collect whatever completed and mark the rest as None
+            for future, task_id in futures.items():
+                if task_id not in results:
+                    results[task_id] = None
+                    future.cancel()
+            if callbacks and callbacks.on_error:
+                callbacks.on_error(f"Parallel execution timed out after {timeout}s")
+        finally:
+            with self._lock:
+                if self._run_state == EngineRunState.RUNNING:
+                    self._run_state = EngineRunState.IDLE
+
+        return results
+
+    def dispatch_pending_tasks(
+        self,
+        callbacks: Optional[SlockEngineCallbacks] = None,
+        *,
+        max_concurrent: Optional[int] = None,
+    ) -> dict[str, Optional[str]]:
+        """Auto-assign and execute all pending TODO tasks in parallel.
+
+        For each TODO task, uses the TaskRouter to find the best available agent,
+        then dispatches all assignments concurrently via execute_parallel.
+
+        Args:
+            callbacks: Engine lifecycle callbacks.
+            max_concurrent: Override max parallel tasks (defaults to _max_parallel_agents).
+
+        Returns:
+            Dict mapping task_id → formatted result (or None on failure/skip).
+        """
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        agents = self._registry.list_agents(channel_id=channel_id)
+        self._sync_skill_profiles(agents)
+
+        if not agents:
+            return {}
+
+        # Gather TODO tasks and assign agents
+        pending = [t for t in self._tasks if t.status == TaskStatus.TODO]
+        if not pending:
+            return {}
+
+        limit = max_concurrent or self._max_parallel_agents
+        assignments: list[tuple[str, str]] = []
+
+        for task in pending[:limit]:
+            # Route task content to best agent
+            target = self._router.route_message(task.content, agents)
+            if not target:
+                target = agents[0]
+            assignments.append((task.task_id, target.agent_id))
+
+        if not assignments:
+            return {}
+
+        return self.execute_parallel(assignments, callbacks)
+
+    # ------------------------------------------------------------------
     # Status & Cleanup
     # ------------------------------------------------------------------
 
@@ -532,6 +863,11 @@ class SlockEngine(BaseEngine):
 
     def cleanup(self) -> None:
         """Clean up engine resources."""
+        # Shutdown thread pool executor
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
+
         # Reset all agent statuses
         with self._lock:
             for agent_id in list(self._agent_statuses.keys()):

@@ -199,7 +199,7 @@ class TestParseSlockCommand:
 _acp_available = pytest.importorskip("acp", reason="acp package not installed")
 
 from src.slock_engine.agent_registry import AgentRegistry  # noqa: E402
-from src.slock_engine.engine import SlockEngine, SlockEngineCallbacks  # noqa: E402
+from src.slock_engine.engine import SlockEngine, SlockEngineCallbacks, SlockStreamProcessor  # noqa: E402
 from src.slock_engine.models import (  # noqa: E402
     AgentIdentity,
     AgentStatus,
@@ -1025,3 +1025,440 @@ class TestStatusPanelStopButton:
             if btn.get("value", {}).get("action") == "slock_refresh_status"
         ]
         assert len(refresh_buttons) == 1
+
+
+# ============================================================
+# Parallel Execution (Task 1: ThreadPoolExecutor dispatch)
+# ============================================================
+
+
+class TestSlockEngineParallelExecution:
+    """Tests for execute_parallel and dispatch_pending_tasks."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _make_engine(self, mock_create_session, tmp_path=None):
+        mock_create_session.return_value = None
+        base_path = str(tmp_path) if tmp_path else "/tmp/test_slock_parallel"
+        return SlockEngine(
+            chat_id="chat_parallel",
+            root_path="/tmp/test_root",
+            memory_base_path=base_path,
+        )
+
+    def test_execute_parallel_runs_multiple_tasks(self, tmp_path):
+        """execute_parallel dispatches tasks to different agents concurrently."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_par", name="Parallel", team_name="ParTeam")
+        engine.activate_channel(ch)
+
+        agent_a = AgentIdentity(agent_id="a1", name="AgentA", agent_type="coco", owner_group="ch_par")
+        agent_b = AgentIdentity(agent_id="a2", name="AgentB", agent_type="coco", owner_group="ch_par")
+        engine.registry.register(agent_a)
+        engine.registry.register(agent_b)
+
+        t1 = engine.add_task("Task one")
+        t2 = engine.add_task("Task two")
+
+        with patch.object(engine, "_run_acp_session", side_effect=["result one", "result two"]):
+            results = engine.execute_parallel(
+                [(t1.task_id, "a1"), (t2.task_id, "a2")],
+                timeout=10.0,
+            )
+
+        assert results[t1.task_id] is not None
+        assert results[t2.task_id] is not None
+        # Both tasks should be marked DONE
+        statuses = {t.task_id: t.status for t in engine.tasks}
+        assert statuses[t1.task_id] == TaskStatus.DONE
+        assert statuses[t2.task_id] == TaskStatus.DONE
+
+    def test_execute_parallel_handles_failure(self, tmp_path):
+        """execute_parallel returns None for tasks that fail."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_fail", name="Fail", team_name="FailTeam")
+        engine.activate_channel(ch)
+
+        agent = AgentIdentity(agent_id="a1", name="AgentA", agent_type="coco", owner_group="ch_fail")
+        engine.registry.register(agent)
+
+        t1 = engine.add_task("Will fail")
+
+        with patch.object(engine, "_run_acp_session", return_value=None):
+            results = engine.execute_parallel(
+                [(t1.task_id, "a1")],
+                timeout=10.0,
+            )
+
+        assert results[t1.task_id] is None
+        # Task should be rolled back to TODO on failure
+        assert engine.tasks[0].status == TaskStatus.TODO
+
+    def test_execute_parallel_when_stopping(self, tmp_path):
+        """execute_parallel returns None for all tasks when engine is stopping."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_stop", name="Stop", team_name="StopTeam")
+        engine.activate_channel(ch)
+
+        t1 = engine.add_task("Whatever")
+        engine.pause()  # sets state to STOPPING
+
+        results = engine.execute_parallel([(t1.task_id, "a1")], timeout=5.0)
+        assert results[t1.task_id] is None
+
+    def test_dispatch_pending_tasks_assigns_and_executes(self, tmp_path):
+        """dispatch_pending_tasks auto-routes and executes TODO tasks."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_dispatch", name="Dispatch", team_name="DispatchTeam")
+        engine.activate_channel(ch)
+
+        agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco", owner_group="ch_dispatch")
+        engine.registry.register(agent)
+
+        engine.add_task("Implement login")
+        engine.add_task("Write tests")
+
+        with patch.object(engine, "_run_acp_session", return_value="done"):
+            results = engine.dispatch_pending_tasks()
+
+        assert len(results) == 2
+        assert all(v is not None for v in results.values())
+        assert all(t.status == TaskStatus.DONE for t in engine.tasks)
+
+    def test_dispatch_pending_tasks_no_agents(self, tmp_path):
+        """dispatch_pending_tasks returns empty when no agents registered."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_empty", name="Empty", team_name="EmptyTeam")
+        engine.activate_channel(ch)
+        engine.add_task("No one to run this")
+
+        results = engine.dispatch_pending_tasks()
+        assert results == {}
+
+    def test_dispatch_pending_tasks_respects_max_concurrent(self, tmp_path):
+        """dispatch_pending_tasks limits concurrent tasks."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_limit", name="Limit", team_name="LimitTeam")
+        engine.activate_channel(ch)
+
+        agent = AgentIdentity(agent_id="a1", name="Worker", agent_type="coco", owner_group="ch_limit")
+        engine.registry.register(agent)
+
+        for i in range(5):
+            engine.add_task(f"Task {i}")
+
+        with patch.object(engine, "_run_acp_session", return_value="done"):
+            results = engine.dispatch_pending_tasks(max_concurrent=2)
+
+        # Only 2 should have been dispatched
+        assert len(results) == 2
+
+    def test_cleanup_shuts_down_executor(self, tmp_path):
+        """cleanup() gracefully shuts down the thread pool."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        # Force executor creation
+        executor = engine._get_executor()
+        assert executor is not None
+        engine.cleanup()
+        assert engine._executor is None
+
+
+# ============================================================
+# TaskClaim Persistence (Task 9-11)
+# ============================================================
+
+
+class TestTaskClaimPersistence:
+    """Tests for TaskClaim file persistence and TTL expiry."""
+
+    def test_claim_persists_to_disk(self, tmp_path):
+        """Claims are written to disk on mutation."""
+        from src.slock_engine.task_router import TaskClaim
+        import json
+
+        path = str(tmp_path / "claims.json")
+        tc = TaskClaim(persist_path=path)
+        tc.claim("t1", "agent-1")
+
+        assert os.path.isfile(path)
+        with open(path, "r") as f:
+            data = json.load(f)
+        assert "t1" in data
+        assert data["t1"]["agent_id"] == "agent-1"
+
+    def test_claim_loads_from_disk(self, tmp_path):
+        """Claims are restored from disk on construction."""
+        from src.slock_engine.task_router import TaskClaim
+        import json
+
+        path = str(tmp_path / "claims.json")
+        # Write a claim manually
+        data = {"t1": {"agent_id": "agent-x", "claimed_at": time.time()}}
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        tc = TaskClaim(persist_path=path)
+        assert tc.get_holder("t1") == "agent-x"
+
+    def test_expired_claims_not_loaded(self, tmp_path):
+        """Expired claims are pruned on load."""
+        from src.slock_engine.task_router import TaskClaim
+        import json
+
+        path = str(tmp_path / "claims.json")
+        # Write an expired claim (claimed 2 hours ago, TTL is 1 hour)
+        data = {"t1": {"agent_id": "agent-x", "claimed_at": time.time() - 7200}}
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+        tc = TaskClaim(default_ttl=3600.0, persist_path=path)
+        assert tc.get_holder("t1") is None
+
+    def test_release_removes_from_disk(self, tmp_path):
+        """Release removes claim from persisted file."""
+        from src.slock_engine.task_router import TaskClaim
+        import json
+
+        path = str(tmp_path / "claims.json")
+        tc = TaskClaim(persist_path=path)
+        tc.claim("t1", "agent-1")
+        tc.release("t1", "agent-1")
+
+        with open(path, "r") as f:
+            data = json.load(f)
+        assert "t1" not in data
+
+    def test_purge_expired_removes_stale_claims(self, tmp_path):
+        """purge_expired removes all claims past TTL."""
+        from src.slock_engine.task_router import TaskClaim
+
+        path = str(tmp_path / "claims.json")
+        tc = TaskClaim(default_ttl=1.0, persist_path=path)
+        tc.claim("t1", "agent-1")
+        tc.claim("t2", "agent-2")
+
+        # Manually backdate claims
+        with tc._lock:
+            tc._claims["t1"] = ("agent-1", time.time() - 5.0)
+            tc._claims["t2"] = ("agent-2", time.time())
+
+        purged = tc.purge_expired()
+        assert purged == 1
+        assert tc.get_holder("t1") is None
+        assert tc.get_holder("t2") == "agent-2"
+
+    def test_no_persist_path_works_in_memory_only(self):
+        """TaskClaim without persist_path works purely in-memory (backward compat)."""
+        from src.slock_engine.task_router import TaskClaim
+
+        tc = TaskClaim()
+        tc.claim("t1", "agent-1")
+        assert tc.get_holder("t1") == "agent-1"
+        tc.release("t1")
+        assert tc.get_holder("t1") is None
+
+
+# ============================================================
+# Escalation Protocol (Task 12-16)
+# ============================================================
+
+
+class TestEscalationProtocol:
+    """Tests for the escalation protocol."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _make_engine(self, mock_create_session, tmp_path=None):
+        mock_create_session.return_value = None
+        base_path = str(tmp_path) if tmp_path else "/tmp/test_slock_esc"
+        return SlockEngine(
+            chat_id="chat_esc",
+            root_path="/tmp/test_root",
+            memory_base_path=base_path,
+        )
+
+    def test_escalate_creates_request(self, tmp_path):
+        """escalate() creates an EscalationRequest and stores it."""
+        from src.slock_engine.models import EscalationLevel, EscalationRequest
+
+        engine = self._make_engine(tmp_path=tmp_path)
+        agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco")
+
+        esc = engine.escalate(agent, "Cannot connect to database", level=EscalationLevel.BLOCKED)
+
+        assert esc.agent_id == "a1"
+        assert esc.agent_name == "Coder"
+        assert esc.reason == "Cannot connect to database"
+        assert esc.level == EscalationLevel.BLOCKED
+        assert not esc.resolved
+        assert len(engine.get_pending_escalations()) == 1
+
+    def test_escalate_pauses_agent(self, tmp_path):
+        """escalate() transitions agent back to IDLE."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco")
+
+        # Move agent to RUNNING state
+        engine.transition_agent("a1", AgentStatus.WAKING)
+        engine.transition_agent("a1", AgentStatus.THINKING)
+        engine.transition_agent("a1", AgentStatus.RUNNING)
+
+        engine.escalate(agent, "Stuck")
+
+        assert engine.get_agent_status("a1") == AgentStatus.IDLE
+
+    def test_resolve_escalation(self, tmp_path):
+        """resolve_escalation() marks the request as resolved."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco")
+
+        esc = engine.escalate(agent, "Need help")
+        resolved = engine.resolve_escalation(esc.escalation_id, "Retry")
+
+        assert resolved is not None
+        assert resolved.resolved is True
+        assert resolved.resolution == "Retry"
+        assert resolved.resolved_at is not None
+        assert len(engine.get_pending_escalations()) == 0
+
+    def test_resolve_nonexistent_escalation(self, tmp_path):
+        """resolve_escalation() returns None for unknown ID."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        result = engine.resolve_escalation("nonexistent", "Skip")
+        assert result is None
+
+    def test_escalation_card_structure(self, tmp_path):
+        """get_escalation_card() produces valid card structure."""
+        from src.slock_engine.models import EscalationLevel
+
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_esc", name="Esc", team_name="EscTeam")
+        engine.activate_channel(ch)
+
+        agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco")
+        esc = engine.escalate(
+            agent, "API rate limit exceeded",
+            level=EscalationLevel.CRITICAL,
+            context="Error: 429 Too Many Requests",
+            options=["Retry", "Wait 5min", "Abort"],
+        )
+
+        card = engine.get_escalation_card(esc)
+        assert card["schema"] == "2.0"
+        assert "Escalation" in card["header"]["title"]["content"]
+        assert card["header"]["template"] == "red"  # CRITICAL level
+
+    def test_escalation_with_task_reference(self, tmp_path):
+        """Escalation can reference a specific task."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco")
+        task = engine.add_task("Deploy to prod")
+
+        esc = engine.escalate(agent, "Deploy failed", task_id=task.task_id)
+        assert esc.task_id == task.task_id
+
+
+# ============================================================
+# SlockStreamProcessor (Task 5-6)
+# ============================================================
+
+
+class TestSlockStreamProcessor:
+    """Tests for the streaming progress card processor."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _make_engine(self, mock_create_session, tmp_path=None):
+        mock_create_session.return_value = None
+        base_path = str(tmp_path) if tmp_path else "/tmp/test_slock_stream"
+        return SlockEngine(
+            chat_id="chat_stream",
+            root_path="/tmp/test_root",
+            memory_base_path=base_path,
+        )
+
+    def test_build_callbacks_returns_valid_callbacks(self, tmp_path):
+        """build_callbacks() returns SlockEngineCallbacks with all hooks set."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        processor = SlockStreamProcessor(engine)
+        callbacks = processor.build_callbacks()
+
+        assert callbacks.on_agent_wake is not None
+        assert callbacks.on_agent_thinking is not None
+        assert callbacks.on_agent_running is not None
+        assert callbacks.on_agent_done is not None
+        assert callbacks.on_agent_error is not None
+        assert callbacks.on_error is not None
+
+    def test_progress_card_initial_state(self, tmp_path):
+        """Initial progress card shows 'Waiting for agents'."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_s", name="Stream", team_name="StreamTeam")
+        engine.activate_channel(ch)
+
+        processor = SlockStreamProcessor(engine)
+        card = processor.get_progress_card()
+
+        assert card["schema"] == "2.0"
+        assert "StreamTeam" in card["header"]["title"]["content"]
+        assert "Running" in card["header"]["title"]["content"]
+
+    def test_progress_card_tracks_agent_activity(self, tmp_path):
+        """Progress card updates as agents transition through states."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_s", name="Stream", team_name="StreamTeam")
+        engine.activate_channel(ch)
+
+        processor = SlockStreamProcessor(engine)
+        callbacks = processor.build_callbacks()
+
+        agent = AgentIdentity(agent_id="a1", name="Coder", emoji="🔧", agent_type="coco")
+        callbacks.on_agent_wake(agent)
+
+        card = processor.get_progress_card()
+        body_text = str(card["body"]["elements"])
+        assert "Coder" in body_text
+        assert "waking" in body_text
+
+    def test_progress_card_shows_percentage(self, tmp_path):
+        """Progress card shows completion percentage when total_tasks is set."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_s", name="Stream", team_name="StreamTeam")
+        engine.activate_channel(ch)
+
+        processor = SlockStreamProcessor(engine)
+        processor.set_total_tasks(4)
+        callbacks = processor.build_callbacks()
+
+        agent = AgentIdentity(agent_id="a1", name="Coder", emoji="🔧", agent_type="coco")
+        callbacks.on_agent_done(agent, "result")
+
+        card = processor.get_progress_card()
+        assert "25%" in card["header"]["title"]["content"]
+        assert "1/4" in card["header"]["title"]["content"]
+
+    def test_on_update_callback_fires(self, tmp_path):
+        """on_update is called with card dict on each state change."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        updates: list[dict] = []
+
+        processor = SlockStreamProcessor(engine, on_update=lambda card: updates.append(card))
+        callbacks = processor.build_callbacks()
+
+        agent = AgentIdentity(agent_id="a1", name="Coder", emoji="🔧", agent_type="coco")
+        callbacks.on_agent_wake(agent)
+        callbacks.on_agent_thinking(agent)
+        callbacks.on_agent_running(agent, "implement feature")
+
+        assert len(updates) == 3
+        assert all(u["schema"] == "2.0" for u in updates)
+
+    def test_error_count_tracked(self, tmp_path):
+        """Errors increment the error counter in the progress card."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        processor = SlockStreamProcessor(engine)
+        callbacks = processor.build_callbacks()
+
+        agent = AgentIdentity(agent_id="a1", name="Coder", emoji="🔧", agent_type="coco")
+        callbacks.on_agent_error(agent, "Connection timeout")
+
+        card = processor.get_progress_card()
+        note_text = str(card["body"]["elements"][-1])
+        assert "❌" in note_text

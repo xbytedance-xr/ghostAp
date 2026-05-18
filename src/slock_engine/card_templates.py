@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from src.card.shared import apply_compact_style, build_responsive_layout
 
-from .models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
+from .models import AgentIdentity, AgentStatus, EscalationLevel, EscalationRequest, SlockTask, TaskStatus
 
 
 def build_agent_message_card(
@@ -347,3 +347,92 @@ def _build_callback_button(
             "behaviors": [{"type": "callback", "value": value}],
         }
     )
+
+
+def build_escalation_card(
+    escalation: EscalationRequest,
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build an escalation card requesting admin intervention.
+
+    Shows the agent name, severity level, reason, and resolution option buttons.
+    """
+    level_icons = {
+        EscalationLevel.WARNING: "⚠️",
+        EscalationLevel.BLOCKED: "🚫",
+        EscalationLevel.CRITICAL: "🔴",
+    }
+    level_colors = {
+        EscalationLevel.WARNING: "yellow",
+        EscalationLevel.BLOCKED: "orange",
+        EscalationLevel.CRITICAL: "red",
+    }
+
+    icon = level_icons.get(escalation.level, "⚠️")
+    header_color = level_colors.get(escalation.level, "orange")
+    header_title = f"{icon} Escalation: {escalation.agent_name or 'Agent'}"
+
+    elements: list[dict] = []
+
+    # Severity and reason
+    elements.append({
+        "tag": "markdown",
+        "content": (
+            f"**Level:** {escalation.level.value.upper()}\n"
+            f"**Agent:** {escalation.agent_name} (`{escalation.agent_id}`)\n"
+            f"**Reason:** {escalation.reason}"
+        ),
+    })
+
+    # Context details (truncated)
+    if escalation.context:
+        context_display = escalation.context[:500]
+        if len(escalation.context) > 500:
+            context_display += "\n..."
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "markdown",
+            "content": f"**Context:**\n```\n{context_display}\n```",
+        })
+
+    # Task reference
+    if escalation.task_id:
+        elements.append({
+            "tag": "markdown",
+            "content": f"**Task:** `{escalation.task_id}`",
+        })
+
+    elements.append({"tag": "hr"})
+
+    # Resolution option buttons
+    option_buttons: list[dict] = []
+    default_options = escalation.options or ["Retry", "Skip", "Abort"]
+    for option in default_options:
+        value = {
+            "action": "slock_escalation_resolve",
+            "escalation_id": escalation.escalation_id,
+            "resolution": option,
+            "channel_id": channel_id,
+        }
+        btn_type = "danger" if option.lower() == "abort" else "default"
+        option_buttons.append(apply_compact_style({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": option},
+            "type": btn_type,
+            "value": value,
+            "behaviors": [{"type": "callback", "value": value}],
+        }))
+
+    if option_buttons:
+        elements.extend(build_responsive_layout(option_buttons))
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": header_color,
+        },
+        "body": {"elements": elements},
+    }

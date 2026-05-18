@@ -25,12 +25,19 @@ _WEIGHT_AVAILABILITY = 0.25
 
 
 class TaskClaim:
-    """Exclusive lock for task claiming — process-internal, thread-safe."""
+    """Exclusive lock for task claiming — thread-safe with optional file persistence.
 
-    def __init__(self, default_ttl: float = 3600.0):
+    When persist_path is set, claim state is saved to disk on every mutation
+    and loaded on construction, surviving process restarts.
+    """
+
+    def __init__(self, default_ttl: float = 3600.0, persist_path: Optional[str] = None):
         self._claims: dict[str, tuple[str, float]] = {}  # task_id -> (agent_id, claimed_at)
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._default_ttl = default_ttl
+        self._persist_path = persist_path
+        if persist_path:
+            self._load_from_disk()
 
     def claim(self, task_id: str, agent_id: str, ttl: Optional[float] = None) -> bool:
         """Attempt to claim a task. Returns True if successful, False if already claimed."""
@@ -45,6 +52,7 @@ class TaskClaim:
                     # Expired — allow reclaim
                     self._claims[task_id] = (agent_id, now)
                     logger.info("Task %s reclaimed by %s (previous claim expired)", task_id, agent_id)
+                    self._persist()
                     return True
                 # Still held by another agent
                 if holder_id != agent_id:
@@ -53,6 +61,7 @@ class TaskClaim:
                 return True
             # Not claimed — claim it
             self._claims[task_id] = (agent_id, now)
+            self._persist()
             return True
 
     def release(self, task_id: str, agent_id: Optional[str] = None) -> bool:
@@ -65,6 +74,7 @@ class TaskClaim:
                 if holder_id != agent_id:
                     return False
             del self._claims[task_id]
+            self._persist()
             return True
 
     def get_holder(self, task_id: str) -> Optional[str]:
@@ -76,6 +86,7 @@ class TaskClaim:
             # Check expiry
             if time.time() - claimed_at >= self._default_ttl:
                 del self._claims[task_id]
+                self._persist()
                 return None
             return holder_id
 
@@ -87,6 +98,66 @@ class TaskClaim:
         """Admin override: forcefully assign task regardless of current holder."""
         with self._lock:
             self._claims[task_id] = (agent_id, time.time())
+            self._persist()
+
+    def purge_expired(self) -> int:
+        """Remove all expired claims. Returns the number purged."""
+        now = time.time()
+        purged = 0
+        with self._lock:
+            expired_keys = [
+                tid for tid, (_, claimed_at) in self._claims.items()
+                if now - claimed_at >= self._default_ttl
+            ]
+            for tid in expired_keys:
+                del self._claims[tid]
+                purged += 1
+            if purged:
+                self._persist()
+        return purged
+
+    def _persist(self) -> None:
+        """Write claims to disk (must be called under self._lock)."""
+        if not self._persist_path:
+            return
+        import json
+        import os
+
+        try:
+            os.makedirs(os.path.dirname(self._persist_path), exist_ok=True)
+            tmp_path = self._persist_path + ".tmp"
+            data = {
+                tid: {"agent_id": aid, "claimed_at": cat}
+                for tid, (aid, cat) in self._claims.items()
+            }
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp_path, self._persist_path)
+        except OSError as e:
+            logger.warning("TaskClaim persist failed: %s", str(e))
+
+    def _load_from_disk(self) -> None:
+        """Load claims from disk, pruning expired entries."""
+        import json
+        import os
+
+        if not self._persist_path or not os.path.isfile(self._persist_path):
+            return
+        try:
+            with open(self._persist_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("TaskClaim load failed: %s", str(e))
+            return
+
+        now = time.time()
+        for tid, entry in data.items():
+            if not isinstance(entry, dict):
+                continue
+            agent_id = entry.get("agent_id", "")
+            claimed_at = entry.get("claimed_at", 0.0)
+            if now - claimed_at < self._default_ttl:
+                self._claims[tid] = (agent_id, claimed_at)
 
 
 class TaskRouter:
@@ -101,8 +172,8 @@ class TaskRouter:
     # Pattern to match @AgentName mentions
     _MENTION_PATTERN = re.compile(r"@([\w\-]+)", re.UNICODE)
 
-    def __init__(self, task_claim_ttl: float = 3600.0):
-        self._task_claim = TaskClaim(default_ttl=task_claim_ttl)
+    def __init__(self, task_claim_ttl: float = 3600.0, persist_path: Optional[str] = None):
+        self._task_claim = TaskClaim(default_ttl=task_claim_ttl, persist_path=persist_path)
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._skill_profiles: dict[str, list[SkillProfile]] = {}  # agent_id -> profiles
         self._round_robin_index = 0

@@ -32,6 +32,65 @@ class TaskStatus(Enum):
     DONE = "done"
 
 
+class EscalationLevel(Enum):
+    """Escalation severity levels."""
+
+    WARNING = "warning"      # Agent can continue but wants guidance
+    BLOCKED = "blocked"      # Agent cannot proceed, needs admin decision
+    CRITICAL = "critical"    # Fatal error, immediate admin attention needed
+
+
+@dataclass
+class EscalationRequest:
+    """A request for admin intervention from an agent."""
+
+    escalation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    agent_id: str = ""
+    agent_name: str = ""
+    task_id: Optional[str] = None
+    level: EscalationLevel = EscalationLevel.BLOCKED
+    reason: str = ""
+    context: str = ""  # Additional context (truncated conversation, error details)
+    options: list[str] = field(default_factory=list)  # Suggested resolution options
+    resolved: bool = False
+    resolution: str = ""  # Admin's resolution choice
+    created_at: float = field(default_factory=time.time)
+    resolved_at: Optional[float] = None
+
+    def to_dict(self) -> dict:
+        return {
+            "escalation_id": self.escalation_id,
+            "agent_id": self.agent_id,
+            "agent_name": self.agent_name,
+            "task_id": self.task_id,
+            "level": self.level.value,
+            "reason": self.reason,
+            "context": self.context,
+            "options": self.options,
+            "resolved": self.resolved,
+            "resolution": self.resolution,
+            "created_at": self.created_at,
+            "resolved_at": self.resolved_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "EscalationRequest":
+        return cls(
+            escalation_id=data.get("escalation_id", str(uuid.uuid4())),
+            agent_id=data.get("agent_id", ""),
+            agent_name=data.get("agent_name", ""),
+            task_id=data.get("task_id"),
+            level=EscalationLevel(data.get("level", "blocked")),
+            reason=data.get("reason", ""),
+            context=data.get("context", ""),
+            options=data.get("options", []),
+            resolved=data.get("resolved", False),
+            resolution=data.get("resolution", ""),
+            created_at=data.get("created_at", time.time()),
+            resolved_at=data.get("resolved_at"),
+        )
+
+
 # Agent role color mapping for card rendering
 AGENT_ROLE_COLORS: dict[str, str] = {
     "coder": "blue",
