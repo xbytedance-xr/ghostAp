@@ -131,7 +131,7 @@ def build_status_panel_card(
             }
             elements.append(column_set)
 
-    # Action button for refresh
+    # Action buttons: refresh + stop
     elements.append({
         "tag": "action",
         "actions": [
@@ -140,7 +140,13 @@ def build_status_panel_card(
                 "text": {"tag": "plain_text", "content": "🔄 Refresh"},
                 "type": "primary_text",
                 "value": {"action": "slock_refresh_status", "channel_id": channel_id},
-            }
+            },
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "⏹ Stop"},
+                "type": "danger",
+                "value": {"action": "slock_stop", "channel_id": channel_id},
+            },
         ],
     })
 

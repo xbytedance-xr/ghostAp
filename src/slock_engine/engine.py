@@ -316,7 +316,7 @@ class SlockEngine(BaseEngine):
 
             self._session = session
             try:
-                result = session.send_prompt(prompt, timeout=self.settings.coco_execution_timeout if hasattr(self.settings, 'coco_execution_timeout') else 3600)
+                result = session.send_prompt(prompt, timeout=self.settings.coco_execution_timeout)
                 return result.text if result else None
             finally:
                 self._close_session_safely()
@@ -432,9 +432,10 @@ class SlockEngine(BaseEngine):
         """Pause the engine."""
         with self._lock:
             self._run_state = EngineRunState.STOPPING
-        if self._session:
+            session = self._session  # snapshot under lock to avoid TOCTOU
+        if session:
             try:
-                self._session.cancel()
+                session.cancel()
             except Exception:
                 pass
 
@@ -450,3 +451,32 @@ class SlockEngine(BaseEngine):
             for agent_id in list(self._agent_statuses.keys()):
                 self._agent_statuses[agent_id] = AgentStatus.IDLE
         super().cleanup()
+
+    def deactivate(self) -> None:
+        """Deactivate slock mode for this channel.
+
+        Stops the engine, resets all agent statuses, and clears channel binding.
+        After deactivation, the engine will refuse to execute new messages.
+        """
+        with self._lock:
+            self._run_state = EngineRunState.STOPPING
+            # Reset all agents to IDLE
+            for agent_id in list(self._agent_statuses.keys()):
+                self._agent_statuses[agent_id] = AgentStatus.IDLE
+            self._channel = None
+            session = self._session  # snapshot under lock to avoid TOCTOU
+
+        # Cancel any running session using the snapshot
+        if session:
+            try:
+                session.cancel()
+            except Exception:
+                pass
+
+        logger.info("SlockEngine deactivated for chat %s", self.chat_id)
+
+    @property
+    def is_active(self) -> bool:
+        """Check if the engine is active (has a channel and is not stopping)."""
+        with self._lock:
+            return self._channel is not None and self._run_state != EngineRunState.STOPPING

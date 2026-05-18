@@ -113,3 +113,41 @@ class TestMemoryManagerIsolation:
         assert os.path.isdir(os.path.join(str(tmp_path), "agents", "a1"))
         assert os.path.isdir(os.path.join(str(tmp_path), "groups", "ch1", "tasks"))
         assert os.path.isdir(os.path.join(str(tmp_path), "global"))
+
+    def test_cross_chat_id_access_returns_empty(self, tmp_path):
+        """AC-10: L2 shared memory of chat_id_A is not accessible via chat_id_B."""
+        mm = MemoryManager(base_path=str(tmp_path))
+        mm.write_group_memory("chat_id_A", "Secret data for group A")
+        result_b = mm.read_group_memory("chat_id_B")
+        assert result_b == ""
+        assert mm.read_group_memory("chat_id_A") == "Secret data for group A"
+
+    def test_cross_chat_append_does_not_leak(self, tmp_path):
+        """AC-10: Appending to group B does not affect group A."""
+        mm = MemoryManager(base_path=str(tmp_path))
+        mm.write_group_memory("group_alpha", "Alpha original")
+        mm.append_group_memory("group_beta", "Beta new entry")
+        assert mm.read_group_memory("group_alpha") == "Alpha original"
+        assert mm.read_group_memory("group_beta") == "Beta new entry"
+
+    def test_many_groups_no_cross_contamination(self, tmp_path):
+        """AC-10: 10 groups each with unique data — no cross-contamination."""
+        mm = MemoryManager(base_path=str(tmp_path))
+        for i in range(10):
+            mm.write_group_memory(f"chat_{i}", f"data_for_group_{i}")
+
+        for i in range(10):
+            content = mm.read_group_memory(f"chat_{i}")
+            assert content == f"data_for_group_{i}"
+            for j in range(10):
+                if j != i:
+                    assert f"data_for_group_{j}" not in content
+
+    def test_agent_memory_isolated_from_group_memory(self, tmp_path):
+        """Agent L1 memory and group L2 memory are fully separate namespaces."""
+        mm = MemoryManager(base_path=str(tmp_path))
+        mm.write_agent_memory("agent_x", SlockMemory(role="Coder", key_knowledge="Python", active_context="task"))
+        mm.write_group_memory("agent_x", "This is group data")
+        agent_mem = mm.read_agent_memory("agent_x")
+        assert agent_mem.role == "Coder"
+        assert mm.read_group_memory("agent_x") == "This is group data"

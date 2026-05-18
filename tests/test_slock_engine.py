@@ -459,3 +459,299 @@ class TestMemoryUpdateAfterExecution:
             with patch.object(engine._memory, "update_agent_context") as mock_update:
                 engine._execute_agent(agent, "do something", None)
                 mock_update.assert_not_called()
+
+
+# ============================================================
+# Task 9: Engine deactivate lifecycle tests
+# ============================================================
+
+
+class TestSlockEngineDeactivate:
+    """Test deactivate() method, is_active property, and state reset behavior."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _make_engine(self, mock_create_session, tmp_path=None):
+        mock_create_session.return_value = None
+        base_path = str(tmp_path) if tmp_path else "/tmp/test_deactivate"
+        return SlockEngine(
+            chat_id="chat_deact",
+            root_path=str(tmp_path) if tmp_path else "/tmp/test_root",
+            memory_base_path=base_path,
+        )
+
+    def test_deactivate_sets_not_active(self, tmp_path):
+        """deactivate() causes is_active to return False."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_deact", team_name="Deact")
+        engine.activate_channel(ch)
+        assert engine.is_active is True
+
+        engine.deactivate()
+        assert engine.is_active is False
+
+    def test_deactivate_clears_channel(self, tmp_path):
+        """deactivate() sets channel to None."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_deact2", team_name="Deact2")
+        engine.activate_channel(ch)
+        assert engine.channel is not None
+
+        engine.deactivate()
+        assert engine.channel is None
+
+    def test_deactivate_resets_agents_to_idle(self, tmp_path):
+        """deactivate() resets all agent statuses to IDLE."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_deact3", team_name="Deact3")
+        engine.activate_channel(ch)
+
+        # Transition agents to non-IDLE states
+        engine.transition_agent("a1", AgentStatus.WAKING)
+        engine.transition_agent("a1", AgentStatus.THINKING)
+        engine.transition_agent("a2", AgentStatus.WAKING)
+
+        assert engine.get_agent_status("a1") == AgentStatus.THINKING
+        assert engine.get_agent_status("a2") == AgentStatus.WAKING
+
+        engine.deactivate()
+
+        assert engine.get_agent_status("a1") == AgentStatus.IDLE
+        assert engine.get_agent_status("a2") == AgentStatus.IDLE
+
+    def test_deactivate_cancels_session(self, tmp_path):
+        """deactivate() calls session.cancel() if session exists."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_deact4", team_name="Deact4")
+        engine.activate_channel(ch)
+
+        mock_session = MagicMock()
+        engine._session = mock_session
+
+        engine.deactivate()
+        mock_session.cancel.assert_called_once()
+
+    def test_deactivate_without_channel_is_safe(self, tmp_path):
+        """deactivate() on engine without channel does not raise."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        assert engine.channel is None
+        engine.deactivate()  # Should not raise
+        assert engine.is_active is False
+
+    def test_is_active_false_when_no_channel(self, tmp_path):
+        """is_active is False when no channel is bound."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        assert engine.is_active is False
+
+    def test_is_active_true_after_activation(self, tmp_path):
+        """is_active is True after channel activation."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_active", team_name="Active")
+        engine.activate_channel(ch)
+        assert engine.is_active is True
+
+
+# ============================================================
+# Task 11: _create_callbacks verification tests
+# ============================================================
+
+
+class TestSlockHandlerCallbacks:
+    """Verify _create_callbacks produces working SlockEngineCallbacks."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.slock import SlockHandler
+        ctx = MagicMock()
+        handler = SlockHandler(ctx)
+        handler.reply_text = MagicMock()
+        handler.send_card_to_chat = MagicMock()
+        return handler
+
+    def test_create_callbacks_returns_callbacks_instance(self):
+        """_create_callbacks returns a SlockEngineCallbacks with all hooks set."""
+        from src.slock_engine.engine import SlockEngineCallbacks
+        handler = self._make_handler()
+        cb = handler._create_callbacks("msg1", "chat1", None, "test_engine", "/tmp")
+        assert isinstance(cb, SlockEngineCallbacks)
+        assert cb.on_agent_wake is not None
+        assert cb.on_agent_running is not None
+        assert cb.on_agent_done is not None
+        assert cb.on_error is not None
+
+    def test_callbacks_on_agent_wake_callable(self):
+        """on_agent_wake callback is callable without error."""
+        handler = self._make_handler()
+        cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
+        agent = MagicMock()
+        agent.name = "TestAgent"
+        cb.on_agent_wake(agent)  # Should not raise
+
+    def test_callbacks_on_agent_done_callable(self):
+        """on_agent_done callback is callable without error."""
+        handler = self._make_handler()
+        cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
+        agent = MagicMock()
+        agent.name = "DoneAgent"
+        cb.on_agent_done(agent, "result text")  # Should not raise
+
+    def test_callbacks_on_error_callable(self):
+        """on_error callback is callable without error."""
+        handler = self._make_handler()
+        cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
+        cb.on_error("something went wrong")  # Should not raise
+
+
+# ============================================================
+# Thread safety: deactivate/pause snapshot-under-lock
+# ============================================================
+
+
+class TestSlockEngineThreadSafety:
+    """Verify deactivate() and pause() use snapshot-under-lock for session."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _make_engine(self, mock_create_session, tmp_path=None):
+        mock_create_session.return_value = None
+        base_path = str(tmp_path) if tmp_path else "/tmp/test_ts"
+        return SlockEngine(
+            chat_id="chat_ts",
+            root_path=str(tmp_path) if tmp_path else "/tmp/test_root",
+            memory_base_path=base_path,
+        )
+
+    def test_concurrent_deactivate_no_exception(self, tmp_path):
+        """Two threads calling deactivate() concurrently must not raise."""
+        import threading
+
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_ts", team_name="TS")
+        engine.activate_channel(ch)
+
+        mock_session = MagicMock()
+        engine._session = mock_session
+
+        errors = []
+
+        def deactivate_worker():
+            try:
+                engine.deactivate()
+            except Exception as e:
+                errors.append(e)
+
+        t1 = threading.Thread(target=deactivate_worker)
+        t2 = threading.Thread(target=deactivate_worker)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert errors == [], f"Concurrent deactivate raised: {errors}"
+
+    def test_deactivate_with_none_session(self, tmp_path):
+        """deactivate() with self._session = None must not raise."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_ts2", team_name="TS2")
+        engine.activate_channel(ch)
+        engine._session = None
+        engine.deactivate()  # Should not raise
+
+    def test_pause_with_none_session(self, tmp_path):
+        """pause() with self._session = None must not raise."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        engine._session = None
+        engine.pause()  # Should not raise
+
+    def test_pause_cancels_session_via_snapshot(self, tmp_path):
+        """pause() calls cancel on the session snapshot, not self._session."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        mock_session = MagicMock()
+        engine._session = mock_session
+        engine.pause()
+        mock_session.cancel.assert_called_once()
+
+
+# ============================================================
+# Timeout config: _run_acp_session uses settings.coco_execution_timeout
+# ============================================================
+
+
+class TestSlockEngineTimeoutConfig:
+    """Verify _run_acp_session reads timeout from self.settings."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_timeout_from_settings(self, mock_create, tmp_path):
+        """send_prompt is called with self.settings.coco_execution_timeout."""
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.text = "ok"
+        mock_session.send_prompt.return_value = mock_result
+        mock_create.return_value = mock_session
+
+        engine = SlockEngine(
+            chat_id="chat_to",
+            root_path=str(tmp_path),
+            engine_name="TOTest",
+        )
+        # Inject a known timeout value
+        engine.settings = MagicMock()
+        engine.settings.coco_execution_timeout = 600
+
+        agent = AgentIdentity(
+            name="TimeoutBot",
+            agent_type="coco",
+            owner_group="chat_to",
+        )
+        engine._run_acp_session(agent, "test")
+
+        mock_session.send_prompt.assert_called_once_with("test", timeout=600)
+
+
+# ============================================================
+# Status panel card: Stop button presence
+# ============================================================
+
+
+class TestStatusPanelStopButton:
+    """Verify build_status_panel_card includes a Stop button with slock_stop action."""
+
+    def test_stop_button_in_card(self):
+        """Status panel card must contain a button with action 'slock_stop'."""
+        from src.slock_engine.card_templates import build_status_panel_card
+
+        card = build_status_panel_card(
+            agents=[],
+            team_name="TestTeam",
+            channel_id="ch_btn",
+        )
+
+        # Find the action element
+        elements = card["body"]["elements"]
+        action_elements = [e for e in elements if e.get("tag") == "action"]
+        assert len(action_elements) >= 1
+
+        actions = action_elements[0]["actions"]
+        stop_buttons = [
+            btn for btn in actions
+            if btn.get("value", {}).get("action") == "slock_stop"
+        ]
+        assert len(stop_buttons) == 1
+        assert stop_buttons[0]["type"] == "danger"
+        assert stop_buttons[0]["value"]["channel_id"] == "ch_btn"
+
+    def test_refresh_button_still_present(self):
+        """Refresh button must still exist alongside Stop."""
+        from src.slock_engine.card_templates import build_status_panel_card
+
+        card = build_status_panel_card(
+            agents=[],
+            team_name="TestTeam",
+            channel_id="ch_btn2",
+        )
+
+        elements = card["body"]["elements"]
+        action_elements = [e for e in elements if e.get("tag") == "action"]
+        actions = action_elements[0]["actions"]
+        refresh_buttons = [
+            btn for btn in actions
+            if btn.get("value", {}).get("action") == "slock_refresh_status"
+        ]
+        assert len(refresh_buttons) == 1

@@ -16,6 +16,7 @@ class SlockCommandAction(Enum):
     # /slock entry and status
     ACTIVATE = "activate"
     STATUS = "status"
+    STOP = "stop"
     HELP = "help"
 
     # Team management
@@ -111,6 +112,8 @@ def _parse_slock_subcommand(args: str) -> SlockCommand:
 
     if subcmd == "status":
         return SlockCommand(action=SlockCommandAction.STATUS)
+    elif subcmd == "stop":
+        return SlockCommand(action=SlockCommandAction.STOP)
     elif subcmd == "help":
         return SlockCommand(action=SlockCommandAction.HELP)
     else:
@@ -138,6 +141,41 @@ def _parse_role_subcommand(args: str) -> SlockCommand:
         return SlockCommand(action=SlockCommandAction.ROLE_INFO, target=subcmd)
 
 
+def _parse_assign_args(text: str) -> tuple[str, str]:
+    """Parse /task assign arguments, supporting quoted multi-word values.
+
+    Returns (content, role_name) tuple. Supports:
+        "multi word task" "Role Name"
+        "multi word task" role
+        simple_task role
+        simple task role   (last word = role, rest = content)
+    """
+    import shlex
+
+    if not text:
+        return ("", "")
+
+    # Try shlex parsing first for proper quote handling
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = None
+
+    if tokens and len(tokens) >= 2:
+        # Last token is role, everything else is content
+        role = tokens[-1]
+        content = " ".join(tokens[:-1])
+        return (content, role)
+    elif tokens and len(tokens) == 1:
+        return (tokens[0], "")
+
+    # Fallback: split on last whitespace
+    parts = text.rsplit(None, 1)
+    if len(parts) == 2:
+        return (parts[0], parts[1])
+    return (text, "")
+
+
 def _parse_task_subcommand(args: str) -> SlockCommand:
     """Parse /task subcommands."""
     if not args:
@@ -153,13 +191,15 @@ def _parse_task_subcommand(args: str) -> SlockCommand:
         return SlockCommand(action=SlockCommandAction.TASK_STATUS)
     elif subcmd == "assign":
         # /task assign <content> <role_name>
-        # Try to split last word as role name
-        assign_parts = sub_args.rsplit(None, 1)
-        if len(assign_parts) == 2:
+        # Supports quoted multi-word arguments:
+        #   /task assign "implement login" "Coder Alpha"
+        #   /task assign implement_login coder
+        content, role = _parse_assign_args(sub_args)
+        if content and role:
             return SlockCommand(
                 action=SlockCommandAction.TASK_ASSIGN,
-                args=assign_parts[0],
-                target=assign_parts[1],
+                args=content,
+                target=role,
             )
         return SlockCommand(action=SlockCommandAction.TASK_ASSIGN, args=sub_args)
     else:

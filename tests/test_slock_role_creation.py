@@ -342,3 +342,82 @@ class TestRoleWhitelistValidation:
         agent = engine.registry.register.call_args[0][0]
         assert agent.role == "coder"
         assert agent.name == "TestAgent"
+
+
+# ============================================================
+# Task 10: /task assign quoted parsing boundary tests
+# ============================================================
+
+
+class TestTaskAssignQuotedParsing:
+    """Test _parse_assign_args and /task assign with quoted multi-word arguments."""
+
+    def test_both_quoted(self):
+        """'\"multi word task\" \"Role Name\"' parses correctly."""
+        from src.slock_engine.slash_commands import parse_slock_command
+        cmd = parse_slock_command('/task assign "multi word task" "Role Name"')
+        assert cmd.action.value == "task_assign"
+        assert cmd.args == "multi word task"
+        assert cmd.target == "Role Name"
+
+    def test_quoted_task_unquoted_role(self):
+        """'\"multi word task\" role' parses correctly."""
+        from src.slock_engine.slash_commands import parse_slock_command
+        cmd = parse_slock_command('/task assign "build the feature" coder')
+        assert cmd.action.value == "task_assign"
+        assert cmd.args == "build the feature"
+        assert cmd.target == "coder"
+
+    def test_simple_two_words(self):
+        """'simple_task role' parses correctly."""
+        from src.slock_engine.slash_commands import parse_slock_command
+        cmd = parse_slock_command("/task assign fix_bug reviewer")
+        assert cmd.action.value == "task_assign"
+        assert cmd.args == "fix_bug"
+        assert cmd.target == "reviewer"
+
+    def test_multi_word_unquoted_last_is_role(self):
+        """'simple task description role' — last word is role, rest is content."""
+        from src.slock_engine.slash_commands import parse_slock_command
+        cmd = parse_slock_command("/task assign fix the login bug coder")
+        assert cmd.action.value == "task_assign"
+        assert cmd.target == "coder"
+        assert "fix" in cmd.args
+        assert "login" in cmd.args
+
+    def test_single_word_no_role(self):
+        """Single word after assign becomes args with no target."""
+        from src.slock_engine.slash_commands import parse_slock_command
+        cmd = parse_slock_command("/task assign cleanup")
+        assert cmd.action.value == "task_assign"
+        assert cmd.args == "cleanup"
+        assert cmd.target == ""
+
+    def test_empty_assign(self):
+        """Empty assign returns task_assign with empty args."""
+        from src.slock_engine.slash_commands import parse_slock_command
+        cmd = parse_slock_command("/task assign")
+        assert cmd.action.value == "task_assign"
+
+    def test_parse_assign_args_directly(self):
+        """Direct unit test of _parse_assign_args helper."""
+        from src.slock_engine.slash_commands import _parse_assign_args
+        content, role = _parse_assign_args('"write documentation" "Tech Writer"')
+        assert content == "write documentation"
+        assert role == "Tech Writer"
+
+    def test_parse_assign_args_empty(self):
+        """_parse_assign_args with empty string returns empty tuple."""
+        from src.slock_engine.slash_commands import _parse_assign_args
+        content, role = _parse_assign_args("")
+        assert content == ""
+        assert role == ""
+
+    def test_parse_assign_args_malformed_quotes(self):
+        """_parse_assign_args handles malformed quotes via fallback."""
+        from src.slock_engine.slash_commands import _parse_assign_args
+        # Unbalanced quote — falls back to rsplit
+        content, role = _parse_assign_args('"unclosed quote task role')
+        # Should still return something reasonable (fallback behavior)
+        assert isinstance(content, str)
+        assert isinstance(role, str)

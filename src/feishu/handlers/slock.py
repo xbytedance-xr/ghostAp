@@ -52,7 +52,24 @@ class SlockHandler(BaseEngineHandler):
     ):
         from ...slock_engine.engine import SlockEngineCallbacks
 
-        return SlockEngineCallbacks()
+        def on_agent_wake(agent):
+            logger.debug("Slock agent waking: %s in chat %s", agent.name, chat_id)
+
+        def on_agent_running(agent, msg):
+            logger.debug("Slock agent running: %s task=%s", agent.name, msg[:80])
+
+        def on_agent_done(agent, result):
+            logger.debug("Slock agent done: %s result_len=%d", agent.name, len(result))
+
+        def on_error(err_msg):
+            logger.error("Slock engine error in chat %s: %s", chat_id, err_msg)
+
+        return SlockEngineCallbacks(
+            on_agent_wake=on_agent_wake,
+            on_agent_running=on_agent_running,
+            on_agent_done=on_agent_done,
+            on_error=on_error,
+        )
 
     # ------------------------------------------------------------------
     # Command router
@@ -67,6 +84,7 @@ class SlockHandler(BaseEngineHandler):
         dispatch: dict[SlockCommandAction, callable] = {
             SlockCommandAction.ACTIVATE: lambda: self.activate_slock(message_id, chat_id, cmd.args, project),
             SlockCommandAction.STATUS: lambda: self.show_slock_status(message_id, chat_id, project),
+            SlockCommandAction.STOP: lambda: self.stop_slock_engine(message_id, chat_id, project),
             SlockCommandAction.HELP: lambda: self.show_slock_help(message_id),
             SlockCommandAction.NEW_TEAM: lambda: self.create_team(message_id, chat_id, cmd.args, project),
             SlockCommandAction.TEAM_LIST: lambda: self.list_teams(message_id, chat_id, project),
@@ -125,8 +143,7 @@ class SlockHandler(BaseEngineHandler):
 
         if target_agent:
             # Direct agent execution
-            from ...slock_engine import SlockEngineCallbacks
-            callbacks = SlockEngineCallbacks()
+            callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
             try:
                 result = engine._execute_agent(target_agent, text, callbacks)
             except Exception as e:
@@ -135,8 +152,7 @@ class SlockHandler(BaseEngineHandler):
                 return
         else:
             # Smart routing via engine.execute()
-            from ...slock_engine import SlockEngineCallbacks
-            callbacks = SlockEngineCallbacks()
+            callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
             try:
                 result = engine.execute(text, callbacks, sender_id="")
             except Exception as e:
@@ -187,7 +203,7 @@ class SlockHandler(BaseEngineHandler):
                 message_id,
                 "⚠️ 当前已有 Slock 协作团队在运行\n\n"
                 "发送 `/slock status` 查看状态\n"
-                "发送 `/stop_slock` 停止",
+                "发送 `/slock stop` 停止",
             )
             return
 
@@ -265,7 +281,7 @@ class SlockHandler(BaseEngineHandler):
             "**激活 & 状态**\n"
             "• `/slock` — 激活协作模式\n"
             "• `/slock status` — 查看团队状态\n"
-            "• `/stop_slock` — 停止协作\n\n"
+            "• `/slock stop` — 停止协作\n\n"
             "**团队管理**\n"
             "• `/new-team <名称>` — 创建团队\n"
             "• `/team list` — 查看团队列表\n"
@@ -679,8 +695,7 @@ class SlockHandler(BaseEngineHandler):
             import time as _time
             start_time = _time.time()
             try:
-                from ...slock_engine import SlockEngineCallbacks
-                callbacks = SlockEngineCallbacks()
+                callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
                 result = engine.execute_task(task.task_id, agent.agent_id, callbacks)
             except Exception as e:
                 logger.error("assign_task execute_task error: %s", repr(e))
@@ -727,6 +742,11 @@ class SlockHandler(BaseEngineHandler):
     def stop_slock_engine(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Stop the slock engine, unregister managed chat, and clean up."""
         manager = self._get_engine_manager()
+
+        # Deactivate the engine if it exists
+        engine = manager.get_activated_engine(chat_id)
+        if engine:
+            engine.deactivate()
 
         # Unregister managed chat so dispatcher stops routing to this engine
         manager.unregister_managed_chat(chat_id)
