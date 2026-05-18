@@ -18,7 +18,6 @@ from .review_helpers import (
 )
 from .text import (
     append_duration_to_title,
-    clean_terminal_output,
     format_duration,
     generate_task_id,
     make_progress_bar,
@@ -27,7 +26,6 @@ from .text import (
 
 __all__ = [
     "append_duration_to_title",
-    "clean_terminal_output",
     "format_duration",
     "generate_task_id",
     "make_progress_bar",

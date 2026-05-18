@@ -156,41 +156,11 @@ def make_progress_bar(completed: int, total: int) -> str:
     return f"{'▰' * filled}{'▱' * empty} {percent:.0f}% ({completed}/{total})"
 
 
-def clean_terminal_output(output: str) -> str:
-    """去除 ANSI 转义序列和 OSC 序列"""
-    output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", output)
-    output = re.sub(r"\x1b\][^\x07]*\x07", "", output)
-    output = re.sub(r"\x1b[\[\]\\^][^\x07\x1b]*", "", output)
-    return output.strip()
-
-
 def truncate_output(output: str, max_len: int, label: str = "输出被截断") -> str:
     if len(output) > max_len:
         return output[:max_len] + f"\n\n... ({label}，共 {len(output)} 字符)"
     return output
 
-
-_PATH_PATTERN = re.compile(r"(/[\w./\-]+){3,}")
-_TB_PATTERN = re.compile(r"^\s*(File \"|Traceback )", re.MULTILINE)
-
-
-def sanitize_error_for_display(error: str, max_length: int = 200) -> str:
-    """Sanitize error text for user display: strip paths, tracebacks, truncate.
-
-    Full error is preserved in logging; this function only cleans user-facing text.
-    """
-    if not error:
-        return error
-    # Strip traceback lines — keep only the last line (actual error message)
-    if _TB_PATTERN.search(error):
-        lines = error.strip().splitlines()
-        error = lines[-1] if lines else error
-    # Replace internal file paths with [internal]
-    error = _PATH_PATTERN.sub("[internal]", error)
-    # Truncate
-    if len(error) > max_length:
-        error = error[:max_length] + "…"
-    return error.strip()
 
 
 def get_acp_result_header_text() -> dict[str, str]:
