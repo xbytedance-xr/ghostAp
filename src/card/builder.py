@@ -399,19 +399,38 @@ class CardBuilder:
         return SystemBuilder.build_acp_tool_select_card(tools, project_id=project_id, current_tool=current_tool)
 
     @staticmethod
+    def build_slock_role_tool_select_card(role_name: str, tools: list[dict], project_id: Optional[str] = None) -> tuple[str, str]:
+        return SystemBuilder.build_slock_role_tool_select_card(role_name, tools, project_id=project_id)
+
+    @staticmethod
     def build_acp_model_select_card(
         models: list,
         tool_name: str,
         project_id: Optional[str] = None,
         current_model: Optional[str] = None,
         thread_root_id: Optional[str] = None,
+        *,
+        action_name: Optional[str] = None,
+        value_extra: Optional[dict] = None,
+        context_markdown: Optional[str] = None,
+        refresh_action_name: Optional[str] = None,
     ) -> tuple[str, str]:
+        kwargs = {}
+        if action_name is not None:
+            kwargs["action_name"] = action_name
+        if value_extra is not None:
+            kwargs["value_extra"] = value_extra
+        if context_markdown is not None:
+            kwargs["context_markdown"] = context_markdown
+        if refresh_action_name is not None:
+            kwargs["refresh_action_name"] = refresh_action_name
         return SystemBuilder.build_acp_model_select_card(
             models,
             tool_name,
             project_id=project_id,
             current_model=current_model,
             thread_root_id=thread_root_id,
+            **kwargs,
         )
 
     @staticmethod

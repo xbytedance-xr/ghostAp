@@ -953,12 +953,61 @@ class SystemBuilder:
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
+    def build_slock_role_tool_select_card(
+        role_name: str,
+        tools: list[dict],
+        project_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build the first step of `/new-role`: choose the backing tool."""
+
+        role = str(role_name or "").strip()
+        elements = [
+            {
+                "tag": "markdown",
+                "content": f"为 Slock 角色 **{role}** 选择工具和后续模型。",
+            }
+        ]
+
+        buttons = []
+        for tool in tools or []:
+            name = str(tool.get("name") or "").strip()
+            if not name:
+                continue
+            label = str(tool.get("label") or name)
+            emoji = str(tool.get("emoji") or "🤖")
+            desc = str(tool.get("description") or "").strip()
+            text = f"{emoji} {label}"
+            if desc:
+                text += f" ({desc})"
+            buttons.append(
+                SystemBuilder._callback_button(
+                    text=SystemBuilder._mobile_safe_button_label(text),
+                    button_type="primary" if name == "coco" else "default",
+                    action={
+                        "action": action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
+                        "role_name": role,
+                        "tool_name": name,
+                        "project_id": project_id,
+                    },
+                )
+            )
+
+        elements.extend(build_responsive_layout(buttons))
+        card = CoreBuilder._wrap_card("Slock 角色工具选择", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
     def build_acp_model_select_card(
         models: list,
         tool_name: str,
         project_id: Optional[str] = None,
         current_model: Optional[str] = None,
         thread_root_id: Optional[str] = None,
+        *,
+        action_name: str = action_ids.SELECT_ACP_MODEL,
+        value_extra: Optional[dict] = None,
+        context_markdown: Optional[str] = None,
+        refresh_action_name: Optional[str] = action_ids.REFRESH_ACP_MODELS,
     ) -> tuple[str, str]:
         """Build an interactive card for ACP model selection.
 
@@ -970,6 +1019,8 @@ class SystemBuilder:
                 "content": UI_TEXT["system_acp_select_model_prompt"].format(tool=tool_name),
             }
         ]
+        if context_markdown:
+            elements.append({"tag": "markdown", "content": context_markdown})
 
         items: list[ModelOptionView] = []
         for model in models or []:
@@ -993,6 +1044,20 @@ class SystemBuilder:
                 )
             )
 
+        def _selection_value(model_name: str, *, use_default_model: bool = False) -> dict:
+            value = {
+                "action": action_name,
+                "tool_name": tool_name,
+                "model_name": model_name,
+                "project_id": project_id,
+                "thread_root_id": thread_root_id,
+            }
+            if use_default_model:
+                value["use_default_model"] = True
+            if value_extra:
+                value.update(value_extra)
+            return value
+
         buttons = [
             {
                 "tag": "button",
@@ -1003,14 +1068,10 @@ class SystemBuilder:
                     ),
                 },
                 "type": "primary" if not current_model else "default",
-                "value": {
-                    "action": "select_acp_model",
-                    "tool_name": tool_name,
-                    "model_name": DEFAULT_MODEL_OPTION_VALUE,
-                    "use_default_model": True,
-                    "project_id": project_id,
-                    "thread_root_id": thread_root_id,
-                },
+                "value": _selection_value(DEFAULT_MODEL_OPTION_VALUE, use_default_model=True),
+                "behaviors": [
+                    {"type": "callback", "value": _selection_value(DEFAULT_MODEL_OPTION_VALUE, use_default_model=True)}
+                ],
             }
         ]
         for m in items:
@@ -1025,35 +1086,35 @@ class SystemBuilder:
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": btn_text},
                     "type": "primary" if m.name == current_model else "default",
-                    "value": {
-                        "action": "select_acp_model",
-                        "tool_name": tool_name,
-                        "model_name": m.name,
-                        "project_id": project_id,
-                        "thread_root_id": thread_root_id,
-                    },
+                    "value": _selection_value(m.name),
+                    "behaviors": [{"type": "callback", "value": _selection_value(m.name)}],
                 }
             )
 
         elements.extend(build_responsive_layout(buttons))
-        elements.append({"tag": "hr"})
-        elements.extend(
-            build_responsive_layout(
-                [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_refresh_btn"]},
-                        "type": "primary",
-                        "value": {
-                            "action": "refresh_acp_models",
-                            "tool_name": tool_name,
-                            "project_id": project_id,
-                            "thread_root_id": thread_root_id,
-                        },
-                    }
-                ]
+        if refresh_action_name:
+            refresh_value = {
+                "action": refresh_action_name,
+                "tool_name": tool_name,
+                "project_id": project_id,
+                "thread_root_id": thread_root_id,
+            }
+            if value_extra:
+                refresh_value.update(value_extra)
+            elements.append({"tag": "hr"})
+            elements.extend(
+                build_responsive_layout(
+                    [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_refresh_btn"]},
+                            "type": "primary",
+                            "value": refresh_value,
+                            "behaviors": [{"type": "callback", "value": refresh_value}],
+                        }
+                    ]
+                )
             )
-        )
 
         card = CoreBuilder._wrap_card(UI_TEXT["system_acp_model_select_title"].format(tool=tool_name), "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

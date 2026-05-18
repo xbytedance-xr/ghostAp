@@ -382,6 +382,8 @@ class TestActivateSlockManagedChat:
         text = handler.reply_text.call_args[0][1]
         assert "--template coder" in text
         assert "--fork <已有角色>" in text
+        assert "工具选择卡片" in text
+        assert "选择模型" in text
         assert "/task assign <任务> [角色]" in text
         assert "自动选择" in text
         assert "Kanban" in text

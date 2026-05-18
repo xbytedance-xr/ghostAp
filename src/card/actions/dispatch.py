@@ -106,6 +106,12 @@ SELECT_ACP_MODEL = "select_acp_model"  # Select a model for the ACP tool
 REFRESH_ACP_MODELS = "refresh_acp_models"  # Refresh available ACP model list
 
 # ---------------------------------------------------------------------------
+# Slock actions
+# ---------------------------------------------------------------------------
+SLOCK_NEW_ROLE_SELECT_TOOL = "slock_new_role_select_tool"  # Select a tool while creating a Slock role
+SLOCK_NEW_ROLE_SELECT_MODEL = "slock_new_role_select_model"  # Select a model and create the Slock role
+
+# ---------------------------------------------------------------------------
 # Lock actions
 # ---------------------------------------------------------------------------
 FORCE_RELEASE_REPO_LOCK = "force_release_repo_lock"  # Force-release repo lock (may interrupt other user)

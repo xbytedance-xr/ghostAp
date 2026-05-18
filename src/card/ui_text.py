@@ -323,8 +323,8 @@ UI_TEXT = {
     "system_help_section_slock_body": (
         "`/slock` · 在当前群激活 Slock  ·  `/slocks` 或 `/slock list` · 查询 Slock 群并跳转\n"
         "`/new-team <名称>` · 新建 `[Slock]` 标识协作群\n"
-        "`/new-role <名称> [--tool codex] [--model <模型>]` · 创建 Agent\n"
-        "`/new-role <名称> --template coder` · 从模板创建  ·  `--fork <角色>` · 复制角色\n"
+        "`/new-role <名称>` · 选择工具和模型后创建 Agent\n"
+        "`/new-role <名称> --tool codex --model <模型>` · 命令式创建  ·  `--template coder` / `--fork <角色>` · 复用角色\n"
         "`/task assign <任务> [角色]` · 分配任务；省略角色时按技能画像自动选择\n"
         "`/task status` · 查看 Kanban 看板  ·  `/role info <名称>` · 查看角色记忆/技能\n"
         "`/team list/status/dissolve <名称>` · 管理团队  ·  `/slock stop` · 停止当前团队"

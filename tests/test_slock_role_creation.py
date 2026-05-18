@@ -7,7 +7,26 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import json
+from unittest.mock import MagicMock, patch
+
+from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
+
+
+def _collect_card_values(node):
+    if isinstance(node, dict):
+        values = []
+        if isinstance(node.get("value"), dict):
+            values.append(node["value"])
+        for value in node.values():
+            values.extend(_collect_card_values(value))
+        return values
+    if isinstance(node, list):
+        values = []
+        for item in node:
+            values.extend(_collect_card_values(item))
+        return values
+    return []
 
 
 class TestCreateRoleWithParams:
@@ -18,6 +37,7 @@ class TestCreateRoleWithParams:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
         handler.send_card_to_chat = MagicMock()
         return handler
 
@@ -95,6 +115,7 @@ class TestCreateRoleDefaults:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
         handler.send_card_to_chat = MagicMock()
         return handler
 
@@ -107,8 +128,8 @@ class TestCreateRoleDefaults:
         engine.memory.write_agent_memory = MagicMock()
         return engine
 
-    def test_create_role_no_params_uses_defaults(self):
-        """AC7: /new-role SimpleAgent uses coco/🤖 defaults and a Directive."""
+    def test_create_role_name_only_shows_tool_selection_card(self):
+        """`/new-role SimpleAgent` starts the Feishu tool/model selection flow."""
         handler = self._make_handler()
         engine = self._make_engine()
 
@@ -118,19 +139,94 @@ class TestCreateRoleDefaults:
 
         handler.create_role("msg_1", "chat_test", "SimpleAgent")
 
-        call_args = engine.registry.register.call_args
-        agent = call_args[0][0]
+        engine.registry.register.assert_not_called()
+        handler.reply_card.assert_called_once()
+        card = json.loads(handler.reply_card.call_args[0][1])
+        card_text = json.dumps(card, ensure_ascii=False)
+        assert "选择工具" in card_text
+        assert "SimpleAgent" in card_text
+        values = _collect_card_values(card)
+        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "coco" for v in values)
+        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "codex" for v in values)
 
+    def test_select_tool_shows_model_selection_card_with_slock_action(self):
+        """Tool choice reuses ACP model discovery but keeps the Slock create-role action."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        models = [MagicMock(name="model", description="fast")]
+        models[0].name = "gpt-5"
+        with patch("src.feishu.handlers.slock.fetch_acp_models", return_value=models):
+            handler.handle_new_role_select_tool(
+                "msg_1",
+                "chat_test",
+                {"role_name": "SimpleAgent", "tool_name": "codex"},
+            )
+
+        handler.reply_card.assert_called_once()
+        card = json.loads(handler.reply_card.call_args[0][1])
+        card_text = json.dumps(card, ensure_ascii=False)
+        assert "SimpleAgent" in card_text
+        assert "codex" in card_text
+        assert "gpt-5" in card_text
+        values = _collect_card_values(card)
+        assert any(
+            v.get("action") == "slock_new_role_select_model"
+            and v.get("tool_name") == "codex"
+            and v.get("model_name") == "gpt-5"
+            for v in values
+        )
+
+    def test_select_model_creates_role(self):
+        """Model choice is the point where the role is actually created."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.handle_new_role_select_model(
+            "msg_1",
+            "chat_test",
+            {"role_name": "SimpleAgent", "tool_name": "codex", "model_name": "gpt-5"},
+        )
+
+        agent = engine.registry.register.call_args[0][0]
         assert agent.name == "SimpleAgent"
-        assert agent.agent_id == "coco:default:SimpleAgent"
-        assert agent.agent_type == "coco"
-        assert agent.model_name == ""
-        assert agent.emoji == "🤖"
+        assert agent.agent_type == "codex"
+        assert agent.model_name == "gpt-5"
+        assert agent.agent_id == "codex:gpt-5:SimpleAgent"
         assert "Core Directives" in agent.system_prompt
-        assert "零交互" in agent.system_prompt
-        assert agent.memory_path == "/tmp/slock/agents/agent/MEMORY.md"
-        assert agent.owner_group == "chat_test"
         engine.memory.write_agent_memory.assert_called_once()
+
+    def test_select_default_model_does_not_persist_ui_sentinel(self):
+        """Default model selection keeps the sentinel UI-only."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.handle_new_role_select_model(
+            "msg_1",
+            "chat_test",
+            {
+                "role_name": "SimpleAgent",
+                "tool_name": "coco",
+                "model_name": DEFAULT_MODEL_OPTION_VALUE,
+                "use_default_model": True,
+            },
+        )
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.agent_id == "coco:default:SimpleAgent"
+        assert agent.model_name == ""
 
     def test_create_role_empty_name_shows_usage(self):
         """Empty name shows usage message."""
@@ -159,6 +255,7 @@ class TestCreateRoleWithRoleParam:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
         handler.send_card_to_chat = MagicMock()
         return handler
 
@@ -375,15 +472,15 @@ class TestRoleInfoDetails:
         assert "claude" in error_msg
         assert "codex" in error_msg
 
-    def test_no_role_no_tool_defaults_to_writer(self):
-        """Default tool_type='coco' infers role='writer'."""
+    def test_create_role_with_default_tool_after_selection_infers_writer(self):
+        """Finalized default tool_type='coco' infers role='writer'."""
         handler = self._make_handler()
         engine = self._make_engine()
         manager = MagicMock()
         manager.get_activated_engine.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
-        handler.create_role("msg_1", "chat_test", "Eta")
+        handler.create_role("msg_1", "chat_test", "Eta --tool coco")
 
         agent = engine.registry.register.call_args[0][0]
         assert agent.role == "writer"  # coco → writer
@@ -398,6 +495,7 @@ class TestRoleWhitelistValidation:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
         handler.send_card_to_chat = MagicMock()
         return handler
 

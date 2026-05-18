@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+import shlex
 from typing import TYPE_CHECKING, Optional
 
+from ...acp.helper import fetch_acp_models
 from ...card import CardBuilder
+from ...card.actions import dispatch as action_ids
+from ...model_selection import is_default_model_option
 from ...slock_engine.models import SlockChannel
 from ...slock_engine.slash_commands import (
     SlockCommandAction,
@@ -290,8 +294,8 @@ class SlockHandler(BaseEngineHandler):
             "• `/team status <名称>` — 查看团队详情\n"
             "• `/team dissolve <名称>` — 解散团队\n\n"
             "**角色管理**\n"
-            "• `/new-role <名称>` — 创建虚拟 Agent\n"
-            "• `/new-role <名称> --tool codex --model <模型> --role coder` — 指定工具/模型/角色类型\n"
+            "• `/new-role <名称>` — 打开工具选择卡片，再选择模型创建虚拟 Agent\n"
+            "• `/new-role <名称> --tool codex --model <模型> --role coder` — 命令式指定工具/模型/角色类型\n"
             "• `/new-role <名称> --template coder` — 从内置模板创建 Agent\n"
             "• `/new-role <名称> --fork <已有角色>` — 复制角色的指令、记忆和技能画像\n"
             "• `/role list` — 查看所有角色\n"
@@ -482,9 +486,17 @@ class SlockHandler(BaseEngineHandler):
         "codex": "coder",
         "claude": "reviewer",
         "coco": "writer",
+        "aiden": "coder",
         "gemini": "coder",
         "ttadk": "custom",
     }
+    TOOL_SELECT_OPTIONS: tuple[dict[str, str], ...] = (
+        {"name": "coco", "label": "Coco", "emoji": "🥥", "description": "默认协作工具"},
+        {"name": "codex", "label": "Codex", "emoji": "🧠", "description": "代码实现"},
+        {"name": "aiden", "label": "Aiden", "emoji": "🎯", "description": "AI 编程助手"},
+        {"name": "claude", "label": "Claude", "emoji": "📝", "description": "评审与长文"},
+        {"name": "gemini", "label": "Gemini", "emoji": "💎", "description": "多模态与代码"},
+    )
 
     def create_role(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
@@ -509,14 +521,16 @@ class SlockHandler(BaseEngineHandler):
             return
 
         # Parse optional arguments from the name/args string
-        import shlex
-
         try:
             tokens = shlex.split(name)
         except ValueError:
             tokens = name.split()
 
         role_name = tokens[0] if tokens else name
+        if len(tokens) == 1:
+            self.show_new_role_tool_selection(message_id, role_name, project)
+            return
+
         tool_type = "coco"
         model_name = ""
         emoji = "🤖"
@@ -687,6 +701,77 @@ class SlockHandler(BaseEngineHandler):
             f"✅ 角色 **{agent.emoji} {agent.name}** 已创建 (ID: `{agent.agent_id[:8]}`)\n"
             f"   工具: `{tool_type}` | 模型: `{model_name or '默认'}` | 角色: `{role}` | Emoji: {emoji}",
         )
+
+    def show_new_role_tool_selection(
+        self,
+        message_id: str,
+        role_name: str,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Show the first `/new-role` interactive step: choose a backing tool."""
+
+        _, card_content = CardBuilder.build_slock_role_tool_select_card(
+            role_name,
+            list(self.TOOL_SELECT_OPTIONS),
+            project_id=(project.project_id if project else None),
+        )
+        self.reply_card(message_id, card_content)
+
+    def handle_new_role_select_tool(
+        self,
+        message_id: str,
+        chat_id: str,
+        value: dict,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Handle `/new-role` tool selection and show the ACP model picker."""
+
+        role_name = str(value.get("role_name") or "").strip()
+        tool_name = str(value.get("tool_name") or "").strip().lower()
+        if not role_name or not tool_name:
+            self.reply_text(message_id, "请选择有效的 Slock 角色工具")
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
+            return
+
+        cwd = getattr(project, "root_path", None) or getattr(engine, "root_path", None) or self.get_working_dir(chat_id)
+        models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
+        _, card_content = CardBuilder.build_acp_model_select_card(
+            models,
+            tool_name,
+            project_id=(project.project_id if project else value.get("project_id")),
+            action_name=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
+            value_extra={"role_name": role_name},
+            context_markdown=f"角色: **{role_name}**",
+            refresh_action_name="",
+        )
+        self.reply_card(message_id, card_content)
+
+    def handle_new_role_select_model(
+        self,
+        message_id: str,
+        chat_id: str,
+        value: dict,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Finalize `/new-role` after the user selects a model."""
+
+        role_name = str(value.get("role_name") or "").strip()
+        tool_name = str(value.get("tool_name") or "").strip().lower()
+        raw_model = value.get("_option") or value.get("model_name") or ""
+        model_name = "" if value.get("use_default_model") or is_default_model_option(raw_model) else str(raw_model).strip()
+        if not role_name or not tool_name:
+            self.reply_text(message_id, "请选择有效的 Slock 角色模型")
+            return
+
+        args = f"{shlex.quote(role_name)} --tool {shlex.quote(tool_name)}"
+        if model_name:
+            args += f" --model {shlex.quote(model_name)}"
+        self.create_role(message_id, chat_id, args, project)
 
     @staticmethod
     def _build_default_directive(

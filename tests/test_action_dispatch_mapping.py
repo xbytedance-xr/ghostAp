@@ -146,6 +146,8 @@ def test_feishu_action_registry_uses_canonical_core_action_ids():
         action_ids.SELECT_ACP_TOOL,
         action_ids.SELECT_ACP_MODEL,
         action_ids.REFRESH_ACP_MODELS,
+        action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
+        action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
         action_ids.SHOW_WORKTREE_MENU,
         action_ids.WORKTREE_FINISH_SELECTION,
         action_ids.WORKTREE_SELECT_TOOL,
@@ -170,7 +172,7 @@ def test_feishu_action_registry_uses_canonical_core_action_ids():
     }
 
     assert expected_exact <= client.exact_actions
-    assert {"deep_", "spec_"} <= client.prefix_actions
+    assert {"deep_", "spec_", "slock_"} <= client.prefix_actions
 
 
 def test_select_acp_model_default_option_passes_none_model():
