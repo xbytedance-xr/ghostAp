@@ -282,6 +282,7 @@ class SlockHandler(BaseEngineHandler):
             "**激活 & 状态**\n"
             "• `/slock` — 激活协作模式\n"
             "• `/slock status` — 查看团队状态\n"
+            "• `/slock list` / `/slocks` — 在主对话查询所有 Slock 群并跳转\n"
             "• `/slock stop` — 停止协作\n\n"
             "**团队管理**\n"
             "• `/new-team <名称>` — 创建带 `[Slock]` 标识的协作团队群\n"
@@ -383,15 +384,14 @@ class SlockHandler(BaseEngineHandler):
             self.send_text_to_chat(new_chat_id, welcome_text)
 
             # Step 7: Send confirmation with jump link in original group
-            self.reply_text(
-                message_id,
-                f"✅ 团队 **{name}** 已创建\n\n"
-                f"已建立专属协作群「{group_name}」并激活 Slock 运行时\n"
-                f"• 事件监听: ✓\n"
-                f"• Agent 调度器: ✓\n"
-                f"• 工作区目录: ✓\n\n"
-                f"请前往新群开始协作 🚀",
+            from ...slock_engine.card_templates import build_team_created_card
+
+            card = build_team_created_card(
+                team_name=name,
+                group_name=group_name,
+                channel_id=new_chat_id,
             )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
 
         except Exception as e:
             # Rollback: delete the created group on any activation failure
@@ -420,7 +420,7 @@ class SlockHandler(BaseEngineHandler):
             self.reply_text(message_id, "当前没有活跃的团队\n\n发送 `/slock` 激活协作模式")
             return
 
-        lines = ["📋 **团队列表**\n"]
+        teams = []
         for engine in sorted(engines, key=lambda item: (item.channel.team_name if item.channel else "")):
             channel = engine.channel
             if not channel:
@@ -428,12 +428,19 @@ class SlockHandler(BaseEngineHandler):
             agents = engine.registry.list_agents(channel_id=channel.channel_id)
             agent_count = len(agents)
             task_count = len(engine.tasks)
-            lines.append(
-                f"• **{channel.team_name or channel.name or channel.channel_id}** — "
-                f"{agent_count} 个 Agent · {task_count} 个任务 · 频道: `{channel.channel_id}`"
+            teams.append(
+                {
+                    "team_name": channel.team_name or channel.name or channel.channel_id,
+                    "name": channel.name,
+                    "channel_id": channel.channel_id,
+                    "agent_count": agent_count,
+                    "task_count": task_count,
+                }
             )
 
-        self.reply_text(message_id, "\n".join(lines))
+        from ...slock_engine.card_templates import build_team_list_card
+
+        self.reply_card(message_id, json.dumps(build_team_list_card(teams), ensure_ascii=False))
 
     def show_team_status(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None

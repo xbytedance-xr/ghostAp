@@ -30,6 +30,8 @@ class TestIsSLockCommand:
     @pytest.mark.parametrize("text", [
         "/slock",
         "/slock status",
+        "/slock list",
+        "/slocks",
         "/new-team Alpha",
     ])
     def test_globally_recognized(self, text):
@@ -83,6 +85,18 @@ class TestParseSlockCommand:
     def test_slock_help(self):
         cmd = parse_slock_command("/slock help")
         assert cmd.action == SlockCommandAction.HELP
+
+    def test_slock_list(self):
+        cmd = parse_slock_command("/slock list")
+        assert cmd.action == SlockCommandAction.TEAM_LIST
+
+    def test_slock_teams(self):
+        cmd = parse_slock_command("/slock teams")
+        assert cmd.action == SlockCommandAction.TEAM_LIST
+
+    def test_slocks_alias(self):
+        cmd = parse_slock_command("/slocks")
+        assert cmd.action == SlockCommandAction.TEAM_LIST
 
     def test_slock_with_args(self):
         cmd = parse_slock_command("/slock build a web app")

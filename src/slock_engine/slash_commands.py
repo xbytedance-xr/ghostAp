@@ -73,6 +73,10 @@ def parse_slock_command(text: str) -> SlockCommand:
     if cmd == "/slock":
         return _parse_slock_subcommand(remainder)
 
+    # /slocks
+    if cmd == "/slocks":
+        return SlockCommand(action=SlockCommandAction.TEAM_LIST)
+
     # /new-team <name>
     if cmd == "/new-team":
         if remainder:
@@ -114,6 +118,8 @@ def _parse_slock_subcommand(args: str) -> SlockCommand:
         return SlockCommand(action=SlockCommandAction.STOP)
     elif subcmd == "help":
         return SlockCommand(action=SlockCommandAction.HELP)
+    elif subcmd in {"list", "team", "teams"}:
+        return SlockCommand(action=SlockCommandAction.TEAM_LIST)
     else:
         # Treat as activate with requirement text
         return SlockCommand(action=SlockCommandAction.ACTIVATE, args=args)

@@ -6,6 +6,9 @@ Uses CoreBuilder._wrap_card pattern from the existing card system.
 from __future__ import annotations
 
 from typing import Optional
+from urllib.parse import quote
+
+from src.card.shared import apply_compact_style, build_responsive_layout
 
 from .models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
 
@@ -66,6 +69,63 @@ def build_agent_message_card(
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": header,
+        "body": {"elements": elements},
+    }
+
+
+def build_team_created_card(
+    *,
+    team_name: str,
+    group_name: str,
+    channel_id: str,
+) -> dict:
+    """Build the /new-team confirmation card with a direct group jump button."""
+    content = (
+        f"✅ 团队 **{team_name}** 已创建\n\n"
+        f"已建立专属协作群「{group_name}」并激活 Slock 运行时\n"
+        "• 事件监听: ✓\n"
+        "• Agent 调度器: ✓\n"
+        "• 工作区目录: ✓\n\n"
+        "请前往新群开始协作"
+    )
+    elements: list[dict] = [{"tag": "markdown", "content": content}]
+    elements.extend(build_responsive_layout([_build_slock_group_jump_button(channel_id)]))
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text", "content": "🎭 Slock 协作群已创建"}, "template": "indigo"},
+        "body": {"elements": elements},
+    }
+
+
+def build_team_list_card(teams: list[dict]) -> dict:
+    """Build a Slock team directory card with jump buttons."""
+    elements: list[dict] = []
+    for team in teams:
+        team_name = str(team.get("team_name") or team.get("name") or team.get("channel_id") or "")
+        channel_id = str(team.get("channel_id") or "")
+        agent_count = int(team.get("agent_count") or 0)
+        task_count = int(team.get("task_count") or 0)
+        elements.append(
+            {
+                "tag": "markdown",
+                "content": (
+                    f"**{team_name}**\n"
+                    f"{agent_count} 个 Agent · {task_count} 个任务 · 频道: `{channel_id}`"
+                ),
+            }
+        )
+        if channel_id:
+            elements.extend(build_responsive_layout([_build_slock_group_jump_button(channel_id)]))
+        elements.append({"tag": "hr"})
+
+    if elements and elements[-1].get("tag") == "hr":
+        elements.pop()
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text", "content": "🎭 Slock 协作群"}, "template": "indigo"},
         "body": {"elements": elements},
     }
 
@@ -245,3 +305,26 @@ _TASK_STATUS_ICONS: dict[TaskStatus, str] = {
     TaskStatus.IN_REVIEW: "🟡",
     TaskStatus.DONE: "✅",
 }
+
+
+def _build_slock_group_jump_button(channel_id: str) -> dict:
+    return apply_compact_style(
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "进入 Slock 群"},
+            "type": "primary",
+            "multi_url": _build_chat_multi_url(channel_id),
+        }
+    )
+
+
+def _build_chat_multi_url(chat_id: str) -> dict:
+    safe_chat_id = quote(str(chat_id or "").strip(), safe="")
+    https = f"https://applink.feishu.cn/client/chat/open?openChatId={safe_chat_id}"
+    native = f"lark://applink/client/chat/open?openChatId={safe_chat_id}"
+    return {
+        "url": https,
+        "pc_url": https,
+        "android_url": native,
+        "ios_url": native,
+    }

@@ -136,12 +136,16 @@ class TestCreateTeamHappyPath:
         assert new_group_text[0] == "oc_new_group_id"
         assert "TestTeam" in new_group_text[1]
 
-        # 7. Confirmation sent to original group
-        handler.reply_text.assert_called_once()
-        reply_args = handler.reply_text.call_args[0]
+        # 7. Confirmation card sent to original group with a direct group jump button
+        handler.reply_card.assert_called_once()
+        reply_args = handler.reply_card.call_args[0]
         assert reply_args[0] == "msg1"
-        assert "TestTeam" in reply_args[1]
-        assert "事件监听" in reply_args[1]
+        card = json.loads(reply_args[1])
+        card_blob = json.dumps(card, ensure_ascii=False)
+        assert "TestTeam" in card_blob
+        assert "事件监听" in card_blob
+        assert "进入 Slock 群" in card_blob
+        assert "openChatId=oc_new_group_id" in card_blob
 
     @patch("src.slock_engine.engine.create_engine_session")
     @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
@@ -297,12 +301,16 @@ class TestTeamAdminCommands:
 
         handler.list_teams("msg_admin", "oc_admin")
 
-        handler.reply_text.assert_called_once()
-        text = handler.reply_text.call_args[0][1]
-        assert "Alpha" in text
-        assert "Beta" in text
-        assert "oc_alpha" in text
-        assert "oc_beta" in text
+        handler.reply_card.assert_called_once()
+        card = json.loads(handler.reply_card.call_args[0][1])
+        card_blob = json.dumps(card, ensure_ascii=False)
+        assert "Alpha" in card_blob
+        assert "Beta" in card_blob
+        assert "oc_alpha" in card_blob
+        assert "oc_beta" in card_blob
+        assert "进入 Slock 群" in card_blob
+        assert "openChatId=oc_alpha" in card_blob
+        assert "openChatId=oc_beta" in card_blob
 
     @patch("src.slock_engine.engine.create_engine_session")
     def test_team_status_finds_team_by_name(self, mock_session, tmp_path):
