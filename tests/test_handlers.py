@@ -23,6 +23,7 @@ from src.feishu.handlers.programming import (
     CocoModeHandler,
     ProgrammingModeHandler,
     TTADKModeHandler,
+    build_programming_session_callbacks,
 )
 from src.feishu.handlers.project import ProjectHandler
 from src.feishu.handlers.system import SystemHandler
@@ -947,6 +948,27 @@ class TestTTADKModeHandler:
         project.set_programming_mode.assert_called_once_with("ttadk", True, "sid", 4)
         project.set_coco_mode.assert_not_called()
         project.set_claude_mode.assert_not_called()
+
+    def test_programming_session_callbacks_react_only_for_user_task_completion(self):
+        from src.card.state.models import CardMetadata, CardState
+
+        add_reaction = MagicMock()
+        callbacks = build_programming_session_callbacks(
+            reply_text_fn=MagicMock(),
+            add_reaction=add_reaction,
+            message_id="origin_msg",
+            chat_id="chat_1",
+        )
+
+        assert callbacks.hooks
+        root_state = CardState(metadata=CardMetadata())
+        callbacks.hooks[0].on_terminal(root_state, "completed")
+        add_reaction.assert_called_once_with("origin_msg", "PARTY")
+
+        add_reaction.reset_mock()
+        subagent_state = CardState(metadata=CardMetadata(is_subagent=True))
+        callbacks.hooks[0].on_terminal(subagent_state, "completed")
+        add_reaction.assert_not_called()
 
     def test_enter_mode_builds_ttadk_entry_card(self):
         ctx = _make_handler_context()

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-18
+- **普通编程任务完成 PARTY 反应补齐** — 普通 `/coco`、`/codex`、`/aiden`、`/claude`、`/gemini`、`/ttadk` 编程模式的 `CardSession` callbacks 现在统一注入 `EmojiHook`，根用户任务 completed 时对原始用户消息发送 `PARTY`；subagent 终态继续按 `metadata.is_subagent` 跳过，避免单个子任务完成撒花。验证：新增红灯 1 项后转绿，handler/hook 回归 `225 passed`。
 - **Slock `/new-role` 工具与模型选择交互** — `/new-role <名称>` 仅带名称时改为先发工具选择卡（Coco/Codex/Aiden/Claude/Gemini），选择工具后复用 ACP 模型发现/选择卡但使用 Slock 专属 action，选择模型后才创建角色；默认模型 sentinel 保持 UI-only，不写入 Agent。同步注册 `slock_new_role_select_tool/model` 与 `slock_` prefix，README、主 help、`/slock help` 已更新。验证：新增红灯 5 项后转绿，定向回归 `85 passed`。
 - **Slock 群跳转与主对话查询入口** — `/new-team` 成功回执从纯文本改为 Slock 协作群卡片，按钮使用 Feishu `openChatId` deeplink 直接进入新群；团队列表从纯文本改为卡片，每个群带“进入 Slock 群”跳转按钮。新增主机器人对话可用的 `/slocks` 与 `/slock list` 查询入口，便于像 `/projects` 一样快速找回 Slock 群。验证：新增红灯 4 项后转绿，Slock 专项 `305 passed`，ruff/`--validate`/`git diff --check` 通过。
 - **Slock 新建群默认标识** — `/new-team` 创建群默认使用 `SLOCK_TEAM_NAME_PREFIX=[Slock]`，最终群名为 `[Slock] <团队名>`，与 `/new-chat` 的 `{项目名}-{后缀}` 项目群标识分离；已处理自带前缀不重复追加、可配置自定义前缀、README/主 help/`/slock help` 文案同步。验证：Slock 建群/配置/help 回归 `17 passed`，文档引用 `4 passed`，ruff 与 `git diff --check` 通过。

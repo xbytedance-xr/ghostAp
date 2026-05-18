@@ -10,12 +10,15 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEventRenderer
 from ...acp.manager import ACPSessionManager
 from ...agent_session import SyncSession
 from ...card import CardBuilder
+from ...card.hooks import EmojiHook
+from ...card.session.config import SessionCallbacks
 from ...card.ui_text import UI_TEXT
 from ...mode import InteractionMode
 from ...project import ContextSourceMode
@@ -28,6 +31,26 @@ if TYPE_CHECKING:
     from ...project import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+
+def build_programming_session_callbacks(
+    *,
+    reply_text_fn: Callable[[str, str], object],
+    add_reaction: Callable[[str, str], object],
+    message_id: str,
+    chat_id: str,
+) -> SessionCallbacks:
+    """Build callbacks for normal programming CardSession lifecycle."""
+    return SessionCallbacks(
+        reply_text_fn=reply_text_fn,
+        hooks=(
+            EmojiHook(
+                add_reaction=add_reaction,
+                message_id=message_id,
+                chat_id=chat_id,
+            ),
+        ),
+    )
 
 
 class ProgrammingModeHandler(BaseHandler):
@@ -753,7 +776,6 @@ class ProgrammingModeHandler(BaseHandler):
         from ...card.delivery.feishu_client import FeishuCardAPIClient
         from ...card.programming_adapter import ProgrammingCardSession, build_programming_metadata
         from ...card.session import CardSession
-        from ...card.session.config import SessionCallbacks
         from ...card.session.factory import CardSessionFactory
 
         project_name = project.project_name if project else None
@@ -789,7 +811,12 @@ class ProgrammingModeHandler(BaseHandler):
         delivery = create_card_delivery(api_client)
         from src.card.session.config import SessionConfig
         config = SessionConfig(metadata=metadata, reply_to=message_id)
-        card_callbacks = SessionCallbacks(reply_text_fn=self.reply_text)
+        card_callbacks = build_programming_session_callbacks(
+            reply_text_fn=self.reply_text,
+            add_reaction=self.add_reaction,
+            message_id=message_id,
+            chat_id=chat_id,
+        )
         card_session = CardSession(
             chat_id=chat_id,
             config=config,
