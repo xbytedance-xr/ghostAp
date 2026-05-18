@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
+## 2026-05-18
+- **Slock 模式 16 项 AC 全量验证通过** — 审计 AC-01~AC-14 现有测试覆盖，发现 AC-09（memory 集成链路）、AC-11（auto_approve 抑制）、AC-14（路由优先级）3 处 gap，补充 7 个测试；新增 `test_validate_cli.py` 2 个 subprocess 测试覆盖 AC-16。全量 `6832 passed`（+9），`--validate` 退出码 0，16 项 AC 全部 PASS → [详细记录](2026-05-18.md)
 ## 2026-05-16
 - **Spec 任务分解聚合成单折叠卡** — Spec `spec_task` 结构化块仍保持一任务一个 state block，但渲染展平阶段会把连续任务聚合成一个 `任务列表-N` 折叠面板；面板内按任务顺序逐行展示描述，并在同一行合并依赖与状态，避免飞书端刷出多张彩色小任务卡。`ux/card_preview.html` 同步增加 Spec 方案/任务产物预览；红灯复现后相关回归 `2 + 34 passed`，全量 `6610 passed`，改动文件 `ruff` 与 `--validate` 通过 → [详细记录](2026-05-16.md)
 - **Spec 方案规划面板改浅橙** — Spec 卡片“方案规划”内容块原先用 `background_style="wathet"`，飞书端显示成较深青蓝。现在 `render_spec_plan_panel()` 改为 `background_style="orange"`，外层折叠面板边框也改为 `orange`，任务分解面板轮换配色不变；`ux/card_preview.html` 增加极浅橙 `.panel-orange` 预览样式。红灯复现后相关回归 `1 + 34 passed`，全量 `6610 passed`，改动文件 `ruff`、`--validate` 与 `git diff --check` 通过 → [详细记录](2026-05-16.md)
