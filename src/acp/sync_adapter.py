@@ -1349,10 +1349,6 @@ def start_ttadk_session_with_pty_retry(
             ) from e2
 
 
-# Backward-compatible alias for legacy call sites/tests
-start_ttadk_session_with_pty_retry_once = start_ttadk_session_with_pty_retry
-
-
 class SyncACPSession:
     """Synchronous wrapper for ACPSession.
 

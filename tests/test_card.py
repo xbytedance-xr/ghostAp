@@ -6,7 +6,7 @@ from src.card.builder import CardBuilder
 from src.card.models import EngineCardState
 from src.card.shared import THEMES, get_theme
 from src.config import Settings
-from src.project.context import CocoSessionSnapshot, ProjectContext
+from src.project.context import ProjectContext, SessionSnapshot
 from src.ttadk.models import TTADKModel, TTADKTool
 
 
@@ -247,7 +247,7 @@ class TestCardBuilder:
         assert any("建议下一步" in str(e) for e in card["body"]["elements"])
 
     def test_build_coco_resume_card(self, sample_project):
-        sample_project.coco_session_snapshot = CocoSessionSnapshot(
+        sample_project.coco_session_snapshot = SessionSnapshot(
             session_id="session_123",
             query_count=10,
             last_query="帮我写一个函数",
@@ -266,7 +266,7 @@ class TestCardBuilder:
         sample_project.ttadk_tool_name = "claude"
         sample_project.ttadk_model_name = "gpt-5.2-ttadk"
         sample_project.ttadk_yolo_enabled = False
-        sample_project.ttadk_session_snapshot = CocoSessionSnapshot(
+        sample_project.ttadk_session_snapshot = SessionSnapshot(
             session_id="session_ttadk",
             query_count=3,
             last_query="继续重构",
@@ -601,7 +601,7 @@ class TestCardSchema20Structure:
         self._assert_no_lark_md(card, "status_board")
 
     def test_coco_resume_card_schema(self, project):
-        project.coco_session_snapshot = CocoSessionSnapshot(
+        project.coco_session_snapshot = SessionSnapshot(
             session_id="s1",
             query_count=3,
             last_query="test",

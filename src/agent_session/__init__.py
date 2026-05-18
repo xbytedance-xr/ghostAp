@@ -45,9 +45,6 @@ from .ttadk_cli import (
 )
 from .wrappers import ModelFailureAwareSession, RateLimitAwareSession
 
-# Legacy compat alias
-TTADK_STARTUP_ERROR = None  # legacy alias; do not use
-
 __all__ = [
     "SyncSession", "ClaudeCLIConfig", "SyncClaudeCLISession", "SyncTTADKCLISession",
     "RateLimitAwareSession", "ModelFailureAwareSession", "EphemeralReviewSession",
@@ -57,5 +54,4 @@ __all__ = [
     "_JSONTextExtractor", "_is_ttadk_preamble_line", "_build_ttadk_passthrough_prompt",
     "_detect_rate_limit", "_extract_model_from_agent_args", "_replace_model_in_agent_args",
     "_remove_model_in_agent_args", "_apply_compaction_once", "_build_generic_error_blob",
-    "TTADK_STARTUP_ERROR",
 ]
