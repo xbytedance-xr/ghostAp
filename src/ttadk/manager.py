@@ -20,7 +20,7 @@ from typing import Callable, Optional
 from ..config import get_settings
 from ..utils.env import is_test_environment
 from ..utils.errors import get_error_detail
-from .cache import TTADKModelCache
+from .cache import TTADKModelCache, parse_preheat_tools
 from .command_exec import (
     TTADKCommandRunner,
 )
@@ -612,23 +612,7 @@ class TTADKManager:
             self._initialized = True
 
     def _parse_preheat_tools(self, raw: str) -> list[str]:
-        raw = (raw or "").strip()
-        if not raw:
-            return []
-        # 支持逗号/空白分隔
-        parts: list[str] = []
-        for chunk in raw.replace(",", " ").split():
-            name = (chunk or "").strip().lower()
-            if name:
-                parts.append(name)
-        # 去重保序
-        seen = set()
-        out: list[str] = []
-        for x in parts:
-            if x not in seen:
-                seen.add(x)
-                out.append(x)
-        return out
+        return parse_preheat_tools(raw)
 
     def maybe_preheat_common_models(self, cwd: Optional[str] = None) -> None:
         """常用工具最小可用性预热：probe 一次模型列表并写入缓存（best-effort）。
