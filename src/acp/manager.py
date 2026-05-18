@@ -52,27 +52,6 @@ except Exception:  # pragma: no cover - extremely unlikely
     _ORIG_TTADK_CLI_SESSION = None
 
 
-def _format_error_type_and_repr(err: object) -> tuple[str, str]:
-    """兼容入口：历史调用点需要 err_type/err_repr。
-
-    新 SSOT 在 `src.acp.diagnostics.format_startup_failure_log_line`。
-    这里保留函数名以降低回归风险。
-    """
-    try:
-        err_type = type(err).__name__
-    except Exception:
-        logger.warning("Error while formatting error type", exc_info=True)
-        err_type = "Exception"
-    try:
-        err_repr = repr(err)
-    except Exception:
-        logger.warning("Error while formatting error representation", exc_info=True)
-        err_repr = ""
-    if not (err_repr or "").strip():
-        err_repr = f"<{err_type}>"
-    return (err_type or "Exception", err_repr)
-
-
 def _format_ttadk_startup_attempts(diagnostics: object, *, per_item_limit: int = 300, total_limit: int = 1600) -> str:
     """TTADK 启动 attempts 摘要（compat wrapper）。
 

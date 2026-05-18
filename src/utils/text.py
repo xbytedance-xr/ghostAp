@@ -6,11 +6,10 @@
 - 不直接依赖具体 UI 主题（例如颜色、布局等）。
 """
 
-import re
 import threading
 import time
 
-from src.utils.time_ago import IdleHealth, TimeAgoBucket, compute_time_ago_bucket
+from src.utils.time_ago import TimeAgoBucket, compute_time_ago_bucket
 
 _TASK_ID_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _TASK_ID_SEQ = 0
@@ -108,43 +107,6 @@ def append_duration_to_title(title: str, duration_secs: float | None) -> str:
     return title
 
 
-def format_idle_health(health: IdleHealth) -> str:
-    """将 IdleHealth 枚举渲染为简短中文文案。
-
-    说明：
-    - 仅做文案层映射，不参与任何业务决策；
-    - 作为 IdleHealth → 文案 的 SSOT，避免在各处散落 magic string；
-    - 如需展示 emoji，可在调用方或后续扩展中统一更新本函数实现。
-    """
-
-    if health is IdleHealth.HEALTHY:
-        return "健康（近期活跃）"
-    if health is IdleHealth.IDLE:
-        return "空闲（可关注）"
-    if health is IdleHealth.STALE:
-        return "陈旧（可清理候选）"
-    # 包含 UNKNOWN 或未来扩展值
-    return "未知"
-
-
-def format_seconds_ago(seconds: float) -> str:
-    """[DEPRECATED] 兼容包装：请改用 :func:`format_time_ago`。
-
-    历史上本函数直接实现了一套独立的相对时间文案（`X秒前 / X分钟Y秒前 / X小时Y分钟前`）。
-    现在统一收敛到共享入口 :func:`format_time_ago`（基于 "秒数→语义段→文案" 的分层架构），
-    以避免一种概念多套说法，并为多语言/多风格预留扩展点。
-
-    行为说明：
-    - 接受秒数作为输入；
-    - 内部直接调用 :func:`format_time_ago`，返回 "刚刚" / "X 分钟前" / "X 小时前" / "X 天前"；
-    - 负数或异常输入会被按 0 处理。
-
-    未来新增调用方请直接依赖 :func:`format_time_ago`，避免继续扩散本兼容别名。
-    """
-
-    return format_time_ago(seconds)
-
-
 def format_time_ago(seconds: float) -> str:
     """统一的相对时间文案（"X 时间前" 风格）。
 
@@ -193,41 +155,11 @@ def make_progress_bar(completed: int, total: int) -> str:
     return f"{'▰' * filled}{'▱' * empty} {percent:.0f}% ({completed}/{total})"
 
 
-def clean_terminal_output(output: str) -> str:
-    """去除 ANSI 转义序列和 OSC 序列"""
-    output = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", output)
-    output = re.sub(r"\x1b\][^\x07]*\x07", "", output)
-    output = re.sub(r"\x1b[\[\]\\^][^\x07\x1b]*", "", output)
-    return output.strip()
-
-
 def truncate_output(output: str, max_len: int, label: str = "输出被截断") -> str:
     if len(output) > max_len:
         return output[:max_len] + f"\n\n... ({label}，共 {len(output)} 字符)"
     return output
 
-
-_PATH_PATTERN = re.compile(r"(/[\w./\-]+){3,}")
-_TB_PATTERN = re.compile(r"^\s*(File \"|Traceback )", re.MULTILINE)
-
-
-def sanitize_error_for_display(error: str, max_length: int = 200) -> str:
-    """Sanitize error text for user display: strip paths, tracebacks, truncate.
-
-    Full error is preserved in logging; this function only cleans user-facing text.
-    """
-    if not error:
-        return error
-    # Strip traceback lines — keep only the last line (actual error message)
-    if _TB_PATTERN.search(error):
-        lines = error.strip().splitlines()
-        error = lines[-1] if lines else error
-    # Replace internal file paths with [internal]
-    error = _PATH_PATTERN.sub("[internal]", error)
-    # Truncate
-    if len(error) > max_length:
-        error = error[:max_length] + "…"
-    return error.strip()
 
 
 def get_acp_result_header_text() -> dict[str, str]:

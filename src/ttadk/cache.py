@@ -26,7 +26,27 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "TTADKModelCache",
+    "parse_preheat_tools",
 ]
+
+
+def parse_preheat_tools(raw: str) -> list[str]:
+    """Parse comma/space-separated preheat tool names into a deduped ordered list."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    parts: list[str] = []
+    for chunk in raw.replace(",", " ").split():
+        name = (chunk or "").strip().lower()
+        if name:
+            parts.append(name)
+    seen: set[str] = set()
+    out: list[str] = []
+    for x in parts:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
 
 
 class TTADKModelCache:
@@ -239,21 +259,7 @@ class TTADKModelCache:
     # ------------------------------
 
     def _parse_preheat_tools(self, raw: str) -> list[str]:
-        raw = (raw or "").strip()
-        if not raw:
-            return []
-        parts: list[str] = []
-        for chunk in raw.replace(",", " ").split():
-            name = (chunk or "").strip().lower()
-            if name:
-                parts.append(name)
-        seen: set[str] = set()
-        out: list[str] = []
-        for x in parts:
-            if x not in seen:
-                seen.add(x)
-                out.append(x)
-        return out
+        return parse_preheat_tools(raw)
 
     def _preheat_probe_and_cache(self, tool_name: str, *, cwd: Optional[str], timeout: float, reason: str) -> bool:
         tool = (tool_name or "").strip().lower()

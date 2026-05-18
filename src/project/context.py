@@ -55,13 +55,6 @@ class SessionSnapshot:
     is_resumable: bool = True
 
 
-# Backward-compatible aliases
-CocoSessionSnapshot = SessionSnapshot
-ClaudeSessionSnapshot = SessionSnapshot
-TtadkSessionSnapshot = SessionSnapshot
-AidenSessionSnapshot = SessionSnapshot
-CodexSessionSnapshot = SessionSnapshot
-GeminiSessionSnapshot = SessionSnapshot
 
 
 @dataclass

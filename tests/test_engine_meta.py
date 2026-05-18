@@ -1,5 +1,6 @@
 """Tests for src.card.engine_meta — centralized engine metadata."""
 
+import pytest
 
 from src.card.engine_meta import (
     ENGINE_CMD_MAP,
@@ -29,37 +30,43 @@ class TestEngineMeta:
         for cmd in ENGINE_CMD_MAP.values():
             assert cmd.startswith("/"), f"Command '{cmd}' does not start with /"
 
-    def test_engine_type_to_cmd_known(self):
-        """Known engine types return their mapped command."""
-        assert engine_type_to_cmd("deep") == "/deep"
-        assert engine_type_to_cmd("spec") == "/spec"
-        assert engine_type_to_cmd("worktree") == "/wt"
+    @pytest.mark.parametrize("engine_type, fallback, expected", [
+        # Known engine types return their mapped command.
+        ("deep", None, "/deep"),
+        ("spec", None, "/spec"),
+        ("worktree", None, "/wt"),
+        # Unknown engine types return the fallback value.
+        ("unknown", None, "命令"),
+        ("", None, "命令"),
+        (None, None, "命令"),
+        # Custom fallback is respected.
+        ("unknown", "对应命令", "对应命令"),
+        (None, "", ""),
+    ])
+    def test_engine_type_to_cmd(self, engine_type, fallback, expected):
+        """engine_type_to_cmd handles known/unknown types with default and custom fallbacks."""
+        if fallback is None:
+            assert engine_type_to_cmd(engine_type) == expected
+        else:
+            assert engine_type_to_cmd(engine_type, fallback=fallback) == expected
 
-    def test_engine_type_to_cmd_unknown_returns_fallback(self):
-        """Unknown engine types return the fallback value."""
-        assert engine_type_to_cmd("unknown") == "命令"
-        assert engine_type_to_cmd("") == "命令"
-        assert engine_type_to_cmd(None) == "命令"
-
-    def test_engine_type_to_cmd_custom_fallback(self):
-        """Custom fallback is respected."""
-        assert engine_type_to_cmd("unknown", fallback="对应命令") == "对应命令"
-        assert engine_type_to_cmd(None, fallback="") == ""
-
-    def test_engine_type_to_name_known(self):
-        """Known engine types return their display name."""
-        assert engine_type_to_name("deep") == "Deep"
-        assert engine_type_to_name("spec") == "Spec"
-        assert engine_type_to_name("worktree") == "Worktree"
-
-    def test_engine_type_to_name_unknown_returns_fallback(self):
-        """Unknown engine types return empty string by default."""
-        assert engine_type_to_name("unknown") == ""
-        assert engine_type_to_name(None) == ""
-
-    def test_engine_type_to_name_custom_fallback(self):
-        """Custom fallback is respected."""
-        assert engine_type_to_name(None, fallback="Engine") == "Engine"
+    @pytest.mark.parametrize("engine_type, fallback, expected", [
+        # Known engine types return their display name.
+        ("deep", None, "Deep"),
+        ("spec", None, "Spec"),
+        ("worktree", None, "Worktree"),
+        # Unknown engine types return empty string by default.
+        ("unknown", None, ""),
+        (None, None, ""),
+        # Custom fallback is respected.
+        (None, "Engine", "Engine"),
+    ])
+    def test_engine_type_to_name(self, engine_type, fallback, expected):
+        """engine_type_to_name handles known/unknown types with default and custom fallbacks."""
+        if fallback is None:
+            assert engine_type_to_name(engine_type) == expected
+        else:
+            assert engine_type_to_name(engine_type, fallback=fallback) == expected
 
     def test_engine_labels_contain_restart_prefix(self):
         """All engine labels should contain the restart prefix."""

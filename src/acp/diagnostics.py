@@ -172,26 +172,6 @@ def _safe_str(x: object) -> str:
             return ""
 
 
-def _truncate_text(text: str, limit: int) -> str:
-    """兼容层：请改用公共 API `truncate_text()`。
-
-    移除条件：仓内不再存在对本模块 `_truncate_text` 的跨模块导入，且连续回归稳定后可删除。
-    """
-    try:
-        limit = int(limit or 0)
-    except Exception:
-        logger.warning("Error while converting limit to int in truncate_text", exc_info=True)
-        limit = 0
-    if limit <= 0:
-        return ""
-    s = _safe_str(text)
-    if not s:
-        return ""
-    if len(s) <= limit:
-        return s
-    return s[:limit] + "…(truncated)"
-
-
 def _safe_bool(value: object, default: bool) -> bool:
     try:
         return value if isinstance(value, bool) else default
@@ -272,7 +252,7 @@ def _truncate_args(args: list[str], limit: int) -> list[str]:
         if out:
             out.append("…(truncated)")
         else:
-            out.append(_truncate_text(a, limit))
+            out.append(truncate_text(a, limit))
         break
     return out
 
@@ -324,7 +304,7 @@ def _init_diag_container(diag: object) -> dict:
         elif diag is None:
             out["error"] = "(empty)"
         else:
-            out["error"] = _truncate_text(_safe_str(diag), 400)
+            out["error"] = truncate_text(_safe_str(diag), 400)
     except Exception:
         logger.warning("Error while initializing diagnostics container", exc_info=True)
         out["error"] = "format_error"
@@ -418,18 +398,18 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
         out["args"] = [str(x) for x in (out.get("args") or [])]
 
     try:
-        out["cmd"] = _truncate_text(_safe_str(out.get("cmd") or ""), snippet_limit)
+        out["cmd"] = truncate_text(_safe_str(out.get("cmd") or ""), snippet_limit)
     except Exception:
         logger.warning("Error while truncating cmd field", exc_info=True)
         out["cmd"] = _safe_str(out.get("cmd") or "")
     try:
-        out["stdout_snippet"] = _truncate_text(_safe_str(out.get("stdout_snippet") or ""), snippet_limit)
-        out["stderr_snippet"] = _truncate_text(_safe_str(out.get("stderr_snippet") or ""), snippet_limit)
+        out["stdout_snippet"] = truncate_text(_safe_str(out.get("stdout_snippet") or ""), snippet_limit)
+        out["stderr_snippet"] = truncate_text(_safe_str(out.get("stderr_snippet") or ""), snippet_limit)
     except Exception:
         logger.debug("snippet truncation failed", exc_info=True)
     try:
         out["error_text"] = (
-            _truncate_text(
+            truncate_text(
                 _safe_str(out.get("error_text") or ""), min(400, snippet_limit) if snippet_limit > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT
             )
             or "(empty)"
@@ -439,19 +419,19 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
         out["error_text"] = _safe_str(out.get("error_text") or "") or "(empty)"
     try:
         out["error"] = (
-            _truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT)
+            truncate_text(_safe_str(out.get("error") or ""), min(400, snippet_limit) if snippet_limit > 0 else DEFAULT_DIAGNOSTICS_SNIPPET_LIMIT)
             or out["error_text"]
         )
     except Exception:
         logger.warning("Error while truncating error field", exc_info=True)
         out["error"] = _safe_str(out.get("error") or "") or out.get("error_text") or "(empty)"
     try:
-        out["fail_reason"] = _truncate_text(_safe_str(out.get("fail_reason") or ""), 80) or "start_failed"
+        out["fail_reason"] = truncate_text(_safe_str(out.get("fail_reason") or ""), 80) or "start_failed"
     except Exception:
         logger.warning("Error while truncating fail_reason field", exc_info=True)
         out["fail_reason"] = _safe_str(out.get("fail_reason") or "") or "start_failed"
     try:
-        out["spec"] = _truncate_text(
+        out["spec"] = truncate_text(
             _safe_str(out.get("spec") or ""), min(400, total_limit) if total_limit > 0 else 400
         )
     except Exception:
@@ -459,7 +439,7 @@ def _apply_truncation(out: dict, args_limit: int, snippet_limit: int, total_limi
         out["spec"] = _safe_str(out.get("spec") or "")
     try:
         if "agent_spec" in out:
-            out["agent_spec"] = _truncate_text(
+            out["agent_spec"] = truncate_text(
                 _safe_str(out.get("agent_spec") or ""), min(400, total_limit) if total_limit > 0 else 400
             )
     except Exception:
@@ -512,8 +492,20 @@ def safe_str(x: object) -> str:
 
 
 def truncate_text(text: str, limit: int) -> str:
-    """Public wrapper for text truncation (never raises)."""
-    return _truncate_text(text, limit)
+    """Public API: bounded text truncation (never raises)."""
+    try:
+        limit = int(limit or 0)
+    except Exception:
+        logger.warning("Error while converting limit to int in truncate_text", exc_info=True)
+        limit = 0
+    if limit <= 0:
+        return ""
+    s = _safe_str(text)
+    if not s:
+        return ""
+    if len(s) <= limit:
+        return s
+    return s[:limit] + "…(truncated)"
 
 
 def truncate_args(args: list[str], limit: int) -> list[str]:
@@ -654,7 +646,7 @@ def format_attempts_summary(
         if not blob:
             blob = _safe_str(d.get("stdout", ""))
         blob = blob or "(empty)"
-        blob = _truncate_text(blob, per_lim) or "(empty)"
+        blob = truncate_text(blob, per_lim) or "(empty)"
 
         item = {
             "phase": phase,
@@ -679,7 +671,7 @@ def format_attempts_summary(
             s = redact_text(s, patterns, repl)
         except Exception:
             logger.debug("redaction pass failed in format_attempts_summary", exc_info=True)
-    return _truncate_text(s, total_lim)
+    return truncate_text(s, total_lim)
 
 
 def format_startup_diagnostics_summary(
@@ -711,14 +703,14 @@ def format_startup_diagnostics_summary(
         if isinstance(nd, dict):
             base.update(nd)
         else:
-            base["error"] = _truncate_text(_safe_str(nd), 400)
+            base["error"] = truncate_text(_safe_str(nd), 400)
     except Exception:
         logger.warning("Error while normalizing startup diagnostics in summary", exc_info=True)
         try:
             if isinstance(diag, dict):
                 base.update(diag)
             else:
-                base["error"] = _truncate_text(_safe_str(diag), 400)
+                base["error"] = truncate_text(_safe_str(diag), 400)
         except Exception:
             logger.warning("Error while applying diagnostic fallback in summary", exc_info=True)
             base["error"] = "format_error"
@@ -755,7 +747,7 @@ def format_startup_diagnostics_summary(
             s = redact_text(s, patterns, repl)
         except Exception:
             logger.debug("redaction pass failed in normalize_startup_diagnostics", exc_info=True)
-    return _truncate_text(s, eff_total)
+    return truncate_text(s, eff_total)
 
 
 def format_startup_failure_log_line(
@@ -823,7 +815,7 @@ def format_startup_failure_log_line(
         except Exception:
             logger.debug("redaction pass failed in format_startup_failure_log_line", exc_info=True)
     if lim > 0:
-        err_repr = _truncate_text(err_repr, lim) or f"<{err_type}>"
+        err_repr = truncate_text(err_repr, lim) or f"<{err_type}>"
 
     diagnostics_summary = ""
     d: dict = {}

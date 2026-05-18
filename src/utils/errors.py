@@ -38,67 +38,6 @@ class GhostAPError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Domain-specific exception hierarchy
-# ---------------------------------------------------------------------------
-
-
-class ACPError(GhostAPError):
-    """ACP (Agent Client Protocol) layer errors — session, transport, protocol."""
-
-    def __init__(self, message: str = "ACP 通信异常", **kwargs):
-        super().__init__(message, action=kwargs.pop("action", "acp"), **kwargs)
-
-
-class FeishuError(GhostAPError):
-    """Feishu integration errors — WebSocket, API, message handling."""
-
-    def __init__(self, message: str = "飞书通信异常", **kwargs):
-        super().__init__(message, action=kwargs.pop("action", "feishu"), **kwargs)
-
-
-class TTADKError(GhostAPError):
-    """TTADK (Multi-Tool AI Development Kit) errors — tool/model management, startup, cache."""
-
-    def __init__(self, message: str = "TTADK 操作异常", **kwargs):
-        super().__init__(message, action=kwargs.pop("action", "ttadk"), **kwargs)
-
-
-class EngineError(GhostAPError):
-    """Execution engine errors — Deep/Spec engine lifecycle and execution."""
-
-    def __init__(self, message: str = "引擎执行异常", **kwargs):
-        super().__init__(message, action=kwargs.pop("action", "engine"), **kwargs)
-
-
-class SessionError(GhostAPError):
-    """Session orchestration errors — agent_session lifecycle and coordination."""
-
-    def __init__(self, message: str = "会话管理异常", **kwargs):
-        super().__init__(message, action=kwargs.pop("action", "session"), **kwargs)
-
-
-class SessionExpiredError(GhostAPError):
-    """AI session (Coco/Claude) has expired or is unreachable."""
-
-    def __init__(self, message: str = "会话已过期", **kwargs):
-        super().__init__(message, quick_actions=["retry"], **kwargs)
-
-
-class ProjectNotFoundError(GhostAPError):
-    """Requested project does not exist."""
-
-    def __init__(self, message: str = "项目不存在", **kwargs):
-        super().__init__(message, quick_actions=["new_project_prompt", "list_projects"], **kwargs)
-
-
-class SafetyCheckError(GhostAPError):
-    """Command blocked by safety checks."""
-
-    def __init__(self, message: str = "操作被安全策略拦截", **kwargs):
-        super().__init__(message, quick_actions=[], **kwargs)
-
-
-# ---------------------------------------------------------------------------
 # User-facing message formatters
 # ---------------------------------------------------------------------------
 
@@ -186,15 +125,12 @@ def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
     return f"❌ {action}失败"
 
 
-def unwrap_fmt_error(formatted: str, exc: Exception | None = None, *, default: str = "未知错误") -> str:
-    """从 `fmt_error("", exc)` 的输出中提取可展示的 detail。
-
-    历史上多处调用会：
-    1) `formatted = fmt_error("", e)`
-    2) 手动剥离 "❌ 失败: " 前缀
-
-    本函数把该逻辑下沉到 `src/utils/errors.py`，避免重复实现。
-    """
+def get_error_detail(exc: Exception, *, default: str = "未知错误") -> str:
+    """统一把异常转成可展示的 detail（不含 "❌ 失败" 前缀）。"""
+    try:
+        formatted = fmt_error("", exc)
+    except Exception:
+        formatted = ""
     s = str(formatted or "")
 
     # 典型输出："❌ 失败: xxx" / "❌ 失败"
@@ -212,37 +148,11 @@ def unwrap_fmt_error(formatted: str, exc: Exception | None = None, *, default: s
     return s
 
 
-def get_error_detail(exc: Exception, *, default: str = "未知错误") -> str:
-    """统一把异常转成可展示的 detail（不含 "❌ 失败" 前缀）。"""
-    try:
-        formatted = fmt_error("", exc)
-    except Exception:
-        formatted = ""
-    return unwrap_fmt_error(formatted, exc, default=default)
-
-
 def fmt_exception(action: str, exc: BaseException) -> str:
     """Format an unexpected exception for the user."""
     if classify_timeout(exc):
         return f"❌ {action}超时: 操作耗时过长，请重试"
     return f"❌ {action}异常: {str(exc) or repr(exc)}"
-
-
-def fmt_warning(message: str) -> str:
-    """Format a warning / partial-failure message."""
-    return f"⚠️ {message}"
-
-
-def fmt_timeout(action: str, seconds: int) -> str:
-    """Format a timeout message."""
-    return f"⏱️ {action}超时（{seconds}秒）"
-
-
-def fmt_not_found(resource: str, name: str = "") -> str:
-    """Format a resource-not-found message."""
-    if name:
-        return f"❌ 未找到{resource}: {name}"
-    return f"❌ 未找到 {resource}"
 
 
 def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int = logging.ERROR) -> None:

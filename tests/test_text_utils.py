@@ -3,18 +3,18 @@
 import re
 import time
 
+import pytest
+
 from src.utils.text import (
     append_duration_to_title,
     format_duration,
-    format_idle_health,
-    format_seconds_ago,
     format_time_ago,
     format_time_ago_from_bucket,
     generate_task_id,
     render_time_ago_cn,
     render_violation_report,
 )
-from src.utils.time_ago import IdleHealth, compute_time_ago_bucket
+from src.utils.time_ago import compute_time_ago_bucket
 
 # ──────────────────────────────────────────────────────────────────────
 # format_duration
@@ -22,40 +22,25 @@ from src.utils.time_ago import IdleHealth, compute_time_ago_bucket
 
 
 class TestFormatDuration:
-    def test_zero(self):
-        assert format_duration(0) == "0 秒"
-
-    def test_fractional_rounds_down(self):
-        assert format_duration(0.9) == "0 秒"
-
-    def test_seconds_only(self):
-        assert format_duration(5) == "5 秒"
-        assert format_duration(59) == "59 秒"
-
-    def test_minutes_boundary(self):
-        assert format_duration(60) == "1 分钟 0 秒"
-
-    def test_minutes_and_seconds(self):
-        assert format_duration(225) == "3 分钟 45 秒"
-
-    def test_just_under_one_hour(self):
-        assert format_duration(3599) == "59 分钟 59 秒"
-
-    def test_one_hour_boundary(self):
-        assert format_duration(3600) == "1 小时 0 分钟 0 秒"
-
-    def test_hours_minutes_seconds(self):
-        assert format_duration(3661) == "1 小时 1 分钟 1 秒"
-
-    def test_large_value(self):
-        # 24 hours
-        assert format_duration(86400) == "24 小时 0 分钟 0 秒"
-
-    def test_negative_clamped_to_zero(self):
-        assert format_duration(-10) == "0 秒"
-
-    def test_very_small_positive(self):
-        assert format_duration(0.001) == "0 秒"
+    @pytest.mark.parametrize(
+        "seconds, expected",
+        [
+            (0, "0 秒"),
+            (0.9, "0 秒"),
+            (0.001, "0 秒"),
+            (-10, "0 秒"),
+            (5, "5 秒"),
+            (59, "59 秒"),
+            (60, "1 分钟 0 秒"),
+            (225, "3 分钟 45 秒"),
+            (3599, "59 分钟 59 秒"),
+            (3600, "1 小时 0 分钟 0 秒"),
+            (3661, "1 小时 1 分钟 1 秒"),
+            (86400, "24 小时 0 分钟 0 秒"),
+        ],
+    )
+    def test_format_duration(self, seconds, expected):
+        assert format_duration(seconds) == expected
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -66,29 +51,20 @@ class TestFormatDuration:
 class TestFooterFormatDuration:
     """Verify footer's _format_duration covers hours branch."""
 
-    def test_sub_second(self):
+    @pytest.mark.parametrize(
+        "seconds, expected",
+        [
+            (0, "< 1 秒"),
+            (1, "< 1 秒"),
+            (30, "30 秒"),
+            (125, "2 分钟 5 秒"),
+            (3600, "1 小时 0 分钟 0 秒"),
+            (7261, "2 小时 1 分钟 1 秒"),
+        ],
+    )
+    def test_footer_format_duration(self, seconds, expected):
         from src.card.render.footer import _format_duration
-        assert _format_duration(0) == "< 1 秒"
-        assert _format_duration(1) == "< 1 秒"
-
-    def test_seconds(self):
-        from src.card.render.footer import _format_duration
-        assert _format_duration(30) == "30 秒"
-
-    def test_minutes_seconds(self):
-        from src.card.render.footer import _format_duration
-        result = _format_duration(125)
-        assert result == "2 分钟 5 秒"
-
-    def test_one_hour_boundary(self):
-        from src.card.render.footer import _format_duration
-        result = _format_duration(3600)
-        assert result == "1 小时 0 分钟 0 秒"
-
-    def test_hours_minutes_seconds(self):
-        from src.card.render.footer import _format_duration
-        result = _format_duration(7261)
-        assert result == "2 小时 1 分钟 1 秒"
+        assert _format_duration(seconds) == expected
 
 
 class TestUITextDurationLiterals:
@@ -234,25 +210,6 @@ class TestBucketAndFormatConsistency:
 
             assert from_bucket == direct
             assert from_helper == direct
-
-
-class TestFormatSecondsAgoCompat:
-    """兼容包装：确保行为与 format_time_ago 一致。"""
-
-    def test_delegates_to_format_time_ago(self):
-        # 这里不严格断言文案细节，只要与 format_time_ago 相同即可
-        for value in (0, 10, 59, 60, 3600, 86400, -5):
-            assert format_seconds_ago(value) == format_time_ago(value)
-
-
-class TestFormatIdleHealth:
-    def test_basic_mapping(self) -> None:
-        assert "健康" in format_idle_health(IdleHealth.HEALTHY)
-        assert "空闲" in format_idle_health(IdleHealth.IDLE)
-        assert "陈旧" in format_idle_health(IdleHealth.STALE)
-
-    def test_unknown_and_future_values(self) -> None:
-        assert format_idle_health(IdleHealth.UNKNOWN) == "未知"
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -1,6 +1,8 @@
 """Tests for DeliveryTracker: failure tracking, recovery banner, and mutual exclusion."""
 
 
+import pytest
+
 from src.card.delivery.tracker import DeliveryTracker, PendingAction
 
 
@@ -292,3 +294,28 @@ class TestConcurrentAccess:
         # At most one SHOW_MAX_FAILURES_WARNING should be reported
         warning_count = sum(1 for a in results if a is PendingAction.SHOW_MAX_FAILURES_WARNING)
         assert warning_count <= 1
+
+
+class TestFailureTimestamp:
+    """on_failure records a HH:MM-formatted timestamp."""
+
+    def test_failure_records_timestamp(self):
+        tracker = DeliveryTracker(max_failures=3)
+        tracker.on_failure()
+        assert tracker.last_failure_timestamp is not None
+        # Format should be HH:MM
+        parts = tracker.last_failure_timestamp.split(":")
+        assert len(parts) == 2
+        assert all(p.isdigit() for p in parts)
+
+
+class TestValidation:
+    """Constructor validation."""
+
+    def test_max_failures_must_be_positive(self):
+        with pytest.raises(ValueError, match="max_failures must be >= 1"):
+            DeliveryTracker(max_failures=0)
+
+    def test_clear_threshold_must_be_positive(self):
+        with pytest.raises(ValueError, match="clear_threshold must be >= 1"):
+            DeliveryTracker(clear_threshold=0)

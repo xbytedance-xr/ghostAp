@@ -45,6 +45,68 @@ from src.spec_engine.tracker import PhaseTracker
 from src.spec_engine.utils import parse_review_output_loose
 
 
+# ---------------------------------------------------------------------------
+# Shared spec settings factory — avoids 50-line duplication across test classes
+# ---------------------------------------------------------------------------
+
+def _make_spec_settings(**overrides):
+    """Build a mock settings object with spec_engine defaults.
+
+    Callers can override any field via keyword arguments.
+    """
+    s = MagicMock()
+    defaults = dict(
+        spec_max_cycles=1,
+        spec_max_cycles_limit=5000,
+        spec_convergence_window=1,
+        spec_execution_timeout=300,
+        spec_review_enabled=True,
+        spec_infinite_mode=False,
+        spec_disable_convergence=False,
+        spec_disable_early_stop=False,
+        spec_min_cycles=1,
+        spec_max_retries=1,
+        spec_cycle_tasks_max=50,
+        spec_cycle_output_max_chars=4000,
+        spec_state_filename=".spec_engine_state.json",
+        spec_artifacts_dirname=".spec_engine",
+        spec_persist_phase_artifacts=True,
+        spec_persist_every_phase=True,
+        spec_discovery_enabled=False,
+        spec_discovery_max_questions=3,
+        spec_discovery_force_nonempty=True,
+        spec_generated_specs_per_cycle=1,
+        spec_discovery_gate_on_satisfied=True,
+        spec_discovery_max_pending=5,
+        spec_discovery_cooldown_cycles=3,
+        spec_backlog_stuck_window=3,
+        spec_success_ignore_backlog=True,
+        spec_allow_resume_from_disk=True,
+        spec_history_log_filename="history.jsonl",
+        spec_phase_output_persist_max_chars=20000,
+        spec_cycle_artifact_retention=50,
+        spec_generated_specs_retention=1000,
+        spec_review_failure_circuit_enabled=False,
+        spec_review_failure_max_consecutive=3,
+        spec_review_failure_cooldown_cycles=3,
+        spec_review_timeout=120,
+        spec_review_min_timeout=30,
+        spec_review_hard_floor=15,
+        spec_review_max_parallel=4,
+        spec_review_retry_max_attempts=1,
+        spec_review_retry_max_delay=30,
+        spec_state_cycles_tail=50,
+        spec_state_work_items_tail=200,
+        spec_state_metrics_tail=200,
+        spec_rebuild_session_between_cycles=False,
+        spec_review_parallel_enabled=False,
+    )
+    defaults.update(overrides)
+    for k, v in defaults.items():
+        setattr(s, k, v)
+    return s
+
+
 def test_spec_engine_run_phase_fallback_to_send_prompt_when_retry_method_missing():
     """回归：session 缺少 send_prompt_with_retry 时，_run_phase 应回退到 send_prompt。"""
     engine = SpecEngine(chat_id="c", root_path="/tmp")
@@ -2514,59 +2576,7 @@ class TestSpecEngineExecution:
     """Integration tests for execute, resume, review, criteria evaluation."""
 
     def _mock_settings(self):
-        s = MagicMock()
-        s.spec_max_cycles = 1
-        s.spec_max_cycles_limit = 5000
-        s.spec_convergence_window = 1
-        s.spec_execution_timeout = 300
-        s.spec_review_enabled = True
-        s.spec_infinite_mode = False
-        s.spec_disable_convergence = False
-        s.spec_disable_early_stop = False
-        s.spec_min_cycles = 1
-        s.spec_max_retries = 1
-        s.spec_cycle_tasks_max = 50
-        s.spec_cycle_output_max_chars = 4000
-        s.spec_state_filename = ".spec_engine_state.json"
-        s.spec_artifacts_dirname = ".spec_engine"
-        s.spec_persist_phase_artifacts = True
-        s.spec_persist_every_phase = True
-        # Legacy integration tests focus on spec/plan/task/build/review/criteria only.
-        s.spec_discovery_enabled = False
-        s.spec_discovery_max_questions = 3
-        s.spec_discovery_force_nonempty = True
-        s.spec_generated_specs_per_cycle = 1
-        s.spec_discovery_gate_on_satisfied = True
-        s.spec_discovery_max_pending = 5
-        s.spec_discovery_cooldown_cycles = 3
-        s.spec_backlog_stuck_window = 3
-        s.spec_success_ignore_backlog = True
-        s.spec_allow_resume_from_disk = True
-        s.spec_infinite_mode = False
-        s.spec_disable_convergence = False
-        s.spec_disable_early_stop = False
-        s.spec_min_cycles = 1
-        s.spec_history_log_filename = "history.jsonl"
-        s.spec_phase_output_persist_max_chars = 20000
-        s.spec_cycle_artifact_retention = 50
-        s.spec_generated_specs_retention = 1000
-        s.spec_review_failure_circuit_enabled = False
-        s.spec_review_failure_max_consecutive = 3
-        s.spec_review_failure_cooldown_cycles = 3
-
-        s.spec_review_timeout = 120
-        s.spec_review_min_timeout = 30
-        s.spec_review_hard_floor = 15
-        s.spec_review_max_parallel = 4
-        s.spec_review_retry_max_attempts = 1
-        s.spec_review_retry_max_delay = 30
-        s.spec_state_cycles_tail = 50
-        s.spec_state_work_items_tail = 200
-        s.spec_state_metrics_tail = 200
-        s.spec_rebuild_session_between_cycles = False
-        # Disable parallel pipeline to use legacy serial review path in integration tests
-        s.spec_review_parallel_enabled = False
-        return s
+        return _make_spec_settings()
 
     def _make_mock_session(self, text_responses):
         """Mock session that returns text_responses sequentially via on_event."""
@@ -3350,58 +3360,7 @@ class TestSpecEngineExecution:
 
 class TestSpecEngineProjectTypes:
     def _mock_settings(self):
-        s = MagicMock()
-        s.spec_max_cycles = 1
-        s.spec_max_cycles_limit = 5000
-        s.spec_convergence_window = 1
-        s.spec_execution_timeout = 300
-        s.spec_review_enabled = True
-        s.spec_infinite_mode = False
-        s.spec_disable_convergence = False
-        s.spec_disable_early_stop = False
-        s.spec_min_cycles = 1
-        s.spec_max_retries = 1
-        s.spec_cycle_tasks_max = 50
-        s.spec_cycle_output_max_chars = 4000
-        s.spec_state_filename = ".spec_engine_state.json"
-        s.spec_artifacts_dirname = ".spec_engine"
-        s.spec_persist_phase_artifacts = True
-        s.spec_persist_every_phase = True
-        s.spec_discovery_enabled = False
-        s.spec_discovery_max_questions = 3
-        s.spec_discovery_force_nonempty = True
-        s.spec_generated_specs_per_cycle = 1
-        s.spec_discovery_gate_on_satisfied = True
-        s.spec_discovery_max_pending = 5
-        s.spec_discovery_cooldown_cycles = 3
-        s.spec_backlog_stuck_window = 3
-        s.spec_success_ignore_backlog = True
-        s.spec_allow_resume_from_disk = True
-        s.spec_infinite_mode = False
-        s.spec_disable_convergence = False
-        s.spec_disable_early_stop = False
-        s.spec_min_cycles = 1
-        s.spec_history_log_filename = "history.jsonl"
-        s.spec_phase_output_persist_max_chars = 20000
-        s.spec_cycle_artifact_retention = 50
-        s.spec_generated_specs_retention = 1000
-        s.spec_review_failure_circuit_enabled = False
-        s.spec_review_failure_max_consecutive = 3
-        s.spec_review_failure_cooldown_cycles = 3
-
-        s.spec_review_timeout = 120
-        s.spec_review_min_timeout = 30
-        s.spec_review_hard_floor = 15
-        s.spec_review_max_parallel = 4
-        s.spec_review_retry_max_attempts = 1
-        s.spec_review_retry_max_delay = 30
-        s.spec_state_cycles_tail = 50
-        s.spec_state_work_items_tail = 200
-        s.spec_state_metrics_tail = 200
-        s.spec_rebuild_session_between_cycles = False
-        # Disable parallel pipeline to use legacy serial review path in integration tests
-        s.spec_review_parallel_enabled = False
-        return s
+        return _make_spec_settings()
 
     def _make_mock_session(self, text_responses):
         session = MagicMock()
@@ -3419,86 +3378,43 @@ class TestSpecEngineProjectTypes:
         session.send_prompt_with_retry = fake_send_prompt
         return session
 
+    @pytest.mark.parametrize("spec_json,plan_json,task_text,requirement", [
+        pytest.param(
+            '```json\n{"goals":["Web 登录"],"functional_spec":["页面","接口"],"non_functional_requirements":["性能"],"acceptance_criteria":["Web 登录可用"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}\n```',
+            '```json\n{"architecture":"MVC","tech_stack":["FastAPI","React"],"steps":["实现 API","实现 UI"],"file_changes":["src/app.py"],"test_plan":["pytest"],"risks":[],"version":"1.0"}\n```',
+            "1. 实现 Web 登录 (依赖: 无)",
+            "- Web 需求",
+            id="web_app",
+        ),
+        pytest.param(
+            '```json\n{"goals":["API 开发"],"functional_spec":["REST"],"non_functional_requirements":[],"acceptance_criteria":["API 返回符合预期"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}\n```',
+            '```json\n{"architecture":"HTTP API","tech_stack":["FastAPI"],"steps":["实现 endpoint"],"file_changes":["src/api.py"],"test_plan":["pytest -k api"],"risks":[],"version":"1.0"}\n```',
+            "1. 实现 API (依赖: 无)",
+            "- API 需求",
+            id="api_dev",
+        ),
+        pytest.param(
+            '```json\n{"goals":["脚本工具"],"functional_spec":["CLI"],"non_functional_requirements":[],"acceptance_criteria":["CLI 可执行并输出正确"],"out_of_scope":[],"risks":[],"clarification_questions":[],"decisions":[],"version":"1.0"}\n```',
+            '```json\n{"architecture":"单文件脚本","tech_stack":["Python"],"steps":["实现命令解析"],"file_changes":["tools/foo.py"],"test_plan":["pytest -k tool"],"risks":[],"version":"1.0"}\n```',
+            "1. 实现脚本工具 (依赖: 无)",
+            "- 脚本需求",
+            id="script_tool",
+        ),
+    ])
     @patch("src.spec_engine.engine.create_engine_session")
     @patch("src.engine_base.get_settings")
-    def test_web_app_flow_no_missing_artifacts(self, mock_settings, mock_create):
+    def test_project_flow_no_missing_artifacts(self, mock_settings, mock_create, spec_json, plan_json, task_text, requirement):
         mock_settings.return_value = self._mock_settings()
-
-        spec_json = """```json\n{\"goals\":[\"Web 登录\"],\"functional_spec\":[\"页面\",\"接口\"],\"non_functional_requirements\":[\"性能\"],\"acceptance_criteria\":[\"Web 登录可用\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
-        plan_json = """```json\n{\"architecture\":\"MVC\",\"tech_stack\":[\"FastAPI\",\"React\"],\"steps\":[\"实现 API\",\"实现 UI\"],\"file_changes\":[\"src/app.py\"],\"test_plan\":[\"pytest\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
         review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
         criteria_text = "CRITERIA_1: PASS"
 
         session = self._make_mock_session(
-            [
-                spec_json,
-                plan_json,
-                "1. 实现 Web 登录 (依赖: 无)",
-                "build ok " * 10,
-                review_text,
-                criteria_text,
-            ]
+            [spec_json, plan_json, task_text, "build ok " * 10, review_text, criteria_text]
         )
         mock_create.return_value = session
 
         engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
-        project = engine.execute("- Web 需求")
-        assert project.status == SpecProjectStatus.COMPLETED
-        assert project.cycles[0].spec_artifact is not None
-        assert project.cycles[0].plan_artifact is not None
-
-    @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.engine_base.get_settings")
-    def test_api_dev_flow_no_missing_artifacts(self, mock_settings, mock_create):
-        mock_settings.return_value = self._mock_settings()
-
-        spec_json = """```json\n{\"goals\":[\"API 开发\"],\"functional_spec\":[\"REST\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"API 返回符合预期\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
-        plan_json = """```json\n{\"architecture\":\"HTTP API\",\"tech_stack\":[\"FastAPI\"],\"steps\":[\"实现 endpoint\"],\"file_changes\":[\"src/api.py\"],\"test_plan\":[\"pytest -k api\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
-        criteria_text = "CRITERIA_1: PASS"
-
-        session = self._make_mock_session(
-            [
-                spec_json,
-                plan_json,
-                "1. 实现 API (依赖: 无)",
-                "build ok " * 10,
-                review_text,
-                criteria_text,
-            ]
-        )
-        mock_create.return_value = session
-
-        engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
-        project = engine.execute("- API 需求")
-        assert project.status == SpecProjectStatus.COMPLETED
-        assert project.cycles[0].spec_artifact is not None
-        assert project.cycles[0].plan_artifact is not None
-
-    @patch("src.spec_engine.engine.create_engine_session")
-    @patch("src.engine_base.get_settings")
-    def test_script_tool_flow_no_missing_artifacts(self, mock_settings, mock_create):
-        mock_settings.return_value = self._mock_settings()
-
-        spec_json = """```json\n{\"goals\":[\"脚本工具\"],\"functional_spec\":[\"CLI\"],\"non_functional_requirements\":[],\"acceptance_criteria\":[\"CLI 可执行并输出正确\"],\"out_of_scope\":[],\"risks\":[],\"clarification_questions\":[],\"decisions\":[],\"version\":\"1.0\"}\n```"""
-        plan_json = """```json\n{\"architecture\":\"单文件脚本\",\"tech_stack\":[\"Python\"],\"steps\":[\"实现命令解析\"],\"file_changes\":[\"tools/foo.py\"],\"test_plan\":[\"pytest -k tool\"],\"risks\":[],\"version\":\"1.0\"}\n```"""
-        review_text = "[ARCHITECT]\nPASS\n\n[PRODUCT]\nPASS\n\n[USER]\nPASS\n\n[TESTER]\nPASS\n\n[DESIGNER]\nPASS\n"
-        criteria_text = "CRITERIA_1: PASS"
-
-        session = self._make_mock_session(
-            [
-                spec_json,
-                plan_json,
-                "1. 实现脚本工具 (依赖: 无)",
-                "build ok " * 10,
-                review_text,
-                criteria_text,
-            ]
-        )
-        mock_create.return_value = session
-
-        engine = SpecEngine(chat_id="c1", root_path="/tmp/test")
-        project = engine.execute("- 脚本需求")
+        project = engine.execute(requirement)
         assert project.status == SpecProjectStatus.COMPLETED
         assert project.cycles[0].spec_artifact is not None
         assert project.cycles[0].plan_artifact is not None
@@ -4197,58 +4113,24 @@ class TestSpecEngineCycleResilience:
     _PLAN_JSON = '```json\n{"architecture":"A","tech_stack":[],"steps":["S1"],"file_changes":[],"test_plan":[],"risks":[],"version":"1.0"}\n```'
 
     def _mock_settings(self):
-        s = MagicMock()
-        s.spec_max_cycles = 2
-        s.spec_max_cycles_limit = 5000
-        s.spec_convergence_window = 1
-        s.spec_execution_timeout = 300
-        s.spec_review_enabled = False
-        s.spec_infinite_mode = False
-        s.spec_disable_convergence = False
-        s.spec_disable_early_stop = False
-        s.spec_min_cycles = 1
-        s.spec_max_retries = 1
-        s.spec_max_consecutive_failures = 3
-        s.spec_cycle_tasks_max = 50
-        s.spec_cycle_output_max_chars = 4000
-        s.spec_state_filename = ".spec_engine_state.json"
-        s.spec_artifacts_dirname = ".spec_engine"
-        s.spec_persist_phase_artifacts = False
-        s.spec_persist_every_phase = False
-        s.spec_discovery_enabled = False
-        s.spec_discovery_max_questions = 3
-        s.spec_discovery_force_nonempty = True
-        s.spec_generated_specs_per_cycle = 1
-        s.spec_discovery_gate_on_satisfied = True
-        s.spec_discovery_max_pending = 5
-        s.spec_discovery_cooldown_cycles = 3
-        s.spec_backlog_stuck_window = 0
-        s.spec_success_ignore_backlog = True
-        s.spec_allow_resume_from_disk = False
-        s.spec_history_log_filename = "history.jsonl"
-        s.spec_phase_output_persist_max_chars = 20000
-        s.spec_cycle_artifact_retention = 50
-        s.spec_generated_specs_retention = 1000
-        s.spec_review_failure_circuit_enabled = False
-        s.spec_review_failure_max_consecutive = 3
-        s.spec_review_failure_cooldown_cycles = 3
-        s.spec_state_cycles_tail = 50
-        s.spec_state_work_items_tail = 200
-        s.spec_state_metrics_tail = 200
-        s.spec_rebuild_session_between_cycles = False
-        s.spec_review_parallel_enabled = False
-        s.spec_model_switch_enabled = False
-        s.spec_failed_task_id_override = ""
-        s.spec_review_timeout = 60
-        s.spec_review_max_parallel = 2
-        s.spec_review_failure_max_cooldown_cycles = 12
-        s.spec_review_min_timeout = 30
-        s.spec_review_hard_floor = 15
-        s.review_circuit_window_size = 10
-        s.review_circuit_success_rate_threshold = 0.3
-        s.review_circuit_lint_fallback_enabled = False
-        s.review_circuit_lint_timeout = 10
-        return s
+        return _make_spec_settings(
+            spec_max_cycles=2,
+            spec_review_enabled=False,
+            spec_persist_phase_artifacts=False,
+            spec_persist_every_phase=False,
+            spec_max_consecutive_failures=3,
+            spec_backlog_stuck_window=0,
+            spec_allow_resume_from_disk=False,
+            spec_model_switch_enabled=False,
+            spec_failed_task_id_override="",
+            spec_review_timeout=60,
+            spec_review_max_parallel=2,
+            spec_review_failure_max_cooldown_cycles=12,
+            review_circuit_window_size=10,
+            review_circuit_success_rate_threshold=0.3,
+            review_circuit_lint_fallback_enabled=False,
+            review_circuit_lint_timeout=10,
+        )
 
     def _make_mock_session(self, send_fn):
         session = MagicMock()

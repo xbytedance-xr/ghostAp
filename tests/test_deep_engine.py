@@ -15,6 +15,56 @@ from src.deep_engine.models import DeepProject, DeepProjectStatus, EngineRunStat
 from src.deep_engine.progress import DeepProgress
 
 
+class _DummySession:
+    """Minimal session stub shared across TTADK startup/resume tests."""
+
+    def __init__(self, *a, **k):
+        self.session_id = "sid"
+        self.created_at = 0.0
+        self.last_active = 0.0
+        self.message_count = 0
+        self.last_query = ""
+        self.is_resumed = False
+
+    def describe_agent(self):
+        return "dummy"
+
+    def start(self, startup_timeout: float = 60, **kwargs):
+        return "sid"
+
+    def load_session(self, session_id: str):
+        return None
+
+    def load_local_history(self, session_id=None, limit: int = 200):
+        return []
+
+    def cancel(self):
+        return None
+
+    def close(self):
+        return None
+
+    def to_snapshot(self):
+        return {}
+
+    def get_session_info(self):
+        return ""
+
+    def is_server_running(self):
+        return True
+
+    def is_server_healthy(self, healthcheck_timeout: float = 2.0):
+        return True
+
+    def send_prompt(self, *a, **k):
+        return MagicMock(stop_reason="end_turn")
+
+
+class _SessSettings:
+    acp_startup_timeout = 20
+    rate_limit_retry_enabled = False
+
+
 class TestDeepEngine:
     @patch("src.engine_base.get_settings")
     def _make_engine(self, mock_settings, **kwargs):
@@ -174,56 +224,10 @@ class TestDeepEngine:
 
         caplog.set_level(logging.INFO, logger="src.agent_session")
 
-        class _S:
-            def __init__(self, *a, **k):
-                self.session_id = "sid"
-                self.created_at = 0.0
-                self.last_active = 0.0
-                self.message_count = 0
-                self.last_query = ""
-                self.is_resumed = False
-
-            def describe_agent(self):
-                return "dummy"
-
-            def start(self, startup_timeout: float = 60, **kwargs):
-                return "sid"
-
-            def load_session(self, session_id: str):
-                return None
-
-            def load_local_history(self, session_id=None, limit: int = 200):
-                return []
-
-            def cancel(self):
-                return None
-
-            def close(self):
-                return None
-
-            def to_snapshot(self):
-                return {}
-
-            def get_session_info(self):
-                return ""
-
-            def is_server_running(self):
-                return True
-
-            def is_server_healthy(self, healthcheck_timeout: float = 2.0):
-                return True
-
-            def send_prompt(self, *a, **k):
-                return MagicMock(stop_reason="end_turn")
-
-        class _SessSettings:
-            acp_startup_timeout = 20
-            rate_limit_retry_enabled = False
-
         with (
             patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_DummySession()),
         ):
             # SSOT：create_engine_session 统一走 start_agent_session；单测不应触发真实 ttadk/codex 探测。
             mk_precheck.return_value = {
@@ -255,56 +259,10 @@ class TestDeepEngine:
 
         caplog.set_level(logging.INFO, logger="src.agent_session")
 
-        class _S:
-            def __init__(self, *a, **k):
-                self.session_id = "sid"
-                self.created_at = 0.0
-                self.last_active = 0.0
-                self.message_count = 0
-                self.last_query = ""
-                self.is_resumed = False
-
-            def describe_agent(self):
-                return "dummy"
-
-            def start(self, startup_timeout: float = 60, **kwargs):
-                return "sid"
-
-            def load_session(self, session_id: str):
-                return None
-
-            def load_local_history(self, session_id=None, limit: int = 200):
-                return []
-
-            def cancel(self):
-                return None
-
-            def close(self):
-                return None
-
-            def to_snapshot(self):
-                return {}
-
-            def get_session_info(self):
-                return ""
-
-            def is_server_running(self):
-                return True
-
-            def is_server_healthy(self, healthcheck_timeout: float = 2.0):
-                return True
-
-            def send_prompt(self, *a, **k):
-                return MagicMock(stop_reason="end_turn")
-
-        class _SessSettings:
-            acp_startup_timeout = 20
-            rate_limit_retry_enabled = False
-
         with (
             patch("src.agent_session.factory.get_settings", return_value=_SessSettings()),
             patch("src.ttadk.startup_common.precheck_ttadk_startup_model") as mk_precheck,
-            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_S()),
+            patch("src.agent_session.factory.SyncTTADKCLISession", return_value=_DummySession()),
         ):
             mk_precheck.return_value = {
                 "tool": "codex",
@@ -333,52 +291,6 @@ def test_ttadk_startup_log_semantics_consistent_between_create_sync_and_engine(m
     import src.agent_session as agent_session
 
     caplog.set_level(logging.INFO, logger="src.agent_session")
-
-    class _SessSettings:
-        acp_startup_timeout = 20
-        rate_limit_retry_enabled = False
-
-    class _DummySession:
-        def __init__(self):
-            self.session_id = "sid"
-            self.created_at = 0.0
-            self.last_active = 0.0
-            self.message_count = 0
-            self.last_query = ""
-            self.is_resumed = False
-
-        def describe_agent(self):
-            return "dummy"
-
-        def start(self, startup_timeout: float = 60, **kwargs):
-            return "sid"
-
-        def load_session(self, session_id: str):
-            return None
-
-        def load_local_history(self, session_id=None, limit: int = 200):
-            return []
-
-        def cancel(self):
-            return None
-
-        def close(self):
-            return None
-
-        def to_snapshot(self):
-            return {}
-
-        def get_session_info(self):
-            return ""
-
-        def is_server_running(self):
-            return True
-
-        def is_server_healthy(self, healthcheck_timeout: float = 2.0):
-            return True
-
-        def send_prompt(self, *a, **k):
-            return MagicMock(stop_reason="end_turn")
 
     info_ok = {
         "result": _DummySession(),

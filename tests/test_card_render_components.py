@@ -1,4 +1,6 @@
 """Tests for header/footer/buttons rendering."""
+import pytest
+
 from src.card.render.buttons import render_buttons
 from src.card.render.footer import render_footer
 from src.card.render.header import render_header
@@ -181,50 +183,46 @@ from src.card.render.progress import render_progress_bar
 class TestRenderProgressBarBoundary:
     """Boundary value tests for render_progress_bar."""
 
-    def test_pct_zero(self):
-        result = render_progress_bar(0)
-        assert "▱▱▱▱▱" in result
-        assert "▰" not in result
-
-    def test_pct_hundred(self):
-        result = render_progress_bar(100)
-        assert "▰▰▰▰▰" in result
-        assert "▱" not in result
-
-    def test_pct_over_hundred_clamps(self):
-        result = render_progress_bar(150)
-        # Should clamp to 100%
-        assert "▰▰▰▰▰" in result
-
-    def test_pct_negative_clamps(self):
-        result = render_progress_bar(-10)
-        # Should clamp to 0%
-        assert "▱▱▱▱▱" in result
-
-    def test_pct_midpoint(self):
-        result = render_progress_bar(50)
-        assert "▰" in result
-        assert "▱" in result
-
-    def test_pct_one_shows_at_least_one_filled(self):
-        """AC13: pct>0 must show at least 1 filled block."""
-        result = render_progress_bar(1)
-        assert "▰" in result
-
-    def test_percentage_in_output(self):
-        """Progress bar should include percentage number."""
-        result = render_progress_bar(50)
-        assert "50%" in result
-
-    def test_total_segments_zero_returns_empty(self):
-        """total_segments=0 should return empty string without raising."""
-        result = render_progress_bar(50, total_segments=0)
-        assert result == ""
-
-    def test_total_segments_negative_returns_empty(self):
-        """total_segments<0 should return empty string without raising."""
-        result = render_progress_bar(100, total_segments=-5)
-        assert result == ""
+    @pytest.mark.parametrize(
+        "pct, total_segments_kwarg, expected_substrings, forbidden_substrings",
+        [
+            (0, None, ["▱▱▱▱▱"], ["▰"]),
+            (100, None, ["▰▰▰▰▰"], ["▱"]),
+            (150, None, ["▰▰▰▰▰"], []),
+            (-10, None, ["▱▱▱▱▱"], []),
+            (50, None, ["▰", "▱"], []),
+            (1, None, ["▰"], []),
+            (50, None, ["50%"], []),
+            (50, 0, [""], []),
+            (100, -5, [""], []),
+        ],
+        ids=[
+            "test_pct_zero",
+            "test_pct_hundred",
+            "test_pct_over_hundred_clamps",
+            "test_pct_negative_clamps",
+            "test_pct_midpoint",
+            "test_pct_one_shows_at_least_one_filled",
+            "test_percentage_in_output",
+            "test_total_segments_zero_returns_empty",
+            "test_total_segments_negative_returns_empty",
+        ],
+    )
+    def test_progress_bar_boundary(
+        self, pct, total_segments_kwarg, expected_substrings, forbidden_substrings
+    ):
+        if total_segments_kwarg is None:
+            result = render_progress_bar(pct)
+        else:
+            result = render_progress_bar(pct, total_segments=total_segments_kwarg)
+        # When expected substring is "", the result must be exactly empty string
+        if expected_substrings == [""]:
+            assert result == ""
+        else:
+            for sub in expected_substrings:
+                assert sub in result
+        for forbidden in forbidden_substrings:
+            assert forbidden not in result
 
 
 # ---------------------------------------------------------------------------
@@ -293,28 +291,25 @@ class TestBannerUnifiedPosition:
         cards = render_card(state, RenderBudget())
         return cards[0]._card_json["body"]["elements"]
 
-    def test_error_banner_in_body_top(self):
-        elements = self._render_with_banner("error")
+    @pytest.mark.parametrize(
+        "warning_type, expected_style",
+        [
+            ("error", "red"),
+            ("warning", "yellow"),
+            ("info", "wathet"),
+            ("success", "green"),
+        ],
+        ids=[
+            "test_error_banner_in_body_top",
+            "test_warning_banner_in_body_top",
+            "test_info_banner_in_body_top",
+            "test_success_banner_in_body_top",
+        ],
+    )
+    def test_banner_in_body_top(self, warning_type, expected_style):
+        elements = self._render_with_banner(warning_type)
         assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "red"
-        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
-
-    def test_warning_banner_in_body_top(self):
-        elements = self._render_with_banner("warning")
-        assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "yellow"
-        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
-
-    def test_info_banner_in_body_top(self):
-        elements = self._render_with_banner("info")
-        assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "wathet"
-        assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
-
-    def test_success_banner_in_body_top(self):
-        elements = self._render_with_banner("success")
-        assert elements[0]["tag"] == "column_set"
-        assert elements[0]["background_style"] == "green"
+        assert elements[0]["background_style"] == expected_style
         assert "Test banner message" in elements[0]["columns"][0]["elements"][0]["content"]
 
 
@@ -705,31 +700,28 @@ class TestBannerMultiPagePosition:
 class TestRenderButtonsStopIntent:
     """Verify that stop intent buttons produce flex_mode='none' (full-width layout)."""
 
-    def test_stop_intent_flex_mode_none(self):
-        """ButtonSpec with action_id='intent.engine.stop' → flex_mode='none'."""
+    @pytest.mark.parametrize(
+        "action_id, button_text",
+        [
+            ("intent.engine.stop", "停止"),
+            ("intent.deep.stop", "停止 Deep"),
+            ("some_other_action", "提交"),
+        ],
+        ids=[
+            "test_stop_intent_flex_mode_none",
+            "test_deep_stop_intent_flex_mode_none",
+            "test_non_stop_single_button_flex_mode_none",
+        ],
+    )
+    def test_single_button_flex_mode_none(self, action_id, button_text):
+        """Single button → flex_mode='none' (unified full-width for mobile)."""
         state = CardState(
-            buttons=(ButtonSpec(action_id="intent.engine.stop", text="停止"),),
+            buttons=(ButtonSpec(action_id=action_id, text=button_text),),
         )
         result = render_buttons(state)
         # 1 layout element (escalation hint is now managed by STOPPING reducer, not render_buttons)
         assert len(result) == 1
         assert result[0]["tag"] == "column_set"
-        assert result[0]["flex_mode"] == "none"
-
-    def test_deep_stop_intent_flex_mode_none(self):
-        """ButtonSpec with action_id='intent.deep.stop' → flex_mode='none'."""
-        state = CardState(
-            buttons=(ButtonSpec(action_id="intent.deep.stop", text="停止 Deep"),),
-        )
-        result = render_buttons(state)
-        assert result[0]["flex_mode"] == "none"
-
-    def test_non_stop_single_button_flex_mode_none(self):
-        """Non-stop single button → also flex_mode='none' (unified full-width for mobile)."""
-        state = CardState(
-            buttons=(ButtonSpec(action_id="some_other_action", text="提交"),),
-        )
-        result = render_buttons(state)
         assert result[0]["flex_mode"] == "none"
 
 
@@ -788,33 +780,28 @@ class TestWorktreeStepperTotal:
 class TestWorktreeMergeStatusChinese:
     """Verify merge status uses Chinese text, not English."""
 
-    def test_merge_status_ready_chinese(self):
-        """ready status should display 就绪."""
+    @pytest.mark.parametrize(
+        "status, expected_chinese, check_no_english",
+        [
+            ("ready", "就绪", True),
+            ("conflict", "冲突", False),
+            ("merged", "已合并", False),
+        ],
+        ids=[
+            "test_merge_status_ready_chinese",
+            "test_merge_status_conflict_chinese",
+            "test_merge_status_merged_chinese",
+        ],
+    )
+    def test_merge_status_chinese(self, status, expected_chinese, check_no_english):
         data = {
-            "merge_notes": [{"branch": "feat-1", "status": "ready", "summary": "ok"}],
+            "merge_notes": [{"branch": "feat-1", "status": status, "summary": "ok"}],
             "base_branch": "main",
         }
         result = _render_worktree_merge(data)
-        assert "就绪" in result["content"]
-        assert "ready" not in result["content"].lower().replace("worktree", "")
-
-    def test_merge_status_conflict_chinese(self):
-        """conflict status should display 冲突."""
-        data = {
-            "merge_notes": [{"branch": "feat-1", "status": "conflict"}],
-            "base_branch": "main",
-        }
-        result = _render_worktree_merge(data)
-        assert "冲突" in result["content"]
-
-    def test_merge_status_merged_chinese(self):
-        """merged status should display 已合并."""
-        data = {
-            "merge_notes": [{"branch": "feat-1", "status": "merged"}],
-            "base_branch": "main",
-        }
-        result = _render_worktree_merge(data)
-        assert "已合并" in result["content"]
+        assert expected_chinese in result["content"]
+        if check_no_english:
+            assert "ready" not in result["content"].lower().replace("worktree", "")
 
 
 class TestFooterBlockedReason:

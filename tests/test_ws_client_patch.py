@@ -9,6 +9,40 @@ from src.feishu.ws_client import FeishuWSClient
 from src.mode import InteractionMode
 
 
+def _make_ws_client(**extra_settings):
+    """Shared helper: instantiate FeishuWSClient with mocked dependencies."""
+    with (
+        patch("src.feishu.ws_client.get_settings") as mock_get_settings,
+        patch("src.feishu.ws_client.ACPSessionManager"),
+        patch("src.feishu.ws_client.IntentRecognizer"),
+        patch("src.feishu.ws_client.ProjectManager"),
+        patch("src.feishu.ws_client.MessageProjectMapper"),
+        patch("src.feishu.ws_client.DeepEngineManager"),
+        patch("src.feishu.ws_client.ProgressReporter"),
+        patch("src.mode.ModeManager"),
+    ):
+        mock_settings = MagicMock()
+        mock_settings.app_id = "test_app_id"
+        mock_settings.app_secret = "test_app_secret"
+        mock_settings.streaming_enabled = False
+        mock_settings.task_scheduler_max_concurrent = 2
+        mock_settings.task_scheduler_per_key_concurrency = 1
+        mock_settings.message_cache_ttl = 300
+        mock_settings.message_cache_max_size = 1000
+        mock_settings.card.action_dedup_ttl = 1
+        mock_settings.card.action_dedup_max_size = 5000
+        mock_settings.system_command_concurrency = 10
+        mock_settings.spec_rate_limit_capacity = 100
+        mock_settings.spec_rate_limit_fill_rate = 50.0
+        mock_settings.spec_circuit_breaker_threshold = 10
+        mock_settings.spec_circuit_breaker_recovery = 5.0
+        mock_settings.message_expire_seconds = 30
+        for k, v in extra_settings.items():
+            setattr(mock_settings, k, v)
+        mock_get_settings.return_value = mock_settings
+        return FeishuWSClient(MagicMock())
+
+
 class TestCardActionHandler(unittest.TestCase):
     def test_handle_card_action_returns_none(self):
         """验证 _handle_card_action 返回 None"""
@@ -1041,75 +1075,18 @@ class TestCardActionHandler(unittest.TestCase):
             client._system_handler.handle_acp_command.assert_called_once_with("m1", "c1", None)
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-            return FeishuWSClient(MagicMock())
+        return _make_ws_client()
 
 
 class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
 
     def _make_client_with_gate_active(self, chat_id="oc_1"):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-            client._scheduler = MagicMock()
-            client._reply_text = MagicMock()
-
-            with client._system_cmd_gate_lock:
-                client._system_cmd_inflight_by_chat[chat_id] = 1
-
-            return client
+        client = _make_ws_client()
+        client._scheduler = MagicMock()
+        client._reply_text = MagicMock()
+        with client._system_cmd_gate_lock:
+            client._system_cmd_inflight_by_chat[chat_id] = 1
+        return client
 
     def _make_card_data(self, action_type, chat_id="oc_1", message_id="om_1"):
         return SimpleNamespace(
@@ -1202,34 +1179,7 @@ class TestSystemCmdGateReadonlyBypass(unittest.TestCase):
 class TestIsSystemCardActionEngineControls(unittest.TestCase):
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-            return FeishuWSClient(MagicMock())
+        return _make_ws_client()
 
     def _make_data(self, action_type):
         return SimpleNamespace(
@@ -1270,37 +1220,7 @@ class TestIsSystemCardActionEngineControls(unittest.TestCase):
 class TestOneShotDispatchToThread(unittest.TestCase):
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_settings.thread_programming_enabled = True
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-        return client
+        return _make_ws_client(thread_programming_enabled=True)
 
     def test_find_active_thread_returns_programming_context(self):
         client = self._make_client()
@@ -1342,37 +1262,7 @@ class TestOneShotDispatchToThread(unittest.TestCase):
 class TestActiveThreadGuidance(unittest.TestCase):
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_settings.thread_programming_enabled = True
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-        return client
+        return _make_ws_client(thread_programming_enabled=True)
 
     @patch("src.feishu.ws_client.get_current_thread_id", return_value=None)
     def test_guidance_shown_when_intent_unrecognized_with_active_thread(self, _):
@@ -1421,37 +1311,7 @@ class TestActiveThreadGuidance(unittest.TestCase):
 class TestThreadPersistentProgramming(unittest.TestCase):
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_settings.thread_programming_enabled = True
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-        return client
+        return _make_ws_client(thread_programming_enabled=True)
 
     def test_dispatch_message_logic_skips_enter_mode_for_thread(self):
         client = self._make_client()
@@ -1556,37 +1416,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
     """话题内编程模式保持的鲁棒性测试 — 覆盖第三轮修复的多层防御"""
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_settings.thread_programming_enabled = True
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-        return client
+        return _make_ws_client(thread_programming_enabled=True)
 
     def test_resolve_context_returns_mode_even_if_project_none(self):
         """_resolve_message_context 应在 thread_ctx 存在但 project 查找失败时仍返回 auto_enter_mode"""
@@ -2095,36 +1925,7 @@ class TestDualKeyThreadContext(unittest.TestCase):
         real_mgr.close()
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_settings.thread_programming_enabled = True
-            mock_get_settings.return_value = mock_settings
-            client = FeishuWSClient(MagicMock())
-        return client
+        return _make_ws_client(thread_programming_enabled=True)
 
     def test_resolve_context_root_mismatch_does_not_fallback_to_chat_thread(self):
         client = self._make_client()
@@ -2317,34 +2118,7 @@ class TestSendLockConflictCardFacade(unittest.TestCase):
     via _get_handler('system') instead of getattr-based private attribute access."""
 
     def _make_client(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-            return FeishuWSClient(MagicMock())
+        return _make_ws_client()
 
     def test_delegates_to_system_handler_via_get_handler(self):
         """send_lock_conflict_card should use _get_handler('system'), not getattr.

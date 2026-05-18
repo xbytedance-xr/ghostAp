@@ -42,14 +42,6 @@ logger = logging.getLogger(__name__)
 _NULL_LOCK = contextlib.nullcontext()
 
 
-def _safe_float_or_none(value: object) -> Optional[float]:
-    """Best-effort float conversion.
-
-    Contract: never raises; returns None when conversion is impossible.
-    """
-    return safe_float_or_none(value)
-
-
 def _resolve_startup_snippet_limit(snippet_limit: int) -> int:
     """Resolve effective startup diagnostics snippet limit from config with compat fallback."""
     cfg = get_diagnostics_config(get_settings_fn=get_settings)
@@ -438,7 +430,7 @@ def _build_startup_diagnostics_impl(
     diag["stderr_snippet"] = safe_str(diag.get("stderr_snippet") or "")
     diag["agent_spec"] = safe_str(diag.get("agent_spec") or "")
     # Re-assert timeout_s contract: None | float
-    diag["timeout_s"] = _safe_float_or_none(diag.get("timeout_s"))
+    diag["timeout_s"] = safe_float_or_none(diag.get("timeout_s"))
 
     # Normalize error_text (some exceptions have empty __str__).
     # Compose from: str(error) -> stderr/stdout snippets -> cause/context -> repr(error) -> type fallback.
@@ -1355,10 +1347,6 @@ def start_ttadk_session_with_pty_retry(
                 fail_phase="pty_retry",
                 cause=e2,
             ) from e2
-
-
-# Backward-compatible alias for legacy call sites/tests
-start_ttadk_session_with_pty_retry_once = start_ttadk_session_with_pty_retry
 
 
 class SyncACPSession:

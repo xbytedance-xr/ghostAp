@@ -73,43 +73,24 @@ class TestIntentRecognizerQuickMatch:
         assert result.primary_intent == IntentType.SHELL_COMMAND
         assert result.confidence >= 0.9
 
-    def test_shell_command_git(self, recognizer):
-        result = recognizer._quick_match("git status")
+    @pytest.mark.parametrize("text", ["git status", "npm install", "python main.py"])
+    def test_shell_command_other(self, recognizer, text):
+        result = recognizer._quick_match(text)
         assert result is not None
         assert result.primary_intent == IntentType.SHELL_COMMAND
 
-    def test_shell_command_npm(self, recognizer):
-        result = recognizer._quick_match("npm install")
-        assert result is not None
-        assert result.primary_intent == IntentType.SHELL_COMMAND
-
-    def test_shell_command_python(self, recognizer):
-        result = recognizer._quick_match("python main.py")
-        assert result is not None
-        assert result.primary_intent == IntentType.SHELL_COMMAND
-
-    def test_exit_keyword_in_coco_mode(self, recognizer):
-        result = recognizer._quick_match("退出", current_mode="coco")
-        assert result is not None
-        assert result.primary_intent == IntentType.EXIT_MODE
-
-    def test_exit_keyword_exit_in_coco_mode(self, recognizer):
-        result = recognizer._quick_match("exit", current_mode="coco")
-        assert result is not None
-        assert result.primary_intent == IntentType.EXIT_MODE
-
-    def test_exit_keyword_in_claude_mode(self, recognizer):
-        result = recognizer._quick_match("退出", current_mode="claude")
-        assert result is not None
-        assert result.primary_intent == IntentType.EXIT_MODE
-
-    def test_exit_keyword_in_ttadk_mode(self, recognizer):
-        result = recognizer._quick_match("退出", current_mode="ttadk")
-        assert result is not None
-        assert result.primary_intent == IntentType.EXIT_MODE
-
-    def test_exit_keyword_exit_in_claude_mode(self, recognizer):
-        result = recognizer._quick_match("exit", current_mode="claude")
+    @pytest.mark.parametrize(
+        "text, current_mode",
+        [
+            ("退出", "coco"),
+            ("exit", "coco"),
+            ("退出", "claude"),
+            ("退出", "ttadk"),
+            ("exit", "claude"),
+        ],
+    )
+    def test_exit_keyword_in_programming_mode(self, recognizer, text, current_mode):
+        result = recognizer._quick_match(text, current_mode=current_mode)
         assert result is not None
         assert result.primary_intent == IntentType.EXIT_MODE
 
@@ -198,25 +179,19 @@ class TestIntentRecognizerContextHint:
     def recognizer(self):
         return IntentRecognizer()
 
-    def test_fallback_intent_coco_mode(self, recognizer):
-        fallback = recognizer._get_fallback_intent(current_mode="coco")
-        assert fallback == IntentType.COCO_MESSAGE
-
-    def test_fallback_intent_claude_mode(self, recognizer):
-        fallback = recognizer._get_fallback_intent(current_mode="claude")
-        assert fallback == IntentType.CLAUDE_MESSAGE
-
-    def test_fallback_intent_gemini_mode(self, recognizer):
-        fallback = recognizer._get_fallback_intent(current_mode="gemini")
-        assert fallback == IntentType.GEMINI_MESSAGE
-
-    def test_fallback_intent_ttadk_mode(self, recognizer):
-        fallback = recognizer._get_fallback_intent(current_mode="ttadk")
-        assert fallback == IntentType.TTADK_MESSAGE
-
-    def test_fallback_intent_smart_mode(self, recognizer):
-        fallback = recognizer._get_fallback_intent(current_mode="smart")
-        assert fallback == IntentType.SHELL_COMMAND
+    @pytest.mark.parametrize(
+        "current_mode, expected",
+        [
+            ("coco", IntentType.COCO_MESSAGE),
+            ("claude", IntentType.CLAUDE_MESSAGE),
+            ("gemini", IntentType.GEMINI_MESSAGE),
+            ("ttadk", IntentType.TTADK_MESSAGE),
+            ("smart", IntentType.SHELL_COMMAND),
+        ],
+    )
+    def test_fallback_intent(self, recognizer, current_mode, expected):
+        fallback = recognizer._get_fallback_intent(current_mode=current_mode)
+        assert fallback == expected
 
     def test_exact_command_tools(self, recognizer):
         result = recognizer._quick_match("/tools")

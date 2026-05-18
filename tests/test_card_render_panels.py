@@ -92,23 +92,28 @@ class TestToolPanel:
 
 
 class TestToolSummary:
-    def test_summary_bash(self):
-        """Bash → command text truncated"""
-        block = ContentBlock(kind="tool_call", tool_name="bash", tool_input="ls -la /very/long/path/here")
+    @pytest.mark.parametrize(
+        "tool_name, tool_input, tool_summary, expected_substring",
+        [
+            ("bash", "ls -la /very/long/path/here", None, "ls -la"),
+            ("read", '{"path": "/src/main.py"}', None, "/src/main.py"),
+            ("custom_tool", None, "did something", "did something"),
+        ],
+        ids=[
+            "test_summary_bash",
+            "test_summary_read",
+            "test_summary_generic",
+        ],
+    )
+    def test_summary(self, tool_name, tool_input, tool_summary, expected_substring):
+        kwargs = {"kind": "tool_call", "tool_name": tool_name}
+        if tool_input is not None:
+            kwargs["tool_input"] = tool_input
+        if tool_summary is not None:
+            kwargs["tool_summary"] = tool_summary
+        block = ContentBlock(**kwargs)
         result = generate_tool_summary(block)
-        assert "ls -la" in result
-
-    def test_summary_read(self):
-        """Read → file path"""
-        block = ContentBlock(kind="tool_call", tool_name="read", tool_input='{"path": "/src/main.py"}')
-        result = generate_tool_summary(block)
-        assert "/src/main.py" in result
-
-    def test_summary_generic(self):
-        """Generic → fallback to tool_summary or tool_name"""
-        block = ContentBlock(kind="tool_call", tool_name="custom_tool", tool_summary="did something")
-        result = generate_tool_summary(block)
-        assert "did something" in result
+        assert expected_substring in result
 
     def test_summary_task_uses_description(self):
         """task → user-visible task description, not literal tool name."""

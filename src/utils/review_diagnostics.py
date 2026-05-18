@@ -29,24 +29,6 @@ REVIEW_DIAG_STABLE_KEYS = (
     "traceback_snippet",
 )
 
-REVIEW_DIAG_COMPAT_KEYS = (
-    "cycle_number",
-    "exception_type",
-    "review_role",
-)
-
-REVIEW_EXCEPTION_LOG_FIELDS = (
-    "phase",
-    "role",
-    "cycle",
-    "decision",
-    "fail_reason",
-    "err_type",
-    "err_repr",
-    "error_text",
-    "diag_json",
-)
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Iterable, Optional
 
-from .models import WorktreeSelectionItem, WorktreeSelectionState
+from .models import WorktreeSelectionItem
 
 
 @dataclass(frozen=True)
@@ -16,14 +16,6 @@ class WorktreeToolOption:
     supports_model: bool = True
     model_optional: bool = False
     skip_model_selection: bool = False
-
-
-@dataclass(frozen=True)
-class WorktreeModelOption:
-    name: str
-    display_name: str
-    description: str = ""
-    is_default: bool = False
 
 
 def provider_display_name(provider: str) -> str:
@@ -77,5 +69,3 @@ def format_selection_lines(items: Iterable[WorktreeSelectionItem]) -> list[str]:
     return lines
 
 
-def selection_state_has_items(state: Optional[WorktreeSelectionState]) -> bool:
-    return bool(state and state.selected_items)
