@@ -13,10 +13,6 @@ def get_trace_id() -> Optional[str]:
     return _trace_id_ctx_var.get() or _request_id_ctx_var.get()
 
 
-def set_trace_id(trace_id: str) -> contextvars.Token[Optional[str]]:
-    """Set the current trace_id in context."""
-    return _trace_id_ctx_var.set(trace_id)
-
 
 class TraceContext:
     """Context manager to set and clear request_id/trace_id."""
