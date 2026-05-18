@@ -365,6 +365,7 @@ class TestTraceProjectIsolation:
             enable_streaming=False,
             managers={},
             handlers={},
+            slock_engine_manager=MagicMock(),
         )
         h = DiagnosticsHandler(ctx)
         h.reply_text = MagicMock()

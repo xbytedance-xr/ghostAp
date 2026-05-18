@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from ..project import MessageProjectMapper, ProjectContextManager, ProjectManager
     from ..project.mapper import MessageLinker
     from ..repo_lock import RepoLockManager
+    from ..slock_engine import SlockEngineManager
     from ..spec_engine import SpecEngineManager, SpecReporter
     from ..tasking import TaskScheduler
     from ..thread import ThreadContextManager
@@ -68,6 +69,7 @@ class HandlerContext:
     progress_reporter: "ProgressReporter"
     spec_engine_manager: "SpecEngineManager"
     spec_reporter: "SpecReporter"
+    slock_engine_manager: "SlockEngineManager"
     thread_manager: "ThreadContextManager"
 
     # Lazy-initialized singletons

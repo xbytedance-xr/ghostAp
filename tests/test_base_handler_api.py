@@ -54,6 +54,7 @@ def _make_handler(**settings_overrides) -> BaseHandler:
         enable_streaming=False,
         managers={},
         handlers={},
+        slock_engine_manager=MagicMock(),
     )
     h = BaseHandler(ctx)
     # Mock the im_client (attached by handler_context or externally)

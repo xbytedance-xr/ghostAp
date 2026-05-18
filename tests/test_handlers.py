@@ -61,6 +61,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
         progress_reporter=MagicMock(),
         spec_engine_manager=MagicMock(),
         spec_reporter=MagicMock(),
+        slock_engine_manager=MagicMock(),
         thread_manager=MagicMock(),
         image_handler_factory=MagicMock(),
         working_dirs={},

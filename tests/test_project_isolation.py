@@ -246,6 +246,7 @@ class TestCardActionCrossChatIsolation:
             enable_streaming=False,
             managers={},
             handlers={},
+            slock_engine_manager=MagicMock(),
         )
         ctx.settings.thread_programming_enabled = False
         ctx.mode_manager.is_coco_mode.return_value = False

@@ -46,6 +46,7 @@ from ..project import (
     ProjectManager,
 )
 from ..spec_engine import SpecEngineManager, SpecReporter
+from ..slock_engine import SlockEngineManager
 from ..tasking import TaskPriority, TaskScheduler, TaskSpec
 from ..thread import get_current_thread_id, get_thread_manager
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
@@ -65,6 +66,7 @@ from .handlers import (
     DiagnosticsHandler,
     GeminiModeHandler,
     ProjectHandler,
+    SlockHandler,
     SpecHandler,
     SystemHandler,
     TTADKModeHandler,
@@ -210,6 +212,7 @@ class FeishuWSClient:
         self._progress_reporter = ProgressReporter()
         self._spec_engine_manager = SpecEngineManager()
         self._spec_reporter = SpecReporter()
+        self._slock_engine_manager = SlockEngineManager()
 
         self._context_manager = ProjectContextManager()
 
@@ -252,6 +255,7 @@ class FeishuWSClient:
             progress_reporter=self._progress_reporter,
             spec_engine_manager=self._spec_engine_manager,
             spec_reporter=self._spec_reporter,
+            slock_engine_manager=self._slock_engine_manager,
             thread_manager=self._thread_manager,
 
             image_handler_factory=self._get_image_handler,
@@ -280,6 +284,7 @@ class FeishuWSClient:
         worktree_handler = WorktreeHandler(self._handler_ctx)
         worktree_handler._renderer = WorktreeRenderer(worktree_handler)
         diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
+        slock_handler = SlockHandler(self._handler_ctx)
 
         # ------------------------------------------------------------------
         # Populate registry containers in context
@@ -297,6 +302,7 @@ class FeishuWSClient:
         self._system_handler = system_handler
         self._worktree_handler = worktree_handler
         self._diagnostics_handler = diagnostics_handler
+        self._slock_handler = slock_handler
 
         self._handler_ctx.managers.update({
             "coco": self._coco_manager,
@@ -319,6 +325,7 @@ class FeishuWSClient:
             "system": system_handler,
             "worktree": worktree_handler,
             "diagnostics": diagnostics_handler,
+            "slock": slock_handler,
         })
 
         # Subscribe to hard-timeout reclaim events on RepoLockManager
@@ -653,6 +660,19 @@ class FeishuWSClient:
     def _is_spec_command(text: str) -> bool:
         """判断是否为 Spec Engine 命令。"""
         return SystemHandler.is_spec_command(text)
+
+    def _is_slock_command(self, text: str, chat_id: str = "") -> bool:
+        """判断是否为 Slock Engine 命令。"""
+        from ..slock_engine.slash_commands import is_slock_command
+        manager = getattr(self, '_slock_engine_manager', None)
+        return is_slock_command(text, chat_id=chat_id, manager=manager)
+
+    def _is_slock_active(self, chat_id: str) -> bool:
+        """Check if a chat has an active slock engine."""
+        manager = getattr(self, '_slock_engine_manager', None)
+        if manager is None:
+            return False
+        return manager.is_slock_active(chat_id)
 
     @staticmethod
     def _is_interceptable_command_match(command_match: CommandMatch | None) -> bool:
@@ -1960,6 +1980,16 @@ class FeishuWSClient:
         self._message_cache.start_cleanup_thread()
         self._card_event_cache.start_cleanup_thread()
         self._ws_health_monitor.start_watchdog()
+
+        # Restore slock engines from persisted marker files
+        import os
+        _root = os.getcwd()
+        try:
+            restored = self._slock_engine_manager.restore_from_disk(_root)
+            if restored:
+                logger.info("Restored %d slock engine(s) from disk", restored)
+        except (OSError, ValueError, KeyError):
+            logger.warning("Failed to restore slock engines from disk", exc_info=True)
 
         logger.info("正在建立飞书长连接...")
         logger.info("多项目管理已启用")

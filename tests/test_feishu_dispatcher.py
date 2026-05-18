@@ -14,6 +14,8 @@ from src.mode.manager import InteractionMode
 class TestMessageDispatcher:
     def setup_method(self):
         self.client = MagicMock()
+        self.client._is_slock_command.return_value = False
+        self.client._is_slock_active.return_value = False
         self.dispatcher = MessageDispatcher(self.client)
 
     def test_process_with_intent_deep_command(self):

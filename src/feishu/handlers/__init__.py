@@ -13,6 +13,7 @@ from .programming import (
     TTADKModeHandler,
 )
 from .project import ProjectHandler
+from .slock import SlockHandler
 from .spec import SpecHandler
 from .system import SystemHandler
 
@@ -27,6 +28,7 @@ __all__ = [
     "TTADKModeHandler",
     "DeepHandler",
     "SpecHandler",
+    "SlockHandler",
     "ProjectHandler",
     "SystemHandler",
     "DiagnosticsHandler",

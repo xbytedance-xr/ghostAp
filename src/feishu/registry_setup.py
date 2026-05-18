@@ -14,6 +14,7 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..mode import ModeManager
     from ..project import MessageLinker, MessageProjectMapper, ProjectContextManager, ProjectManager
+    from ..slock_engine import SlockEngineManager
     from ..spec_engine import SpecEngineManager, SpecReporter
     from ..tasking import TaskScheduler
     from ..thread import get_thread_manager
@@ -29,6 +30,7 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
         DiagnosticsHandler,
         GeminiModeHandler,
         ProjectHandler,
+        SlockHandler,
         SpecHandler,
         SystemHandler,
         TTADKModeHandler,
@@ -52,6 +54,7 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
         "ProgressReporter": ProgressReporter,
         "SpecEngineManager": SpecEngineManager,
         "SpecReporter": SpecReporter,
+        "SlockEngineManager": SlockEngineManager,
         "ProjectContextManager": ProjectContextManager,
         "CocoModeHandler": CocoModeHandler,
         "ClaudeModeHandler": ClaudeModeHandler,
@@ -61,6 +64,7 @@ def register_default_class_types(registry: ServiceRegistry) -> None:
         "TTADKModeHandler": TTADKModeHandler,
         "DeepHandler": DeepHandler,
         "SpecHandler": SpecHandler,
+        "SlockHandler": SlockHandler,
         "ProjectHandler": ProjectHandler,
         "SystemHandler": SystemHandler,
         "DiagnosticsHandler": DiagnosticsHandler,
@@ -87,6 +91,7 @@ def setup_feishu_services(
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..mode import ModeManager
     from ..project import MessageLinker, MessageProjectMapper, ProjectContextManager, ProjectManager
+    from ..slock_engine import SlockEngineManager
     from ..spec_engine import SpecEngineManager, SpecReporter
     from ..tasking import TaskScheduler
     from ..thread import get_thread_manager
@@ -105,6 +110,7 @@ def setup_feishu_services(
         DiagnosticsHandler,
         GeminiModeHandler,
         ProjectHandler,
+        SlockHandler,
         SpecHandler,
         SystemHandler,
         TTADKModeHandler,
@@ -172,6 +178,7 @@ def setup_feishu_services(
     registry.register_factory_if_absent("progress_reporter", lambda: registry.get("ProgressReporter", default=ProgressReporter)())
     registry.register_factory_if_absent("spec_engine_manager", lambda: registry.get("SpecEngineManager", default=SpecEngineManager)())
     registry.register_factory_if_absent("spec_reporter", lambda: registry.get("SpecReporter", default=SpecReporter)())
+    registry.register_factory_if_absent("slock_engine_manager", lambda: registry.get("SlockEngineManager", default=SlockEngineManager)())
     registry.register_factory_if_absent("context_manager", lambda: registry.get("ProjectContextManager", default=ProjectContextManager)())
 
     # 3. Handler Context
@@ -186,6 +193,7 @@ def setup_feishu_services(
     registry.register_factory_if_absent("ttadk_handler", lambda: registry.get("TTADKModeHandler", default=TTADKModeHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("deep_handler", lambda: registry.get("DeepHandler", default=DeepHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("spec_handler", lambda: registry.get("SpecHandler", default=SpecHandler)(registry.get("handler_ctx")))
+    registry.register_factory_if_absent("slock_handler", lambda: registry.get("SlockHandler", default=SlockHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("project_handler", lambda: registry.get("ProjectHandler", default=ProjectHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("system_handler", lambda: registry.get("SystemHandler", default=SystemHandler)(registry.get("handler_ctx")))
     registry.register_factory_if_absent("diagnostics_handler", lambda: registry.get("DiagnosticsHandler", default=DiagnosticsHandler)(registry.get("handler_ctx")))

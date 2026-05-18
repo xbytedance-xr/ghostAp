@@ -164,6 +164,9 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_build_context_diff_report": ("diagnostics", "_build_context_diff_report"),
     "_submit_diff_report": ("diagnostics", "_submit_diff_report"),
     "_show_message_trace": ("diagnostics", "show_message_trace"),
+    # --- Slock Engine ---
+    "_handle_slock_command": ("slock", "handle_slock_command"),
+    "_handle_slock_message": ("slock", "handle_message"),
 }
 
 
@@ -180,6 +183,7 @@ def _handler_classes() -> dict[str, type]:
         TTADKModeHandler,
     )
     from .handlers.project import ProjectHandler
+    from .handlers.slock import SlockHandler
     from .handlers.spec import SpecHandler
     from .handlers.system import SystemHandler
     from .handlers.worktree import WorktreeHandler
@@ -195,6 +199,7 @@ def _handler_classes() -> dict[str, type]:
         "worktree": WorktreeHandler,
         "deep": DeepHandler,
         "spec": SpecHandler,
+        "slock": SlockHandler,
         "project": ProjectHandler,
         "diagnostics": DiagnosticsHandler,
     }

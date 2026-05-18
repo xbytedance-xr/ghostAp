@@ -2278,6 +2278,7 @@ class TestSpecHandler:
             pending_image_keys={},
             pending_image_lock=threading.Lock(),
             enable_streaming=False,
+            slock_engine_manager=MagicMock(),
         )
 
     def test_handle_spec_command_routing_spec(self):

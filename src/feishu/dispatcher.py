@@ -106,6 +106,18 @@ class MessageDispatcher:
             self.client._handle_spec_command(message_id, chat_id, text, project)
             return
 
+        if self.client._is_slock_command(text, chat_id):
+            self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
+            self.client._add_reaction(message_id, EmojiReaction.on_processing())
+            self.client._handle_slock_command(message_id, chat_id, text, project)
+            return
+
+        # Slock active chat: route non-command messages to slock engine
+        if self.client._is_slock_active(chat_id):
+            self.client._add_reaction(message_id, EmojiReaction.on_processing())
+            self.client._handle_slock_message(message_id, chat_id, text, project)
+            return
+
         if is_in_programming and self.client._is_exit_command(text):
             self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
             if self.client._control_plane.should_defer_exit(chat_id=chat_id, project_id=_pid):
