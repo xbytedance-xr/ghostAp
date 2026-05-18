@@ -219,6 +219,7 @@ class SlockHandler(BaseEngineHandler):
             team_name=project.project_name if project else "Team",
         )
         engine.activate_channel(channel)
+        manager.register_managed_chat(chat_id)
 
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
@@ -524,9 +525,19 @@ class SlockHandler(BaseEngineHandler):
         else:
             role = self.TOOL_TYPE_ROLE_MAP.get(tool_type, "custom")
 
-        from ...slock_engine.models import AgentIdentity
+        from ...slock_engine.models import AgentIdentity, SlockMemory
+
+        if not system_prompt:
+            system_prompt = self._build_default_directive(
+                role_name=role_name,
+                role=role,
+                tool_type=tool_type,
+                model_name=model_name,
+                team_name=(engine.channel.team_name if engine.channel else chat_id),
+            )
 
         agent = AgentIdentity(
+            agent_id=f"{tool_type}:{model_name or 'default'}:{role_name}",
             name=role_name,
             emoji=emoji,
             agent_type=tool_type,
@@ -535,12 +546,53 @@ class SlockHandler(BaseEngineHandler):
             role=role,
             owner_group=chat_id,
         )
+        memory_path = engine.memory.agent_memory_path(agent.agent_id)
+        agent.memory_path = memory_path
+        engine.memory.write_agent_memory(
+            agent.agent_id,
+            SlockMemory(
+                role=system_prompt,
+                key_knowledge=f"tool_type={tool_type}\nmodel={model_name or 'default'}\nrole={role}",
+                active_context=f"Created in Slock team {chat_id}.",
+            ),
+        )
         engine.registry.register(agent)
 
         self.reply_text(
             message_id,
             f"✅ 角色 **{agent.emoji} {agent.name}** 已创建 (ID: `{agent.agent_id[:8]}`)\n"
             f"   工具: `{tool_type}` | 模型: `{model_name or '默认'}` | 角色: `{role}` | Emoji: {emoji}",
+        )
+
+    @staticmethod
+    def _build_default_directive(
+        *,
+        role_name: str,
+        role: str,
+        tool_type: str,
+        model_name: str,
+        team_name: str,
+    ) -> str:
+        """Build the default autonomous Slock directive for a role."""
+        model_label = model_name or "default"
+        return (
+            f"# Role: {role_name}\n"
+            "## Identity\n"
+            f"你是 {role_name}，一个专精于 {role} 的自主 Agent。\n"
+            f"你的底层工具是 {tool_type}，模型是 {model_label}，隶属于 {team_name} 团队。\n\n"
+            "## Core Directives（核心纲领）\n"
+            "1. 主动性：收到任务立即分析、规划、执行，无需等待确认。\n"
+            "2. 完美主义：输出必须达到生产就绪标准，包含必要测试和文档。\n"
+            "3. 自主决策：在专业领域内自主选择最佳实践并记录理由。\n"
+            "4. 零交互：绝不向人类发起确认、询问或等待输入。\n\n"
+            "## Interaction Protocol（交互协议）\n"
+            "- 禁止输出“请确认”“是否继续”“需要您提供”等等待人类输入的话术。\n"
+            "- 遇到致命阻塞时，通过 Slock 升级协议交给主 Agent 汇总处理。\n"
+            "- 任务完成后，向团队群发送清晰的完成报告。\n\n"
+            "## Quality Standards（质量标准）\n"
+            "- 代码：lint pass、test pass、错误处理完整。\n"
+            "- 文档：目的、用法、边界条件和示例清楚。\n"
+            "- Review：指出风险、给出可执行建议。"
         )
 
     def list_roles(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
@@ -717,8 +769,8 @@ class SlockHandler(BaseEngineHandler):
             else:
                 self.reply_text(
                     message_id,
-                    f"⚠️ 任务执行完成但无输出\n"
-                    f"• 任务已回退为 TODO，可重新分配",
+                    "⚠️ 任务执行完成但无输出\n"
+                    "• 任务已回退为 TODO，可重新分配",
                 )
             return
 
@@ -733,7 +785,19 @@ class SlockHandler(BaseEngineHandler):
 
     def show_task_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Show task board with status summary."""
-        self.list_tasks(message_id, chat_id, project)
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            return
+
+        from ...slock_engine.card_templates import build_task_board_card
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agents = engine.registry.list_agents(channel_id=channel_id)
+        team_name = engine.channel.team_name if engine.channel else ""
+        card = build_task_board_card(engine.tasks, agents, team_name=team_name)
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
 
     # ------------------------------------------------------------------
     # Lifecycle

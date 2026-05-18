@@ -7,9 +7,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 
 class TestCreateRoleWithParams:
@@ -105,10 +103,12 @@ class TestCreateRoleDefaults:
         engine.channel = MagicMock()
         engine.channel.channel_id = "chat_test"
         engine.registry.register = MagicMock()
+        engine.memory.agent_memory_path.return_value = "/tmp/slock/agents/agent/MEMORY.md"
+        engine.memory.write_agent_memory = MagicMock()
         return engine
 
     def test_create_role_no_params_uses_defaults(self):
-        """AC7: /new-role SimpleAgent uses coco/🤖/empty defaults."""
+        """AC7: /new-role SimpleAgent uses coco/🤖 defaults and a Directive."""
         handler = self._make_handler()
         engine = self._make_engine()
 
@@ -122,11 +122,15 @@ class TestCreateRoleDefaults:
         agent = call_args[0][0]
 
         assert agent.name == "SimpleAgent"
+        assert agent.agent_id == "coco:default:SimpleAgent"
         assert agent.agent_type == "coco"
         assert agent.model_name == ""
         assert agent.emoji == "🤖"
-        assert agent.system_prompt == ""
+        assert "Core Directives" in agent.system_prompt
+        assert "零交互" in agent.system_prompt
+        assert agent.memory_path == "/tmp/slock/agents/agent/MEMORY.md"
         assert agent.owner_group == "chat_test"
+        engine.memory.write_agent_memory.assert_called_once()
 
     def test_create_role_empty_name_shows_usage(self):
         """Empty name shows usage message."""

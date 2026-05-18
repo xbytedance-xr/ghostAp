@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..agent_session import create_engine_session
-from ..engine_base import BaseEngine, BaseEngineManager, EngineRunState
+from ..engine_base import BaseEngine, EngineRunState
 from .agent_registry import AgentRegistry
 from .card_templates import build_status_panel_card
 from .memory_manager import MemoryManager
@@ -63,8 +63,9 @@ class SlockEngine(BaseEngine):
         super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
 
         # Core subsystems
-        self._registry = AgentRegistry(base_path=memory_base_path)
-        self._memory = MemoryManager(base_path=memory_base_path)
+        storage_base_path = memory_base_path or os.path.join(root_path, ".ghostap", "slock")
+        self._registry = AgentRegistry(base_path=storage_base_path)
+        self._memory = MemoryManager(base_path=storage_base_path)
         self._router = TaskRouter()
         self._mouthpiece = Mouthpiece()
 
@@ -150,23 +151,36 @@ class SlockEngine(BaseEngine):
         self._channel = channel
         self._memory.ensure_directories(channel_id=channel.channel_id)
 
-        # Create workspace directory for this channel
+        marker_data = {
+            "channel_id": channel.channel_id,
+            "team_name": channel.team_name,
+            "name": channel.name,
+            "activated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+
+        # Canonical project-local group marker under .ghostap/slock/groups.
+        canonical_dir = self._memory.get_group_base_path(channel.channel_id)
+        os.makedirs(canonical_dir, exist_ok=True)
+        canonical_marker = os.path.join(canonical_dir, ".slock_channel.json")
+        self._write_channel_marker(canonical_marker, marker_data)
+
+        # Legacy restore marker retained for compatibility with existing workspaces.
         workspace_dir = os.path.join(self.root_path, "slock", channel.channel_id)
         os.makedirs(workspace_dir, exist_ok=True)
-
-        # Write channel marker file
         marker_path = os.path.join(workspace_dir, ".slock_channel.json")
-        if not os.path.exists(marker_path):
-            import json as _json
+        self._write_channel_marker(marker_path, marker_data)
 
-            marker_data = {
-                "channel_id": channel.channel_id,
-                "team_name": channel.team_name,
-                "name": channel.name,
-                "activated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
-            with open(marker_path, "w", encoding="utf-8") as f:
-                _json.dump(marker_data, f, ensure_ascii=False, indent=2)
+    @staticmethod
+    def _write_channel_marker(marker_path: str, marker_data: dict) -> None:
+        """Write a channel marker atomically if it does not already exist."""
+        if os.path.exists(marker_path):
+            return
+        import json as _json
+
+        tmp_path = marker_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            _json.dump(marker_data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, marker_path)
 
     def execute(
         self,
@@ -229,6 +243,16 @@ class SlockEngine(BaseEngine):
         IDLE → WAKING → THINKING → RUNNING → CHECKING → SENDING → IDLE
         """
         agent_id = agent.agent_id
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+
+        self._memory.append_message_archive(
+            channel_id,
+            sender_type="user",
+            content=message,
+            agent_id=agent_id,
+            agent_name=agent.name,
+            metadata={"routed_to": agent_id},
+        )
 
         # IDLE → WAKING
         self.transition_agent(agent_id, AgentStatus.WAKING)
@@ -263,6 +287,14 @@ class SlockEngine(BaseEngine):
         # Format output through mouthpiece
         if result:
             formatted = self._mouthpiece.format_text(agent, result)
+            self._memory.append_message_archive(
+                channel_id,
+                sender_type="agent",
+                content=result,
+                agent_id=agent_id,
+                agent_name=agent.name,
+                metadata={"formatted": formatted},
+            )
         else:
             formatted = None
 
@@ -381,8 +413,6 @@ class SlockEngine(BaseEngine):
         if task is None:
             return None
 
-        # Find the agent
-        channel_id = self._channel.channel_id if self._channel else self.chat_id
         agent = self._registry.get(agent_id)
         if agent is None:
             return None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,12 +12,10 @@ import pytest
 # Slash commands have zero heavy dependencies — safe to import directly.
 # ------------------------------------------------------------------
 from src.slock_engine.slash_commands import (
-    SlockCommand,
     SlockCommandAction,
     is_slock_command,
     parse_slock_command,
 )
-
 
 # ============================================================
 # Slash Commands
@@ -186,7 +186,6 @@ from src.slock_engine.models import (  # noqa: E402
     AgentIdentity,
     AgentStatus,
     SlockChannel,
-    SlockTask,
     TaskStatus,
 )
 
@@ -223,7 +222,6 @@ class TestSlockEngine:
         ch = SlockChannel(channel_id="ch_ws", name="ws-group", team_name="WS Team")
         engine.activate_channel(ch)
 
-        import json, os
         workspace_dir = os.path.join(str(tmp_path / "project_root"), "slock", "ch_ws")
         assert os.path.isdir(workspace_dir), "workspace directory should exist"
 
@@ -236,6 +234,58 @@ class TestSlockEngine:
         assert marker["team_name"] == "WS Team"
         assert marker["name"] == "ws-group"
         assert "activated_at" in marker
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_default_storage_base_is_project_ghostap_slock(self, mock_create_session, tmp_path):
+        """Default Slock storage follows the project-local .ghostap/slock contract."""
+        mock_create_session.return_value = None
+        root_path = str(tmp_path / "project_root")
+        engine = SlockEngine(chat_id="chat_storage", root_path=root_path)
+
+        expected = os.path.join(root_path, ".ghostap", "slock")
+        assert engine.memory.base_path == expected
+        assert engine.registry.base_path == expected
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_activate_channel_writes_canonical_group_marker(self, mock_create_session, tmp_path):
+        """Slock channel markers are written under .ghostap/slock/groups/{chat_id}."""
+        mock_create_session.return_value = None
+        root_path = str(tmp_path / "project_root")
+        engine = SlockEngine(chat_id="chat_canonical", root_path=root_path)
+        ch = SlockChannel(channel_id="ch_canonical", name="canonical", team_name="Canon")
+
+        engine.activate_channel(ch)
+
+        marker_path = os.path.join(
+            root_path,
+            ".ghostap",
+            "slock",
+            "groups",
+            "ch_canonical",
+            ".slock_channel.json",
+        )
+        assert os.path.isfile(marker_path)
+
+    def test_execute_agent_archives_user_and_agent_messages(self, tmp_path):
+        """Successful agent execution appends JSONL records to the channel archive."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_archive", name="Archive", team_name="ArchiveTeam")
+        engine.activate_channel(ch)
+        agent = AgentIdentity(name="ArchiveBot", emoji="📝", agent_type="coco", owner_group="ch_archive")
+        engine.registry.register(agent)
+
+        with patch.object(engine, "_run_acp_session", return_value="archived response"):
+            engine._execute_agent(agent, "please archive this", None)
+
+        archive_path = engine.memory.message_archive_path("ch_archive")
+        assert os.path.isfile(archive_path)
+        with open(archive_path, "r", encoding="utf-8") as f:
+            records = [json.loads(line) for line in f if line.strip()]
+
+        assert [record["sender_type"] for record in records] == ["user", "agent"]
+        assert records[0]["content"] == "please archive this"
+        assert records[1]["agent_id"] == agent.agent_id
+        assert records[1]["content"] == "archived response"
 
     def test_add_task(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from typing import Optional
 
 from .models import SlockMemory
@@ -38,6 +39,10 @@ class MemoryManager:
 
     def _agent_memory_path(self, agent_id: str) -> str:
         return os.path.join(self._base_path, "agents", agent_id, "MEMORY.md")
+
+    def agent_memory_path(self, agent_id: str) -> str:
+        """Return the canonical L1 memory path for an agent."""
+        return self._agent_memory_path(agent_id)
 
     def read_agent_memory(self, agent_id: str) -> SlockMemory:
         """Read L1 agent private memory."""
@@ -76,6 +81,10 @@ class MemoryManager:
     def _group_memory_path(self, channel_id: str) -> str:
         return os.path.join(self._base_path, "groups", channel_id, "SHARED_MEMORY.md")
 
+    def group_memory_path(self, channel_id: str) -> str:
+        """Return the canonical L2 shared memory path for a group."""
+        return self._group_memory_path(channel_id)
+
     def read_group_memory(self, channel_id: str) -> str:
         """Read L2 group shared memory."""
         path = self._group_memory_path(channel_id)
@@ -110,6 +119,10 @@ class MemoryManager:
 
     def _global_wiki_path(self) -> str:
         return os.path.join(self._base_path, "global", "WIKI.md")
+
+    def global_wiki_path(self) -> str:
+        """Return the canonical L3 global wiki path."""
+        return self._global_wiki_path()
 
     def read_global_wiki(self) -> str:
         """Read L3 global knowledge base."""
@@ -146,6 +159,43 @@ class MemoryManager:
     def get_group_base_path(self, channel_id: str) -> str:
         """Return the base directory for a group's memory — useful for isolation checks."""
         return os.path.join(self._base_path, "groups", channel_id)
+
+    # ------------------------------------------------------------------
+    # Message Archive
+    # ------------------------------------------------------------------
+
+    def message_archive_path(self, channel_id: str) -> str:
+        """Return the JSONL archive path for a channel's Slock messages."""
+        return os.path.join(self._base_path, "archives", channel_id, "messages.jsonl")
+
+    def append_message_archive(
+        self,
+        channel_id: str,
+        *,
+        sender_type: str,
+        content: str,
+        agent_id: str = "",
+        agent_name: str = "",
+        metadata: Optional[dict] = None,
+    ) -> None:
+        """Append a message record to the channel JSONL archive."""
+        import json
+
+        path = self.message_archive_path(channel_id)
+        record = {
+            "timestamp": time.time(),
+            "channel_id": channel_id,
+            "sender_type": sender_type,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "content": content,
+            "metadata": metadata or {},
+        }
+        with self._lock:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
+                f.write("\n")
 
     def ensure_directories(self, agent_id: Optional[str] = None, channel_id: Optional[str] = None) -> None:
         """Pre-create directories for an agent and/or channel."""

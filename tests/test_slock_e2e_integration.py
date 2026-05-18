@@ -11,8 +11,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel
 from src.slock_engine.slash_commands import is_slock_command
 
@@ -263,3 +261,29 @@ class TestE2EStatusPanel:
             handler.show_slock_status("msg_n", "chat_n")
 
         handler.reply_card.assert_called_once()
+
+    def test_task_status_returns_task_board_card(self):
+        """`/task status` should render the Kanban-style task board card."""
+        from src.feishu.handlers.slock import SlockHandler
+        from src.slock_engine.models import SlockTask
+
+        ctx = MagicMock()
+        handler = SlockHandler(ctx)
+        handler.reply_card = MagicMock()
+        handler.reply_text = MagicMock()
+
+        engine, agent = TestE2EHandlerToEngine()._make_engine_with_agent(chat_id="chat_task")
+        engine.tasks = [SlockTask(content="Implement archive")]
+        engine.registry.list_agents.return_value = [agent]
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.show_task_status("msg_task", "chat_task")
+
+        handler.reply_card.assert_called_once()
+        handler.reply_text.assert_not_called()
+        card_json = handler.reply_card.call_args[0][1]
+        card_data = json.loads(card_json)
+        assert "Task Board" in card_data["header"]["title"]["content"]

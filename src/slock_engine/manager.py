@@ -85,68 +85,73 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
         """
         from .models import SlockChannel
 
-        slock_dir = os.path.join(root_path, "slock")
-        if not os.path.isdir(slock_dir):
+        marker_dirs = [
+            os.path.join(root_path, ".ghostap", "slock", "groups"),
+            os.path.join(root_path, "slock"),
+        ]
+        existing_dirs = [path for path in marker_dirs if os.path.isdir(path)]
+        if not existing_dirs:
             return 0
 
         restored = 0
-        try:
-            entries = os.listdir(slock_dir)
-        except OSError as e:
-            logger.warning("restore_from_disk: cannot list %s: %s", slock_dir, repr(e))
-            return 0
-
-        for entry in entries:
-            channel_dir = os.path.join(slock_dir, entry)
-            if not os.path.isdir(channel_dir):
-                continue
-
-            marker_path = os.path.join(channel_dir, ".slock_channel.json")
-            if not os.path.isfile(marker_path):
-                continue
-
+        for slock_dir in existing_dirs:
             try:
-                with open(marker_path, "r", encoding="utf-8") as f:
-                    marker = json.load(f)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning(
-                    "restore_from_disk: skipping corrupted marker %s: %s",
-                    marker_path, e,
-                )
+                entries = os.listdir(slock_dir)
+            except OSError as e:
+                logger.warning("restore_from_disk: cannot list %s: %s", slock_dir, repr(e))
                 continue
 
-            channel_id = marker.get("channel_id")
-            if not channel_id:
-                logger.warning(
-                    "restore_from_disk: marker missing channel_id: %s", marker_path
-                )
-                continue
+            for entry in entries:
+                channel_dir = os.path.join(slock_dir, entry)
+                if not os.path.isdir(channel_dir):
+                    continue
 
-            # Skip if already managed (idempotent)
-            if self.is_managed_chat(channel_id):
-                continue
+                marker_path = os.path.join(channel_dir, ".slock_channel.json")
+                if not os.path.isfile(marker_path):
+                    continue
 
-            try:
-                engine = self.get_or_create(
-                    channel_id, root_path, engine_name="Slock"
-                )
-                channel = SlockChannel(
-                    channel_id=channel_id,
-                    name=marker.get("name", ""),
-                    team_name=marker.get("team_name", ""),
-                )
-                engine.activate_channel(channel)
-                self.register_managed_chat(channel_id)
-                restored += 1
-                logger.info(
-                    "restore_from_disk: restored slock engine for chat=%s team=%s",
-                    channel_id, channel.team_name,
-                )
-            except Exception as e:
-                logger.error(
-                    "restore_from_disk: failed to restore %s: %s",
-                    channel_id, e,
-                )
+                try:
+                    with open(marker_path, "r", encoding="utf-8") as f:
+                        marker = json.load(f)
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(
+                        "restore_from_disk: skipping corrupted marker %s: %s",
+                        marker_path, e,
+                    )
+                    continue
+
+                channel_id = marker.get("channel_id")
+                if not channel_id:
+                    logger.warning(
+                        "restore_from_disk: marker missing channel_id: %s", marker_path
+                    )
+                    continue
+
+                # Skip if already managed (idempotent)
+                if self.is_managed_chat(channel_id):
+                    continue
+
+                try:
+                    engine = self.get_or_create(
+                        channel_id, root_path, engine_name="Slock"
+                    )
+                    channel = SlockChannel(
+                        channel_id=channel_id,
+                        name=marker.get("name", ""),
+                        team_name=marker.get("team_name", ""),
+                    )
+                    engine.activate_channel(channel)
+                    self.register_managed_chat(channel_id)
+                    restored += 1
+                    logger.info(
+                        "restore_from_disk: restored slock engine for chat=%s team=%s",
+                        channel_id, channel.team_name,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "restore_from_disk: failed to restore %s: %s",
+                        channel_id, e,
+                    )
 
         if restored:
             logger.info("restore_from_disk: restored %d slock engine(s)", restored)

@@ -12,8 +12,6 @@ import pytest
 _acp_available = pytest.importorskip("acp", reason="acp package not installed")
 
 from src.slock_engine.manager import SlockEngineManager  # noqa: E402
-from src.slock_engine.models import SlockChannel  # noqa: E402
-
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -28,8 +26,6 @@ class _FakeCreateChatResult:
 
 def _make_handler_ctx(tmp_path, *, api_client_factory=None, settings=None):
     """Build a minimal HandlerContext-like object for SlockHandler."""
-    from unittest.mock import PropertyMock
-
     ctx = MagicMock()
     ctx.api_client_factory = api_client_factory or MagicMock()
     ctx.project_manager = MagicMock()
@@ -262,6 +258,31 @@ class TestDispatcherSlockRouting:
         manager.register_managed_chat("oc_test")
         manager.unregister_managed_chat("oc_test")
         assert manager.is_managed_chat("oc_test") is False
+
+
+class TestActivateSlockManagedChat:
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_activate_slock_registers_current_chat_for_team_commands(self, mock_session, tmp_path):
+        """After `/slock`, team-local commands such as `/new-role` must be captured."""
+        from src.slock_engine.slash_commands import is_slock_command
+
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        project_root = str(tmp_path / "project_root")
+        handler._ensure_project = MagicMock(return_value=MagicMock(
+            root_path=project_root,
+            project_name="CurrentTeam",
+            project_id="p-current",
+        ))
+        handler.get_engine_name = MagicMock(return_value="Slock-current")
+        session = MagicMock()
+        handler.create_static_card_session.return_value = session
+
+        handler.activate_slock("msg_current", "oc_current", "", project=None)
+
+        manager = ctx.slock_engine_manager
+        assert manager.is_managed_chat("oc_current") is True
+        assert is_slock_command("/new-role Coder", chat_id="oc_current", manager=manager) is True
 
 
 # ==================================================================
