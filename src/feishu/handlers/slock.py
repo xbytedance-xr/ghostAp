@@ -290,13 +290,17 @@ class SlockHandler(BaseEngineHandler):
             "• `/team dissolve <名称>` — 解散团队\n\n"
             "**角色管理**\n"
             "• `/new-role <名称>` — 创建虚拟 Agent\n"
+            "• `/new-role <名称> --tool codex --model <模型> --role coder` — 指定工具/模型/角色类型\n"
+            "• `/new-role <名称> --template coder` — 从内置模板创建 Agent\n"
+            "• `/new-role <名称> --fork <已有角色>` — 复制角色的指令、记忆和技能画像\n"
             "• `/role list` — 查看所有角色\n"
-            "• `/role info <名称>` — 查看角色详情\n"
+            "• `/role info <名称>` — 查看角色记忆、任务统计和技能画像\n"
             "• `/role remove <名称>` — 移除角色\n\n"
             "**任务管理**\n"
             "• `/task list` — 查看任务列表\n"
-            "• `/task assign <任务> <角色>` — 分配任务\n"
-            "• `/task status` — 查看任务进度"
+            "• `/task assign <任务> [角色]` — 分配任务；省略角色时按技能画像自动选择\n"
+            "• `/task assign \"多词任务\" \"角色名\"` — 支持引号包裹多词任务和角色\n"
+            "• `/task status` — 查看 Kanban 任务进度"
         )
         self.reply_text(message_id, help_text)
 

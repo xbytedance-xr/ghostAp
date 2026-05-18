@@ -1351,6 +1351,10 @@ class SystemBuilder:
                 UI_TEXT["system_help_section_worktree"],
                 UI_TEXT["system_help_section_worktree_body"]
             ),
+            (
+                UI_TEXT["system_help_section_slock"],
+                UI_TEXT["system_help_section_slock_body"]
+            ),
         ]
 
         # F-12: Only show lock section when lock feature is enabled

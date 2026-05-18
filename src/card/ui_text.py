@@ -319,6 +319,15 @@ UI_TEXT = {
         "分隔符支持空格/Tab：例如 `/wt\\t实现登录功能` 或 `/worktree 实现登录功能`\n"
         "流程：选择工具 → 设定目标 → 自动分配 → 并行执行 → 合并结果"
     ),
+    "system_help_section_slock": "🎭 Slock · 飞书群内多 Agent 协作",
+    "system_help_section_slock_body": (
+        "`/slock` · 在当前群激活 Slock  ·  `/new-team <名称>` · 新建协作群\n"
+        "`/new-role <名称> [--tool codex] [--model <模型>]` · 创建 Agent\n"
+        "`/new-role <名称> --template coder` · 从模板创建  ·  `--fork <角色>` · 复制角色\n"
+        "`/task assign <任务> [角色]` · 分配任务；省略角色时按技能画像自动选择\n"
+        "`/task status` · 查看 Kanban 看板  ·  `/role info <名称>` · 查看角色记忆/技能\n"
+        "`/team list/status/dissolve <名称>` · 管理团队  ·  `/slock stop` · 停止当前团队"
+    ),
     "system_help_tips": (
         "**💡 使用提示**\n"
         "1. 发送 `/menu` 打开完整快捷菜单\n"

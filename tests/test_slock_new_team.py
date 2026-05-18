@@ -343,6 +343,21 @@ class TestActivateSlockManagedChat:
         assert manager.is_managed_chat("oc_current") is True
         assert is_slock_command("/new-role Coder", chat_id="oc_current", manager=manager) is True
 
+    def test_slock_help_mentions_templates_fork_and_auto_routing(self, tmp_path):
+        """Slock's own help should document the richer role/task workflow."""
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+
+        handler.show_slock_help("msg_help")
+
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "--template coder" in text
+        assert "--fork <已有角色>" in text
+        assert "/task assign <任务> [角色]" in text
+        assert "自动选择" in text
+        assert "Kanban" in text
+
 
 # ==================================================================
 # Test: Restart survival — create team, simulate restart, verify restore

@@ -2838,6 +2838,27 @@ class TestNonStreamingHeartbeat:
 class TestHelpCardLockAlwaysVisible:
     """F-20/AC-18: lock_enabled=True ensures /help always contains lock section."""
 
+    def test_slock_section_present_in_main_help(self):
+        """The main /help card should expose Slock mode and its core workflow."""
+        from src.card.builders.system import SystemBuilder
+
+        _msg_type, card_json = SystemBuilder.build_help_card(
+            project=None,
+            category="main",
+            is_admin=False,
+            lock_enabled=False,
+            chat_id="",
+            session_idle_timeout=600,
+            session_idle_warn_at_remaining=120,
+            lock_undo_window_seconds=300,
+        )
+        assert "Slock" in card_json
+        assert "/slock" in card_json
+        assert "/new-team" in card_json
+        assert "/new-role" in card_json
+        assert "--template coder" in card_json
+        assert "/task assign" in card_json
+
     def test_lock_section_present_when_no_admin_ids(self):
         """Even with admin_user_ids=frozenset(), the help card includes lock content."""
         from src.card.builders.system import SystemBuilder
