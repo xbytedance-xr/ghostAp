@@ -58,7 +58,12 @@ class AgentIdentity:
     permissions: list[str] = field(default_factory=lambda: ["shell", "file_write", "git"])
     memory_path: str = ""
     owner_group: str = ""  # chat_id of owning group
+    member_groups: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
+
+    def __post_init__(self) -> None:
+        if self.owner_group and self.owner_group not in self.member_groups:
+            self.member_groups.append(self.owner_group)
 
     @property
     def display_name(self) -> str:
@@ -80,6 +85,7 @@ class AgentIdentity:
             "permissions": self.permissions,
             "memory_path": self.memory_path,
             "owner_group": self.owner_group,
+            "member_groups": self.member_groups,
             "created_at": self.created_at,
         }
 
@@ -96,6 +102,7 @@ class AgentIdentity:
             permissions=data.get("permissions", ["shell", "file_write", "git"]),
             memory_path=data.get("memory_path", ""),
             owner_group=data.get("owner_group", ""),
+            member_groups=data.get("member_groups", []),
             created_at=data.get("created_at", time.time()),
         )
 

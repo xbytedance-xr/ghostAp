@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from ..agent_session import create_engine_session
+from ..agent_session import close_session_safely, create_engine_session
 from ..engine_base import BaseEngine, EngineRunState
 from .agent_registry import AgentRegistry
 from .card_templates import build_status_panel_card
@@ -73,6 +73,7 @@ class SlockEngine(BaseEngine):
         self._channel: Optional[SlockChannel] = None
         self._tasks: list[SlockTask] = []
         self._agent_statuses: dict[str, AgentStatus] = {}
+        self._agent_sessions: dict[str, object] = {}
 
     @property
     def registry(self) -> AgentRegistry:
@@ -150,6 +151,10 @@ class SlockEngine(BaseEngine):
         """
         self._channel = channel
         self._memory.ensure_directories(channel_id=channel.channel_id)
+        self._memory.initialize_team_workspace(channel, project_path=self.root_path)
+        persisted_tasks = self._memory.read_task_board(channel.channel_id)
+        if persisted_tasks:
+            self._tasks = persisted_tasks
 
         marker_data = {
             "channel_id": channel.channel_id,
@@ -203,6 +208,7 @@ class SlockEngine(BaseEngine):
             # Get available agents for this channel
             channel_id = self._channel.channel_id if self._channel else self.chat_id
             agents = self._registry.list_agents(channel_id=channel_id)
+            self._sync_skill_profiles(agents)
 
             if not agents:
                 with self._lock:
@@ -308,8 +314,44 @@ class SlockEngine(BaseEngine):
         if result:
             context_entry = f"[{time.strftime('%Y-%m-%d %H:%M')}] Responded to: {message[:100]}"
             self._memory.update_agent_context(agent_id, context_entry)
+            skill_tags = self._router.extract_skill_keywords(message)
+            profiles = self._memory.record_skill_feedback(agent_id, skill_tags, quality_score=100.0)
+            self._router.set_skill_profiles(agent_id, profiles)
+            self._record_observer_learning(agent, message, skill_tags)
 
         return formatted
+
+    def _sync_skill_profiles(self, agents: list[AgentIdentity]) -> None:
+        """Load persisted skill profiles into the router before assignment."""
+        for agent in agents:
+            profiles = self._memory.read_skill_profiles(agent.agent_id)
+            if profiles:
+                self._router.set_skill_profiles(agent.agent_id, profiles)
+
+    def _record_observer_learning(
+        self,
+        actor: AgentIdentity,
+        message: str,
+        skill_tags: list[str],
+    ) -> None:
+        """Let idle team members learn potential skills from successful work."""
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        for observer in self._registry.list_agents(channel_id=channel_id):
+            if observer.agent_id == actor.agent_id:
+                continue
+            if self.get_agent_status(observer.agent_id) != AgentStatus.IDLE:
+                continue
+            profiles = self._memory.record_skill_feedback(
+                observer.agent_id,
+                skill_tags,
+                quality_score=60.0,
+            )
+            self._router.set_skill_profiles(observer.agent_id, profiles)
+            context_entry = (
+                f"[{time.strftime('%Y-%m-%d %H:%M')}] "
+                f"Observed {actor.agent_id} complete: {message[:100]}"
+            )
+            self._memory.update_agent_context(observer.agent_id, context_entry)
 
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
         """Build the full prompt for an agent including system prompt and memory."""
@@ -346,12 +388,16 @@ class SlockEngine(BaseEngine):
                 logger.warning("Failed to create ACP session for agent %s", agent.name)
                 return None
 
-            self._session = session
+            with self._lock:
+                self._agent_sessions[agent.agent_id] = session
             try:
                 result = session.send_prompt(prompt, timeout=self.settings.coco_execution_timeout)
                 return result.text if result else None
             finally:
-                self._close_session_safely()
+                with self._lock:
+                    if self._agent_sessions.get(agent.agent_id) is session:
+                        del self._agent_sessions[agent.agent_id]
+                close_session_safely(session)
 
         except Exception as e:
             logger.error("ACP session error for agent %s: %s", agent.name, str(e))
@@ -368,6 +414,7 @@ class SlockEngine(BaseEngine):
             created_in=self._channel.channel_id if self._channel else self.chat_id,
         )
         self._tasks.append(task)
+        self._persist_task_board()
         return task
 
     def claim_task(self, task_id: str, agent_id: str) -> bool:
@@ -381,6 +428,7 @@ class SlockEngine(BaseEngine):
                 task.status = TaskStatus.IN_PROGRESS
                 task.claimed_by = agent_id
                 task.claimed_at = time.time()
+                self._persist_task_board()
                 return True
         return False
 
@@ -390,6 +438,7 @@ class SlockEngine(BaseEngine):
             if task.task_id == task_id and task.claimed_by == agent_id:
                 task.status = TaskStatus.DONE
                 self._router.task_claim.release(task_id, agent_id)
+                self._persist_task_board()
                 return True
         return False
 
@@ -446,6 +495,12 @@ class SlockEngine(BaseEngine):
                 task.claimed_at = None
                 break
         self._router.task_claim.release(task_id, agent_id)
+        self._persist_task_board()
+
+    def _persist_task_board(self) -> None:
+        """Persist task state for the active channel."""
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        self._memory.write_task_board(channel_id, self._tasks)
 
     # ------------------------------------------------------------------
     # Status & Cleanup
@@ -463,9 +518,16 @@ class SlockEngine(BaseEngine):
         with self._lock:
             self._run_state = EngineRunState.STOPPING
             session = self._session  # snapshot under lock to avoid TOCTOU
+            agent_sessions = list(self._agent_sessions.values())
+            self._agent_sessions.clear()
         if session:
             try:
                 session.cancel()
+            except Exception:
+                pass
+        for agent_session in agent_sessions:
+            try:
+                agent_session.cancel()
             except Exception:
                 pass
 
@@ -480,6 +542,13 @@ class SlockEngine(BaseEngine):
         with self._lock:
             for agent_id in list(self._agent_statuses.keys()):
                 self._agent_statuses[agent_id] = AgentStatus.IDLE
+            agent_sessions = list(self._agent_sessions.values())
+            self._agent_sessions.clear()
+        for agent_session in agent_sessions:
+            try:
+                agent_session.cancel()
+            except Exception:
+                pass
         super().cleanup()
 
     def deactivate(self) -> None:
@@ -495,11 +564,18 @@ class SlockEngine(BaseEngine):
                 self._agent_statuses[agent_id] = AgentStatus.IDLE
             self._channel = None
             session = self._session  # snapshot under lock to avoid TOCTOU
+            agent_sessions = list(self._agent_sessions.values())
+            self._agent_sessions.clear()
 
         # Cancel any running session using the snapshot
         if session:
             try:
                 session.cancel()
+            except Exception:
+                pass
+        for agent_session in agent_sessions:
+            try:
+                agent_session.cancel()
             except Exception:
                 pass
 

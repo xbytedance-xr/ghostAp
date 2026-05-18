@@ -12,6 +12,7 @@ import pytest
 _acp_available = pytest.importorskip("acp", reason="acp package not installed")
 
 from src.slock_engine.manager import SlockEngineManager  # noqa: E402
+from src.slock_engine.models import SlockChannel  # noqa: E402
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -258,6 +259,64 @@ class TestDispatcherSlockRouting:
         manager.register_managed_chat("oc_test")
         manager.unregister_managed_chat("oc_test")
         assert manager.is_managed_chat("oc_test") is False
+
+
+class TestTeamAdminCommands:
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_list_teams_lists_all_activated_slock_teams_from_admin_chat(self, mock_session, tmp_path):
+        """Admin `/team list` should show every active team, not only the current chat."""
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        manager = ctx.slock_engine_manager
+        root_path = str(tmp_path / "project_root")
+
+        for chat_id, team_name in [("oc_alpha", "Alpha"), ("oc_beta", "Beta")]:
+            engine = manager.get_or_create(chat_id, root_path, engine_name="Slock")
+            engine.activate_channel(SlockChannel(channel_id=chat_id, name=team_name, team_name=team_name))
+            manager.register_managed_chat(chat_id)
+
+        handler.list_teams("msg_admin", "oc_admin")
+
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "Alpha" in text
+        assert "Beta" in text
+        assert "oc_alpha" in text
+        assert "oc_beta" in text
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_team_status_finds_team_by_name(self, mock_session, tmp_path):
+        """Admin `/team status <name>` resolves a team by name and renders its status card."""
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        root_path = str(tmp_path / "project_root")
+        engine = ctx.slock_engine_manager.get_or_create("oc_alpha", root_path, engine_name="Slock")
+        engine.activate_channel(SlockChannel(channel_id="oc_alpha", name="Alpha Chat", team_name="Alpha"))
+        engine.get_status_card = MagicMock(return_value={"header": {"title": {"content": "Alpha"}}})
+
+        handler.show_team_status("msg_status", "oc_admin", "Alpha")
+
+        handler.reply_card.assert_called_once()
+        card = json.loads(handler.reply_card.call_args[0][1])
+        assert card["header"]["title"]["content"] == "Alpha"
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_team_dissolve_unregisters_and_removes_named_team(self, mock_session, tmp_path):
+        """Admin `/team dissolve <name>` stops the named team runtime."""
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        manager = ctx.slock_engine_manager
+        root_path = str(tmp_path / "project_root")
+        engine = manager.get_or_create("oc_beta", root_path, engine_name="Slock")
+        engine.activate_channel(SlockChannel(channel_id="oc_beta", name="Beta Chat", team_name="Beta"))
+        manager.register_managed_chat("oc_beta")
+
+        handler.dissolve_team("msg_dissolve", "oc_admin", "Beta")
+
+        assert manager.is_managed_chat("oc_beta") is False
+        assert manager.get_activated_engine("oc_beta") is None
+        handler.reply_text.assert_called_once()
+        assert "Beta" in handler.reply_text.call_args[0][1]
 
 
 class TestActivateSlockManagedChat:

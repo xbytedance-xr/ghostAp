@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -181,13 +183,17 @@ class TestParseSlockCommand:
 
 _acp_available = pytest.importorskip("acp", reason="acp package not installed")
 
+from src.slock_engine.agent_registry import AgentRegistry  # noqa: E402
 from src.slock_engine.engine import SlockEngine, SlockEngineCallbacks  # noqa: E402
 from src.slock_engine.models import (  # noqa: E402
     AgentIdentity,
     AgentStatus,
+    SkillProfile,
     SlockChannel,
+    SlockMemory,
     TaskStatus,
 )
+from src.slock_engine.task_router import TaskRouter  # noqa: E402
 
 
 class TestSlockEngine:
@@ -266,6 +272,40 @@ class TestSlockEngine:
         )
         assert os.path.isfile(marker_path)
 
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_activate_channel_initializes_team_workspace_files(self, mock_create_session, tmp_path):
+        """Activation creates the auditable team workspace described by the design doc."""
+        mock_create_session.return_value = None
+        root_path = str(tmp_path / "project_root")
+        engine = SlockEngine(chat_id="chat_workspace", root_path=root_path)
+        ch = SlockChannel(channel_id="ch_workspace", name="Workspace", team_name="WorkspaceTeam")
+
+        engine.activate_channel(ch)
+
+        workspace = engine.memory.team_workspace_path("ch_workspace")
+        assert os.path.isdir(os.path.join(workspace, "agents"))
+        assert os.path.isdir(os.path.join(workspace, "shared", "artifacts"))
+        assert os.path.isdir(os.path.join(workspace, "shared", "references"))
+        assert os.path.isdir(os.path.join(workspace, "shared", "templates"))
+        assert os.path.isdir(os.path.join(workspace, "project"))
+        assert os.path.isfile(os.path.join(workspace, ".team-config.json"))
+        assert os.path.isfile(os.path.join(workspace, ".task-board.json"))
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_activate_channel_seeds_global_agent_templates(self, mock_create_session, tmp_path):
+        """Activation seeds the global Agent template market, including onboarding."""
+        mock_create_session.return_value = None
+        engine = SlockEngine(chat_id="chat_templates", root_path=str(tmp_path))
+        ch = SlockChannel(channel_id="ch_templates", name="Templates", team_name="TemplateTeam")
+
+        engine.activate_channel(ch)
+
+        templates = engine.memory.list_agent_templates()
+        assert "onboarding" in templates
+        onboarding = engine.memory.read_agent_template("onboarding")
+        assert onboarding["role"] == "writer"
+        assert "new team members" in onboarding["system_prompt"]
+
     def test_execute_agent_archives_user_and_agent_messages(self, tmp_path):
         """Successful agent execution appends JSONL records to the channel archive."""
         engine = self._make_engine(tmp_path=tmp_path)
@@ -287,12 +327,64 @@ class TestSlockEngine:
         assert records[1]["agent_id"] == agent.agent_id
         assert records[1]["content"] == "archived response"
 
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_parallel_acp_sessions_close_their_own_session(self, mock_create_session, tmp_path):
+        """Parallel agents must not share self._session and close each other's sessions."""
+        engine = SlockEngine(chat_id="chat_parallel", root_path=str(tmp_path))
+        barrier = threading.Barrier(2)
+
+        def make_session(label: str, delay: float):
+            session = MagicMock()
+            result = MagicMock()
+            result.text = label
+
+            def send_prompt(*args, **kwargs):
+                barrier.wait(timeout=2)
+                time.sleep(delay)
+                return result
+
+            session.send_prompt.side_effect = send_prompt
+            return session
+
+        session_a = make_session("A done", 0.03)
+        session_b = make_session("B done", 0.0)
+        mock_create_session.side_effect = [session_a, session_b]
+        agent_a = AgentIdentity(agent_id="agent-a", name="A", agent_type="coco")
+        agent_b = AgentIdentity(agent_id="agent-b", name="B", agent_type="coco")
+
+        results: dict[str, str | None] = {}
+        threads = [
+            threading.Thread(target=lambda: results.setdefault("a", engine._run_acp_session(agent_a, "A"))),
+            threading.Thread(target=lambda: results.setdefault("b", engine._run_acp_session(agent_b, "B"))),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        assert results == {"a": "A done", "b": "B done"}
+        session_a.close.assert_called_once()
+        session_b.close.assert_called_once()
+
     def test_add_task(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
         task = engine.add_task("Implement feature X")
         assert task.content == "Implement feature X"
         assert task.status == TaskStatus.TODO
         assert len(engine.tasks) == 1
+
+    def test_add_task_persists_group_task_board(self, tmp_path):
+        """Tasks are persisted to the group task board under .ghostap/slock."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_board", name="Board", team_name="BoardTeam")
+        engine.activate_channel(ch)
+
+        task = engine.add_task("Persist this task")
+
+        board = engine.memory.read_task_board("ch_board")
+        assert len(board) == 1
+        assert board[0].task_id == task.task_id
+        assert board[0].content == "Persist this task"
 
     def test_claim_task(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
@@ -318,12 +410,111 @@ class TestSlockEngine:
         assert result is True
         assert engine.tasks[0].status == TaskStatus.DONE
 
+    def test_complete_task_persists_done_status(self, tmp_path):
+        """Task state changes are reflected in the persisted task board."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_done", name="Done", team_name="DoneTeam")
+        engine.activate_channel(ch)
+        task = engine.add_task("Ship it")
+
+        engine.claim_task(task.task_id, "agent-1")
+        engine.complete_task(task.task_id, "agent-1")
+
+        board = engine.memory.read_task_board("ch_done")
+        assert board[0].status == TaskStatus.DONE
+        assert board[0].claimed_by == "agent-1"
+
     def test_complete_task_wrong_agent(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
         task = engine.add_task("Task A")
         engine.claim_task(task.task_id, "agent-1")
         result = engine.complete_task(task.task_id, "agent-2")
         assert result is False
+
+    def test_execute_agent_updates_persistent_skill_profile_on_success(self, tmp_path):
+        """Successful task execution feeds back into the agent's persisted skill profile."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_skill", name="Skill", team_name="SkillTeam")
+        engine.activate_channel(ch)
+        agent = AgentIdentity(name="Tester", emoji="🧪", agent_type="coco", owner_group="ch_skill")
+        engine.registry.register(agent)
+
+        with patch.object(engine, "_run_acp_session", return_value="tests added"):
+            engine._execute_agent(agent, "add regression tests for login", None)
+
+        profiles = engine.memory.read_skill_profiles(agent.agent_id)
+        profile_by_tag = {profile.tag: profile for profile in profiles}
+        assert "test" in profile_by_tag
+        assert profile_by_tag["test"].total_tasks == 1
+        assert profile_by_tag["test"].success_rate > 50.0
+        assert profile_by_tag["test"].last_active > 0
+
+    def test_idle_agents_observe_successful_tasks_as_potential_skills(self, tmp_path):
+        """Idle team members learn potential skills from another agent's completed task."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_observe", name="Observe", team_name="ObserveTeam")
+        engine.activate_channel(ch)
+        actor = AgentIdentity(agent_id="actor", name="Actor", agent_type="coco", owner_group="ch_observe")
+        observer = AgentIdentity(agent_id="observer", name="Observer", agent_type="coco", owner_group="ch_observe")
+        engine.registry.register(actor)
+        engine.registry.register(observer)
+        engine.memory.write_agent_memory(observer.agent_id, SlockMemory(role="Observer"))
+
+        with patch.object(engine, "_run_acp_session", return_value="implemented"):
+            engine._execute_agent(actor, "implement a parser", None)
+
+        profiles = engine.memory.read_skill_profiles(observer.agent_id)
+        profile_by_tag = {profile.tag: profile for profile in profiles}
+        assert "code" in profile_by_tag
+        assert 0 < profile_by_tag["code"].success_rate < 100
+        observer_memory = engine.memory.read_agent_memory(observer.agent_id)
+        assert "Observed actor complete" in observer_memory.active_context
+
+
+class TestSlockAgentRegistryCrossTeam:
+    def test_same_agent_id_can_join_multiple_groups_without_losing_original_team(self, tmp_path):
+        """Agent identity follows the agent across teams while membership includes both groups."""
+        registry = AgentRegistry(base_path=str(tmp_path))
+        first = AgentIdentity(
+            agent_id="codex:o3-pro:Coder",
+            name="Coder",
+            agent_type="codex",
+            model_name="o3-pro",
+            owner_group="chat_alpha",
+        )
+        second = AgentIdentity(
+            agent_id="codex:o3-pro:Coder",
+            name="Coder",
+            agent_type="codex",
+            model_name="o3-pro",
+            owner_group="chat_beta",
+        )
+
+        registry.register(first)
+        merged = registry.register(second)
+
+        assert merged.owner_group == "chat_alpha"
+        assert set(merged.member_groups) == {"chat_alpha", "chat_beta"}
+        assert [agent.agent_id for agent in registry.list_agents("chat_alpha")] == ["codex:o3-pro:Coder"]
+        assert [agent.agent_id for agent in registry.list_agents("chat_beta")] == ["codex:o3-pro:Coder"]
+
+
+class TestSlockTaskRouterEvolution:
+    def test_equal_scores_use_round_robin(self):
+        """When skill scores tie, automatic assignment rotates between candidates."""
+        router = TaskRouter()
+        agents = [
+            AgentIdentity(agent_id="agent-a", name="AgentA", owner_group="chat"),
+            AgentIdentity(agent_id="agent-b", name="AgentB", owner_group="chat"),
+        ]
+        for agent in agents:
+            router.set_skill_profiles(agent.agent_id, [SkillProfile(tag="code", success_rate=90, total_tasks=2)])
+
+        first = router.route_message("implement the login flow", agents)
+        second = router.route_message("implement the logout flow", agents)
+
+        assert first is agents[0]
+        assert second is agents[1]
 
 
 class TestSlockEngineStateMachine:

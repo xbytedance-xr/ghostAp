@@ -225,6 +225,123 @@ class TestCreateRoleWithRoleParam:
         assert agent.role == "writer"
         assert agent.card_color == "green"
 
+
+class TestRoleInfoDetails:
+    """Role info should expose memory summary and historical task stats."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.slock import SlockHandler
+        ctx = MagicMock()
+        handler = SlockHandler(ctx)
+        handler.reply_text = MagicMock()
+        handler.send_card_to_chat = MagicMock()
+        return handler
+
+    def _make_engine(self):
+        engine = MagicMock()
+        engine.channel = MagicMock()
+        engine.channel.channel_id = "chat_test"
+        engine.registry.register = MagicMock()
+        return engine
+
+    def test_role_info_includes_memory_summary_and_task_stats(self):
+        from src.slock_engine.models import AgentIdentity, SlockMemory, SlockTask, TaskStatus
+
+        handler = self._make_handler()
+        agent = AgentIdentity(
+            agent_id="codex:default:Coder",
+            name="Coder",
+            emoji="🔧",
+            agent_type="codex",
+            role="coder",
+            owner_group="chat_test",
+        )
+        done_task = SlockTask(content="Done task", claimed_by=agent.agent_id, status=TaskStatus.DONE)
+        active_task = SlockTask(content="Active task", claimed_by=agent.agent_id, status=TaskStatus.IN_PROGRESS)
+        engine = MagicMock()
+        engine.registry.find_by_name.return_value = agent
+        engine.get_agent_status.return_value = "idle"
+        engine.tasks = [done_task, active_task]
+        engine.memory.read_agent_memory.return_value = SlockMemory(
+            role="Backend coder",
+            key_knowledge="Python service conventions",
+            active_context="Working on login",
+        )
+        engine.memory.read_skill_profiles.return_value = []
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.show_role_info("msg_info", "chat_test", "Coder")
+
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "记忆摘要" in text
+        assert "Backend coder" in text
+        assert "Python service conventions" in text
+        assert "历史任务" in text
+        assert "已完成: 1" in text
+
+    def test_create_role_from_onboarding_template(self):
+        """`--template onboarding` uses the global template market defaults."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        engine.memory.read_agent_template.return_value = {
+            "name": "onboarding",
+            "tool_type": "coco",
+            "role": "writer",
+            "emoji": "🧭",
+            "system_prompt": "You guide new team members.",
+        }
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Guide --template onboarding")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.name == "Guide"
+        assert agent.emoji == "🧭"
+        assert agent.role == "writer"
+        assert agent.agent_type == "coco"
+        assert agent.system_prompt == "You guide new team members."
+
+    def test_create_role_forks_existing_role_memory_and_skill_profile(self):
+        """`--fork Coder` copies directive, memory, and skill profiles into the new role."""
+        from src.slock_engine.models import AgentIdentity, SkillProfile, SlockMemory
+
+        handler = self._make_handler()
+        engine = self._make_engine()
+        source = AgentIdentity(
+            agent_id="codex:default:Coder",
+            name="Coder",
+            emoji="🔧",
+            agent_type="codex",
+            role="coder",
+            system_prompt="Source directive",
+            owner_group="chat_test",
+        )
+        source_memory = SlockMemory(role="Source role", key_knowledge="Source knowledge")
+        source_profiles = [SkillProfile(tag="code", success_rate=95, total_tasks=4)]
+        engine.registry.find_by_name.return_value = source
+        engine.memory.read_agent_memory.return_value = source_memory
+        engine.memory.read_skill_profiles.return_value = source_profiles
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "CoderFork --fork Coder")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.agent_type == "codex"
+        assert agent.role == "coder"
+        assert agent.system_prompt == "Source directive"
+        engine.memory.write_agent_memory.assert_called_once()
+        written_memory = engine.memory.write_agent_memory.call_args[0][1]
+        assert "Forked from codex:default:Coder" in written_memory.active_context
+        engine.memory.write_skill_profiles.assert_called_once_with(agent.agent_id, source_profiles)
+
     def test_explicit_role_overrides_tool_inference(self):
         """Explicit --role takes priority over tool_type inference."""
         handler = self._make_handler()

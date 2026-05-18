@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class SlockCommandAction(Enum):
@@ -108,7 +107,6 @@ def _parse_slock_subcommand(args: str) -> SlockCommand:
 
     sub = args.split(None, 1)
     subcmd = sub[0].lower()
-    sub_args = sub[1].strip() if len(sub) > 1 else ""
 
     if subcmd == "status":
         return SlockCommand(action=SlockCommandAction.STATUS)

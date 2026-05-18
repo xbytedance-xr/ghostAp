@@ -287,3 +287,37 @@ class TestE2EStatusPanel:
         card_json = handler.reply_card.call_args[0][1]
         card_data = json.loads(card_json)
         assert "Task Board" in card_data["header"]["title"]["content"]
+
+    def test_task_assign_without_role_auto_routes_and_executes(self):
+        """`/task assign <task>` without a role should still auto-select an idle agent."""
+        from src.feishu.handlers.slock import SlockHandler
+        from src.slock_engine.models import SlockTask
+
+        ctx = MagicMock()
+        handler = SlockHandler(ctx)
+        handler.reply_text = MagicMock()
+        handler.send_card_to_chat = MagicMock()
+        callbacks = MagicMock()
+        handler._create_callbacks = MagicMock(return_value=callbacks)
+
+        engine, agent = TestE2EHandlerToEngine()._make_engine_with_agent(chat_id="chat_auto_task")
+        task = SlockTask(content="implement login tests", created_in="chat_auto_task")
+        engine.add_task.return_value = task
+        engine.router.route_message.return_value = agent
+        engine.claim_task.return_value = True
+        engine.execute_task.return_value = "auto routed result"
+        engine._mouthpiece.format_card.return_value = {
+            "header": {"title": {"content": "🔧 Coder-E2E"}},
+            "elements": [{"tag": "markdown", "content": "auto routed result"}],
+        }
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.assign_task("msg_auto", "chat_auto_task", "implement login tests")
+
+        engine.router.route_message.assert_called_once()
+        engine.claim_task.assert_called_once_with(task.task_id, agent.agent_id)
+        engine.execute_task.assert_called_once_with(task.task_id, agent.agent_id, callbacks)
+        handler.send_card_to_chat.assert_called_once()

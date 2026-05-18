@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .models import AGENT_ROLE_COLORS, AgentIdentity, AgentStatus, SlockTask, TaskStatus
+from .models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
 
 
 def build_agent_message_card(

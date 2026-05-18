@@ -396,35 +396,59 @@ class SlockHandler(BaseEngineHandler):
             self.reply_text(message_id, f"❌ 团队激活失败已回滚: {get_error_detail(e)}")
 
     def list_teams(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        """List active teams in the current chat."""
+        """List all active Slock teams."""
         manager = self._get_engine_manager()
-        engine = manager.get_activated_engine(chat_id)
+        engines = manager.list_activated_engines()
 
-        if not engine or not engine.channel:
+        if not engines:
             self.reply_text(message_id, "当前没有活跃的团队\n\n发送 `/slock` 激活协作模式")
             return
 
-        channel = engine.channel
-        agents = engine.registry.list_agents(channel_id=channel.channel_id)
-        agent_count = len(agents)
+        lines = ["📋 **团队列表**\n"]
+        for engine in sorted(engines, key=lambda item: (item.channel.team_name if item.channel else "")):
+            channel = engine.channel
+            if not channel:
+                continue
+            agents = engine.registry.list_agents(channel_id=channel.channel_id)
+            agent_count = len(agents)
+            task_count = len(engine.tasks)
+            lines.append(
+                f"• **{channel.team_name or channel.name or channel.channel_id}** — "
+                f"{agent_count} 个 Agent · {task_count} 个任务 · 频道: `{channel.channel_id}`"
+            )
 
-        content = (
-            f"📋 **团队列表**\n\n"
-            f"• **{channel.team_name}** — {agent_count} 个 Agent · 频道: `{channel.name}`"
-        )
-        self.reply_text(message_id, content)
+        self.reply_text(message_id, "\n".join(lines))
 
     def show_team_status(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
     ):
         """Show status of a specific team."""
-        self.show_slock_status(message_id, chat_id, project)
+        manager = self._get_engine_manager()
+        engine = manager.find_team(name) if name else manager.get_activated_engine(chat_id)
+        if not engine or not engine.channel:
+            self.reply_text(message_id, f"未找到团队: **{name}**" if name else "当前没有活跃的团队")
+            return
+
+        team_name = engine.channel.team_name if engine.channel else ""
+        status_card = engine.get_status_card(team_name=team_name)
+        self.reply_card(message_id, json.dumps(status_card, ensure_ascii=False))
 
     def dissolve_team(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
     ):
         """Dissolve (stop) a team."""
-        self.stop_slock_engine(message_id, chat_id, project)
+        manager = self._get_engine_manager()
+        engine = manager.find_team(name) if name else manager.get_activated_engine(chat_id)
+        if not engine or not engine.channel:
+            self.reply_text(message_id, f"未找到团队: **{name}**" if name else "当前没有活跃的团队")
+            return
+
+        target_chat_id = engine.channel.channel_id
+        team_name = engine.channel.team_name or engine.channel.name or target_chat_id
+        engine.deactivate()
+        manager.unregister_managed_chat(target_chat_id)
+        manager.remove(target_chat_id, engine.root_path)
+        self.reply_text(message_id, f"✅ 团队 **{team_name}** 已停止并归档本地状态")
 
     # ------------------------------------------------------------------
     # Role / Agent management
@@ -475,30 +499,81 @@ class SlockHandler(BaseEngineHandler):
         emoji = "🤖"
         system_prompt = ""
         explicit_role: str | None = None
+        template_name = ""
+        fork_name = ""
+        tool_explicit = False
+        model_explicit = False
+        emoji_explicit = False
+        prompt_explicit = False
 
         i = 1
         while i < len(tokens):
             tok = tokens[i]
             if tok == "--tool" and i + 1 < len(tokens):
                 tool_type = tokens[i + 1]
+                tool_explicit = True
                 i += 2
             elif tok == "--model" and i + 1 < len(tokens):
                 model_name = tokens[i + 1]
+                model_explicit = True
                 i += 2
             elif tok == "--emoji" and i + 1 < len(tokens):
                 emoji = tokens[i + 1]
+                emoji_explicit = True
                 i += 2
             elif tok == "--role" and i + 1 < len(tokens):
                 explicit_role = tokens[i + 1]
                 i += 2
             elif tok == "--prompt" and i + 1 < len(tokens):
                 system_prompt = tokens[i + 1]
+                prompt_explicit = True
+                i += 2
+            elif tok == "--template" and i + 1 < len(tokens):
+                template_name = tokens[i + 1]
+                i += 2
+            elif tok == "--fork" and i + 1 < len(tokens):
+                fork_name = tokens[i + 1]
                 i += 2
             else:
                 i += 1
 
         # Validate tool_type against whitelist
-        from ...slock_engine.models import AGENT_ROLE_COLORS
+        from ...slock_engine.models import AGENT_ROLE_COLORS, AgentIdentity, SlockMemory
+
+        template_data: dict = {}
+        if template_name:
+            raw_template = engine.memory.read_agent_template(template_name)
+            template_data = raw_template if isinstance(raw_template, dict) else {}
+            if not template_data:
+                self.reply_text(message_id, f"❌ 未找到 Agent 模板: `{template_name}`")
+                return
+            if not tool_explicit:
+                tool_type = template_data.get("tool_type", tool_type)
+            if not model_explicit:
+                model_name = template_data.get("model_name", model_name)
+            if not emoji_explicit:
+                emoji = template_data.get("emoji", emoji)
+            if explicit_role is None:
+                explicit_role = template_data.get("role") or explicit_role
+            if not prompt_explicit:
+                system_prompt = template_data.get("system_prompt", system_prompt)
+
+        fork_source: AgentIdentity | None = None
+        if fork_name:
+            fork_source = engine.registry.find_by_name(fork_name, channel_id=chat_id) or engine.registry.find_by_name(fork_name)
+            if not isinstance(fork_source, AgentIdentity):
+                self.reply_text(message_id, f"❌ 未找到可 fork 的角色: `{fork_name}`")
+                return
+            if not tool_explicit:
+                tool_type = fork_source.agent_type
+            if not model_explicit:
+                model_name = fork_source.model_name
+            if not emoji_explicit:
+                emoji = fork_source.emoji
+            if explicit_role is None:
+                explicit_role = fork_source.role
+            if not prompt_explicit:
+                system_prompt = fork_source.system_prompt
 
         VALID_TOOLS = set(self.TOOL_TYPE_ROLE_MAP.keys())
         if tool_type not in VALID_TOOLS:
@@ -525,8 +600,11 @@ class SlockHandler(BaseEngineHandler):
         else:
             role = self.TOOL_TYPE_ROLE_MAP.get(tool_type, "custom")
 
-        from ...slock_engine.models import AgentIdentity, SlockMemory
-
+        agent_id = f"{tool_type}:{model_name or 'default'}:{role_name}"
+        existing_raw = engine.registry.get(agent_id)
+        existing_agent = existing_raw if isinstance(existing_raw, AgentIdentity) else None
+        if existing_agent and not system_prompt:
+            system_prompt = existing_agent.system_prompt
         if not system_prompt:
             system_prompt = self._build_default_directive(
                 role_name=role_name,
@@ -537,7 +615,7 @@ class SlockHandler(BaseEngineHandler):
             )
 
         agent = AgentIdentity(
-            agent_id=f"{tool_type}:{model_name or 'default'}:{role_name}",
+            agent_id=agent_id,
             name=role_name,
             emoji=emoji,
             agent_type=tool_type,
@@ -545,17 +623,40 @@ class SlockHandler(BaseEngineHandler):
             system_prompt=system_prompt,
             role=role,
             owner_group=chat_id,
+            member_groups=[chat_id],
         )
         memory_path = engine.memory.agent_memory_path(agent.agent_id)
         agent.memory_path = memory_path
-        engine.memory.write_agent_memory(
-            agent.agent_id,
-            SlockMemory(
-                role=system_prompt,
-                key_knowledge=f"tool_type={tool_type}\nmodel={model_name or 'default'}\nrole={role}",
-                active_context=f"Created in Slock team {chat_id}.",
-            ),
-        )
+        if not existing_agent:
+            if fork_source is not None:
+                source_memory = engine.memory.read_agent_memory(fork_source.agent_id)
+                active_context = source_memory.active_context
+                fork_entry = f"Forked from {fork_source.agent_id} into Slock team {chat_id}."
+                active_context = f"{active_context}\n{fork_entry}".strip() if active_context else fork_entry
+                engine.memory.write_agent_memory(
+                    agent.agent_id,
+                    SlockMemory(
+                        role=source_memory.role or system_prompt,
+                        key_knowledge=source_memory.key_knowledge,
+                        active_context=active_context,
+                    ),
+                )
+                source_profiles = engine.memory.read_skill_profiles(fork_source.agent_id)
+                engine.memory.write_skill_profiles(agent.agent_id, source_profiles)
+            else:
+                key_knowledge = template_data.get("key_knowledge") or (
+                    f"tool_type={tool_type}\nmodel={model_name or 'default'}\nrole={role}"
+                )
+                engine.memory.write_agent_memory(
+                    agent.agent_id,
+                    SlockMemory(
+                        role=system_prompt,
+                        key_knowledge=key_knowledge,
+                        active_context=f"Created in Slock team {chat_id}.",
+                    ),
+                )
+        else:
+            engine.memory.update_agent_context(agent.agent_id, f"Joined Slock team {chat_id}.")
         engine.registry.register(agent)
 
         self.reply_text(
@@ -659,14 +760,41 @@ class SlockHandler(BaseEngineHandler):
             return
 
         status = engine.get_agent_status(agent.agent_id)
+        status_value = status.value if hasattr(status, "value") else str(status)
+        memory = engine.memory.read_agent_memory(agent.agent_id)
+        profiles = engine.memory.read_skill_profiles(agent.agent_id)
+        assigned_tasks = [task for task in engine.tasks if task.claimed_by == agent.agent_id]
+        done_count = sum(1 for task in assigned_tasks if getattr(task.status, "value", task.status) == "done")
+        active_count = sum(
+            1
+            for task in assigned_tasks
+            if getattr(task.status, "value", task.status) in {"in_progress", "in_review"}
+        )
+        memory_lines: list[str] = []
+        if memory.role:
+            memory_lines.append(f"• Role: {memory.role[:160]}")
+        if memory.key_knowledge:
+            memory_lines.append(f"• Key Knowledge: {memory.key_knowledge[:160]}")
+        if memory.active_context:
+            memory_lines.append(f"• Active Context: {memory.active_context[-160:]}")
+        profile_lines = [
+            f"• {profile.tag}: 成功率 {profile.success_rate:.0f}% · {profile.total_tasks} 次"
+            for profile in profiles[:6]
+        ]
         info = (
             f"{agent.emoji} **{agent.name}**\n\n"
             f"• ID: `{agent.agent_id[:8]}`\n"
             f"• 类型: `{agent.agent_type}`\n"
             f"• 模型: `{agent.model_name or 'default'}`\n"
             f"• 角色: {agent.role or '(未设置)'}\n"
-            f"• 状态: `{status.value}`\n"
-            f"• 权限: `{', '.join(agent.permissions) if agent.permissions else '默认'}`"
+            f"• 状态: `{status_value}`\n"
+            f"• 权限: `{', '.join(agent.permissions) if agent.permissions else '默认'}`\n\n"
+            "**记忆摘要**\n"
+            f"{chr(10).join(memory_lines) if memory_lines else '• 暂无记忆'}\n\n"
+            "**历史任务**\n"
+            f"• 总数: {len(assigned_tasks)} · 已完成: {done_count} · 进行中: {active_count}\n\n"
+            "**技能画像**\n"
+            f"{chr(10).join(profile_lines) if profile_lines else '• 暂无技能画像'}"
         )
         self.reply_text(message_id, info)
 
@@ -774,14 +902,68 @@ class SlockHandler(BaseEngineHandler):
                 )
             return
 
-        # No role specified — just create the task
+        # No role specified — use skill-based automatic assignment.
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agents = list(engine.registry.list_agents(channel_id=channel_id))
+        if not agents:
+            self.reply_text(
+                message_id,
+                f"✅ 任务已创建（等待分配）\n"
+                f"• ID: `{task.task_id[:8]}`\n"
+                f"• 内容: {content[:80]}\n"
+                f"• 当前没有可用角色，发送 `/new-role <名称>` 创建角色",
+            )
+            return
+
+        agent = engine.router.route_message(content, agents)
+        if not agent:
+            self.reply_text(
+                message_id,
+                f"✅ 任务已创建（等待分配）\n"
+                f"• ID: `{task.task_id[:8]}`\n"
+                f"• 内容: {content[:80]}\n"
+                f"• 暂无匹配角色，发送 `/role list` 查看可用角色",
+            )
+            return
+
+        if not engine.claim_task(task.task_id, agent.agent_id):
+            self.reply_text(message_id, f"❌ 任务 claim 失败，{agent.name} 可能正在执行其他任务")
+            return
+
         self.reply_text(
             message_id,
-            f"✅ 任务已创建（未分配）\n"
+            f"⏳ 任务已自动分配给 {agent.emoji} **{agent.name}**，正在执行...\n"
             f"• ID: `{task.task_id[:8]}`\n"
-            f"• 内容: {content[:80]}\n"
-            f"• 发送 `/task assign <任务> <角色>` 分配给角色",
+            f"• 内容: {content[:80]}",
         )
+
+        import time as _time
+        start_time = _time.time()
+        try:
+            callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
+            result = engine.execute_task(task.task_id, agent.agent_id, callbacks)
+        except Exception as e:
+            logger.error("assign_task auto execute_task error: %s", repr(e))
+            self.reply_text(
+                message_id,
+                f"❌ 任务执行失败: {get_error_detail(e)}\n"
+                f"• 任务已回退为 TODO，可重新分配",
+            )
+            return
+
+        if result:
+            duration = _time.time() - start_time
+            card_data = engine._mouthpiece.format_card(
+                agent, result, model_info=agent.agent_type, duration_s=duration
+            )
+            card_json = json.dumps(card_data, ensure_ascii=False)
+            self.send_card_to_chat(chat_id, card_json, origin_message_id=message_id)
+        else:
+            self.reply_text(
+                message_id,
+                "⚠️ 任务执行完成但无输出\n"
+                "• 任务已回退为 TODO，可重新分配",
+            )
 
     def show_task_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Show task board with status summary."""

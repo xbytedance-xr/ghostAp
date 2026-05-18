@@ -75,6 +75,28 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
         """Check if slock mode is active for a given chat."""
         return self.get_activated_engine(chat_id) is not None
 
+    def list_activated_engines(self) -> list[SlockEngine]:
+        """List all engines with an activated slock channel."""
+        return [engine for engine in self.list_engines() if engine.channel is not None]
+
+    def find_team(self, name: str) -> Optional[SlockEngine]:
+        """Find an activated team by team name, channel name, or chat id."""
+        needle = (name or "").strip().lower()
+        if not needle:
+            return None
+        for engine in self.list_activated_engines():
+            channel = engine.channel
+            if channel is None:
+                continue
+            candidates = {
+                channel.channel_id.lower(),
+                (channel.name or "").lower(),
+                (channel.team_name or "").lower(),
+            }
+            if needle in candidates:
+                return engine
+        return None
+
     def restore_from_disk(self, root_path: str) -> int:
         """Scan {root_path}/slock/*/.slock_channel.json and restore engines.
 

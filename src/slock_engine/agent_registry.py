@@ -6,6 +6,7 @@ Persists agent identities as YAML files under .ghostap/slock/agents/.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -14,9 +15,6 @@ from typing import Optional
 from .models import AgentIdentity
 
 logger = logging.getLogger(__name__)
-
-# Use JSON instead of YAML to avoid extra dependency
-import json
 
 
 class AgentRegistry:
@@ -66,6 +64,11 @@ class AgentRegistry:
         """Register a new agent and persist to disk."""
         with self._lock:
             self._ensure_loaded()
+            existing = self._agents.get(agent.agent_id)
+            if existing is not None:
+                agent = self._merge_agent(existing, agent)
+            else:
+                agent = self._normalize_groups(agent)
             self._agents[agent.agent_id] = agent
             self._persist(agent)
         return agent
@@ -83,7 +86,7 @@ class AgentRegistry:
             name_lower = name.lower()
             for agent in self._agents.values():
                 if agent.name.lower() == name_lower:
-                    if channel_id is None or agent.owner_group == channel_id:
+                    if channel_id is None or self._belongs_to_channel(agent, channel_id):
                         return agent
             return None
 
@@ -93,7 +96,7 @@ class AgentRegistry:
             self._ensure_loaded()
             if channel_id is None:
                 return list(self._agents.values())
-            return [a for a in self._agents.values() if a.owner_group == channel_id]
+            return [a for a in self._agents.values() if self._belongs_to_channel(a, channel_id)]
 
     def remove(self, agent_id: str) -> bool:
         """Remove an agent from registry and delete its identity file."""
@@ -128,6 +131,41 @@ class AgentRegistry:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(agent.to_dict(), f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, identity_file)
+
+    @staticmethod
+    def _normalize_groups(agent: AgentIdentity) -> AgentIdentity:
+        """Ensure owner_group and member_groups agree for persisted identities."""
+        groups = list(dict.fromkeys([*(agent.member_groups or []), agent.owner_group]))
+        agent.member_groups = [g for g in groups if g]
+        return agent
+
+    @classmethod
+    def _merge_agent(cls, existing: AgentIdentity, incoming: AgentIdentity) -> AgentIdentity:
+        """Merge a known agent into another team without losing its original identity."""
+        groups = list(dict.fromkeys([
+            *(existing.member_groups or []),
+            existing.owner_group,
+            *(incoming.member_groups or []),
+            incoming.owner_group,
+        ]))
+        groups = [g for g in groups if g]
+
+        existing.name = incoming.name or existing.name
+        existing.emoji = incoming.emoji or existing.emoji
+        existing.agent_type = incoming.agent_type or existing.agent_type
+        existing.model_name = incoming.model_name or existing.model_name
+        existing.system_prompt = incoming.system_prompt or existing.system_prompt
+        existing.role = incoming.role or existing.role
+        existing.permissions = incoming.permissions or existing.permissions
+        existing.memory_path = incoming.memory_path or existing.memory_path
+        existing.member_groups = groups
+        if not existing.owner_group:
+            existing.owner_group = incoming.owner_group
+        return cls._normalize_groups(existing)
+
+    @staticmethod
+    def _belongs_to_channel(agent: AgentIdentity, channel_id: str) -> bool:
+        return agent.owner_group == channel_id or channel_id in (agent.member_groups or [])
 
     def clear(self) -> None:
         """Clear in-memory cache (does not delete files)."""

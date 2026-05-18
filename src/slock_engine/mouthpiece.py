@@ -6,7 +6,6 @@ using emoji prefixes, named identifiers, and Interactive Cards for visual identi
 
 from __future__ import annotations
 
-import time
 from typing import Optional
 
 from .card_templates import build_agent_message_card

@@ -14,7 +14,7 @@ import threading
 import time
 from typing import Optional
 
-from .models import AgentIdentity, AgentStatus, SkillProfile, SlockTask, TaskStatus
+from .models import AgentIdentity, AgentStatus, SkillProfile
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +105,7 @@ class TaskRouter:
         self._task_claim = TaskClaim(default_ttl=task_claim_ttl)
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._skill_profiles: dict[str, list[SkillProfile]] = {}  # agent_id -> profiles
+        self._round_robin_index = 0
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     @property
@@ -166,10 +167,9 @@ class TaskRouter:
     ) -> Optional[AgentIdentity]:
         """Score agents by skill relevance and availability, return best match."""
         # Extract skill keywords from message
-        required_skills = self._extract_skill_keywords(text)
+        required_skills = self.extract_skill_keywords(text)
 
-        best_agent: Optional[AgentIdentity] = None
-        best_score = -1.0
+        scored: list[tuple[AgentIdentity, float]] = []
 
         for agent in agents:
             status = self.get_agent_status(agent.agent_id)
@@ -193,14 +193,22 @@ class TaskRouter:
                 + relevance * _WEIGHT_SKILL_RELEVANCE
                 + availability * _WEIGHT_AVAILABILITY
             )
+            scored.append((agent, score))
 
-            if score > best_score:
-                best_score = score
-                best_agent = agent
+        if not scored:
+            return None
 
-        return best_agent
+        best_score = max(score for _, score in scored)
+        tied = [agent for agent, score in scored if abs(score - best_score) < 1e-9]
+        if len(tied) == 1:
+            return tied[0]
 
-    def _extract_skill_keywords(self, text: str) -> list[str]:
+        with self._lock:
+            selected = tied[self._round_robin_index % len(tied)]
+            self._round_robin_index += 1
+        return selected
+
+    def extract_skill_keywords(self, text: str) -> list[str]:
         """Extract skill-related keywords from message text."""
         skill_keywords = {
             "code": ["code", "implement", "function", "class", "bug", "fix", "编码", "实现", "修复"],
@@ -218,6 +226,10 @@ class TaskRouter:
                 matched.append(skill)
 
         return matched if matched else ["code"]  # default to code
+
+    def _extract_skill_keywords(self, text: str) -> list[str]:
+        """Backward-compatible alias for existing direct unit tests."""
+        return self.extract_skill_keywords(text)
 
     def _calculate_relevance(self, profiles: list[SkillProfile], required_skills: list[str]) -> float:
         """Calculate skill relevance score (0.0 - 1.0)."""
