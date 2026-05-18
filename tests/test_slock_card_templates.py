@@ -192,3 +192,100 @@ class TestBuildTaskBoardCard:
         # Should have columns for each status
         assert any("Todo" in e["content"] for e in md_elements)
         assert any("Done" in e["content"] for e in md_elements)
+
+
+class TestBuildAgentMessageCardJsonStructure:
+    """R-01 mitigation: JSON Schema regression tests for build_agent_message_card.
+
+    Ensures the four essential elements (header.template, header.title,
+    body.elements[markdown], body.elements[note]) are always present and correctly
+    structured to prevent Feishu card rendering failures.
+    """
+
+    def _make_agent(self, **kwargs) -> AgentIdentity:
+        defaults = {
+            "agent_id": "test-001",
+            "name": "TestCoder",
+            "emoji": "🔧",
+            "role": "coder",
+            "agent_type": "claude",
+            "model_name": "claude-sonnet-4",
+        }
+        defaults.update(kwargs)
+        return AgentIdentity(**defaults)
+
+    def test_top_level_schema_keys(self):
+        """Card must have schema, config, header, body at top level."""
+        agent = self._make_agent()
+        card = build_agent_message_card(agent, "content")
+        assert set(card.keys()) == {"schema", "config", "header", "body"}
+        assert card["schema"] == "2.0"
+        assert card["config"]["wide_screen_mode"] is True
+
+    def test_header_has_template_and_title(self):
+        """Header must contain template (color) and title with tag+content."""
+        agent = self._make_agent(role="coder")
+        card = build_agent_message_card(agent, "hello")
+        header = card["header"]
+        # template must be a valid Feishu color string
+        assert header["template"] == "blue"  # coder -> blue
+        # title must be a plain_text tag with content
+        assert header["title"]["tag"] == "plain_text"
+        assert "TestCoder" in header["title"]["content"]
+        assert "🔧" in header["title"]["content"]
+
+    def test_header_template_varies_by_role(self):
+        """Different roles produce different header colors."""
+        roles_colors = [
+            ("coder", "blue"),
+            ("writer", "green"),
+            ("reviewer", "orange"),
+            ("tester", "purple"),
+            ("planner", "red"),
+            ("custom", "grey"),
+        ]
+        for role, expected_color in roles_colors:
+            agent = self._make_agent(role=role)
+            card = build_agent_message_card(agent, "x")
+            assert card["header"]["template"] == expected_color, f"role={role}"
+
+    def test_body_contains_markdown_element(self):
+        """Body elements must include at least one markdown element with the content."""
+        agent = self._make_agent()
+        card = build_agent_message_card(agent, "The quick brown fox")
+        body_elements = card["body"]["elements"]
+        md_elements = [e for e in body_elements if e.get("tag") == "markdown"]
+        assert len(md_elements) >= 1
+        assert "The quick brown fox" in md_elements[0]["content"]
+
+    def test_body_contains_note_element_when_metadata_present(self):
+        """Body elements must include a note element when model_info or duration is given."""
+        agent = self._make_agent()
+        card = build_agent_message_card(agent, "msg", model_info="gpt-4o", duration_s=3.5)
+        body_elements = card["body"]["elements"]
+        note_elements = [e for e in body_elements if e.get("tag") == "note"]
+        assert len(note_elements) == 1
+        note = note_elements[0]
+        # note must have elements array with plain_text child
+        assert note["elements"][0]["tag"] == "plain_text"
+        note_content = note["elements"][0]["content"]
+        assert "gpt-4o" in note_content
+        assert "3.5s" in note_content
+
+    def test_note_element_contains_agent_type(self):
+        """Footer note should include agent_type when present."""
+        agent = self._make_agent(agent_type="codex")
+        card = build_agent_message_card(agent, "msg", duration_s=1.0)
+        note_elements = [e for e in card["body"]["elements"] if e.get("tag") == "note"]
+        assert len(note_elements) == 1
+        note_content = note_elements[0]["elements"][0]["content"]
+        assert "codex" in note_content
+
+    def test_elements_ordering_markdown_before_note(self):
+        """Markdown content must appear before the footer note in elements array."""
+        agent = self._make_agent()
+        card = build_agent_message_card(agent, "body text", model_info="model-x")
+        body_elements = card["body"]["elements"]
+        md_idx = next(i for i, e in enumerate(body_elements) if e["tag"] == "markdown")
+        note_idx = next(i for i, e in enumerate(body_elements) if e["tag"] == "note")
+        assert md_idx < note_idx

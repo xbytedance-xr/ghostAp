@@ -740,6 +740,17 @@ class SlockHandler(BaseEngineHandler):
     # Card action handler
     # ------------------------------------------------------------------
 
+    def _refresh_status_card(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Rebuild and update the status panel card in-place."""
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            return
+        team_name = engine.channel.team_name if engine.channel else ""
+        status_card = engine.get_status_card(team_name=team_name)
+        card_content = json.dumps(status_card, ensure_ascii=False)
+        self.update_card(message_id, card_content)
+
     def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
         """Handle slock_* card actions."""
         project_id = value.get("project_id", "")
@@ -749,6 +760,7 @@ class SlockHandler(BaseEngineHandler):
 
         slock_actions = {
             "slock_stop": self.stop_slock_engine,
+            "slock_refresh_status": self._refresh_status_card,
         }
 
         self._dispatch_standard_card_action(CardActionContext(
