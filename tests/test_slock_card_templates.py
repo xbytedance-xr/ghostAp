@@ -67,13 +67,57 @@ class TestBuildStatusPanelCard:
         body = card["body"]["elements"]
         assert any("No agents" in e.get("content", "") for e in body)
 
-    def test_with_agents(self):
+    def test_with_agents_uses_column_set(self):
+        """AC-6: Status panel uses column_set components instead of plain markdown list."""
         agent = AgentIdentity(agent_id="a1", name="Alice", emoji="🤖", role="coder")
         card = build_status_panel_card([(agent, AgentStatus.IDLE)], team_name="Team")
         body = card["body"]["elements"]
-        md_elements = [e for e in body if e["tag"] == "markdown"]
-        assert any("Alice" in e["content"] for e in md_elements)
-        assert any("Idle" in e["content"] for e in md_elements)
+        column_sets = [e for e in body if e["tag"] == "column_set"]
+        assert len(column_sets) == 1
+        # Verify agent info is inside the first column
+        col = column_sets[0]["columns"][0]
+        md_content = col["elements"][0]["content"]
+        assert "Alice" in md_content
+
+    def test_status_color_idle_green(self):
+        """IDLE status maps to green background."""
+        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
+        card = build_status_panel_card([(agent, AgentStatus.IDLE)])
+        cs = [e for e in card["body"]["elements"] if e["tag"] == "column_set"]
+        assert cs[0]["background_style"] == "green"
+
+    def test_status_color_thinking_yellow(self):
+        """THINKING status maps to yellow background."""
+        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
+        card = build_status_panel_card([(agent, AgentStatus.THINKING)])
+        cs = [e for e in card["body"]["elements"] if e["tag"] == "column_set"]
+        assert cs[0]["background_style"] == "yellow"
+
+    def test_status_color_running_blue(self):
+        """RUNNING status maps to blue background."""
+        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
+        card = build_status_panel_card([(agent, AgentStatus.RUNNING)])
+        cs = [e for e in card["body"]["elements"] if e["tag"] == "column_set"]
+        assert cs[0]["background_style"] == "blue"
+
+    def test_status_color_sending_grey(self):
+        """SENDING status maps to grey background."""
+        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
+        card = build_status_panel_card([(agent, AgentStatus.SENDING)])
+        cs = [e for e in card["body"]["elements"] if e["tag"] == "column_set"]
+        assert cs[0]["background_style"] == "grey"
+
+    def test_multiple_agents_produce_multiple_column_sets(self):
+        """Each agent gets its own column_set row."""
+        a1 = AgentIdentity(agent_id="a1", name="Alice", emoji="🤖")
+        a2 = AgentIdentity(agent_id="a2", name="Bob", emoji="🔧")
+        card = build_status_panel_card(
+            [(a1, AgentStatus.IDLE), (a2, AgentStatus.RUNNING)]
+        )
+        cs = [e for e in card["body"]["elements"] if e["tag"] == "column_set"]
+        assert len(cs) == 2
+        assert cs[0]["background_style"] == "green"
+        assert cs[1]["background_style"] == "blue"
 
     def test_refresh_button_present(self):
         card = build_status_panel_card([])
@@ -85,6 +129,29 @@ class TestBuildStatusPanelCard:
     def test_default_title_without_team(self):
         card = build_status_panel_card([])
         assert "Slock Agent Status" in card["header"]["title"]["content"]
+
+    def test_status_panel_dual_column(self):
+        """Designer review fix: column_set uses 2 columns with flex_mode='bisect'."""
+        a1 = AgentIdentity(agent_id="a1", name="Alice", emoji="🤖", role="coder")
+        a2 = AgentIdentity(agent_id="a2", name="Bob", emoji="🔧", role="writer")
+        card = build_status_panel_card(
+            [(a1, AgentStatus.IDLE), (a2, AgentStatus.RUNNING)], team_name="Team"
+        )
+        body = card["body"]["elements"]
+        column_sets = [e for e in body if e["tag"] == "column_set"]
+        assert len(column_sets) == 2
+
+        for cs in column_sets:
+            # Must have 2 columns
+            assert len(cs["columns"]) == 2
+            # flex_mode must be bisect
+            assert cs["flex_mode"] == "bisect"
+            # Left column has weight 3, right column has weight 1
+            assert cs["columns"][0]["weight"] == 3
+            assert cs["columns"][1]["weight"] == 1
+            # Right column content is right-aligned status label
+            right_md = cs["columns"][1]["elements"][0]
+            assert right_md["text_align"] == "right"
 
 
 class TestBuildTaskBoardCard:

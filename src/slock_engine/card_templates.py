@@ -77,6 +77,9 @@ def build_status_panel_card(
 ) -> dict:
     """Build a status panel card showing all agents and their states.
 
+    Uses Feishu column_set components with colored backgrounds for native
+    status color-coding: green=IDLE, yellow=THINKING, blue=RUNNING, grey=SENDING.
+
     Args:
         agents: List of (AgentIdentity, AgentStatus) tuples.
         team_name: Optional team name for the header.
@@ -89,14 +92,44 @@ def build_status_panel_card(
     if not agents:
         elements.append({"tag": "markdown", "content": "*No agents registered in this team.*"})
     else:
-        # Build agent status rows
-        rows: list[str] = []
+        # Build column_set rows — one per agent with colored status indicator
         for agent, status in agents:
             status_icon = _STATUS_ICON_MAP.get(status, "⚪")
             status_label = status.value.capitalize()
-            rows.append(f"{agent.emoji} **{agent.name}** — {status_icon} {status_label}")
+            bg_color = _STATUS_BG_COLOR_MAP.get(status, "grey")
 
-        elements.append({"tag": "markdown", "content": "\n".join(rows)})
+            column_set: dict = {
+                "tag": "column_set",
+                "flex_mode": "bisect",
+                "background_style": bg_color,
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 3,
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": f"{agent.emoji} **{agent.name}** — {status_icon}",
+                            }
+                        ],
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "center",
+                        "elements": [
+                            {
+                                "tag": "markdown",
+                                "content": f"**{status_label}**",
+                                "text_align": "right",
+                            }
+                        ],
+                    },
+                ],
+            }
+            elements.append(column_set)
 
     # Action button for refresh
     elements.append({
@@ -188,6 +221,16 @@ _STATUS_ICON_MAP: dict[AgentStatus, str] = {
     AgentStatus.RUNNING: "🔵",
     AgentStatus.CHECKING: "🔵",
     AgentStatus.SENDING: "⚪",
+}
+
+# Background color mapping for column_set status rows (Feishu card background_style)
+_STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = {
+    AgentStatus.IDLE: "green",
+    AgentStatus.WAKING: "yellow",
+    AgentStatus.THINKING: "yellow",
+    AgentStatus.RUNNING: "blue",
+    AgentStatus.CHECKING: "blue",
+    AgentStatus.SENDING: "grey",
 }
 
 _TASK_STATUS_ICONS: dict[TaskStatus, str] = {

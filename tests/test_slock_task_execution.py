@@ -8,11 +8,13 @@ Covers:
 
 from __future__ import annotations
 
+import pytest
+
+pytest.importorskip("acp", reason="acp SDK not installed")
+
 import time
 import unittest.mock
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.slock_engine.engine import SlockEngine
 from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus

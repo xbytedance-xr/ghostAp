@@ -413,16 +413,29 @@ class SlockHandler(BaseEngineHandler):
     # Role / Agent management
     # ------------------------------------------------------------------
 
+    # tool_type → default role inference mapping
+    TOOL_TYPE_ROLE_MAP: dict[str, str] = {
+        "codex": "coder",
+        "claude": "reviewer",
+        "coco": "writer",
+        "gemini": "coder",
+        "ttadk": "custom",
+    }
+
     def create_role(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
     ):
         """Create a new virtual agent role.
 
         Supports parameter syntax:
-            /new-role <name> [--tool <type>] [--model <model>] [--emoji <e>] [--prompt <text>]
+            /new-role <name> [--tool <type>] [--model <model>] [--emoji <e>] [--role <role>] [--prompt <text>]
         """
         if not name:
-            self.reply_text(message_id, "请提供角色名称\n\n用法: `/new-role <角色名称>` [--tool codex] [--model o3-pro] [--emoji 🔧] [--prompt <text>]")
+            self.reply_text(
+                message_id,
+                "请提供角色名称\n\n用法: `/new-role <角色名称>` [--tool codex] [--model o3-pro] "
+                "[--emoji 🔧] [--role coder] [--prompt <text>]",
+            )
             return
 
         manager = self._get_engine_manager()
@@ -444,6 +457,7 @@ class SlockHandler(BaseEngineHandler):
         model_name = ""
         emoji = "🤖"
         system_prompt = ""
+        explicit_role: str | None = None
 
         i = 1
         while i < len(tokens):
@@ -457,11 +471,42 @@ class SlockHandler(BaseEngineHandler):
             elif tok == "--emoji" and i + 1 < len(tokens):
                 emoji = tokens[i + 1]
                 i += 2
+            elif tok == "--role" and i + 1 < len(tokens):
+                explicit_role = tokens[i + 1]
+                i += 2
             elif tok == "--prompt" and i + 1 < len(tokens):
                 system_prompt = tokens[i + 1]
                 i += 2
             else:
                 i += 1
+
+        # Validate tool_type against whitelist
+        from ...slock_engine.models import AGENT_ROLE_COLORS
+
+        VALID_TOOLS = set(self.TOOL_TYPE_ROLE_MAP.keys())
+        if tool_type not in VALID_TOOLS:
+            self.reply_text(
+                message_id,
+                f"❌ 无效的 tool_type: `{tool_type}`\n"
+                f"合法值: {', '.join(sorted(VALID_TOOLS))}",
+            )
+            return
+
+        # Validate explicit role against whitelist
+        VALID_ROLES = set(AGENT_ROLE_COLORS.keys())
+        if explicit_role and explicit_role not in VALID_ROLES:
+            self.reply_text(
+                message_id,
+                f"❌ 无效的 role: `{explicit_role}`\n"
+                f"合法值: {', '.join(sorted(VALID_ROLES))}",
+            )
+            return
+
+        # Determine role: explicit --role takes priority, otherwise infer from tool_type
+        if explicit_role:
+            role = explicit_role
+        else:
+            role = self.TOOL_TYPE_ROLE_MAP.get(tool_type, "custom")
 
         from ...slock_engine.models import AgentIdentity
 
@@ -471,6 +516,7 @@ class SlockHandler(BaseEngineHandler):
             agent_type=tool_type,
             model_name=model_name,
             system_prompt=system_prompt,
+            role=role,
             owner_group=chat_id,
         )
         engine.registry.register(agent)
@@ -478,7 +524,7 @@ class SlockHandler(BaseEngineHandler):
         self.reply_text(
             message_id,
             f"✅ 角色 **{agent.emoji} {agent.name}** 已创建 (ID: `{agent.agent_id[:8]}`)\n"
-            f"   工具: `{tool_type}` | 模型: `{model_name or '默认'}` | Emoji: {emoji}",
+            f"   工具: `{tool_type}` | 模型: `{model_name or '默认'}` | 角色: `{role}` | Emoji: {emoji}",
         )
 
     def list_roles(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):

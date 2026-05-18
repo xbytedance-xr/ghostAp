@@ -145,3 +145,200 @@ class TestCreateRoleDefaults:
         handler.create_role("msg_1", "chat_test", "TestAgent")
         handler.reply_text.assert_called_once()
         assert "激活" in handler.reply_text.call_args[0][1]
+
+
+class TestCreateRoleWithRoleParam:
+    """Test --role parameter: explicit role, auto-inference from tool_type, override priority."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.slock import SlockHandler
+        ctx = MagicMock()
+        handler = SlockHandler(ctx)
+        handler.reply_text = MagicMock()
+        handler.send_card_to_chat = MagicMock()
+        return handler
+
+    def _make_engine(self):
+        engine = MagicMock()
+        engine.channel = MagicMock()
+        engine.channel.channel_id = "chat_test"
+        engine.registry.register = MagicMock()
+        return engine
+
+    def test_explicit_role_param(self):
+        """AC-4: /new-role Alpha --role coder --tool codex sets role='coder', card_color='blue'."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Alpha --role coder --tool codex")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.role == "coder"
+        assert agent.card_color == "blue"
+
+    def test_role_inferred_from_codex(self):
+        """AC-5: /new-role Beta --tool codex (no --role) infers role='coder'."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Beta --tool codex")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.role == "coder"
+        assert agent.card_color == "blue"
+
+    def test_role_inferred_from_claude(self):
+        """--tool claude infers role='reviewer'."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Gamma --tool claude")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.role == "reviewer"
+        assert agent.card_color == "orange"
+
+    def test_role_inferred_from_coco(self):
+        """--tool coco infers role='writer'."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Delta --tool coco")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.role == "writer"
+        assert agent.card_color == "green"
+
+    def test_explicit_role_overrides_tool_inference(self):
+        """Explicit --role takes priority over tool_type inference."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Epsilon --tool codex --role writer")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.role == "writer"
+        assert agent.card_color == "green"
+
+    def test_unknown_tool_rejected(self):
+        """Unknown tool_type is rejected with error listing valid tools."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Zeta --tool unknown_tool")
+
+        # Should NOT register — validation rejects unknown tool
+        engine.registry.register.assert_not_called()
+        # Should reply with error listing valid tools
+        handler.reply_text.assert_called_once()
+        error_msg = handler.reply_text.call_args[0][1]
+        assert "无效" in error_msg or "invalid" in error_msg.lower()
+        assert "claude" in error_msg
+        assert "codex" in error_msg
+
+    def test_no_role_no_tool_defaults_to_writer(self):
+        """Default tool_type='coco' infers role='writer'."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Eta")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.role == "writer"  # coco → writer
+        assert agent.card_color == "green"
+
+
+class TestRoleWhitelistValidation:
+    """Test role and tool_type whitelist validation (security audit fix)."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.slock import SlockHandler
+        ctx = MagicMock()
+        handler = SlockHandler(ctx)
+        handler.reply_text = MagicMock()
+        handler.send_card_to_chat = MagicMock()
+        return handler
+
+    def _make_engine(self):
+        engine = MagicMock()
+        engine.channel = MagicMock()
+        engine.channel.channel_id = "chat_test"
+        engine.registry.register = MagicMock()
+        return engine
+
+    def test_invalid_role_rejected(self):
+        """--role admin is rejected with error listing valid roles."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "TestAgent --role admin")
+
+        # Should NOT register
+        engine.registry.register.assert_not_called()
+        # Error message should list valid roles
+        handler.reply_text.assert_called_once()
+        error_msg = handler.reply_text.call_args[0][1]
+        assert "admin" in error_msg
+        assert "coder" in error_msg
+        assert "writer" in error_msg
+        assert "reviewer" in error_msg
+
+    def test_invalid_tool_rejected(self):
+        """--tool fake is rejected with error listing valid tool types."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "TestAgent --tool fake")
+
+        # Should NOT register
+        engine.registry.register.assert_not_called()
+        # Error message should list valid tools
+        handler.reply_text.assert_called_once()
+        error_msg = handler.reply_text.call_args[0][1]
+        assert "fake" in error_msg
+        assert "codex" in error_msg
+        assert "claude" in error_msg
+        assert "coco" in error_msg
+
+    def test_valid_role_accepted(self):
+        """--role coder is accepted and agent is created with correct role."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "TestAgent --role coder --tool codex")
+
+        # Should register successfully
+        engine.registry.register.assert_called_once()
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.role == "coder"
+        assert agent.name == "TestAgent"
