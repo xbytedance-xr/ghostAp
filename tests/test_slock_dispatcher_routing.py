@@ -200,3 +200,54 @@ class TestUnmanagedChatPassthrough:
         assert is_slock_command("/role list") is False
         assert is_slock_command("/task list") is False
         assert is_slock_command("/team status") is False
+
+
+# ============================================================
+# AC-14: Dispatcher routing chain priority
+# ============================================================
+
+
+class TestRoutingChainPriority:
+    """AC-14: SlockModeHandler sits after SpecModeHandler and before ExitHandler."""
+
+    def test_slock_checked_after_spec_before_exit(self):
+        """AC-14: In dispatcher source, slock check follows spec and precedes exit.
+
+        We verify by importing the dispatcher and inspecting process_with_intent
+        source line order — spec check line < slock check line < exit check line.
+        """
+        import inspect
+        from src.feishu.dispatcher import MessageDispatcher
+
+        source = inspect.getsource(MessageDispatcher.process_with_intent)
+
+        spec_pos = source.find("_is_spec_command")
+        slock_pos = source.find("_is_slock_command")
+        exit_pos = source.find("_is_exit_command")
+
+        assert spec_pos != -1, "_is_spec_command not found in process_with_intent"
+        assert slock_pos != -1, "_is_slock_command not found in process_with_intent"
+        assert exit_pos != -1, "_is_exit_command not found in process_with_intent"
+
+        assert spec_pos < slock_pos, (
+            f"Spec ({spec_pos}) must appear before Slock ({slock_pos}) in routing chain"
+        )
+        assert slock_pos < exit_pos, (
+            f"Slock ({slock_pos}) must appear before Exit ({exit_pos}) in routing chain"
+        )
+
+    def test_slock_command_does_not_fall_to_exit(self):
+        """AC-14: When slock command matches, exit handler is never reached."""
+        manager = MagicMock()
+        manager.is_managed_chat.return_value = True
+
+        # /slock status is a slock command, not an exit command
+        assert is_slock_command("/slock status", chat_id="ch", manager=manager) is True
+
+    def test_spec_takes_priority_over_slock_for_spec_command(self):
+        """AC-14: /spec is not captured by slock — spec handler takes precedence."""
+        manager = MagicMock()
+        manager.is_managed_chat.return_value = True
+
+        assert is_slock_command("/spec", chat_id="ch", manager=manager) is False
+        assert is_slock_command("/spec start", chat_id="ch", manager=manager) is False

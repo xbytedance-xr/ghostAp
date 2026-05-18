@@ -340,3 +340,122 @@ class TestSlockEngineCallbacks:
         cb = SlockEngineCallbacks(on_error=fn)
         cb.on_error("test error")
         fn.assert_called_once_with("test error")
+
+
+# ============================================================
+# AC-11: Human interaction suppression in slock mode
+# ============================================================
+
+
+class TestHumanInteractionSuppression:
+    """AC-11: slock mode passes auto_approve=True to suppress human interaction."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_acp_session_created_with_auto_approve(self, mock_create, tmp_path):
+        """AC-11: _run_acp_session passes auto_approve=True to create_engine_session."""
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.text = "done"
+        mock_session.send_prompt.return_value = mock_result
+        mock_create.return_value = mock_session
+
+        engine = SlockEngine(
+            chat_id="chat_ac11",
+            root_path=str(tmp_path),
+            engine_name="AC11Test",
+        )
+        agent = AgentIdentity(
+            name="Tester",
+            agent_type="coco",
+            owner_group="chat_ac11",
+        )
+        result = engine._run_acp_session(agent, "test prompt")
+
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args
+        # auto_approve=True is the key assertion for AC-11
+        assert call_kwargs.kwargs.get("auto_approve") is True or (
+            len(call_kwargs.args) > 0 and any(
+                k == "auto_approve" and v is True
+                for k, v in call_kwargs.kwargs.items()
+            )
+        )
+        assert result == "done"
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_auto_approve_keyword_in_call(self, mock_create, tmp_path):
+        """AC-11: Verify auto_approve=True is explicitly passed as keyword arg."""
+        mock_create.return_value = None  # Session creation fails
+
+        engine = SlockEngine(
+            chat_id="chat_ac11b",
+            root_path=str(tmp_path),
+            engine_name="AC11Test",
+        )
+        agent = AgentIdentity(
+            name="Bot",
+            agent_type="claude",
+            owner_group="chat_ac11b",
+        )
+        engine._run_acp_session(agent, "prompt")
+
+        mock_create.assert_called_once()
+        assert mock_create.call_args.kwargs["auto_approve"] is True
+
+
+# ============================================================
+# AC-09: Memory update after agent execution (integration)
+# ============================================================
+
+
+class TestMemoryUpdateAfterExecution:
+    """AC-09: _execute_agent updates agent memory after successful execution."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _make_engine(self, mock_create_session, tmp_path=None):
+        mock_create_session.return_value = None
+        return SlockEngine(
+            chat_id="chat_mem",
+            root_path=str(tmp_path) if tmp_path else "/tmp/test_mem",
+            memory_base_path=str(tmp_path) if tmp_path else "/tmp/test_mem",
+        )
+
+    def test_execute_agent_updates_memory_on_success(self, tmp_path):
+        """AC-09: Successful _execute_agent writes context to agent memory."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_mem", team_name="MemTest")
+        engine.activate_channel(ch)
+
+        agent = AgentIdentity(
+            name="MemBot",
+            agent_type="coco",
+            owner_group="ch_mem",
+        )
+        engine.registry.register(agent)
+
+        # Mock _run_acp_session to return a result
+        with patch.object(engine, "_run_acp_session", return_value="Task completed"):
+            with patch.object(engine._memory, "update_agent_context") as mock_update:
+                engine._execute_agent(agent, "fix the bug", None)
+                mock_update.assert_called_once()
+                call_args = mock_update.call_args
+                assert call_args[0][0] == agent.agent_id
+                assert "fix the bug" in call_args[0][1]
+
+    def test_execute_agent_skips_memory_on_no_result(self, tmp_path):
+        """AC-09: When _run_acp_session returns None, memory is NOT updated."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_mem2", team_name="MemTest2")
+        engine.activate_channel(ch)
+
+        agent = AgentIdentity(
+            name="MemBot2",
+            agent_type="coco",
+            owner_group="ch_mem2",
+        )
+        engine.registry.register(agent)
+
+        with patch.object(engine, "_run_acp_session", return_value=None):
+            with patch.object(engine._memory, "update_agent_context") as mock_update:
+                engine._execute_agent(agent, "do something", None)
+                mock_update.assert_not_called()
