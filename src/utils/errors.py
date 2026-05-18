@@ -38,32 +38,6 @@ class GhostAPError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Domain-specific exception hierarchy
-# ---------------------------------------------------------------------------
-
-
-class SessionExpiredError(GhostAPError):
-    """AI session (Coco/Claude) has expired or is unreachable."""
-
-    def __init__(self, message: str = "会话已过期", **kwargs):
-        super().__init__(message, quick_actions=["retry"], **kwargs)
-
-
-class ProjectNotFoundError(GhostAPError):
-    """Requested project does not exist."""
-
-    def __init__(self, message: str = "项目不存在", **kwargs):
-        super().__init__(message, quick_actions=["new_project_prompt", "list_projects"], **kwargs)
-
-
-class SafetyCheckError(GhostAPError):
-    """Command blocked by safety checks."""
-
-    def __init__(self, message: str = "操作被安全策略拦截", **kwargs):
-        super().__init__(message, quick_actions=[], **kwargs)
-
-
-# ---------------------------------------------------------------------------
 # User-facing message formatters
 # ---------------------------------------------------------------------------
 
@@ -179,23 +153,6 @@ def fmt_exception(action: str, exc: BaseException) -> str:
     if classify_timeout(exc):
         return f"❌ {action}超时: 操作耗时过长，请重试"
     return f"❌ {action}异常: {str(exc) or repr(exc)}"
-
-
-def fmt_warning(message: str) -> str:
-    """Format a warning / partial-failure message."""
-    return f"⚠️ {message}"
-
-
-def fmt_timeout(action: str, seconds: int) -> str:
-    """Format a timeout message."""
-    return f"⏱️ {action}超时（{seconds}秒）"
-
-
-def fmt_not_found(resource: str, name: str = "") -> str:
-    """Format a resource-not-found message."""
-    if name:
-        return f"❌ 未找到{resource}: {name}"
-    return f"❌ 未找到 {resource}"
 
 
 def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int = logging.ERROR) -> None:

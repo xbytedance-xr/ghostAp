@@ -6,11 +6,10 @@
 - 不直接依赖具体 UI 主题（例如颜色、布局等）。
 """
 
-import re
 import threading
 import time
 
-from src.utils.time_ago import IdleHealth, TimeAgoBucket, compute_time_ago_bucket
+from src.utils.time_ago import TimeAgoBucket, compute_time_ago_bucket
 
 _TASK_ID_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _TASK_ID_SEQ = 0

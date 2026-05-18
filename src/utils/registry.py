@@ -198,9 +198,6 @@ class ServiceRegistry:
                         )
                     break  # 只调用第一个找到的方法
 
-# 全局默认注册表
-_default_registry = ServiceRegistry()
-
 
 @dataclass(frozen=True, order=True)
 class CleanupTask:
