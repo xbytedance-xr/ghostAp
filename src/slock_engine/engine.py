@@ -16,7 +16,7 @@ from ..agent_session import close_session_safely, create_engine_session
 from ..engine_base import BaseEngine, EngineRunState
 from .agent_registry import AgentRegistry
 from .card_templates import build_status_panel_card
-from .memory_manager import MemoryManager
+from .memory_manager import MemoryManager, default_slock_storage_base
 from .models import AgentIdentity, AgentStatus, SlockChannel, SlockTask, TaskStatus
 from .mouthpiece import Mouthpiece
 from .task_router import TaskRouter
@@ -63,7 +63,7 @@ class SlockEngine(BaseEngine):
         super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
 
         # Core subsystems
-        storage_base_path = memory_base_path or os.path.join(root_path, ".ghostap", "slock")
+        storage_base_path = memory_base_path or default_slock_storage_base()
         self._registry = AgentRegistry(base_path=storage_base_path)
         self._memory = MemoryManager(base_path=storage_base_path)
         self._router = TaskRouter()
@@ -163,17 +163,11 @@ class SlockEngine(BaseEngine):
             "activated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
-        # Canonical project-local group marker under .ghostap/slock/groups.
+        # Canonical app-level group marker under ~/.ghostap/slock/groups.
         canonical_dir = self._memory.get_group_base_path(channel.channel_id)
         os.makedirs(canonical_dir, exist_ok=True)
         canonical_marker = os.path.join(canonical_dir, ".slock_channel.json")
         self._write_channel_marker(canonical_marker, marker_data)
-
-        # Legacy restore marker retained for compatibility with existing workspaces.
-        workspace_dir = os.path.join(self.root_path, "slock", channel.channel_id)
-        os.makedirs(workspace_dir, exist_ok=True)
-        marker_path = os.path.join(workspace_dir, ".slock_channel.json")
-        self._write_channel_marker(marker_path, marker_data)
 
     @staticmethod
     def _write_channel_marker(marker_path: str, marker_data: dict) -> None:

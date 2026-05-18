@@ -9,6 +9,7 @@ from typing import Optional
 
 from ..engine_base import BaseEngineManager
 from .engine import SlockEngine
+from .memory_manager import default_slock_storage_base
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +21,10 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
     Uses secondary index (_chat_keys) for efficient per-chat lookups.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, storage_base_path: str = "") -> None:
         super().__init__()
         self._managed_chats: set[str] = set()
+        self._storage_base_path = storage_base_path or default_slock_storage_base()
 
     def register_managed_chat(self, chat_id: str) -> None:
         """Declare a chat_id as managed by the slock engine (event routing)."""
@@ -53,6 +55,7 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
             agent_type=agent_type,
             engine_name=engine_name,
             model_name=model_name,
+            memory_base_path=self._storage_base_path,
         )
 
     def remove(self, chat_id: str, root_path: str) -> None:
@@ -98,7 +101,7 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
         return None
 
     def restore_from_disk(self, root_path: str) -> int:
-        """Scan {root_path}/slock/*/.slock_channel.json and restore engines.
+        """Scan app-level Slock group markers and restore engines.
 
         For each valid marker file, rebuilds a SlockEngine, activates the
         channel, and registers the chat for event routing.
@@ -107,10 +110,7 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
         """
         from .models import SlockChannel
 
-        marker_dirs = [
-            os.path.join(root_path, ".ghostap", "slock", "groups"),
-            os.path.join(root_path, "slock"),
-        ]
+        marker_dirs = [os.path.join(self._storage_base_path, "groups")]
         existing_dirs = [path for path in marker_dirs if os.path.isdir(path)]
         if not existing_dirs:
             return 0

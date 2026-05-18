@@ -1,7 +1,7 @@
 """Agent Registry — manages agent identities with file-system persistence.
 
 Thread-safe registry for registering, finding, and removing agents.
-Persists agent identities as YAML files under .ghostap/slock/agents/.
+Persists agent identities as JSON files under ~/.ghostap/slock/agents/.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import os
 import threading
 from typing import Optional
 
+from .memory_manager import default_slock_storage_base
 from .models import AgentIdentity
 
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ class AgentRegistry:
     """
 
     def __init__(self, base_path: str = ""):
-        self._base_path = base_path or os.path.expanduser("~/.ghostap/slock")
+        self._base_path = base_path or default_slock_storage_base()
         self._agents: dict[str, AgentIdentity] = {}
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._loaded = False

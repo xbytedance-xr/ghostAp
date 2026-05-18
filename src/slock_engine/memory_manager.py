@@ -18,6 +18,11 @@ from .models import SkillProfile, SlockChannel, SlockMemory, SlockTask
 logger = logging.getLogger(__name__)
 
 
+def default_slock_storage_base() -> str:
+    """Return the app-level Slock storage directory."""
+    return os.path.expanduser("~/.ghostap/slock")
+
+
 class MemoryManager:
     """Manages the three-layer memory system for slock agents.
 
@@ -26,7 +31,7 @@ class MemoryManager:
     """
 
     def __init__(self, base_path: str = ""):
-        self._base_path = base_path or os.path.expanduser("~/.ghostap/slock")
+        self._base_path = base_path or default_slock_storage_base()
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     @property

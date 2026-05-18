@@ -45,7 +45,7 @@ def _make_handler_ctx(tmp_path, *, api_client_factory=None, settings=None):
     ctx.settings = s
 
     # Slock engine manager — use real instance
-    manager = SlockEngineManager()
+    manager = SlockEngineManager(storage_base_path=s.slock_memory_base_path)
     ctx.slock_engine_manager = manager
 
     # Handler registry (minimal)
@@ -118,14 +118,15 @@ class TestCreateTeamHappyPath:
         assert engine.channel.channel_id == "oc_new_group_id"
         assert engine.channel.team_name == "TestTeam"
 
-        # 4. Workspace directory exists
-        workspace_dir = os.path.join(root_path, "slock", "oc_new_group_id")
+        # 4. Group marker exists in the configured app storage, not the repo
+        workspace_dir = engine.memory.get_group_base_path("oc_new_group_id")
         assert os.path.isdir(workspace_dir)
         marker_path = os.path.join(workspace_dir, ".slock_channel.json")
         assert os.path.isfile(marker_path)
         with open(marker_path, "r") as f:
             marker = json.load(f)
         assert marker["channel_id"] == "oc_new_group_id"
+        assert not os.path.exists(os.path.join(root_path, "slock", "oc_new_group_id"))
 
         # 5. Managed chat registered for event routing
         assert manager.is_managed_chat("oc_new_group_id") is True
@@ -423,7 +424,7 @@ class TestRestartSurvival:
         assert original_manager.get_activated_engine("oc_survive") is not None
 
         # Step 2: Simulate restart — create a brand new manager
-        new_manager = SlockEngineManager()
+        new_manager = SlockEngineManager(storage_base_path=ctx.settings.slock_memory_base_path)
         assert new_manager.is_managed_chat("oc_survive") is False
 
         # Step 3: Restore from disk

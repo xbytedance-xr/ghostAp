@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -237,12 +238,11 @@ class TestSlockEngine:
 
     def test_activate_channel_creates_workspace(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
-        # Override root_path to use tmp_path for assertions
         engine.root_path = str(tmp_path / "project_root")
         ch = SlockChannel(channel_id="ch_ws", name="ws-group", team_name="WS Team")
         engine.activate_channel(ch)
 
-        workspace_dir = os.path.join(str(tmp_path / "project_root"), "slock", "ch_ws")
+        workspace_dir = engine.memory.get_group_base_path("ch_ws")
         assert os.path.isdir(workspace_dir), "workspace directory should exist"
 
         marker_path = os.path.join(workspace_dir, ".slock_channel.json")
@@ -256,35 +256,35 @@ class TestSlockEngine:
         assert "activated_at" in marker
 
     @patch("src.slock_engine.engine.create_engine_session")
-    def test_default_storage_base_is_project_ghostap_slock(self, mock_create_session, tmp_path):
-        """Default Slock storage follows the project-local .ghostap/slock contract."""
+    def test_default_storage_base_is_user_config_slock(self, mock_create_session, tmp_path):
+        """Default Slock storage follows the existing global ~/.ghostap/slock contract."""
         mock_create_session.return_value = None
         root_path = str(tmp_path / "project_root")
         engine = SlockEngine(chat_id="chat_storage", root_path=root_path)
 
-        expected = os.path.join(root_path, ".ghostap", "slock")
+        expected = os.path.expanduser("~/.ghostap/slock")
         assert engine.memory.base_path == expected
         assert engine.registry.base_path == expected
 
     @patch("src.slock_engine.engine.create_engine_session")
-    def test_activate_channel_writes_canonical_group_marker(self, mock_create_session, tmp_path):
-        """Slock channel markers are written under .ghostap/slock/groups/{chat_id}."""
+    def test_activate_channel_writes_marker_to_config_dir_only(self, mock_create_session, tmp_path):
+        """Slock channel markers are written under the app config dir, not the repo."""
         mock_create_session.return_value = None
         root_path = str(tmp_path / "project_root")
-        engine = SlockEngine(chat_id="chat_canonical", root_path=root_path)
+        config_path = str(tmp_path / "app_config" / "slock")
+        engine = SlockEngine(chat_id="chat_canonical", root_path=root_path, memory_base_path=config_path)
         ch = SlockChannel(channel_id="ch_canonical", name="canonical", team_name="Canon")
 
         engine.activate_channel(ch)
 
         marker_path = os.path.join(
-            root_path,
-            ".ghostap",
-            "slock",
+            config_path,
             "groups",
             "ch_canonical",
             ".slock_channel.json",
         )
         assert os.path.isfile(marker_path)
+        assert not os.path.exists(os.path.join(root_path, "slock", "ch_canonical"))
 
     @patch("src.slock_engine.engine.create_engine_session")
     def test_activate_channel_initializes_team_workspace_files(self, mock_create_session, tmp_path):
@@ -388,7 +388,7 @@ class TestSlockEngine:
         assert len(engine.tasks) == 1
 
     def test_add_task_persists_group_task_board(self, tmp_path):
-        """Tasks are persisted to the group task board under .ghostap/slock."""
+        """Tasks are persisted to the group task board under the configured Slock store."""
         engine = self._make_engine(tmp_path=tmp_path)
         ch = SlockChannel(channel_id="ch_board", name="Board", team_name="BoardTeam")
         engine.activate_channel(ch)
@@ -958,6 +958,15 @@ class TestSlockEngineTimeoutConfig:
         engine._run_acp_session(agent, "test")
 
         mock_session.send_prompt.assert_called_once_with("test", timeout=600)
+
+
+class TestSlockRuntimeArtifactsIgnored:
+    def test_repo_ignores_slock_runtime_group_state(self):
+        """Machine-local Slock group state must not be tracked by git."""
+        repo_root = Path(__file__).resolve().parents[1]
+        gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
+
+        assert "slock/" in gitignore
 
 
 # ============================================================
