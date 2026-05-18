@@ -3,16 +3,43 @@
 Validates that bare TimeoutError() (no message) and other empty-message
 exceptions never produce empty user-facing strings.
 """
+import asyncio
+import concurrent.futures
 import json
+import logging
+import re
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from src.utils.errors import fmt_exception, get_error_detail
 
+
 # ---------------------------------------------------------------------------
-# Task 1: CardBuilder.build_error_card — empty guard
+# Helpers for chained exception construction
 # ---------------------------------------------------------------------------
+
+
+def _chain_cause(outer_cls, inner):
+    outer = outer_cls("wrapper")
+    outer.__cause__ = inner
+    return outer
+
+
+def _chain_context(outer_cls, inner):
+    outer = outer_cls("wrapper")
+    outer.__context__ = inner
+    return outer
+
+
+# ===========================================================================
+# Section 1: Integration tests (complex setup, kept individually or lightly
+# parametrized where methods were near-duplicates)
+# ===========================================================================
+
 
 class TestBuildErrorCardEmptyGuard:
     """system.py: build_error_card must never produce empty message body."""
@@ -23,21 +50,18 @@ class TestBuildErrorCardEmptyGuard:
         _, card_json = SystemBuilder.build_error_card(TimeoutError())
         card = json.loads(card_json)
         body_elements = card.get("body", {}).get("elements", card.get("elements", []))
-        # Find the content element that contains the error message
         content_texts = [
             el.get("content", "")
             for el in body_elements
             if el.get("tag") == "markdown" or el.get("tag") == "div"
         ]
         full_text = " ".join(content_texts)
-        # Must not have empty message after the title
         assert "超时" in full_text or "未知错误" in full_text
 
     def test_bare_timeout_error_no_empty_body(self):
         from src.card.builders.system import SystemBuilder
 
         _, card_json = SystemBuilder.build_error_card(TimeoutError())
-        # The card body should not contain "操作失败**\n\n" followed by nothing
         assert "\n\n\n" not in card_json
 
     def test_string_exc_still_works(self):
@@ -55,15 +79,10 @@ class TestBuildErrorCardEmptyGuard:
         assert "ACP prompt 执行超时" in card_json
 
 
-# ---------------------------------------------------------------------------
-# Task 2: BaseHandler.send_error_card fallback — empty guard
-# ---------------------------------------------------------------------------
-
 class TestBaseHandlerFallbackEmptyGuard:
     """base.py: fallback text path must never produce '❌ title: ' with empty tail."""
 
     def _make_handler(self):
-        """Create a BaseHandler with enough mocking to test send_error_card."""
         from src.feishu.handlers.base import BaseHandler
 
         ctx = MagicMock()
@@ -74,7 +93,6 @@ class TestBaseHandlerFallbackEmptyGuard:
 
     def test_fallback_path_bare_timeout_no_empty_tail(self):
         handler = self._make_handler()
-        # Force CardBuilder.build_error_card to raise so fallback triggers
         sent_content = []
 
         def capture_reply(msg_id, content, **kw):
@@ -93,31 +111,28 @@ class TestBaseHandlerFallbackEmptyGuard:
 
         assert len(sent_content) == 1
         msg = sent_content[0]
-        # Should not end with ": " (empty tail)
         assert not msg.endswith(": ")
         assert "操作失败" in msg or "启动超时" in msg
 
 
-# ---------------------------------------------------------------------------
-# Task 3: TaskScheduler — empty error guard
-# ---------------------------------------------------------------------------
-
 class TestSchedulerEmptyErrorGuard:
     """scheduler.py: state.error must never be empty for bare exceptions."""
 
-    def test_bare_timeout_error_state_nonempty(self):
+    @pytest.mark.parametrize("exc_factory,label", [
+        pytest.param(TimeoutError, "timeout", id="bare_timeout"),
+        pytest.param(Exception, "empty_exc", id="bare_exception"),
+    ])
+    def test_error_state_nonempty(self, exc_factory, label):
         from src.tasking.scheduler import TaskScheduler, TaskSpec
 
         scheduler = TaskScheduler(max_concurrent=2)
         try:
-            spec = TaskSpec(chat_id="c1", name="test_timeout")
+            spec = TaskSpec(chat_id="c1", name=f"test_{label}")
 
             def failing_task(ctx):
-                raise TimeoutError()
+                raise exc_factory()
 
             handle = scheduler.submit(spec, failing_task)
-
-            # Wait for task to complete
             try:
                 handle.wait(timeout=5)
             except Exception:
@@ -125,90 +140,11 @@ class TestSchedulerEmptyErrorGuard:
 
             state = scheduler.get_state(handle.run_id)
             assert state is not None
-            assert state.error  # must not be empty
+            assert state.error
             assert len(state.error) > 0
         finally:
             scheduler.stop(shutdown_executor=True)
 
-    def test_bare_exception_state_nonempty(self):
-        from src.tasking.scheduler import TaskScheduler, TaskSpec
-
-        scheduler = TaskScheduler(max_concurrent=2)
-        try:
-            spec = TaskSpec(chat_id="c1", name="test_empty_exc")
-
-            def failing_task(ctx):
-                raise Exception()
-
-            handle = scheduler.submit(spec, failing_task)
-
-            try:
-                handle.wait(timeout=5)
-            except Exception:
-                pass
-
-            state = scheduler.get_state(handle.run_id)
-            assert state is not None
-            assert state.error  # must not be empty — repr(e) kicks in
-        finally:
-            scheduler.stop(shutdown_executor=True)
-
-
-# ---------------------------------------------------------------------------
-# Task 4: fmt_exception — empty guard for non-timeout
-# ---------------------------------------------------------------------------
-
-class TestFmtExceptionEmptyGuard:
-    """errors.py: fmt_exception must never produce trailing empty content."""
-
-    def test_bare_exception_has_repr_fallback(self):
-        result = fmt_exception("处理", Exception())
-        assert "处理异常" in result
-        # Must not end with ": " (empty)
-        assert not result.endswith(": ")
-        # repr(Exception()) == "Exception()" — should appear
-        assert "Exception()" in result
-
-    def test_bare_value_error_has_repr(self):
-        result = fmt_exception("验证", ValueError())
-        assert "ValueError()" in result
-
-    def test_normal_exception_preserves_message(self):
-        result = fmt_exception("操作", RuntimeError("具体原因"))
-        assert "具体原因" in result
-
-    def test_timeout_still_uses_fixed_message(self):
-        result = fmt_exception("操作", TimeoutError())
-        assert "超时" in result
-        assert "操作耗时过长" in result
-
-    def test_concurrent_futures_timeout_error(self):
-        import concurrent.futures
-        result = fmt_exception("任务", concurrent.futures.TimeoutError())
-        assert "任务超时" in result
-        assert "操作耗时过长" in result
-
-    def test_wrapped_timeout_chain(self):
-        inner = TimeoutError()
-        outer = RuntimeError("chained failure")
-        outer.__cause__ = inner
-        result = fmt_exception("审查", outer)
-        assert "审查超时" in result
-        assert "操作耗时过长" in result
-
-    def test_wrapped_asyncio_timeout_chain(self):
-        import asyncio
-        inner = asyncio.TimeoutError()
-        outer = ValueError("failed")
-        outer.__context__ = inner
-        result = fmt_exception("执行", outer)
-        assert "执行超时" in result
-        assert "操作耗时过长" in result
-
-
-# ---------------------------------------------------------------------------
-# Task 5: WorktreeDispatcher — get_error_detail integration
-# ---------------------------------------------------------------------------
 
 class TestWorktreeDispatcherGetErrorDetail:
     """dispatcher.py: TimeoutError uses get_error_detail() for consistent messages."""
@@ -257,253 +193,95 @@ class TestWorktreeDispatcherGetErrorDetail:
         executed = dispatcher.execute_units(planned, timeout=30)
 
         assert executed[0].status == "failed"
-        assert executed[0].error  # non-empty
+        assert executed[0].error
         assert "超时" in executed[0].error
-        # Should use get_error_detail output which contains "操作超时"
         assert "操作超时" in executed[0].error
 
-
-# ---------------------------------------------------------------------------
-# Cross-cutting: get_error_detail always non-empty
-# ---------------------------------------------------------------------------
-
-class TestGetErrorDetailNeverEmpty:
-    """get_error_detail must always return non-empty for any exception."""
-
-    def test_bare_timeout_error(self):
-        result = get_error_detail(TimeoutError())
-        assert result
-        assert "超时" in result
-
-    def test_bare_exception(self):
-        result = get_error_detail(Exception())
-        assert result  # Should be "未知错误" (default)
-
-    def test_exception_with_message(self):
-        result = get_error_detail(ValueError("bad input"))
-        assert "bad input" in result
-
-
-# ---------------------------------------------------------------------------
-# Task 6: Deep handler — project creation empty error guard
-# ---------------------------------------------------------------------------
 
 class TestDeepHandlerProjectCreateEmptyGuard:
     """deep.py: project creation failure must never produce empty error message."""
 
     def _make_handler(self):
         from src.feishu.handlers.deep import DeepHandler
+
         ctx = MagicMock()
         ctx.settings = MagicMock()
         ctx.settings.ref_note_enabled = False
         handler = DeepHandler(ctx)
         return handler
 
-    def test_bare_exception_nonempty_error(self):
+    @pytest.mark.parametrize("exc_factory,check_timeout", [
+        pytest.param(Exception, False, id="bare_exception"),
+        pytest.param(TimeoutError, True, id="bare_timeout"),
+    ])
+    def test_project_create_nonempty_error(self, exc_factory, check_timeout):
         handler = self._make_handler()
         sent = []
         handler.send_error_card = lambda **kw: sent.append(kw)
         handler.get_working_dir = lambda cid: "/tmp"
-        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = Exception()
-
-        handler.start_deep_engine("msg1", "chat1", "test requirement")
-        assert len(sent) == 1
-        exc_val = sent[0]["exc"]
-        assert exc_val  # must be non-empty string
-        assert len(str(exc_val)) > 0
-
-    def test_bare_timeout_error_nonempty(self):
-        handler = self._make_handler()
-        sent = []
-        handler.send_error_card = lambda **kw: sent.append(kw)
-        handler.get_working_dir = lambda cid: "/tmp"
-        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = exc_factory()
 
         handler.start_deep_engine("msg1", "chat1", "test requirement")
         assert len(sent) == 1
         exc_val = str(sent[0]["exc"])
         assert exc_val
-        assert "超时" in exc_val
+        assert len(exc_val) > 0
+        if check_timeout:
+            assert "超时" in exc_val
 
-
-# ---------------------------------------------------------------------------
-# Task 7: Spec handler — multiple empty error guard paths
-# ---------------------------------------------------------------------------
 
 class TestSpecHandlerEmptyGuard:
     """spec.py: all error paths must produce non-empty user-facing messages."""
 
     def _make_handler(self):
         from src.feishu.handlers.spec import SpecHandler
+
         ctx = MagicMock()
         ctx.settings = MagicMock()
         ctx.settings.ref_note_enabled = False
         handler = SpecHandler(ctx)
         return handler
 
-    def test_project_create_bare_exception(self):
+    @pytest.mark.parametrize("exc_factory,check_timeout", [
+        pytest.param(Exception, False, id="bare_exception"),
+        pytest.param(TimeoutError, True, id="bare_timeout"),
+    ])
+    def test_project_create_error(self, exc_factory, check_timeout):
         handler = self._make_handler()
         sent = []
         handler.reply_card = lambda mid, content, **kw: sent.append(content)
         handler.get_working_dir = lambda cid: "/tmp"
-        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = Exception()
+        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = exc_factory()
 
         handler.start_spec_engine("msg1", "chat1", "req")
         assert len(sent) == 1
         assert sent[0]
-        assert "创建项目" in sent[0]
-        # Must not end with just "失败" and nothing else meaningful
-        assert "❌" in sent[0]
-
-    def test_project_create_bare_timeout(self):
-        handler = self._make_handler()
-        sent = []
-        handler.reply_card = lambda mid, content, **kw: sent.append(content)
-        handler.get_working_dir = lambda cid: "/tmp"
-        handler.ctx.project_manager.get_or_create_project_for_path.side_effect = TimeoutError()
-
-        handler.start_spec_engine("msg1", "chat1", "req")
-        assert len(sent) == 1
-        assert "超时" in sent[0]
+        if check_timeout:
+            assert "超时" in sent[0]
+        else:
+            assert "创建项目" in sent[0]
+            assert "❌" in sent[0]
 
     def test_export_bare_exception(self):
-        """Export file write failure with bare Exception() should not produce empty tail."""
-        from src.utils.errors import get_error_detail
-        # Directly test that get_error_detail handles bare Exception
         result = get_error_detail(Exception())
-        assert result  # non-empty fallback
+        assert result
 
     def test_restore_context_bare_exception(self):
-        """fmt_error("恢复项目上下文", Exception()) should produce non-empty."""
         from src.utils.errors import fmt_error
+
         result = fmt_error("恢复项目上下文", Exception())
         assert result
         assert "恢复项目上下文" in result
 
     def test_restore_context_bare_timeout(self):
-        """fmt_error("恢复任务上下文", TimeoutError()) should mention timeout."""
         from src.utils.errors import fmt_error
+
         result = fmt_error("恢复任务上下文", TimeoutError())
         assert "超时" in result
 
 
-# ---------------------------------------------------------------------------
-# Task 8: spec_engine — last_error and rewrite_requirement
-# ---------------------------------------------------------------------------
-
-class TestSpecEngineInternalEmptyGuard:
-    """spec_engine/engine.py: internal error tracking must never be empty."""
-
-    def test_get_error_detail_for_last_error(self):
-        """get_error_detail replaces the old 3-tier fallback for last_error."""
-        result = get_error_detail(Exception())
-        assert result  # must be non-empty
-        result2 = get_error_detail(TimeoutError())
-        assert result2
-        assert "超时" in result2
-
-    def test_get_error_detail_for_rewrite_requirement(self):
-        """return False, get_error_detail(e) must never return empty string."""
-        for exc in [Exception(), TimeoutError(), ValueError(), RuntimeError()]:
-            result = get_error_detail(exc)
-            assert result, f"get_error_detail({type(exc).__name__}()) returned empty"
-
-
-# ---------------------------------------------------------------------------
-# Task 9: WorktreeManager — init/merge empty error guard
-# ---------------------------------------------------------------------------
-
-class TestWorktreeManagerEmptyGuard:
-    """worktree_engine/manager.py: last_error and merge detail must be non-empty."""
-
-    def test_init_bare_exception_last_error_nonempty(self):
-        """WorktreeManager.initialize_worktrees failure should produce non-empty last_error."""
-        result = get_error_detail(Exception())
-        assert result
-        # Simulate what the code does: state.last_error = get_error_detail(exc)
-        last_error = get_error_detail(Exception())
-        summary = f"- worktree 创建失败：{last_error}"
-        assert "创建失败" in summary
-        assert not summary.endswith("：")  # must have content after colon
-
-    def test_merge_bare_exception_detail_nonempty(self):
-        """Merge failure detail should be non-empty for bare Exception."""
-        detail = get_error_detail(Exception())
-        assert detail
-        result = {"success": False, "detail": detail}
-        assert result["detail"]
-
-
-# ---------------------------------------------------------------------------
-# Task 10: main.py — top-level exception handler
-# ---------------------------------------------------------------------------
-
-class TestMainAppEmptyGuard:
-    """main.py: top-level exception handler must produce non-empty error message."""
-
-    def test_get_error_detail_for_main(self):
-        """get_error_detail is now used in main.py instead of str(e)."""
-        for exc in [Exception(), TimeoutError(), RuntimeError()]:
-            result = get_error_detail(exc)
-            assert result, f"main.py would show empty error for {type(exc).__name__}()"
-
-
-# ---------------------------------------------------------------------------
-# Task 11: spec.py save_state — fmt_error now receives Exception directly
-# ---------------------------------------------------------------------------
-
-class TestSpecHandlerSaveStateEmptyGuard:
-    """spec.py:412 — save_state error now passes exception object to fmt_error,
-    so isinstance dispatch handles bare TimeoutError() correctly."""
-
-    def test_save_state_bare_timeout_no_empty_tail(self):
-        """fmt_error('保存 Spec 状态', TimeoutError()) must mention timeout."""
-        from src.utils.errors import fmt_error
-
-        result = fmt_error("保存 Spec 状态", TimeoutError())
-        assert result
-        assert "保存 Spec 状态" in result
-        assert "超时" in result
-        assert not result.endswith(": ")
-
-    def test_save_state_bare_exception_no_empty_tail(self):
-        """fmt_error('保存 Spec 状态', Exception()) must not leave empty detail."""
-        from src.utils.errors import fmt_error
-
-        result = fmt_error("保存 Spec 状态", Exception())
-        assert result
-        assert "保存 Spec 状态" in result
-        # When str(Exception()) is empty, fmt_error returns "❌ 保存 Spec 状态失败" (no colon)
-        assert not result.endswith(": ")
-
-
-# ---------------------------------------------------------------------------
-# Task 12: system.py TTADK refresh — get_error_detail for reply_error
-# ---------------------------------------------------------------------------
-
-class TestSystemHandlerTTADKRefreshEmptyGuard:
-    """system.py:371 — TTADK model refresh now uses get_error_detail(e)
-    instead of str(e), preventing empty error text for bare exceptions."""
-
-    def test_ttadk_refresh_bare_timeout_nonempty(self):
-        """get_error_detail(TimeoutError()) must produce non-empty timeout text."""
-        result = get_error_detail(TimeoutError())
-        assert result
-        assert "超时" in result
-
-    def test_ttadk_refresh_bare_exception_nonempty(self):
-        """get_error_detail(Exception()) must produce non-empty fallback text."""
-        result = get_error_detail(Exception())
-        assert result
-        assert len(result) > 0
-
-
-# ---------------------------------------------------------------------------
-# Task 13: system.py handle_refresh_ttadk_models — integration guard
-# ---------------------------------------------------------------------------
-
 class TestSystemHandlerRefreshModelsIntegration:
-    """system.py:1476 — handle_refresh_ttadk_models reply_error must never
+    """system.py: handle_refresh_ttadk_models reply_error must never
     produce empty-tail message for bare TimeoutError or Exception."""
 
     def _make_handler(self):
@@ -515,7 +293,12 @@ class TestSystemHandlerRefreshModelsIntegration:
         handler = SystemHandler(ctx)
         return handler
 
-    def test_bare_timeout_reply_error_nonempty(self):
+    @pytest.mark.parametrize("exc,check_timeout,check_msg", [
+        pytest.param(TimeoutError(), True, None, id="bare_timeout"),
+        pytest.param(Exception(), False, None, id="bare_exception"),
+        pytest.param(TimeoutError("模型服务不可用"), False, "模型服务不可用", id="named_timeout"),
+    ])
+    def test_reply_error_nonempty(self, exc, check_timeout, check_msg):
         handler = self._make_handler()
         sent = []
         handler.reply_error = lambda mid, content, **kw: sent.append(content)
@@ -524,86 +307,647 @@ class TestSystemHandlerRefreshModelsIntegration:
 
         mock_mgr = MagicMock()
         mock_mgr.get_current_tool.return_value = "coco"
-        mock_mgr.refresh_models.side_effect = TimeoutError()
+        mock_mgr.refresh_models.side_effect = exc
 
         with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=mock_mgr):
             handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
 
         assert len(sent) == 1
         msg = sent[0]
-        assert msg  # non-empty
-        assert not msg.endswith(": ")  # no empty tail
-        assert "超时" in msg  # timeout info preserved
-
-    def test_bare_exception_reply_error_nonempty(self):
-        handler = self._make_handler()
-        sent = []
-        handler.reply_error = lambda mid, content, **kw: sent.append(content)
-        handler._resolve_ttadk_cwd = lambda *a, **kw: "/tmp"
-        handler._maybe_log_ttadk_cwd = lambda **kw: None
-
-        mock_mgr = MagicMock()
-        mock_mgr.get_current_tool.return_value = "coco"
-        mock_mgr.refresh_models.side_effect = Exception()
-
-        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=mock_mgr):
-            handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
-
-        assert len(sent) == 1
-        msg = sent[0]
-        assert msg  # non-empty
+        assert msg
         assert not msg.endswith(": ")
+        if check_timeout:
+            assert "超时" in msg
+        if check_msg:
+            assert check_msg in msg
 
-    def test_named_timeout_preserves_message(self):
-        handler = self._make_handler()
-        sent = []
-        handler.reply_error = lambda mid, content, **kw: sent.append(content)
-        handler._resolve_ttadk_cwd = lambda *a, **kw: "/tmp"
-        handler._maybe_log_ttadk_cwd = lambda **kw: None
 
-        mock_mgr = MagicMock()
-        mock_mgr.get_current_tool.return_value = "coco"
-        mock_mgr.refresh_models.side_effect = TimeoutError("模型服务不可用")
+_EXPECTED_METRICS_KEYS = {
+    "metric_type", "engine", "fail_reason",
+    "consecutive_timeouts", "consecutive_failures",
+    "circuit_open", "adaptive_timeout", "backoff_level",
+}
 
-        with patch("src.feishu.handlers.ttadk_commands.get_ttadk_manager", return_value=mock_mgr):
-            handler.handle_refresh_ttadk_models("msg1", "chat1", "coco")
 
-        assert len(sent) == 1
-        assert "模型服务不可用" in sent[0]
+class TestSpecReviewMetricsLog:
+    """spec_engine/review.py: review_metrics logger.info is called with valid JSON."""
+
+    def _run_conduct_review_with_error(self, exc: Exception):
+        from src.spec_engine.review import ReviewCircuitState, conduct_review
+
+        circuit = ReviewCircuitState()
+        settings = MagicMock()
+        settings.spec_review_failure_circuit_enabled = False
+        settings.spec_review_failure_max_consecutive = 3
+        settings.spec_review_failure_cooldown_cycles = 3
+        settings.spec_review_timeout = 120
+        settings.spec_review_min_timeout = 30
+        settings.spec_review_hard_floor = 15
+        settings.spec_review_failure_max_cooldown_cycles = 12
+
+        def raise_exc(*a, **kw):
+            raise exc
+
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = lambda r: records.append(r)
+
+        logger = logging.getLogger("src.utils.review_helpers")
+        logger.addHandler(handler)
+        old_level = logger.level
+        logger.setLevel(logging.DEBUG)
+        logger_me = logging.getLogger("src.utils.metrics_exporter")
+        logger_me.addHandler(handler)
+        old_level_me = logger_me.level
+        logger_me.setLevel(logging.DEBUG)
+        from src.utils.metrics_exporter import reset_metrics_exporter
+        reset_metrics_exporter()
+        try:
+            conduct_review(
+                session=MagicMock(),
+                settings=settings,
+                project=MagicMock(requirement="test req"),
+                send_prompt_with_retry_fn=raise_exc,
+                build_review_exception_diagnostics_fn=lambda e, cycle: {
+                    "phase": "review", "cycle": cycle,
+                    "fail_reason": "timeout" if isinstance(e, TimeoutError) else "exception",
+                    "err_type": type(e).__name__, "err_repr": repr(e),
+                    "error_text": str(e) or "审查执行异常",
+                },
+                circuit=circuit,
+                cycle=3,
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.setLevel(old_level)
+            logger_me.removeHandler(handler)
+            logger_me.setLevel(old_level_me)
+            reset_metrics_exporter()
+
+        return [r for r in records if "review_metrics" in str(r.getMessage())]
+
+    def test_metrics_log_emitted_on_timeout(self):
+        recs = self._run_conduct_review_with_error(TimeoutError("slow"))
+        assert len(recs) >= 1, "review_metrics log not emitted"
+
+    def test_metrics_log_emitted_on_regular_error(self):
+        recs = self._run_conduct_review_with_error(RuntimeError("oops"))
+        assert len(recs) >= 1, "review_metrics log not emitted"
+
+    def test_metrics_json_structure(self):
+        recs = self._run_conduct_review_with_error(TimeoutError())
+        msg = recs[0].getMessage()
+        json_str = msg.split("review_metrics: ", 1)[1]
+        data = json.loads(json_str)
+        missing = _EXPECTED_METRICS_KEYS - set(data.keys())
+        assert not missing, f"Missing metrics keys: {missing}"
+        assert data["engine"] == "spec"
+        assert data["metric_type"] == "review_exception"
+
+    def test_metrics_adaptive_timeout_is_int(self):
+        recs = self._run_conduct_review_with_error(TimeoutError())
+        msg = recs[0].getMessage()
+        json_str = msg.split("review_metrics: ", 1)[1]
+        data = json.loads(json_str)
+        assert isinstance(data["adaptive_timeout"], int)
+        assert data["adaptive_timeout"] > 0
+
+    def test_metrics_sentinel_fallback_when_compute_fails(self):
+        import inspect
+
+        from src.spec_engine.review import conduct_review
+        source = inspect.getsource(conduct_review)
+        assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
+
+
+class TestRunAsyncTimeoutWrapping:
+    """sync_adapter._run_async must never leak empty TimeoutError messages."""
+
+    def _make_adapter(self):
+        from src.acp.sync_adapter import SyncACPSession
+
+        adapter = SyncACPSession.__new__(SyncACPSession)
+        adapter._agent_type = "test_agent"
+        adapter._loop = asyncio.new_event_loop()
+        adapter._loop_thread = threading.Thread(
+            target=adapter._loop.run_forever, daemon=True
+        )
+        adapter._loop_thread.start()
+        return adapter
+
+    def _cleanup(self, adapter):
+        adapter._loop.call_soon_threadsafe(adapter._loop.stop)
+        adapter._loop_thread.join(timeout=2)
+
+    def test_timeout_has_nonempty_message(self):
+        adapter = self._make_adapter()
+        try:
+            async def hang():
+                await asyncio.sleep(999)
+
+            try:
+                adapter._run_async(hang(), timeout=0.05)
+                assert False, "Should have raised TimeoutError"
+            except TimeoutError as e:
+                msg = str(e)
+                assert msg, "_run_async produced empty TimeoutError message"
+                assert "(empty message)" not in msg
+                assert "test_agent" in msg
+        finally:
+            self._cleanup(adapter)
+
+    def test_normal_return_unaffected(self):
+        adapter = self._make_adapter()
+        try:
+            async def ok():
+                return 42
+
+            assert adapter._run_async(ok(), timeout=5) == 42
+        finally:
+            self._cleanup(adapter)
+
+    def test_non_timeout_exception_passthrough(self):
+        adapter = self._make_adapter()
+        try:
+            async def boom():
+                raise ValueError("test boom")
+
+            try:
+                adapter._run_async(boom(), timeout=5)
+                assert False, "Should have raised ValueError"
+            except ValueError as e:
+                assert "test boom" in str(e)
+        finally:
+            self._cleanup(adapter)
+
+    def test_timeout_with_existing_message_preserved(self):
+        adapter = self._make_adapter()
+        try:
+            async def raise_with_msg():
+                raise TimeoutError("custom timeout msg")
+
+            try:
+                adapter._run_async(raise_with_msg(), timeout=5)
+                assert False, "Should have raised TimeoutError"
+            except TimeoutError as e:
+                assert "custom timeout msg" in str(e)
+        finally:
+            self._cleanup(adapter)
+
+
+# ===========================================================================
+# Section 2: Parametrized pure-function tests
+# (consolidates many small classes that tested the same utility functions)
+# ===========================================================================
 
 
 # ---------------------------------------------------------------------------
-# Regression lint: no bare f"{e}" in user-visible reply_error / send_error_card
+# get_error_detail: always non-empty for all exception variants
+# (consolidates: TestGetErrorDetailNeverEmpty, TestSpecEngineInternalEmptyGuard,
+#  TestWorktreeManagerEmptyGuard, TestMainAppEmptyGuard,
+#  TestSystemHandlerTTADKRefreshEmptyGuard, TestWorktreeDispatcherTimeoutContext,
+#  TestWorktreeManagerTimeoutContext, TestBaseHandlerFallbackTimeoutContext,
+#  TestTimeoutErrorE2EDetail)
 # ---------------------------------------------------------------------------
 
-import re
-from pathlib import Path
+
+@pytest.mark.parametrize("exc,must_contain", [
+    pytest.param(TimeoutError(), "超时", id="bare_timeout"),
+    pytest.param(Exception(), None, id="bare_exception"),
+    pytest.param(ValueError("bad input"), "bad input", id="value_error_with_msg"),
+    pytest.param(ValueError(), None, id="bare_value_error"),
+    pytest.param(RuntimeError(), None, id="bare_runtime_error"),
+    pytest.param(asyncio.TimeoutError(), "超时", id="asyncio_timeout"),
+    pytest.param(concurrent.futures.TimeoutError(), "超时", id="concurrent_timeout"),
+    pytest.param(TimeoutError("ACP 超时 120s"), "ACP 超时 120s", id="timeout_with_msg"),
+    pytest.param(TimeoutError(""), "超时", id="empty_string_timeout"),
+    pytest.param(
+        _chain_cause(RuntimeError, TimeoutError()), "超时", id="chained_timeout_cause",
+    ),
+    pytest.param(
+        _chain_context(RuntimeError, TimeoutError()), "超时", id="chained_timeout_context",
+    ),
+    pytest.param(
+        _chain_cause(RuntimeError, concurrent.futures.TimeoutError()),
+        "超时", id="chained_concurrent_timeout",
+    ),
+])
+def test_get_error_detail_never_empty(exc, must_contain):
+    """get_error_detail must always return non-empty for any exception."""
+    result = get_error_detail(exc)
+    assert result, f"get_error_detail({type(exc).__name__}) returned empty"
+    if must_contain:
+        assert must_contain in result, f"Expected '{must_contain}' in '{result}'"
+
+
+def test_get_error_detail_not_old_fallback():
+    """BaseHandler fallback: detail != '操作失败' (old fallback) for TimeoutError."""
+    detail = get_error_detail(TimeoutError())
+    assert detail != "操作失败"
+
+
+def test_get_error_detail_third_party_timeout_via_name():
+    """TimeoutExpired, ReadTimeout, ConnectTimeout detected by name in chain."""
+    for tn in ("TimeoutExpired", "ReadTimeout", "ConnectTimeout"):
+        class MockTimeout(Exception):
+            pass
+        MockTimeout.__name__ = tn
+        inner = MockTimeout("inner timeout")
+        outer = RuntimeError("outer")
+        outer.__cause__ = inner
+        result = get_error_detail(outer)
+        assert "超时" in result, f"Failed for {tn}"
+
+
+def test_get_error_detail_worktree_format_not_empty_tail():
+    """WorktreeManager: formatted summary must not end with empty Chinese colon."""
+    last_error = get_error_detail(Exception())
+    summary = f"- worktree 创建失败：{last_error}"
+    assert "创建失败" in summary
+    assert not summary.endswith("：")
+
+
+# ---------------------------------------------------------------------------
+# fmt_exception: all branches produce non-empty output
+# (consolidates TestFmtExceptionEmptyGuard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("context,exc,must_contain", [
+    pytest.param("处理", Exception(), "Exception()", id="bare_exception_repr"),
+    pytest.param("验证", ValueError(), "ValueError()", id="bare_value_error_repr"),
+    pytest.param("操作", RuntimeError("具体原因"), "具体原因", id="named_runtime_error"),
+    pytest.param("操作", TimeoutError(), "操作耗时过长", id="bare_timeout_fixed_msg"),
+    pytest.param("任务", concurrent.futures.TimeoutError(), "操作耗时过长", id="concurrent_timeout"),
+])
+def test_fmt_exception_nonempty(context, exc, must_contain):
+    """fmt_exception must never produce trailing empty content."""
+    result = fmt_exception(context, exc)
+    assert not result.endswith(": ")
+    assert must_contain in result
+
+
+def test_fmt_exception_wrapped_timeout_chain():
+    """Chained TimeoutError via __cause__ detected."""
+    inner = TimeoutError()
+    outer = RuntimeError("chained failure")
+    outer.__cause__ = inner
+    result = fmt_exception("审查", outer)
+    assert "审查超时" in result
+    assert "操作耗时过长" in result
+
+
+def test_fmt_exception_wrapped_asyncio_timeout_chain():
+    """Chained asyncio.TimeoutError via __context__ detected."""
+    inner = asyncio.TimeoutError()
+    outer = ValueError("failed")
+    outer.__context__ = inner
+    result = fmt_exception("执行", outer)
+    assert "执行超时" in result
+    assert "操作耗时过长" in result
+
+
+# ---------------------------------------------------------------------------
+# fmt_error: save-state and restore-context branches
+# (consolidates TestSpecHandlerSaveStateEmptyGuard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("context,exc_factory,must_contain", [
+    pytest.param("保存 Spec 状态", TimeoutError, "超时", id="save_state_timeout"),
+    pytest.param("保存 Spec 状态", Exception, "保存 Spec 状态", id="save_state_exception"),
+])
+def test_fmt_error_nonempty(context, exc_factory, must_contain):
+    """fmt_error must never leave empty detail."""
+    from src.utils.errors import fmt_error
+
+    result = fmt_error(context, exc_factory())
+    assert result
+    assert must_contain in result
+    assert not result.endswith(": ")
+
+
+# ---------------------------------------------------------------------------
+# f-string pattern: `f"prefix: {str(e) or repr(e)}"` never empty
+# (consolidates: TestIntentRecognizerEmptyGuard, TestEngineBaseLoggerEmptyGuard,
+#  TestProjectManagerEmptyGuard, TestArtifactsParseEmptyGuard)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("prefix,exc,expected_substr", [
+    # IntentRecognizer
+    pytest.param("异常回退", Exception(), "Exception()", id="intent_bare_exception"),
+    pytest.param("异常回退", TimeoutError(), "TimeoutError()", id="intent_bare_timeout"),
+    pytest.param("异常回退", ValueError("bad input"), "bad input", id="intent_named_value_error"),
+    # EngineBase logger
+    pytest.param("Deep Engine 执行超时 (task_id=t1)", TimeoutError(), "TimeoutError()", id="engine_timeout"),
+    pytest.param("Deep Engine 执行异常", Exception(), "Exception()", id="engine_bare_exception"),
+    pytest.param("Deep Engine 执行异常", RuntimeError("connection lost"), "connection lost", id="engine_named_runtime"),
+    # ProjectManager
+    pytest.param("无法创建目录 /tmp/test", Exception(), "Exception()", id="project_bare_exception"),
+    pytest.param("无法创建目录 /tmp/test", OSError(), None, id="project_bare_os_error"),
+    pytest.param("无法创建目录 /tmp/test", PermissionError("access denied"), "access denied", id="project_named_perm_error"),
+    # ArtifactsParse
+    pytest.param("规格 JSON 解析失败", Exception(), "Exception()", id="spec_parse_bare_exception"),
+    pytest.param("规划 JSON 解析失败", Exception(), "Exception()", id="plan_parse_bare_exception"),
+])
+def test_fstring_or_repr_pattern_nonempty(prefix, exc, expected_substr):
+    """f'prefix: {str(e) or repr(e)}' must never produce empty tail."""
+    msg = f"{prefix}: {str(exc) or repr(exc)}"
+    assert msg
+    assert not msg.endswith(": ")
+    assert not msg.endswith("：")
+    if expected_substr:
+        assert expected_substr in msg
+
+
+def test_fstring_json_decode_error_preserves_message():
+    """JSON decode error message is preserved in f-string pattern."""
+    try:
+        json.loads("{bad json")
+    except Exception as e:
+        msg = f"规格 JSON 解析失败：{str(e) or repr(e)}"
+        assert msg
+        assert len(msg) > len("规格 JSON 解析失败：")
+
+
+# ---------------------------------------------------------------------------
+# build_review_exception_diagnostics: no (empty message) marker
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnoseReviewFailureNoEmptyMessageMarker:
+    """review_diagnostics.py: error_text must never contain '(empty message)'."""
+
+    def _build(self, exc: Exception) -> dict:
+        from src.utils.review_diagnostics import build_review_exception_diagnostics
+        return build_review_exception_diagnostics(exc, cycle=1)
+
+    @pytest.mark.parametrize("exc", [
+        pytest.param(TimeoutError(), id="timeout"),
+        pytest.param(ValueError(), id="value_error"),
+        pytest.param(RuntimeError(), id="runtime_error"),
+        pytest.param(Exception(), id="bare_exception"),
+    ])
+    def test_no_empty_marker(self, exc):
+        diag = self._build(exc)
+        assert "(empty message)" not in diag["error_text"]
+
+    def test_timeout_friendly_text(self):
+        diag = self._build(TimeoutError())
+        assert "审查超时" in diag["error_text"]
+
+    @pytest.mark.parametrize("exc_cls", [ValueError, RuntimeError, Exception],
+                             ids=["ValueError", "RuntimeError", "Exception"])
+    def test_non_timeout_friendly_text(self, exc_cls):
+        diag = self._build(exc_cls())
+        assert "审查执行异常" in diag["error_text"]
+
+    def test_exception_with_message_preserved(self):
+        diag = self._build(ValueError("bad input"))
+        assert "bad input" in diag["error_text"]
+        assert "(empty message)" not in diag["error_text"]
+
+    def test_timeout_with_message_preserved(self):
+        diag = self._build(TimeoutError("took too long"))
+        assert "took too long" in diag["error_text"]
+
+    def test_err_repr_still_contains_repr_info(self):
+        diag = self._build(TimeoutError())
+        assert diag["err_repr"]
+        assert "TimeoutError" in diag["err_repr"]
+
+
+# ---------------------------------------------------------------------------
+# _infer_fail_reason + _has_timeout_in_chain
+# ---------------------------------------------------------------------------
+
+
+class TestInferFailReasonChainedExceptions:
+    """review_diagnostics: _infer_fail_reason must detect TimeoutError in exception chains."""
+
+    def _infer(self, exc: Exception) -> str:
+        from src.utils.review_diagnostics import build_review_exception_diagnostics
+        diag = build_review_exception_diagnostics(exc, cycle=1)
+        return diag.get("fail_reason", "")
+
+    @pytest.mark.parametrize("exc,expected_timeout", [
+        pytest.param(TimeoutError(), True, id="direct_timeout"),
+        pytest.param(TimeoutError("ACP prompt 超时"), True, id="direct_timeout_with_msg"),
+        pytest.param(
+            _chain_cause(RuntimeError, TimeoutError("inner")), True, id="wrapped_via_cause",
+        ),
+        pytest.param(
+            _chain_context(RuntimeError, TimeoutError("inner")), True, id="wrapped_via_context",
+        ),
+        pytest.param(ValueError("bad input"), False, id="no_timeout"),
+        pytest.param(_chain_cause(RuntimeError, ValueError("inner")), False, id="non_timeout_chain"),
+    ])
+    def test_fail_reason(self, exc, expected_timeout):
+        result = self._infer(exc)
+        if expected_timeout:
+            assert result == "timeout"
+        else:
+            assert result != "timeout"
+
+    def test_multi_level_nested_timeout(self):
+        """Exception → RuntimeError → TimeoutError (3 levels) → 'timeout'."""
+        deep = TimeoutError("deep")
+        mid = RuntimeError("mid")
+        mid.__cause__ = deep
+        outer = Exception("outer")
+        outer.__context__ = mid
+        assert self._infer(outer) == "timeout"
+
+    def test_chain_depth_limit_protection(self):
+        """Deep chain (>10 levels) does not cause infinite recursion."""
+        from src.utils.review_diagnostics import _has_timeout_in_chain
+        exc = RuntimeError("base")
+        for i in range(15):
+            wrapper = RuntimeError(f"level-{i}")
+            wrapper.__cause__ = exc
+            exc = wrapper
+        assert not _has_timeout_in_chain(exc)
+
+    def test_chain_with_timeout_at_depth_9(self):
+        """TimeoutError at depth 9 (within limit) is detected."""
+        from src.utils.review_diagnostics import _has_timeout_in_chain
+        exc = TimeoutError("deep")
+        for i in range(9):
+            wrapper = RuntimeError(f"level-{i}")
+            wrapper.__cause__ = exc
+            exc = wrapper
+        assert _has_timeout_in_chain(exc)
+
+
+# ---------------------------------------------------------------------------
+# handle_review_exception E2E: no empty message leak
+# ---------------------------------------------------------------------------
+
+
+class TestHandleReviewExceptionE2EEmptyMessage:
+    """handle_review_exception: no empty message / '(empty message)' leaks."""
+
+    def _make_circuit(self):
+        from src.spec_engine.review import ReviewCircuitState
+        return ReviewCircuitState()
+
+    def _make_settings(self):
+        s = MagicMock()
+        s.spec_review_failure_circuit_enabled = True
+        s.spec_review_failure_max_consecutive = 3
+        s.spec_review_failure_cooldown_cycles = 3
+        s.spec_review_failure_max_cooldown_cycles = 12
+        return s
+
+    @pytest.mark.parametrize("exc,check_content", [
+        pytest.param(asyncio.TimeoutError(), None, id="bare_asyncio_timeout"),
+        pytest.param(TimeoutError(""), None, id="empty_string_timeout"),
+        pytest.param(ValueError("bad input"), "bad input", id="non_timeout_exception"),
+    ])
+    def test_suggestion_nonempty(self, exc, check_content):
+        from src.utils.review_helpers import handle_review_exception
+
+        circuit = self._make_circuit()
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=1,
+            settings=self._make_settings(), engine="spec",
+        )
+        assert result.suggestion_text
+        assert "(empty message)" not in result.suggestion_text
+        assert result.suggestion_text.strip() != ""
+        if check_content:
+            assert check_content in result.suggestion_text
+
+    def test_chained_timeout_empty(self):
+        """RuntimeError wrapping asyncio.TimeoutError() — chain traversal."""
+        from src.utils.review_helpers import handle_review_exception
+
+        inner = asyncio.TimeoutError()
+        exc = RuntimeError("review failed")
+        exc.__cause__ = inner
+        circuit = self._make_circuit()
+        result = handle_review_exception(
+            exc, circuit=circuit, cycle=2,
+            settings=self._make_settings(), engine="spec",
+        )
+        assert result.suggestion_text
+        assert "(empty message)" not in result.suggestion_text
+
+
+# ---------------------------------------------------------------------------
+# build_review_error_suggestion output guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("kwargs,must_contain", [
+    pytest.param(dict(fail_reason="timeout"), None, id="timeout_branch"),
+    pytest.param(dict(fail_reason="unknown", error_text="", err_repr=""), None, id="empty_error_text"),
+    pytest.param(
+        dict(fail_reason="unknown", error_text="(empty message)", err_repr=""),
+        None, id="empty_message_marker",
+    ),
+    pytest.param(
+        dict(fail_reason="parse_error", error_text="JSON decode failed"),
+        "JSON decode failed", id="normal_error",
+    ),
+    pytest.param(dict(), None, id="all_empty"),
+    pytest.param(dict(fail_reason="", error_text="   ", err_repr=""), None, id="whitespace_only"),
+    pytest.param(
+        dict(fail_reason="some_error", error_text="", err_repr="ValueError('x')"),
+        "ValueError('x')", id="repr_fallback",
+    ),
+])
+def test_build_review_error_suggestion_nonempty(kwargs, must_contain):
+    """build_review_error_suggestion never returns empty for any branch."""
+    from src.utils.review_helpers import build_review_error_suggestion
+
+    result = build_review_error_suggestion(**kwargs)
+    assert result and result.strip()
+    assert "(empty message)" not in result
+    if must_contain:
+        assert must_contain in result
+
+
+# ---------------------------------------------------------------------------
+# Logger-level empty guards
+# (consolidates: TestLogExceptionEmptyTimeout, TestSpecHandlerResumeTimeoutLogNotEmpty,
+#  TestIMClientRetryTimeoutLogNotEmpty, TestAgentSessionRateLimitTimeoutLogNotEmpty)
+# ---------------------------------------------------------------------------
+
+
+class TestLogExceptionEmptyTimeout:
+    """errors.py: log_exception must not produce empty detail for TimeoutError()."""
+
+    def test_log_exception_empty_timeout_uses_detail(self):
+        from src.utils.errors import GhostAPError, log_exception
+
+        mock_logger = MagicMock(spec=logging.Logger)
+        exc = GhostAPError("")
+        log_exception(mock_logger, "测试操作", exc)
+        mock_logger.warning.assert_called_once()
+        logged_msg = mock_logger.warning.call_args[0][0]
+        parts = logged_msg.split(": ", 1)
+        assert len(parts) == 2, f"Expected 'msg: detail' format, got: {logged_msg}"
+        assert parts[1], f"Detail part is empty in: {logged_msg}"
+
+    def test_log_exception_timeout_error_goes_to_log_level(self):
+        from src.utils.errors import log_exception
+
+        mock_logger = MagicMock(spec=logging.Logger)
+        log_exception(mock_logger, "超时测试", TimeoutError())
+        mock_logger.log.assert_called_once()
+
+
+@pytest.mark.parametrize("fmt_template,fmt_args", [
+    pytest.param(
+        "恢复任务上下文失败(task_id=%s): %s", ("test-task",),
+        id="spec_handler_resume_timeout",
+    ),
+    pytest.param(
+        "%s异常(尝试%d/%d): %s", ("发送消息", 1, 3),
+        id="im_client_retry_timeout",
+    ),
+    pytest.param(
+        "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s", (30, 1, 3),
+        id="agent_session_rate_limit_timeout",
+    ),
+])
+def test_logger_format_nonempty_detail(fmt_template, fmt_args):
+    """Logger format strings must not have empty tail for TimeoutError()."""
+    detail = get_error_detail(TimeoutError())
+    formatted = fmt_template % (*fmt_args, detail)
+    assert not formatted.endswith(": "), f"Log ends with empty detail: {formatted}"
+    assert "超时" in formatted or "未知" in formatted
+
+
+def test_rate_limit_with_message_preserves():
+    """Named TimeoutError message preserved in rate-limit log format."""
+    detail = get_error_detail(TimeoutError("rate limit 429"))
+    formatted = "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s" % (30, 1, 3, detail)
+    assert "rate limit 429" in formatted
+
+
+# ===========================================================================
+# Section 3: Lint scan tests (static file scanning)
+# ===========================================================================
 
 
 class TestNoBareFStringInUserVisibleErrors:
     """Lint guard: reply_error / send_error_card calls must not use bare f\"{e}\"
     or f\"{exc}\" which can produce empty strings for TimeoutError()."""
 
-    # Pattern: user-visible output calls with bare {e}/{exc}/{err}/etc.
-    # Matches bare exception vars without get_error_detail / repr / or guard
     _BARE_FSTR_RE = re.compile(
         r'(?:reply_error|send_error_card|_reply_message|reply_text|update_card)'
         r'\s*\([^)]*f["\'].*\{(?:e|exc|err|ex|te|error|exception)\}[^)]*\)'
     )
-
-    # Pattern: logger.warning/error(f"...{e}") — bare exception in log format
     _BARE_LOGGER_RE = re.compile(
         r'logger\.(?:warning|error)\s*\(\s*f["\'].*\{(?:e|exc|err|ex|te|error|exception)\}'
     )
-
-    # "str(" alone is too broad — `str(e)` without `or repr(e)` is still unsafe.
-    # Keep "str(" only when the same line also contains " or " (handled by the
-    # " or " entry).  Replace the blanket "str(" with a precise check below.
     _SKIP_GUARDS = ("get_error_detail", "repr(", " or ")
 
     @classmethod
     def _line_is_guarded(cls, line: str) -> bool:
-        """Return True if *line* already has a safe guard pattern."""
         return any(g in line for g in cls._SKIP_GUARDS)
 
     def _scan_src_files(self):
@@ -611,7 +955,6 @@ class TestNoBareFStringInUserVisibleErrors:
         violations = []
         for py_file in src_dir.rglob("*.py"):
             for i, line in enumerate(py_file.read_text().splitlines(), 1):
-                # Skip lines that already use get_error_detail or repr or `or`
                 if self._line_is_guarded(line):
                     continue
                 if self._BARE_FSTR_RE.search(line):
@@ -619,7 +962,6 @@ class TestNoBareFStringInUserVisibleErrors:
         return violations
 
     def _scan_logger_bare_fstr(self):
-        """Scan logger.warning/error for bare f\"{e}\" without guard."""
         src_dir = Path(__file__).resolve().parent.parent / "src"
         violations = []
         for py_file in src_dir.rglob("*.py"):
@@ -646,10 +988,9 @@ class TestNoBareFStringInUserVisibleErrors:
 
     # --- Bare asyncio.wait_for lint ---
     _BARE_WAIT_FOR_RE = re.compile(r'asyncio\.wait_for\s*\(')
-    _WAIT_FOR_ALLOWLIST = {"src/utils/async_helpers.py"}  # safe_wait_for 自身需要调用
+    _WAIT_FOR_ALLOWLIST = {"src/utils/async_helpers.py"}
 
     def _scan_bare_wait_for(self):
-        """Scan src/ for direct asyncio.wait_for usage (should use safe_wait_for)."""
         src_dir = Path(__file__).resolve().parent.parent / "src"
         violations = []
         for py_file in src_dir.rglob("*.py"):
@@ -662,7 +1003,6 @@ class TestNoBareFStringInUserVisibleErrors:
         return violations
 
     def test_no_bare_asyncio_wait_for(self):
-        """All asyncio.wait_for should use safe_wait_for to prevent empty TimeoutError."""
         violations = self._scan_bare_wait_for()
         assert not violations, (
             "Found bare asyncio.wait_for (use safe_wait_for instead):\n"
@@ -670,9 +1010,6 @@ class TestNoBareFStringInUserVisibleErrors:
         )
 
     # --- Bare logger %s exception variable lint ---
-    # Matches: logger.xxx("...%s", e) where e is a bare exception variable
-    # WITHOUT str()/repr()/get_error_detail() wrapping.
-    # This catches the *non-fstring* pattern: logger.debug("...%s", e)
     _BARE_LOGGER_PERCENT_RE = re.compile(
         r'logger\.(?:debug|info|warning|error|critical)\s*\('
         r'[^)]*%s[^)]*,\s*'
@@ -680,16 +1017,13 @@ class TestNoBareFStringInUserVisibleErrors:
     )
 
     def _scan_logger_bare_percent(self):
-        """Scan src/ for logger calls with bare exception variable in %s formatting."""
         src_dir = Path(__file__).resolve().parent.parent / "src"
         violations = []
         for py_file in src_dir.rglob("*.py"):
             for i, line in enumerate(py_file.read_text().splitlines(), 1):
                 stripped = line.strip()
-                # Skip lines that already use guards
                 if self._line_is_guarded(stripped):
                     continue
-                # Skip lines with exc_info=True (full traceback already captured)
                 if "exc_info" in stripped:
                     continue
                 if self._BARE_LOGGER_PERCENT_RE.search(stripped):
@@ -697,7 +1031,6 @@ class TestNoBareFStringInUserVisibleErrors:
         return violations
 
     def test_no_bare_logger_percent_exception(self):
-        """Logger %s calls must not use bare exception variable (risk of empty message)."""
         violations = self._scan_logger_bare_percent()
         assert not violations, (
             "Found logger.xxx('...%s', e) with bare exception variable "
@@ -706,552 +1039,16 @@ class TestNoBareFStringInUserVisibleErrors:
         )
 
 
-# ---------------------------------------------------------------------------
-# Guard tests for newly hardened internal diagnostic paths (batch 2)
-# ---------------------------------------------------------------------------
-
-
-class TestIntentRecognizerEmptyGuard:
-    """intent_recognizer.py: bare exception in reasoning must not be empty."""
-
-    def test_bare_exception_reasoning_nonempty(self):
-        from src.agent.intent_recognizer import IntentRecognizer
-
-        recognizer = IntentRecognizer.__new__(IntentRecognizer)
-        recognizer._get_fallback_intent = lambda mode: "CHAT"
-
-        # Simulate the except block logic directly
-        e = Exception()
-        reasoning = f"异常回退: {str(e) or repr(e)}"
-        assert reasoning  # non-empty
-        assert not reasoning.endswith(": ")  # no empty tail
-        assert "Exception()" in reasoning  # repr fallback
-
-    def test_bare_timeout_reasoning_nonempty(self):
-        e = TimeoutError()
-        reasoning = f"异常回退: {str(e) or repr(e)}"
-        assert reasoning
-        assert not reasoning.endswith(": ")
-        assert "TimeoutError()" in reasoning
-
-    def test_named_exception_preserves_message(self):
-        e = ValueError("bad input")
-        reasoning = f"异常回退: {str(e) or repr(e)}"
-        assert "bad input" in reasoning
-
-
-class TestEngineBaseLoggerEmptyGuard:
-    """engine_base.py: logger format strings must not have empty tail."""
-
-    def test_timeout_logger_nonempty(self):
-        e = TimeoutError()
-        msg = f"Deep Engine 执行超时 (task_id=t1): {str(e) or repr(e)}"
-        assert msg
-        assert not msg.endswith(": ")
-        assert "TimeoutError()" in msg
-
-    def test_bare_exception_logger_nonempty(self):
-        e = Exception()
-        msg = f"Deep Engine 执行异常: {str(e) or repr(e)}"
-        assert msg
-        assert not msg.endswith(": ")
-        assert "Exception()" in msg
-
-    def test_named_exception_logger_preserves(self):
-        e = RuntimeError("connection lost")
-        msg = f"Deep Engine 执行异常: {str(e) or repr(e)}"
-        assert "connection lost" in msg
-
-
-class TestProjectManagerEmptyGuard:
-    """project/manager.py: directory creation error must not be empty."""
-
-    def test_bare_exception_nonempty(self):
-        e = Exception()
-        msg = f"无法创建目录 /tmp/test: {str(e) or repr(e)}"
-        assert msg
-        assert not msg.endswith(": ")
-        assert "Exception()" in msg
-
-    def test_bare_os_error_nonempty(self):
-        e = OSError()
-        msg = f"无法创建目录 /tmp/test: {str(e) or repr(e)}"
-        assert msg
-        assert not msg.endswith(": ")
-
-    def test_named_os_error_preserves(self):
-        e = PermissionError("access denied")
-        msg = f"无法创建目录 /tmp/test: {str(e) or repr(e)}"
-        assert "access denied" in msg
-
-
-class TestArtifactsParseEmptyGuard:
-    """spec_engine/artifacts.py: JSON parse error must not be empty."""
-
-    def test_spec_parse_bare_exception_nonempty(self):
-        e = Exception()
-        msg = f"规格 JSON 解析失败：{str(e) or repr(e)}"
-        assert msg
-        assert not msg.endswith("：")  # Chinese colon
-        assert "Exception()" in msg
-
-    def test_plan_parse_bare_exception_nonempty(self):
-        e = Exception()
-        msg = f"规划 JSON 解析失败：{str(e) or repr(e)}"
-        assert msg
-        assert not msg.endswith("：")
-        assert "Exception()" in msg
-
-    def test_json_decode_error_preserves_message(self):
-        import json
-
-        try:
-            json.loads("{bad json")
-        except Exception as e:
-            msg = f"规格 JSON 解析失败：{str(e) or repr(e)}"
-            assert msg
-            assert len(msg) > len("规格 JSON 解析失败：")
-
-
-# ---------------------------------------------------------------------------
-# diagnose_review_failure: (empty message) marker must never appear
-# ---------------------------------------------------------------------------
-
-
-class TestDiagnoseReviewFailureNoEmptyMessageMarker:
-    """review_diagnostics.py: error_text must never contain '(empty message)'."""
-
-    def _build(self, exc: Exception) -> dict:
-        from src.utils.review_diagnostics import build_review_exception_diagnostics
-        return build_review_exception_diagnostics(exc, cycle=1)
-
-    def test_timeout_error_no_empty_marker(self):
-        diag = self._build(TimeoutError())
-        assert "(empty message)" not in diag["error_text"]
-
-    def test_value_error_no_empty_marker(self):
-        diag = self._build(ValueError())
-        assert "(empty message)" not in diag["error_text"]
-
-    def test_runtime_error_no_empty_marker(self):
-        diag = self._build(RuntimeError())
-        assert "(empty message)" not in diag["error_text"]
-
-    def test_bare_exception_no_empty_marker(self):
-        diag = self._build(Exception())
-        assert "(empty message)" not in diag["error_text"]
-
-    def test_timeout_friendly_text(self):
-        diag = self._build(TimeoutError())
-        assert "审查超时" in diag["error_text"]
-
-    def test_non_timeout_friendly_text(self):
-        for exc_cls in (ValueError, RuntimeError, Exception):
-            diag = self._build(exc_cls())
-            assert "审查执行异常" in diag["error_text"], f"Failed for {exc_cls.__name__}"
-
-    def test_exception_with_message_preserved(self):
-        """Exceptions with a real message should keep that message."""
-        diag = self._build(ValueError("bad input"))
-        assert "bad input" in diag["error_text"]
-        assert "(empty message)" not in diag["error_text"]
-
-    def test_timeout_with_message_preserved(self):
-        """TimeoutError with a real message should keep that message."""
-        diag = self._build(TimeoutError("took too long"))
-        assert "took too long" in diag["error_text"]
-
-    def test_err_repr_still_contains_repr_info(self):
-        """err_repr field should still carry repr() info for debugging."""
-        diag = self._build(TimeoutError())
-        assert diag["err_repr"]  # not empty
-        assert "TimeoutError" in diag["err_repr"]
-
-
-# ---------------------------------------------------------------------------
-# worktree dispatcher/manager + base handler: TimeoutError context preserved
-# ---------------------------------------------------------------------------
-
-
-class TestWorktreeDispatcherTimeoutContext:
-    """worktree_engine/dispatcher.py: TimeoutError() must produce '超时' in error."""
-
-    def test_timeout_error_preserves_context(self):
-        """execute_units catch-all: TimeoutError() → error contains '超时'."""
-        detail = get_error_detail(TimeoutError())
-        assert detail
-        assert "超时" in detail
-
-    def test_regular_error_nonempty(self):
-        detail = get_error_detail(RuntimeError())
-        assert detail  # never empty
-
-
-class TestWorktreeManagerTimeoutContext:
-    """worktree_engine/manager.py: TimeoutError() in execute_goal → '超时'."""
-
-    def test_timeout_error_preserves_context(self):
-        detail = get_error_detail(TimeoutError())
-        assert "超时" in detail
-
-
-class TestBaseHandlerFallbackTimeoutContext:
-    """feishu/handlers/base.py: fallback detail for TimeoutError has '超时'."""
-
-    def test_timeout_fallback_has_context(self):
-        detail = get_error_detail(TimeoutError())
-        assert "超时" in detail
-        assert detail != "操作失败"  # old fallback
-
-    def test_regular_error_fallback_nonempty(self):
-        detail = get_error_detail(Exception())
-        assert detail  # never empty
-
-
-# ---------------------------------------------------------------------------
-# Exception chain traversal: _infer_fail_reason + _has_timeout_in_chain
-# ---------------------------------------------------------------------------
-
-
-class TestInferFailReasonChainedExceptions:
-    """review_diagnostics: _infer_fail_reason must detect TimeoutError in exception chains."""
-
-    def _infer(self, exc: Exception) -> str:
-        from src.utils.review_diagnostics import build_review_exception_diagnostics
-        diag = build_review_exception_diagnostics(exc, cycle=1)
-        return diag.get("fail_reason", "")
-
-    def test_direct_timeout_still_timeout(self):
-        """Regression: direct TimeoutError → 'timeout'."""
-        assert self._infer(TimeoutError()) == "timeout"
-
-    def test_direct_timeout_with_message(self):
-        assert self._infer(TimeoutError("ACP prompt 超时")) == "timeout"
-
-    def test_wrapped_timeout_via_cause(self):
-        """RuntimeError wrapping TimeoutError via __cause__ → 'timeout'."""
-        outer = RuntimeError("wrapper")
-        outer.__cause__ = TimeoutError("inner")
-        assert self._infer(outer) == "timeout"
-
-    def test_wrapped_timeout_via_context(self):
-        """RuntimeError wrapping TimeoutError via __context__ → 'timeout'."""
-        outer = RuntimeError("wrapper")
-        outer.__context__ = TimeoutError("inner")
-        assert self._infer(outer) == "timeout"
-
-    def test_multi_level_nested_timeout(self):
-        """Exception → RuntimeError → TimeoutError (3 levels) → 'timeout'."""
-        deep = TimeoutError("deep")
-        mid = RuntimeError("mid")
-        mid.__cause__ = deep
-        outer = Exception("outer")
-        outer.__context__ = mid
-        assert self._infer(outer) == "timeout"
-
-    def test_no_timeout_in_chain(self):
-        """ValueError with no TimeoutError in chain → NOT 'timeout'."""
-        assert self._infer(ValueError("bad input")) != "timeout"
-
-    def test_no_timeout_in_non_timeout_chain(self):
-        """RuntimeError → ValueError chain → NOT 'timeout'."""
-        outer = RuntimeError("outer")
-        outer.__cause__ = ValueError("inner")
-        assert self._infer(outer) != "timeout"
-
-    def test_chain_depth_limit_protection(self):
-        """Deep chain (>10 levels) does not cause infinite recursion."""
-        from src.utils.review_diagnostics import _has_timeout_in_chain
-        # Build chain of 15 RuntimeErrors with no TimeoutError
-        exc = RuntimeError("base")
-        for i in range(15):
-            wrapper = RuntimeError(f"level-{i}")
-            wrapper.__cause__ = exc
-            exc = wrapper
-        # Should not hang and should return False
-        assert not _has_timeout_in_chain(exc)
-
-    def test_chain_with_timeout_at_depth_9(self):
-        """TimeoutError at depth 9 (within limit) is detected."""
-        from src.utils.review_diagnostics import _has_timeout_in_chain
-        exc = TimeoutError("deep")
-        for i in range(9):
-            wrapper = RuntimeError(f"level-{i}")
-            wrapper.__cause__ = exc
-            exc = wrapper
-        assert _has_timeout_in_chain(exc)
-
-
-# ---------------------------------------------------------------------------
-# Structured review_metrics log validation (Spec engine)
-# ---------------------------------------------------------------------------
-
-
-_EXPECTED_METRICS_KEYS = {
-    "metric_type", "engine", "fail_reason",
-    "consecutive_timeouts", "consecutive_failures",
-    "circuit_open", "adaptive_timeout", "backoff_level",
-}
-
-
-class TestSpecReviewMetricsLog:
-    """spec_engine/review.py: review_metrics logger.info is called with valid JSON."""
-
-    def _run_conduct_review_with_error(self, exc: Exception):
-        """Call conduct_review with a send_fn that raises *exc*, return captured log records."""
-        import logging
-        from unittest.mock import MagicMock
-
-        from src.spec_engine.review import ReviewCircuitState, conduct_review
-
-        circuit = ReviewCircuitState()
-        settings = MagicMock()
-        settings.spec_review_failure_circuit_enabled = False
-        settings.spec_review_failure_max_consecutive = 3
-        settings.spec_review_failure_cooldown_cycles = 3
-        settings.spec_review_timeout = 120
-        settings.spec_review_min_timeout = 30
-        settings.spec_review_hard_floor = 15
-        settings.spec_review_failure_max_cooldown_cycles = 12
-
-        def raise_exc(*a, **kw):
-            raise exc
-
-        records: list[logging.LogRecord] = []
-        handler = logging.Handler()
-        handler.emit = lambda r: records.append(r)
-
-        logger = logging.getLogger("src.utils.review_helpers")
-        logger.addHandler(handler)
-        old_level = logger.level
-        logger.setLevel(logging.DEBUG)
-        # Also capture metrics_exporter logger (metrics now routed via exporter)
-        logger_me = logging.getLogger("src.utils.metrics_exporter")
-        logger_me.addHandler(handler)
-        old_level_me = logger_me.level
-        logger_me.setLevel(logging.DEBUG)
-        # Reset exporter singleton so LoggerExporter is re-created fresh
-        from src.utils.metrics_exporter import reset_metrics_exporter
-        reset_metrics_exporter()
-        try:
-            conduct_review(
-                session=MagicMock(),
-                settings=settings,
-                project=MagicMock(requirement="test req"),
-                send_prompt_with_retry_fn=raise_exc,
-                build_review_exception_diagnostics_fn=lambda e, cycle: {
-                    "phase": "review", "cycle": cycle, "fail_reason": "timeout" if isinstance(e, TimeoutError) else "exception",
-                    "err_type": type(e).__name__, "err_repr": repr(e),
-                    "error_text": str(e) or "审查执行异常",
-                },
-                circuit=circuit,
-                cycle=3,
-            )
-        finally:
-            logger.removeHandler(handler)
-            logger.setLevel(old_level)
-            logger_me.removeHandler(handler)
-            logger_me.setLevel(old_level_me)
-            reset_metrics_exporter()
-
-        # Find the review_metrics record
-        metrics_records = [r for r in records if "review_metrics" in str(r.getMessage())]
-        return metrics_records
-
-    def test_metrics_log_emitted_on_timeout(self):
-        recs = self._run_conduct_review_with_error(TimeoutError("slow"))
-        assert len(recs) >= 1, "review_metrics log not emitted"
-
-    def test_metrics_log_emitted_on_regular_error(self):
-        recs = self._run_conduct_review_with_error(RuntimeError("oops"))
-        assert len(recs) >= 1, "review_metrics log not emitted"
-
-    def test_metrics_json_structure(self):
-        import json
-        recs = self._run_conduct_review_with_error(TimeoutError())
-        msg = recs[0].getMessage()
-        json_str = msg.split("review_metrics: ", 1)[1]
-        data = json.loads(json_str)
-        missing = _EXPECTED_METRICS_KEYS - set(data.keys())
-        assert not missing, f"Missing metrics keys: {missing}"
-        assert data["engine"] == "spec"
-        assert data["metric_type"] == "review_exception"
-
-    def test_metrics_adaptive_timeout_is_int(self):
-        import json
-        recs = self._run_conduct_review_with_error(TimeoutError())
-        msg = recs[0].getMessage()
-        json_str = msg.split("review_metrics: ", 1)[1]
-        data = json.loads(json_str)
-        assert isinstance(data["adaptive_timeout"], int)
-        assert data["adaptive_timeout"] > 0  # sentinel was overwritten by compute_adaptive_timeout
-
-    def test_metrics_sentinel_fallback_when_compute_fails(self):
-        """If compute_adaptive_timeout itself raised, adaptive_timeout should be 0 sentinel."""
-        # This is implicitly tested: the sentinel is set before try, so if compute_adaptive_timeout
-        # raises, the except block still has review_timeout = 0.
-        # We verify by checking the sentinel pattern exists in the source.
-        import inspect
-
-        from src.spec_engine.review import conduct_review
-        source = inspect.getsource(conduct_review)
-        assert "review_timeout: int = 0" in source or "review_timeout = 0" in source
-
-
-# ---------------------------------------------------------------------------
-# E2E: handle_review_exception with bare asyncio.TimeoutError('')
-# ---------------------------------------------------------------------------
-
-
-class TestHandleReviewExceptionE2EEmptyMessage:
-    """Simulate asyncio.TimeoutError('') through handle_review_exception and
-    verify no empty message / '(empty message)' leaks to suggestion_text."""
-
-    def _make_circuit(self):
-        from src.spec_engine.review import ReviewCircuitState
-        return ReviewCircuitState()
-
-    def _make_settings(self):
-        s = MagicMock()
-        s.spec_review_failure_circuit_enabled = True
-        s.spec_review_failure_max_consecutive = 3
-        s.spec_review_failure_cooldown_cycles = 3
-        s.spec_review_failure_max_cooldown_cycles = 12
-        return s
-
-    def test_bare_asyncio_timeout_spec(self):
-        """asyncio.TimeoutError() with empty message through Spec path."""
-        import asyncio
-
-        from src.utils.review_helpers import handle_review_exception
-
-        exc = asyncio.TimeoutError()
-        circuit = self._make_circuit()
-        result = handle_review_exception(
-            exc, circuit=circuit, cycle=1,
-            settings=self._make_settings(), engine="spec",
-        )
-        assert result.suggestion_text
-        assert "(empty message)" not in result.suggestion_text
-        assert result.suggestion_text.strip() != ""
-
-    def test_builtin_timeout_empty_string(self):
-        """TimeoutError('') — empty string message."""
-        from src.utils.review_helpers import handle_review_exception
-
-        exc = TimeoutError("")
-        circuit = self._make_circuit()
-        result = handle_review_exception(
-            exc, circuit=circuit, cycle=1,
-            settings=self._make_settings(), engine="spec",
-        )
-        assert result.suggestion_text
-        assert "(empty message)" not in result.suggestion_text
-        assert "empty" not in result.suggestion_text.lower()
-
-    def test_chained_timeout_empty(self):
-        """RuntimeError wrapping asyncio.TimeoutError() — chain traversal."""
-        import asyncio
-
-        from src.utils.review_helpers import handle_review_exception
-
-        inner = asyncio.TimeoutError()
-        exc = RuntimeError("review failed")
-        exc.__cause__ = inner
-        circuit = self._make_circuit()
-        result = handle_review_exception(
-            exc, circuit=circuit, cycle=2,
-            settings=self._make_settings(), engine="spec",
-        )
-        assert result.suggestion_text
-        assert "(empty message)" not in result.suggestion_text
-
-    def test_non_timeout_exception_no_empty(self):
-        """Non-timeout exception still produces non-empty suggestion."""
-        from src.utils.review_helpers import handle_review_exception
-
-        exc = ValueError("bad input")
-        circuit = self._make_circuit()
-        result = handle_review_exception(
-            exc, circuit=circuit, cycle=1,
-            settings=self._make_settings(), engine="spec",
-        )
-        assert result.suggestion_text
-        assert "bad input" in result.suggestion_text
-
-
-# ---------------------------------------------------------------------------
-# review_helpers output guard: build_review_error_suggestion all branches
-# ---------------------------------------------------------------------------
-
-
-class TestBuildReviewErrorSuggestionOutputGuard:
-    """Ensure build_review_error_suggestion never returns empty for any branch."""
-
-    def test_timeout_branch(self):
-        from src.utils.review_helpers import build_review_error_suggestion
-        result = build_review_error_suggestion(fail_reason="timeout")
-        assert result and result.strip()
-        assert "(empty message)" not in result
-
-    def test_empty_error_text_branch(self):
-        from src.utils.review_helpers import build_review_error_suggestion
-        result = build_review_error_suggestion(fail_reason="unknown", error_text="", err_repr="")
-        assert result and result.strip()
-        assert "(empty message)" not in result
-
-    def test_empty_message_marker_branch(self):
-        from src.utils.review_helpers import build_review_error_suggestion
-        result = build_review_error_suggestion(
-            fail_reason="unknown", error_text="(empty message)", err_repr="",
-        )
-        assert result and result.strip()
-        assert "(empty message)" not in result
-
-    def test_normal_error_branch(self):
-        from src.utils.review_helpers import build_review_error_suggestion
-        result = build_review_error_suggestion(
-            fail_reason="parse_error", error_text="JSON decode failed",
-        )
-        assert result and result.strip()
-        assert "JSON decode failed" in result
-
-    def test_all_empty_inputs(self):
-        from src.utils.review_helpers import build_review_error_suggestion
-        result = build_review_error_suggestion()
-        assert result and result.strip()
-
-    def test_whitespace_only_error_text(self):
-        from src.utils.review_helpers import build_review_error_suggestion
-        result = build_review_error_suggestion(fail_reason="", error_text="   ", err_repr="")
-        assert result and result.strip()
-
-    def test_err_repr_fallback_when_error_text_empty(self):
-        from src.utils.review_helpers import build_review_error_suggestion
-        result = build_review_error_suggestion(
-            fail_reason="some_error", error_text="", err_repr="ValueError('x')",
-        )
-        assert result and result.strip()
-        assert "ValueError('x')" in result
-
-
 class TestReviewCallsTotalTimeout:
-    """Lint guard: review-related send_prompt_with_retry calls in spec_engine
-    must include total_timeout parameter to prevent unbounded
-    retry duration."""
+    """Lint guard: review-related send_prompt_with_retry calls must include total_timeout."""
 
-    _REVIEW_FILES = [
-        "src/spec_engine/review.py",
-    ]
+    _REVIEW_FILES = ["src/spec_engine/review.py"]
 
     def test_review_send_prompt_with_retry_has_total_timeout(self):
-        """All send_prompt_with_retry calls in review code must include total_timeout."""
-        import re
         src_dir = Path(__file__).resolve().parent.parent
         violations = []
         call_re = re.compile(r'send_prompt_with_retry\s*\(')
         total_timeout_re = re.compile(r'total_timeout\s*=')
-        # Only check inside review functions — detect the enclosing function name
         review_fn_re = re.compile(r'^\s*def\s+(?:conduct_review|_conduct_review)\b')
 
         for rel_path in self._REVIEW_FILES:
@@ -1262,13 +1059,11 @@ class TestReviewCallsTotalTimeout:
             lines = content.splitlines()
             in_review_fn = False
             for i, line in enumerate(lines, 1):
-                # Track whether we're inside a review function
                 if re.match(r'^\s*def\s+\w+', line):
                     in_review_fn = bool(review_fn_re.match(line))
                 if not in_review_fn:
                     continue
                 if call_re.search(line):
-                    # Look at the full call (may span multiple lines)
                     snippet = "\n".join(lines[i - 1 : min(i + 10, len(lines))])
                     if not total_timeout_re.search(snippet):
                         violations.append(f"{rel_path}:{i}: {line.strip()}")
@@ -1279,27 +1074,11 @@ class TestReviewCallsTotalTimeout:
         )
 
 
-# ---------------------------------------------------------------------------
-# Lint guard: no bare `raise TimeoutError()` without message argument
-# ---------------------------------------------------------------------------
-
-
 class TestNoBareRaiseTimeoutError:
-    """Prevent introducing bare `raise TimeoutError()` (no message) in src/.
+    """Prevent bare `raise TimeoutError()` (no message) in src/."""
 
-    Bare TimeoutError() produces an empty str(e), which is the root cause
-    of the '审查执行异常: TimeoutError (empty message)' issue.
-    Only test files are exempted (they intentionally test the bare case).
-    """
-
-    # Matches: raise TimeoutError() — with empty parens, no arguments
     _BARE_RAISE_RE = re.compile(r'raise\s+TimeoutError\s*\(\s*\)')
-
-    # Files in src/ that legitimately wrap and re-raise with a message
-    # (they catch the bare one from concurrent.futures and add a message)
-    _ALLOWLIST = {
-        "src/acp/sync_adapter.py",  # catches bare and re-raises with message
-    }
+    _ALLOWLIST = {"src/acp/sync_adapter.py"}
 
     def _scan(self):
         src_dir = Path(__file__).resolve().parent.parent / "src"
@@ -1310,7 +1089,6 @@ class TestNoBareRaiseTimeoutError:
                 continue
             for i, line in enumerate(py_file.read_text().splitlines(), 1):
                 stripped = line.strip()
-                # Skip comments and test-like assertions
                 if stripped.startswith("#"):
                     continue
                 if self._BARE_RAISE_RE.search(stripped):
@@ -1327,274 +1105,12 @@ class TestNoBareRaiseTimeoutError:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: _run_async empty-message TimeoutError wrapping
-# ---------------------------------------------------------------------------
-
-
-class TestRunAsyncTimeoutWrapping:
-    """sync_adapter._run_async must never leak empty TimeoutError messages."""
-
-    def _make_adapter(self):
-        """Create a minimal SyncACPSession with a running event loop."""
-        import asyncio
-
-        from src.acp.sync_adapter import SyncACPSession
-
-        adapter = SyncACPSession.__new__(SyncACPSession)
-        adapter._agent_type = "test_agent"
-        adapter._loop = asyncio.new_event_loop()
-        adapter._loop_thread = threading.Thread(
-            target=adapter._loop.run_forever, daemon=True
-        )
-        adapter._loop_thread.start()
-        return adapter
-
-    def _cleanup(self, adapter):
-        adapter._loop.call_soon_threadsafe(adapter._loop.stop)
-        adapter._loop_thread.join(timeout=2)
-
-    def test_timeout_has_nonempty_message(self):
-        """future.result timeout → TimeoutError with meaningful message."""
-        import asyncio
-
-        adapter = self._make_adapter()
-        try:
-            async def hang():
-                await asyncio.sleep(999)
-
-            try:
-                adapter._run_async(hang(), timeout=0.05)
-                assert False, "Should have raised TimeoutError"
-            except TimeoutError as e:
-                msg = str(e)
-                assert msg, "_run_async produced empty TimeoutError message"
-                assert "(empty message)" not in msg
-                assert "test_agent" in msg
-        finally:
-            self._cleanup(adapter)
-
-    def test_normal_return_unaffected(self):
-        """Non-timeout coroutines return normally."""
-        adapter = self._make_adapter()
-        try:
-            async def ok():
-                return 42
-
-            assert adapter._run_async(ok(), timeout=5) == 42
-        finally:
-            self._cleanup(adapter)
-
-    def test_non_timeout_exception_passthrough(self):
-        """Non-TimeoutError exceptions propagate unchanged."""
-        adapter = self._make_adapter()
-        try:
-            async def boom():
-                raise ValueError("test boom")
-
-            try:
-                adapter._run_async(boom(), timeout=5)
-                assert False, "Should have raised ValueError"
-            except ValueError as e:
-                assert "test boom" in str(e)
-        finally:
-            self._cleanup(adapter)
-
-    def test_timeout_with_existing_message_preserved(self):
-        """If the underlying TimeoutError already has a message, preserve it."""
-
-        adapter = self._make_adapter()
-        try:
-            async def raise_with_msg():
-                raise TimeoutError("custom timeout msg")
-
-            try:
-                adapter._run_async(raise_with_msg(), timeout=5)
-                assert False, "Should have raised TimeoutError"
-            except TimeoutError as e:
-                assert "custom timeout msg" in str(e)
-        finally:
-            self._cleanup(adapter)
-
-
-# ---------------------------------------------------------------------------
-# E2E: get_error_detail produces non-empty for all TimeoutError variants
-# ---------------------------------------------------------------------------
-
-
-class TestTimeoutErrorE2EDetail:
-    """End-to-end: get_error_detail always returns non-empty, meaningful text
-    for bare TimeoutError(), wrapped TimeoutError, and asyncio.TimeoutError."""
-
-    def test_bare_timeout_nonempty_and_contains_timeout(self):
-        result = get_error_detail(TimeoutError())
-        assert result, "get_error_detail(TimeoutError()) returned empty"
-        assert "超时" in result
-
-    def test_bare_asyncio_timeout_nonempty(self):
-        import asyncio
-        result = get_error_detail(asyncio.TimeoutError())
-        assert result, "get_error_detail(asyncio.TimeoutError()) returned empty"
-        assert "超时" in result
-
-    def test_wrapped_timeout_via_cause(self):
-        inner = TimeoutError()
-        outer = RuntimeError("wrapper")
-        outer.__cause__ = inner
-        result = get_error_detail(outer)
-        assert result, "get_error_detail for wrapped TimeoutError returned empty"
-        assert "超时" in result
-
-    def test_wrapped_timeout_via_context(self):
-        inner = TimeoutError()
-        outer = RuntimeError("wrapper")
-        outer.__context__ = inner
-        result = get_error_detail(outer)
-        assert result, "get_error_detail for context-wrapped TimeoutError returned empty"
-        assert "超时" in result
-
-    def test_third_party_timeout_via_name(self):
-        """Verifies that TimeoutExpired, ReadTimeout, ConnectTimeout are detected by name."""
-        for tn in ("TimeoutExpired", "ReadTimeout", "ConnectTimeout"):
-            class MockTimeout(Exception):
-                pass
-            MockTimeout.__name__ = tn
-
-            inner = MockTimeout("inner timeout")
-            outer = RuntimeError("outer")
-            outer.__cause__ = inner
-
-            result = get_error_detail(outer)
-            assert "超时" in result, f"Failed for {tn}"
-
-    def test_concurrent_futures_timeout_error(self):
-        import concurrent.futures
-        result = get_error_detail(concurrent.futures.TimeoutError())
-        assert "超时" in result
-
-    def test_concurrent_futures_wrapped_timeout(self):
-        import concurrent.futures
-        inner = concurrent.futures.TimeoutError()
-        outer = RuntimeError("wrapper")
-        outer.__cause__ = inner
-        result = get_error_detail(outer)
-        assert "超时" in result
-
-    def test_timeout_with_message_preserves(self):
-        result = get_error_detail(TimeoutError("ACP 超时 120s"))
-        assert "ACP 超时 120s" in result
-
-    def test_empty_string_timeout_still_nonempty(self):
-        result = get_error_detail(TimeoutError(""))
-        assert result, "get_error_detail(TimeoutError('')) returned empty"
-        assert "超时" in result
-
-
-# ---------------------------------------------------------------------------
-# Task 5: Logger-level empty-message guards (4 fix sites)
-# ---------------------------------------------------------------------------
-
-
-class TestLogExceptionEmptyTimeout:
-    """errors.py: log_exception must not produce empty detail for TimeoutError()."""
-
-    def test_log_exception_empty_timeout_uses_detail(self):
-        import logging
-        from unittest.mock import MagicMock
-
-        from src.utils.errors import GhostAPError, log_exception
-
-        mock_logger = MagicMock(spec=logging.Logger)
-        # GhostAPError with empty message — goes through WARNING branch
-        exc = GhostAPError("")
-        log_exception(mock_logger, "测试操作", exc)
-        mock_logger.warning.assert_called_once()
-        logged_msg = mock_logger.warning.call_args[0][0]
-        # Detail part (after ": ") should not be empty
-        parts = logged_msg.split(": ", 1)
-        assert len(parts) == 2, f"Expected 'msg: detail' format, got: {logged_msg}"
-        assert parts[1], f"Detail part is empty in: {logged_msg}"
-
-    def test_log_exception_timeout_error_goes_to_log_level(self):
-        """TimeoutError is not GhostAPError, so goes to logger.log() branch — no empty string concern."""
-        import logging
-        from unittest.mock import MagicMock
-
-        from src.utils.errors import log_exception
-
-        mock_logger = MagicMock(spec=logging.Logger)
-        log_exception(mock_logger, "超时测试", TimeoutError())
-        # Should use logger.log with exc_info, not warning branch
-        mock_logger.log.assert_called_once()
-
-
-class TestSpecHandlerResumeTimeoutLogNotEmpty:
-    """spec.py: restore_from_task_state timeout log must not be empty."""
-
-    def test_restore_timeout_log_has_detail(self):
-        import logging
-        from unittest.mock import MagicMock
-
-        from src.utils.errors import get_error_detail
-
-        # Simulate the logger call pattern used in spec.py:696
-        mock_logger = MagicMock(spec=logging.Logger)
-        e = TimeoutError()  # empty message
-        detail = get_error_detail(e)
-        mock_logger.warning("恢复任务上下文失败(task_id=%s): %s", "test-task", detail, exc_info=True)
-
-        call_args = mock_logger.warning.call_args
-        # The %s placeholder for detail should not be empty
-        assert call_args[0][2], "detail placeholder is empty for bare TimeoutError()"
-        assert "超时" in call_args[0][2] or "未知" in call_args[0][2]
-
-
-class TestIMClientRetryTimeoutLogNotEmpty:
-    """im_client.py: retry exception log must not be empty for TimeoutError()."""
-
-    def test_retry_timeout_log_has_detail(self):
-        from src.utils.errors import get_error_detail
-
-        e = TimeoutError()  # empty message
-        detail = get_error_detail(e)
-        # Simulate the format string used in im_client.py:63
-        formatted = "%s异常(尝试%d/%d): %s" % ("发送消息", 1, 3, detail)
-        # The detail part should not end with ": " (empty)
-        assert not formatted.endswith(": "), f"Log ends with empty detail: {formatted}"
-        assert "超时" in formatted or "未知" in formatted
-
-
-class TestAgentSessionRateLimitTimeoutLogNotEmpty:
-    """agent_session.py: rate-limit retry log must not be empty for TimeoutError()."""
-
-    def test_rate_limit_timeout_log_has_detail(self):
-        from src.utils.errors import get_error_detail
-
-        e = TimeoutError()  # empty message
-        detail = get_error_detail(e)
-        # Simulate the format string used in agent_session.py:1138-1144
-        formatted = "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s" % (30, 1, 3, detail)
-        assert not formatted.endswith(": "), f"Log ends with empty detail: {formatted}"
-        assert "超时" in formatted or "未知" in formatted
-
-    def test_rate_limit_with_message_preserves(self):
-        from src.utils.errors import get_error_detail
-
-        e = TimeoutError("rate limit 429")
-        detail = get_error_detail(e)
-        formatted = "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s" % (30, 1, 3, detail)
-        assert "rate limit 429" in formatted
-
-
-# ---------------------------------------------------------------------------
 # Static scan: ban `str(e) or repr(e)` pattern from src/ (except errors.py)
 # ---------------------------------------------------------------------------
 
-import pathlib
-import re
-
-_SRC_ROOT = pathlib.Path(__file__).resolve().parent.parent / "src"
+_SRC_ROOT = Path(__file__).resolve().parent.parent / "src"
 _BAN_PATTERN = re.compile(r"str\(\w+\)\s+or\s+(?:repr\(\w+\)|\"(?:\(empty\)|empty)\")")
-_ALLOWED_FILES = {"errors.py"}  # get_error_detail implementation itself
+_ALLOWED_FILES = {"errors.py"}
 
 
 class TestBanStrOrReprPattern:
@@ -1620,14 +1136,13 @@ class TestBanStrOrReprPattern:
 
 
 # ---------------------------------------------------------------------------
-# Task 44: No bare `except Exception: pass` in lock-related source files
+# No bare `except Exception: pass` in lock-related source files
 # ---------------------------------------------------------------------------
 
 
 class TestNoBareSilentExceptInLockFiles:
-    """Lock-related files must not swallow exceptions silently with `except Exception: pass`."""
+    """Lock-related files must not swallow exceptions silently."""
 
-    # Only scan files that are purely lock-related (not general-purpose handlers)
     _LOCK_FILES = [
         "src/chat_lock.py",
         "src/repo_lock.py",
@@ -1638,8 +1153,6 @@ class TestNoBareSilentExceptInLockFiles:
     ]
 
     def test_no_except_exception_pass(self):
-        import re
-        from pathlib import Path
         root = Path(__file__).resolve().parent.parent
         pattern = re.compile(r'except\s+Exception\s*:\s*$')
         violations = []
@@ -1650,7 +1163,6 @@ class TestNoBareSilentExceptInLockFiles:
             lines = fpath.read_text(encoding="utf-8").splitlines()
             for i, line in enumerate(lines, 1):
                 if pattern.search(line.strip()):
-                    # Check if the next non-empty line is just `pass`
                     for j in range(i, min(i + 3, len(lines))):
                         next_line = lines[j].strip()
                         if next_line == "pass":
