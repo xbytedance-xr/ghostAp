@@ -18,7 +18,7 @@ from src.spec_engine.review_aggregation import (
 )
 from src.spec_engine.review_artifacts import ReviewArtifacts
 from src.spec_engine.review_roles import ReviewRoleSpec, batch_roles_by_dependencies
-from src.utils.errors import get_error_detail
+from src.utils.errors import classify_timeout, get_error_detail
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +38,11 @@ class AdaptiveReviewResult(ReviewResult):
 def build_role_review_prompt(role: ReviewRoleSpec, artifacts: ReviewArtifacts) -> str:
     files = "\n".join(f"- {path}" for path in (artifacts.touched_files or [])[:50])
     diff = artifacts.diff_patch or ""
-    if len(diff) > 40_000:
-        diff = diff[:40_000] + "\n...[truncated]"
+    if len(diff) > 20_000:
+        head = diff[:8_000]
+        tail = diff[-8_000:]
+        skipped = len(diff) - 16_000
+        diff = f"{head}\n\n...[truncated {skipped} chars]...\n\n{tail}"
     return f"""你是 {role.display_name}。
 
 ## 任务目标
@@ -193,24 +196,26 @@ class RoleReviewWorker:
             return parse_role_review_output(self.role, raw)
         except Exception as exc:
             err = get_error_detail(exc)
+            is_timeout = classify_timeout(exc)
             logger.warning("[RoleReviewWorker:%s] failed: %s", self.role.role_id, err)
+            error_str = f"timeout_degraded:{err}" if is_timeout else err
             return RoleReviewOutcome(
                 role_id=self.role.role_id,
                 role_display_name=self.role.display_name,
                 role_category=self.role.category,
                 passed=False,
-                summary="审查异常",
+                summary="审查超时（已降级）" if is_timeout else "审查异常",
                 suggestions=[
                     RoleSuggestion(
                         severity="major",
                         confidence="high",
                         evidence=f"role failed after {int((time.monotonic() - t0) * 1000)}ms",
                         recommendation=f"{self.role.display_name} 审查异常：{err}",
-                        blocking=True,
+                        blocking=False if is_timeout else True,
                     )
                 ],
-                error=err,
-                blocking=self.role.blocking,
+                error=error_str,
+                blocking=False if is_timeout else self.role.blocking,
                 base_perspective_value=self.role.base_perspective.value if self.role.base_perspective else "",
             )
 
@@ -287,14 +292,20 @@ def _run_batch(
     prompt_runner_factory: PromptRunnerFactory,
     max_parallel: int,
     timeout: float,
+    role_timeout_multipliers: dict[str, float] | None = None,
 ) -> list[RoleReviewOutcome]:
     outcomes: list[RoleReviewOutcome] = []
     max_parallel = max(1, int(max_parallel or 1))
+    multipliers = role_timeout_multipliers or {}
     for i in range(0, len(roles), max_parallel):
         wave = roles[i:i + max_parallel]
         with ThreadPoolExecutor(max_workers=len(wave), thread_name_prefix="role-review-") as pool:
             futures = {
-                pool.submit(RoleReviewWorker(role, timeout=timeout).run, artifacts, prompt_runner_factory(role)): role
+                pool.submit(
+                    RoleReviewWorker(role, timeout=timeout * multipliers.get(role.role_id, 1.0)).run,
+                    artifacts,
+                    prompt_runner_factory(role),
+                ): role
                 for role in wave
             }
             for future in as_completed(futures):
@@ -311,6 +322,7 @@ def run_adaptive_role_review_pipeline(
     prompt_runner_factory: PromptRunnerFactory,
     max_parallel: int = 3,
     timeout: float = 240.0,
+    role_timeout_multipliers: dict[str, float] | None = None,
     iteration: int | None = None,
 ) -> AdaptiveReviewResult:
     """Run adaptive roles with dependency batching and parallel workers."""
@@ -324,6 +336,7 @@ def run_adaptive_role_review_pipeline(
                 prompt_runner_factory=prompt_runner_factory,
                 max_parallel=max_parallel,
                 timeout=timeout,
+                role_timeout_multipliers=role_timeout_multipliers,
             )
         )
     order = {role.role_id: idx for idx, role in enumerate(roles)}

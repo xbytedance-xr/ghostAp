@@ -16,6 +16,6 @@
 
 | ID | 日期 | Gap 描述 | Severity | 来源 | 状态 | 解决 Commit |
 |----|------|----------|----------|------|------|-------------|
-| — | — | 当前无开放 Backlog 条目。 | — | — | — | — |
+| B020 | 2026-05-18 | 架构师审查超时(240s)导致阻塞：已实现 per-role timeout multiplier + diff 截断 + timeout 降级 | Medium | Spec Engine audit | ✅ Fixed | (pending commit) |
 
 > **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。

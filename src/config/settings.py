@@ -246,6 +246,7 @@ class Settings(BaseSettings):
     spec_review_enabled: bool = True
     spec_review_strategy: Literal["adaptive_roles", "multi_perspective", "none"] = "adaptive_roles"
     spec_review_timeout: int = 240
+    spec_review_role_timeout_multipliers: dict[str, float] = {"architect": 1.5}
     spec_review_max_parallel: int = 3
     spec_review_dynamic_roles_enabled: bool = True
     spec_review_dynamic_roles_max: int = 3
@@ -625,6 +626,25 @@ class Settings(BaseSettings):
                 f"{info.field_name} 必须 ≤ 10（推荐 1-3），当前值为 {v}"
             )
         return val
+
+    @field_validator("spec_review_role_timeout_multipliers", mode="before")
+    @classmethod
+    def _clamp_role_timeout_multipliers(cls, v, info) -> dict[str, float]:
+        import json as _json
+
+        if isinstance(v, str):
+            v = _json.loads(v)
+        if not isinstance(v, dict):
+            raise ValueError(f"{info.field_name} 必须是 dict[str, float]")
+        clamped: dict[str, float] = {}
+        for k, val in v.items():
+            fval = float(val)
+            if fval < 0.1:
+                fval = 0.1
+            if fval > 3.0:
+                fval = 3.0
+            clamped[str(k)] = fval
+        return clamped
 
     @model_validator(mode="before")
     @classmethod

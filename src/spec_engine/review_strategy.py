@@ -171,6 +171,7 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
             iteration=ctx.cycle,
             max_parallel=int(getattr(ctx.settings, "spec_review_max_parallel", 3) or 3),
             timeout=float(getattr(ctx.settings, "spec_review_timeout", 240) or 240),
+            role_timeout_multipliers=getattr(ctx.settings, "spec_review_role_timeout_multipliers", None),
         )
         result.role_plan_hash = role_plan_hash
         result.blocking_suggestion_hash = result.aggregated.blocking_hash() if result.aggregated else ""
