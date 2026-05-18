@@ -1060,26 +1060,6 @@ class TTADKManager:
         # 直接走 get_models(force_refresh=True)
         return self.get_models(cwd=cwd, tool_name=target_tool, force_refresh=True)
 
-    def get_acceptance_baseline(self, tool_name: Optional[str] = None, friendly_model: str = "gpt-5.2") -> dict:
-        """返回可执行且可验证的“验收基线命令集”（用于诊断/人工验收）。
-
-        判定规则：stdout/stderr 不得包含 `Invalid model`（忽略大小写）。
-        注意：该方法不执行外部命令，仅输出命令与规则。
-        """
-        tool = (tool_name or self._current_tool or "").strip().lower() or "coco"
-
-        return {
-            "tool": tool,
-            "commands": [
-                f"ttadk code -t {tool} -m {friendly_model}",
-                f"ttadk code -t {tool}",
-            ],
-            "criteria": {
-                "forbid_patterns": ["invalid model"],
-                "description": "stdout/stderr 不包含 'Invalid model'（忽略大小写）",
-            },
-        }
-
     def resolve_and_ensure_valid_model(
         self,
         model_name: str,
@@ -1185,37 +1165,6 @@ class TTADKManager:
         except Exception as e:
             logger.debug("Failed to read ttadk setting.json: %s", get_error_detail(e))
         return []
-
-    def _extract_models_from_sync(
-        self,
-        data: object,
-        tool_name: Optional[str],
-        current_model: Optional[str],
-    ) -> list[TTADKModel]:
-        from .model_parsing import extract_models_from_sync
-        return extract_models_from_sync(data, tool_name, current_model)
-
-    def _extract_models_from_tool_container(
-        self,
-        container: object,
-        tool_name: str,
-        current_model: Optional[str],
-    ) -> list[TTADKModel]:
-        from .model_parsing import extract_models_from_tool_container
-        return extract_models_from_tool_container(container, tool_name, current_model)
-
-    def _extract_models_from_container(
-        self,
-        container: object,
-        current_model: Optional[str],
-        under_model_key: bool,
-    ) -> list[TTADKModel]:
-        from .model_parsing import extract_models_from_container
-        return extract_models_from_container(container, current_model, under_model_key)
-
-    def _normalize_models(self, raw: object, current_model: Optional[str]) -> list[TTADKModel]:
-        from .model_parsing import normalize_models
-        return normalize_models(raw, current_model)
 
     def get_current_model(self) -> Optional[str]:
         self._ensure_initialized()

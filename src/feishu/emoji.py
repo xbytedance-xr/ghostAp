@@ -55,14 +55,6 @@ class EmojiReaction:
         return EmojiType.TYPING
 
     @staticmethod
-    def on_thinking() -> str:
-        return EmojiType.THINKING
-
-    @staticmethod
-    def on_success() -> str:
-        return EmojiType.DONE
-
-    @staticmethod
     def on_error() -> str:
         return EmojiType.SOB
 
@@ -85,14 +77,6 @@ class EmojiReaction:
     @staticmethod
     def on_multi_task_done() -> str:
         return EmojiType.PARTY
-
-    @staticmethod
-    def on_project_created() -> str:
-        return EmojiType.FLASH
-
-    @staticmethod
-    def on_project_switched() -> str:
-        return EmojiType.HIGHFIVE
 
     @staticmethod
     def on_dir_changed() -> str:
