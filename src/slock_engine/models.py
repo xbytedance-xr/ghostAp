@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
+# Escalation resolution option constants (bilingual support)
+RETRY_OPTIONS: frozenset[str] = frozenset({"Retry", "重试"})
+SKIP_OPTIONS: frozenset[str] = frozenset({"Skip", "跳过"})
+ABORT_OPTIONS: frozenset[str] = frozenset({"Abort", "中止"})
+
 
 class AgentStatus(Enum):
     """Agent lifecycle state machine."""
@@ -51,11 +56,16 @@ class EscalationRequest:
     level: EscalationLevel = EscalationLevel.BLOCKED
     reason: str = ""
     context: str = ""  # Additional context (truncated conversation, error details)
-    options: list[str] = field(default_factory=list)  # Suggested resolution options
+    options: tuple[str, ...] = field(default_factory=tuple)  # Suggested resolution options (frozen)
     resolved: bool = False
     resolution: str = ""  # Admin's resolution choice
     created_at: float = field(default_factory=time.time)
     resolved_at: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        # Freeze options to tuple for thread-safety — prevents mutation after creation.
+        if isinstance(self.options, list):
+            object.__setattr__(self, "options", tuple(self.options))
 
     def to_dict(self) -> dict:
         return {
@@ -66,7 +76,7 @@ class EscalationRequest:
             "level": self.level.value,
             "reason": self.reason,
             "context": self.context,
-            "options": self.options,
+            "options": list(self.options),
             "resolved": self.resolved,
             "resolution": self.resolution,
             "created_at": self.created_at,
@@ -211,6 +221,7 @@ class SlockChannel:
     agents: list[str] = field(default_factory=list)  # agent_id list
     shared_memory_path: str = ""
     team_name: str = ""
+    owner_id: str = ""  # User who created this team (for permission checks)
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -220,6 +231,7 @@ class SlockChannel:
             "agents": self.agents,
             "shared_memory_path": self.shared_memory_path,
             "team_name": self.team_name,
+            "owner_id": self.owner_id,
             "created_at": self.created_at,
         }
 
@@ -231,6 +243,7 @@ class SlockChannel:
             agents=data.get("agents", []),
             shared_memory_path=data.get("shared_memory_path", ""),
             team_name=data.get("team_name", ""),
+            owner_id=data.get("owner_id", ""),
             created_at=data.get("created_at", time.time()),
         )
 

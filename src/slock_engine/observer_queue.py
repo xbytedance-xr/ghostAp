@@ -1,0 +1,171 @@
+"""ObserverLearningQueue — async batch queue for observer skill learning.
+
+Idle agents' observation records are enqueued in-memory and flushed to disk
+by a background daemon thread at regular intervals, avoiding I/O blocking
+on the worker threads that execute agent tasks.
+"""
+
+from __future__ import annotations
+
+import atexit
+import logging
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from .models import AgentIdentity
+
+logger = logging.getLogger(__name__)
+
+
+class MemoryBackend(Protocol):
+    """Protocol for the memory operations needed by the queue."""
+
+    def record_skill_feedback(
+        self, agent_id: str, skill_tags: list[str], *, quality_score: float
+    ) -> list:
+        ...
+
+    def update_agent_context(self, agent_id: str, entry: str) -> None:
+        ...
+
+
+class SkillProfileSetter(Protocol):
+    """Protocol for setting skill profiles on the router."""
+
+    def set_skill_profiles(self, agent_id: str, profiles: list) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class ObservationRecord:
+    """A single observation to be flushed."""
+
+    observer_id: str
+    actor_id: str
+    message_snippet: str
+    skill_tags: tuple[str, ...]
+    timestamp: float
+
+
+class ObserverLearningQueue:
+    """Thread-safe async queue for observer learning with periodic flush.
+
+    Records are accumulated in an in-memory deque and flushed to disk by a
+    background daemon thread every `flush_interval` seconds.
+    """
+
+    def __init__(
+        self,
+        memory: MemoryBackend,
+        router: SkillProfileSetter,
+        flush_interval: float = 10.0,
+        max_queue_size: int = 10000,
+        flush_timeout: float = 30.0,
+    ) -> None:
+        self._memory = memory
+        self._router = router
+        self._flush_interval = flush_interval
+        self._flush_timeout = flush_timeout
+        self._queue: deque[ObservationRecord] = deque(maxlen=max_queue_size)
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=self._flush_loop,
+            name="slock-observer-flush",
+            daemon=True,
+        )
+        self._thread.start()
+        atexit.register(self.flush)
+
+    def enqueue(
+        self,
+        observer_id: str,
+        actor_id: str,
+        message: str,
+        skill_tags: list[str],
+    ) -> None:
+        """Add an observation record to the queue (non-blocking)."""
+        record = ObservationRecord(
+            observer_id=observer_id,
+            actor_id=actor_id,
+            message_snippet=message[:100],
+            skill_tags=tuple(skill_tags),
+            timestamp=time.time(),
+        )
+        with self._lock:
+            self._queue.append(record)
+
+    def flush(self) -> int:
+        """Flush all pending records to disk. Returns count of flushed records.
+
+        Respects self._flush_timeout: if the batch processing exceeds the timeout,
+        the remaining records are discarded for this round with a warning.
+        """
+        with self._lock:
+            batch = list(self._queue)
+            self._queue.clear()
+
+        if not batch:
+            return 0
+
+        flushed = 0
+        deadline = time.monotonic() + self._flush_timeout
+        for record in batch:
+            if time.monotonic() > deadline:
+                remaining = len(batch) - flushed
+                logger.warning(
+                    "Observer flush timeout (%.1fs): skipping %d remaining records",
+                    self._flush_timeout,
+                    remaining,
+                )
+                break
+            try:
+                profiles = self._memory.record_skill_feedback(
+                    record.observer_id,
+                    list(record.skill_tags),
+                    quality_score=60.0,
+                )
+                self._router.set_skill_profiles(record.observer_id, profiles)
+                context_entry = (
+                    f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(record.timestamp))}] "
+                    f"Observed {record.actor_id} complete: {record.message_snippet}"
+                )
+                self._memory.update_agent_context(record.observer_id, context_entry)
+                flushed += 1
+            except Exception:
+                logger.exception(
+                    "Failed to flush observer record for %s", record.observer_id
+                )
+        return flushed
+
+    def shutdown(self) -> None:
+        """Stop the background thread and flush remaining records."""
+        self._stop_event.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+        self.flush()
+
+    @property
+    def pending_count(self) -> int:
+        """Number of records waiting to be flushed."""
+        with self._lock:
+            return len(self._queue)
+
+    def _flush_loop(self) -> None:
+        """Background loop that periodically flushes the queue."""
+        while not self._stop_event.is_set():
+            self._stop_event.wait(timeout=self._flush_interval)
+            if not self._stop_event.is_set():
+                try:
+                    self.flush()
+                except Exception:
+                    logger.exception("Observer flush loop error")
+        # Final flush on exit
+        try:
+            self.flush()
+        except Exception:
+            logger.exception("Observer final flush error")

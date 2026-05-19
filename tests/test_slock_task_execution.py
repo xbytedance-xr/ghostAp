@@ -33,6 +33,7 @@ class TestExecuteTaskSuccess:
             chat_id="chat_test",
             root_path=str(tmp_path),
             engine_name="Test",
+            memory_base_path=str(tmp_path),
         )
         # Set up channel
         from src.slock_engine.models import SlockChannel
@@ -82,6 +83,7 @@ class TestExecuteTaskFailure:
             chat_id="chat_test",
             root_path=str(tmp_path),
             engine_name="Test",
+            memory_base_path=str(tmp_path),
         )
         from src.slock_engine.models import SlockChannel
         channel = SlockChannel(channel_id="chat_test", name="TestChannel")
@@ -158,8 +160,21 @@ class TestAssignTaskHandler:
         handler = SlockHandler(ctx)
         # Patch real inherited methods with mocks
         handler.reply_text = MagicMock()
-        handler.send_card_to_chat = MagicMock()
+        handler.send_card_to_chat = MagicMock(return_value="card-msg-001")
+        handler.update_card = MagicMock(return_value=True)
         return handler
+
+    @staticmethod
+    def _make_sync_executor():
+        """Create a mock executor that runs submitted functions synchronously."""
+        executor = MagicMock()
+
+        def immediate_submit(fn, *args, **kwargs):
+            fn(*args, **kwargs)
+            return MagicMock()
+
+        executor.submit = immediate_submit
+        return executor
 
     def test_assign_with_role_executes_task(self):
         """assign_task with role triggers execute_task and sends card on success."""
@@ -178,6 +193,7 @@ class TestAssignTaskHandler:
         engine.execute_task.return_value = "Feature implemented"
         engine._mouthpiece = MagicMock()
         engine._mouthpiece.format_card.return_value = {"header": {}}
+        engine._get_executor.return_value = self._make_sync_executor()
 
         manager = MagicMock()
         manager.get_activated_engine.return_value = engine
@@ -218,6 +234,7 @@ class TestAssignTaskHandler:
         engine.registry.find_by_name.return_value = agent
         engine.claim_task.return_value = True
         engine.execute_task.side_effect = RuntimeError("timeout")
+        engine._get_executor.return_value = self._make_sync_executor()
 
         manager = MagicMock()
         manager.get_activated_engine.return_value = engine
@@ -225,7 +242,7 @@ class TestAssignTaskHandler:
 
         handler.assign_task("msg_1", "chat_1", "broken task", "Coder", None)
 
-        # Should have called reply_text with error message
-        calls = handler.reply_text.call_args_list
-        error_call = [c for c in calls if "失败" in str(c) or "error" in str(c).lower() or "timeout" in str(c).lower()]
-        assert len(error_call) > 0
+        # Error card should be sent via update_card (async pattern)
+        handler.update_card.assert_called()
+        update_args = handler.update_card.call_args[0]
+        assert "❌" in update_args[1] or "失败" in update_args[1]

@@ -161,6 +161,7 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
                         channel_id=channel_id,
                         name=marker.get("name", ""),
                         team_name=marker.get("team_name", ""),
+                        owner_id=marker.get("owner_id", ""),
                     )
                     engine.activate_channel(channel)
                     self.register_managed_chat(channel_id)

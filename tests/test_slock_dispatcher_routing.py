@@ -10,9 +10,21 @@ Covers:
 from __future__ import annotations
 
 import unittest.mock
+from concurrent.futures import Future
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
+
+
+def _sync_submit(fn, *args, **kwargs):
+    """Helper that executes executor.submit synchronously for deterministic tests."""
+    future = Future()
+    try:
+        result = fn(*args, **kwargs)
+        future.set_result(result)
+    except Exception as exc:
+        future.set_exception(exc)
+    return future
 
 from src.slock_engine.slash_commands import is_slock_command
 
@@ -83,6 +95,9 @@ class TestManagedChatMessageRouting:
     def test_normal_message_calls_engine_execute(self):
         """AC3: Normal text in managed chat routes to engine.execute()."""
         handler = self._make_handler()
+        handler.send_card_to_chat = MagicMock(return_value="placeholder-msg-001")
+        handler.update_card = MagicMock(return_value=True)
+
         engine = MagicMock()
         engine.execute.return_value = "Agent response"
         engine.channel = MagicMock()
@@ -93,6 +108,10 @@ class TestManagedChatMessageRouting:
         mock_agent = MagicMock()
         mock_agent.agent_type = "coco"
         engine.registry.list_agents.return_value = [mock_agent]
+
+        executor = MagicMock()
+        executor.submit.side_effect = _sync_submit
+        engine._get_executor = MagicMock(return_value=executor)
 
         manager = MagicMock()
         manager.get_activated_engine.return_value = engine
@@ -128,7 +147,8 @@ class TestAtMentionRouting:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
-        handler.send_card_to_chat = MagicMock()
+        handler.send_card_to_chat = MagicMock(return_value="placeholder-msg-001")
+        handler.update_card = MagicMock(return_value=True)
 
         engine = MagicMock()
         engine.channel = MagicMock()
@@ -141,6 +161,10 @@ class TestAtMentionRouting:
         engine._execute_agent.return_value = "Code fix applied"
         engine._mouthpiece = MagicMock()
         engine._mouthpiece.format_card.return_value = {"header": {}, "elements": []}
+
+        executor = MagicMock()
+        executor.submit.side_effect = _sync_submit
+        engine._get_executor = MagicMock(return_value=executor)
 
         manager = MagicMock()
         manager.get_activated_engine.return_value = engine
@@ -158,7 +182,8 @@ class TestAtMentionRouting:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
-        handler.send_card_to_chat = MagicMock()
+        handler.send_card_to_chat = MagicMock(return_value="placeholder-msg-001")
+        handler.update_card = MagicMock(return_value=True)
 
         engine = MagicMock()
         engine.channel = MagicMock()
@@ -171,6 +196,10 @@ class TestAtMentionRouting:
         mock_agent = MagicMock()
         mock_agent.agent_type = "coco"
         engine.registry.list_agents.return_value = [mock_agent]
+
+        executor = MagicMock()
+        executor.submit.side_effect = _sync_submit
+        engine._get_executor = MagicMock(return_value=executor)
 
         manager = MagicMock()
         manager.get_activated_engine.return_value = engine

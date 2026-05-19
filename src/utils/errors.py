@@ -3,6 +3,17 @@ import logging
 import re
 from typing import Union
 
+__all__ = [
+    "GhostAPError",
+    "sanitize_futures_msg",
+    "classify_timeout",
+    "fmt_error",
+    "get_error_detail",
+    "fmt_exception",
+    "log_exception",
+    "safe_error_message",
+]
+
 """Unified error formatting and base exception for user-facing messages.
 
 All user-facing error messages should use these helpers to ensure consistent
@@ -165,3 +176,18 @@ def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int =
         logger.warning(f"{msg}: {get_error_detail(exc)}")
     else:
         logger.log(level, msg, exc_info=exc)
+
+
+def safe_error_message(exc: Exception) -> str:
+    """Return a user-safe error description without leaking internal details.
+
+    Known exception types get specific Chinese messages; unknown exceptions
+    get a generic message.  Full details should be logged separately via logger.
+    """
+    if isinstance(exc, TimeoutError):
+        return "执行超时"
+    if isinstance(exc, PermissionError):
+        return "权限不足"
+    if isinstance(exc, (ConnectionError, OSError)):
+        return "连接失败"
+    return "内部错误，请联系管理员"

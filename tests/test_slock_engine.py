@@ -477,6 +477,9 @@ class TestSlockEngine:
         with patch.object(engine, "_run_acp_session", return_value="implemented"):
             engine._execute_agent(actor, "implement a parser", None)
 
+        # Flush the async observer queue so writes land on disk before assertions
+        engine._observer_queue.flush()
+
         profiles = engine.memory.read_skill_profiles(observer.agent_id)
         profile_by_tag = {profile.tag: profile for profile in profiles}
         assert "code" in profile_by_tag
@@ -1343,7 +1346,7 @@ class TestEscalationProtocol:
 
         card = engine.get_escalation_card(esc)
         assert card["schema"] == "2.0"
-        assert "Escalation" in card["header"]["title"]["content"]
+        assert "升级告警" in card["header"]["title"]["content"]
         assert card["header"]["template"] == "red"  # CRITICAL level
 
     def test_escalation_with_task_reference(self, tmp_path):
@@ -1462,3 +1465,93 @@ class TestSlockStreamProcessor:
         card = processor.get_progress_card()
         note_text = str(card["body"]["elements"][-1])
         assert "❌" in note_text
+
+
+# ============================================================
+# AC-19: add_task() rejects new tasks when open task limit is reached
+# ============================================================
+
+
+class TestAddTaskOpenLimit:
+    """AC-19: add_task() rejects new tasks when open task limit is reached."""
+
+    def _make_engine(self, tmp_path):
+        from src.slock_engine.engine import SlockEngine
+        return SlockEngine(chat_id="test_chat", root_path=str(tmp_path), memory_base_path=str(tmp_path))
+
+    @patch("src.slock_engine.task_board_manager.get_settings")
+    @patch("src.slock_engine.engine.get_settings")
+    def test_add_task_exceeds_max_open(self, mock_settings, mock_tbm_settings, tmp_path):
+        """When open tasks >= slock_max_open_tasks, add_task returns None."""
+        settings = MagicMock()
+        settings.slock_max_parallel_agents = 4
+        settings.slock_max_queue_size = 8
+        settings.slock_max_open_tasks = 3
+        mock_settings.return_value = settings
+        mock_tbm_settings.return_value = settings
+
+        engine = self._make_engine(tmp_path)
+
+        # Add 3 tasks (at limit)
+        t1 = engine.add_task("Task 1")
+        t2 = engine.add_task("Task 2")
+        t3 = engine.add_task("Task 3")
+        assert t1 is not None
+        assert t2 is not None
+        assert t3 is not None
+
+        # 4th should be rejected
+        t4 = engine.add_task("Task 4")
+        assert t4 is None
+        assert len(engine.tasks) == 3
+
+    @patch("src.slock_engine.task_board_manager.get_settings")
+    @patch("src.slock_engine.engine.get_settings")
+    def test_add_task_done_not_counted(self, mock_settings, mock_tbm_settings, tmp_path):
+        """DONE tasks don't count toward the open limit."""
+        settings = MagicMock()
+        settings.slock_max_parallel_agents = 4
+        settings.slock_max_queue_size = 8
+        settings.slock_max_open_tasks = 2
+        mock_settings.return_value = settings
+        mock_tbm_settings.return_value = settings
+
+        engine = self._make_engine(tmp_path)
+
+        # Add 2 tasks and mark them DONE
+        t1 = engine.add_task("Done Task 1")
+        t2 = engine.add_task("Done Task 2")
+        t1.status = TaskStatus.DONE
+        t2.status = TaskStatus.DONE
+
+        # Should still be able to add (open count = 0)
+        t3 = engine.add_task("Active Task")
+        assert t3 is not None
+        assert t3.content == "Active Task"
+
+    @patch("src.slock_engine.task_board_manager.get_settings")
+    @patch("src.slock_engine.engine.get_settings")
+    def test_add_task_mixed_statuses(self, mock_settings, mock_tbm_settings, tmp_path):
+        """Only non-DONE tasks count toward the limit."""
+        settings = MagicMock()
+        settings.slock_max_parallel_agents = 4
+        settings.slock_max_queue_size = 8
+        settings.slock_max_open_tasks = 3
+        mock_settings.return_value = settings
+        mock_tbm_settings.return_value = settings
+
+        engine = self._make_engine(tmp_path)
+
+        t1 = engine.add_task("TODO task")
+        t2 = engine.add_task("In progress task")
+        t2.status = TaskStatus.IN_PROGRESS
+        t3 = engine.add_task("Done task")
+        t3.status = TaskStatus.DONE
+
+        # Open count = 2 (t1 TODO + t2 IN_PROGRESS), limit is 3 → can add one more
+        t4 = engine.add_task("Fourth task")
+        assert t4 is not None
+
+        # Now open count = 3, should reject
+        t5 = engine.add_task("Fifth task")
+        assert t5 is None

@@ -1,10 +1,12 @@
 """Settings — main application configuration model backed by pydantic-settings."""
 
 import logging as _logging
+import os
 import shlex
+import warnings
 from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .card import CardSessionConfig
@@ -16,6 +18,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     app_id: str = ""
@@ -524,7 +527,36 @@ class Settings(BaseSettings):
     max_allowed_chat_ids: int = 50  # 每个 project 最多关联的 chat_id 数量
     max_evicted_cache: int = 200  # evicted_chat_ids 有界 LRU 上限
     project_chat_suffix: str = "dev"  # 项目专属群名称后缀
-    slock_team_name_prefix: str = "[Slock]"  # /new-team 创建 Slock 协作群时的名称标识
+    slock_team_name_suffix: str = Field(
+        default="[Slock]",
+        description="/new-team 创建 Slock 协作群时追加的名称后缀",
+        validation_alias=AliasChoices("slock_team_name_suffix", "slock_team_name_prefix"),
+    )
+
+    # Slock 引擎运行参数 --------------------------------------------------------
+    slock_max_parallel_agents: int = Field(default=4, ge=1, description="Slock 最大并行 Agent 数（ThreadPool workers）")
+    slock_max_queue_size: int = Field(default=8, ge=1, description="Slock 执行队列最大深度，超出时拒绝提交")
+    slock_queue_wait_timeout: int = Field(default=60, ge=1, description="Slock 排队等待超时（秒），超时未执行则取消")
+    slock_max_open_tasks: int = Field(default=50, ge=1, description="Slock 单群最大未完成任务数，超出时拒绝创建")
+    slock_agent_execution_timeout: int = Field(default=600, ge=30, description="Slock 单 Agent 执行超时（秒），超时后取消 ACP session")
+    slock_observer_flush_timeout: int = Field(default=30, ge=5, description="ObserverLearningQueue flush 操作超时（秒）")
+    slock_observer_max_queue_size: int = Field(default=10000, ge=100, description="ObserverLearningQueue 最大队列深度，超出时丢弃最旧记录")
+    slock_assign_rate_limit: int = Field(default=5, ge=1, description="非管理员每分钟最大任务提交数（rate-limit）")
+
+    @field_validator("slock_team_name_suffix", mode="before")
+    @classmethod
+    def _warn_deprecated_slock_prefix(cls, v: str) -> str:
+        """Emit deprecation warning when the old alias is used."""
+        # The warning fires unconditionally here; the alias mapping is handled
+        # by Pydantic's validation_alias. We detect usage of the old env var
+        # by checking os.environ for the deprecated key name.
+        if os.environ.get("SLOCK_TEAM_NAME_PREFIX") is not None:
+            warnings.warn(
+                "SLOCK_TEAM_NAME_PREFIX is deprecated, use SLOCK_TEAM_NAME_SUFFIX instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return v
 
     @field_validator("max_allowed_chat_ids", mode="before")
     @classmethod

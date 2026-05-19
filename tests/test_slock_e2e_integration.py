@@ -9,10 +9,22 @@ Covers AC-01, AC-02, AC-05, AC-06.
 from __future__ import annotations
 
 import json
+from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel
 from src.slock_engine.slash_commands import is_slock_command
+
+
+def _sync_submit(fn, *args, **kwargs):
+    """Helper that executes executor.submit synchronously for deterministic tests."""
+    future = Future()
+    try:
+        result = fn(*args, **kwargs)
+        future.set_result(result)
+    except Exception as exc:
+        future.set_exception(exc)
+    return future
 
 
 class TestE2EDispatcherToHandler:
@@ -124,6 +136,11 @@ class TestE2EHandlerToEngine:
             "elements": [{"tag": "markdown", "content": "Code review complete"}],
         }
 
+        # Mock async executor to run synchronously
+        executor = MagicMock()
+        executor.submit.side_effect = _sync_submit
+        engine._get_executor = MagicMock(return_value=executor)
+
         handler.handle_message("msg_2", "chat_e2e", "@Coder-E2E please review this code")
 
         # Agent was found by name and executed
@@ -146,6 +163,11 @@ class TestE2EHandlerToEngine:
             "header": {"title": {"content": "🔧 Coder-E2E"}},
             "elements": [{"tag": "markdown", "content": "Smart routed response"}],
         }
+
+        # Mock async executor to run synchronously
+        executor = MagicMock()
+        executor.submit.side_effect = _sync_submit
+        engine._get_executor = MagicMock(return_value=executor)
 
         handler.handle_message("msg_3", "chat_e2e", "implement login feature")
 
@@ -286,7 +308,7 @@ class TestE2EStatusPanel:
         handler.reply_text.assert_not_called()
         card_json = handler.reply_card.call_args[0][1]
         card_data = json.loads(card_json)
-        assert "Task Board" in card_data["header"]["title"]["content"]
+        assert "任务看板" in card_data["header"]["title"]["content"]
 
     def test_task_assign_without_role_auto_routes_and_executes(self):
         """`/task assign <task>` without a role should still auto-select an idle agent."""
@@ -296,7 +318,8 @@ class TestE2EStatusPanel:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
-        handler.send_card_to_chat = MagicMock()
+        handler.send_card_to_chat = MagicMock(return_value="card-msg-001")
+        handler.update_card = MagicMock(return_value=True)
         callbacks = MagicMock()
         handler._create_callbacks = MagicMock(return_value=callbacks)
 
@@ -311,6 +334,11 @@ class TestE2EStatusPanel:
             "elements": [{"tag": "markdown", "content": "auto routed result"}],
         }
 
+        # Use a synchronous executor so the async submit runs inline
+        sync_executor = MagicMock()
+        sync_executor.submit = _sync_submit
+        engine._get_executor.return_value = sync_executor
+
         manager = MagicMock()
         manager.get_activated_engine.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
@@ -320,4 +348,6 @@ class TestE2EStatusPanel:
         engine.router.route_message.assert_called_once()
         engine.claim_task.assert_called_once_with(task.task_id, agent.agent_id)
         engine.execute_task.assert_called_once_with(task.task_id, agent.agent_id, callbacks)
-        handler.send_card_to_chat.assert_called_once()
+        # Placeholder card sent + result card updated
+        handler.send_card_to_chat.assert_called()
+        handler.update_card.assert_called()

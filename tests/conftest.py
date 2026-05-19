@@ -7,6 +7,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# ACP compatibility shim — bridge renamed symbols between acp versions.
+# The source code uses KillTerminalCommandResponse (acp >=0.11) but the
+# installed version may only expose KillTerminalResponse (acp 0.10.x).
+# ---------------------------------------------------------------------------
+try:
+    import acp.schema as _acp_schema
+
+    if not hasattr(_acp_schema, "KillTerminalCommandResponse") and hasattr(_acp_schema, "KillTerminalResponse"):
+        _acp_schema.KillTerminalCommandResponse = _acp_schema.KillTerminalResponse
+except ImportError:
+    pass
+
 from src.card.delivery.engine import CardDelivery
 from src.card.delivery.registry import delivery_registry
 from src.card.session import CardSession

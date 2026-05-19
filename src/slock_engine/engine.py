@@ -8,15 +8,19 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, as_completed, wait as futures_wait
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from ..agent_session import close_session_safely, create_engine_session
+from ..config import get_settings
 from ..engine_base import BaseEngine, EngineRunState
 from .agent_registry import AgentRegistry
-from .card_templates import build_escalation_card, build_status_panel_card
+from .bounded_executor import BoundedExecutor, QueueFullError
+from .card_templates import build_status_panel_card
+from .escalation_manager import EscalationManager
 from .memory_manager import MemoryManager, default_slock_storage_base
 from .models import (
     AgentIdentity,
@@ -28,6 +32,8 @@ from .models import (
     TaskStatus,
 )
 from .mouthpiece import Mouthpiece
+from .observer_queue import ObserverLearningQueue
+from .task_board_manager import TaskBoardManager
 from .task_router import TaskRouter
 
 logger = logging.getLogger(__name__)
@@ -161,12 +167,21 @@ class SlockStreamProcessor:
         }
 
 
+class AgentCancellationError(Exception):
+    """Raised when an agent execution is cancelled via cancellation token."""
+
+
 class SlockEngine(BaseEngine):
     """Multi-Agent collaboration engine using mouthpiece pattern.
 
     Manages a team of virtual agents within a single Feishu group,
     routing messages, managing tasks, and formatting output through
     the mouthpiece mechanism.
+
+    Lock ordering (always acquire in this order to prevent deadlocks):
+        1. self._lock (inherited RLock from BaseEngine)
+        2. self._executor_lock (plain threading.Lock)
+        3. BoundedExecutor._lock (leaf lock, never held while acquiring above)
     """
 
     _state_filename = ".slock_engine_state.json"
@@ -190,19 +205,57 @@ class SlockEngine(BaseEngine):
         self._registry = AgentRegistry(base_path=storage_base_path)
         self._memory = MemoryManager(base_path=storage_base_path)
         claims_path = os.path.join(storage_base_path, "claims", f"{chat_id}.json")
-        self._router = TaskRouter(persist_path=claims_path)
+        self._router = TaskRouter(persist_path=claims_path, memory_backend=self._memory)
+        self._observer_queue = ObserverLearningQueue(memory=self._memory, router=self._router)
         self._mouthpiece = Mouthpiece()
 
         # Thread pool for parallel agent execution
-        self._executor: Optional[ThreadPoolExecutor] = None
+        self._executor: Optional[BoundedExecutor] = None
+        self._executor_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._max_parallel_agents = 4
 
         # Channel state
         self._channel: Optional[SlockChannel] = None
         self._tasks: list[SlockTask] = []
+        self._dirty = False  # dirty-flag for debounced task board persistence
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._agent_sessions: dict[str, object] = {}
         self._escalations: list[EscalationRequest] = []
+        self._escalation_retry_counts: dict[str, int] = {}
+
+        # Cancellation tokens for per-agent execution control
+        self._cancel_events: dict[str, threading.Event] = {}
+        self._cancel_events_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
+        # Composed managers (share lock and state references)
+        self._task_mgr = TaskBoardManager(
+            lock=self._lock,
+            tasks=self._tasks,
+            channel_getter=lambda: self._channel,
+            chat_id_getter=lambda: self.chat_id,
+            dirty_getter=lambda: self._dirty,
+            dirty_setter=self._set_dirty,
+            router=self._router,
+            memory=self._memory,
+            registry_get=self._registry.get,
+            execute_agent_fn=lambda agent, content, callbacks: self._execute_agent(agent, content, callbacks),
+        )
+        self._escalation_mgr = EscalationManager(
+            lock=self._lock,
+            escalations=self._escalations,
+            retry_counts=self._escalation_retry_counts,
+            channel_getter=lambda: self._channel,
+            chat_id_getter=lambda: self.chat_id,
+            task_list_getter=lambda: self._tasks,
+            dirty_setter=self._set_dirty,
+            router=self._router,
+            transition_agent=self.transition_agent,
+            flush_if_dirty=self._task_mgr._flush_if_dirty,
+            execute_task_fn=lambda task_id, agent_id, callbacks: self.execute_task(task_id, agent_id, callbacks),
+            rollback_task_fn=self._task_mgr._rollback_task,
+            force_complete_task_fn=self._task_mgr.force_complete_task,
+            get_executor_fn=self._get_executor,
+        )
 
     @property
     def registry(self) -> AgentRegistry:
@@ -270,6 +323,36 @@ class SlockEngine(BaseEngine):
         return False
 
     # ------------------------------------------------------------------
+    # Agent Cancellation
+    # ------------------------------------------------------------------
+
+    def _get_cancel_event(self, agent_id: str) -> threading.Event:
+        """Get or create a cancellation event for an agent."""
+        with self._cancel_events_lock:
+            if agent_id not in self._cancel_events:
+                self._cancel_events[agent_id] = threading.Event()
+            return self._cancel_events[agent_id]
+
+    def _clear_cancel_event(self, agent_id: str) -> None:
+        """Remove the cancellation event after execution completes."""
+        with self._cancel_events_lock:
+            self._cancel_events.pop(agent_id, None)
+
+    def cancel_agent(self, agent_id: str) -> bool:
+        """Cancel a running agent by setting its cancellation event.
+
+        Returns True if the agent had an active cancel event to set.
+        """
+        with self._cancel_events_lock:
+            event = self._cancel_events.get(agent_id)
+            if event is not None:
+                event.set()
+                logger.info("Cancellation requested for agent %s", agent_id)
+                return True
+        logger.debug("No active cancel event for agent %s", agent_id)
+        return False
+
+    # ------------------------------------------------------------------
     # Engine Lifecycle
     # ------------------------------------------------------------------
 
@@ -289,6 +372,7 @@ class SlockEngine(BaseEngine):
             "channel_id": channel.channel_id,
             "team_name": channel.team_name,
             "name": channel.name,
+            "owner_id": channel.owner_id,
             "activated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -300,14 +384,37 @@ class SlockEngine(BaseEngine):
 
     @staticmethod
     def _write_channel_marker(marker_path: str, marker_data: dict) -> None:
-        """Write a channel marker atomically if it does not already exist."""
-        if os.path.exists(marker_path):
-            return
+        """Write or merge a channel marker atomically.
+
+        If the marker file already exists, read the existing JSON and merge:
+        - Only fill in fields that are missing or currently empty/None.
+        - Never overwrite ``activated_at`` (preserve first activation time).
+        Then write atomically via tmp + os.replace.
+        """
         import json as _json
+
+        existing: dict = {}
+        if os.path.exists(marker_path):
+            try:
+                with open(marker_path, "r", encoding="utf-8") as f:
+                    existing = _json.load(f)
+            except (OSError, ValueError):
+                existing = {}
+
+        # Merge: for each key in marker_data, update only if the existing
+        # value is missing/empty and the new value is non-empty.
+        merged = dict(existing)
+        for key, new_val in marker_data.items():
+            # Never overwrite activated_at — preserve first activation time.
+            if key == "activated_at" and key in merged and merged[key]:
+                continue
+            old_val = merged.get(key)
+            if not old_val and new_val:
+                merged[key] = new_val
 
         tmp_path = marker_path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            _json.dump(marker_data, f, ensure_ascii=False, indent=2)
+            _json.dump(merged, f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, marker_path)
 
     def execute(
@@ -331,7 +438,6 @@ class SlockEngine(BaseEngine):
             # Get available agents for this channel
             channel_id = self._channel.channel_id if self._channel else self.chat_id
             agents = self._registry.list_agents(channel_id=channel_id)
-            self._sync_skill_profiles(agents)
 
             if not agents:
                 with self._lock:
@@ -374,82 +480,111 @@ class SlockEngine(BaseEngine):
         agent_id = agent.agent_id
         channel_id = self._channel.channel_id if self._channel else self.chat_id
 
-        self._memory.append_message_archive(
-            channel_id,
-            sender_type="user",
-            content=message,
-            agent_id=agent_id,
-            agent_name=agent.name,
-            metadata={"routed_to": agent_id},
+        # Set up cancellation event and watchdog timer
+        cancel_event = self._get_cancel_event(agent_id)
+        settings = get_settings()
+        watchdog = threading.Timer(
+            settings.slock_agent_execution_timeout,
+            cancel_event.set,
         )
+        watchdog.daemon = True
+        watchdog.start()
 
-        # IDLE → WAKING
-        self.transition_agent(agent_id, AgentStatus.WAKING)
-        if callbacks and callbacks.on_agent_wake:
-            callbacks.on_agent_wake(agent)
-
-        # Load agent memory context
-        memory = self._memory.read_agent_memory(agent_id)
-
-        # WAKING → THINKING
-        self.transition_agent(agent_id, AgentStatus.THINKING)
-        if callbacks and callbacks.on_agent_thinking:
-            callbacks.on_agent_thinking(agent)
-
-        # Build prompt with memory context and system prompt
-        prompt = self._build_agent_prompt(agent, message, memory)
-
-        # THINKING → RUNNING
-        self.transition_agent(agent_id, AgentStatus.RUNNING)
-        if callbacks and callbacks.on_agent_running:
-            callbacks.on_agent_running(agent, message)
-
-        # Execute via ACP session
-        result = self._run_acp_session(agent, prompt)
-
-        # RUNNING → CHECKING
-        self.transition_agent(agent_id, AgentStatus.CHECKING)
-
-        # CHECKING → SENDING
-        self.transition_agent(agent_id, AgentStatus.SENDING)
-
-        # Format output through mouthpiece
-        if result:
-            formatted = self._mouthpiece.format_text(agent, result)
+        try:
             self._memory.append_message_archive(
                 channel_id,
-                sender_type="agent",
-                content=result,
+                sender_type="user",
+                content=message,
                 agent_id=agent_id,
                 agent_name=agent.name,
-                metadata={"formatted": formatted},
+                metadata={"routed_to": agent_id},
             )
-        else:
-            formatted = None
 
-        if callbacks and callbacks.on_agent_done:
-            callbacks.on_agent_done(agent, result or "")
+            # IDLE → WAKING
+            self.transition_agent(agent_id, AgentStatus.WAKING)
+            if callbacks and callbacks.on_agent_wake:
+                callbacks.on_agent_wake(agent)
 
-        # SENDING → IDLE
-        self.transition_agent(agent_id, AgentStatus.IDLE)
+            # Check cancellation
+            if cancel_event.is_set():
+                raise AgentCancellationError(f"Agent {agent_id} cancelled")
 
-        # Update agent memory with new context
-        if result:
-            context_entry = f"[{time.strftime('%Y-%m-%d %H:%M')}] Responded to: {message[:100]}"
-            self._memory.update_agent_context(agent_id, context_entry)
-            skill_tags = self._router.extract_skill_keywords(message)
-            profiles = self._memory.record_skill_feedback(agent_id, skill_tags, quality_score=100.0)
-            self._router.set_skill_profiles(agent_id, profiles)
-            self._record_observer_learning(agent, message, skill_tags)
+            # Load agent memory context
+            memory = self._memory.read_agent_memory(agent_id)
 
-        return formatted
+            # WAKING → THINKING
+            self.transition_agent(agent_id, AgentStatus.THINKING)
+            if callbacks and callbacks.on_agent_thinking:
+                callbacks.on_agent_thinking(agent)
 
-    def _sync_skill_profiles(self, agents: list[AgentIdentity]) -> None:
-        """Load persisted skill profiles into the router before assignment."""
-        for agent in agents:
-            profiles = self._memory.read_skill_profiles(agent.agent_id)
-            if profiles:
-                self._router.set_skill_profiles(agent.agent_id, profiles)
+            # Build prompt with memory context and system prompt
+            prompt = self._build_agent_prompt(agent, message, memory)
+
+            # Check cancellation
+            if cancel_event.is_set():
+                raise AgentCancellationError(f"Agent {agent_id} cancelled")
+
+            # THINKING → RUNNING
+            self.transition_agent(agent_id, AgentStatus.RUNNING)
+            if callbacks and callbacks.on_agent_running:
+                callbacks.on_agent_running(agent, message)
+
+            # Execute via ACP session
+            result = self._run_acp_session(agent, prompt)
+
+            # Check cancellation after session
+            if cancel_event.is_set():
+                raise AgentCancellationError(f"Agent {agent_id} cancelled")
+
+            # RUNNING → CHECKING
+            self.transition_agent(agent_id, AgentStatus.CHECKING)
+
+            # CHECKING → SENDING
+            self.transition_agent(agent_id, AgentStatus.SENDING)
+
+            # Format output through mouthpiece
+            if result:
+                formatted = self._mouthpiece.format_text(agent, result)
+                self._memory.append_message_archive(
+                    channel_id,
+                    sender_type="agent",
+                    content=result,
+                    agent_id=agent_id,
+                    agent_name=agent.name,
+                    metadata={"formatted": formatted},
+                )
+            else:
+                formatted = None
+
+            if callbacks and callbacks.on_agent_done:
+                callbacks.on_agent_done(agent, result or "")
+
+            # SENDING → IDLE
+            self.transition_agent(agent_id, AgentStatus.IDLE)
+
+            # Update agent memory with new context
+            if result:
+                context_entry = f"[{time.strftime('%Y-%m-%d %H:%M')}] Responded to: {message[:100]}"
+                self._memory.update_agent_context(agent_id, context_entry)
+                skill_tags = self._router.extract_skill_keywords(message)
+                profiles = self._memory.record_skill_feedback(agent_id, skill_tags, quality_score=100.0)
+                self._router.set_skill_profiles(agent_id, profiles)
+                self._record_observer_learning(agent, message, skill_tags)
+
+            return formatted
+
+        except AgentCancellationError:
+            logger.warning("Agent %s execution cancelled", agent_id)
+            self.transition_agent(agent_id, AgentStatus.IDLE)
+            # Close any active session
+            with self._lock:
+                session = self._agent_sessions.pop(agent_id, None)
+            if session:
+                close_session_safely(session)
+            return None
+        finally:
+            watchdog.cancel()
+            self._clear_cancel_event(agent_id)
 
     def _record_observer_learning(
         self,
@@ -464,17 +599,12 @@ class SlockEngine(BaseEngine):
                 continue
             if self.get_agent_status(observer.agent_id) != AgentStatus.IDLE:
                 continue
-            profiles = self._memory.record_skill_feedback(
-                observer.agent_id,
-                skill_tags,
-                quality_score=60.0,
+            self._observer_queue.enqueue(
+                observer_id=observer.agent_id,
+                actor_id=actor.agent_id,
+                message=message,
+                skill_tags=skill_tags,
             )
-            self._router.set_skill_profiles(observer.agent_id, profiles)
-            context_entry = (
-                f"[{time.strftime('%Y-%m-%d %H:%M')}] "
-                f"Observed {actor.agent_id} complete: {message[:100]}"
-            )
-            self._memory.update_agent_context(observer.agent_id, context_entry)
 
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
         """Build the full prompt for an agent including system prompt and memory."""
@@ -482,6 +612,14 @@ class SlockEngine(BaseEngine):
 
         if agent.system_prompt:
             parts.append(agent.system_prompt)
+
+        # Minimum authorization: inject permitted tools so ACP session scope is bounded.
+        if agent.permissions:
+            parts.append(
+                f"\n# Authorized Tools\n"
+                f"You are ONLY permitted to use the following tools: "
+                f"{', '.join(agent.permissions)}."
+            )
 
         if memory.role:
             parts.append(f"\n# Your Role\n{memory.role}")
@@ -497,7 +635,13 @@ class SlockEngine(BaseEngine):
         return "\n".join(parts)
 
     def _run_acp_session(self, agent: AgentIdentity, prompt: str) -> Optional[str]:
-        """Run an ACP session for the agent. Returns response text or None."""
+        """Run an ACP session for the agent. Returns response text or None.
+
+        Security: auto_approve=True suppresses interactive prompts (zero HI).
+        Tool authorization is bounded by agent.permissions which is injected
+        into the system prompt by _execute_agent, restricting which tools the
+        agent may use.
+        """
         try:
             thread_id = f"slock_agent_{agent.agent_id}"
             session = create_engine_session(
@@ -505,7 +649,7 @@ class SlockEngine(BaseEngine):
                 cwd=self.root_path,
                 model_name=agent.model_name or None,
                 thread_id=thread_id,
-                auto_approve=True,  # Human interaction suppression
+                auto_approve=True,  # Zero HI; tool scope bounded by agent.permissions
             )
             if session is None:
                 logger.warning("Failed to create ACP session for agent %s", agent.name)
@@ -527,43 +671,38 @@ class SlockEngine(BaseEngine):
             return None
 
     # ------------------------------------------------------------------
-    # Task Management
+    # Dirty flag helper
     # ------------------------------------------------------------------
 
-    def add_task(self, content: str) -> SlockTask:
-        """Create a new task in the channel."""
-        task = SlockTask(
-            content=content,
-            created_in=self._channel.channel_id if self._channel else self.chat_id,
-        )
-        self._tasks.append(task)
-        self._persist_task_board()
-        return task
+    def _set_dirty(self, value: bool) -> None:
+        """Set the dirty flag (used by composed managers)."""
+        self._dirty = value
+
+    # ------------------------------------------------------------------
+    # Task Management (delegated to TaskBoardManager)
+    # ------------------------------------------------------------------
+
+    def add_task(self, content: str) -> Optional[SlockTask]:
+        """Create a new task in the channel.
+
+        Returns:
+            SlockTask if successfully created.
+            None if the channel has reached ``slock_max_open_tasks`` limit.
+
+        Note:
+            This is a breaking contract change — callers MUST handle the None
+            return case (e.g. display a "team busy" card to the user) instead
+            of unconditionally accessing task attributes.
+        """
+        return self._task_mgr.add_task(content)
 
     def claim_task(self, task_id: str, agent_id: str) -> bool:
         """Attempt to claim a task for an agent."""
-        if not self._router.task_claim.claim(task_id, agent_id):
-            return False
-
-        # Update task status
-        for task in self._tasks:
-            if task.task_id == task_id:
-                task.status = TaskStatus.IN_PROGRESS
-                task.claimed_by = agent_id
-                task.claimed_at = time.time()
-                self._persist_task_board()
-                return True
-        return False
+        return self._task_mgr.claim_task(task_id, agent_id)
 
     def complete_task(self, task_id: str, agent_id: str) -> bool:
         """Mark a task as done."""
-        for task in self._tasks:
-            if task.task_id == task_id and task.claimed_by == agent_id:
-                task.status = TaskStatus.DONE
-                self._router.task_claim.release(task_id, agent_id)
-                self._persist_task_board()
-                return True
-        return False
+        return self._task_mgr.complete_task(task_id, agent_id)
 
     def execute_task(
         self,
@@ -571,63 +710,30 @@ class SlockEngine(BaseEngine):
         agent_id: str,
         callbacks: Optional[SlockEngineCallbacks] = None,
     ) -> Optional[str]:
-        """Execute a task end-to-end: claim → execute → complete/rollback.
-
-        Returns the formatted agent output on success, or None on failure.
-        On failure, the task is rolled back to TODO and the claim is released.
-        """
-        # Find the task
-        task = None
-        for t in self._tasks:
-            if t.task_id == task_id:
-                task = t
-                break
-        if task is None:
-            return None
-
-        agent = self._registry.get(agent_id)
-        if agent is None:
-            return None
-
-        # Claim (may already be claimed by assign_task caller)
-        if task.claimed_by != agent_id:
-            if not self.claim_task(task_id, agent_id):
-                return None
-
-        # Execute agent with the task content as message
-        try:
-            result = self._execute_agent(agent, task.content, callbacks)
-            if result:
-                self.complete_task(task_id, agent_id)
-                return result
-            else:
-                # Execution produced no output — rollback
-                self._rollback_task(task_id, agent_id)
-                return None
-        except Exception as e:
-            logger.error("execute_task failed for task %s agent %s: %s", task_id, agent_id, repr(e))
-            self._rollback_task(task_id, agent_id)
-            raise
+        """Execute a task end-to-end: claim → execute → complete/rollback."""
+        return self._task_mgr.execute_task(task_id, agent_id, callbacks)
 
     def _rollback_task(self, task_id: str, agent_id: str) -> None:
         """Rollback a task to TODO state and release its claim."""
-        for task in self._tasks:
-            if task.task_id == task_id:
-                task.status = TaskStatus.TODO
-                task.claimed_by = None
-                task.claimed_at = None
-                break
-        self._router.task_claim.release(task_id, agent_id)
-        self._persist_task_board()
+        self._task_mgr._rollback_task(task_id, agent_id)
 
     def _persist_task_board(self) -> None:
         """Persist task state for the active channel."""
-        channel_id = self._channel.channel_id if self._channel else self.chat_id
-        self._memory.write_task_board(channel_id, self._tasks)
+        self._task_mgr._persist_task_board()
+
+    def _trim_done_tasks(self) -> None:
+        """Remove oldest DONE tasks when exceeding cap."""
+        self._task_mgr._trim_done_tasks()
+
+    def _flush_if_dirty(self, snapshot: list[SlockTask]) -> None:
+        """Persist task board from a snapshot if dirty flag is set."""
+        self._task_mgr._flush_if_dirty(snapshot)
 
     # ------------------------------------------------------------------
-    # Escalation Protocol
+    # Escalation Protocol (delegated to EscalationManager)
     # ------------------------------------------------------------------
+
+    _MAX_ESCALATION_RETRIES = 3
 
     def escalate(
         self,
@@ -640,90 +746,62 @@ class SlockEngine(BaseEngine):
         options: Optional[list[str]] = None,
         callbacks: Optional["SlockEngineCallbacks"] = None,
     ) -> EscalationRequest:
-        """Raise an escalation request — pauses the agent and requests admin decision.
-
-        The agent is transitioned to IDLE (paused) and the escalation is stored.
-        Returns the EscalationRequest for the handler to send as a card.
-
-        Args:
-            agent: The agent requesting escalation.
-            reason: Human-readable description of the blocker.
-            level: Severity level (WARNING, BLOCKED, CRITICAL).
-            task_id: Optional task being worked on.
-            context: Additional context (error details, conversation snippet).
-            options: Resolution choices for the admin (defaults to Retry/Skip/Abort).
-            callbacks: Engine callbacks for error reporting.
-        """
-        escalation = EscalationRequest(
-            agent_id=agent.agent_id,
-            agent_name=agent.name,
-            task_id=task_id,
-            level=level,
-            reason=reason,
-            context=context[:2000],  # Truncate to prevent oversized cards
-            options=options or ["Retry", "Skip", "Abort"],
+        """Raise an escalation request."""
+        return self._escalation_mgr.escalate(
+            agent, reason, level=level, task_id=task_id,
+            context=context, options=options, callbacks=callbacks,
         )
-
-        with self._lock:
-            self._escalations.append(escalation)
-
-        # Pause the agent
-        self.transition_agent(agent.agent_id, AgentStatus.IDLE)
-
-        logger.warning(
-            "Escalation raised: agent=%s level=%s reason=%s",
-            agent.name, level.value, reason[:100],
-        )
-
-        if callbacks and callbacks.on_error:
-            callbacks.on_error(f"Escalation [{level.value}] from {agent.name}: {reason}")
-
-        return escalation
 
     def resolve_escalation(
         self,
         escalation_id: str,
         resolution: str,
     ) -> Optional[EscalationRequest]:
-        """Resolve a pending escalation with the admin's decision.
+        """Resolve a pending escalation with the admin's decision."""
+        return self._escalation_mgr.resolve_escalation(escalation_id, resolution)
 
-        Returns the resolved EscalationRequest, or None if not found.
-        """
-        with self._lock:
-            for esc in self._escalations:
-                if esc.escalation_id == escalation_id and not esc.resolved:
-                    esc.resolved = True
-                    esc.resolution = resolution
-                    esc.resolved_at = time.time()
-                    logger.info(
-                        "Escalation resolved: id=%s resolution=%s",
-                        escalation_id, resolution,
-                    )
-                    return esc
-        return None
+    def get_escalation(self, escalation_id: str) -> Optional[EscalationRequest]:
+        """Get an escalation by ID."""
+        return self._escalation_mgr.get_escalation(escalation_id)
 
     def get_pending_escalations(self) -> list[EscalationRequest]:
         """Return all unresolved escalations."""
-        with self._lock:
-            return [e for e in self._escalations if not e.resolved]
+        return self._escalation_mgr.get_pending_escalations()
 
     def get_escalation_card(self, escalation: EscalationRequest) -> dict:
         """Build the interactive card for an escalation request."""
-        channel_id = self._channel.channel_id if self._channel else self.chat_id
-        return build_escalation_card(escalation, channel_id=channel_id)
+        return self._escalation_mgr.get_escalation_card(escalation)
+
+    def resume_after_escalation(
+        self,
+        escalation: EscalationRequest,
+        callbacks: Optional[SlockEngineCallbacks] = None,
+    ) -> Optional[str]:
+        """Resume agent work after an escalation has been resolved."""
+        return self._escalation_mgr.resume_after_escalation(escalation, callbacks)
+
+    def _force_complete_task(self, task_id: str) -> None:
+        """Force-mark a task as DONE regardless of claimer."""
+        self._task_mgr.force_complete_task(task_id)
+
+    def _trim_escalations(self) -> None:
+        """Delegate escalation trimming to the escalation manager."""
+        self._escalation_mgr._trim_escalations()
 
     # ------------------------------------------------------------------
     # Parallel Execution
     # ------------------------------------------------------------------
 
-    def _get_executor(self) -> ThreadPoolExecutor:
-        """Lazy-initialize the thread pool executor."""
-        if self._executor is None or self._executor._shutdown:
-            self._executor = ThreadPoolExecutor(
-                max_workers=self._max_parallel_agents,
-                thread_name_prefix="slock-agent",
-            )
-        return self._executor
+    def _get_executor(self) -> BoundedExecutor:
+        """Lazy-initialize the bounded thread pool executor."""
+        with self._executor_lock:
+            if self._executor is None:
+                settings = get_settings()
+                self._executor = BoundedExecutor(
+                    max_workers=settings.slock_max_parallel_agents,
+                    max_queue_size=settings.slock_max_queue_size,
+                )
+            return self._executor
 
     def execute_parallel(
         self,
@@ -749,12 +827,20 @@ class SlockEngine(BaseEngine):
 
         executor = self._get_executor()
         futures: dict[Future, str] = {}  # future → task_id
+        task_to_agent: dict[str, str] = {}  # task_id → agent_id for cancellation
         results: dict[str, Optional[str]] = {}
 
         try:
             for task_id, agent_id in task_assignments:
-                future = executor.submit(self.execute_task, task_id, agent_id, callbacks)
-                futures[future] = task_id
+                task_to_agent[task_id] = agent_id
+                try:
+                    future = executor.submit(self.execute_task, task_id, agent_id, callbacks)
+                    futures[future] = task_id
+                except (QueueFullError, RuntimeError) as e:
+                    logger.warning("Failed to submit task %s: %s", task_id, repr(e))
+                    results[task_id] = None
+                    if callbacks and callbacks.on_error:
+                        callbacks.on_error(f"Task {task_id} rejected: {e}")
 
             for future in as_completed(futures, timeout=timeout):
                 task_id = futures[future]
@@ -768,11 +854,18 @@ class SlockEngine(BaseEngine):
 
         except TimeoutError:
             logger.warning("Parallel execution timed out after %.1fs", timeout)
-            # Collect whatever completed and mark the rest as None
+            # Cancel incomplete agents via cancellation events
+            incomplete_futures = []
             for future, task_id in futures.items():
                 if task_id not in results:
                     results[task_id] = None
-                    future.cancel()
+                    incomplete_futures.append(future)
+                    agent_id = task_to_agent.get(task_id)
+                    if agent_id:
+                        self.cancel_agent(agent_id)
+            # Grace period: wait for cancelled agents to finish cleanup (event-driven)
+            if incomplete_futures:
+                futures_wait(incomplete_futures, timeout=5.0)
             if callbacks and callbacks.on_error:
                 callbacks.on_error(f"Parallel execution timed out after {timeout}s")
         finally:
@@ -802,13 +895,13 @@ class SlockEngine(BaseEngine):
         """
         channel_id = self._channel.channel_id if self._channel else self.chat_id
         agents = self._registry.list_agents(channel_id=channel_id)
-        self._sync_skill_profiles(agents)
 
         if not agents:
             return {}
 
-        # Gather TODO tasks and assign agents
-        pending = [t for t in self._tasks if t.status == TaskStatus.TODO]
+        # Snapshot pending tasks under lock to avoid TOCTOU race
+        with self._lock:
+            pending = [t for t in self._tasks if t.status == TaskStatus.TODO]
         if not pending:
             return {}
 
@@ -863,6 +956,9 @@ class SlockEngine(BaseEngine):
 
     def cleanup(self) -> None:
         """Clean up engine resources."""
+        # Flush and stop observer learning queue
+        self._observer_queue.shutdown()
+
         # Shutdown thread pool executor
         if self._executor is not None:
             self._executor.shutdown(wait=False)
@@ -909,7 +1005,40 @@ class SlockEngine(BaseEngine):
             except Exception:
                 pass
 
+        # Flush and stop observer learning queue
+        self._observer_queue.shutdown()
+
+        # Release thread pool resources
+        with self._executor_lock:
+            if self._executor is not None:
+                self._executor.shutdown(wait=False)
+                self._executor = None
+
         logger.info("SlockEngine deactivated for chat %s", self.chat_id)
+
+    def stop_agent(self, agent_id: str) -> bool:
+        """Stop a single agent: cancel its ACP session and reset status to IDLE.
+
+        Returns True if the agent was found and stopped, False otherwise.
+        Does not affect other agents or the engine's overall state.
+        """
+        with self._lock:
+            if agent_id not in self._agent_statuses:
+                return False
+            self._agent_statuses[agent_id] = AgentStatus.IDLE
+            agent_session = self._agent_sessions.pop(agent_id, None)
+
+        # Signal cancellation to the executing thread
+        self.cancel_agent(agent_id)
+
+        if agent_session:
+            try:
+                agent_session.cancel()
+            except Exception:
+                pass
+
+        logger.info("Stopped agent %s in chat %s", agent_id, self.chat_id)
+        return True
 
     @property
     def is_active(self) -> bool:

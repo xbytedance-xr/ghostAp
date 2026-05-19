@@ -39,9 +39,10 @@ change touches shared routing, card rendering, locks, config, or session code.
   Never hardcode credentials or tokens.
 - Tests, probes, and temporary helpers belong under `tests/`, `scripts/`, `ux/`,
   or `/tmp`; keep the repo root clean.
-- After completing a meaningful task, update `.Memory/{YYYY-MM-DD}.md` and
-  `.Memory/Abstract.md`. Keep entries concrete: what changed, why, validation,
-  and any follow-up risk.
+- After completing a meaningful task, update `.Memory/{YYYY-MM-DD}.md` with
+  detailed entries: what changed, why, validation, and any follow-up risk.
+  Also append a one-line summary (~20 chars) to `.Memory/Abstract.md` with the
+  date reference so readers can locate the full record in the day file.
 - Medium/Low audit findings go to `.Memory/Backlog.md`; High correctness or
   security findings should be fixed immediately. Remove backlog items when fixed.
 - Commit messages must follow `docs/commit-message-guidelines.md`.

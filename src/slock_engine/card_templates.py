@@ -7,10 +7,29 @@ from __future__ import annotations
 
 from typing import Optional
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from src.card.shared import apply_compact_style, build_responsive_layout
 
-from .models import AgentIdentity, AgentStatus, EscalationLevel, EscalationRequest, SlockTask, TaskStatus
+from .models import AgentIdentity, AgentStatus, EscalationLevel, EscalationRequest, SlockTask, TaskStatus, ABORT_OPTIONS
+
+_DISPLAY_TZ = ZoneInfo("Asia/Shanghai")
+
+_STATUS_LABEL_ZH: dict[str, str] = {
+    "idle": "空闲",
+    "waking": "唤醒中",
+    "thinking": "思考中",
+    "running": "运行中",
+    "checking": "检查中",
+    "sending": "发送中",
+}
+
+_TASK_STATUS_LABEL_ZH: dict[str, str] = {
+    "todo": "待办",
+    "in_progress": "进行中",
+    "in_review": "审查中",
+    "done": "已完成",
+}
 
 
 def build_agent_message_card(
@@ -98,6 +117,25 @@ def build_team_created_card(
     }
 
 
+def build_welcome_card(*, team_name: str) -> dict:
+    """Build a welcome card sent inside the newly created Slock team group."""
+    content = (
+        f"🎭 **Slock 协作团队「{team_name}」已就绪**\n\n"
+        "📌 **快速开始**:\n"
+        "• `/new-role <名称>` — 创建虚拟 Agent\n"
+        "• `/task assign <任务> <角色>` — 分配任务\n"
+        "• `/slock status` — 查看团队状态\n"
+        "• `/slock help` — 查看所有命令"
+    )
+    elements: list[dict] = [{"tag": "markdown", "content": content}]
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {"title": {"tag": "plain_text", "content": f"👋 欢迎加入 {team_name}"}, "template": "green"},
+        "body": {"elements": elements},
+    }
+
+
 def build_team_list_card(teams: list[dict]) -> dict:
     """Build a Slock team directory card with jump buttons."""
     elements: list[dict] = []
@@ -145,17 +183,17 @@ def build_status_panel_card(
         team_name: Optional team name for the header.
         channel_id: Optional channel identifier.
     """
-    header_title = f"📊 {team_name} Agent Status" if team_name else "📊 Slock Agent Status"
+    header_title = f"📊 {team_name} Agent 状态" if team_name else "📊 Slock Agent 状态"
 
     elements: list[dict] = []
 
     if not agents:
-        elements.append({"tag": "markdown", "content": "*No agents registered in this team.*"})
+        elements.append({"tag": "markdown", "content": "*当前团队暂无已注册的 Agent。*"})
     else:
         # Build column_set rows — one per agent with colored status indicator
         for agent, status in agents:
             status_icon = _STATUS_ICON_MAP.get(status, "⚪")
-            status_label = status.value.capitalize()
+            status_label = _STATUS_LABEL_ZH.get(status.value, status.value)
             bg_color = _STATUS_BG_COLOR_MAP.get(status, "grey")
 
             column_set: dict = {
@@ -195,17 +233,28 @@ def build_status_panel_card(
         build_responsive_layout(
             [
                 _build_callback_button(
-                    "🔄 Refresh",
+                    "🔄 刷新",
                     "slock_refresh_status",
                     channel_id=channel_id,
                     button_type="primary_text",
                 ),
                 _build_callback_button(
-                    "⏹ Stop",
+                    "⏹ 全部停止",
                     "slock_stop",
                     channel_id=channel_id,
                     button_type="danger",
                 ),
+            ]
+            + [
+                _build_callback_button(
+                    f"⏹ 停止 {agent.name}",
+                    "slock_stop_agent",
+                    channel_id=channel_id,
+                    button_type="danger",
+                    extra_value={"agent_id": agent.agent_id},
+                )
+                for agent, status in agents
+                if status not in (AgentStatus.IDLE,)
             ]
         )
     )
@@ -228,8 +277,13 @@ def build_task_board_card(
     agents: list[AgentIdentity],
     team_name: str = "",
 ) -> dict:
-    """Build a Kanban-style task board card."""
-    header_title = f"📋 {team_name} Task Board" if team_name else "📋 Slock Task Board"
+    """Build a Kanban-style task board card using column_set with colored backgrounds.
+
+    Each TaskStatus occupies one row as a column_set with background_style color-coding:
+    TODO=grey, IN_PROGRESS=blue, IN_REVIEW=yellow, DONE=green.
+    Inside each row, a two-column layout separates the status header from the task list.
+    """
+    header_title = f"📋 {team_name} 任务看板" if team_name else "📋 Slock 任务看板"
 
     elements: list[dict] = []
 
@@ -238,30 +292,54 @@ def build_task_board_card(
     for task in tasks:
         grouped[task.status].append(task)
 
-    # Build each column
+    # Build each status row as a column_set with colored background
     agent_map = {a.agent_id: a for a in agents}
 
     for status in TaskStatus:
         status_tasks = grouped[status]
         icon = _TASK_STATUS_ICONS.get(status, "⬜")
-        section = f"**{icon} {status.value.replace('_', ' ').title()}** ({len(status_tasks)})"
+        bg_color = _TASK_STATUS_BG_COLOR_MAP.get(status, "grey")
+        status_title = f"**{icon} {_TASK_STATUS_LABEL_ZH.get(status.value, status.value)}** ({len(status_tasks)})"
 
+        # Build task list content for the right column
         if status_tasks:
+            task_lines: list[str] = []
             for task in status_tasks[:5]:  # limit display
                 assignee = ""
                 if task.claimed_by and task.claimed_by in agent_map:
                     a = agent_map[task.claimed_by]
                     assignee = f" → {a.emoji}{a.name}"
-                section += f"\n• {task.content[:60]}{assignee}"
+                task_lines.append(f"• {task.content[:60]}{assignee}")
+            task_content = "\n".join(task_lines)
         else:
-            section += "\n*empty*"
+            task_content = "*暂无*"
 
-        elements.append({"tag": "markdown", "content": section})
-        elements.append({"tag": "hr"})
-
-    # Remove trailing hr
-    if elements and elements[-1].get("tag") == "hr":
-        elements.pop()
+        column_set: dict = {
+            "tag": "column_set",
+            "flex_mode": "bisect",
+            "background_style": bg_color,
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "vertical_align": "top",
+                    "elements": [
+                        {"tag": "markdown", "content": status_title},
+                    ],
+                },
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 3,
+                    "vertical_align": "top",
+                    "elements": [
+                        {"tag": "markdown", "content": task_content},
+                    ],
+                },
+            ],
+        }
+        elements.append(column_set)
 
     header: dict = {
         "title": {"tag": "plain_text", "content": header_title},
@@ -306,6 +384,14 @@ _TASK_STATUS_ICONS: dict[TaskStatus, str] = {
     TaskStatus.DONE: "✅",
 }
 
+# Background color mapping for task board Kanban columns (Feishu card background_style)
+_TASK_STATUS_BG_COLOR_MAP: dict[TaskStatus, str] = {
+    TaskStatus.TODO: "grey",
+    TaskStatus.IN_PROGRESS: "blue",
+    TaskStatus.IN_REVIEW: "yellow",
+    TaskStatus.DONE: "green",
+}
+
 
 def _build_slock_group_jump_button(channel_id: str) -> dict:
     return apply_compact_style(
@@ -336,8 +422,11 @@ def _build_callback_button(
     *,
     channel_id: str = "",
     button_type: str = "default",
+    extra_value: dict | None = None,
 ) -> dict:
     value = {"action": action, "channel_id": channel_id}
+    if extra_value:
+        value.update(extra_value)
     return apply_compact_style(
         {
             "tag": "button",
@@ -371,7 +460,7 @@ def build_escalation_card(
 
     icon = level_icons.get(escalation.level, "⚠️")
     header_color = level_colors.get(escalation.level, "orange")
-    header_title = f"{icon} Escalation: {escalation.agent_name or 'Agent'}"
+    header_title = f"{icon} 升级告警: {escalation.agent_name or 'Agent'}"
 
     elements: list[dict] = []
 
@@ -379,9 +468,9 @@ def build_escalation_card(
     elements.append({
         "tag": "markdown",
         "content": (
-            f"**Level:** {escalation.level.value.upper()}\n"
-            f"**Agent:** {escalation.agent_name} (`{escalation.agent_id}`)\n"
-            f"**Reason:** {escalation.reason}"
+            f"**级别:** {escalation.level.value.upper()}\n"
+            f"**代理:** {escalation.agent_name} (`{escalation.agent_id}`)\n"
+            f"**原因:** {escalation.reason}"
         ),
     })
 
@@ -393,21 +482,21 @@ def build_escalation_card(
         elements.append({"tag": "hr"})
         elements.append({
             "tag": "markdown",
-            "content": f"**Context:**\n```\n{context_display}\n```",
+            "content": f"**上下文:**\n```\n{context_display}\n```",
         })
 
     # Task reference
     if escalation.task_id:
         elements.append({
             "tag": "markdown",
-            "content": f"**Task:** `{escalation.task_id}`",
+            "content": f"**任务:** `{escalation.task_id}`",
         })
 
     elements.append({"tag": "hr"})
 
     # Resolution option buttons
     option_buttons: list[dict] = []
-    default_options = escalation.options or ["Retry", "Skip", "Abort"]
+    default_options = escalation.options or ["重试", "跳过", "中止"]
     for option in default_options:
         value = {
             "action": "slock_escalation_resolve",
@@ -415,7 +504,7 @@ def build_escalation_card(
             "resolution": option,
             "channel_id": channel_id,
         }
-        btn_type = "danger" if option.lower() == "abort" else "default"
+        btn_type = "danger" if option in ABORT_OPTIONS else "default"
         option_buttons.append(apply_compact_style({
             "tag": "button",
             "text": {"tag": "plain_text", "content": option},
@@ -433,6 +522,88 @@ def build_escalation_card(
         "header": {
             "title": {"tag": "plain_text", "content": header_title},
             "template": header_color,
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_resolved_escalation_card(
+    escalation: EscalationRequest,
+    *,
+    resolved_by: str = "",
+    resolution: str = "",
+    resolved_at: Optional[float] = None,
+    channel_id: str = "",
+) -> dict:
+    """Build an escalation card in resolved state — buttons removed, status shown.
+
+    Args:
+        escalation: The original EscalationRequest.
+        resolved_by: Display name or ID of the operator who resolved it.
+        resolution: The chosen resolution (e.g. Retry/Skip/Abort).
+        resolved_at: Timestamp of resolution (epoch seconds).
+        channel_id: Optional channel identifier.
+    """
+    import time as _time
+
+    level_icons = {
+        EscalationLevel.WARNING: "⚠️",
+        EscalationLevel.BLOCKED: "🚫",
+        EscalationLevel.CRITICAL: "🔴",
+    }
+
+    icon = level_icons.get(escalation.level, "⚠️")
+    header_title = f"{icon} 升级告警: {escalation.agent_name or 'Agent'} [已解决]"
+
+    elements: list[dict] = []
+
+    # Original severity and reason
+    elements.append({
+        "tag": "markdown",
+        "content": (
+            f"**级别:** {escalation.level.value.upper()}\n"
+            f"**代理:** {escalation.agent_name} (`{escalation.agent_id}`)\n"
+            f"**原因:** {escalation.reason}"
+        ),
+    })
+
+    # Context details (truncated) — keep for reference
+    if escalation.context:
+        context_display = escalation.context[:500]
+        if len(escalation.context) > 500:
+            context_display += "\n..."
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "markdown",
+            "content": f"**上下文:**\n```\n{context_display}\n```",
+        })
+
+    # Task reference
+    if escalation.task_id:
+        elements.append({
+            "tag": "markdown",
+            "content": f"**任务:** `{escalation.task_id}`",
+        })
+
+    elements.append({"tag": "hr"})
+
+    # Resolution status (replaces buttons)
+    ts = resolved_at or _time.time()
+    from datetime import datetime
+    time_str = datetime.fromtimestamp(ts, tz=_DISPLAY_TZ).strftime("%Y-%m-%d %H:%M")
+    operator_display = resolved_by or "未知"
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"✅ **已解决:** {resolution}，由 {operator_display} 处理\n📅 {time_str}",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": "green",
         },
         "body": {"elements": elements},
     }

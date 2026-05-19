@@ -12,9 +12,12 @@ import logging
 import re
 import threading
 import time
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from .models import AgentIdentity, AgentStatus, SkillProfile
+
+if TYPE_CHECKING:
+    from .memory_manager import MemoryManager
 
 logger = logging.getLogger(__name__)
 
@@ -172,10 +175,19 @@ class TaskRouter:
     # Pattern to match @AgentName mentions
     _MENTION_PATTERN = re.compile(r"@([\w\-]+)", re.UNICODE)
 
-    def __init__(self, task_claim_ttl: float = 3600.0, persist_path: Optional[str] = None):
+    _SKILL_PROFILE_TTL: float = 60.0  # seconds before cached profiles are considered stale
+
+    def __init__(
+        self,
+        task_claim_ttl: float = 3600.0,
+        persist_path: Optional[str] = None,
+        memory_backend: Optional["MemoryManager"] = None,
+    ):
         self._task_claim = TaskClaim(default_ttl=task_claim_ttl, persist_path=persist_path)
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._skill_profiles: dict[str, list[SkillProfile]] = {}  # agent_id -> profiles
+        self._skill_profile_ts: dict[str, float] = {}  # agent_id -> last_load_time
+        self._memory_backend = memory_backend
         self._round_robin_index = 0
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
@@ -197,6 +209,26 @@ class TaskRouter:
         """Set skill profiles for an agent."""
         with self._lock:
             self._skill_profiles[agent_id] = profiles
+            self._skill_profile_ts[agent_id] = time.time()
+
+    def _ensure_skill_profiles_loaded(self, agent_id: str) -> None:
+        """Lazy-load skill profiles from memory backend with TTL caching.
+
+        Only reads from disk if the memory backend is configured and the cached
+        profiles are missing or older than _SKILL_PROFILE_TTL.
+        """
+        if self._memory_backend is None:
+            return
+        now = time.time()
+        with self._lock:
+            last_ts = self._skill_profile_ts.get(agent_id, 0.0)
+            if now - last_ts < self._SKILL_PROFILE_TTL:
+                return  # cache is fresh
+        # Read outside lock to avoid holding it during disk I/O
+        profiles = self._memory_backend.read_skill_profiles(agent_id)
+        with self._lock:
+            self._skill_profiles[agent_id] = profiles
+            self._skill_profile_ts[agent_id] = now
 
     def route_message(
         self,
@@ -246,6 +278,9 @@ class TaskRouter:
             status = self.get_agent_status(agent.agent_id)
             # Prefer idle agents
             availability = 1.0 if status == AgentStatus.IDLE else 0.3
+
+            # Lazy-load skill profiles from disk if stale/missing
+            self._ensure_skill_profiles_loaded(agent.agent_id)
 
             # Get skill profiles
             with self._lock:

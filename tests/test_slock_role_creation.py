@@ -10,7 +10,19 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
+
+
+@pytest.fixture(autouse=True)
+def _bypass_slock_permission():
+    """Bypass permission gate for all role creation tests in this module."""
+    with patch(
+        "src.feishu.handlers.slock.SlockHandler._check_slock_permission",
+        return_value=True,
+    ):
+        yield
 
 
 def _collect_card_values(node):
@@ -640,3 +652,69 @@ class TestTaskAssignQuotedParsing:
         # Should still return something reasonable (fallback behavior)
         assert isinstance(content, str)
         assert isinstance(role, str)
+
+
+class TestRoleListShowsCreatedAgent:
+    """AC-02: /role list shows newly created agent after registration."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.slock import SlockHandler
+        ctx = MagicMock()
+        handler = SlockHandler.__new__(SlockHandler)
+        handler.context = ctx
+        handler.reply_text = MagicMock(return_value=True)
+        handler.reply_card = MagicMock(return_value="card_msg_id")
+        handler.send_card_to_chat = MagicMock(return_value="card_msg_id")
+        handler.update_card = MagicMock(return_value=True)
+        handler.send_text_to_chat = MagicMock()
+        return handler
+
+    def _make_engine_with_agents(self, agents):
+        from src.slock_engine.models import AgentStatus
+        engine = MagicMock()
+        engine.channel = MagicMock()
+        engine.channel.channel_id = "chat_test"
+        engine.registry.list_agents.return_value = agents
+        engine.get_agent_status.return_value = AgentStatus.IDLE
+        return engine
+
+    def test_list_roles_shows_registered_agent(self):
+        """After registration, /role list shows the agent name."""
+        from src.slock_engine.models import AgentIdentity
+        handler = self._make_handler()
+        agent = AgentIdentity(
+            agent_id="claude:sonnet-4:TestCoder",
+            name="TestCoder",
+            emoji="🔧",
+            agent_type="claude",
+            model_name="sonnet-4",
+            system_prompt="test",
+            role="coder",
+        )
+        engine = self._make_engine_with_agents([agent])
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.list_roles("msg_1", "chat_test")
+
+        handler.reply_text.assert_called_once()
+        reply = handler.reply_text.call_args[0][1]
+        assert "TestCoder" in reply
+        assert "🔧" in reply
+        assert "角色列表" in reply
+
+    def test_list_roles_empty_shows_hint(self):
+        """When no roles exist, shows hint to create one."""
+        handler = self._make_handler()
+        engine = self._make_engine_with_agents([])
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.list_roles("msg_1", "chat_test")
+
+        handler.reply_text.assert_called_once()
+        reply = handler.reply_text.call_args[0][1]
+        assert "没有角色" in reply
+        assert "/new-role" in reply

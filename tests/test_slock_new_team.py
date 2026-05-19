@@ -33,7 +33,7 @@ def _make_handler_ctx(tmp_path, *, api_client_factory=None, settings=None):
 
     # Settings
     s = MagicMock()
-    s.slock_team_name_prefix = "[Slock]"
+    s.slock_team_name_suffix = "[Slock]"
     s.slock_workspace_base = ""
     s.slock_memory_base_path = str(tmp_path / "slock_memory")
     s.slock_execution_timeout = 3600
@@ -104,7 +104,7 @@ class TestCreateTeamHappyPath:
         # 1. Group created with correct params
         mock_lark.create_chat.assert_called_once()
         call_kwargs = mock_lark.create_chat.call_args
-        assert call_kwargs.kwargs["name"] == "[Slock] TestTeam"
+        assert call_kwargs.kwargs["name"] == "TestTeam [Slock]"
         assert "ou_sender123" in call_kwargs.kwargs["user_id_list"]
 
         # 2. Sender promoted to manager
@@ -131,11 +131,15 @@ class TestCreateTeamHappyPath:
         # 5. Managed chat registered for event routing
         assert manager.is_managed_chat("oc_new_group_id") is True
 
-        # 6. Welcome sent to new group
-        handler.send_text_to_chat.assert_called_once()
-        new_group_text = handler.send_text_to_chat.call_args[0]
-        assert new_group_text[0] == "oc_new_group_id"
-        assert "TestTeam" in new_group_text[1]
+        # 6. Welcome card sent to new group
+        handler.send_card_to_chat.assert_called_once()
+        new_group_args = handler.send_card_to_chat.call_args[0]
+        assert new_group_args[0] == "oc_new_group_id"
+        welcome_card = json.loads(new_group_args[1])
+        welcome_blob = json.dumps(welcome_card, ensure_ascii=False)
+        assert "TestTeam" in welcome_blob
+        assert "/new-role" in welcome_blob
+        assert welcome_card["schema"] == "2.0"
 
         # 7. Confirmation card sent to original group with a direct group jump button
         handler.reply_card.assert_called_once()
@@ -151,22 +155,22 @@ class TestCreateTeamHappyPath:
     @patch("src.slock_engine.engine.create_engine_session")
     @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
     @patch("src.project_chat.lark_chat_client.LarkChatClient")
-    def test_create_team_with_prefix(
+    def test_create_team_with_suffix(
         self, MockLarkChatClient, mock_sender, mock_session, tmp_path
     ):
-        ctx = _make_handler_ctx(tmp_path, settings={"slock_team_name_prefix": "Slock-"})
+        ctx = _make_handler_ctx(tmp_path, settings={"slock_team_name_suffix": "-Slock"})
         handler = _make_slock_handler(ctx)
         handler.get_working_dir.return_value = str(tmp_path / "root")
 
         mock_lark = MockLarkChatClient.return_value
         mock_lark.create_chat.return_value = _FakeCreateChatResult(
-            chat_id="oc_prefixed", name="Slock-Alpha"
+            chat_id="oc_prefixed", name="Alpha-Slock"
         )
 
         handler.create_team("msg2", "oc_origin", "Alpha")
 
         call_kwargs = mock_lark.create_chat.call_args.kwargs
-        assert call_kwargs["name"] == "Slock-Alpha"
+        assert call_kwargs["name"] == "Alpha-Slock"
 
     @patch("src.slock_engine.engine.create_engine_session")
     @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
@@ -180,13 +184,13 @@ class TestCreateTeamHappyPath:
 
         mock_lark = MockLarkChatClient.return_value
         mock_lark.create_chat.return_value = _FakeCreateChatResult(
-            chat_id="oc_marked", name="[Slock] Alpha"
+            chat_id="oc_marked", name="Alpha [Slock]"
         )
 
-        handler.create_team("msg3", "oc_origin", "[Slock] Alpha")
+        handler.create_team("msg3", "oc_origin", "Alpha [Slock]")
 
         call_kwargs = mock_lark.create_chat.call_args.kwargs
-        assert call_kwargs["name"] == "[Slock] Alpha"
+        assert call_kwargs["name"] == "Alpha [Slock]"
 
 
 # ==================================================================
@@ -286,6 +290,55 @@ class TestDispatcherSlockRouting:
         assert manager.is_managed_chat("oc_test") is False
 
 
+# ==================================================================
+# Test: activate_slock passes owner_id (AC-14)
+# ==================================================================
+
+
+class TestActivateSlockOwnerId:
+    """AC-14: activate_slock() must pass sender_open_id as owner_id to SlockChannel."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    @patch("src.thread.manager.get_current_sender_id", return_value="user-sender-123")
+    def test_activate_slock_passes_owner_id(self, mock_sender, mock_session, tmp_path):
+        """Channel created via /slock activate should have owner_id == sender_open_id."""
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        project = MagicMock()
+        project.project_name = "TestProject"
+        project.project_id = "proj-001"
+        project.root_path = str(tmp_path / "root")
+        handler._ensure_project = MagicMock(return_value=project)
+
+        handler.activate_slock("msg-001", "oc_activate_test", project=project)
+
+        # Verify the channel has owner_id set
+        manager = ctx.slock_engine_manager
+        engine = manager.get_activated_engine("oc_activate_test")
+        assert engine is not None
+        assert engine.channel is not None
+        assert engine.channel.owner_id == "user-sender-123"
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    @patch("src.thread.manager.get_current_sender_id", return_value="")
+    def test_activate_slock_empty_sender_still_works(self, mock_sender, mock_session, tmp_path):
+        """Even with empty sender_id, activation should not crash (owner_id='')."""
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        project = MagicMock()
+        project.project_name = "TestProject"
+        project.project_id = "proj-001"
+        project.root_path = str(tmp_path / "root")
+        handler._ensure_project = MagicMock(return_value=project)
+
+        handler.activate_slock("msg-002", "oc_activate_empty", project=project)
+
+        manager = ctx.slock_engine_manager
+        engine = manager.get_activated_engine("oc_activate_empty")
+        assert engine is not None
+        assert engine.channel.owner_id == ""
+
+
 class TestTeamAdminCommands:
     @patch("src.slock_engine.engine.create_engine_session")
     def test_list_teams_lists_all_activated_slock_teams_from_admin_chat(self, mock_session, tmp_path):
@@ -337,10 +390,12 @@ class TestTeamAdminCommands:
         manager = ctx.slock_engine_manager
         root_path = str(tmp_path / "project_root")
         engine = manager.get_or_create("oc_beta", root_path, engine_name="Slock")
-        engine.activate_channel(SlockChannel(channel_id="oc_beta", name="Beta Chat", team_name="Beta"))
+        engine.activate_channel(SlockChannel(channel_id="oc_beta", name="Beta Chat", team_name="Beta", owner_id="ou_admin"))
         manager.register_managed_chat("oc_beta")
 
-        handler.dissolve_team("msg_dissolve", "oc_admin", "Beta")
+        with patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"), \
+             patch("src.config.get_settings", return_value=MagicMock(admin_user_ids=frozenset({"ou_admin"}))):
+            handler.dissolve_team("msg_dissolve", "oc_admin", "Beta")
 
         assert manager.is_managed_chat("oc_beta") is False
         assert manager.get_activated_engine("oc_beta") is None
@@ -437,3 +492,181 @@ class TestRestartSurvival:
         assert engine.channel is not None
         assert engine.channel.channel_id == "oc_survive"
         assert engine.channel.team_name == "SurviveTeam"
+
+
+class TestOwnerIdPersistence:
+    """AC-14: owner_id must be persisted in marker_data and restored from disk."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_marker_data_contains_owner_id(self, mock_session, tmp_path):
+        """activate_channel writes owner_id to .slock_channel.json marker."""
+        manager = SlockEngineManager(storage_base_path=str(tmp_path / "slock_mem"))
+        root_path = str(tmp_path / "project_root")
+        engine = manager.get_or_create("oc_owner_test", root_path, engine_name="Slock")
+
+        channel = SlockChannel(
+            channel_id="oc_owner_test",
+            name="Owner Team",
+            team_name="OwnerTeam",
+            owner_id="ou_creator_abc",
+        )
+        engine.activate_channel(channel)
+
+        # Read marker from disk
+        marker_path = os.path.join(
+            engine.memory.get_group_base_path("oc_owner_test"),
+            ".slock_channel.json",
+        )
+        with open(marker_path, "r") as f:
+            marker = json.load(f)
+
+        assert "owner_id" in marker
+        assert marker["owner_id"] == "ou_creator_abc"
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_restore_from_disk_recovers_owner_id(self, mock_session, tmp_path):
+        """After restart, restore_from_disk recovers owner_id from marker."""
+        storage_path = str(tmp_path / "slock_mem")
+        root_path = str(tmp_path / "project_root")
+
+        # Step 1: Create and activate with owner_id
+        manager1 = SlockEngineManager(storage_base_path=storage_path)
+        engine1 = manager1.get_or_create("oc_restore_owner", root_path, engine_name="Slock")
+        channel = SlockChannel(
+            channel_id="oc_restore_owner",
+            name="Restore Team",
+            team_name="RestoreTeam",
+            owner_id="ou_original_owner",
+        )
+        engine1.activate_channel(channel)
+        manager1.register_managed_chat("oc_restore_owner")
+
+        # Step 2: Simulate restart — fresh manager
+        manager2 = SlockEngineManager(storage_base_path=storage_path)
+        restored = manager2.restore_from_disk(root_path)
+
+        assert restored == 1
+        engine2 = manager2.get_activated_engine("oc_restore_owner")
+        assert engine2 is not None
+        assert engine2.channel is not None
+        assert engine2.channel.owner_id == "ou_original_owner"
+
+
+class TestMarkerMerge:
+    """AC-14/AC-15: _write_channel_marker merge fills missing fields without overwriting."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_merge_fills_missing_owner_id(self, mock_session, tmp_path):
+        """Old marker without owner_id gets owner_id filled after activate_channel."""
+        storage_path = str(tmp_path / "slock_mem")
+        root_path = str(tmp_path / "project_root")
+
+        manager = SlockEngineManager(storage_base_path=storage_path)
+        engine = manager.get_or_create("oc_merge1", root_path, engine_name="Slock")
+
+        # Pre-write an old marker WITHOUT owner_id
+        group_dir = engine.memory.get_group_base_path("oc_merge1")
+        os.makedirs(group_dir, exist_ok=True)
+        marker_path = os.path.join(group_dir, ".slock_channel.json")
+        old_marker = {
+            "channel_id": "oc_merge1",
+            "team_name": "OldTeam",
+            "name": "Old",
+            "activated_at": "2025-01-01T00:00:00Z",
+        }
+        with open(marker_path, "w") as f:
+            json.dump(old_marker, f)
+
+        # Now activate with owner_id set
+        channel = SlockChannel(
+            channel_id="oc_merge1",
+            name="Old",
+            team_name="OldTeam",
+            owner_id="ou_new_owner",
+        )
+        engine.activate_channel(channel)
+
+        # Verify owner_id was merged in
+        with open(marker_path, "r") as f:
+            merged = json.load(f)
+        assert merged["owner_id"] == "ou_new_owner"
+        # activated_at should be preserved (not overwritten)
+        assert merged["activated_at"] == "2025-01-01T00:00:00Z"
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_merge_does_not_overwrite_with_empty(self, mock_session, tmp_path):
+        """Existing owner_id is NOT overwritten when new value is empty."""
+        storage_path = str(tmp_path / "slock_mem")
+        root_path = str(tmp_path / "project_root")
+
+        manager = SlockEngineManager(storage_base_path=storage_path)
+        engine = manager.get_or_create("oc_merge2", root_path, engine_name="Slock")
+
+        # Pre-write marker WITH owner_id
+        group_dir = engine.memory.get_group_base_path("oc_merge2")
+        os.makedirs(group_dir, exist_ok=True)
+        marker_path = os.path.join(group_dir, ".slock_channel.json")
+        old_marker = {
+            "channel_id": "oc_merge2",
+            "team_name": "Team2",
+            "name": "Team2",
+            "owner_id": "ou_existing_owner",
+            "activated_at": "2025-01-01T00:00:00Z",
+        }
+        with open(marker_path, "w") as f:
+            json.dump(old_marker, f)
+
+        # Activate with empty owner_id — should NOT overwrite
+        channel = SlockChannel(
+            channel_id="oc_merge2",
+            name="Team2",
+            team_name="Team2",
+            owner_id="",
+        )
+        engine.activate_channel(channel)
+
+        with open(marker_path, "r") as f:
+            merged = json.load(f)
+        assert merged["owner_id"] == "ou_existing_owner"
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def test_restore_recovers_merged_owner_id(self, mock_session, tmp_path):
+        """After merge fills owner_id, restore_from_disk correctly recovers it."""
+        storage_path = str(tmp_path / "slock_mem")
+        root_path = str(tmp_path / "project_root")
+
+        manager1 = SlockEngineManager(storage_base_path=storage_path)
+        engine1 = manager1.get_or_create("oc_merge3", root_path, engine_name="Slock")
+
+        # Pre-write old marker without owner_id
+        group_dir = engine1.memory.get_group_base_path("oc_merge3")
+        os.makedirs(group_dir, exist_ok=True)
+        marker_path = os.path.join(group_dir, ".slock_channel.json")
+        old_marker = {
+            "channel_id": "oc_merge3",
+            "team_name": "MergeTeam",
+            "name": "MergeTeam",
+            "activated_at": "2025-06-01T00:00:00Z",
+        }
+        with open(marker_path, "w") as f:
+            json.dump(old_marker, f)
+
+        # Activate to trigger merge — fills owner_id
+        channel = SlockChannel(
+            channel_id="oc_merge3",
+            name="MergeTeam",
+            team_name="MergeTeam",
+            owner_id="ou_merged_owner",
+        )
+        engine1.activate_channel(channel)
+        manager1.register_managed_chat("oc_merge3")
+
+        # Simulate restart
+        manager2 = SlockEngineManager(storage_base_path=storage_path)
+        restored = manager2.restore_from_disk(root_path)
+
+        assert restored == 1
+        engine2 = manager2.get_activated_engine("oc_merge3")
+        assert engine2 is not None
+        assert engine2.channel is not None
+        assert engine2.channel.owner_id == "ou_merged_owner"

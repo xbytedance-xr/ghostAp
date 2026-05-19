@@ -11,14 +11,16 @@ from ...acp.helper import fetch_acp_models
 from ...card import CardBuilder
 from ...card.actions import dispatch as action_ids
 from ...model_selection import is_default_model_option
+from ...slock_engine.bounded_executor import QueueFullError
 from ...slock_engine.models import SlockChannel
 from ...slock_engine.slash_commands import (
     SlockCommandAction,
     is_slock_command,
     parse_slock_command,
 )
-from ...utils.errors import get_error_detail
+from ...utils.errors import get_error_detail, safe_error_message
 from ..emoji import EmojiReaction
+from ..user_cache import resolve_display_name
 from .base import CardActionContext
 from .engine_base import BaseEngineHandler
 
@@ -34,6 +36,8 @@ class SlockHandler(BaseEngineHandler):
 
     def __init__(self, ctx: "HandlerContext") -> None:
         super().__init__(ctx)
+        # Rate-limit tracker: key = "chat_id:sender_id" → list of timestamps
+        self._rate_limit_tracker: dict[str, list[float]] = {}
 
     # ------------------------------------------------------------------
     # BaseEngineHandler abstract method implementations
@@ -110,6 +114,87 @@ class SlockHandler(BaseEngineHandler):
             self.show_slock_help(message_id)
 
     # ------------------------------------------------------------------
+    # Async execution helper (shared by handle_message & _submit_task_execution)
+    # ------------------------------------------------------------------
+
+    def _execute_async(
+        self,
+        *,
+        engine,
+        execute_fn,
+        placeholder_card_json: str,
+        result_card_fn,
+        error_card_fn,
+        empty_card_fn,
+        busy_card_fn,
+        message_id: str,
+        chat_id: str,
+    ) -> None:
+        """Submit async execution with placeholder→update card pattern.
+
+        This method encapsulates the common pattern:
+          1. Send placeholder card immediately
+          2. Submit execute_fn to BoundedExecutor
+          3. On success: update card via result_card_fn(result, duration)
+          4. On empty result: update via empty_card_fn()
+          5. On exception: update via error_card_fn(exception)
+          6. On queue full: update via busy_card_fn()
+          7. On queue wait timeout: update with timeout card
+
+        Callbacks:
+          execute_fn() -> Optional[str] — the actual work
+          result_card_fn(result: str, duration: float) -> str — JSON card for success
+          error_card_fn(exc: Exception) -> str — JSON card for error
+          empty_card_fn() -> str — JSON card for empty result
+          busy_card_fn() -> str — JSON card for busy/full
+        """
+        card_message_id = self.send_card_to_chat(
+            chat_id, placeholder_card_json, origin_message_id=message_id
+        )
+
+        executor = engine._get_executor()
+
+        def _async_work():
+            import time as _time
+
+            start_time = _time.time()
+
+            # Check queue wait timeout
+            if self._check_queue_wait_timeout(future, start_time, card_message_id, chat_id):
+                return
+
+            try:
+                result = execute_fn()
+            except Exception as e:
+                logger.error("Slock _execute_async error: %s", repr(e), exc_info=True)
+                error_card = error_card_fn(e)
+                if card_message_id:
+                    self.update_card(card_message_id, error_card)
+                return
+
+            if not result:
+                empty_card = empty_card_fn()
+                if card_message_id:
+                    self.update_card(card_message_id, empty_card)
+                return
+
+            duration = _time.time() - start_time
+            success_card = result_card_fn(result, duration)
+            if card_message_id:
+                self.update_card(card_message_id, success_card)
+            else:
+                self.send_card_to_chat(chat_id, success_card, origin_message_id=message_id)
+
+        future = None  # Assigned by executor.submit(); closure reads after thread start
+        try:
+            future = executor.submit(_async_work)
+        except (QueueFullError, RuntimeError) as e:
+            logger.warning("Slock executor submit rejected for chat %s: %s", chat_id, repr(e))
+            busy_card = busy_card_fn()
+            if card_message_id:
+                self.update_card(card_message_id, busy_card)
+
+    # ------------------------------------------------------------------
     # Message routing (non-command messages in slock-active chats)
     # ------------------------------------------------------------------
 
@@ -122,9 +207,11 @@ class SlockHandler(BaseEngineHandler):
         1. @AgentName → precise route to named agent
         2. /task keyword → redirect to handle_slock_command
         3. Normal text → engine.execute() smart routing
+
+        Execution is submitted asynchronously to the engine's thread pool.
+        A placeholder card is sent immediately and updated in-place upon completion.
         """
         import re
-        import time as _time
 
         # Check for /task keyword — redirect to command handler
         if text and text.strip().lower().startswith("/task"):
@@ -143,47 +230,74 @@ class SlockHandler(BaseEngineHandler):
             agent_name = at_match.group(1)
             target_agent = engine.registry.find_by_name(agent_name)
 
-        start_time = _time.time()
-
-        if target_agent:
-            # Direct agent execution
+        # --- Callbacks for _execute_async ---
+        def _execute():
             callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
-            try:
-                result = engine._execute_agent(target_agent, text, callbacks)
-            except Exception as e:
-                logger.error("Slock handle_message agent exec error: %s", repr(e))
-                self.reply_text(message_id, f"❌ Agent 执行出错: {get_error_detail(e)}")
-                return
-        else:
-            # Smart routing via engine.execute()
-            callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
-            try:
-                result = engine.execute(text, callbacks, sender_id="")
-            except Exception as e:
-                logger.error("Slock handle_message engine exec error: %s", repr(e))
-                self.reply_text(message_id, f"❌ Slock 引擎执行出错: {get_error_detail(e)}")
-                return
+            if target_agent:
+                return engine._execute_agent(target_agent, text, callbacks)
+            return engine.execute(text, callbacks, sender_id="")
 
-        if not result:
-            return  # No output — stay silent
+        def _result_card(result: str, duration: float) -> str:
+            agent_used = target_agent
+            if not agent_used:
+                channel_id = engine.channel.channel_id if engine.channel else chat_id
+                agents = engine.registry.list_agents(channel_id=channel_id)
+                agent_used = agents[0] if agents else None
 
-        # Send result as Interactive Card
-        duration = _time.time() - start_time
-        agent_used = target_agent
-        if not agent_used:
-            # Try to identify which agent responded from engine state
-            channel_id = engine.channel.channel_id if engine.channel else chat_id
-            agents = engine.registry.list_agents(channel_id=channel_id)
-            agent_used = agents[0] if agents else None
+            if agent_used:
+                card_data = engine._mouthpiece.format_card(
+                    agent_used, result, model_info=agent_used.agent_type, duration_s=duration
+                )
+                return json.dumps(card_data, ensure_ascii=False)
+            return json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "💬 Agent 回复"}, "template": "blue"},
+                "body": {"elements": [{"tag": "markdown", "content": result}]},
+            }, ensure_ascii=False)
 
-        if agent_used:
-            card_data = engine._mouthpiece.format_card(
-                agent_used, result, model_info=agent_used.agent_type, duration_s=duration
-            )
-            card_json = json.dumps(card_data, ensure_ascii=False)
-            self.send_card_to_chat(chat_id, card_json, origin_message_id=message_id)
-        else:
-            self.reply_text(message_id, result)
+        def _error_card(exc: Exception) -> str:
+            return json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "❌ 执行出错"}, "template": "red"},
+                "body": {"elements": [{"tag": "markdown", "content": f"Agent 执行出错: {safe_error_message(exc)}"}]},
+            }, ensure_ascii=False)
+
+        def _empty_card() -> str:
+            return json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "✅ 处理完成"}, "template": "green"},
+                "body": {"elements": [{"tag": "markdown", "content": "Agent 已处理，无额外输出。"}]},
+            }, ensure_ascii=False)
+
+        def _busy_card() -> str:
+            return json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "⚠️ 团队繁忙"}, "template": "orange"},
+                "body": {"elements": [{"tag": "markdown", "content": "当前所有 Agent 均在忙碌中，请稍后重试。"}]},
+            }, ensure_ascii=False)
+
+        placeholder_card = json.dumps({
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": "⏳ 正在处理..."}, "template": "indigo"},
+            "body": {"elements": [{"tag": "markdown", "content": "Agent 正在思考中，请稍候..."}]},
+        }, ensure_ascii=False)
+
+        self._execute_async(
+            engine=engine,
+            execute_fn=_execute,
+            placeholder_card_json=placeholder_card,
+            result_card_fn=_result_card,
+            error_card_fn=_error_card,
+            empty_card_fn=_empty_card,
+            busy_card_fn=_busy_card,
+            message_id=message_id,
+            chat_id=chat_id,
+        )
 
     # ------------------------------------------------------------------
     # Slock activation
@@ -211,6 +325,10 @@ class SlockHandler(BaseEngineHandler):
             )
             return
 
+        from ...thread.manager import get_current_sender_id
+
+        sender_open_id = get_current_sender_id() or ""
+
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
         engine = manager.get_or_create(
             chat_id, root_path, engine_name=engine_name,
@@ -221,6 +339,7 @@ class SlockHandler(BaseEngineHandler):
             channel_id=chat_id,
             name=project.project_name if project else "slock",
             team_name=project.project_name if project else "Team",
+            owner_id=sender_open_id,
         )
         engine.activate_channel(channel)
         manager.register_managed_chat(chat_id)
@@ -289,7 +408,7 @@ class SlockHandler(BaseEngineHandler):
             "• `/slock list` / `/slocks` — 在主对话查询所有 Slock 群并跳转\n"
             "• `/slock stop` — 停止协作\n\n"
             "**团队管理**\n"
-            "• `/new-team <名称>` — 创建带 `[Slock]` 标识的协作团队群\n"
+            "• `/new-team <名称>` — 创建带 `[Slock]` 后缀的协作团队群\n"
             "• `/team list` — 查看团队列表\n"
             "• `/team status <名称>` — 查看团队详情\n"
             "• `/team dissolve <名称>` — 解散团队\n\n"
@@ -336,7 +455,7 @@ class SlockHandler(BaseEngineHandler):
             return
 
         settings = self.ctx.settings
-        group_name = self._format_slock_group_name(name, getattr(settings, "slock_team_name_prefix", "[Slock]"))
+        group_name = self._format_slock_group_name(name, getattr(settings, "slock_team_name_suffix", "[Slock]"))
 
         # Step 1: Create Feishu group
         lark_client = LarkChatClient(api_client_factory=self.ctx.api_client_factory)
@@ -348,7 +467,7 @@ class SlockHandler(BaseEngineHandler):
             )
         except Exception as e:
             logger.error("create_team: 建群失败 name=%s err=%s", name, str(e))
-            self.reply_text(message_id, f"❌ 创建团队群失败: {get_error_detail(e)}")
+            self.reply_text(message_id, f"❌ 创建团队群失败: {safe_error_message(e)}")
             return
 
         new_chat_id = result.chat_id
@@ -370,22 +489,18 @@ class SlockHandler(BaseEngineHandler):
                 channel_id=new_chat_id,
                 name=group_name,
                 team_name=name,
+                owner_id=sender_open_id,
             )
             engine.activate_channel(channel)
 
             # Step 5: Register managed chat for event routing
             manager.register_managed_chat(new_chat_id)
 
-            # Step 6: Send welcome message in the new group
-            welcome_text = (
-                f"🎭 **Slock 协作团队「{name}」已就绪**\n\n"
-                "📌 **快速开始**:\n"
-                "• `/new-role <名称>` — 创建虚拟 Agent\n"
-                "• `/task assign <任务> <角色>` — 分配任务\n"
-                "• `/slock status` — 查看团队状态\n"
-                "• `/slock help` — 查看所有命令"
-            )
-            self.send_text_to_chat(new_chat_id, welcome_text)
+            # Step 6: Send welcome card in the new group
+            from ...slock_engine.card_templates import build_welcome_card
+
+            welcome_card = build_welcome_card(team_name=name)
+            self.send_card_to_chat(new_chat_id, json.dumps(welcome_card, ensure_ascii=False))
 
             # Step 7: Send confirmation with jump link in original group
             from ...slock_engine.card_templates import build_team_created_card
@@ -401,19 +516,19 @@ class SlockHandler(BaseEngineHandler):
             # Rollback: delete the created group on any activation failure
             logger.error("create_team: 激活失败, 回滚建群 chat=%s err=%s", new_chat_id, str(e))
             lark_client.delete_chat(new_chat_id)
-            self.reply_text(message_id, f"❌ 团队激活失败已回滚: {get_error_detail(e)}")
+            self.reply_text(message_id, f"❌ 团队激活失败已回滚: {safe_error_message(e)}")
 
     @staticmethod
-    def _format_slock_group_name(name: str, prefix: str = "[Slock]") -> str:
-        """Format Slock team group names with a visible marker."""
+    def _format_slock_group_name(name: str, suffix: str = "[Slock]") -> str:
+        """Format Slock team group names with a visible suffix marker."""
         clean_name = (name or "").strip()
-        clean_prefix = (prefix or "").strip()
-        if not clean_prefix:
+        clean_suffix = (suffix or "").strip()
+        if not clean_suffix:
             return clean_name
-        if clean_name.casefold().startswith(clean_prefix.casefold()):
+        if clean_name.casefold().endswith(clean_suffix.casefold()):
             return clean_name
-        separator = "" if prefix.endswith((" ", "-", "_", "/", "|", "｜", ":", "：")) else " "
-        return f"{prefix}{separator}{clean_name}"
+        separator = "" if suffix.startswith((" ", "-", "_", "/", "|", "｜", ":", "：")) else " "
+        return f"{clean_name}{separator}{suffix}"
 
     def list_teams(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """List all active Slock teams."""
@@ -470,6 +585,9 @@ class SlockHandler(BaseEngineHandler):
             self.reply_text(message_id, f"未找到团队: **{name}**" if name else "当前没有活跃的团队")
             return
 
+        if not self._check_slock_permission(engine, message_id, chat_id):
+            return
+
         target_chat_id = engine.channel.channel_id
         team_name = engine.channel.team_name or engine.channel.name or target_chat_id
         engine.deactivate()
@@ -518,6 +636,10 @@ class SlockHandler(BaseEngineHandler):
         engine = manager.get_activated_engine(chat_id)
         if not engine:
             self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
+            return
+
+        # Permission gate: only admin or channel owner may create roles.
+        if not self._check_slock_permission(engine, message_id, chat_id):
             return
 
         # Parse optional arguments from the name/args string
@@ -840,6 +962,9 @@ class SlockHandler(BaseEngineHandler):
             self.reply_text(message_id, "当前没有活跃的 Slock 团队")
             return
 
+        if not self._check_slock_permission(engine, message_id, chat_id):
+            return
+
         agent = engine.registry.find_by_name(name)
         if not agent:
             self.reply_text(message_id, f"未找到角色: **{name}**")
@@ -953,7 +1078,17 @@ class SlockHandler(BaseEngineHandler):
             self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
             return
 
+        # Rate-limit check for non-admin/non-owner users
+        if not self._check_assign_rate_limit(engine, message_id, chat_id):
+            return
+
         task = engine.add_task(content)
+        if task is None:
+            self.reply_text(
+                message_id,
+                "❌ 任务创建失败（任务队列已满或内部错误），请稍后重试",
+            )
+            return
 
         if role_name:
             agent = engine.registry.find_by_name(role_name)
@@ -971,43 +1106,10 @@ class SlockHandler(BaseEngineHandler):
                 self.reply_text(message_id, f"❌ 任务 claim 失败，{agent.name} 可能正在执行其他任务")
                 return
 
-            # Notify user that execution is starting
-            self.reply_text(
-                message_id,
-                f"⏳ 任务已分配给 {agent.emoji} **{agent.name}**，正在执行...\n"
-                f"• ID: `{task.task_id[:8]}`\n"
-                f"• 内容: {content[:80]}",
+            # Submit async execution — send placeholder, update on completion
+            self._submit_task_execution(
+                engine, task, agent, message_id, chat_id, content, project
             )
-
-            # Execute the task (claim → execute → complete/rollback)
-            import time as _time
-            start_time = _time.time()
-            try:
-                callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
-                result = engine.execute_task(task.task_id, agent.agent_id, callbacks)
-            except Exception as e:
-                logger.error("assign_task execute_task error: %s", repr(e))
-                self.reply_text(
-                    message_id,
-                    f"❌ 任务执行失败: {get_error_detail(e)}\n"
-                    f"• 任务已回退为 TODO，可重新分配",
-                )
-                return
-
-            if result:
-                # Success — send result as card
-                duration = _time.time() - start_time
-                card_data = engine._mouthpiece.format_card(
-                    agent, result, model_info=agent.agent_type, duration_s=duration
-                )
-                card_json = json.dumps(card_data, ensure_ascii=False)
-                self.send_card_to_chat(chat_id, card_json, origin_message_id=message_id)
-            else:
-                self.reply_text(
-                    message_id,
-                    "⚠️ 任务执行完成但无输出\n"
-                    "• 任务已回退为 TODO，可重新分配",
-                )
             return
 
         # No role specified — use skill-based automatic assignment.
@@ -1038,40 +1140,97 @@ class SlockHandler(BaseEngineHandler):
             self.reply_text(message_id, f"❌ 任务 claim 失败，{agent.name} 可能正在执行其他任务")
             return
 
-        self.reply_text(
-            message_id,
-            f"⏳ 任务已自动分配给 {agent.emoji} **{agent.name}**，正在执行...\n"
-            f"• ID: `{task.task_id[:8]}`\n"
-            f"• 内容: {content[:80]}",
+        self._submit_task_execution(
+            engine, task, agent, message_id, chat_id, content, project, auto_routed=True
         )
 
-        import time as _time
-        start_time = _time.time()
-        try:
-            callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
-            result = engine.execute_task(task.task_id, agent.agent_id, callbacks)
-        except Exception as e:
-            logger.error("assign_task auto execute_task error: %s", repr(e))
-            self.reply_text(
-                message_id,
-                f"❌ 任务执行失败: {get_error_detail(e)}\n"
-                f"• 任务已回退为 TODO，可重新分配",
-            )
-            return
+    def _submit_task_execution(
+        self,
+        engine,
+        task,
+        agent,
+        message_id: str,
+        chat_id: str,
+        content: str,
+        project: Optional["ProjectContext"],
+        *,
+        auto_routed: bool = False,
+    ) -> None:
+        """Submit task execution to the engine's thread pool asynchronously.
 
-        if result:
-            duration = _time.time() - start_time
+        Sends a placeholder card immediately, then updates it with the result
+        or error when execution completes.
+        """
+        prefix = "自动分配给" if auto_routed else "已分配给"
+
+        def _execute():
+            callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
+            return engine.execute_task(task.task_id, agent.agent_id, callbacks)
+
+        def _result_card(result: str, duration: float) -> str:
             card_data = engine._mouthpiece.format_card(
                 agent, result, model_info=agent.agent_type, duration_s=duration
             )
-            card_json = json.dumps(card_data, ensure_ascii=False)
-            self.send_card_to_chat(chat_id, card_json, origin_message_id=message_id)
-        else:
-            self.reply_text(
-                message_id,
-                "⚠️ 任务执行完成但无输出\n"
-                "• 任务已回退为 TODO，可重新分配",
-            )
+            return json.dumps(card_data, ensure_ascii=False)
+
+        def _error_card(exc: Exception) -> str:
+            return json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "❌ 任务执行失败"}, "template": "red"},
+                "body": {"elements": [{"tag": "markdown", "content": (
+                    f"Agent: {agent.emoji} {agent.name}\n"
+                    f"任务: {content[:60]}\n"
+                    f"错误: {safe_error_message(exc)}\n\n"
+                    "任务已回退为 TODO，可重新分配"
+                )}]},
+            }, ensure_ascii=False)
+
+        def _empty_card() -> str:
+            return json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "⚠️ 任务完成无输出"}, "template": "orange"},
+                "body": {"elements": [{"tag": "markdown", "content": (
+                    f"Agent: {agent.emoji} {agent.name}\n"
+                    f"任务: {content[:60]}\n\n"
+                    "任务已回退为 TODO，可重新分配"
+                )}]},
+            }, ensure_ascii=False)
+
+        def _busy_card() -> str:
+            return json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "⚠️ 团队繁忙"}, "template": "orange"},
+                "body": {"elements": [{"tag": "markdown", "content": "当前所有 Agent 均在忙碌中，请稍后重试。"}]},
+            }, ensure_ascii=False)
+
+        placeholder_card = json.dumps({
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": f"⏳ 任务{prefix} {agent.emoji} {agent.name}"},
+                "template": "indigo",
+            },
+            "body": {"elements": [{"tag": "markdown", "content": (
+                f"**任务**: {content[:80]}\n"
+                f"**ID**: `{task.task_id[:8]}`\n\n"
+                "Agent 正在执行中..."
+            )}]},
+        }, ensure_ascii=False)
+
+        self._execute_async(
+            engine=engine,
+            execute_fn=_execute,
+            placeholder_card_json=placeholder_card,
+            result_card_fn=_result_card,
+            error_card_fn=_error_card,
+            empty_card_fn=_empty_card,
+            busy_card_fn=_busy_card,
+            message_id=message_id,
+            chat_id=chat_id,
+        )
 
     def show_task_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Show task board with status summary."""
@@ -1100,6 +1259,8 @@ class SlockHandler(BaseEngineHandler):
         # Deactivate the engine if it exists
         engine = manager.get_activated_engine(chat_id)
         if engine:
+            if not self._check_slock_permission(engine, message_id, chat_id):
+                return
             engine.deactivate()
 
         # Unregister managed chat so dispatcher stops routing to this engine
@@ -1110,6 +1271,33 @@ class SlockHandler(BaseEngineHandler):
             "stop", chat_id, message_id, project,
         )
 
+    def _stop_single_agent(self, message_id: str, chat_id: str, value: dict):
+        """Stop a single agent by agent_id from card action value.
+
+        Falls back to full engine stop if agent_id is not provided (backwards compat).
+        """
+        agent_id = value.get("agent_id", "")
+
+        if not agent_id:
+            # Fallback: no agent_id means legacy card — stop the whole engine
+            self.stop_slock_engine(message_id, chat_id)
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式。")
+            return
+
+        if not self._check_slock_permission(engine, message_id, chat_id):
+            return
+
+        stopped = engine.stop_agent(agent_id)
+        if stopped:
+            self.send_text_to_chat(chat_id, "⏹ Agent 已停止，状态已重置为 IDLE。")
+        else:
+            self.send_text_to_chat(chat_id, "⚠️ 未找到该 Agent 或其已处于空闲状态。")
+
     # ------------------------------------------------------------------
     # Card action handler
     # ------------------------------------------------------------------
@@ -1119,14 +1307,223 @@ class SlockHandler(BaseEngineHandler):
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
+            self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式，无法刷新状态。")
             return
         team_name = engine.channel.team_name if engine.channel else ""
         status_card = engine.get_status_card(team_name=team_name)
         card_content = json.dumps(status_card, ensure_ascii=False)
         self.update_card(message_id, card_content)
 
+    def _check_slock_permission(self, engine, message_id: str, chat_id: str) -> bool:
+        """Check if current operator is admin or channel owner. Returns True if authorized."""
+        from ...config import get_settings
+        from ...thread.manager import get_current_sender_id
+
+        operator_id = get_current_sender_id() or ""
+        settings = get_settings()
+        admin_ids = settings.admin_user_ids if hasattr(settings, "admin_user_ids") else frozenset()
+        channel_owner_id = ""
+        if engine.channel:
+            channel_owner_id = getattr(engine.channel, "owner_id", "") or ""
+
+        is_authorized = (
+            (operator_id and operator_id in admin_ids)
+            or (operator_id and channel_owner_id and operator_id == channel_owner_id)
+        )
+        if not is_authorized:
+            perm_msg = "⚠️ 权限不足，仅管理员或团队创建者可执行此操作。"
+            if not self.reply_text(message_id, perm_msg):
+                self.send_text_to_chat(chat_id, perm_msg)
+            return False
+        return True
+
+    def _check_assign_rate_limit(self, engine, message_id: str, chat_id: str) -> bool:
+        """Check rate-limit for task assignment. Admin/owner bypass. Returns True if allowed."""
+        import time as _time
+
+        from ...config import get_settings
+        from ...thread.manager import get_current_sender_id
+
+        operator_id = get_current_sender_id() or ""
+        settings = get_settings()
+        admin_ids = settings.admin_user_ids if hasattr(settings, "admin_user_ids") else frozenset()
+        channel_owner_id = ""
+        if engine.channel:
+            channel_owner_id = getattr(engine.channel, "owner_id", "") or ""
+
+        # Admin and owner bypass rate-limit
+        is_privileged = (
+            (operator_id and operator_id in admin_ids)
+            or (operator_id and channel_owner_id and operator_id == channel_owner_id)
+        )
+        if is_privileged:
+            return True
+
+        # Rate-limit for regular users: sliding window of 60s
+        rate_limit = settings.slock_assign_rate_limit
+        tracker_key = f"{chat_id}:{operator_id}"
+        now = _time.time()
+        window = 60.0
+
+        timestamps = self._rate_limit_tracker.get(tracker_key, [])
+        # Prune expired entries
+        timestamps = [t for t in timestamps if now - t < window]
+
+        if len(timestamps) >= rate_limit:
+            self.reply_text(
+                message_id,
+                f"⚠️ 任务提交频率超限（每分钟最多 {rate_limit} 次），请稍后重试。",
+            )
+            self._rate_limit_tracker[tracker_key] = timestamps
+            return False
+
+        timestamps.append(now)
+        self._rate_limit_tracker[tracker_key] = timestamps
+        return True
+
+    def _check_queue_wait_timeout(self, future, start_time: float, card_message_id: str, chat_id: str) -> bool:
+        """Check if task waited too long in queue. Returns True if timed out (caller should abort).
+
+        If future is None (e.g. synchronous executor in tests where the work runs
+        before submit() returns), skip timeout detection entirely — the task is
+        already executing, so queue-wait is irrelevant.
+        """
+        import json as _json
+        import time
+
+        from ...config import get_settings as _get_settings
+
+        if future is None:
+            return False
+
+        _settings = _get_settings()
+        _enqueue_time = getattr(future, "enqueue_time", None)
+        if _enqueue_time is None:
+            _enqueue_time = start_time
+        enqueue_elapsed = time.time() - _enqueue_time
+        if enqueue_elapsed > _settings.slock_queue_wait_timeout:
+            logger.warning(
+                "Slock queue wait timeout (%.1fs > %ds) for chat %s",
+                enqueue_elapsed, _settings.slock_queue_wait_timeout, chat_id,
+            )
+            timeout_card = _json.dumps({
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "⏱️ 排队超时"}, "template": "orange"},
+                "body": {"elements": [{"tag": "markdown", "content": "消息在队列中等待过久，已自动取消。请稍后重试。"}]},
+            }, ensure_ascii=False)
+            if card_message_id:
+                self.update_card(card_message_id, timeout_card)
+            return True
+        return False
+
+    def _resolve_escalation(self, message_id: str, chat_id: str, value: dict):
+        """Handle admin clicking Retry/Skip/Abort on an escalation card.
+
+        Enhanced flow:
+        (a) Get operator via thread-local
+        (b) Permission check via _check_slock_permission
+        (c) Resolution whitelist validation
+        (d) Resolve via engine
+        (e) Update card to resolved state
+        (f) Fallback to text if card update fails
+        (g) Handle duplicate clicks gracefully
+        """
+        from ...slock_engine.card_templates import build_resolved_escalation_card
+        from ...thread.manager import get_current_sender_id
+
+        escalation_id = value.get("escalation_id", "")
+        resolution = value.get("resolution", "")
+
+        if not escalation_id or not resolution:
+            logger.warning("Escalation resolve missing params: escalation_id=%s resolution=%s", escalation_id, resolution)
+            self.send_text_to_chat(chat_id, "⚠️ 升级请求处理参数缺失，请重试或联系管理员。")
+            return
+
+        # (a) Get operator identity
+        operator_id = get_current_sender_id() or ""
+        operator_display = resolve_display_name(operator_id) if operator_id else ""
+
+        # (b) Permission check — admin or team owner (unified)
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            logger.warning("No active engine for escalation resolve in chat %s", chat_id)
+            self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式，无法处理升级请求。")
+            return
+
+        if not self._check_slock_permission(engine, message_id, chat_id):
+            return
+
+        # (c) Resolution whitelist validation
+        escalation = engine.get_escalation(escalation_id)
+        if not escalation:
+            self.send_text_to_chat(chat_id, f"⚠️ Escalation `{escalation_id}` 不存在。")
+            return
+
+        # Handle duplicate clicks — already resolved
+        if escalation.resolved:
+            self.send_text_to_chat(chat_id, f"ℹ️ 此升级请求已处理（{escalation.resolution}），无需重复操作。")
+            return
+
+        allowed_options = escalation.options or ["重试", "跳过", "中止"]
+        resolution_stripped = resolution.strip()
+        if resolution_stripped not in allowed_options:
+            logger.warning(
+                "Escalation resolve invalid resolution: '%s' not in %s",
+                resolution, allowed_options,
+            )
+            self.send_text_to_chat(
+                chat_id,
+                f"⚠️ 无效的解决选项 `{resolution}`，允许的选项: {', '.join(allowed_options)}",
+            )
+            return
+
+        # (d) Execute resolve
+        resolved = engine.resolve_escalation(escalation_id, resolution_stripped)
+        if not resolved:
+            # Race condition: resolved between our check and this call
+            self.send_text_to_chat(chat_id, "ℹ️ 此升级请求已处理，无需重复操作。")
+            return
+
+        # (e) Build resolved card and update in-place
+        resolved_card = build_resolved_escalation_card(
+            escalation,
+            resolved_by=operator_display or operator_id,
+            resolution=resolution_stripped,
+            resolved_at=resolved.resolved_at,
+            channel_id=chat_id,
+        )
+        card_json = json.dumps(resolved_card, ensure_ascii=False)
+        card_updated = self.update_card(message_id, card_json)
+
+        # (f) Fallback to text confirmation if card update fails
+        if not card_updated:
+            logger.error(
+                "Failed to update escalation card: message_id=%s chat_id=%s",
+                message_id, chat_id,
+            )
+            confirm_text = (
+                f"✅ Escalation resolved: **{resolved.agent_name}** — {resolution_stripped}\n"
+                f"Reason: {resolved.reason}"
+            )
+            self.send_text_to_chat(chat_id, confirm_text)
+
+        # (g) Trigger agent recovery based on resolution
+        engine.resume_after_escalation(resolved)
+
     def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
         """Handle slock_* card actions."""
+        # Escalation resolve needs extra params from value — handle before standard dispatch
+        if action_type == "slock_escalation_resolve":
+            self._resolve_escalation(open_message_id, open_chat_id, value)
+            return
+
+        # Per-agent stop needs agent_id from value — handle before standard dispatch
+        if action_type == "slock_stop_agent":
+            self._stop_single_agent(open_message_id, open_chat_id, value)
+            return
+
         project_id = value.get("project_id", "")
         target_project = (
             self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
