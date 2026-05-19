@@ -86,3 +86,4 @@ slock/
 .worktrees/
 
 .superpowers/
+result.json

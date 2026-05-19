@@ -215,12 +215,20 @@ class TestBuildStatusPanelCard:
             assert right_md["text_align"] == "right"
 
 
+_TASK_BOARD_BG_COLORS = {"grey", "blue", "yellow", "green"}
+
+
 def _task_board_column_sets(card: dict) -> list[dict]:
-    """Extract column_set elements from task board card body."""
+    """Extract task-status column_set elements from task board card body.
+
+    Uses positive matching on known task-status background colors to avoid
+    accidentally filtering out button column_sets that lack background_style.
+    """
     return [
         element
         for element in card["body"]["elements"]
         if element.get("tag") == "column_set"
+        and element.get("background_style") in _TASK_BOARD_BG_COLORS
     ]
 
 
@@ -322,6 +330,42 @@ class TestBuildTaskBoardCard:
         right_col = in_progress_cs["columns"][1]
         right_md = right_col["elements"][0]["content"]
         assert "Implement auth flow" in right_md
+
+    def test_done_task_aborted_marker(self):
+        """DONE task with resolved_reason shows ⚠️ and strikethrough."""
+        task = SlockTask(
+            task_id="t1", content="Deploy service", status=TaskStatus.DONE,
+            resolved_reason="超时中止",
+        )
+        card = build_task_board_card([task], [])
+        column_sets = _task_board_column_sets(card)
+        # DONE is the last status (index 3)
+        done_cs = column_sets[3]
+        right_md = done_cs["columns"][1]["elements"][0]["content"]
+        assert "⚠️" in right_md
+        assert "~~Deploy service~~" in right_md
+
+    def test_done_task_normal_marker(self):
+        """DONE task without resolved_reason shows plain content (no ⚠️, no strikethrough)."""
+        task = SlockTask(
+            task_id="t1", content="Write tests", status=TaskStatus.DONE,
+        )
+        card = build_task_board_card([task], [])
+        column_sets = _task_board_column_sets(card)
+        done_cs = column_sets[3]
+        right_md = done_cs["columns"][1]["elements"][0]["content"]
+        assert "⚠️" not in right_md
+        assert "~~" not in right_md
+        assert "Write tests" in right_md
+
+    def test_refresh_button_chat_id(self):
+        """Refresh button callback value contains chat_id field."""
+        task = SlockTask(task_id="t1", content="X", status=TaskStatus.TODO)
+        card = build_task_board_card([task], [], channel_id="chat_abc123")
+        buttons = _collect_buttons(card)
+        refresh_btns = [b for b in buttons if b.get("value", {}).get("action") == "slock_refresh_task_board"]
+        assert len(refresh_btns) == 1
+        assert refresh_btns[0]["value"]["chat_id"] == "chat_abc123"
 
 
 class TestBuildAgentMessageCardJsonStructure:

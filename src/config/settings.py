@@ -542,6 +542,7 @@ class Settings(BaseSettings):
     slock_observer_flush_timeout: int = Field(default=30, ge=5, description="ObserverLearningQueue flush 操作超时（秒）")
     slock_observer_max_queue_size: int = Field(default=10000, ge=100, description="ObserverLearningQueue 最大队列深度，超出时丢弃最旧记录")
     slock_assign_rate_limit: int = Field(default=5, ge=1, description="非管理员每分钟最大任务提交数（rate-limit）")
+    slock_escalation_timeout: int = Field(default=1800, ge=60, description="Slock 升级请求自动中止超时（秒），默认 30 分钟")
 
     @field_validator("slock_team_name_suffix", mode="before")
     @classmethod

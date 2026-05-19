@@ -61,6 +61,7 @@ class EscalationRequest:
     resolution: str = ""  # Admin's resolution choice
     created_at: float = field(default_factory=time.time)
     resolved_at: Optional[float] = None
+    card_message_id: Optional[str] = None  # Feishu message_id of the escalation card (for update)
 
     def __post_init__(self) -> None:
         # Freeze options to tuple for thread-safety — prevents mutation after creation.
@@ -81,6 +82,7 @@ class EscalationRequest:
             "resolution": self.resolution,
             "created_at": self.created_at,
             "resolved_at": self.resolved_at,
+            "card_message_id": self.card_message_id,
         }
 
     @classmethod
@@ -98,6 +100,7 @@ class EscalationRequest:
             resolution=data.get("resolution", ""),
             created_at=data.get("created_at", time.time()),
             resolved_at=data.get("resolved_at"),
+            card_message_id=data.get("card_message_id"),
         )
 
 
@@ -187,6 +190,7 @@ class SlockTask:
     claimed_at: Optional[float] = None
     created_in: str = ""  # channel_id
     created_at: float = field(default_factory=time.time)
+    resolved_reason: Optional[str] = None  # Non-None for abnormal completion (e.g. "超时中止")
 
     def to_dict(self) -> dict:
         return {
@@ -197,6 +201,7 @@ class SlockTask:
             "claimed_at": self.claimed_at,
             "created_in": self.created_in,
             "created_at": self.created_at,
+            "resolved_reason": self.resolved_reason,
         }
 
     @classmethod
@@ -209,6 +214,7 @@ class SlockTask:
             claimed_at=data.get("claimed_at"),
             created_in=data.get("created_in", ""),
             created_at=data.get("created_at", time.time()),
+            resolved_reason=data.get("resolved_reason"),
         )
 
 

@@ -199,23 +199,25 @@ class RoleReviewWorker:
             is_timeout = classify_timeout(exc)
             logger.warning("[RoleReviewWorker:%s] failed: %s", self.role.role_id, err)
             error_str = f"timeout_degraded:{err}" if is_timeout else err
+            blocking = not is_timeout
+            summary = "审查超时（已降级）" if is_timeout else f"审查异常：{err}"
             return RoleReviewOutcome(
                 role_id=self.role.role_id,
                 role_display_name=self.role.display_name,
                 role_category=self.role.category,
-                passed=True,
-                summary="审查异常 (infra, non-blocking)",
+                passed=False,
+                summary=summary,
                 suggestions=[
                     RoleSuggestion(
-                        severity="observation",
+                        severity="major" if is_timeout else "observation",
                         confidence="low",
                         evidence=f"role failed after {int((time.monotonic() - t0) * 1000)}ms",
                         recommendation=f"{self.role.display_name} 审查异常：{err}",
-                        blocking=False,
+                        blocking=blocking,
                     )
                 ],
-                error=err,
-                blocking=False,
+                error=error_str,
+                blocking=blocking,
                 base_perspective_value=self.role.base_perspective.value if self.role.base_perspective else "",
             )
 

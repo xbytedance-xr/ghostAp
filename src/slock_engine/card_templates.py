@@ -10,6 +10,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from src.card.shared import apply_compact_style, build_responsive_layout
+from src.utils.redact import redact_sensitive
 
 from .models import AgentIdentity, AgentStatus, EscalationLevel, EscalationRequest, SlockTask, TaskStatus, ABORT_OPTIONS
 
@@ -123,7 +124,9 @@ def build_welcome_card(*, team_name: str) -> dict:
         f"🎭 **Slock 协作团队「{team_name}」已就绪**\n\n"
         "📌 **快速开始**:\n"
         "• `/new-role <名称>` — 创建虚拟 Agent\n"
+        "• `/role list` — 查看所有角色\n"
         "• `/task assign <任务> <角色>` — 分配任务\n"
+        "• `/task status` — 查看任务看板\n"
         "• `/slock status` — 查看团队状态\n"
         "• `/slock help` — 查看所有命令"
     )
@@ -276,6 +279,7 @@ def build_task_board_card(
     tasks: list[SlockTask],
     agents: list[AgentIdentity],
     team_name: str = "",
+    channel_id: str = "",
 ) -> dict:
     """Build a Kanban-style task board card using column_set with colored backgrounds.
 
@@ -309,7 +313,11 @@ def build_task_board_card(
                 if task.claimed_by and task.claimed_by in agent_map:
                     a = agent_map[task.claimed_by]
                     assignee = f" → {a.emoji}{a.name}"
-                task_lines.append(f"• {task.content[:60]}{assignee}")
+                # Differentiate aborted tasks from normal completion
+                if status == TaskStatus.DONE and task.resolved_reason:
+                    task_lines.append(f"• ⚠️ ~~{task.content[:60]}~~{assignee}")
+                else:
+                    task_lines.append(f"• {task.content[:60]}{assignee}")
             task_content = "\n".join(task_lines)
         else:
             task_content = "*暂无*"
@@ -340,6 +348,21 @@ def build_task_board_card(
             ],
         }
         elements.append(column_set)
+
+    # Refresh button
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "🔄 刷新",
+                    "slock_refresh_task_board",
+                    channel_id=channel_id,
+                    button_type="primary_text",
+                    extra_value={"chat_id": channel_id},
+                ),
+            ]
+        )
+    )
 
     header: dict = {
         "title": {"tag": "plain_text", "content": header_title},
@@ -442,6 +465,7 @@ def build_escalation_card(
     escalation: EscalationRequest,
     *,
     channel_id: str = "",
+    timeout_minutes: Optional[int] = None,
 ) -> dict:
     """Build an escalation card requesting admin intervention.
 
@@ -464,19 +488,20 @@ def build_escalation_card(
 
     elements: list[dict] = []
 
-    # Severity and reason
+    # Severity and reason (redact sensitive info before rendering)
+    safe_reason = redact_sensitive(escalation.reason)
     elements.append({
         "tag": "markdown",
         "content": (
             f"**级别:** {escalation.level.value.upper()}\n"
             f"**代理:** {escalation.agent_name} (`{escalation.agent_id}`)\n"
-            f"**原因:** {escalation.reason}"
+            f"**原因:** {safe_reason}"
         ),
     })
 
-    # Context details (truncated)
+    # Context details (truncated + redacted)
     if escalation.context:
-        context_display = escalation.context[:500]
+        context_display = redact_sensitive(escalation.context[:500])
         if len(escalation.context) > 500:
             context_display += "\n..."
         elements.append({"tag": "hr"})
@@ -490,6 +515,15 @@ def build_escalation_card(
         elements.append({
             "tag": "markdown",
             "content": f"**任务:** `{escalation.task_id}`",
+        })
+
+    # Timeout hint
+    if timeout_minutes is not None:
+        elements.append({
+            "tag": "note",
+            "elements": [
+                {"tag": "plain_text", "content": f"⏰ 此升级将在 {timeout_minutes} 分钟后自动中止"}
+            ],
         })
 
     elements.append({"tag": "hr"})

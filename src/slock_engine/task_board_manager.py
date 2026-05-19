@@ -179,13 +179,20 @@ class TaskBoardManager:
             snapshot = list(self._tasks)
         self._flush_if_dirty(snapshot)
 
-    def force_complete_task(self, task_id: str) -> None:
-        """Force-mark a task as DONE regardless of claimer."""
+    def force_complete_task(self, task_id: str, *, reason: Optional[str] = None) -> None:
+        """Force-mark a task as DONE regardless of claimer.
+
+        Args:
+            task_id: The task to force-complete.
+            reason: Optional reason for abnormal completion (e.g. "超时中止").
+                    Written to task.resolved_reason for differentiated display.
+        """
         snapshot: list[SlockTask] = []
         with self._lock:
             for task in self._tasks:
                 if task.task_id == task_id:
                     task.status = TaskStatus.DONE
+                    task.resolved_reason = reason
                     if task.claimed_by:
                         self._router.task_claim.release(task_id, task.claimed_by)
                     self._dirty_setter(True)

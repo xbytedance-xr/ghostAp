@@ -19,6 +19,7 @@ from ...slock_engine.slash_commands import (
     parse_slock_command,
 )
 from ...utils.errors import get_error_detail, safe_error_message
+from ...utils.redact import redact_sensitive
 from ..emoji import EmojiReaction
 from ..user_cache import resolve_display_name
 from .base import CardActionContext
@@ -72,10 +73,30 @@ class SlockHandler(BaseEngineHandler):
         def on_error(err_msg):
             logger.error("Slock engine error in chat %s: %s", chat_id, err_msg)
 
+        def on_escalation(esc):
+            """Send escalation card to chat and write back message_id."""
+            manager = self._get_engine_manager()
+            engine = manager.get_active_engine(chat_id)
+            if not engine:
+                logger.warning("on_escalation: engine not found for chat %s", chat_id)
+                return
+            card = engine.get_escalation_card(esc)
+            if not card:
+                logger.warning("on_escalation: failed to build card for esc %s", esc.escalation_id)
+                return
+            import json as _json
+            card_json = _json.dumps(card) if isinstance(card, dict) else card
+            sent_msg_id = self.send_card_to_chat(chat_id, card_json)
+            if sent_msg_id:
+                esc.card_message_id = sent_msg_id
+            else:
+                logger.warning("on_escalation: send_card_to_chat returned None for esc %s", esc.escalation_id)
+
         return SlockEngineCallbacks(
             on_agent_wake=on_agent_wake,
             on_agent_running=on_agent_running,
             on_agent_done=on_agent_done,
+            on_escalation=on_escalation,
             on_error=on_error,
         )
 
@@ -344,28 +365,31 @@ class SlockHandler(BaseEngineHandler):
         engine.activate_channel(channel)
         manager.register_managed_chat(chat_id)
 
+        # Wire UI callbacks for escalation timeout notifications
+        engine.set_escalation_ui_callbacks(
+            update_card_fn=self.update_card,
+            send_text_fn=self.send_text_to_chat,
+        )
+
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
-        content = (
-            "🎭 **Slock 协作模式已激活**\n\n"
-            f"**团队**: {channel.team_name}\n"
-            f"**频道**: {channel.name}\n\n"
-            "📌 **快速开始**:\n"
-            "• `/new-role <名称>` — 创建虚拟 Agent\n"
-            "• `/task assign <任务> <角色>` — 分配任务\n"
-            "• `/slock status` — 查看团队状态\n"
-            "• `/slock help` — 查看所有命令"
-        )
+        # Use unified welcome card with team/channel info prepended
+        from ...slock_engine.card_templates import build_welcome_card
 
-        _msg_type, card_content = CardBuilder.build_info_card(
-            project=project,
-            title="🎭 Slock 协作团队",
-            content=content,
-            engine_name=engine_name,
-            show_buttons=False,
-        )
+        welcome_card = build_welcome_card(team_name=channel.team_name)
+        # Prepend team/channel metadata to the welcome card body
+        team_info_element = {
+            "tag": "markdown",
+            "content": (
+                f"**团队**: {channel.team_name}\n"
+                f"**频道**: {channel.name}"
+            ),
+        }
+        welcome_card["body"]["elements"].insert(0, team_info_element)
+        welcome_card["header"]["title"]["content"] = "🎭 Slock 协作模式已激活"
+
         session = self.create_static_card_session(chat_id, reply_to=message_id)
-        session.send(json.loads(card_content))
+        session.send(welcome_card)
         session.close()
 
     # ------------------------------------------------------------------
@@ -492,6 +516,12 @@ class SlockHandler(BaseEngineHandler):
                 owner_id=sender_open_id,
             )
             engine.activate_channel(channel)
+
+            # Wire UI callbacks for escalation timeout notifications
+            engine.set_escalation_ui_callbacks(
+                update_card_fn=self.update_card,
+                send_text_fn=self.send_text_to_chat,
+            )
 
             # Step 5: Register managed chat for event routing
             manager.register_managed_chat(new_chat_id)
@@ -1245,7 +1275,7 @@ class SlockHandler(BaseEngineHandler):
         channel_id = engine.channel.channel_id if engine.channel else chat_id
         agents = engine.registry.list_agents(channel_id=channel_id)
         team_name = engine.channel.team_name if engine.channel else ""
-        card = build_task_board_card(engine.tasks, agents, team_name=team_name)
+        card = build_task_board_card(engine.tasks, agents, team_name=team_name, channel_id=channel_id)
         self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
 
     # ------------------------------------------------------------------
@@ -1313,6 +1343,21 @@ class SlockHandler(BaseEngineHandler):
         status_card = engine.get_status_card(team_name=team_name)
         card_content = json.dumps(status_card, ensure_ascii=False)
         self.update_card(message_id, card_content)
+
+    def _refresh_task_board_card(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Rebuild and update the task board card in-place."""
+        from ...slock_engine.card_templates import build_task_board_card
+
+        manager = self._get_engine_manager()
+        engine = manager.get_active_engine(chat_id)
+        if not engine:
+            self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式，无法刷新任务看板。")
+            return
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agents = engine.registry.list_agents(channel_id=channel_id)
+        team_name = engine.channel.team_name if engine.channel else ""
+        card = build_task_board_card(engine.tasks, agents, team_name=team_name, channel_id=channel_id)
+        self.update_card(message_id, json.dumps(card, ensure_ascii=False))
 
     def _check_slock_permission(self, engine, message_id: str, chat_id: str) -> bool:
         """Check if current operator is admin or channel owner. Returns True if authorized."""
@@ -1505,7 +1550,7 @@ class SlockHandler(BaseEngineHandler):
             )
             confirm_text = (
                 f"✅ Escalation resolved: **{resolved.agent_name}** — {resolution_stripped}\n"
-                f"Reason: {resolved.reason}"
+                f"Reason: {redact_sensitive(resolved.reason)}"
             )
             self.send_text_to_chat(chat_id, confirm_text)
 
@@ -1532,6 +1577,7 @@ class SlockHandler(BaseEngineHandler):
         slock_actions = {
             "slock_stop": self.stop_slock_engine,
             "slock_refresh_status": self._refresh_status_card,
+            "slock_refresh_task_board": self._refresh_task_board_card,
         }
 
         self._dispatch_standard_card_action(CardActionContext(

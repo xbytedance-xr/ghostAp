@@ -50,6 +50,7 @@ class SlockEngineCallbacks:
     on_agent_error: Optional[Callable[[AgentIdentity, str], None]] = None
     on_task_claimed: Optional[Callable[[SlockTask, AgentIdentity], None]] = None
     on_message_routed: Optional[Callable[[str, AgentIdentity], None]] = None
+    on_escalation: Optional[Callable[[EscalationRequest], None]] = None
     on_error: Optional[Callable[[str], None]] = None
 
 
@@ -255,6 +256,7 @@ class SlockEngine(BaseEngine):
             rollback_task_fn=self._task_mgr._rollback_task,
             force_complete_task_fn=self._task_mgr.force_complete_task,
             get_executor_fn=self._get_executor,
+            escalation_timeout_s=get_settings().slock_escalation_timeout,
         )
 
     @property
@@ -772,6 +774,14 @@ class SlockEngine(BaseEngine):
         """Build the interactive card for an escalation request."""
         return self._escalation_mgr.get_escalation_card(escalation)
 
+    def set_escalation_ui_callbacks(
+        self,
+        update_card_fn: Callable[[str, str], bool],
+        send_text_fn: Callable[[str, str], None],
+    ) -> None:
+        """Wire UI callbacks for escalation timeout auto-abort notifications."""
+        self._escalation_mgr.set_ui_callbacks(update_card_fn, send_text_fn)
+
     def resume_after_escalation(
         self,
         escalation: EscalationRequest,
@@ -959,6 +969,9 @@ class SlockEngine(BaseEngine):
         # Flush and stop observer learning queue
         self._observer_queue.shutdown()
 
+        # Cancel escalation timeout timers
+        self._escalation_mgr.shutdown_timers()
+
         # Shutdown thread pool executor
         if self._executor is not None:
             self._executor.shutdown(wait=False)
@@ -1004,6 +1017,9 @@ class SlockEngine(BaseEngine):
                 agent_session.cancel()
             except Exception:
                 pass
+
+        # Cancel escalation timeout timers
+        self._escalation_mgr.shutdown_timers()
 
         # Flush and stop observer learning queue
         self._observer_queue.shutdown()
