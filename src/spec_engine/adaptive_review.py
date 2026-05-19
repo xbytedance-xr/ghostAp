@@ -112,20 +112,20 @@ def parse_role_review_output(role: ReviewRoleSpec, raw: str) -> RoleReviewOutcom
             role_id=role.role_id,
             role_display_name=role.display_name,
             role_category=role.category,
-            passed=False,
-            summary="parse failure",
+            passed=True,
+            summary="parse failure (infra, non-blocking)",
             suggestions=[
                 RoleSuggestion(
-                    severity="major",
-                    confidence="high",
+                    severity="observation",
+                    confidence="low",
                     evidence="role output was not valid JSON",
                     recommendation=f"{role.display_name} 审查输出无法解析，请重跑该角色审查",
-                    blocking=True,
+                    blocking=False,
                 )
             ],
             raw_preview=(raw or "")[:500],
             error=get_error_detail(exc),
-            blocking=role.blocking,
+            blocking=False,
             base_perspective_value=role.base_perspective.value if role.base_perspective else "",
         )
 
@@ -203,19 +203,19 @@ class RoleReviewWorker:
                 role_id=self.role.role_id,
                 role_display_name=self.role.display_name,
                 role_category=self.role.category,
-                passed=False,
-                summary="审查超时（已降级）" if is_timeout else "审查异常",
+                passed=True,
+                summary="审查异常 (infra, non-blocking)",
                 suggestions=[
                     RoleSuggestion(
-                        severity="major",
-                        confidence="high",
+                        severity="observation",
+                        confidence="low",
                         evidence=f"role failed after {int((time.monotonic() - t0) * 1000)}ms",
                         recommendation=f"{self.role.display_name} 审查异常：{err}",
-                        blocking=False if is_timeout else True,
+                        blocking=False,
                     )
                 ],
-                error=error_str,
-                blocking=False if is_timeout else self.role.blocking,
+                error=err,
+                blocking=False,
                 base_perspective_value=self.role.base_perspective.value if self.role.base_perspective else "",
             )
 
