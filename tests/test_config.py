@@ -208,8 +208,8 @@ class TestNewConfigDefaults:
         assert s.spec_review_max_parallel == 3
 
     def test_spec_max_cycles_default(self):
-        s = Settings()
-        assert s.spec_max_cycles == 2000
+        s = Settings(_env_file=None)
+        assert s.spec_max_cycles == 1000
 
     def test_slock_team_name_suffix_default_marks_slock_groups(self, monkeypatch):
         monkeypatch.delenv("SLOCK_TEAM_NAME_SUFFIX", raising=False)

@@ -153,7 +153,7 @@ class TestSyncTTADKCLISession:
         assert sess._tool_name == "unknown"
 
     def test_start_raises_when_no_executable(self):
-        with patch("shutil.which", return_value=None):
+        with patch("src.agent_session.ttadk_cli.resolve_ttadk_executable", return_value=""):
             sess = SyncTTADKCLISession(agent_type="ttadk_coco", cwd="/tmp")
             with pytest.raises(RuntimeError, match="未找到 ttadk"):
                 sess.start()

@@ -6,7 +6,6 @@ import json as _json
 import logging
 import re as _re
 import shlex as _shlex
-import shutil
 import subprocess
 import threading
 import time
@@ -14,7 +13,7 @@ import uuid
 from typing import Callable, Optional
 
 from ..acp.models import ACPEvent, ACPEventType, PromptResult
-from ..ttadk.env_sandbox import build_ttadk_subprocess_env
+from ..ttadk.env_sandbox import build_ttadk_subprocess_env, resolve_ttadk_executable
 from ..utils.errors import get_error_detail
 from ..utils.retry import RetryPolicy, prompt_with_retry
 
@@ -48,7 +47,7 @@ class SyncTTADKCLISession:
         return f"tool={self._tool_name} model={self._model_name or '(auto)'} backend=cli cwd={self._cwd}"
 
     def start(self, startup_timeout: float = 60) -> str:
-        if not shutil.which("ttadk"):
+        if not resolve_ttadk_executable():
             raise RuntimeError("未找到 ttadk 可执行文件")
         if not self.session_id:
             self.session_id = str(uuid.uuid4())

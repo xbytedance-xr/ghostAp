@@ -31,6 +31,51 @@ _AUTH_PRESERVE_DIRS: tuple[str, ...] = (
 ) if sys.platform == "darwin" else ()
 
 
+def _ttadk_candidate_bin_dirs() -> list[str]:
+    """Return common user-level TTADK install locations missing from GUI app PATH."""
+    home = os.path.expanduser("~")
+    return [
+        os.path.join(home, ".npm-global", "bin"),
+        os.path.join(home, ".local", "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ]
+
+
+def resolve_ttadk_executable(*, path: str | None = None) -> str:
+    """Resolve ttadk from PATH plus common npm-global locations."""
+    try:
+        found = shutil.which("ttadk", path=path)
+        if found:
+            return found
+    except Exception:
+        logger.debug("resolve_ttadk_executable: shutil.which failed", exc_info=True)
+
+    for directory in _ttadk_candidate_bin_dirs():
+        candidate = os.path.join(directory, "ttadk")
+        try:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        except Exception:
+            logger.debug("resolve_ttadk_executable: candidate check failed", exc_info=True)
+    return ""
+
+
+def ensure_ttadk_path(env: dict[str, str]) -> dict[str, str]:
+    """Prepend the resolved ttadk directory to PATH when GUI shells omit it."""
+    try:
+        resolved = resolve_ttadk_executable(path=env.get("PATH"))
+        if not resolved:
+            return env
+        bin_dir = os.path.dirname(resolved)
+        path_parts = [part for part in (env.get("PATH") or "").split(os.pathsep) if part]
+        if bin_dir and bin_dir not in path_parts:
+            env["PATH"] = os.pathsep.join([bin_dir, *path_parts])
+    except Exception:
+        logger.debug("ensure_ttadk_path: failed", exc_info=True)
+    return env
+
+
 def _symlink_auth_dirs(real_home: str, sandbox_root: Path) -> None:
     for rel in _AUTH_PRESERVE_DIRS:
         src = Path(real_home) / rel
@@ -103,6 +148,7 @@ def build_ttadk_subprocess_env(
         env = dict(base_env) if isinstance(base_env, dict) else os.environ.copy()
     except Exception:
         env = {}
+    ensure_ttadk_path(env)
 
     # Always drop nested-session guard to keep behavior consistent across ttadk paths.
     try:
