@@ -6,7 +6,7 @@ and status panel card reflects correct state text.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -113,7 +113,7 @@ class TestStateFlowFullCycle:
 
     def test_callbacks_fire_at_each_stage(self, tmp_engine):
         """SlockEngineCallbacks fire at correct stages."""
-        agent = _register_agent(tmp_engine)
+        _register_agent(tmp_engine)
         callback_log: list[str] = []
 
         callbacks = SlockEngineCallbacks(
@@ -139,7 +139,7 @@ class TestStatusPanelReflectsState:
 
     def test_status_panel_shows_idle_after_execution(self, tmp_engine):
         """After execution, status panel shows IDLE (空闲)."""
-        agent = _register_agent(tmp_engine)
+        _register_agent(tmp_engine)
 
         with patch.object(tmp_engine, "_run_acp_session", return_value="done"):
             tmp_engine.execute("Do task")

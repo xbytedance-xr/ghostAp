@@ -6,18 +6,16 @@ messages are sent to users. The Agent operates fully autonomously.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.slock_engine.engine import SlockEngine, SlockEngineCallbacks
 from src.slock_engine.models import (
     AgentIdentity,
-    AgentStatus,
     SlockChannel,
 )
 from src.slock_engine.mouthpiece import Mouthpiece
-
 
 # Patterns that should NEVER appear in agent output messages
 FORBIDDEN_INTERACTION_PATTERNS = [

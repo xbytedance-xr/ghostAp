@@ -18,9 +18,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 ADMIN_ID = "admin_001"
 OWNER_ID = "owner_002"
 REGULAR_USER_ID = "user_003"

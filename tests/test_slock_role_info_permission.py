@@ -6,9 +6,7 @@ AC-4: Admin/owner sees full information including Active Context and permissions
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel, SlockMemory
 
@@ -129,7 +127,6 @@ class TestRoleInfoPermissionFiltering:
         """Regular member sees name, type, model, status, role, task stats."""
         handler, engine, manager, agent, memory = self._setup_handler_and_engine()
 
-        is_privileged = False
         info_parts = [
             f"{agent.emoji} **{agent.name}**\n",
             f"• ID: `{agent.agent_id[:8]}`\n"

@@ -6,11 +6,9 @@ and the agent claims it with status changing to IN_PROGRESS.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from src.slock_engine.models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
+from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus
 
 
 class TestSlockTaskAssign:

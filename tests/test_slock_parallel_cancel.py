@@ -7,15 +7,11 @@ Covers:
 
 from __future__ import annotations
 
-import threading
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.slock_engine.engine import SlockEngine
-from src.slock_engine.models import AgentIdentity, SlockChannel, SlockTask, TaskStatus
-
+from src.slock_engine.models import AgentIdentity, SlockChannel
 
 # ============================================================
 # Helpers
@@ -96,7 +92,7 @@ class TestParallelTimeoutUsesWait:
 
             # Patch _get_executor to return our mock executor
             with patch.object(engine, "_get_executor", return_value=mock_executor):
-                results = engine.execute_parallel(
+                engine.execute_parallel(
                     [(task.task_id, agent.agent_id)],
                     timeout=10.0,
                 )
@@ -173,8 +169,8 @@ class TestParallelTimeoutCancelsAgents:
     def test_incomplete_agents_cancel_event_is_set(self, tmp_path):
         """When timeout fires, each incomplete agent's cancel_event is set."""
         engine = _make_engine(tmp_path)
-        agent1 = _register_agent(engine, name="Coder", agent_id="agent_cancel_1")
-        agent2 = _register_agent(engine, name="Writer", agent_id="agent_cancel_2")
+        _register_agent(engine, name="Coder", agent_id="agent_cancel_1")
+        _register_agent(engine, name="Writer", agent_id="agent_cancel_2")
 
         with patch("src.slock_engine.engine.get_settings") as mock_settings:
             settings = MagicMock()
@@ -202,7 +198,7 @@ class TestParallelTimeoutCancelsAgents:
         mock_executor.submit.side_effect = [future1, future2]
 
         with patch("src.slock_engine.engine.get_settings") as mock_settings, \
-             patch("src.slock_engine.engine.futures_wait") as mock_futures_wait, \
+             patch("src.slock_engine.engine.futures_wait"), \
              patch("src.slock_engine.engine.as_completed", side_effect=TimeoutError):
 
             settings = MagicMock()
@@ -229,8 +225,8 @@ class TestParallelTimeoutCancelsAgents:
     def test_partial_completion_only_incomplete_cancelled(self, tmp_path):
         """When some tasks complete and others timeout, only incomplete agents are cancelled."""
         engine = _make_engine(tmp_path)
-        agent1 = _register_agent(engine, name="Fast", agent_id="agent_fast")
-        agent2 = _register_agent(engine, name="Slow", agent_id="agent_slow")
+        _register_agent(engine, name="Fast", agent_id="agent_fast")
+        _register_agent(engine, name="Slow", agent_id="agent_slow")
 
         with patch("src.slock_engine.engine.get_settings") as mock_settings:
             settings = MagicMock()
@@ -267,7 +263,7 @@ class TestParallelTimeoutCancelsAgents:
             raise TimeoutError
 
         with patch("src.slock_engine.engine.get_settings") as mock_settings, \
-             patch("src.slock_engine.engine.futures_wait") as mock_futures_wait, \
+             patch("src.slock_engine.engine.futures_wait"), \
              patch("src.slock_engine.engine.as_completed", side_effect=fake_as_completed_partial):
 
             settings = MagicMock()

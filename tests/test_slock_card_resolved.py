@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
-
 from src.slock_engine.card_templates import build_resolved_escalation_card
 from src.slock_engine.models import EscalationLevel, EscalationRequest
 

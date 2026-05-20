@@ -8,9 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel
+from src.slock_engine.models import AgentStatus
 
 
 class TestSlockStopAgent:

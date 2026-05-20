@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-20
+- **Slock 测试 lint 债清零** — 对所有 `tests/test_slock*.py` 执行 ruff 安全修复并手动处理剩余 F841/E731，删除未使用导入/局部变量、整理 import、将 helper lambda 改为本地 def；`ruff check tests/test_slock*.py` 通过，Slock 测试 855 passed → [详细记录](2026-05-20.md)
 - **Slock 文档差异统一实现 + 存储路径文档修正** — 按飞书需求复核后，仅将文档中的存储路径纠正为 `~/.ghostap/slock/`；实现 TTADK 角色入口、Agent 回复卡三按钮、Feishu mention 路由、自动分配候选 claim 轮转、L2/L3 记忆注入、执行异常升级、解散群删除飞书群，以及升级超时 IO shutdown 并发保护。所有 `test_slock*.py` 855 passed → [详细记录](2026-05-20.md)
 - **Slock `move_agent` 结构化返回 + copy-on-write + 卡片文案一致性** — `move_agent` 从裸 `bool` 改为 `MoveOutcome(status=MoveResult.*)` 带 4 种错误码；实现 copy-on-write（`to_dict()` 快照 + `OSError` 恢复）；notification/confirm 卡片文案修正为"活跃上下文已按跨群策略重置"；`show_role_info` 检测迁移 redact 标记显示脱敏状态。262 slock 测试通过 → [详细记录](2026-05-20.md)
 - **Slock `/role move` 执行顺序修复 + L1 记忆跨群加载验证** — (1) `move_role()` 改为 'move first, notify second'：`registry.move_agent()` 原子持久化在 notification card 之前执行，消除假通知风险；(2) notification 发送失败改为降级警告（不 rollback），confirm card 继续发送；(3) 新增/强化 6 个测试类覆盖执行顺序、降级行为、L1 Memory 独立加载、system_prompt 一致性、并发通知隔离。Slock 专项 762 passed → [详细记录](2026-05-20.md)

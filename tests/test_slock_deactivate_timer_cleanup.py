@@ -8,9 +8,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, patch, call
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.slock_engine.escalation_manager import EscalationManager
 from src.slock_engine.models import (

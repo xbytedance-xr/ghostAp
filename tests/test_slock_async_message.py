@@ -9,12 +9,9 @@ Verifies:
 
 from __future__ import annotations
 
-import json
 import sys
 from concurrent.futures import Future
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Mock external dependencies that are not installed in the test environment.

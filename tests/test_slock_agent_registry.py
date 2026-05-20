@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import os
 
-import pytest
-
 from src.slock_engine.agent_registry import AgentRegistry
 from src.slock_engine.models import AgentIdentity
 

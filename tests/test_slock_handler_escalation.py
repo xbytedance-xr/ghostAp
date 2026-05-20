@@ -9,10 +9,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.slock_engine.models import (
-    AgentIdentity,
     EscalationLevel,
     EscalationRequest,
     SlockChannel,

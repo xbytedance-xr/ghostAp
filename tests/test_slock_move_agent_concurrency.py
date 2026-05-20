@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-from src.slock_engine.agent_registry import AgentRegistry, MoveOutcome, MoveResult
+from src.slock_engine.agent_registry import AgentRegistry, MoveOutcome
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockMemory
 
@@ -313,9 +313,7 @@ class TestHandlerLevelTOCTOU:
 
     def test_move_succeeds_when_agent_stays_idle(self, storage):
         """When no concurrent assign, try_lock_for_move succeeds."""
-        from unittest.mock import MagicMock
 
-        from src.slock_engine.engine import SlockEngine
 
         registry = storage["registry"]
         agent = _make_agent("idle-agent", owner_group="idle-src")

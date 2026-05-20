@@ -12,7 +12,7 @@ Covers:
 
 import pytest
 
-from src.slock_engine.agent_registry import AgentRegistry, MoveOutcome, MoveResult
+from src.slock_engine.agent_registry import AgentRegistry
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import AgentIdentity, SlockMemory
 
@@ -480,7 +480,6 @@ class TestEndToEndCrossEngineMovePromptConsistency:
     def test_target_engine_memory_fields_match_source(self, tmp_path):
         """All three L1 memory fields are identical when read from target engine."""
         from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.models import SlockChannel
 
         base_path = str(tmp_path / "slock_data")
 
@@ -521,7 +520,6 @@ class TestEndToEndCrossEngineMovePromptConsistency:
     def test_migration_context_append_only_extends_active_context(self, tmp_path):
         """After migration record append, only active_context grows; role/knowledge unchanged."""
         from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.models import SlockChannel
 
         base_path = str(tmp_path / "slock_data")
 
@@ -671,9 +669,9 @@ class TestVerifyL1MemoryAfterMoveErrorOnEmptyRole:
     def test_error_logged_when_role_empty_but_has_context(self, storage, caplog):
         """Agent with key_knowledge but empty role triggers ERROR."""
         import logging
+        from unittest.mock import patch
 
         from src.slock_engine.engine import SlockEngine
-        from unittest.mock import patch
 
         memory_mgr = storage["memory"]
         registry = storage["registry"]
@@ -704,9 +702,9 @@ class TestVerifyL1MemoryAfterMoveErrorOnEmptyRole:
     def test_no_error_when_role_present(self, storage, caplog):
         """Agent with valid role does not trigger ERROR."""
         import logging
+        from unittest.mock import patch
 
         from src.slock_engine.engine import SlockEngine
-        from unittest.mock import patch
 
         memory_mgr = storage["memory"]
         registry = storage["registry"]
@@ -734,9 +732,9 @@ class TestVerifyL1MemoryAfterMoveErrorOnEmptyRole:
     def test_no_error_for_completely_empty_new_agent(self, storage, caplog):
         """Brand new agent with no memory at all does not trigger ERROR."""
         import logging
+        from unittest.mock import patch
 
         from src.slock_engine.engine import SlockEngine
-        from unittest.mock import patch
 
         with patch("src.slock_engine.engine.create_engine_session"):
             engine = SlockEngine(

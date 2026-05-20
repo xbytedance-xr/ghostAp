@@ -12,13 +12,11 @@ import pytest
 
 pytest.importorskip("acp", reason="acp SDK not installed")
 
-import time
 import unittest.mock
 from unittest.mock import MagicMock, patch
 
 from src.slock_engine.engine import SlockEngine
-from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus
-
+from src.slock_engine.models import AgentIdentity, TaskStatus
 
 # ============================================================
 # Engine.execute_task tests

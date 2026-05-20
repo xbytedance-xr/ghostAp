@@ -12,10 +12,7 @@ The method under test (src/feishu/handlers/slock.py) does:
 
 from __future__ import annotations
 
-import time as _real_time
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 PATCH_GET_SENDER = "src.thread.manager.get_current_sender_id"
 PATCH_GET_SETTINGS = "src.config.get_settings"

@@ -583,7 +583,6 @@ class TestResumeRetryAsync:
     def _make_manager(self, *, get_executor_fn=None, execute_task_fn=None):
         """Create a minimal EscalationManager with mocked dependencies for Retry-path tests."""
         import threading
-
         from unittest.mock import MagicMock
 
         from src.slock_engine.escalation_manager import EscalationManager

@@ -1842,8 +1842,6 @@ class TestEndToEndMoveWithRedactAndPersonaConsistency:
 
     def test_persona_consistency_after_move_and_redact(self, storage):
         """AC-6: _build_agent_prompt role+key_knowledge identical after move+redact."""
-        from unittest.mock import patch
-        from src.slock_engine.engine import SlockEngine
 
         agent, original_memory = self._setup_full_agent(storage)
         registry = storage["registry"]
@@ -1883,8 +1881,8 @@ class TestEndToEndMoveWithRedactAndPersonaConsistency:
     def test_build_agent_prompt_role_knowledge_consistent(self, storage):
         """AC-6: Full engine _build_agent_prompt preserves role+knowledge sections."""
         from unittest.mock import patch
+
         from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.models import SlockChannel
 
         agent, original_memory = self._setup_full_agent(storage)
         registry = storage["registry"]

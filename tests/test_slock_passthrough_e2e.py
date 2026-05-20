@@ -6,12 +6,10 @@ passes messages to downstream handlers without any side effects.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
 from src.slock_engine.manager import SlockEngineManager
-from src.slock_engine.models import AgentIdentity, SlockChannel
+from src.slock_engine.models import SlockChannel
 
 
 @pytest.fixture

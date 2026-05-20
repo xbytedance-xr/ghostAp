@@ -9,9 +9,8 @@ Covers:
 
 from __future__ import annotations
 
-import unittest.mock
 from concurrent.futures import Future
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -27,7 +26,6 @@ def _sync_submit(fn, *args, **kwargs):
     return future
 
 from src.slock_engine.slash_commands import is_slock_command
-
 
 # ============================================================
 # AC2: Command Scoping
@@ -246,6 +244,7 @@ class TestRoutingChainPriority:
         source line order — spec check line < slock check line < exit check line.
         """
         import inspect
+
         from src.feishu.dispatcher import MessageDispatcher
 
         source = inspect.getsource(MessageDispatcher.process_with_intent)

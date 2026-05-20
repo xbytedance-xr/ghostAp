@@ -17,8 +17,6 @@ import json
 import time as _time_module
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 PATCH_GET_SETTINGS = "src.config.get_settings"
 PATCH_TIME = "tests.test_slock_queue_timeout._time_module.time"
 

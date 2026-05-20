@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
-import pytest
-
 from src.slock_engine.models import (
     AGENT_ROLE_COLORS,
     AgentIdentity,

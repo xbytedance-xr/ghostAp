@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory
 

@@ -6,12 +6,9 @@ Validates the full state machine cycle and status panel color mapping.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
 
-import pytest
-
-from src.slock_engine.models import AgentIdentity, AgentStatus
 from src.slock_engine.card_templates import build_status_panel_card
+from src.slock_engine.models import AgentIdentity, AgentStatus
 
 
 class TestAgentLifecycleStates:

@@ -9,13 +9,10 @@ AC4: _execute_agent early-returns when transition_agent(WAKING) returns False.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, AsyncMock
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from src.slock_engine.models import AgentIdentity, AgentStatus
 from src.slock_engine.task_router import TaskRouter
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -22,10 +22,8 @@ from src.slock_engine.models import (
     EscalationLevel,
     EscalationRequest,
     SlockChannel,
-    SlockTask,
     TaskStatus,
 )
-
 
 # ============================================================
 # Helpers
@@ -355,7 +353,6 @@ class TestExecuteParallelPartialQueueFull:
                 callbacks = SlockEngineCallbacks(on_error=lambda msg: error_messages.append(msg))
 
                 # Execute — some will be rejected due to queue size=2
-                import concurrent.futures
                 # Run with a short timeout to not block forever
                 results = engine.execute_parallel(task_assignments, callbacks, timeout=2.0)
 

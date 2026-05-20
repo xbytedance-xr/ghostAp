@@ -9,13 +9,9 @@ Covers:
 from __future__ import annotations
 
 import json
-import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus
-
 
 # ============================================================
 # Helpers
@@ -381,25 +377,32 @@ class TestExecuteAsyncHelper:
     ):
         """Helper to invoke _execute_async with sensible defaults."""
         if result_card_fn is None:
-            result_card_fn = lambda result, duration: json.dumps(
-                {"schema": "2.0", "header": {"title": {"content": "✅ Done"}}, "body": {"elements": []}},
-                ensure_ascii=False,
-            )
+            def result_card_fn(result, duration):
+                return json.dumps(
+                    {"schema": "2.0", "header": {"title": {"content": "✅ Done"}}, "body": {"elements": []}},
+                    ensure_ascii=False,
+                )
+
         if error_card_fn is None:
-            error_card_fn = lambda exc: json.dumps(
-                {"schema": "2.0", "header": {"title": {"content": "❌ Error"}}, "body": {"elements": []}},
-                ensure_ascii=False,
-            )
+            def error_card_fn(exc):
+                return json.dumps(
+                    {"schema": "2.0", "header": {"title": {"content": "❌ Error"}}, "body": {"elements": []}},
+                    ensure_ascii=False,
+                )
+
         if empty_card_fn is None:
-            empty_card_fn = lambda: json.dumps(
-                {"schema": "2.0", "header": {"title": {"content": "⚠️ Empty"}}, "body": {"elements": []}},
-                ensure_ascii=False,
-            )
+            def empty_card_fn():
+                return json.dumps(
+                    {"schema": "2.0", "header": {"title": {"content": "⚠️ Empty"}}, "body": {"elements": []}},
+                    ensure_ascii=False,
+                )
+
         if busy_card_fn is None:
-            busy_card_fn = lambda: json.dumps(
-                {"schema": "2.0", "header": {"title": {"content": "⚠️ 团队繁忙"}}, "body": {"elements": []}},
-                ensure_ascii=False,
-            )
+            def busy_card_fn():
+                return json.dumps(
+                    {"schema": "2.0", "header": {"title": {"content": "⚠️ 团队繁忙"}}, "body": {"elements": []}},
+                    ensure_ascii=False,
+                )
 
         placeholder_card = json.dumps(
             {"schema": "2.0", "header": {"title": {"content": "⏳ Processing..."}}, "body": {"elements": []}},

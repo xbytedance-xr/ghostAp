@@ -7,13 +7,8 @@ Covers:
 
 from __future__ import annotations
 
-import json
-
-import pytest
-
 from src.slock_engine.card_templates import build_task_board_card, build_welcome_card
 from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
 
 
 class TestRoleMoveShlex:

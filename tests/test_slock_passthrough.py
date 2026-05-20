@@ -9,8 +9,6 @@ from __future__ import annotations
 from concurrent.futures import Future
 from unittest.mock import MagicMock
 
-import pytest
-
 
 def _sync_submit(fn, *args, **kwargs):
     """Helper that executes executor.submit synchronously for deterministic tests."""

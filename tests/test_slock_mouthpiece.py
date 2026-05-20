@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.slock_engine.models import AgentIdentity
 from src.slock_engine.mouthpiece import Mouthpiece
 

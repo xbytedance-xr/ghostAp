@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import MagicMock
 
 import pytest
-from unittest.mock import MagicMock
 
 from src.slock_engine.models import SlockTask, TaskStatus
 from src.slock_engine.task_router import TaskClaim
@@ -265,7 +265,6 @@ class TestConcurrentTaskClaim:
 
     def test_concurrent_claim_only_one_wins(self):
         """AC-07: Two agents racing to claim → only one succeeds."""
-        from src.slock_engine.engine import SlockEngine
 
         # Use a real lock for this concurrency test
         lock = threading.Lock()
@@ -356,10 +355,10 @@ class TestExecuteParallelConsistency:
 
     def _make_engine_with_tasks(self, num_tasks: int = 4):
         """Create a mock engine with tasks and a working lock."""
-        from concurrent.futures import ThreadPoolExecutor
+
         from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.task_router import TaskClaim
         from src.slock_engine.task_board_manager import TaskBoardManager
+        from src.slock_engine.task_router import TaskClaim
 
         engine = MagicMock(spec=SlockEngine)
         engine._lock = threading.Lock()
