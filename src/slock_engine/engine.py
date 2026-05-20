@@ -154,8 +154,9 @@ class SlockStreamProcessor:
         if self._error_count:
             stats_parts.append(f"❌ {self._error_count}")
         elements.append({
-            "tag": "note",
-            "elements": [{"tag": "plain_text", "content": " | ".join(stats_parts)}],
+            "tag": "markdown",
+            "content": " | ".join(stats_parts),
+            "text_size": "notation",
         })
 
         return {

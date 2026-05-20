@@ -375,7 +375,19 @@ class FeishuWSClient:
                         "config": {"wide_screen_mode": True},
                         "elements": [
                             {"tag": "markdown", "content": _text},
-                            {"tag": "action", "actions": [_btn]},
+                            {
+                                "tag": "column_set",
+                                "flex_mode": "none",
+                                "background_style": "default",
+                                "columns": [
+                                    {
+                                        "tag": "column",
+                                        "width": "weighted",
+                                        "weight": 1,
+                                        "elements": [_btn],
+                                    }
+                                ],
+                            },
                         ],
                     }, ensure_ascii=False)
                     for _cid in blocked_chat_ids:

@@ -216,9 +216,9 @@ class TestE2EHandlerToEngine:
             for e in elements
         )
 
-        # Footer note should contain model info
-        note_elements = [e for e in elements if e.get("tag") == "note"]
-        assert len(note_elements) > 0
+        # Footer should contain model info (notation-sized markdown)
+        footer_elements = [e for e in elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) > 0
 
     def test_no_engine_message_stays_silent(self):
         """When no engine is active, handle_message does nothing."""

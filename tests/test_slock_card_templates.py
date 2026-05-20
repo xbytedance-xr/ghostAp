@@ -70,29 +70,28 @@ class TestBuildAgentMessageCard:
     def test_footer_with_model_info(self):
         agent = self._make_agent(agent_type="claude", model_name="claude-3")
         card = build_agent_message_card(agent, "msg", model_info="claude-3-opus")
-        note_elements = [e for e in card["body"]["elements"] if e["tag"] == "note"]
-        assert len(note_elements) == 1
-        note_text = note_elements[0]["elements"][0]["content"]
-        assert "claude-3-opus" in note_text
+        footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) == 1
+        assert "claude-3-opus" in footer_elements[0]["content"]
 
     def test_footer_with_duration_seconds(self):
         agent = self._make_agent()
         card = build_agent_message_card(agent, "msg", duration_s=5.2)
-        note_elements = [e for e in card["body"]["elements"] if e["tag"] == "note"]
-        assert len(note_elements) == 1
-        assert "5.2s" in note_elements[0]["elements"][0]["content"]
+        footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) == 1
+        assert "5.2s" in footer_elements[0]["content"]
 
     def test_footer_with_duration_minutes(self):
         agent = self._make_agent()
         card = build_agent_message_card(agent, "msg", duration_s=125.3)
-        note_elements = [e for e in card["body"]["elements"] if e["tag"] == "note"]
-        assert "2m" in note_elements[0]["elements"][0]["content"]
+        footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert "2m" in footer_elements[0]["content"]
 
     def test_no_footer_when_no_metadata(self):
         agent = self._make_agent(agent_type="", model_name="")
         card = build_agent_message_card(agent, "msg")
-        note_elements = [e for e in card["body"]["elements"] if e["tag"] == "note"]
-        assert len(note_elements) == 0
+        footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) == 0
 
 
 class TestBuildStatusPanelCard:
@@ -433,36 +432,32 @@ class TestBuildAgentMessageCardJsonStructure:
         assert "The quick brown fox" in md_elements[0]["content"]
 
     def test_body_contains_note_element_when_metadata_present(self):
-        """Body elements must include a note element when model_info or duration is given."""
+        """Body elements must include a notation-sized markdown footer when model_info or duration is given."""
         agent = self._make_agent()
         card = build_agent_message_card(agent, "msg", model_info="gpt-4o", duration_s=3.5)
         body_elements = card["body"]["elements"]
-        note_elements = [e for e in body_elements if e.get("tag") == "note"]
-        assert len(note_elements) == 1
-        note = note_elements[0]
-        # note must have elements array with plain_text child
-        assert note["elements"][0]["tag"] == "plain_text"
-        note_content = note["elements"][0]["content"]
-        assert "gpt-4o" in note_content
-        assert "3.5s" in note_content
+        footer_elements = [e for e in body_elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) == 1
+        footer_content = footer_elements[0]["content"]
+        assert "gpt-4o" in footer_content
+        assert "3.5s" in footer_content
 
     def test_note_element_contains_agent_type(self):
-        """Footer note should include agent_type when present."""
+        """Footer should include agent_type when present."""
         agent = self._make_agent(agent_type="codex")
         card = build_agent_message_card(agent, "msg", duration_s=1.0)
-        note_elements = [e for e in card["body"]["elements"] if e.get("tag") == "note"]
-        assert len(note_elements) == 1
-        note_content = note_elements[0]["elements"][0]["content"]
-        assert "codex" in note_content
+        footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) == 1
+        assert "codex" in footer_elements[0]["content"]
 
     def test_elements_ordering_markdown_before_note(self):
-        """Markdown content must appear before the footer note in elements array."""
+        """Markdown content must appear before the footer in elements array."""
         agent = self._make_agent()
         card = build_agent_message_card(agent, "body text", model_info="model-x")
         body_elements = card["body"]["elements"]
-        md_idx = next(i for i, e in enumerate(body_elements) if e["tag"] == "markdown")
-        note_idx = next(i for i, e in enumerate(body_elements) if e["tag"] == "note")
-        assert md_idx < note_idx
+        md_idx = next(i for i, e in enumerate(body_elements) if e["tag"] == "markdown" and e.get("text_size") != "notation")
+        footer_idx = next(i for i, e in enumerate(body_elements) if e.get("tag") == "markdown" and e.get("text_size") == "notation")
+        assert md_idx < footer_idx
 
 
 class TestBuildWelcomeCard:

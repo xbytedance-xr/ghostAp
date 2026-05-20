@@ -83,10 +83,9 @@ def build_agent_message_card(
 
     if footer_parts:
         elements.append({
-            "tag": "note",
-            "elements": [
-                {"tag": "plain_text", "content": " | ".join(footer_parts)}
-            ],
+            "tag": "markdown",
+            "content": " | ".join(footer_parts),
+            "text_size": "notation",
         })
 
     header: dict = {
@@ -422,10 +421,9 @@ def build_agent_move_departure_card(
         footer_parts.append(agent.model_name)
     footer_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
     elements.append({
-        "tag": "note",
-        "elements": [
-            {"tag": "plain_text", "content": " | ".join(footer_parts)}
-        ],
+        "tag": "markdown",
+        "content": " | ".join(footer_parts),
+        "text_size": "notation",
     })
 
     return {
@@ -479,10 +477,9 @@ def build_agent_move_notification_card(
         footer_parts.append(agent.model_name)
     footer_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
     elements.append({
-        "tag": "note",
-        "elements": [
-            {"tag": "plain_text", "content": " | ".join(footer_parts)}
-        ],
+        "tag": "markdown",
+        "content": " | ".join(footer_parts),
+        "text_size": "notation",
     })
 
     return {
@@ -539,10 +536,9 @@ def build_agent_move_confirm_card(
         footer_parts.append(agent.model_name)
     footer_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
     elements.append({
-        "tag": "note",
-        "elements": [
-            {"tag": "plain_text", "content": " | ".join(footer_parts)}
-        ],
+        "tag": "markdown",
+        "content": " | ".join(footer_parts),
+        "text_size": "notation",
     })
 
     return {
@@ -701,10 +697,9 @@ def build_escalation_card(
     # Timeout hint
     if timeout_minutes is not None:
         elements.append({
-            "tag": "note",
-            "elements": [
-                {"tag": "plain_text", "content": f"⏰ 此升级将在 {timeout_minutes} 分钟后自动中止"}
-            ],
+            "tag": "markdown",
+            "content": f"⏰ 此升级将在 {timeout_minutes} 分钟后自动中止",
+            "text_size": "notation",
         })
 
     elements.append({"tag": "hr"})

@@ -40,9 +40,9 @@ class TestMouthpiece:
         mp = Mouthpiece()
         agent = self._make_agent()
         card = mp.format_card(agent, "Done", duration_s=3.5)
-        note_elements = [e for e in card["body"]["elements"] if e["tag"] == "note"]
-        assert len(note_elements) == 1
-        assert "3.5s" in note_elements[0]["elements"][0]["content"]
+        footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) == 1
+        assert "3.5s" in footer_elements[0]["content"]
 
     def test_format_escalation(self):
         mp = Mouthpiece()

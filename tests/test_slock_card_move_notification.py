@@ -32,7 +32,7 @@ class TestMoveNotificationCardNoJumpButton:
     """AC6: Notification card (sent to target group) does NOT contain a jump button."""
 
     def test_notification_card_has_no_button(self):
-        """Card JSON body.elements has markdown + note footer, no button or multi_url."""
+        """Card JSON body.elements has markdown + notation footer, no button or multi_url."""
         agent = _make_test_agent()
         card = build_agent_move_notification_card(
             agent=agent,
@@ -41,10 +41,11 @@ class TestMoveNotificationCardNoJumpButton:
         )
 
         elements = card["body"]["elements"]
-        # markdown + note footer
+        # markdown + notation footer
         assert len(elements) == 2
         assert elements[0]["tag"] == "markdown"
-        assert elements[1]["tag"] == "note"
+        assert elements[1]["tag"] == "markdown"
+        assert elements[1].get("text_size") == "notation"
 
         # Ensure no multi_url or button anywhere in the card JSON
         card_json = json.dumps(card, ensure_ascii=False)
@@ -117,8 +118,9 @@ class TestMoveNotificationCardFooter:
 
         elements = card["body"]["elements"]
         note_elem = elements[-1]
-        assert note_elem["tag"] == "note"
-        footer_text = note_elem["elements"][0]["content"]
+        assert note_elem["tag"] == "markdown"
+        assert note_elem.get("text_size") == "notation"
+        footer_text = note_elem["content"]
         assert "codex" in footer_text
         assert "o3-pro" in footer_text
         # Timestamp pattern: YYYY-MM-DD HH:MM
@@ -186,9 +188,10 @@ class TestMoveConfirmCardHasJumpButton:
         )
 
         elements = card["body"]["elements"]
-        # markdown + note footer only (no button)
+        # markdown + notation footer only (no button)
         assert elements[0]["tag"] == "markdown"
-        assert elements[-1]["tag"] == "note"
+        assert elements[-1]["tag"] == "markdown"
+        assert elements[-1].get("text_size") == "notation"
         card_json = json.dumps(card, ensure_ascii=False)
         assert "multi_url" not in card_json
 
@@ -208,8 +211,9 @@ class TestMoveConfirmCardFooter:
 
         elements = card["body"]["elements"]
         note_elem = elements[-1]
-        assert note_elem["tag"] == "note"
-        footer_text = note_elem["elements"][0]["content"]
+        assert note_elem["tag"] == "markdown"
+        assert note_elem.get("text_size") == "notation"
+        footer_text = note_elem["content"]
         assert "codex" in footer_text
         assert "o3-pro" in footer_text
         # Timestamp pattern: YYYY-MM-DD HH:MM
@@ -262,15 +266,16 @@ class TestDepartureCard:
         agent = _make_test_agent()
         card = build_agent_move_departure_card(agent=agent, target_team="TargetAlpha")
         footer = card["body"]["elements"][1]
-        assert footer["tag"] == "note"
-        footer_text = footer["elements"][0]["content"]
+        assert footer["tag"] == "markdown"
+        assert footer.get("text_size") == "notation"
+        footer_text = footer["content"]
         assert re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", footer_text)
 
     def test_footer_contains_agent_type_and_model(self):
         agent = _make_test_agent()
         card = build_agent_move_departure_card(agent=agent, target_team="TargetAlpha")
         footer = card["body"]["elements"][1]
-        footer_text = footer["elements"][0]["content"]
+        footer_text = footer["content"]
         assert agent.agent_type in footer_text
         assert agent.model_name in footer_text
 

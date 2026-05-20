@@ -85,33 +85,30 @@ class TestMouthpieceCardSchemaCompliance:
         assert "Hello world response" in all_content
 
     def test_card_footer_with_model_info(self, mouthpiece):
-        """Footer note contains model info when provided."""
+        """Footer contains model info when provided."""
         agent = _make_agent("coder")
         card = mouthpiece.format_card(agent, "Content", model_info="claude-sonnet-4")
         elements = card["body"]["elements"]
-        note_elements = [e for e in elements if e.get("tag") == "note"]
-        assert len(note_elements) >= 1
-        note_text = str(note_elements[0])
-        assert "claude-sonnet-4" in note_text
+        footer_elements = [e for e in elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) >= 1
+        assert "claude-sonnet-4" in footer_elements[0]["content"]
 
     def test_card_footer_with_duration(self, mouthpiece):
-        """Footer note contains duration when provided."""
+        """Footer contains duration when provided."""
         agent = _make_agent("coder")
         card = mouthpiece.format_card(agent, "Content", duration_s=5.2)
         elements = card["body"]["elements"]
-        note_elements = [e for e in elements if e.get("tag") == "note"]
-        assert len(note_elements) >= 1
-        note_text = str(note_elements[0])
-        assert "5.2s" in note_text
+        footer_elements = [e for e in elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert len(footer_elements) >= 1
+        assert "5.2s" in footer_elements[0]["content"]
 
     def test_card_footer_with_duration_minutes(self, mouthpiece):
         """Footer shows minutes format for long durations."""
         agent = _make_agent("coder")
         card = mouthpiece.format_card(agent, "Content", duration_s=125.0)
         elements = card["body"]["elements"]
-        note_elements = [e for e in elements if e.get("tag") == "note"]
-        note_text = str(note_elements[0])
-        assert "2m" in note_text
+        footer_elements = [e for e in elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
+        assert "2m" in footer_elements[0]["content"]
 
     def test_card_is_valid_json_serializable(self, mouthpiece):
         """Card dict can be serialized to JSON without errors."""
