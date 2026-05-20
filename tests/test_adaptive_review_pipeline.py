@@ -3,7 +3,7 @@ import threading
 import time
 
 from src.engine_base import ReviewPerspective
-from src.spec_engine.adaptive_review import run_adaptive_role_review_pipeline
+from src.spec_engine.adaptive_review import parse_role_review_output, run_adaptive_role_review_pipeline
 from src.spec_engine.review_aggregation import aggregate_role_outcomes
 from src.spec_engine.review_artifacts import ReviewArtifacts
 from src.spec_engine.review_roles import ReviewRoleSpec
@@ -128,6 +128,32 @@ def test_evidence_less_blocker_is_downgraded_and_does_not_block_review_result():
     assert result.all_passed
     assert result.reviews[0].passed is True
     assert "observation" in result.reviews[0].suggestions[0]
+
+
+def test_invalid_role_json_is_skipped_without_user_visible_evidence_suggestion():
+    outcome = parse_role_review_output(
+        _role("fact_checker"),
+        "I cannot provide JSON for this role review.",
+    )
+
+    assert outcome.passed is True
+    assert outcome.suggestions == []
+    assert "role output was not valid JSON" not in outcome.summary
+    assert "role output was not valid JSON" not in outcome.error
+
+
+def test_non_json_role_output_degrades_to_plain_text_suggestions():
+    outcome = parse_role_review_output(
+        _role("tester"),
+        "FAIL\n- 补充工具流式更新回归测试\n- 明确多角色审查建议和角色面板的关系",
+    )
+
+    assert outcome.passed is True
+    assert [item.recommendation for item in outcome.suggestions] == [
+        "补充工具流式更新回归测试",
+        "明确多角色审查建议和角色面板的关系",
+    ]
+    assert all("role output was not valid JSON" not in item.evidence for item in outcome.suggestions)
 
 
 def test_aggregated_blocking_suggestion_keeps_role_name_and_maps_to_base_perspective():

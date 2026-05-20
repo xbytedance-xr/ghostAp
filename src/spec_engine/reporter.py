@@ -224,7 +224,7 @@ class SpecReporter:
             lines.append(phase_details)
 
         if cycle.review_result and not cycle.review_result.all_passed:
-            lines.append("\n---\n**📋 审查建议（将驱动下一轮优化）：**\n")
+            lines.append("\n---\n**📋 多角色审查建议（将驱动下一轮优化）：**\n")
             for pr in cycle.review_result.reviews:
                 if not pr.passed and pr.suggestions:
                     lines.append(f"\n{pr.perspective.emoji} **{pr.perspective.display_name}**:\n")

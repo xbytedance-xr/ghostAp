@@ -102,6 +102,26 @@ class TestToolReducer:
         assert s.blocks[0].tool_summary == "整理 Spec Review 角色面板"
 
 
+class TestProgressReducer:
+    def test_unknown_total_progress_keeps_text_label(self):
+        s = CardState(
+            metadata=CardMetadata(
+                engine_type="spec",
+                project_name="Test",
+                mode_name="Spec",
+                mode_emoji="📋",
+            )
+        )
+
+        s = reduce_card_state(
+            s,
+            CardEvent.progress_updated(current=2, total=0, label="🔨 2 次工具调用"),
+        )
+
+        assert s.footer.progress == "🔨 2 次工具调用"
+        assert s.footer.progress_pct is None
+
+
 class TestReasoningReducer:
     def test_reasoning_started(self):
         s = reduce_reasoning(_base_state(), CardEvent.reasoning_started("r1"))

@@ -22,6 +22,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from src.utils.errors import classify_timeout
+
 from ..agent_session import EphemeralReviewSession
 from ..engine_base import ReviewResult
 from .adaptive_review import PromptRunner, run_adaptive_role_review_pipeline
@@ -201,15 +203,62 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
                     res = ctx.send_prompt_with_retry_fn(prompt, on_event=on_event, timeout=timeout)
                     return str(getattr(res, "text", res) or "")
                 binding = role_agent_map.get(role.role_id)
-                agent_type = binding.agent_type if binding else ctx.agent_type
-                model_name = binding.model_name if binding else ctx.model_name
-                with EphemeralReviewSession(agent_type, cwd, model_name) as session:
-                    res = session.send_prompt(prompt, on_event=on_event, timeout=timeout)
-                    return str(getattr(res, "text", res) or "")
+                candidates = self._review_agent_fallback_candidates(ctx, primary=binding)
+                last_exc: Exception | None = None
+                for index, (agent_type, model_name) in enumerate(candidates):
+                    try:
+                        with EphemeralReviewSession(agent_type, cwd, model_name) as session:
+                            res = session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+                            return str(getattr(res, "text", res) or "")
+                    except Exception as exc:
+                        last_exc = exc
+                        has_fallback = index < len(candidates) - 1
+                        if classify_timeout(exc) and has_fallback:
+                            next_agent, next_model = candidates[index + 1]
+                            logger.warning(
+                                "[ReviewStrategy:adaptive_roles] role=%s timed out on %s/%s, falling back to %s/%s",
+                                role.role_id,
+                                agent_type,
+                                model_name or "default",
+                                next_agent,
+                                next_model or "default",
+                            )
+                            continue
+                        raise
+                if last_exc:
+                    raise last_exc
+                return ""
 
             return _runner
 
         return _factory
+
+    @staticmethod
+    def _review_agent_fallback_candidates(
+        ctx: ReviewContext,
+        *,
+        primary: ReviewAgentBinding | None,
+    ) -> list[tuple[str, str | None]]:
+        candidates: list[tuple[str, str | None]] = []
+        seen: set[tuple[str, str]] = set()
+
+        def add(agent_type: str | None, model_name: str | None) -> None:
+            agent = str(agent_type or "coco").strip() or "coco"
+            model = str(model_name or "").strip()
+            key = (agent, model)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append((agent, model_name))
+
+        if primary is not None:
+            add(primary.agent_type, primary.model_name)
+        else:
+            add(ctx.agent_type, ctx.model_name)
+        for binding in normalize_review_agents(ctx.review_agents):
+            add(binding.agent_type, binding.model_name)
+        add(ctx.agent_type, ctx.model_name)
+        return candidates
 
     @staticmethod
     def _hash_roles(roles: list[ReviewRoleSpec]) -> str:

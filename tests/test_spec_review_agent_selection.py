@@ -118,6 +118,63 @@ def test_adaptive_review_uses_selected_agents_for_role_sessions(monkeypatch):
     assert {review.review_agent_label for review in result.reviews} == {"Coco / m1", "Codex / gpt-5.2"}
 
 
+def test_adaptive_review_falls_back_to_default_agent_when_selected_agent_times_out(monkeypatch):
+    roles = [_role("architect")]
+    agents = [ReviewAgentBinding.from_selection_item(_item("codex", "gpt-5.2"))]
+    captured: list[tuple[str, str | None]] = []
+
+    class FakeReviewSession:
+        def __init__(self, agent_type: str, cwd: str, model_name: str | None = None):
+            self.agent_type = agent_type
+            self.model_name = model_name
+            captured.append((agent_type, model_name))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return None
+
+        def send_prompt(self, prompt: str, on_event=None, timeout: float = 240.0):
+            if self.agent_type == "codex":
+                raise TimeoutError("selected review agent timed out")
+            return SimpleNamespace(
+                text='{"role_id":"architect","verdict":"PASS","summary":"ok","suggestions":[]}'
+            )
+
+    monkeypatch.setattr("src.spec_engine.review_strategy.EphemeralReviewSession", FakeReviewSession)
+
+    settings = SimpleNamespace(
+        spec_review_dynamic_roles_enabled=True,
+        spec_review_dynamic_roles_max=1,
+        spec_review_total_roles_max=1,
+        spec_review_failure_circuit_enabled=False,
+        spec_review_max_parallel=1,
+        spec_review_timeout=30,
+    )
+    artifacts = ReviewArtifacts(cycle_number=1, requirement="build", cwd="/tmp")
+    result = AdaptiveRoleReviewStrategy().run(
+        ReviewContext(
+            cycle=1,
+            session=None,
+            settings=settings,
+            project=None,
+            send_prompt_with_retry_fn=lambda *args, **kwargs: "",
+            build_review_exception_diagnostics_fn=lambda *args, **kwargs: {},
+            circuit=ReviewCircuitState(),
+            artifacts=artifacts,
+            role_plan_override=roles,
+            review_agents=agents,
+            review_agent_rng=Random(3),
+            agent_type="coco",
+            model_name="default-model",
+        )
+    )
+
+    assert result.all_passed is True
+    assert captured == [("codex", "gpt-5.2"), ("coco", "default-model")]
+
+
 def _make_spec_handler() -> SpecHandler:
     ctx = MagicMock()
     ctx.settings.ref_note_enabled = False

@@ -48,7 +48,7 @@ def format_review_overview(review: ReviewResult, cycle_num: int) -> str:
     suggestion_count = review.total_suggestions
     lines = [f"🔍 **多角色审查 [循环 {cycle_num}]**", f"{passed}/{total} 个角色通过"]
     if suggestion_count:
-        lines.append(f"💡 **改进建议: {suggestion_count} 条** → 将驱动下一轮 Spec 循环")
+        lines.append(f"💡 **多角色审查建议: {suggestion_count} 条** → 将驱动下一轮 Spec 循环")
     else:
         lines.append("✅ **所有角色均通过，无改进建议**")
     return "\n\n".join(lines)

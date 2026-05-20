@@ -86,7 +86,7 @@ def _reduce_progress_updated(state: CardState, event: CardEvent) -> CardState:
                 progress_text += f" · 预计还需 {eta_secs}s"
     else:
         pct = None
-        progress_text = None
+        progress_text = str(label).strip() or None
     return replace(state, footer=replace(footer, progress=progress_text, progress_pct=pct,
                                          progress_started_at=started_at))
 

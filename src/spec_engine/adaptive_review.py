@@ -18,6 +18,7 @@ from src.spec_engine.review_aggregation import (
 )
 from src.spec_engine.review_artifacts import ReviewArtifacts
 from src.spec_engine.review_roles import ReviewRoleSpec, batch_roles_by_dependencies
+from src.spec_engine.utils import extract_suggestions_from_body, normalize_review_verdict
 from src.utils.errors import classify_timeout, get_error_detail
 
 logger = logging.getLogger(__name__)
@@ -108,26 +109,7 @@ def parse_role_review_output(role: ReviewRoleSpec, raw: str) -> RoleReviewOutcom
     try:
         data = _extract_json_object(raw)
     except Exception as exc:
-        return RoleReviewOutcome(
-            role_id=role.role_id,
-            role_display_name=role.display_name,
-            role_category=role.category,
-            passed=True,
-            summary="parse failure (infra, non-blocking)",
-            suggestions=[
-                RoleSuggestion(
-                    severity="observation",
-                    confidence="low",
-                    evidence="role output was not valid JSON",
-                    recommendation=f"{role.display_name} 审查输出无法解析，请重跑该角色审查",
-                    blocking=False,
-                )
-            ],
-            raw_preview=(raw or "")[:500],
-            error=get_error_detail(exc),
-            blocking=False,
-            base_perspective_value=role.base_perspective.value if role.base_perspective else "",
-        )
+        return _parse_role_review_text_fallback(role, raw, exc)
 
     suggestions: list[RoleSuggestion] = []
     for item in data.get("suggestions", []) or []:
@@ -168,6 +150,47 @@ def parse_role_review_output(role: ReviewRoleSpec, raw: str) -> RoleReviewOutcom
         suggestions=suggestions,
         raw_preview=(raw or "")[:500],
         blocking=role.blocking,
+        base_perspective_value=role.base_perspective.value if role.base_perspective else "",
+    )
+
+
+def _parse_role_review_text_fallback(role: ReviewRoleSpec, raw: str, exc: Exception) -> RoleReviewOutcome:
+    """Best-effort parse for role outputs that missed the JSON contract."""
+    text = raw or ""
+    verdict = normalize_review_verdict(text)
+    raw_suggestions = extract_suggestions_from_body(text, limit=max(1, int(role.max_suggestions or 5)))
+
+    suggestions: list[RoleSuggestion] = []
+    if verdict != "PASS":
+        suggestions = [
+            RoleSuggestion(
+                severity="observation",
+                confidence="low",
+                evidence="",
+                recommendation=suggestion,
+                blocking=False,
+            )
+            for suggestion in raw_suggestions
+            if str(suggestion or "").strip()
+        ]
+
+    if suggestions:
+        summary = f"非 JSON 审查输出已降级解析：{len(suggestions)} 条建议"
+    elif verdict == "PASS":
+        summary = "非 JSON 审查输出已按 PASS 解析"
+    else:
+        summary = "审查输出格式异常（已跳过）"
+
+    return RoleReviewOutcome(
+        role_id=role.role_id,
+        role_display_name=role.display_name,
+        role_category=role.category,
+        passed=True,
+        summary=summary,
+        suggestions=suggestions,
+        raw_preview=text[:500],
+        error=f"parse_degraded:{get_error_detail(exc)}",
+        blocking=False,
         base_perspective_value=role.base_perspective.value if role.base_perspective else "",
     )
 

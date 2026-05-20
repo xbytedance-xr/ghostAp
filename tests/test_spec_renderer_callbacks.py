@@ -8,7 +8,7 @@ Covers:
 
 from unittest.mock import MagicMock
 
-from src.acp import ACPEventType
+from src.acp import ACPEvent, ACPEventType, ToolCallInfo
 from src.card.events import CardEventType
 from src.card.render.budget import RenderBudget
 from src.card.state.models import CardMetadata
@@ -336,6 +336,41 @@ class TestSpecStreamProcessorUnifiedCycleCard:
         dispatched_events = [call.args[0] for call in rotator.dispatch.call_args_list]
         event_types = [event.type for event in dispatched_events]
         assert CardEventType.TOOL_STARTED in event_types
+
+    def test_build_phase_tool_update_creates_stream_block_and_progress_summary(self):
+        processor, rotator = _make_processor_for_spec_artifact_tests()
+
+        processor.on_phase_start(1, SpecPhase.BUILD)
+        rotator.dispatch.reset_mock()
+
+        processor.on_phase_event(
+            1,
+            SpecPhase.BUILD,
+            ACPEvent(
+                event_type=ACPEventType.TOOL_CALL_UPDATE,
+                tool_call=ToolCallInfo(
+                    id="tool-1",
+                    title="Edit",
+                    kind="edit",
+                    status="in_progress",
+                    content="src/card/state/reducer.py\npatching",
+                    locations=["src/card/state/reducer.py"],
+                ),
+            ),
+        )
+
+        dispatched_events = [call.args[0] for call in rotator.dispatch.call_args_list]
+        event_types = [event.type for event in dispatched_events]
+        assert event_types[:3] == [
+            CardEventType.TOOL_STARTED,
+            CardEventType.PROGRESS_UPDATED,
+            CardEventType.TOOL_DELTA,
+        ]
+        progress_event = dispatched_events[1]
+        assert progress_event.payload["current"] == 1
+        assert progress_event.payload["total"] == 0
+        assert "1 次工具调用" in progress_event.payload["label"]
+        assert "1 文件" in progress_event.payload["label"]
 
     def test_error_closes_active_stream_blocks_before_failed(self):
         reporter = MagicMock()

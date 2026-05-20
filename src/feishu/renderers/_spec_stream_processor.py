@@ -110,6 +110,8 @@ class SpecStreamProcessor:
         # Build phase tool tracking
         self._build_tool_count: int = 0
         self._build_file_set: set[str] = set()
+        self._build_tool_ids: set[str] = set()
+        self._build_started_tool_ids: set[str] = set()
 
         # TaskOrchestrator for optional task-level cards within a Spec cycle's Build phase
         def _task_session_creator(task_id: str):
@@ -340,6 +342,8 @@ class SpecStreamProcessor:
             # Build phase: use tool panels, no text content needed
             self._build_tool_count = 0
             self._build_file_set = set()
+            self._build_tool_ids = set()
+            self._build_started_tool_ids = set()
 
     def on_phase_event(self, cycle_num: int, phase: SpecPhase, event) -> None:
         """Real-time ACP event processing."""
@@ -377,32 +381,64 @@ class SpecStreamProcessor:
         """Dispatch Build-phase ACP events as native tool/plan CardEvents."""
         card_evt = card_event_from_acp(event)
 
-        # Track tool/file counts for footer progress
-        if event.event_type == ACPEventType.TOOL_CALL_DONE:
-            self._build_tool_count += 1
-            # Extract file paths from tool calls for file count
-            tc = event.tool_call
-            if tc and tc.title:
-                # Common tool names that reference files
-                title_lower = tc.title.lower() if tc.title else ""
-                if any(kw in title_lower for kw in ("write", "edit", "create", "read")):
-                    # Try to extract path from content
-                    content = tc.content or ""
-                    if content and "/" in content:
-                        # Rough heuristic: first line might be a path
-                        first_line = content.split("\n")[0].strip()
-                        if "/" in first_line and len(first_line) < 200:
-                            self._build_file_set.add(first_line)
-            # Update footer with progress
-            progress_text = UI_TEXT["spec_build_progress"].format(tool_count=self._build_tool_count)
-            if self._build_file_set:
-                progress_text += UI_TEXT["spec_build_progress_files"].format(file_count=len(self._build_file_set))
-            self._rotator.dispatch(CardEvent.progress_updated(
-                current=self._build_tool_count, total=0, label=progress_text
-            ))
+        if event.event_type == ACPEventType.TOOL_CALL_START:
+            self._mark_build_tool_started(event)
+            self._rotator.dispatch(card_evt)
+            self._dispatch_build_progress(event)
+            return
 
-        # Forward the converted event to the card session
+        if event.event_type in (ACPEventType.TOOL_CALL_UPDATE, ACPEventType.TOOL_CALL_DONE):
+            self._dispatch_synthetic_tool_start_if_needed(event)
+            self._dispatch_build_progress(event)
+
         self._rotator.dispatch(card_evt)
+
+    def _mark_build_tool_started(self, event) -> None:
+        tc = getattr(event, "tool_call", None)
+        tool_id = str(getattr(tc, "id", "") or "").strip()
+        if tool_id:
+            self._build_started_tool_ids.add(tool_id)
+
+    def _dispatch_synthetic_tool_start_if_needed(self, event) -> None:
+        tc = getattr(event, "tool_call", None)
+        tool_id = str(getattr(tc, "id", "") or "").strip()
+        if not tool_id or tool_id in self._build_started_tool_ids:
+            return
+        tool_name = str(getattr(tc, "title", "") or getattr(tc, "kind", "") or "Tool")
+        self._rotator.dispatch(CardEvent.tool_started(tool_id, tool_name, ""))
+        self._build_started_tool_ids.add(tool_id)
+
+    def _dispatch_build_progress(self, event) -> None:
+        tc = getattr(event, "tool_call", None)
+        tool_id = str(getattr(tc, "id", "") or "").strip()
+        if not tool_id:
+            return
+
+        self._build_tool_ids.add(tool_id)
+        self._build_tool_count = len(self._build_tool_ids)
+        self._record_build_file_refs(tc)
+
+        progress_text = UI_TEXT["spec_build_progress"].format(tool_count=self._build_tool_count)
+        if self._build_file_set:
+            progress_text += UI_TEXT["spec_build_progress_files"].format(file_count=len(self._build_file_set))
+        self._rotator.dispatch(CardEvent.progress_updated(
+            current=self._build_tool_count, total=0, label=progress_text
+        ))
+
+    def _record_build_file_refs(self, tc) -> None:
+        for path in getattr(tc, "locations", None) or []:
+            path_text = str(path or "").strip()
+            if path_text:
+                self._build_file_set.add(path_text)
+
+        title_lower = str(getattr(tc, "title", "") or "").lower()
+        if not any(kw in title_lower for kw in ("write", "edit", "create", "read")):
+            return
+        content = str(getattr(tc, "content", "") or "")
+        if content and "/" in content:
+            first_line = content.split("\n")[0].strip()
+            if "/" in first_line and len(first_line) < 200:
+                self._build_file_set.add(first_line)
 
     def on_phase_done(self, cycle_num: int, phase: SpecPhase, output: str) -> None:
         _, spec_project, state, max_c = self._get_engine_and_state()
