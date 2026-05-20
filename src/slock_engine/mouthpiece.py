@@ -6,7 +6,10 @@ using emoji prefixes, named identifiers, and Interactive Cards for visual identi
 
 from __future__ import annotations
 
+import json
 from typing import Optional
+
+from src.card.render.payload_truncator import check_and_truncate_payload
 
 from .card_templates import build_agent_message_card
 from .models import AgentIdentity
@@ -45,7 +48,7 @@ class Mouthpiece:
         - Markdown content body
         - Footer with agent_type, model, duration
         """
-        return build_agent_message_card(
+        card = build_agent_message_card(
             agent=agent,
             content=content,
             model_info=model_info,
@@ -53,6 +56,7 @@ class Mouthpiece:
             channel_id=channel_id,
             task_id=task_id,
         )
+        return self._guard_feishu_payload(card)
 
     def format_thinking(self, agent: AgentIdentity) -> str:
         """Format a 'thinking' indicator message."""
@@ -61,8 +65,18 @@ class Mouthpiece:
     def format_escalation(self, agent: AgentIdentity, reason: str) -> dict:
         """Format an escalation request card for admin attention."""
         content = f"**⚠️ Escalation Request**\n\n{reason}\n\n*This agent needs human input to proceed.*"
-        return build_agent_message_card(
+        card = build_agent_message_card(
             agent=agent,
             content=content,
             model_info="escalation",
         )
+        return self._guard_feishu_payload(card)
+
+    @staticmethod
+    def _guard_feishu_payload(card: dict) -> dict:
+        """Apply the shared Feishu card guard to direct Slock mouthpiece cards."""
+        raw = json.dumps(card, ensure_ascii=False)
+        guarded = check_and_truncate_payload(raw, engine_type="slock")
+        if guarded == raw:
+            return card
+        return json.loads(guarded)
