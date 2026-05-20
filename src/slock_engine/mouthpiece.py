@@ -34,6 +34,8 @@ class Mouthpiece:
         *,
         model_info: str = "",
         duration_s: Optional[float] = None,
+        channel_id: str = "",
+        task_id: str = "",
     ) -> dict:
         """Format an Interactive Card for an agent's message.
 
@@ -48,6 +50,8 @@ class Mouthpiece:
             content=content,
             model_info=model_info,
             duration_s=duration_s,
+            channel_id=channel_id,
+            task_id=task_id,
         )
 
     def format_thinking(self, agent: AgentIdentity) -> str:

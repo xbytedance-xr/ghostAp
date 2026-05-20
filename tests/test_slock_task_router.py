@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
-
-import pytest
 
 from src.slock_engine.models import AgentIdentity, AgentStatus, SkillProfile
 from src.slock_engine.task_router import TaskClaim, TaskRouter
@@ -99,6 +96,17 @@ class TestTaskRouter:
         assert result is not None
         assert result.agent_id == "a1"
 
+    def test_route_mention_supports_feishu_markup_and_spaced_names(self):
+        """Feishu mention text can include display names with spaces in markup."""
+        router = TaskRouter()
+        agents = [
+            self._make_agent("a1", "Coder Alpha"),
+            self._make_agent("a2", "Reviewer"),
+        ]
+        result = router.route_message('<at user_id="ou_1">Coder Alpha</at> please fix it', agents)
+        assert result is not None
+        assert result.agent_id == "a1"
+
     def test_route_no_mention_falls_to_scoring(self):
         router = TaskRouter()
         agents = [self._make_agent("a1", "Alice")]
@@ -127,6 +135,18 @@ class TestTaskRouter:
         result = router.route_message("please review this PR", [a1, a2])
         assert result is not None
         assert result.agent_id == "a1"
+
+    def test_rank_agents_for_claim_competition_orders_all_idle_candidates(self):
+        """Task assignment can broadcast a claim opportunity in score order."""
+        router = TaskRouter()
+        reviewer = self._make_agent("a1", "Reviewer")
+        coder = self._make_agent("a2", "Coder")
+        router.set_skill_profiles("a1", [SkillProfile(tag="review", success_rate=90.0)])
+        router.set_skill_profiles("a2", [SkillProfile(tag="code", success_rate=90.0)])
+
+        ranked = router.rank_agents_for_claim("please review this PR", [coder, reviewer])
+
+        assert [agent.agent_id for agent in ranked] == ["a1", "a2"]
 
     def test_get_set_agent_status(self):
         router = TaskRouter()

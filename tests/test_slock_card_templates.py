@@ -93,6 +93,25 @@ class TestBuildAgentMessageCard:
         footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
         assert len(footer_elements) == 0
 
+    def test_agent_message_card_has_follow_reasoning_and_done_actions(self):
+        """Agent reply cards expose the follow-up/reasoning/done actions from the spec."""
+        agent = self._make_agent(agent_type="codex", model_name="gpt-5")
+        card = build_agent_message_card(agent, "result", channel_id="chat1", task_id="task1")
+
+        buttons = _collect_buttons(card)
+        labels = {button["text"]["content"] for button in buttons}
+        assert {"@追问", "查看推理", "标记完成"}.issubset(labels)
+        actions = {
+            button["behaviors"][0]["value"]["action"]
+            for button in buttons
+            if button.get("behaviors")
+        }
+        assert {
+            "slock_agent_follow_up",
+            "slock_agent_show_reasoning",
+            "slock_agent_mark_done",
+        }.issubset(actions)
+
 
 class TestBuildStatusPanelCard:
     def test_empty_agents(self):
@@ -476,8 +495,9 @@ class TestBuildWelcomeCard:
         assert "Alpha" in card["header"]["title"]["content"]
 
     def test_body_contains_quick_start_commands(self):
-        from src.slock_engine.card_templates import build_welcome_card
         import json
+
+        from src.slock_engine.card_templates import build_welcome_card
 
         card = build_welcome_card(team_name="MyTeam")
         blob = json.dumps(card, ensure_ascii=False)
@@ -487,8 +507,9 @@ class TestBuildWelcomeCard:
         assert "/slock help" in blob
 
     def test_body_contains_team_name_in_content(self):
-        from src.slock_engine.card_templates import build_welcome_card
         import json
+
+        from src.slock_engine.card_templates import build_welcome_card
 
         card = build_welcome_card(team_name="BetaSquad")
         blob = json.dumps(card, ensure_ascii=False)

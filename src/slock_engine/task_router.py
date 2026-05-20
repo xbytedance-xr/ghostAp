@@ -172,8 +172,9 @@ class TaskRouter:
     3. Normal messages → skill-based scoring to best-match agent
     """
 
-    # Pattern to match @AgentName mentions
-    _MENTION_PATTERN = re.compile(r"@([\w\-]+)", re.UNICODE)
+    # Patterns to match plain @AgentName and Feishu XML-ish mention markup.
+    _MENTION_PATTERN = re.compile(r"@([\w\-\u4e00-\u9fff]+)", re.UNICODE)
+    _FEISHU_MENTION_PATTERN = re.compile(r"<at\b[^>]*>(.*?)</at>", re.IGNORECASE | re.DOTALL)
 
     _SKILL_PROFILE_TTL: float = 60.0  # seconds before cached profiles are considered stale
 
@@ -260,16 +261,45 @@ class TaskRouter:
         # Priority 2: Skill-based scoring for normal messages
         return self._score_and_assign(text, idle_agents)
 
+    def rank_agents_for_claim(
+        self,
+        text: str,
+        available_agents: list[AgentIdentity],
+    ) -> list[AgentIdentity]:
+        """Return all eligible agents ordered for claim competition.
+
+        The first entry is the preferred claimant, but callers should offer the
+        task to subsequent entries when an earlier claim fails.
+        """
+        if not available_agents:
+            return []
+
+        idle_agents = [
+            a for a in available_agents
+            if self.get_agent_status(a.agent_id) == AgentStatus.IDLE
+        ]
+        if not idle_agents:
+            return []
+
+        mentioned = self._extract_mention(text, idle_agents)
+        scored = self._score_agents(text, idle_agents)
+        ordered = [agent for agent, _score in scored]
+        if mentioned is None:
+            return ordered
+        return [mentioned] + [agent for agent in ordered if agent.agent_id != mentioned.agent_id]
+
     def _extract_mention(self, text: str, agents: list[AgentIdentity]) -> Optional[AgentIdentity]:
         """Extract @mention and match to an agent."""
-        matches = self._MENTION_PATTERN.findall(text)
+        matches = self._FEISHU_MENTION_PATTERN.findall(text)
+        matches.extend(self._MENTION_PATTERN.findall(text))
         if not matches:
             return None
 
         for mention in matches:
-            mention_lower = mention.lower()
+            mention_lower = re.sub(r"\s+", " ", mention).strip().lower()
             for agent in agents:
-                if agent.name.lower() == mention_lower:
+                agent_name = re.sub(r"\s+", " ", agent.name).strip().lower()
+                if agent_name == mention_lower:
                     return agent
         return None
 
@@ -279,27 +309,35 @@ class TaskRouter:
         agents: list[AgentIdentity],
     ) -> Optional[AgentIdentity]:
         """Score agents by skill relevance and availability, return best match."""
-        # Extract skill keywords from message
-        required_skills = self.extract_skill_keywords(text)
+        scored = self._score_agents(text, agents)
 
+        if not scored:
+            return None
+
+        best_score = scored[0][1]
+        tied = [agent for agent, score in scored if abs(score - best_score) < 1e-9]
+        if len(tied) == 1:
+            return tied[0]
+
+        with self._lock:
+            selected = tied[self._round_robin_index % len(tied)]
+            self._round_robin_index += 1
+        return selected
+
+    def _score_agents(self, text: str, agents: list[AgentIdentity]) -> list[tuple[AgentIdentity, float]]:
+        """Score agents by relevance, success, and availability."""
+        required_skills = self.extract_skill_keywords(text)
         scored: list[tuple[AgentIdentity, float]] = []
 
         for agent in agents:
             status = self.get_agent_status(agent.agent_id)
-            # Prefer idle agents
             availability = 1.0 if status == AgentStatus.IDLE else 0.3
-
-            # Lazy-load skill profiles from disk if stale/missing
             self._ensure_skill_profiles_loaded(agent.agent_id)
 
-            # Get skill profiles
             with self._lock:
                 profiles = self._skill_profiles.get(agent.agent_id, [])
 
-            # Calculate relevance
             relevance = self._calculate_relevance(profiles, required_skills)
-
-            # Calculate average success rate
             avg_success = 0.5  # default
             if profiles:
                 avg_success = sum(p.success_rate for p in profiles) / len(profiles) / 100.0
@@ -311,18 +349,8 @@ class TaskRouter:
             )
             scored.append((agent, score))
 
-        if not scored:
-            return None
-
-        best_score = max(score for _, score in scored)
-        tied = [agent for agent, score in scored if abs(score - best_score) < 1e-9]
-        if len(tied) == 1:
-            return tied[0]
-
-        with self._lock:
-            selected = tied[self._round_robin_index % len(tied)]
-            self._round_robin_index += 1
-        return selected
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return scored
 
     def extract_skill_keywords(self, text: str) -> list[str]:
         """Extract skill-related keywords from message text."""

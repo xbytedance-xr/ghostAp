@@ -236,6 +236,7 @@ class SlockEngine(BaseEngine):
         self._dirty = False  # dirty-flag for debounced task board persistence
         self._agent_statuses: dict[str, AgentStatus] = {}
         self._agent_sessions: dict[str, object] = {}
+        self._agent_execution_errors: dict[str, str] = {}
         self._escalations: list[EscalationRequest] = []
         self._escalation_retry_counts: dict[str, int] = {}
 
@@ -613,7 +614,31 @@ class SlockEngine(BaseEngine):
                 callbacks.on_agent_running(agent, message)
 
             # Execute via ACP session
-            result = self._run_acp_session(agent, prompt)
+            try:
+                result = self._run_acp_session(agent, prompt)
+            except Exception as exc:
+                self.transition_agent(agent_id, AgentStatus.IDLE)
+                self.escalate(
+                    agent,
+                    f"Agent execution failed: {exc}",
+                    level=EscalationLevel.BLOCKED,
+                    context=message[:1000],
+                    callbacks=callbacks,
+                )
+                return None
+            if result is None:
+                execution_errors = self._get_agent_execution_errors()
+                error_detail = execution_errors.pop(agent_id, "")
+                if error_detail:
+                    self.transition_agent(agent_id, AgentStatus.IDLE)
+                    self.escalate(
+                        agent,
+                        f"Agent execution failed: {error_detail}",
+                        level=EscalationLevel.BLOCKED,
+                        context=message[:1000],
+                        callbacks=callbacks,
+                    )
+                    return None
 
             # Check cancellation after session
             if cancel_event.is_set():
@@ -721,6 +746,15 @@ class SlockEngine(BaseEngine):
         if memory.active_context:
             parts.append(f"\n# Recent Context\n{memory.active_context[-2000:]}")
 
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        group_memory = self._memory.read_group_memory(channel_id)
+        if group_memory:
+            parts.append(f"\n# Team Shared Memory\n{group_memory[-2000:]}")
+
+        global_wiki = self._memory.read_global_wiki()
+        if global_wiki:
+            parts.append(f"\n# Global Knowledge\n{global_wiki[-2000:]}")
+
         parts.append(f"\n# User Message\n{message}")
 
         return "\n".join(parts)
@@ -733,7 +767,9 @@ class SlockEngine(BaseEngine):
         into the system prompt by _execute_agent, restricting which tools the
         agent may use.
         """
+        execution_errors = self._get_agent_execution_errors()
         try:
+            execution_errors.pop(agent.agent_id, None)
             thread_id = f"slock_agent_{agent.agent_id}"
             session = create_engine_session(
                 agent_type=agent.agent_type,
@@ -758,8 +794,17 @@ class SlockEngine(BaseEngine):
                 close_session_safely(session)
 
         except Exception as e:
+            execution_errors[agent.agent_id] = str(e)
             logger.error("ACP session error for agent %s: %s", agent.name, str(e))
             return None
+
+    def _get_agent_execution_errors(self) -> dict[str, str]:
+        """Return the execution-error cache, initializing old test doubles lazily."""
+        execution_errors = getattr(self, "_agent_execution_errors", None)
+        if not isinstance(execution_errors, dict):
+            execution_errors = {}
+            self._agent_execution_errors = execution_errors
+        return execution_errors
 
     # ------------------------------------------------------------------
     # Dirty flag helper

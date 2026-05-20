@@ -192,6 +192,27 @@ class TestCreateTeamHappyPath:
         call_kwargs = mock_lark.create_chat.call_args.kwargs
         assert call_kwargs["name"] == "Alpha [Slock]"
 
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_dissolve_team_deletes_feishu_group(
+        self, MockLarkChatClient, tmp_path
+    ):
+        """`/team dissolve` stops local runtime and dissolves the Feishu group."""
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        handler._check_slock_permission = MagicMock(return_value=True)
+
+        manager = ctx.slock_engine_manager
+        engine = manager.get_or_create("oc_team", str(tmp_path / "root"), engine_name="Slock")
+        engine.activate_channel(SlockChannel(channel_id="oc_team", name="Alpha [Slock]", team_name="Alpha"))
+        manager.register_managed_chat("oc_team")
+
+        handler.dissolve_team("msg-dissolve", "oc_owner", "Alpha")
+
+        MockLarkChatClient.return_value.delete_chat.assert_called_once_with("oc_team")
+        assert manager.is_managed_chat("oc_team") is False
+        handler.reply_text.assert_called_once()
+        assert "已解散" in handler.reply_text.call_args[0][1]
+
 
 # ==================================================================
 # Test: Failure & rollback

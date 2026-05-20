@@ -341,6 +341,61 @@ class TestSlockEngine:
         assert records[1]["agent_id"] == agent.agent_id
         assert records[1]["content"] == "archived response"
 
+    def test_agent_prompt_includes_group_and_global_memory(self, tmp_path):
+        """Agent execution prompt includes L2 shared memory and L3 global knowledge."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_memory", name="Memory", team_name="MemoryTeam")
+        engine.activate_channel(ch)
+        agent = AgentIdentity(agent_id="agent-memory", name="MemoryBot", agent_type="coco")
+        engine.memory.write_group_memory("ch_memory", "Team convention: use pytest.")
+        engine.memory.write_global_wiki("Global standard: document decisions.")
+        agent_memory = SlockMemory(role="You are MemoryBot.", key_knowledge="Knows repo.", active_context="Recent task.")
+
+        prompt = engine._build_agent_prompt(agent, "fix tests", agent_memory)
+
+        assert "# Team Shared Memory" in prompt
+        assert "Team convention: use pytest." in prompt
+        assert "# Global Knowledge" in prompt
+        assert "Global standard: document decisions." in prompt
+
+    def test_execute_agent_escalates_when_session_raises(self, tmp_path):
+        """Fatal ACP execution errors create an escalation instead of disappearing as empty output."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_esc_auto", name="Esc", team_name="EscTeam")
+        engine.activate_channel(ch)
+        agent = AgentIdentity(agent_id="agent-auto-esc", name="EscBot", agent_type="coco")
+        callbacks = SlockEngineCallbacks(on_escalation=MagicMock())
+
+        with patch.object(engine, "_run_acp_session", side_effect=RuntimeError("missing credentials")):
+            result = engine._execute_agent(agent, "deploy to production", callbacks)
+
+        assert result is None
+        pending = engine.get_pending_escalations()
+        assert len(pending) == 1
+        assert pending[0].agent_id == "agent-auto-esc"
+        assert "missing credentials" in pending[0].reason
+        callbacks.on_escalation.assert_called_once()
+        engine.cleanup()
+
+    @patch("src.slock_engine.engine.create_engine_session", side_effect=RuntimeError("token missing"))
+    def test_execute_agent_escalates_when_session_factory_fails(self, mock_create_session, tmp_path):
+        """Errors swallowed inside _run_acp_session still surface as escalations."""
+        engine = SlockEngine(chat_id="chat_factory_esc", root_path=str(tmp_path), memory_base_path=str(tmp_path))
+        ch = SlockChannel(channel_id="ch_factory_esc", name="Esc", team_name="EscTeam")
+        engine.activate_channel(ch)
+        agent = AgentIdentity(agent_id="agent-factory-esc", name="EscBot", agent_type="coco")
+        callbacks = SlockEngineCallbacks(on_escalation=MagicMock())
+        try:
+            result = engine._execute_agent(agent, "deploy to production", callbacks)
+
+            assert result is None
+            pending = engine.get_pending_escalations()
+            assert len(pending) == 1
+            assert "token missing" in pending[0].reason
+            callbacks.on_escalation.assert_called_once()
+        finally:
+            engine.cleanup()
+
     @patch("src.slock_engine.engine.create_engine_session")
     def test_parallel_acp_sessions_close_their_own_session(self, mock_create_session, tmp_path):
         """Parallel agents must not share self._session and close each other's sessions."""
@@ -1179,8 +1234,9 @@ class TestTaskClaimPersistence:
 
     def test_claim_persists_to_disk(self, tmp_path):
         """Claims are written to disk on mutation."""
-        from src.slock_engine.task_router import TaskClaim
         import json
+
+        from src.slock_engine.task_router import TaskClaim
 
         path = str(tmp_path / "claims.json")
         tc = TaskClaim(persist_path=path)
@@ -1194,8 +1250,9 @@ class TestTaskClaimPersistence:
 
     def test_claim_loads_from_disk(self, tmp_path):
         """Claims are restored from disk on construction."""
-        from src.slock_engine.task_router import TaskClaim
         import json
+
+        from src.slock_engine.task_router import TaskClaim
 
         path = str(tmp_path / "claims.json")
         # Write a claim manually
@@ -1208,8 +1265,9 @@ class TestTaskClaimPersistence:
 
     def test_expired_claims_not_loaded(self, tmp_path):
         """Expired claims are pruned on load."""
-        from src.slock_engine.task_router import TaskClaim
         import json
+
+        from src.slock_engine.task_router import TaskClaim
 
         path = str(tmp_path / "claims.json")
         # Write an expired claim (claimed 2 hours ago, TTL is 1 hour)
@@ -1222,8 +1280,9 @@ class TestTaskClaimPersistence:
 
     def test_release_removes_from_disk(self, tmp_path):
         """Release removes claim from persisted file."""
-        from src.slock_engine.task_router import TaskClaim
         import json
+
+        from src.slock_engine.task_router import TaskClaim
 
         path = str(tmp_path / "claims.json")
         tc = TaskClaim(persist_path=path)
@@ -1284,7 +1343,7 @@ class TestEscalationProtocol:
 
     def test_escalate_creates_request(self, tmp_path):
         """escalate() creates an EscalationRequest and stores it."""
-        from src.slock_engine.models import EscalationLevel, EscalationRequest
+        from src.slock_engine.models import EscalationLevel
 
         engine = self._make_engine(tmp_path=tmp_path)
         agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco")
@@ -1546,7 +1605,7 @@ class TestAddTaskOpenLimit:
 
         engine = self._make_engine(tmp_path)
 
-        t1 = engine.add_task("TODO task")
+        assert engine.add_task("TODO task") is not None
         t2 = engine.add_task("In progress task")
         t2.status = TaskStatus.IN_PROGRESS
         t3 = engine.add_task("Done task")

@@ -8,6 +8,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -118,6 +119,21 @@ class TestCreateRoleWithParams:
         assert agent.model_name == ""  # default
         assert agent.emoji == "🤖"  # default
 
+    def test_create_role_ttadk_uses_cli_bridge_agent_type(self):
+        """`--tool ttadk` must create a TTADK CLI-bridge agent, not bare ACP ttadk."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Bridge --tool ttadk")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.agent_type == "ttadk_coco"
+        assert agent.agent_id == "ttadk_coco:default:Bridge"
+
 
 class TestCreateRoleDefaults:
     """AC7: Default role creation without parameters."""
@@ -160,6 +176,7 @@ class TestCreateRoleDefaults:
         values = _collect_card_values(card)
         assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "coco" for v in values)
         assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "codex" for v in values)
+        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "ttadk" for v in values)
 
     def test_select_tool_shows_model_selection_card_with_slock_action(self):
         """Tool choice reuses ACP model discovery but keeps the Slock create-role action."""
@@ -215,6 +232,37 @@ class TestCreateRoleDefaults:
         assert agent.agent_id == "codex:gpt-5:SimpleAgent"
         assert "Core Directives" in agent.system_prompt
         engine.memory.write_agent_memory.assert_called_once()
+
+    def test_unassigned_task_claim_competition_tries_next_agent_after_failed_claim(self):
+        """Automatic assignment broadcasts the claim chance through ranked candidates."""
+        from src.feishu.handlers.slock import SlockHandler
+        from src.slock_engine.models import AgentIdentity
+
+        handler = SlockHandler(MagicMock())
+        handler.reply_text = MagicMock()
+        handler._submit_task_execution = MagicMock()
+
+        task = SimpleNamespace(task_id="task-1", content="please review this")
+        reviewer = AgentIdentity(agent_id="reviewer", name="Reviewer", owner_group="chat_test")
+        coder = AgentIdentity(agent_id="coder", name="Coder", owner_group="chat_test")
+        engine = MagicMock()
+        engine.channel.channel_id = "chat_test"
+        engine.add_task.return_value = task
+        engine.registry.list_agents.return_value = [reviewer, coder]
+        engine.router.rank_agents_for_claim.return_value = [reviewer, coder]
+        engine.claim_task.side_effect = [False, True]
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+        handler._check_assign_rate_limit = MagicMock(return_value=True)
+
+        handler.assign_task("msg_1", "chat_test", "please review this", "")
+
+        assert engine.claim_task.call_args_list[0].args == ("task-1", "reviewer")
+        assert engine.claim_task.call_args_list[1].args == ("task-1", "coder")
+        handler._submit_task_execution.assert_called_once()
+        assert handler._submit_task_execution.call_args.args[2] == coder
 
     def test_select_default_model_does_not_persist_ui_sentinel(self):
         """Default model selection keeps the sentinel UI-only."""

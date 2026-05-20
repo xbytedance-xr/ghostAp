@@ -11,9 +11,10 @@ import logging
 import queue
 import threading as _threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Callable, Optional
 
+from ..utils.redact import redact_sensitive
 from .card_templates import build_escalation_card
 from .models import (
     ABORT_OPTIONS,
@@ -24,10 +25,7 @@ from .models import (
     EscalationLevel,
     EscalationRequest,
     SlockTask,
-    TaskStatus,
 )
-
-from ..utils.redact import redact_sensitive
 
 if TYPE_CHECKING:
     import threading
@@ -51,13 +49,14 @@ class _BoundedIOExecutor:
         self._queue: queue.Queue[tuple[Callable, tuple]] = queue.Queue(
             maxsize=max_queue_size
         )
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="slock-esc-io"
-        )
         self._shutdown = False
         self._lock = _threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        # Start the consumer loop
-        self._consumer_future = self._executor.submit(self._consume_loop)
+        self._thread = _threading.Thread(
+            target=self._consume_loop,
+            name="slock-esc-io",
+            daemon=True,
+        )
+        self._thread.start()
 
     def submit(self, fn: Callable, *args) -> None:
         """Enqueue a task. If full, discard the oldest and log a warning."""
@@ -96,8 +95,7 @@ class _BoundedIOExecutor:
         with self._lock:
             self._shutdown = True
         if wait:
-            self._consumer_future.result(timeout=5)
-        self._executor.shutdown(wait=wait)
+            self._thread.join(timeout=5)
 
 
 class EscalationManager:
@@ -461,7 +459,13 @@ class EscalationManager:
         # Mark state dirty for status panel refresh (cheap, no I/O)
         self._dirty_setter(True)
 
-        self._io_executor.submit(self._do_timeout_io, esc_copy)
+        try:
+            self._io_executor.submit(self._do_timeout_io, esc_copy)
+        except RuntimeError:
+            logger.info(
+                "Skipping timeout I/O for escalation %s because escalation manager is shutting down",
+                escalation_id,
+            )
 
     _IO_CALL_TIMEOUT_S = 10  # Max seconds to wait for a single Feishu API call
 

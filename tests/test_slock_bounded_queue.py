@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.slock_engine.bounded_executor import BoundedExecutor, QueueFullError
 from src.slock_engine.engine import SlockEngine
-from src.slock_engine.task_board_manager import TaskBoardManager
 from src.slock_engine.escalation_manager import EscalationManager
 from src.slock_engine.models import (
     EscalationLevel,
@@ -15,7 +15,7 @@ from src.slock_engine.models import (
     SlockTask,
     TaskStatus,
 )
-from src.slock_engine.bounded_executor import BoundedExecutor, QueueFullError
+from src.slock_engine.task_board_manager import TaskBoardManager
 
 
 def _make_engine_mock(tasks=None, escalations=None):
@@ -287,3 +287,16 @@ class TestBoundedExecutorQueueFull:
             BoundedExecutor(max_workers=0, max_queue_size=5)
         with pytest.raises(ValueError, match="max_queue_size"):
             BoundedExecutor(max_workers=2, max_queue_size=0)
+
+
+class TestEscalationIOExecutorLifecycle:
+    """Regression coverage for escalation background I/O thread lifecycle."""
+
+    def test_bounded_io_executor_uses_daemon_thread(self):
+        from src.slock_engine.escalation_manager import _BoundedIOExecutor
+
+        executor = _BoundedIOExecutor(max_queue_size=2)
+        try:
+            assert executor._thread.daemon is True
+        finally:
+            executor.shutdown(wait=True)

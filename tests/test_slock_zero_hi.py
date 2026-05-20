@@ -6,9 +6,7 @@ or interaction-request messages to users during agent execution.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, call
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from src.slock_engine.models import AgentIdentity, AgentStatus
 
@@ -179,10 +177,10 @@ class TestZeroHumanInteraction:
         auto_approve=True so that underlying tool invocations never prompt
         the user for confirmation.
         """
-        from src.slock_engine.engine import SlockEngine
-
         # Configure settings
         import threading
+
+        from src.slock_engine.engine import SlockEngine
         settings = MagicMock()
         settings.slock_agent_execution_timeout = 60
         settings.coco_execution_timeout = 30
@@ -226,7 +224,6 @@ class TestZeroHumanInteraction:
         agent = self._make_agent(agent_id="agent-auto", name="Builder", agent_type="codex")
 
         # Execute the real _execute_agent which internally calls _run_acp_session
-        callbacks = SlockEngine.__new__(SlockEngine)  # dummy; we just need None callbacks
         SlockEngine._execute_agent(engine, agent, "build the feature", None)
 
         # Verify create_engine_session was called with auto_approve=True

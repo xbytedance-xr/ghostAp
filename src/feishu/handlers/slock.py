@@ -630,7 +630,20 @@ class SlockHandler(BaseEngineHandler):
         engine.deactivate()
         manager.unregister_managed_chat(target_chat_id)
         manager.remove(target_chat_id, engine.root_path)
-        self.reply_text(message_id, f"✅ 团队 **{team_name}** 已停止并归档本地状态")
+        from ...project_chat.lark_chat_client import LarkChatClient
+
+        lark_client = LarkChatClient(api_client_factory=self.ctx.api_client_factory)
+        try:
+            lark_client.delete_chat(target_chat_id)
+        except Exception as e:
+            logger.error("dissolve_team: 解散飞书群失败 chat=%s err=%s", target_chat_id, str(e))
+            self.reply_text(
+                message_id,
+                f"⚠️ 团队 **{team_name}** 本地运行时已停止，但解散飞书群失败: {safe_error_message(e)}",
+            )
+            return
+
+        self.reply_text(message_id, f"✅ 团队 **{team_name}** 已解散并归档本地状态")
 
     # ------------------------------------------------------------------
     # Role / Agent management
@@ -651,6 +664,7 @@ class SlockHandler(BaseEngineHandler):
         {"name": "aiden", "label": "Aiden", "emoji": "🎯", "description": "AI 编程助手"},
         {"name": "claude", "label": "Claude", "emoji": "📝", "description": "评审与长文"},
         {"name": "gemini", "label": "Gemini", "emoji": "💎", "description": "多模态与代码"},
+        {"name": "ttadk", "label": "TTADK", "emoji": "🧩", "description": "CLI 桥接"},
     )
 
     def create_role(
@@ -796,7 +810,8 @@ class SlockHandler(BaseEngineHandler):
         else:
             role = self.TOOL_TYPE_ROLE_MAP.get(tool_type, "custom")
 
-        agent_id = f"{tool_type}:{model_name or 'default'}:{role_name}"
+        runtime_agent_type = self._resolve_slock_runtime_agent_type(tool_type)
+        agent_id = f"{runtime_agent_type}:{model_name or 'default'}:{role_name}"
         existing_raw = engine.registry.get(agent_id)
         existing_agent = existing_raw if isinstance(existing_raw, AgentIdentity) else None
         if existing_agent and not system_prompt:
@@ -814,7 +829,7 @@ class SlockHandler(BaseEngineHandler):
             agent_id=agent_id,
             name=role_name,
             emoji=emoji,
-            agent_type=tool_type,
+            agent_type=runtime_agent_type,
             model_name=model_name,
             system_prompt=system_prompt,
             role=role,
@@ -841,7 +856,8 @@ class SlockHandler(BaseEngineHandler):
                 engine.memory.write_skill_profiles(agent.agent_id, source_profiles)
             else:
                 key_knowledge = template_data.get("key_knowledge") or (
-                    f"tool_type={tool_type}\nmodel={model_name or 'default'}\nrole={role}"
+                    f"tool_type={tool_type}\nruntime_agent_type={runtime_agent_type}\n"
+                    f"model={model_name or 'default'}\nrole={role}"
                 )
                 engine.memory.write_agent_memory(
                     agent.agent_id,
@@ -858,8 +874,16 @@ class SlockHandler(BaseEngineHandler):
         self.reply_text(
             message_id,
             f"✅ 角色 **{agent.emoji} {agent.name}** 已创建 (ID: `{agent.agent_id[:8]}`)\n"
-            f"   工具: `{tool_type}` | 模型: `{model_name or '默认'}` | 角色: `{role}` | Emoji: {emoji}",
+            f"   工具: `{tool_type}` | 运行时: `{runtime_agent_type}` | 模型: `{model_name or '默认'}` | "
+            f"角色: `{role}` | Emoji: {emoji}",
         )
+
+    @staticmethod
+    def _resolve_slock_runtime_agent_type(tool_type: str) -> str:
+        """Map role creation tool choice to an executable agent session backend."""
+        if tool_type == "ttadk":
+            return "ttadk_coco"
+        return tool_type
 
     def show_new_role_tool_selection(
         self,
@@ -1392,8 +1416,12 @@ class SlockHandler(BaseEngineHandler):
             )
             return
 
-        agent = engine.router.route_message(content, agents)
-        if not agent:
+        rank_agents = getattr(engine.router, "rank_agents_for_claim", None)
+        ranked_agents = rank_agents(content, agents) if callable(rank_agents) else []
+        if not isinstance(ranked_agents, list):
+            selected = engine.router.route_message(content, agents)
+            ranked_agents = [selected] if selected else []
+        if not ranked_agents:
             self.reply_text(
                 message_id,
                 f"✅ 任务已创建（等待分配）\n"
@@ -1403,12 +1431,18 @@ class SlockHandler(BaseEngineHandler):
             )
             return
 
-        if not engine.claim_task(task.task_id, agent.agent_id):
-            self.reply_text(message_id, f"❌ 任务 claim 失败，{agent.name} 可能正在执行其他任务")
+        claimed_agent = None
+        for candidate in ranked_agents:
+            if engine.claim_task(task.task_id, candidate.agent_id):
+                claimed_agent = candidate
+                break
+
+        if claimed_agent is None:
+            self.reply_text(message_id, "❌ 任务 claim 失败，所有匹配角色可能都在执行其他任务")
             return
 
         self._submit_task_execution(
-            engine, task, agent, message_id, chat_id, content, project, auto_routed=True
+            engine, task, claimed_agent, message_id, chat_id, content, project, auto_routed=True
         )
 
     def _submit_task_execution(
@@ -1436,7 +1470,12 @@ class SlockHandler(BaseEngineHandler):
 
         def _result_card(result: str, duration: float) -> str:
             card_data = engine._mouthpiece.format_card(
-                agent, result, model_info=agent.agent_type, duration_s=duration
+                agent,
+                result,
+                model_info=agent.agent_type,
+                duration_s=duration,
+                channel_id=chat_id,
+                task_id=task.task_id,
             )
             return json.dumps(card_data, ensure_ascii=False)
 
@@ -1807,6 +1846,24 @@ class SlockHandler(BaseEngineHandler):
         # Per-agent stop needs agent_id from value — handle before standard dispatch
         if action_type == "slock_stop_agent":
             self._stop_single_agent(open_message_id, open_chat_id, value)
+            return
+
+        if action_type == "slock_agent_follow_up":
+            agent_name = value.get("agent_name") or value.get("agent_id") or "Agent"
+            self.send_text_to_chat(open_chat_id, f"可以直接在群里 @ {agent_name} 继续追问。")
+            return
+
+        if action_type == "slock_agent_show_reasoning":
+            self.send_text_to_chat(open_chat_id, "当前 Agent 回复未保存单独推理过程；可查看任务执行卡和消息归档。")
+            return
+
+        if action_type == "slock_agent_mark_done":
+            task_id = value.get("task_id", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if task_id and engine:
+                engine._force_complete_task(task_id)
+            self.send_text_to_chat(open_chat_id, "✅ 已标记完成。")
             return
 
         project_id = value.get("project_id", "")

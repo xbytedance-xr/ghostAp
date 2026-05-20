@@ -48,6 +48,8 @@ def build_agent_message_card(
     *,
     model_info: str = "",
     duration_s: Optional[float] = None,
+    channel_id: str = "",
+    task_id: str = "",
 ) -> dict:
     """Build an Interactive Card for an agent's message (mouthpiece output).
 
@@ -87,6 +89,38 @@ def build_agent_message_card(
             "content": " | ".join(footer_parts),
             "text_size": "notation",
         })
+
+    action_value = {
+        "channel_id": channel_id,
+        "agent_id": agent.agent_id,
+        "agent_name": agent.name,
+        "task_id": task_id,
+    }
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "@追问",
+                    "slock_agent_follow_up",
+                    channel_id=channel_id,
+                    extra_value=action_value,
+                ),
+                _build_callback_button(
+                    "查看推理",
+                    "slock_agent_show_reasoning",
+                    channel_id=channel_id,
+                    extra_value=action_value,
+                ),
+                _build_callback_button(
+                    "标记完成",
+                    "slock_agent_mark_done",
+                    channel_id=channel_id,
+                    button_type="primary_text",
+                    extra_value=action_value,
+                ),
+            ]
+        )
+    )
 
     header: dict = {
         "title": {"tag": "plain_text", "content": header_title},
