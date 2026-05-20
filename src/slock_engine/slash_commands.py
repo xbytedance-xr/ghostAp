@@ -36,6 +36,9 @@ class SlockCommandAction(Enum):
     TASK_ASSIGN = "task_assign"
     TASK_STATUS = "task_status"
 
+    # Discussion
+    DISCUSSION = "discussion"
+
     # Unknown
     UNKNOWN = "unknown"
 
@@ -255,12 +258,22 @@ def _parse_team_subcommand(args: str) -> SlockCommand:
         return SlockCommand(action=SlockCommandAction.TEAM_STATUS, target=subcmd)
 
 
-def is_slock_command(text: str, chat_id: str | None = None, manager=None) -> bool:
+def is_slock_command(
+    text: str,
+    chat_id: str | None = None,
+    manager=None,
+    *,
+    intent_result=None,
+) -> bool:
     """Check if text is a slock-related command.
 
     /slock and /new-team are always captured globally.
     /role, /task, /team, /new-role are only captured when the chat is a
     managed slock chat (manager.is_managed_chat(chat_id) is True).
+
+    If *intent_result* is provided (an IntentResult from the NLI router) and
+    has high confidence for a management action, this also returns True — even
+    without a slash prefix.
     """
     if not text:
         return False
@@ -276,5 +289,15 @@ def is_slock_command(text: str, chat_id: str | None = None, manager=None) -> boo
             return manager.is_managed_chat(chat_id)
         # No manager context — conservative: don't capture
         return False
+
+    # NLI fallback: high-confidence intent classification also counts
+    if intent_result is not None:
+        from src.config import get_settings
+        nli_threshold = get_settings().slock_nli_confidence_threshold
+        if (
+            intent_result.action != SlockCommandAction.UNKNOWN
+            and intent_result.confidence >= nli_threshold
+        ):
+            return True
 
     return False

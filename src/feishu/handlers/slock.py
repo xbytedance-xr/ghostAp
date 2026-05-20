@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shlex
+import threading
 from typing import TYPE_CHECKING, Optional
 
 from ...acp.helper import fetch_acp_models
@@ -32,6 +34,39 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Module-level singleton NLI event loop (daemon thread)
+# ---------------------------------------------------------------------------
+
+_NLI_LOOP: asyncio.AbstractEventLoop | None = None
+_NLI_LOOP_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
+
+def _get_nli_loop() -> asyncio.AbstractEventLoop:
+    """Get or create the singleton NLI event loop running in a daemon thread.
+
+    Thread-safe: uses a module-level lock to ensure only one loop is created.
+    If the loop has stopped (e.g., due to an unhandled exception), it will be
+    recreated automatically.
+    """
+    global _NLI_LOOP
+    with _NLI_LOOP_LOCK:
+        if _NLI_LOOP is not None and _NLI_LOOP.is_running():
+            return _NLI_LOOP
+
+        # Create a new event loop in a daemon thread
+        loop = asyncio.new_event_loop()
+
+        def _run_loop():
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        t = threading.Thread(target=_run_loop, name="slock_nli_loop", daemon=True)
+        t.start()
+        _NLI_LOOP = loop
+        return _NLI_LOOP
+
+
 class SlockHandler(BaseEngineHandler):
     """Manages the full lifecycle of Slock Engine (multi-Agent mouthpiece) tasks."""
 
@@ -39,6 +74,27 @@ class SlockHandler(BaseEngineHandler):
         super().__init__(ctx)
         # Rate-limit tracker: key = "chat_id:sender_id" → list of timestamps
         self._rate_limit_tracker: dict[str, list[float]] = {}
+        # Singleton IntentRouter (AC-10: only instantiated once per handler lifecycle)
+        from src.slock_engine.intent_router import IntentRouter
+        self._intent_router = IntentRouter(
+            confidence_threshold=getattr(ctx.settings, "slock_nli_confidence_threshold", 0.7),
+            timeout=getattr(ctx.settings, "slock_nli_timeout", 5),
+        )
+        # Shared executor for NLI classification (avoids per-message ThreadPoolExecutor)
+        from concurrent.futures import ThreadPoolExecutor
+        self._nli_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="slock_nli")
+
+    def cleanup(self) -> None:
+        """Release resources held by this handler instance.
+
+        Called by the dispatcher when the handler is being rebuilt or shut down.
+        Shuts down the NLI executor to prevent thread leakage.
+        """
+        try:
+            self._nli_executor.shutdown(wait=False)
+            logger.debug("SlockHandler cleanup: _nli_executor shut down")
+        except Exception as exc:
+            logger.warning("SlockHandler cleanup error: %s", str(exc))
 
     # ------------------------------------------------------------------
     # BaseEngineHandler abstract method implementations
@@ -92,12 +148,26 @@ class SlockHandler(BaseEngineHandler):
             else:
                 logger.warning("on_escalation: send_card_to_chat returned None for esc %s", esc.escalation_id)
 
+        def on_card_send(card):
+            """Send a card to the chat and return the message_id."""
+            import json as _json
+            card_json = _json.dumps(card) if isinstance(card, dict) else card
+            return self.send_card_to_chat(chat_id, card_json)
+
+        def on_card_update(msg_id, card):
+            """Update an existing card by message_id."""
+            import json as _json
+            card_json = _json.dumps(card) if isinstance(card, dict) else card
+            return self.update_card(msg_id, card_json)
+
         return SlockEngineCallbacks(
             on_agent_wake=on_agent_wake,
             on_agent_running=on_agent_running,
             on_agent_done=on_agent_done,
             on_escalation=on_escalation,
             on_error=on_error,
+            on_card_send=on_card_send,
+            on_card_update=on_card_update,
         )
 
     # ------------------------------------------------------------------
@@ -127,6 +197,7 @@ class SlockHandler(BaseEngineHandler):
             SlockCommandAction.TASK_LIST: lambda: self.list_tasks(message_id, chat_id, project),
             SlockCommandAction.TASK_ASSIGN: lambda: self.assign_task(message_id, chat_id, cmd.args, cmd.target, project),
             SlockCommandAction.TASK_STATUS: lambda: self.show_task_status(message_id, chat_id, project),
+            SlockCommandAction.DISCUSSION: lambda: self._trigger_nli_discussion(message_id, chat_id, cmd.args, {}, project),
         }
 
         handler = dispatch.get(cmd.action)
@@ -230,35 +301,131 @@ class SlockHandler(BaseEngineHandler):
     ):
         """Route a non-command message in a slock-active chat.
 
-        Three routing modes:
-        1. @AgentName → precise route to named agent
-        2. /task keyword → redirect to handle_slock_command
-        3. Normal text → engine.execute() smart routing
+        Routing priority (FS-01):
+        1. /task keyword → redirect to handle_slock_command
+        2. @AgentName → precise route to named agent
+        3. NLI intent detection → if high confidence, execute as command
+        4. Normal text → engine.execute() smart routing
 
+        NLI fallback: UNKNOWN or low confidence falls through to smart routing (FS-02).
         Execution is submitted asynchronously to the engine's thread pool.
-        A placeholder card is sent immediately and updated in-place upon completion.
         """
         import re
 
-        # Check for /task keyword — redirect to command handler
+        # Priority 1: /task keyword → redirect to command handler
         if text and text.strip().lower().startswith("/task"):
             self.handle_slock_command(message_id, chat_id, text, project)
             return
 
-        manager = self._get_engine_manager()
-        engine = manager.get_activated_engine(chat_id)
-        if not engine:
-            return  # passthrough silently if no engine
-
-        # Check for @AgentName mention — precise routing
+        # Priority 2: @AgentName precise routing (must be before NLI per AC-01)
         at_match = re.search(r"@([\w\-]+)", text or "")
         target_agent = None
-        if at_match:
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+
+        if at_match and engine:
             agent_name = at_match.group(1)
             target_agent = engine.registry.find_by_name(agent_name, channel_id=chat_id)
+            if target_agent:
+                # Direct route to mentioned agent — skip NLI entirely
+                self._execute_routed_message(
+                    engine, message_id, chat_id, text, project, target_agent
+                )
+                return
+
+        # Priority 3: NLI Intent Detection (via dedicated event loop thread)
+        intent_result = None
+        try:
+            # First try synchronous fast path (no LLM, no async)
+            fast_result = self._intent_router.fast_classify(text or "")
+            if fast_result is not None:
+                intent_result = fast_result
+            else:
+                # Fall back to async LLM classification via the singleton NLI loop
+                nli_loop = _get_nli_loop()
+                coro = self._classify_with_timeout(text or "")
+                future = asyncio.run_coroutine_threadsafe(coro, nli_loop)
+                intent_result = future.result(timeout=self.ctx.settings.slock_nli_timeout + 0.2)
+        except Exception as nli_exc:
+            logger.debug("NLI classification skipped (timeout/error): %s", nli_exc)
+            # Fall through to smart routing on any NLI failure
+
+        # Handle activate intent even when engine is not active (FS-03, AC-03)
+        if intent_result and intent_result.action == SlockCommandAction.ACTIVATE:
+            if not engine:
+                self.activate_slock(message_id, chat_id, text or "", project)
+                return
+            # Engine already active — dispatch activate as status
+            self._dispatch_nli_intent(message_id, chat_id, text, project, intent_result)
+            return
+
+        # If engine not activated and no activate intent → send hint (FS-03)
+        if not engine:
+            if intent_result and intent_result.action != SlockCommandAction.UNKNOWN:
+                # User has an intent but engine isn't active
+                self._send_no_engine_hint(message_id, chat_id)
+            return
+
+        # NLI dispatch: only for known actions above threshold (FS-02: UNKNOWN falls through)
+        settings = self.ctx.settings
+        if (
+            intent_result
+            and intent_result.action != SlockCommandAction.UNKNOWN
+            and intent_result.confidence >= settings.slock_nli_confidence_threshold
+        ):
+            if intent_result.confidence >= 0.85:
+                # High confidence: execute directly
+                self._dispatch_nli_intent(message_id, chat_id, text, project, intent_result)
+                return
+            else:
+                # Medium confidence: show confirmation card
+                from ...slock_engine.card_templates import build_nli_feedback_card
+
+                action_value = intent_result.action.value if hasattr(intent_result.action, "value") else str(intent_result.action)
+                description = self._NLI_ACTION_DESCRIPTIONS.get(action_value, action_value)
+                intent_params = {
+                    "action": action_value,
+                    "params": intent_result.params,
+                    "original_text": text,
+                }
+                feedback_card = build_nli_feedback_card(
+                    intent_description=description,
+                    channel_id=chat_id,
+                    intent_params=intent_params,
+                )
+                self.reply_card(message_id, json.dumps(feedback_card, ensure_ascii=False))
+                return
+
+        # Priority 4: Smart routing — engine.execute() (fallback for UNKNOWN/low confidence)
+        self._execute_routed_message(engine, message_id, chat_id, text, project, target_agent=None)
+
+    async def _classify_with_timeout(self, text: str):
+        """Run NLI classification with timeout protection.
+
+        Runs inside the dedicated _NLI_LOOP event loop thread.
+        Uses safe_wait_for for timeout; TimeoutError propagates to the caller.
+        """
+        from src.utils.async_helpers import safe_wait_for
+
+        return await safe_wait_for(
+            self._intent_router.classify_intent(text),
+            timeout=self.ctx.settings.slock_nli_timeout,
+            action="NLI 意图分类",
+        )
+
+    def _execute_routed_message(
+        self,
+        engine,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        project: Optional["ProjectContext"],
+        target_agent,
+    ):
+        """Execute a message routed to a specific agent or via smart routing."""
         agent_used = None
 
-        # --- Callbacks for _execute_async ---
         def _execute():
             nonlocal agent_used
             callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
@@ -351,6 +518,289 @@ class SlockHandler(BaseEngineHandler):
             message_id=message_id,
             chat_id=chat_id,
         )
+
+    # ------------------------------------------------------------------
+    # NLI and routing helpers
+    # ------------------------------------------------------------------
+
+    _NLI_ACTION_DESCRIPTIONS: dict[str, str] = {
+        "status": "查看团队状态",
+        "stop": "停止 Slock 引擎",
+        "help": "查看帮助信息",
+        "new_role": "创建新角色",
+        "role_list": "查看角色列表",
+        "task_list": "查看任务列表",
+        "task_assign": "分配任务",
+        "task_status": "查看任务状态",
+        "activate": "启动 Slock",
+        "discussion": "发起讨论",
+    }
+
+    def _send_no_engine_hint(self, message_id: str, chat_id: str) -> None:
+        """Send a friendly hint card when slock engine is not activated."""
+        hint_card = json.dumps({
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"tag": "plain_text", "content": "💡 Slock 未激活"},
+                "template": "wathet",
+            },
+            "body": {"elements": [
+                {"tag": "markdown", "content": (
+                    "当前群聊尚未启用 Slock 协作模式。\n\n"
+                    "💬 说「**启动协作**」或「**开始干活**」即可激活\n\n"
+                    "---\n"
+                    "📎 *也可用命令*: `/slock`、`/new-team 团队名`、`/slock help`"
+                )},
+            ]},
+        }, ensure_ascii=False)
+        self.reply_card(message_id, hint_card)
+
+    def _dispatch_nli_intent(
+        self,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        project: Optional["ProjectContext"],
+        intent_result,
+    ) -> None:
+        """Dispatch a high-confidence NLI intent by calling handler methods directly.
+
+        Avoids command string assembly — passes structured params to internal
+        handler methods, eliminating quoting/escaping issues.
+        """
+        from src.slock_engine.slash_commands import SlockCommandAction
+
+        action = intent_result.action
+
+        # Param whitelist filtering: only allow known keys per action to prevent injection
+        _ALLOWED_PARAM_KEYS: dict[SlockCommandAction, set[str]] = {
+            SlockCommandAction.TASK_ASSIGN: {"task", "target"},
+            SlockCommandAction.NEW_ROLE: {"name", "tool", "role"},
+            SlockCommandAction.DISCUSSION: {"participants", "topic"},
+            SlockCommandAction.NEW_TEAM: {"name"},
+            SlockCommandAction.ROLE_REMOVE: {"target"},
+            SlockCommandAction.ROLE_INFO: {"target"},
+            SlockCommandAction.ACTIVATE: {"requirement"},
+        }
+        allowed_keys = _ALLOWED_PARAM_KEYS.get(action, set())
+        params = {k: v for k, v in intent_result.params.items() if k in allowed_keys} if allowed_keys else {}
+
+        # --- Simple no-param actions: direct method calls ---
+        if action == SlockCommandAction.STOP:
+            self.stop_slock_engine(message_id, chat_id, project)
+        elif action == SlockCommandAction.STATUS:
+            self.show_slock_status(message_id, chat_id, project)
+        elif action == SlockCommandAction.HELP:
+            self.show_slock_help(message_id)
+        elif action == SlockCommandAction.TASK_LIST:
+            self.list_tasks(message_id, chat_id, project)
+        elif action == SlockCommandAction.TASK_STATUS:
+            self.show_task_status(message_id, chat_id, project)
+        elif action == SlockCommandAction.ROLE_LIST:
+            self.list_roles(message_id, chat_id, project)
+        elif action == SlockCommandAction.TEAM_LIST:
+            self.list_teams(message_id, chat_id, project)
+        elif action == SlockCommandAction.ACTIVATE:
+            self.activate_slock(message_id, chat_id, params.get("requirement", ""), project)
+
+        # --- Parameterized actions: structured params ---
+        elif action == SlockCommandAction.TASK_ASSIGN:
+            # Rate-limit check: consistent with /task assign path
+            if not self._check_assign_rate_limit(message_id, chat_id):
+                return
+            task_content = params.get("task", text)
+            target = params.get("target", "")
+            self.assign_task(message_id, chat_id, task_content, target, project)
+        elif action == SlockCommandAction.NEW_ROLE:
+            name = params.get("name", "Agent")
+            # Build args string for create_role (it handles shlex parsing internally)
+            args_parts = [name]
+            if params.get("tool"):
+                args_parts.append(f"--tool {params['tool']}")
+            if params.get("role"):
+                args_parts.append(f"--role {params['role']}")
+            self.create_role(message_id, chat_id, " ".join(args_parts), project)
+        elif action == SlockCommandAction.NEW_TEAM:
+            team_name = params.get("name", "Team")
+            self.create_team(message_id, chat_id, team_name, project)
+        elif action == SlockCommandAction.ROLE_REMOVE:
+            target = params.get("target", "")
+            self.remove_role(message_id, chat_id, target, project)
+        elif action == SlockCommandAction.ROLE_INFO:
+            target = params.get("target", "")
+            self.show_role_info(message_id, chat_id, target, project)
+
+        # --- Discussion action: trigger inter-agent discussion ---
+        elif action == SlockCommandAction.DISCUSSION:
+            self._trigger_nli_discussion(message_id, chat_id, text, params, project)
+
+        else:
+            # Unhandled intent — fallback to reply
+            self.reply_text(message_id, f"🤔 理解为：{action.value}，但暂不支持自然语言执行此操作。请使用对应的 / 命令。")
+
+    def _trigger_nli_discussion(
+        self,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        params: dict,
+        project: Optional["ProjectContext"],
+    ) -> None:
+        """Handle DISCUSSION intent: resolve participant names and trigger engine discussion.
+
+        Extracts participant agent names from NLI params (or action_hint fallback),
+        resolves them to agent IDs via the engine registry, and triggers the
+        discussion flow through the engine's executor (bounded concurrency + watchdog).
+
+        Permission: admin/owner can always trigger; other members are rate-limited
+        to 3 discussion triggers per 5 minutes.
+        """
+        import json as _json
+        import time as _time
+
+        from src.slock_engine.models import DiscussionThread, DiscussionStatus, AgentStatus
+
+        # Permission gate: check discussion trigger rate-limit for non-admin users
+        if not self._check_discussion_permission(message_id, chat_id):
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self._send_no_engine_hint(message_id, chat_id)
+            return
+
+        # Extract participant names from params
+        participants_raw: list[str] = []
+        if "participants" in params:
+            participants_raw = params["participants"]
+        elif "participant_a" in params and "participant_b" in params:
+            participants_raw = [params["participant_a"], params["participant_b"]]
+
+        if len(participants_raw) < 2:
+            self.reply_text(
+                message_id,
+                "💬 发起讨论需要至少两个参与者。\n\n示例：「让 coder 和 reviewer 讨论一下代码方案」",
+            )
+            return
+
+        # Resolve names to agent IDs
+        participant_ids: list[str] = []
+        unresolved: list[str] = []
+        for name in participants_raw:
+            agent = engine.find_agent_by_name(name) if hasattr(engine, "find_agent_by_name") else None
+            if agent is None:
+                # Fallback: try get_agent directly (if name is already an ID)
+                agent = engine.get_agent(name)
+            if agent:
+                participant_ids.append(agent.agent_id)
+            else:
+                unresolved.append(name)
+
+        if unresolved:
+            self.reply_text(
+                message_id,
+                f"❌ 未找到以下角色：{'、'.join(unresolved)}\n\n请确认角色名称后重试，或使用 `/role list` 查看可用角色。",
+            )
+            return
+
+        if len(participant_ids) < 2:
+            self.reply_text(message_id, "💬 需要至少两个有效参与者才能发起讨论。")
+            return
+
+        # Build discussion thread with config from settings
+        topic = params.get("topic", text)
+        config = engine.build_discussion_config_from_settings()
+        thread = DiscussionThread(
+            channel_id=chat_id,
+            participants=participant_ids,
+            trigger_reason=f"NLI discussion: {topic[:100]}",
+            config=config,
+        )
+
+        # Check capacity and add
+        if not engine._add_discussion(chat_id, thread):
+            self.reply_text(
+                message_id,
+                "⏳ 当前频道讨论数已达上限，请等待现有讨论结束后重试。",
+            )
+            return
+
+        # Send starting card
+        from src.slock_engine.card_templates import build_discussion_card_from_thread, build_discussion_summary_card_from_thread
+
+        try:
+            card = build_discussion_card_from_thread(thread)
+            card_json = _json.dumps(card, ensure_ascii=False)
+            discussion_card_msg_id = self.send_card_to_chat(
+                chat_id, card_json, origin_message_id=message_id
+            )
+        except Exception:
+            discussion_card_msg_id = None
+
+        # Run discussion via engine executor (bounded concurrency) with watchdog
+        settings = self.ctx.settings
+        watchdog_timeout = settings.slock_discussion_timeout
+
+        def _run():
+            from src.slock_engine.discussion_manager import DiscussionManager
+
+            # Watchdog timer: force-terminate if discussion exceeds timeout
+            watchdog = threading.Timer(watchdog_timeout, lambda: _watchdog_trigger())
+            watchdog_fired = threading.Event()
+
+            def _watchdog_trigger():
+                watchdog_fired.set()
+                thread.status = DiscussionStatus.TIMEOUT
+                logger.warning("Discussion watchdog fired: %s (timeout=%ds)", thread.thread_id, watchdog_timeout)
+
+            watchdog.daemon = True
+            watchdog.start()
+
+            try:
+                dm = DiscussionManager(engine=engine, memory_manager=engine._memory, config=config)
+
+                def on_round_complete(updated_thread):
+                    if watchdog_fired.is_set():
+                        return
+                    if discussion_card_msg_id:
+                        try:
+                            updated_card = build_discussion_card_from_thread(updated_thread)
+                            self.update_card(discussion_card_msg_id, _json.dumps(updated_card, ensure_ascii=False))
+                        except Exception:
+                            pass
+
+                completed = dm.run_discussion(thread, topic, on_round_complete=on_round_complete)
+
+                # Send summary card
+                try:
+                    summary_card = build_discussion_summary_card_from_thread(completed)
+                    self.send_card_to_chat(chat_id, _json.dumps(summary_card, ensure_ascii=False))
+                except Exception:
+                    pass
+
+            except Exception as exc:
+                logger.error("NLI discussion failed: %s", exc, exc_info=True)
+                self.reply_text(message_id, f"❌ 讨论执行失败：{str(exc)[:100]}")
+            finally:
+                watchdog.cancel()
+                engine._remove_discussion(chat_id, thread.thread_id)
+                # Reset participant agent states to IDLE
+                for pid in participant_ids:
+                    try:
+                        engine.set_agent_status(pid, AgentStatus.IDLE)
+                    except Exception:
+                        pass
+
+        # Submit to engine executor for bounded concurrency
+        try:
+            executor = engine._get_executor()
+            executor.submit(_run)
+        except Exception as exc:
+            logger.warning("Failed to submit discussion to executor: %s", str(exc))
+            engine._remove_discussion(chat_id, thread.thread_id)
+            self.reply_text(message_id, "⏳ 执行队列已满，请稍后再试。")
 
     # ------------------------------------------------------------------
     # Slock activation
@@ -1653,6 +2103,48 @@ class SlockHandler(BaseEngineHandler):
         else:
             self.send_text_to_chat(chat_id, "⚠️ 未找到该 Agent 或其已处于空闲状态。")
 
+    def _expand_discussion(self, chat_id: str, value: dict):
+        """Show full discussion thread content in response to expand button."""
+        thread_id = value.get("thread_id", "")
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式。")
+            return
+
+        discussions = getattr(engine, "_active_discussions", {})
+        thread = discussions.get(thread_id)
+        if not thread:
+            self.send_text_to_chat(chat_id, "ℹ️ 讨论线程已结束或不存在。")
+            return
+
+        # Format all messages for display
+        lines: list[str] = [f"💬 **讨论详情** (thread: `{thread_id[:12]}...`)\n"]
+        for msg in thread.messages:
+            lines.append(f"**{msg.sender_agent_id}** (R{msg.round_num}):\n{msg.content}\n")
+        self.send_text_to_chat(chat_id, "\n".join(lines)[:4000])
+
+    def _stop_discussion(self, chat_id: str, value: dict):
+        """Manually stop an active discussion thread."""
+        thread_id = value.get("thread_id", "")
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式。")
+            return
+
+        dm = getattr(engine, "_discussion_manager", None)
+        if dm and thread_id:
+            # Look up DiscussionThread object from engine._active_discussions
+            active_discussions = getattr(engine, "_active_discussions", {})
+            thread_obj = active_discussions.get(chat_id)
+            if thread_obj and thread_obj.thread_id == thread_id:
+                stopped = dm.stop_discussion(thread_obj)
+                if stopped:
+                    self.send_text_to_chat(chat_id, "⏹ 讨论已手动终止。")
+                    return
+        self.send_text_to_chat(chat_id, "ℹ️ 讨论线程已结束或不存在。")
+
     # ------------------------------------------------------------------
     # Card action handler
     # ------------------------------------------------------------------
@@ -1761,6 +2253,58 @@ class SlockHandler(BaseEngineHandler):
                 self._rate_limit_tracker[key] = active
             else:
                 self._rate_limit_tracker.pop(key, None)
+
+    def _check_discussion_permission(self, message_id: str, chat_id: str) -> bool:
+        """Check permission for triggering a discussion.
+
+        Admin/owner: always allowed (no rate-limit).
+        Regular members: rate-limited to 3 discussion triggers per 5 minutes.
+        Returns True if allowed, False if denied (with user notification).
+        """
+        import time as _time
+
+        from ...config import get_settings
+        from ...thread.manager import get_current_sender_id
+
+        operator_id = get_current_sender_id() or ""
+        settings = get_settings()
+        admin_ids = settings.admin_user_ids if hasattr(settings, "admin_user_ids") else frozenset()
+
+        # Try to get channel owner from engine
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        channel_owner_id = ""
+        if engine and engine.channel:
+            channel_owner_id = getattr(engine.channel, "owner_id", "") or ""
+
+        # Admin and owner bypass rate-limit
+        is_privileged = (
+            (operator_id and operator_id in admin_ids)
+            or (operator_id and channel_owner_id and operator_id == channel_owner_id)
+        )
+        if is_privileged:
+            return True
+
+        # Rate-limit for regular users: sliding window of 5 minutes, max 3 triggers
+        DISCUSSION_WINDOW = 300.0  # 5 minutes
+        DISCUSSION_MAX = 3
+        tracker_key = f"disc:{chat_id}:{operator_id}"
+        now = _time.time()
+
+        timestamps = self._rate_limit_tracker.get(tracker_key, [])
+        timestamps = [t for t in timestamps if now - t < DISCUSSION_WINDOW]
+
+        if len(timestamps) >= DISCUSSION_MAX:
+            self.reply_text(
+                message_id,
+                f"⚠️ 讨论触发频率超限（每 5 分钟最多 {DISCUSSION_MAX} 次），请稍后重试。",
+            )
+            self._rate_limit_tracker[tracker_key] = timestamps
+            return False
+
+        timestamps.append(now)
+        self._rate_limit_tracker[tracker_key] = timestamps
+        return True
 
     def _check_queue_wait_timeout(self, future, start_time: float, card_message_id: str, chat_id: str) -> bool:
         """Check if task waited too long in queue. Returns True if timed out (caller should abort).
@@ -1940,6 +2484,14 @@ class SlockHandler(BaseEngineHandler):
             if task_id and engine:
                 engine._force_complete_task(task_id)
             self.send_text_to_chat(open_chat_id, "✅ 已标记完成。")
+            return
+
+        if action_type == "slock_discussion_expand":
+            self._expand_discussion(open_chat_id, value)
+            return
+
+        if action_type == "slock_discussion_stop":
+            self._stop_discussion(open_chat_id, value)
             return
 
         project_id = value.get("project_id", "")

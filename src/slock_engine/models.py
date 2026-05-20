@@ -5,6 +5,8 @@ Core dataclasses and enums for the multi-Agent collaboration engine.
 
 from __future__ import annotations
 
+import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -27,6 +29,17 @@ class AgentStatus(Enum):
     CHECKING = "checking"
     SENDING = "sending"
     MOVING = "moving"
+    DISCUSSING = "discussing"
+
+
+class DiscussionStatus(Enum):
+    """Discussion thread lifecycle states."""
+
+    ACTIVE = "active"
+    CONVERGED = "converged"
+    TIMEOUT = "timeout"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    MANUALLY_STOPPED = "manually_stopped"
 
 
 class TaskStatus(Enum):
@@ -137,6 +150,8 @@ class AgentIdentity:
     created_at: float = field(default_factory=time.time)
 
     def __post_init__(self) -> None:
+        # Sanitize agent_id to prevent path traversal
+        self.agent_id = re.sub(r'[^A-Za-z0-9_.:-]+', '_', self.agent_id)
         if self.owner_group and self.owner_group not in self.member_groups:
             self.member_groups.append(self.owner_group)
 
@@ -342,4 +357,179 @@ class SkillProfile:
             success_rate=data.get("success_rate", 50.0),
             total_tasks=data.get("total_tasks", 0),
             last_active=data.get("last_active", 0.0),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Discussion Protocol Models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DiscussionConfig:
+    """Configuration for an inter-agent discussion session."""
+
+    max_rounds: int = 3
+    token_budget: int = 50000
+    trigger_rules: list[str] = field(default_factory=lambda: ["coder->reviewer"])
+    convergence_threshold: float = 0.85  # Similarity threshold to declare convergence
+    discussion_timeout: int = 300  # Total discussion timeout in seconds
+
+    def to_dict(self) -> dict:
+        return {
+            "max_rounds": self.max_rounds,
+            "token_budget": self.token_budget,
+            "trigger_rules": self.trigger_rules,
+            "convergence_threshold": self.convergence_threshold,
+            "discussion_timeout": self.discussion_timeout,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DiscussionConfig:
+        return cls(
+            max_rounds=data.get("max_rounds", 3),
+            token_budget=data.get("token_budget", 50000),
+            trigger_rules=data.get("trigger_rules", ["coder->reviewer"]),
+            convergence_threshold=data.get("convergence_threshold", 0.85),
+            discussion_timeout=data.get("discussion_timeout", 300),
+        )
+
+
+@dataclass
+class DiscussionMessage:
+    """A single message within an inter-agent discussion thread."""
+
+    message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    sender_agent_id: str = ""
+    receiver_agent_id: str = ""
+    content: str = ""
+    round_num: int = 0
+    timestamp: float = field(default_factory=time.time)
+    token_count: int = 0  # Estimated tokens consumed by this message
+
+    def to_dict(self) -> dict:
+        return {
+            "message_id": self.message_id,
+            "sender_agent_id": self.sender_agent_id,
+            "sender_display_name": self.sender_agent_id,
+            "receiver_agent_id": self.receiver_agent_id,
+            "content": self.content,
+            "round_num": self.round_num,
+            "timestamp": self.timestamp,
+            "token_count": self.token_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DiscussionMessage:
+        return cls(
+            message_id=data.get("message_id", str(uuid.uuid4())),
+            sender_agent_id=data.get("sender_agent_id", ""),
+            receiver_agent_id=data.get("receiver_agent_id", ""),
+            content=data.get("content", ""),
+            round_num=data.get("round_num", 0),
+            timestamp=data.get("timestamp", time.time()),
+            token_count=data.get("token_count", 0),
+        )
+
+
+@dataclass
+class DiscussionThread:
+    """A discussion thread between multiple agents."""
+
+    thread_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    channel_id: str = ""
+    participants: list[str] = field(default_factory=list)  # agent_id list
+    messages: list[DiscussionMessage] = field(default_factory=list)
+    _status_value: DiscussionStatus = field(default=DiscussionStatus.ACTIVE, init=False, repr=False)
+    _status_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    config: DiscussionConfig = field(default_factory=DiscussionConfig)
+    trigger_reason: str = ""  # Why this discussion was triggered
+    conclusion: str = ""  # Final conclusion after convergence
+    total_tokens_used: int = 0
+    created_at: float = field(default_factory=time.time)
+    completed_at: Optional[float] = None
+
+    def __init__(
+        self,
+        thread_id: str | None = None,
+        channel_id: str = "",
+        participants: list[str] | None = None,
+        messages: list[DiscussionMessage] | None = None,
+        status: DiscussionStatus = DiscussionStatus.ACTIVE,
+        config: DiscussionConfig | None = None,
+        trigger_reason: str = "",
+        conclusion: str = "",
+        total_tokens_used: int = 0,
+        created_at: float | None = None,
+        completed_at: Optional[float] = None,
+    ) -> None:
+        self.thread_id = thread_id if thread_id is not None else str(uuid.uuid4())
+        self.channel_id = channel_id
+        self.participants = participants if participants is not None else []
+        self.messages = messages if messages is not None else []
+        self._status_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._status_value = status
+        self.config = config if config is not None else DiscussionConfig()
+        self.trigger_reason = trigger_reason
+        self.conclusion = conclusion
+        self.total_tokens_used = total_tokens_used
+        self.created_at = created_at if created_at is not None else time.time()
+        self.completed_at = completed_at
+
+    @property
+    def status(self) -> DiscussionStatus:
+        with self._status_lock:
+            return self._status_value
+
+    @status.setter
+    def status(self, value: DiscussionStatus) -> None:
+        with self._status_lock:
+            self._status_value = value
+
+    @property
+    def current_round(self) -> int:
+        if not self.messages:
+            return 0
+        return max(m.round_num for m in self.messages)
+
+    @property
+    def is_active(self) -> bool:
+        return self.status == DiscussionStatus.ACTIVE
+
+    def to_dict(self) -> dict:
+        return {
+            "thread_id": self.thread_id,
+            "channel_id": self.channel_id,
+            "participants": self.participants,
+            "messages": [m.to_dict() for m in self.messages],
+            "status": self.status.value,
+            "config": self.config.to_dict(),
+            "trigger_reason": self.trigger_reason,
+            "conclusion": self.conclusion,
+            "total_tokens_used": self.total_tokens_used,
+            "created_at": self.created_at,
+            "completed_at": self.completed_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DiscussionThread:
+        messages = [DiscussionMessage.from_dict(m) for m in data.get("messages", [])]
+        config = DiscussionConfig.from_dict(data.get("config", {}))
+        status_val = data.get("status", "active")
+        try:
+            status = DiscussionStatus(status_val)
+        except ValueError:
+            status = DiscussionStatus.ACTIVE
+        return cls(
+            thread_id=data.get("thread_id", str(uuid.uuid4())),
+            channel_id=data.get("channel_id", ""),
+            participants=data.get("participants", []),
+            messages=messages,
+            status=status,
+            config=config,
+            trigger_reason=data.get("trigger_reason", ""),
+            conclusion=data.get("conclusion", ""),
+            total_tokens_used=data.get("total_tokens_used", 0),
+            created_at=data.get("created_at", time.time()),
+            completed_at=data.get("completed_at"),
         )

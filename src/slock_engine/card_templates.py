@@ -32,6 +32,7 @@ _STATUS_LABEL_ZH: dict[str, str] = {
     "checking": "检查中",
     "sending": "发送中",
     "moving": "迁移中",
+    "discussing": "讨论中",
 }
 
 _TASK_STATUS_LABEL_ZH: dict[str, str] = {
@@ -50,6 +51,7 @@ def build_agent_message_card(
     duration_s: Optional[float] = None,
     channel_id: str = "",
     task_id: str = "",
+    discussion_enabled: bool = True,
 ) -> dict:
     """Build an Interactive Card for an agent's message (mouthpiece output).
 
@@ -96,6 +98,8 @@ def build_agent_message_card(
         "agent_name": agent.name,
         "task_id": task_id,
     }
+
+    # Row 1: core action buttons
     elements.extend(
         build_responsive_layout(
             [
@@ -106,8 +110,8 @@ def build_agent_message_card(
                     extra_value=action_value,
                 ),
                 _build_callback_button(
-                    "查看推理",
-                    "slock_agent_show_reasoning",
+                    "让TA继续",
+                    "slock_agent_continue",
                     channel_id=channel_id,
                     extra_value=action_value,
                 ),
@@ -122,6 +126,35 @@ def build_agent_message_card(
         )
     )
 
+    # Row 2: secondary buttons (text style, visually lighter)
+    secondary_buttons = [
+        _build_callback_button(
+            "查看推理",
+            "slock_agent_show_reasoning",
+            channel_id=channel_id,
+            button_type="text",
+            extra_value=action_value,
+        ),
+        _build_callback_button(
+            "换个角色",
+            "slock_agent_switch_role",
+            channel_id=channel_id,
+            button_type="text",
+            extra_value=action_value,
+        ),
+    ]
+    if discussion_enabled:
+        secondary_buttons.append(
+            _build_callback_button(
+                "开启讨论",
+                "slock_start_discussion",
+                channel_id=channel_id,
+                button_type="text",
+                extra_value=action_value,
+            )
+        )
+    elements.extend(build_responsive_layout(secondary_buttons))
+
     header: dict = {
         "title": {"tag": "plain_text", "content": header_title},
         "template": header_template,
@@ -131,6 +164,101 @@ def build_agent_message_card(
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": header,
+        "body": {"elements": elements},
+    }
+
+
+def build_agent_action_buttons(
+    *,
+    channel_id: str = "",
+    extra_value: dict | None = None,
+) -> list[dict]:
+    """Create inline action buttons for the agent response card.
+
+    Returns a list of button dicts suitable for build_responsive_layout().
+
+    Buttons:
+        - "让TA继续" — action: slock_agent_continue
+        - "换个角色" — action: slock_agent_switch_role
+        - "开启讨论" — action: slock_start_discussion
+    """
+    base_value = extra_value or {}
+    return [
+        _build_callback_button(
+            "让TA继续",
+            "slock_agent_continue",
+            channel_id=channel_id,
+            extra_value=base_value,
+        ),
+        _build_callback_button(
+            "换个角色",
+            "slock_agent_switch_role",
+            channel_id=channel_id,
+            extra_value=base_value,
+        ),
+        _build_callback_button(
+            "开启讨论",
+            "slock_start_discussion",
+            channel_id=channel_id,
+            extra_value=base_value,
+        ),
+    ]
+
+
+def build_nli_feedback_card(
+    intent_description: str,
+    channel_id: str,
+    intent_params: dict,
+) -> dict:
+    """Build a confirmation card shown after NLI intent recognition.
+
+    Displays what intent was recognized and offers confirm/cancel buttons.
+
+    Args:
+        intent_description: Human-readable description of the recognized intent
+            (e.g., "创建一个新角色").
+        channel_id: Channel ID for action routing.
+        intent_params: Dict of parsed intent parameters to pass back on confirm.
+    """
+    elements: list[dict] = []
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"我理解你想：**{intent_description}**",
+    })
+
+    action_value = {
+        "channel_id": channel_id,
+        "intent_params": intent_params,
+    }
+
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "确认执行",
+                    "slock_nli_confirm",
+                    channel_id=channel_id,
+                    button_type="primary",
+                    extra_value=action_value,
+                ),
+                _build_callback_button(
+                    "取消",
+                    "slock_nli_cancel",
+                    channel_id=channel_id,
+                    extra_value=action_value,
+                ),
+            ]
+        )
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🤔 意图识别"},
+            "template": "wathet",
+        },
         "body": {"elements": elements},
     }
 
@@ -164,13 +292,14 @@ def build_welcome_card(*, team_name: str) -> dict:
     """Build a welcome card sent inside the newly created Slock team group."""
     content = (
         f"🎭 **Slock 协作团队「{team_name}」已就绪**\n\n"
-        "📌 **快速开始**:\n"
-        "• `/new-role <名称>` — 创建虚拟 Agent\n"
-        "• `/role list` — 查看所有角色\n"
-        "• `/task assign <任务> <角色>` — 分配任务\n"
-        "• `/task status` — 查看任务看板\n"
-        "• `/slock status` — 查看团队状态\n"
-        "• `/slock help` — 查看所有命令"
+        "💬 **直接说就行**:\n"
+        "• 「创建一个编码角色」 — 创建虚拟 Agent\n"
+        "• 「看看谁在」 — 查看所有角色\n"
+        "• 「把代码审查交给 reviewer」 — 分配任务\n"
+        "• 「看看任务进度」 — 查看任务看板\n"
+        "• 「让 coder 和 reviewer 讨论一下」 — 触发讨论\n\n"
+        "---\n"
+        "📎 *也支持斜杠命令*: `/new-role`、`/role list`、`/task assign`、`/slock help`"
     )
     elements: list[dict] = [{"tag": "markdown", "content": content}]
     return {
@@ -594,6 +723,271 @@ def build_agent_move_confirm_card(
 
 
 # ------------------------------------------------------------------
+# Discussion cards
+# ------------------------------------------------------------------
+
+
+def build_discussion_card_from_thread(thread, engine=None) -> dict:
+    """Factory: build discussion card directly from a DiscussionThread object.
+
+    Extracts fields from the thread dataclass and delegates to
+    build_discussion_card (keyword-only signature).
+    """
+    # Resolve participant IDs to display names
+    participants_display = thread.participants
+    if engine:
+        registry = getattr(engine, 'registry', None) or getattr(engine, '_registry', None)
+        if registry:
+            resolved = []
+            for pid in thread.participants:
+                agent = registry.get_agent(pid) if hasattr(registry, 'get_agent') else None
+                if agent:
+                    display = f"{getattr(agent, 'emoji', '')} {agent.name}".strip()
+                    resolved.append(display)
+                else:
+                    resolved.append(pid)
+            participants_display = resolved
+
+    # Resolve message sender IDs
+    messages = []
+    for m in thread.messages:
+        msg_dict = m.to_dict()
+        if engine:
+            registry = getattr(engine, 'registry', None) or getattr(engine, '_registry', None)
+            if registry:
+                agent = registry.get_agent(m.sender_agent_id) if hasattr(registry, 'get_agent') else None
+                if agent:
+                    msg_dict['sender'] = f"{getattr(agent, 'emoji', '')} {agent.name}".strip()
+                    msg_dict['sender_display_name'] = msg_dict['sender']
+        messages.append(msg_dict)
+
+    return build_discussion_card(
+        thread_id=thread.thread_id,
+        participants=participants_display,
+        messages=messages,
+        current_round=thread.current_round,
+        max_rounds=thread.config.max_rounds,
+        trigger_reason=thread.trigger_reason,
+        channel_id=thread.channel_id,
+    )
+
+
+def build_discussion_summary_card_from_thread(thread, engine=None) -> dict:
+    """Factory: build discussion summary card from a completed DiscussionThread.
+
+    Extracts fields from the thread dataclass and delegates to
+    build_discussion_summary_card (keyword-only signature).
+    """
+    # Resolve participant IDs to display names
+    participants_display = thread.participants
+    if engine:
+        registry = getattr(engine, 'registry', None) or getattr(engine, '_registry', None)
+        if registry:
+            resolved = []
+            for pid in thread.participants:
+                agent = registry.get_agent(pid) if hasattr(registry, 'get_agent') else None
+                if agent:
+                    display = f"{getattr(agent, 'emoji', '')} {agent.name}".strip()
+                    resolved.append(display)
+                else:
+                    resolved.append(pid)
+            participants_display = resolved
+
+    return build_discussion_summary_card(
+        thread_id=thread.thread_id,
+        participants=participants_display,
+        conclusion=thread.conclusion,
+        total_rounds=thread.current_round,
+        total_tokens=thread.total_tokens_used,
+        status=thread.status.value if hasattr(thread.status, "value") else str(thread.status),
+        channel_id=thread.channel_id,
+    )
+
+
+def build_discussion_card(
+    *,
+    thread_id: str,
+    participants: list[str],
+    messages: list[dict],
+    current_round: int,
+    max_rounds: int,
+    trigger_reason: str = "",
+    channel_id: str = "",
+) -> dict:
+    """Build a live discussion thread card showing agent-to-agent dialogue.
+
+    Args:
+        thread_id: Unique discussion thread identifier.
+        participants: List of agent display names in the discussion.
+        messages: List of dicts with keys: sender, content, round_num.
+        current_round: Current round number.
+        max_rounds: Maximum allowed rounds.
+        trigger_reason: Why the discussion was triggered.
+        channel_id: Channel ID for action buttons.
+    """
+    header_title = f"💬 Agent 讨论 (轮次 {current_round}/{max_rounds})"
+    header_subtitle = f"👥 {' · '.join(participants)}"
+
+    elements: list[dict] = []
+
+    # Participants line
+    elements.append({
+        "tag": "markdown",
+        "content": f"**参与者:** {' ↔ '.join(participants)}",
+    })
+
+    # Progress bar: visualize completed vs remaining rounds
+    progress_columns = []
+    for i in range(1, max_rounds + 1):
+        color = "purple" if i <= current_round else "grey"
+        progress_columns.append({
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [{
+                "tag": "markdown",
+                "content": f"{'●' if i <= current_round else '○'}",
+                "text_align": "center",
+            }],
+            "background_style": color,
+        })
+    elements.append({
+        "tag": "column_set",
+        "columns": progress_columns,
+        "flex_mode": "stretch",
+        "horizontal_spacing": "small",
+    })
+
+    if trigger_reason:
+        elements.append({
+            "tag": "markdown",
+            "content": f"**触发原因:** {trigger_reason}",
+            "text_size": "notation",
+        })
+
+    elements.append({"tag": "hr"})
+
+    # Show last N messages (limit to 5 to keep card compact)
+    display_messages = messages[-5:] if len(messages) > 5 else messages
+    if len(messages) > 5:
+        elements.append({
+            "tag": "markdown",
+            "content": f"*... 已省略 {len(messages) - 5} 条早期消息*",
+            "text_size": "notation",
+        })
+
+    for msg in display_messages:
+        sender = msg.get("sender", "Agent")
+        content = msg.get("content", "")[:200]
+        round_num = msg.get("round_num", "?")
+        elements.append({
+            "tag": "markdown",
+            "content": f"**{sender}** (R{round_num}):\n{content}",
+        })
+
+    # Action buttons: expand full / stop discussion
+    elements.append({"tag": "hr"})
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "📖 展开全部",
+                    "slock_discussion_expand",
+                    channel_id=channel_id,
+                    extra_value={"thread_id": thread_id},
+                ),
+                _build_callback_button(
+                    "⏹ 停止讨论",
+                    "slock_discussion_stop",
+                    channel_id=channel_id,
+                    button_type="danger",
+                    extra_value={"thread_id": thread_id},
+                ),
+            ]
+        )
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": header_title},
+            "subtitle": {"tag": "plain_text", "content": header_subtitle},
+            "template": "purple",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_discussion_summary_card(
+    *,
+    thread_id: str,
+    participants: list[str],
+    conclusion: str,
+    total_rounds: int,
+    total_tokens: int = 0,
+    status: str = "converged",
+    channel_id: str = "",
+) -> dict:
+    """Build a discussion conclusion card after a discussion ends.
+
+    Args:
+        thread_id: Unique discussion thread identifier.
+        participants: List of agent display names involved.
+        conclusion: The final summarized conclusion.
+        total_rounds: Total number of rounds completed.
+        total_tokens: Total tokens consumed by the discussion.
+        status: Final status (converged, timeout, budget_exhausted, manually_stopped).
+        channel_id: Channel ID for action buttons.
+    """
+    status_labels = {
+        "converged": "✅ 达成共识",
+        "timeout": "⏰ 超时结束",
+        "budget_exhausted": "💰 预算耗尽",
+        "manually_stopped": "⏹ 手动终止",
+    }
+    status_display = status_labels.get(status, status)
+    header_title = f"💬 讨论结论 — {status_display}"
+
+    elements: list[dict] = []
+
+    # Participants and stats
+    elements.append({
+        "tag": "markdown",
+        "content": (
+            f"**参与者:** {' ↔ '.join(participants)}\n"
+            f"**总轮次:** {total_rounds}"
+            + (f" · **Token:** {total_tokens:,}" if total_tokens else "")
+        ),
+    })
+
+    elements.append({"tag": "hr"})
+
+    # Conclusion content
+    elements.append({
+        "tag": "markdown",
+        "content": f"**结论:**\n{conclusion[:500]}",
+    })
+
+    # Footer
+    elements.append({
+        "tag": "markdown",
+        "content": f"`thread: {thread_id[:12]}...`",
+        "text_size": "notation",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": header_title},
+            "template": "green" if status == "converged" else "grey",
+        },
+        "body": {"elements": elements},
+    }
+
+
+# ------------------------------------------------------------------
 # Internal constants
 # ------------------------------------------------------------------
 
@@ -605,6 +999,7 @@ _STATUS_ICON_MAP: dict[AgentStatus, str] = {
     AgentStatus.CHECKING: "🔵",
     AgentStatus.SENDING: "⚪",
     AgentStatus.MOVING: "🔶",
+    AgentStatus.DISCUSSING: "💬",
 }
 
 # Background color mapping for column_set status rows (Feishu card background_style)
@@ -616,6 +1011,7 @@ _STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = {
     AgentStatus.CHECKING: "blue",
     AgentStatus.SENDING: "grey",
     AgentStatus.MOVING: "orange",
+    AgentStatus.DISCUSSING: "purple",
 }
 
 _TASK_STATUS_ICONS: dict[TaskStatus, str] = {

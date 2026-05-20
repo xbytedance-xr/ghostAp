@@ -26,6 +26,7 @@ from .memory_manager import MemoryManager, default_slock_storage_base
 from .models import (
     AgentIdentity,
     AgentStatus,
+    DiscussionStatus,
     EscalationLevel,
     EscalationRequest,
     SlockChannel,
@@ -53,6 +54,9 @@ class SlockEngineCallbacks:
     on_message_routed: Optional[Callable[[str, AgentIdentity], None]] = None
     on_escalation: Optional[Callable[[EscalationRequest], None]] = None
     on_error: Optional[Callable[[str], None]] = None
+    # Discussion card lifecycle callbacks
+    on_card_send: Optional[Callable[[dict], Optional[str]]] = None
+    on_card_update: Optional[Callable[[str, dict], bool]] = None
 
 
 class SlockStreamProcessor:
@@ -195,13 +199,14 @@ class SlockEngine(BaseEngine):
     # try_lock_for_move to ensure a single source of truth.  Values are tuples
     # (immutable) to prevent accidental runtime mutation.
     VALID_TRANSITIONS: dict[AgentStatus, tuple[AgentStatus, ...]] = {
-        AgentStatus.IDLE: (AgentStatus.WAKING, AgentStatus.MOVING),
+        AgentStatus.IDLE: (AgentStatus.WAKING, AgentStatus.MOVING, AgentStatus.DISCUSSING),
         AgentStatus.WAKING: (AgentStatus.THINKING, AgentStatus.IDLE),
         AgentStatus.THINKING: (AgentStatus.RUNNING, AgentStatus.IDLE),
         AgentStatus.RUNNING: (AgentStatus.CHECKING, AgentStatus.IDLE),
         AgentStatus.CHECKING: (AgentStatus.SENDING, AgentStatus.RUNNING, AgentStatus.IDLE),
         AgentStatus.SENDING: (AgentStatus.IDLE,),
         AgentStatus.MOVING: (AgentStatus.IDLE,),
+        AgentStatus.DISCUSSING: (AgentStatus.IDLE,),
     }
 
     def __init__(
@@ -230,6 +235,10 @@ class SlockEngine(BaseEngine):
         self._executor_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._max_parallel_agents = 4
 
+        # Independent executor for inter-agent discussions (decoupled from main agent execution)
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        self._discussion_executor = _TPE(max_workers=2, thread_name_prefix="slock_discussion")
+
         # Channel state
         self._channel: Optional[SlockChannel] = None
         self._tasks: list[SlockTask] = []
@@ -243,6 +252,11 @@ class SlockEngine(BaseEngine):
         # Cancellation tokens for per-agent execution control
         self._cancel_events: dict[str, threading.Event] = {}
         self._cancel_events_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
+        # Discussion state: tracks active inter-agent discussions per channel
+        self._active_discussions: dict[str, list] = {}  # channel_id -> list[DiscussionThread]
+        self._discussions_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._discussion_manager: Optional[object] = None  # Lazy-initialized
 
         # Composed managers (share lock and state references)
         self._task_mgr = TaskBoardManager(
@@ -275,6 +289,35 @@ class SlockEngine(BaseEngine):
             escalation_timeout_s=get_settings().slock_escalation_timeout,
         )
 
+        # Register LLM summarization callback for memory compression
+        self._memory.set_llm_callback(self._summarize_via_llm)
+
+    def _summarize_via_llm(self, prompt: str) -> Optional[str]:
+        """LLM callback for memory summarization via ACP session.
+
+        Creates a lightweight engine session to execute the summarization prompt.
+        Must NOT be called while holding self._memory._lock (caller ensures this).
+        """
+        try:
+            session = create_engine_session(
+                agent_type=self._agent_type,
+                cwd=self.root_path,
+                model_name=None,
+                thread_id="slock_memory_summarize",
+                auto_approve=True,
+            )
+            if session is None:
+                logger.warning("Failed to create session for memory summarization")
+                return None
+            try:
+                result = session.send_prompt(prompt, timeout=60)
+                return result.text if result else None
+            finally:
+                close_session_safely(session)
+        except Exception as exc:
+            logger.warning("Memory summarization LLM call failed: %s", str(exc))
+            return None
+
     @property
     def registry(self) -> AgentRegistry:
         return self._registry
@@ -300,8 +343,73 @@ class SlockEngine(BaseEngine):
         return list(self._tasks)
 
     # ------------------------------------------------------------------
-    # Agent Status Machine
+    # Public API: exposed for DiscussionManager (avoids private access)
     # ------------------------------------------------------------------
+
+    def get_agent(self, agent_id: str) -> Optional[AgentIdentity]:
+        """Get agent identity by ID. Public API for discussion/external use."""
+        return self._registry.get(agent_id)
+
+    def find_agent_by_name(self, name: str, channel_id: Optional[str] = None) -> Optional[AgentIdentity]:
+        """Find agent by display name. Public API for NLI discussion routing."""
+        return self._registry.find_by_name(name, channel_id=channel_id)
+
+    def build_agent_prompt(self, agent: AgentIdentity, message: str, memory=None) -> str:
+        """Build full prompt for an agent. Public wrapper around _build_agent_prompt.
+
+        If memory is None, reads from memory manager automatically.
+        """
+        if memory is None:
+            memory = self._memory.read_agent_memory(agent.agent_id)
+        return self._build_agent_prompt(agent, message, memory)
+
+    def run_agent_session(self, agent: AgentIdentity, prompt: str) -> Optional[str]:
+        """Run an ACP session for the agent. Public wrapper around _run_acp_session."""
+        return self._run_acp_session(agent, prompt)
+
+    # ------------------------------------------------------------------
+    # Discussion Helpers: multi-thread parallel support
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_discussion_config_from_settings(settings=None):
+        """Build a DiscussionConfig from current settings. Shared by all discussion paths."""
+        from .models import DiscussionConfig
+        if settings is None:
+            settings = get_settings()
+        trigger_rules = [
+            r.strip() for r in settings.slock_discussion_trigger_rules.split(",")
+            if r.strip()
+        ]
+        return DiscussionConfig(
+            max_rounds=settings.slock_max_discussion_rounds,
+            token_budget=settings.slock_discussion_token_budget,
+            trigger_rules=trigger_rules or ["coder->reviewer"],
+        )
+
+    def _add_discussion(self, channel_id: str, thread) -> bool:
+        """Add a discussion thread to the channel. Returns False if at capacity."""
+        max_parallel = get_settings().slock_max_parallel_discussions
+        with self._discussions_lock:
+            discussions = self._active_discussions.setdefault(channel_id, [])
+            if len(discussions) >= max_parallel:
+                logger.warning(
+                    "Channel %s at max parallel discussions (%d), rejecting new discussion",
+                    channel_id, max_parallel,
+                )
+                return False
+            discussions.append(thread)
+        return True
+
+    def _remove_discussion(self, channel_id: str, thread_id: str) -> None:
+        """Remove a completed discussion thread from the channel."""
+        with self._discussions_lock:
+            discussions = self._active_discussions.get(channel_id, [])
+            self._active_discussions[channel_id] = [
+                t for t in discussions if t.thread_id != thread_id
+            ]
+            if not self._active_discussions[channel_id]:
+                del self._active_discussions[channel_id]
 
     def get_agent_status(self, agent_id: str) -> AgentStatus:
         """Get current status of an agent."""
@@ -696,6 +804,15 @@ class SlockEngine(BaseEngine):
                 self._router.set_skill_profiles(agent_id, profiles)
                 self._record_observer_learning(agent, message, skill_tags)
 
+                # Discussion hook: trigger inter-agent discussion if enabled
+                self._maybe_trigger_discussion(agent, result, channel_id, callbacks)
+
+                # Memory enhancement: trigger context summarization if threshold exceeded
+                settings_obj = get_settings()
+                self._memory.summarize_context(
+                    agent_id, threshold=settings_obj.slock_memory_summarize_threshold
+                )
+
             return formatted
 
         except AgentCancellationError:
@@ -731,6 +848,159 @@ class SlockEngine(BaseEngine):
                 skill_tags=skill_tags,
             )
 
+    def _maybe_trigger_discussion(
+        self,
+        agent: AgentIdentity,
+        result: str,
+        channel_id: str,
+        callbacks: Optional[SlockEngineCallbacks],
+    ) -> None:
+        """Post-execution hook: check if inter-agent discussion should be triggered.
+
+        Only runs when slock_discussion_enabled is True. Uses DiscussionManager
+        to evaluate trigger conditions and run the discussion loop if triggered.
+        Sends discussion status cards for user visibility.
+        """
+        settings = get_settings()
+        if not settings.slock_discussion_enabled:
+            return
+
+        # Skip discussion trigger for trivial/short responses
+        if len(result.strip()) < 50:
+            return
+
+        # Skip if result is just an acknowledgment or status update
+        _TRIVIAL_PATTERNS = (
+            "已完成", "done", "ok", "好的", "收到", "✅", "已执行",
+            "no issues", "没有问题", "通过", "passed",
+        )
+        result_lower = result.strip().lower()
+        if any(result_lower.startswith(p.lower()) for p in _TRIVIAL_PATTERNS):
+            return
+
+        from .discussion_manager import DiscussionManager
+
+        # Lazy-init discussion manager using shared config builder
+        if self._discussion_manager is None:
+            config = self.build_discussion_config_from_settings(settings)
+            self._discussion_manager = DiscussionManager(
+                engine=self, memory_manager=self._memory, config=config,
+            )
+
+        dm: DiscussionManager = self._discussion_manager  # type: ignore[assignment]
+        thread = dm.should_trigger_discussion(agent, result)
+        if thread is None:
+            return
+
+        # Check parallel discussion capacity
+        if not self._add_discussion(channel_id, thread):
+            logger.info("Discussion rejected: channel %s at max capacity", channel_id)
+            return
+
+        logger.info(
+            "Discussion triggered | agent=%s channel=%s reason=%s participants=%s",
+            agent.agent_id, channel_id, thread.trigger_reason, thread.participants,
+        )
+
+        # Set agent state to DISCUSSING (via state machine validation)
+        if not self.transition_agent(agent.agent_id, AgentStatus.DISCUSSING):
+            logger.info(
+                "Discussion skipped: agent %s not in IDLE state, cannot transition to DISCUSSING",
+                agent.agent_id,
+            )
+            self._remove_discussion(channel_id, thread.thread_id)
+            return
+
+        # Send "discussion in progress" card to user
+        from .card_templates import build_discussion_card_from_thread, build_discussion_summary_card_from_thread
+        discussion_card_msg_id = None
+        if callbacks and callbacks.on_card_send:
+            try:
+                card = build_discussion_card_from_thread(thread)
+                discussion_card_msg_id = callbacks.on_card_send(card)
+            except Exception as card_exc:
+                logger.debug("Failed to send discussion start card: %s", card_exc)
+
+        # Define the discussion runner to be submitted to the executor
+        def _run_discussion():
+            watchdog_timeout = settings.slock_discussion_timeout
+            watchdog_fired = threading.Event()
+
+            def _watchdog_trigger():
+                watchdog_fired.set()
+                thread.status = DiscussionStatus.TIMEOUT
+                logger.warning(
+                    "Discussion watchdog fired: %s (timeout=%ds)",
+                    thread.thread_id, watchdog_timeout,
+                )
+
+            watchdog = threading.Timer(watchdog_timeout, _watchdog_trigger)
+            watchdog.daemon = True
+            watchdog.start()
+
+            try:
+                # Set cancellation event on thread for cooperative cancellation
+                thread.cancellation_event = watchdog_fired
+
+                def on_round_complete(updated_thread):
+                    """Update the discussion card after each round."""
+                    if watchdog_fired.is_set():
+                        return
+                    if discussion_card_msg_id and callbacks and callbacks.on_card_update:
+                        try:
+                            # Pass snapshot to avoid concurrent mutation
+                            snapshot = updated_thread.to_dict() if hasattr(updated_thread, 'to_dict') else updated_thread
+                            card = build_discussion_card_from_thread(updated_thread)
+                            callbacks.on_card_update(discussion_card_msg_id, card)
+                        except Exception as upd_exc:
+                            logger.debug("Failed to update discussion card: %s", upd_exc)
+
+                completed_thread = dm.run_discussion(
+                    thread, result, on_round_complete=on_round_complete
+                )
+
+                # Persist conclusion to L2 shared memory
+                if completed_thread.conclusion:
+                    self._memory.append_discussion_conclusion(
+                        channel_id, completed_thread.conclusion
+                    )
+                    # Sync conclusion to L1 active_context of all participants
+                    for participant_id in completed_thread.participants:
+                        conclusion_entry = (
+                            f"[{time.strftime('%Y-%m-%d %H:%M')}] "
+                            f"Discussion conclusion ({completed_thread.trigger_reason}): "
+                            f"{completed_thread.conclusion[:500]}"
+                        )
+                        self._memory.update_agent_context(participant_id, conclusion_entry)
+
+                # Send discussion summary card
+                if callbacks and callbacks.on_card_send:
+                    try:
+                        summary_card = build_discussion_summary_card_from_thread(completed_thread)
+                        callbacks.on_card_send(summary_card)
+                    except Exception as card_exc:
+                        logger.debug("Failed to send discussion summary card: %s", card_exc)
+
+                if callbacks and callbacks.on_agent_done:
+                    callbacks.on_agent_done(
+                        agent,
+                        f"[Discussion {completed_thread.status.value}] {completed_thread.conclusion[:200]}",
+                    )
+            except Exception as exc:
+                logger.error("Discussion failed: %s", exc, exc_info=True)
+            finally:
+                watchdog.cancel()
+                self.set_agent_status(agent.agent_id, AgentStatus.IDLE)
+                self._remove_discussion(channel_id, thread.thread_id)
+
+        # Submit to discussion executor (non-blocking)
+        try:
+            self._discussion_executor.submit(_run_discussion)
+        except Exception as exc:
+            logger.warning("Failed to submit discussion to executor: %s", str(exc))
+            self.set_agent_status(agent.agent_id, AgentStatus.IDLE)
+            self._remove_discussion(channel_id, thread.thread_id)
+
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
         """Build the full prompt for an agent including system prompt and memory."""
         logger.debug(
@@ -760,10 +1030,22 @@ class SlockEngine(BaseEngine):
         if memory.key_knowledge:
             parts.append(f"\n# Key Knowledge\n{memory.key_knowledge}")
 
-        if memory.active_context:
+        # Memory Enhancement: use conversation replay instead of raw truncation
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        settings = get_settings()
+        replay_rounds = settings.slock_conversation_replay_rounds
+        replay = self._memory.read_conversation_replay(channel_id, replay_rounds)
+        if replay:
+            replay_lines = []
+            for entry in replay:
+                sender = entry.get("agent_name") or entry.get("sender_type", "user")
+                content = entry.get("content", "")[:500]
+                replay_lines.append(f"[{sender}]: {content}")
+            parts.append(f"\n# Recent Conversation\n" + "\n".join(replay_lines))
+        elif memory.active_context:
+            # Fallback: use summarized/truncated active_context
             parts.append(f"\n# Recent Context\n{memory.active_context[-2000:]}")
 
-        channel_id = self._channel.channel_id if self._channel else self.chat_id
         group_memory = self._memory.read_group_memory(channel_id)
         if group_memory:
             parts.append(f"\n# Team Shared Memory\n{group_memory[-2000:]}")
@@ -771,6 +1053,22 @@ class SlockEngine(BaseEngine):
         global_wiki = self._memory.read_global_wiki()
         if global_wiki:
             parts.append(f"\n# Global Knowledge\n{global_wiki[-2000:]}")
+
+        # Discussion context: inject active discussion thread if present (copy-on-read for thread safety)
+        if hasattr(self, '_active_discussions') and hasattr(self, '_discussions_lock'):
+            from ..utils.redact import redact_sensitive
+            with self._discussions_lock:
+                active_threads = list(self._active_discussions.get(channel_id, []))
+            for active_thread in active_threads:
+                if active_thread.is_active and active_thread.messages:
+                    disc_lines = []
+                    for msg in active_thread.messages[-6:]:  # Last 6 messages for context
+                        content = msg.content[:300]
+                        if hasattr(active_thread, 'channel_id') and active_thread.channel_id != channel_id:
+                            content = redact_sensitive(content)
+                        disc_lines.append(f"[Round {msg.round_num}] {msg.sender_agent_id}: {content}")
+                    parts.append(f"\n# Discussion Context\n" + "\n".join(disc_lines))
+                    break  # Only inject the most recent active discussion
 
         parts.append(f"\n# User Message\n{message}")
 
@@ -1141,6 +1439,9 @@ class SlockEngine(BaseEngine):
             self._executor.shutdown(wait=False)
             self._executor = None
 
+        # Shutdown discussion executor
+        self._discussion_executor.shutdown(wait=False)
+
         # Reset all agent statuses
         with self._lock:
             for agent_id in list(self._agent_statuses.keys()):
@@ -1193,6 +1494,9 @@ class SlockEngine(BaseEngine):
             if self._executor is not None:
                 self._executor.shutdown(wait=False)
                 self._executor = None
+
+        # Shutdown discussion executor
+        self._discussion_executor.shutdown(wait=False)
 
         logger.info("SlockEngine deactivated for chat %s", self.chat_id)
 

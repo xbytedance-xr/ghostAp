@@ -12,7 +12,7 @@ import os
 import re
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from .models import SkillProfile, SlockChannel, SlockMemory, SlockTask
 
@@ -34,10 +34,21 @@ class MemoryManager:
     def __init__(self, base_path: str = ""):
         self._base_path = base_path or default_slock_storage_base()
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._llm_callback: Optional[Callable[[str], Optional[str]]] = None
 
     @property
     def base_path(self) -> str:
         return self._base_path
+
+    def set_llm_callback(self, callback: Callable[[str], Optional[str]]) -> None:
+        """Set an LLM callback for intelligent context summarization.
+
+        The callback receives a prompt string and should return the LLM's
+        response as a string, or None on failure.  It will be invoked while
+        self._lock is held, so it MUST complete quickly (the caller is
+        responsible for enforcing timeouts).
+        """
+        self._llm_callback = callback
 
     # ------------------------------------------------------------------
     # L1: Agent Private Memory
@@ -555,8 +566,45 @@ class MemoryManager:
         }
         with self._lock:
             os.makedirs(os.path.dirname(path), exist_ok=True)
+            # Rotation check: rotate if file exceeds 10000 lines or 5MB
+            self._maybe_rotate_archive(path)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+    def _maybe_rotate_archive(self, path: str) -> None:
+        """Rotate archive file if it exceeds size/line limits.
+
+        Must be called while self._lock is held.
+        Limits: 10000 lines or 5MB. Rotates to .old (overwrites existing).
+        """
+        if not os.path.exists(path):
+            return
+        # Check file size first (cheaper than counting lines)
+        try:
+            file_size = os.path.getsize(path)
+        except OSError:
+            return
+
+        MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5MB
+        MAX_LINES = 10000
+
+        needs_rotate = file_size >= MAX_SIZE_BYTES
+        if not needs_rotate:
+            # Count lines only if size check didn't trigger
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    line_count = sum(1 for _ in f)
+                needs_rotate = line_count >= MAX_LINES
+            except OSError:
+                return
+
+        if needs_rotate:
+            old_path = path + ".old"
+            try:
+                os.replace(path, old_path)
+                logger.info("Rotated archive %s -> %s (size=%d)", path, old_path, file_size)
+            except OSError as exc:
+                logger.warning("Failed to rotate archive %s: %s", path, str(exc))
 
     def ensure_directories(self, agent_id: Optional[str] = None, channel_id: Optional[str] = None) -> None:
         """Pre-create directories for an agent and/or channel."""
@@ -566,3 +614,305 @@ class MemoryManager:
             if channel_id:
                 os.makedirs(os.path.join(self._base_path, "groups", channel_id, "tasks"), exist_ok=True)
             os.makedirs(os.path.join(self._base_path, "global"), exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Memory Enhancement: Context Summarization
+    # ------------------------------------------------------------------
+
+    def summarize_context(self, agent_id: str, *, threshold: int = 4000) -> bool:
+        """Summarize L1 active_context when it exceeds the threshold.
+
+        Returns True if summarization was performed, False if not needed.
+        Preserves original file as MEMORY.md.bak before overwriting.
+
+        The LLM callback is invoked OUTSIDE the lock to avoid deadlock.
+        """
+        import shutil
+
+        # Phase 1: read and backup under lock
+        with self._lock:
+            memory = self._read_agent_memory_unlocked(agent_id)
+            if len(memory.active_context) <= threshold:
+                return False
+
+            original_len = len(memory.active_context)
+            text_to_summarize = memory.active_context
+
+            # Create backup: copy MEMORY.md to MEMORY.md.bak (atomic)
+            memory_path = self._agent_memory_path(agent_id)
+            backup_path = memory_path + ".bak"
+            if os.path.exists(memory_path):
+                shutil.copy2(memory_path, backup_path)
+
+        # Phase 2: LLM summarization OUTSIDE lock (may be slow)
+        compressed = self._summarize_text(text_to_summarize)
+
+        # Phase 3: write back under lock
+        with self._lock:
+            memory = self._read_agent_memory_unlocked(agent_id)
+            memory.active_context = compressed
+            self._write_agent_memory_unlocked(agent_id, memory)
+
+        logger.info(
+            "L1 active_context summarized | agent=%s original_len=%d new_len=%d threshold=%d",
+            agent_id, original_len, len(compressed), threshold,
+        )
+        return True
+
+    def _summarize_text(self, text: str, *, max_output_chars: int = 1500) -> str:
+        """Compress text using LLM summarization.
+
+        If an LLM callback has been registered via `set_llm_callback`, it is
+        invoked to produce a high-quality summary.  On any failure the method
+        falls back to simple tail-truncation.
+        """
+        from datetime import datetime, timezone
+
+        if len(text) <= max_output_chars:
+            return text
+
+        timestamp_marker = f"[Context summarized at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}]"
+
+        # --- Attempt LLM-based summarization ---
+        if self._llm_callback is not None:
+            prompt = (
+                "Summarize the following context into key facts, decisions, and "
+                "important details. Preserve all role-relevant information, "
+                "technical decisions, and action items. Output a concise summary "
+                f"under {max_output_chars} characters.\n\n"
+                f"{text}"
+            )
+            try:
+                response = self._llm_callback(prompt)
+                if response and isinstance(response, str) and len(response) <= max_output_chars:
+                    logger.info(
+                        "LLM summarization succeeded | original_len=%d summary_len=%d",
+                        len(text), len(response),
+                    )
+                    return f"{timestamp_marker}\n\n{response}"
+                else:
+                    logger.warning(
+                        "LLM summarization returned invalid response "
+                        "(empty=%s, type=%s, len=%s); falling back to truncation",
+                        not response,
+                        type(response).__name__,
+                        len(response) if isinstance(response, str) else "N/A",
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "LLM summarization failed with exception: %s; falling back to truncation",
+                    exc,
+                )
+
+        # --- Fallback: keep the last max_output_chars with a prefix ---
+        logger.debug(
+            "Using truncation fallback for summarization | original_len=%d max_output_chars=%d",
+            len(text), max_output_chars,
+        )
+        return f"{timestamp_marker}\n\n{text[-max_output_chars:]}"
+
+    # ------------------------------------------------------------------
+    # Memory Enhancement: Conversation Replay
+    # ------------------------------------------------------------------
+
+    def read_conversation_replay(self, channel_id: str, n_rounds: int = 5) -> list[dict]:
+        """Read the most recent n_rounds of conversation from the message archive.
+
+        A 'round' is defined as one user message + one agent response.
+        Returns list of dicts with keys: sender_type, agent_name, content, timestamp.
+        
+        Uses tail-read (reverse scan from file end) to avoid loading the entire file.
+        """
+        import json
+
+        path = self.message_archive_path(channel_id)
+        target_lines = n_rounds * 2
+
+        with self._lock:
+            if not os.path.exists(path):
+                return []
+            try:
+                lines = self._tail_read_lines(path, target_lines)
+            except OSError:
+                return []
+
+        # Parse lines as JSON
+        entries: list[dict] = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                entries.append({
+                    "sender_type": record.get("sender_type", ""),
+                    "agent_name": record.get("agent_name", ""),
+                    "content": record.get("content", ""),
+                    "timestamp": record.get("timestamp", 0.0),
+                })
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        return entries[-target_lines:] if len(entries) > target_lines else entries
+
+    def _tail_read_lines(self, path: str, n: int, buf_size: int = 8192) -> list[str]:
+        """Read the last n lines from a file using reverse seeking.
+        
+        Must be called while self._lock is held (or with external synchronization).
+        """
+        with open(path, "rb") as f:
+            # Seek to end to get file size
+            f.seek(0, 2)
+            file_size = f.tell()
+            
+            if file_size == 0:
+                return []
+            
+            lines: list[str] = []
+            remaining = file_size
+            
+            while len(lines) <= n and remaining > 0:
+                read_size = min(buf_size, remaining)
+                remaining -= read_size
+                f.seek(remaining)
+                chunk = f.read(read_size).decode("utf-8", errors="replace")
+                
+                # Split and accumulate lines
+                chunk_lines = chunk.split("\n")
+                if lines:
+                    # Merge the last piece of previous chunk with first of current
+                    chunk_lines[-1] += lines[0]
+                    lines = chunk_lines + lines[1:]
+                else:
+                    lines = chunk_lines
+            
+            # Remove empty first element if file doesn't start mid-line
+            if lines and not lines[0]:
+                lines = lines[1:]
+            
+            # Remove trailing empty element from final newline
+            if lines and not lines[-1]:
+                lines = lines[:-1]
+            
+            # Return only last n lines
+            return lines[-n:] if len(lines) > n else lines
+
+    # ------------------------------------------------------------------
+    # Memory Enhancement: Structured L2 Group Memory
+    # ------------------------------------------------------------------
+
+    # Standard L2 sections
+    L2_SECTIONS: tuple[str, ...] = ("Decisions", "Blocking Issues", "Conventions")
+
+    def read_group_memory_section(self, channel_id: str, section: str) -> str:
+        """Read a specific section from L2 structured group memory."""
+        with self._lock:
+            path = self._group_memory_path(channel_id)
+            content = self._read_text_unlocked(path)
+
+        if not content:
+            return ""
+
+        # Parse the markdown, extract content under the given # Section header
+        header_pattern = re.compile(r"^#\s+" + re.escape(section) + r"\s*$", re.MULTILINE)
+        match = header_pattern.search(content)
+        if not match:
+            return ""
+
+        # Find the start of content (after the header line)
+        start = match.end()
+        # Find the next top-level header or end of file
+        next_header = re.search(r"^#\s+", content[start:], re.MULTILINE)
+        if next_header:
+            end = start + next_header.start()
+        else:
+            end = len(content)
+
+        return content[start:end].strip()
+
+    def append_group_memory_section(self, channel_id: str, section: str, entry: str) -> None:
+        """Append an entry to a specific section in L2 structured group memory.
+
+        If the section does not exist, it is created at the end of the file.
+        """
+        with self._lock:
+            path = self._group_memory_path(channel_id)
+            content = self._read_text_unlocked(path)
+
+            header_pattern = re.compile(r"^#\s+" + re.escape(section) + r"\s*$", re.MULTILINE)
+            match = header_pattern.search(content)
+
+            if match:
+                # Find the end of this section (next header or EOF)
+                start = match.end()
+                next_header = re.search(r"^#\s+", content[start:], re.MULTILINE)
+                if next_header:
+                    insert_pos = start + next_header.start()
+                    # Insert the entry before the next header
+                    new_content = (
+                        content[:insert_pos].rstrip()
+                        + f"\n{entry}\n\n"
+                        + content[insert_pos:]
+                    )
+                else:
+                    # Append at the end of file
+                    new_content = content.rstrip() + f"\n{entry}\n"
+            else:
+                # Section does not exist — create it at the end
+                new_content = content.rstrip() + f"\n\n# {section}\n{entry}\n"
+
+            self._write_text_unlocked(path, new_content)
+
+        logger.info(
+            "L2 section appended | channel=%s section=%s entry_len=%d",
+            channel_id, section, len(entry),
+        )
+
+    # ------------------------------------------------------------------
+    # Memory Enhancement: Discussion Conclusion
+    # ------------------------------------------------------------------
+
+    def append_discussion_conclusion(
+        self, channel_id: str, conclusion: str, *, section: str = "Decisions"
+    ) -> None:
+        """Write a discussion conclusion to the L2 structured memory.
+
+        Appends the conclusion with a timestamp to the specified section.
+        """
+        timestamp = time.strftime("%Y-%m-%d %H:%M")
+        formatted_entry = f"[{timestamp}] Discussion Conclusion: {conclusion}"
+        self.append_group_memory_section(channel_id, section, formatted_entry)
+
+    def sync_discussion_conclusion_to_agents(
+        self, agent_ids: list[str], conclusion: str, *, trigger_reason: str = ""
+    ) -> None:
+        """Write discussion conclusion to L1 active_context of all participating agents.
+
+        This creates a memory loop: discussion outcomes are remembered by each
+        participant, influencing their future prompt construction.
+
+        Args:
+            agent_ids: List of participating agent IDs.
+            conclusion: The discussion conclusion text.
+            trigger_reason: Optional trigger reason for context.
+        """
+        import time as _time
+
+        timestamp = _time.strftime("%Y-%m-%d %H:%M")
+        for agent_id in agent_ids:
+            context_entry = (
+                f"[{timestamp}] Discussion conclusion"
+                f"{' (' + trigger_reason + ')' if trigger_reason else ''}: "
+                f"{conclusion[:500]}"
+            )
+            try:
+                self.update_agent_context(agent_id, context_entry)
+                logger.debug(
+                    "Discussion conclusion synced to L1 | agent=%s entry_len=%d",
+                    agent_id, len(context_entry),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to sync discussion conclusion to agent %s: %s",
+                    agent_id, exc,
+                )

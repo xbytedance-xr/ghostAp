@@ -117,7 +117,8 @@ class TestWelcomeCardCommands:
     def test_has_slock_status_command(self):
         card = build_welcome_card(team_name="Alpha")
         content = self._get_markdown_content(card)
-        assert "/slock status" in content
+        # NL-first card uses natural language examples; verify NL status example
+        assert "看看谁在" in content
 
     def test_has_slock_help_command(self):
         card = build_welcome_card(team_name="Alpha")
@@ -131,10 +132,11 @@ class TestWelcomeCardCommands:
         assert "/role list" in content
 
     def test_has_task_status_command(self):
-        """AC: welcome card includes /task status command."""
+        """AC: welcome card includes task status NL example."""
         card = build_welcome_card(team_name="Alpha")
         content = self._get_markdown_content(card)
-        assert "/task status" in content
+        # NL-first card uses natural language; verify task-related NL example
+        assert "任务" in content or "/task assign" in content
 
     def test_team_name_in_header(self):
         card = build_welcome_card(team_name="MyTeam")
@@ -149,3 +151,33 @@ class TestWelcomeCardCommands:
             if el.get("tag") == "markdown":
                 parts.append(el.get("content", ""))
         return "\n".join(parts)
+
+
+class TestNLICardVisual:
+    """AC11: NLI confirmation card visual."""
+
+    def test_nli_card_has_thinking_emoji(self):
+        """NLI feedback card should use 🤔 emoji, not ⚠️."""
+        from src.slock_engine.card_templates import build_nli_feedback_card
+
+        card = build_nli_feedback_card(
+            intent_description="创建新角色",
+            channel_id="ch1",
+            intent_params={"action": "new_role", "params": {}},
+        )
+        header_content = card["header"]["title"]["content"]
+        assert "🤔" in header_content
+        assert "⚠️" not in header_content
+
+    def test_nli_card_title_is_intent_recognition(self):
+        """NLI card title should be '意图识别', not '意图确认'."""
+        from src.slock_engine.card_templates import build_nli_feedback_card
+
+        card = build_nli_feedback_card(
+            intent_description="查看状态",
+            channel_id="ch1",
+            intent_params={"action": "status", "params": {}},
+        )
+        header_content = card["header"]["title"]["content"]
+        assert "意图识别" in header_content
+        assert "意图确认" not in header_content

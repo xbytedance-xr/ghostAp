@@ -544,6 +544,21 @@ class Settings(BaseSettings):
     slock_assign_rate_limit: int = Field(default=5, ge=1, description="非管理员每分钟最大任务提交数（rate-limit）")
     slock_escalation_timeout: int = Field(default=1800, ge=60, description="Slock 升级请求自动中止超时（秒），默认 30 分钟")
 
+    # Slock Discussion / NLI / Memory Enhancement ----------------------------
+    slock_discussion_enabled: bool = Field(default=True, description="是否启用 Agent 间自动讨论（默认开启）")
+    slock_max_discussion_rounds: int = Field(default=3, ge=1, le=10, description="讨论链最大轮次，超限强制收敛")
+    slock_discussion_trigger_rules: str = Field(
+        default="coder->reviewer,architect->coder",
+        description="讨论触发规则（role->role 格式，逗号分隔）",
+    )
+    slock_nli_confidence_threshold: float = Field(default=0.6, ge=0.0, le=1.0, description="NLI 意图分类置信度阈值，低于此值 fallback 到 agent 路由")
+    slock_nli_timeout: float = Field(default=2.5, ge=0.1, description="NLI 意图分类超时（秒），超时直接 fallback")
+    slock_memory_summarize_threshold: int = Field(default=4000, ge=1000, description="L1 active_context 超过此字符数时触发 LLM 摘要压缩")
+    slock_conversation_replay_rounds: int = Field(default=5, ge=1, le=20, description="从 messages.jsonl 回读的最近对话轮数")
+    slock_discussion_token_budget: int = Field(default=50000, ge=1000, description="单次讨论链的 token 预算上限")
+    slock_max_parallel_discussions: int = Field(default=3, ge=1, le=10, description="同一 channel 内最大并行讨论数，超出时排队")
+    slock_discussion_timeout: int = Field(default=300, ge=30, description="讨论 watchdog 超时秒数，超时自动终止讨论")
+
     @field_validator("slock_team_name_suffix", mode="before")
     @classmethod
     def _warn_deprecated_slock_prefix(cls, v: str) -> str:

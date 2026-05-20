@@ -523,8 +523,8 @@ class TestBuildWelcomeCard:
         blob = json.dumps(card, ensure_ascii=False)
         assert "/new-role" in blob
         assert "/task assign" in blob
-        assert "/slock status" in blob
         assert "/slock help" in blob
+        assert "/role list" in blob
 
     def test_body_contains_team_name_in_content(self):
         import json
@@ -613,3 +613,265 @@ class TestAllRoleColorsMapping:
         agent = self._make_agent("custom")
         card = build_agent_message_card(agent, "x")
         assert card["header"]["template"] == "grey"
+
+
+# ===========================================================================
+# Test Class: build_discussion_card_from_thread / build_discussion_summary_card_from_thread
+# ===========================================================================
+
+
+class TestBuildDiscussionCardFromThread:
+    """Tests for the from_thread factory methods that bridge DiscussionThread → keyword-only card builders."""
+
+    def _make_thread(self):
+        from src.slock_engine.models import (
+            DiscussionConfig,
+            DiscussionMessage,
+            DiscussionStatus,
+            DiscussionThread,
+        )
+
+        return DiscussionThread(
+            thread_id="thread-abc-123",
+            channel_id="chat-001",
+            participants=["Coder", "Reviewer"],
+            messages=[
+                DiscussionMessage(
+                    sender_agent_id="coder-01",
+                    receiver_agent_id="reviewer-01",
+                    content="Here is my implementation.",
+                    round_num=1,
+                    token_count=20,
+                ),
+                DiscussionMessage(
+                    sender_agent_id="reviewer-01",
+                    receiver_agent_id="coder-01",
+                    content="LGTM, looks good!",
+                    round_num=2,
+                    token_count=10,
+                ),
+            ],
+            status=DiscussionStatus.ACTIVE,
+            config=DiscussionConfig(max_rounds=5, token_budget=50000),
+            trigger_reason="rule:coder->reviewer",
+            total_tokens_used=30,
+        )
+
+    def test_build_discussion_card_from_thread_returns_valid_card(self):
+        """Factory produces a valid Feishu card dict with correct fields."""
+        from src.slock_engine.card_templates import build_discussion_card_from_thread
+
+        thread = self._make_thread()
+        card = build_discussion_card_from_thread(thread)
+
+        assert card["schema"] == "2.0"
+        assert "header" in card
+        assert "body" in card
+        # Header contains round info
+        assert "2/5" in card["header"]["title"]["content"]
+
+    def test_build_discussion_card_from_thread_contains_participants(self):
+        """Card body contains participant names."""
+        import json
+
+        from src.slock_engine.card_templates import build_discussion_card_from_thread
+
+        thread = self._make_thread()
+        card = build_discussion_card_from_thread(thread)
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "Coder" in blob
+        assert "Reviewer" in blob
+
+    def test_build_discussion_card_from_thread_contains_trigger_reason(self):
+        """Card body contains the trigger reason."""
+        import json
+
+        from src.slock_engine.card_templates import build_discussion_card_from_thread
+
+        thread = self._make_thread()
+        card = build_discussion_card_from_thread(thread)
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "rule:coder->reviewer" in blob
+
+    def test_build_discussion_card_from_thread_contains_messages(self):
+        """Card body contains message content."""
+        import json
+
+        from src.slock_engine.card_templates import build_discussion_card_from_thread
+
+        thread = self._make_thread()
+        card = build_discussion_card_from_thread(thread)
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "Here is my implementation." in blob
+        assert "LGTM" in blob
+
+
+class TestBuildDiscussionSummaryCardFromThread:
+    """Tests for build_discussion_summary_card_from_thread factory."""
+
+    def _make_completed_thread(self):
+        from src.slock_engine.models import (
+            DiscussionConfig,
+            DiscussionMessage,
+            DiscussionStatus,
+            DiscussionThread,
+        )
+
+        thread = DiscussionThread(
+            thread_id="thread-done-456",
+            channel_id="chat-002",
+            participants=["Architect", "Tester"],
+            messages=[
+                DiscussionMessage(
+                    sender_agent_id="arch-01",
+                    content="Let's use microservices.",
+                    round_num=1,
+                ),
+                DiscussionMessage(
+                    sender_agent_id="test-01",
+                    content="I agree with microservices.",
+                    round_num=2,
+                ),
+            ],
+            status=DiscussionStatus.CONVERGED,
+            config=DiscussionConfig(max_rounds=5),
+            trigger_reason="rule:architect->tester",
+            total_tokens_used=500,
+            conclusion="Team agreed on microservices architecture.",
+        )
+        return thread
+
+    def test_build_summary_card_returns_valid_card(self):
+        """Factory produces a valid Feishu card."""
+        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
+
+        thread = self._make_completed_thread()
+        card = build_discussion_summary_card_from_thread(thread)
+
+        assert card["schema"] == "2.0"
+        assert "header" in card
+        assert "body" in card
+        # Converged status shows green header
+        assert card["header"]["template"] == "green"
+
+    def test_build_summary_card_contains_conclusion(self):
+        """Summary card contains the conclusion text."""
+        import json
+
+        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
+
+        thread = self._make_completed_thread()
+        card = build_discussion_summary_card_from_thread(thread)
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "Team agreed on microservices architecture." in blob
+
+    def test_build_summary_card_contains_participants(self):
+        """Summary card contains participant names."""
+        import json
+
+        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
+
+        thread = self._make_completed_thread()
+        card = build_discussion_summary_card_from_thread(thread)
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "Architect" in blob
+        assert "Tester" in blob
+
+    def test_build_summary_card_contains_token_count(self):
+        """Summary card contains the token count."""
+        import json
+
+        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
+
+        thread = self._make_completed_thread()
+        card = build_discussion_summary_card_from_thread(thread)
+        blob = json.dumps(card, ensure_ascii=False)
+        assert "500" in blob
+
+    def test_build_summary_card_timeout_shows_grey_header(self):
+        """Timeout status produces a grey header template."""
+        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
+        from src.slock_engine.models import DiscussionStatus
+
+        thread = self._make_completed_thread()
+        thread.status = DiscussionStatus.TIMEOUT
+        card = build_discussion_summary_card_from_thread(thread)
+        assert card["header"]["template"] == "grey"
+
+
+class TestCardButtonLimits:
+    """AC10: Agent message card buttons per row."""
+
+    def test_first_row_has_max_3_buttons(self):
+        """First button row should have at most 3 buttons."""
+        from src.slock_engine.card_templates import build_agent_message_card
+        from src.slock_engine.models import AgentIdentity
+
+        agent = AgentIdentity(
+            agent_id="test:coco:coder",
+            name="Coder",
+            emoji="🔧",
+            agent_type="coco",
+            role="coder",
+        )
+        card = build_agent_message_card(
+            agent=agent,
+            content="Test response",
+            channel_id="ch1",
+        )
+        # Find the first responsive_layout/action_block in elements
+        body_elements = card["body"]["elements"]
+        button_rows = [
+            el for el in body_elements
+            if el.get("tag") == "action" or (
+                el.get("tag") == "column_set" and
+                any("button" in str(col) for col in el.get("columns", []))
+            )
+        ]
+        if button_rows:
+            first_row = button_rows[0]
+            # Count buttons in first action row
+            if first_row.get("tag") == "action":
+                assert len(first_row.get("actions", [])) <= 3
+            elif first_row.get("tag") == "column_set":
+                assert len(first_row.get("columns", [])) <= 3
+
+
+class TestDiscussionCardProgress:
+    """AC15: Discussion card progress bar and purple template."""
+
+    def test_discussion_card_has_progress_bar(self):
+        """Discussion card should contain a progress bar column_set."""
+        from src.slock_engine.card_templates import build_discussion_card
+
+        card = build_discussion_card(
+            thread_id="thread1",
+            participants=["Agent A", "Agent B"],
+            messages=[{"sender": "Agent A", "content": "hello", "round_num": 1}],
+            current_round=2,
+            max_rounds=5,
+            channel_id="ch1",
+        )
+        body_elements = card["body"]["elements"]
+        # Find column_set that looks like a progress bar
+        progress_bars = [
+            el for el in body_elements
+            if el.get("tag") == "column_set" and
+            any(col.get("background_style") in ("purple", "grey")
+                for col in el.get("columns", []))
+        ]
+        assert len(progress_bars) >= 1, "Discussion card should have a progress bar"
+
+    def test_discussion_card_purple_template(self):
+        """Discussion card header should use purple template."""
+        from src.slock_engine.card_templates import build_discussion_card
+
+        card = build_discussion_card(
+            thread_id="thread1",
+            participants=["Agent A", "Agent B"],
+            messages=[],
+            current_round=1,
+            max_rounds=3,
+            channel_id="ch1",
+        )
+        assert card["header"]["template"] == "purple"
