@@ -14,10 +14,9 @@
 
 import pytest
 
-from src.utils.text import format_duration, format_time_ago, make_progress_bar
 from src.card.ui_text import UI_TEXT
+from src.utils.text import format_duration, format_time_ago, make_progress_bar
 from src.utils.ui_text import SPEC_UI_TEXT
-
 
 # ---------------------------------------------------------------------------
 # format_duration 契约

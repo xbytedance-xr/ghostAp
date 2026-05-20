@@ -14,8 +14,6 @@ Protected regression scenarios:
 
 from __future__ import annotations
 
-import threading
-
 import pytest
 
 from src.utils.lock_order import (
@@ -27,7 +25,6 @@ from src.utils.lock_order import (
     ordered_lock,
     ordered_rlock,
 )
-
 
 # ---------------------------------------------------------------------------
 # Enum stability assertions

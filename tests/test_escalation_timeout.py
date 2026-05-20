@@ -6,23 +6,16 @@ deadlock prevention, configurable timeout, and card_message_id serialization.
 
 from __future__ import annotations
 
-import copy
 import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.slock_engine.card_templates import build_escalation_card
 from src.slock_engine.escalation_manager import EscalationManager
 from src.slock_engine.models import (
-    AgentIdentity,
-    AgentStatus,
     EscalationLevel,
     EscalationRequest,
-    SlockTask,
-    TaskStatus,
 )
 
 

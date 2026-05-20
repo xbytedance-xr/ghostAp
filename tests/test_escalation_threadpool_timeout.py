@@ -17,7 +17,6 @@ import pytest
 
 from src.slock_engine.escalation_manager import EscalationManager
 from src.slock_engine.models import (
-    EscalationLevel,
     EscalationRequest,
 )
 

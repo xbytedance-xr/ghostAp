@@ -12,13 +12,9 @@ import threading
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.slock_engine.escalation_manager import EscalationManager
 from src.slock_engine.models import (
     AgentIdentity,
-    AgentStatus,
-    EscalationLevel,
     EscalationRequest,
 )
 
@@ -115,7 +111,7 @@ class TestCardMessageIdAvailableBeforeTimeout:
             esc.card_message_id = "msg_written_by_callback"
 
         callbacks = _FakeCallbacks(on_escalation=on_escalation)
-        esc = mgr.escalate(agent, "test reason", callbacks=callbacks)
+        mgr.escalate(agent, "test reason", callbacks=callbacks)
 
         # Wait for timeout to fire + IO to complete
         time.sleep(2.5)
@@ -192,7 +188,6 @@ class TestConcurrentEscalationsThreadBounded:
         )
         mgr._IO_CALL_TIMEOUT_S = 5
 
-        agent = _make_agent()
         baseline_threads = threading.active_count()
 
         # Create 20 escalations that will all timeout

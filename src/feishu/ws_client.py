@@ -45,8 +45,8 @@ from ..project import (
     ProjectContextManager,
     ProjectManager,
 )
-from ..spec_engine import SpecEngineManager, SpecReporter
 from ..slock_engine import SlockEngineManager
+from ..spec_engine import SpecEngineManager, SpecReporter
 from ..tasking import TaskPriority, TaskScheduler, TaskSpec
 from ..thread import get_current_thread_id, get_thread_manager
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException

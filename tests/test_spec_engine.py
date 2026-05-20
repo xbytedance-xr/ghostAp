@@ -44,7 +44,6 @@ from src.spec_engine.task_persistence import SpecTaskState, load_task_state
 from src.spec_engine.tracker import PhaseTracker
 from src.spec_engine.utils import parse_review_output_loose
 
-
 # ---------------------------------------------------------------------------
 # Shared spec settings factory — avoids 50-line duplication across test classes
 # ---------------------------------------------------------------------------

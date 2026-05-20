@@ -8,8 +8,6 @@ from __future__ import annotations
 import subprocess
 import sys
 
-import pytest
-
 
 class TestValidateCLI:
     """AC-16: `python -m src.main --validate` exits 0 with valid config."""

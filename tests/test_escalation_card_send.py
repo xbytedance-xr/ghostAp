@@ -9,19 +9,13 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import threading
-import time
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.slock_engine.engine import SlockEngineCallbacks
 from src.slock_engine.escalation_manager import EscalationManager
 from src.slock_engine.models import (
     AgentIdentity,
-    AgentStatus,
-    EscalationLevel,
     EscalationRequest,
 )
 from src.slock_engine.task_router import TaskRouter

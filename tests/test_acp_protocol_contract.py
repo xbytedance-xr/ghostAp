@@ -15,10 +15,7 @@ Protected regression scenarios:
 
 from __future__ import annotations
 
-import time
 from dataclasses import fields
-
-import pytest
 
 from src.acp.models import (
     ACPEvent,
@@ -29,7 +26,6 @@ from src.acp.models import (
     PromptResult,
     ToolCallInfo,
 )
-
 
 # ---------------------------------------------------------------------------
 # ACPEventType enum stability

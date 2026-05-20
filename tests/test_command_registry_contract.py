@@ -19,7 +19,6 @@ import pytest
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.slash_command_parser import SlashCommandParser
 
-
 # ============================================================
 # Frozen command snapshots — update ONLY when intentionally
 # adding/removing commands (never as a side-effect of refactoring)
