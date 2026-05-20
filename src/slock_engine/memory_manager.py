@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from typing import Optional
@@ -48,6 +49,34 @@ class MemoryManager:
     def agent_memory_path(self, agent_id: str) -> str:
         """Return the canonical L1 memory path for an agent."""
         return self._agent_memory_path(agent_id)
+
+    def agent_notes_path(self, agent_id: str) -> str:
+        """Return the canonical notes path for an agent."""
+        return os.path.join(self._base_path, "agents", agent_id, "NOTES.md")
+
+    def agent_workspace_path(self, agent_id: str) -> str:
+        """Return the canonical workspace path for an agent."""
+        return os.path.join(self._base_path, "agents", agent_id, "workspace")
+
+    def initialize_agent_workspace(self, agent_id: str) -> dict[str, str]:
+        """Create per-agent MEMORY/NOTES/workspace directories from the Slock spec."""
+        memory_path = self.agent_memory_path(agent_id)
+        notes_path = self.agent_notes_path(agent_id)
+        workspace_path = self.agent_workspace_path(agent_id)
+        with self._lock:
+            os.makedirs(os.path.dirname(memory_path), exist_ok=True)
+            os.makedirs(os.path.join(workspace_path, "current-task"), exist_ok=True)
+            os.makedirs(os.path.join(workspace_path, "history"), exist_ok=True)
+            os.makedirs(os.path.join(self._base_path, "agents", agent_id, "reasoning"), exist_ok=True)
+            if not os.path.exists(notes_path):
+                with open(notes_path + ".tmp", "w", encoding="utf-8") as f:
+                    f.write("# Notes\n")
+                os.replace(notes_path + ".tmp", notes_path)
+        return {
+            "memory_path": memory_path,
+            "notes_path": notes_path,
+            "workspace_path": workspace_path,
+        }
 
     def read_agent_memory(self, agent_id: str) -> SlockMemory:
         """Read L1 agent private memory."""
@@ -160,6 +189,53 @@ class MemoryManager:
         ordered = sorted(profiles.values(), key=lambda profile: profile.tag)
         self.write_skill_profiles(agent_id, ordered)
         return ordered
+
+    def _reasoning_snapshot_path(self, agent_id: str, task_id: str) -> str:
+        safe_task_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", task_id or "message").strip("_") or "message"
+        return os.path.join(self._base_path, "agents", agent_id, "reasoning", f"{safe_task_id}.json")
+
+    def write_agent_reasoning_snapshot(
+        self,
+        agent_id: str,
+        task_id: str,
+        *,
+        prompt_summary: str,
+        result_summary: str,
+        tool_name: str = "",
+        model_name: str = "",
+    ) -> str:
+        """Persist a user-visible execution summary for the reply-card reasoning action."""
+        import json
+
+        path = self._reasoning_snapshot_path(agent_id, task_id)
+        record = {
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "prompt_summary": prompt_summary,
+            "result_summary": result_summary,
+            "tool_name": tool_name,
+            "model_name": model_name,
+            "created_at": time.time(),
+        }
+        with self._lock:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(record, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        return path
+
+    def read_agent_reasoning_snapshot(self, agent_id: str, task_id: str) -> dict:
+        """Read a persisted reasoning/execution summary for an agent task."""
+        import json
+
+        path = self._reasoning_snapshot_path(agent_id, task_id)
+        with self._lock:
+            if not os.path.exists(path):
+                return {}
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        return data if isinstance(data, dict) else {}
 
     # ------------------------------------------------------------------
     # L2: Group Shared Memory
@@ -380,6 +456,39 @@ class MemoryManager:
                 "role": "reviewer",
                 "emoji": "🔍",
                 "system_prompt": "Review changes for correctness, security, regressions, and missing tests.",
+            },
+            "tester": {
+                "name": "tester",
+                "tool_type": "codex",
+                "model_name": "",
+                "role": "tester",
+                "emoji": "🧪",
+                "system_prompt": (
+                    "Design and run focused tests, reproduce edge cases, and turn failures "
+                    "into actionable regression coverage."
+                ),
+            },
+            "planner": {
+                "name": "planner",
+                "tool_type": "coco",
+                "model_name": "",
+                "role": "planner",
+                "emoji": "📋",
+                "system_prompt": (
+                    "Break broad goals into executable tasks, clarify dependencies, and keep "
+                    "the team aligned on current priorities."
+                ),
+            },
+            "architect": {
+                "name": "architect",
+                "tool_type": "gemini",
+                "model_name": "",
+                "role": "architect",
+                "emoji": "🏗️",
+                "system_prompt": (
+                    "Evaluate system boundaries, interfaces, data flow, and long-term "
+                    "evolution risks before implementation."
+                ),
             },
         }
 

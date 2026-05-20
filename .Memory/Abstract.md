@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志；当前 Backlog 无开放条目。
 ## 2026-05-20
+- **Slock 文档差异闭环实现** — 补齐 @mention 群作用域、Smart 路由真实 Agent 卡片身份、`IN_REVIEW` 中间态、状态卡当前任务、TTADK 交互式建角直连 CLI bridge、Agent notes/workspace/reasoning 持久化、`查看推理`执行摘要和长期进化模板/技能关键词；Slock 专项 865 passed，ruff/validate 通过 → [详细记录](2026-05-20.md)
 - **Spec 卡片流式与审查降级修复** — Build 阶段补齐 `TOOL_CALL_UPDATE` 工具块和工具/文件统计 footer，`total=0` progress label 不再丢失；多角色审查建议文案明确来源，角色非 JSON 输出改为文本降级/infra skip，选中审查工具超时后降级到其他可用候选或默认 agent → [详细记录](2026-05-20.md)
 - **全仓 ruff lint 债清零** — 在 Slock 测试 lint 清理后继续扩展到全仓，修复 `scripts/`、`src/feishu/ws_client.py` 与非 Slock 测试中的 import 顺序、未使用 import/局部变量和空白行问题；`uv run ruff check .` 通过，触达测试子集 480 passed，`--validate`/py_compile/`git diff --check` 通过 → [详细记录](2026-05-20.md)
 - **Slock 测试 lint 债清零** — 对所有 `tests/test_slock*.py` 执行 ruff 安全修复并手动处理剩余 F841/E731，删除未使用导入/局部变量、整理 import、将 helper lambda 改为本地 def；`ruff check tests/test_slock*.py` 通过，Slock 测试 855 passed → [详细记录](2026-05-20.md)

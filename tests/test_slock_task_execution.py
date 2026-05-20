@@ -58,6 +58,28 @@ class TestExecuteTaskSuccess:
         assert task.status == TaskStatus.DONE
         assert not engine._router.task_claim.is_claimed(task.task_id)
 
+    def test_execute_task_flushes_in_review_before_done(self, tmp_path):
+        """Successful execution persists the documented IN_REVIEW intermediate state."""
+        engine = self._make_engine(tmp_path)
+
+        agent = AgentIdentity(name="Coder", agent_type="coco", owner_group="chat_test")
+        engine.registry.register(agent)
+        task = engine.add_task("Write unit tests")
+        snapshots: list[list[TaskStatus]] = []
+        original_flush = engine._task_mgr._flush_if_dirty
+
+        def capture_flush(snapshot):
+            snapshots.append([item.status for item in snapshot])
+            original_flush(snapshot)
+
+        with patch.object(engine._task_mgr, "_flush_if_dirty", side_effect=capture_flush):
+            with patch.object(engine, "_execute_agent", return_value="Tests written successfully"):
+                result = engine.execute_task(task.task_id, agent.agent_id)
+
+        assert result == "Tests written successfully"
+        assert any(TaskStatus.IN_REVIEW in snapshot for snapshot in snapshots)
+        assert task.status == TaskStatus.DONE
+
     def test_execute_task_claims_if_not_already_claimed(self, tmp_path):
         """execute_task auto-claims if task is not yet claimed."""
         engine = self._make_engine(tmp_path)

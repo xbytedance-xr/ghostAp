@@ -253,6 +253,8 @@ class AgentRegistry:
         existing.role = incoming.role or existing.role
         existing.permissions = incoming.permissions or existing.permissions
         existing.memory_path = incoming.memory_path or existing.memory_path
+        existing.notes_path = incoming.notes_path or existing.notes_path
+        existing.workspace_path = incoming.workspace_path or existing.workspace_path
         existing.member_groups = groups
         if not existing.owner_group:
             existing.owner_group = incoming.owner_group

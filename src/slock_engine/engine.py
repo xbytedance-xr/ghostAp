@@ -1076,7 +1076,17 @@ class SlockEngine(BaseEngine):
         channel_id = self._channel.channel_id if self._channel else self.chat_id
         agents = self._registry.list_agents(channel_id=channel_id)
         agent_statuses = [(a, self.get_agent_status(a.agent_id)) for a in agents]
-        return build_status_panel_card(agent_statuses, team_name=team_name, channel_id=channel_id)
+        current_tasks = {
+            task.claimed_by: task
+            for task in self._tasks
+            if task.claimed_by and task.status in (TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW)
+        }
+        return build_status_panel_card(
+            agent_statuses,
+            team_name=team_name,
+            channel_id=channel_id,
+            current_tasks=current_tasks,
+        )
 
     def pause(self) -> None:
         """Pause the engine."""

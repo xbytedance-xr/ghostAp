@@ -155,6 +155,7 @@ class TaskBoardManager:
         try:
             result = self._execute_agent_fn(agent, task_content, callbacks)
             if result:
+                self._mark_task_in_review(task_id, agent_id)
                 self.complete_task(task_id, agent_id)
                 return result
             else:
@@ -178,6 +179,23 @@ class TaskBoardManager:
             self._dirty_setter(True)
             snapshot = list(self._tasks)
         self._flush_if_dirty(snapshot)
+
+    def _mark_task_in_review(self, task_id: str, agent_id: str) -> bool:
+        """Persist the intermediate review state before marking a task done."""
+        snapshot: list[SlockTask] = []
+        with self._lock:
+            for task in self._tasks:
+                if task.task_id == task_id and task.claimed_by == agent_id:
+                    if task.status != TaskStatus.IN_PROGRESS:
+                        return False
+                    task.status = TaskStatus.IN_REVIEW
+                    self._dirty_setter(True)
+                    snapshot = list(self._tasks)
+                    break
+        if snapshot:
+            self._flush_if_dirty(snapshot)
+            return True
+        return False
 
     def force_complete_task(self, task_id: str, *, reason: Optional[str] = None) -> None:
         """Force-mark a task as DONE regardless of claimer.

@@ -93,17 +93,29 @@ def _make_engine(execute_result="Agent result text", execute_side_effect=None):
 
     # Mock execution behavior
     if execute_side_effect:
-        engine.execute.side_effect = execute_side_effect
+        engine._execute_agent.side_effect = execute_side_effect
     else:
-        engine.execute.return_value = execute_result
+        mock_agent = MagicMock()
+        mock_agent.agent_id = "agent-default"
+        mock_agent.name = "Default"
+        mock_agent.emoji = "🤖"
+        mock_agent.agent_type = "coco"
+        mock_agent.model_name = ""
+        engine.registry.list_agents.return_value = [mock_agent]
+        engine.router.route_message.return_value = mock_agent
+        engine._execute_agent.return_value = execute_result
+    engine.execute.return_value = execute_result
 
     # Mock mouthpiece format_card
     engine._mouthpiece = MagicMock()
-    engine._mouthpiece.format_card.return_value = {
-        "schema": "2.0",
-        "header": {"title": {"tag": "plain_text", "content": "Result"}},
-        "body": {"elements": [{"tag": "markdown", "content": execute_result or ""}]},
-    }
+    def _format_card(_agent, content, **_kwargs):
+        return {
+            "schema": "2.0",
+            "header": {"title": {"tag": "plain_text", "content": "Result"}},
+            "body": {"elements": [{"tag": "markdown", "content": content or ""}]},
+        }
+
+    engine._mouthpiece.format_card.side_effect = _format_card
 
     return engine
 
@@ -277,3 +289,44 @@ class TestAtMentionRouting:
         engine._execute_agent.assert_called_once()
         # First arg should be the agent
         assert engine._execute_agent.call_args[0][0] == mock_agent
+
+    def test_at_mention_lookup_is_scoped_to_current_chat(self):
+        """@mention pre-routing must not find same-name agents from other Slock teams."""
+        handler = _make_handler()
+        engine = _make_engine(execute_result="agent response")
+        handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+
+        engine.registry.find_by_name.return_value = None
+        engine.registry.list_agents.return_value = []
+
+        handler.handle_message("msg-001", "chat-001", "@Coder fix the bug")
+
+        engine.registry.find_by_name.assert_called_once_with("Coder", channel_id="chat-001")
+
+    def test_smart_routing_result_card_uses_selected_agent_identity(self):
+        """Smart-routed replies must render the actual routed agent, not the first registry agent."""
+        handler = _make_handler()
+        engine = _make_engine(execute_result="ignored")
+        handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+
+        first_agent = MagicMock()
+        first_agent.agent_id = "agent-first"
+        first_agent.name = "First"
+        first_agent.emoji = "1"
+        first_agent.agent_type = "codex"
+        selected_agent = MagicMock()
+        selected_agent.agent_id = "agent-selected"
+        selected_agent.name = "Selected"
+        selected_agent.emoji = "2"
+        selected_agent.agent_type = "claude"
+        engine.registry.find_by_name.return_value = None
+        engine.registry.list_agents.return_value = [first_agent, selected_agent]
+        engine.router.route_message.return_value = selected_agent
+        engine._execute_agent.return_value = "[2 Selected] done"
+
+        handler.handle_message("msg-001", "chat-001", "please review this")
+
+        engine._execute_agent.assert_called_once()
+        assert engine._execute_agent.call_args[0][0] == selected_agent
+        engine._mouthpiece.format_card.assert_called_once()
+        assert engine._mouthpiece.format_card.call_args.args[0] == selected_agent

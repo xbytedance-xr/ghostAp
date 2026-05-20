@@ -217,6 +217,7 @@ def build_status_panel_card(
     agents: list[tuple[AgentIdentity, AgentStatus]],
     team_name: str = "",
     channel_id: str = "",
+    current_tasks: Optional[dict[str, SlockTask]] = None,
 ) -> dict:
     """Build a status panel card showing all agents and their states.
 
@@ -227,6 +228,7 @@ def build_status_panel_card(
         agents: List of (AgentIdentity, AgentStatus) tuples.
         team_name: Optional team name for the header.
         channel_id: Optional channel identifier.
+        current_tasks: Optional agent_id to active task mapping.
     """
     header_title = f"📊 {team_name} Agent 状态" if team_name else "📊 Slock Agent 状态"
 
@@ -240,6 +242,11 @@ def build_status_panel_card(
             status_icon = _STATUS_ICON_MAP.get(status, "⚪")
             status_label = _STATUS_LABEL_ZH.get(status.value, status.value)
             bg_color = _STATUS_BG_COLOR_MAP.get(status, "grey")
+            current_task = (current_tasks or {}).get(agent.agent_id)
+            agent_content = f"{agent.emoji} **{agent.name}** — {status_icon}"
+            if current_task:
+                task_text = current_task.content[:80]
+                agent_content += f"\n当前任务: {task_text}"
 
             column_set: dict = {
                 "tag": "column_set",
@@ -253,7 +260,7 @@ def build_status_panel_card(
                         "elements": [
                             {
                                 "tag": "markdown",
-                                "content": f"{agent.emoji} **{agent.name}** — {status_icon}",
+                                "content": agent_content,
                             }
                         ],
                     },

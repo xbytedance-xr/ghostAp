@@ -316,9 +316,13 @@ class TestSlockEngine:
 
         templates = engine.memory.list_agent_templates()
         assert "onboarding" in templates
+        assert {"coder", "reviewer", "tester", "planner", "architect"}.issubset(set(templates))
         onboarding = engine.memory.read_agent_template("onboarding")
         assert onboarding["role"] == "writer"
         assert "new team members" in onboarding["system_prompt"]
+        architect = engine.memory.read_agent_template("architect")
+        assert architect["role"] == "architect"
+        assert "interfaces" in architect["system_prompt"]
 
     def test_execute_agent_archives_user_and_agent_messages(self, tmp_path):
         """Successful agent execution appends JSONL records to the channel archive."""

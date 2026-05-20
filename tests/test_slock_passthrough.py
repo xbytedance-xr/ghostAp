@@ -73,8 +73,7 @@ class TestSlockPassthrough:
         engine.channel = MagicMock()
         engine.registry = MagicMock()
         engine.registry.find_by_name = MagicMock(return_value=None)
-        # engine.execute returns None (no output) — avoids json.dumps on MagicMock
-        engine.execute = MagicMock(return_value=None)
+        engine.registry.list_agents = MagicMock(return_value=[])
 
         # Mock async executor to run synchronously
         executor = MagicMock()
@@ -86,8 +85,8 @@ class TestSlockPassthrough:
         # For activated chats, the engine processes the message (not passthrough)
         handler.handle_message("msg-003", "chat-active-slock", "build the feature")
 
-        # The engine's execute method should have been called (message consumed)
-        engine.execute.assert_called_once()
+        # The message is consumed by Slock routing even when no agent is available.
+        engine.registry.list_agents.assert_called_once()
 
     def test_passthrough_with_task_prefix_redirects(self):
         """Even /task commands passthrough when no engine is active."""

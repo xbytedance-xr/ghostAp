@@ -255,25 +255,51 @@ class SlockHandler(BaseEngineHandler):
         target_agent = None
         if at_match:
             agent_name = at_match.group(1)
-            target_agent = engine.registry.find_by_name(agent_name)
+            target_agent = engine.registry.find_by_name(agent_name, channel_id=chat_id)
+        agent_used = None
 
         # --- Callbacks for _execute_async ---
         def _execute():
+            nonlocal agent_used
             callbacks = self._create_callbacks(message_id, chat_id, project, engine.engine_name, engine.root_path)
             if target_agent:
+                agent_used = target_agent
                 return engine._execute_agent(target_agent, text, callbacks)
-            return engine.execute(text, callbacks, sender_id="")
+            channel_id = engine.channel.channel_id if engine.channel else chat_id
+            agents = engine.registry.list_agents(channel_id=channel_id)
+            selected_agent = engine.router.route_message(text, agents)
+            if not selected_agent:
+                return None
+            agent_used = selected_agent
+            if callbacks and callbacks.on_message_routed:
+                callbacks.on_message_routed(text, selected_agent)
+            return engine._execute_agent(selected_agent, text, callbacks)
 
         def _result_card(result: str, duration: float) -> str:
-            agent_used = target_agent
-            if not agent_used:
-                channel_id = engine.channel.channel_id if engine.channel else chat_id
-                agents = engine.registry.list_agents(channel_id=channel_id)
-                agent_used = agents[0] if agents else None
-
             if agent_used:
+                try:
+                    engine.memory.write_agent_reasoning_snapshot(
+                        agent_used.agent_id,
+                        f"message:{message_id}",
+                        prompt_summary=text[:1000],
+                        result_summary=result[:2000],
+                        tool_name=agent_used.agent_type,
+                        model_name=agent_used.model_name,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist Slock reasoning snapshot for message %s agent %s",
+                        message_id,
+                        agent_used.agent_id,
+                        exc_info=True,
+                    )
                 card_data = engine._mouthpiece.format_card(
-                    agent_used, result, model_info=agent_used.agent_type, duration_s=duration
+                    agent_used,
+                    result,
+                    model_info=agent_used.agent_type,
+                    duration_s=duration,
+                    channel_id=chat_id,
+                    task_id=f"message:{message_id}",
                 )
                 return json.dumps(card_data, ensure_ascii=False)
             return json.dumps({
@@ -836,8 +862,10 @@ class SlockHandler(BaseEngineHandler):
             owner_group=chat_id,
             member_groups=[chat_id],
         )
-        memory_path = engine.memory.agent_memory_path(agent.agent_id)
-        agent.memory_path = memory_path
+        workspace_paths = engine.memory.initialize_agent_workspace(agent.agent_id)
+        agent.memory_path = workspace_paths.get("memory_path") or engine.memory.agent_memory_path(agent.agent_id)
+        agent.notes_path = workspace_paths.get("notes_path") or engine.memory.agent_notes_path(agent.agent_id)
+        agent.workspace_path = workspace_paths.get("workspace_path") or engine.memory.agent_workspace_path(agent.agent_id)
         if not existing_agent:
             if fork_source is not None:
                 source_memory = engine.memory.read_agent_memory(fork_source.agent_id)
@@ -919,6 +947,10 @@ class SlockHandler(BaseEngineHandler):
         engine = manager.get_activated_engine(chat_id)
         if not engine:
             self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
+            return
+
+        if tool_name == "ttadk":
+            self.create_role(message_id, chat_id, f"{shlex.quote(role_name)} --tool ttadk", project)
             return
 
         cwd = getattr(project, "root_path", None) or getattr(engine, "root_path", None) or self.get_working_dir(chat_id)
@@ -1382,7 +1414,8 @@ class SlockHandler(BaseEngineHandler):
             return
 
         if role_name:
-            agent = engine.registry.find_by_name(role_name)
+            channel_id = engine.channel.channel_id if engine.channel else chat_id
+            agent = engine.registry.find_by_name(role_name, channel_id=channel_id)
             if not agent:
                 self.reply_text(
                     message_id,
@@ -1469,6 +1502,22 @@ class SlockHandler(BaseEngineHandler):
             return engine.execute_task(task.task_id, agent.agent_id, callbacks)
 
         def _result_card(result: str, duration: float) -> str:
+            try:
+                engine.memory.write_agent_reasoning_snapshot(
+                    agent.agent_id,
+                    task.task_id,
+                    prompt_summary=content[:1000],
+                    result_summary=result[:2000],
+                    tool_name=agent.agent_type,
+                    model_name=agent.model_name,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist Slock reasoning snapshot for task %s agent %s",
+                    task.task_id,
+                    agent.agent_id,
+                    exc_info=True,
+                )
             card_data = engine._mouthpiece.format_card(
                 agent,
                 result,
@@ -1854,7 +1903,26 @@ class SlockHandler(BaseEngineHandler):
             return
 
         if action_type == "slock_agent_show_reasoning":
-            self.send_text_to_chat(open_chat_id, "当前 Agent 回复未保存单独推理过程；可查看任务执行卡和消息归档。")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id) or manager.get_active_engine(open_chat_id)
+            agent_id = str(value.get("agent_id") or "")
+            task_id = str(value.get("task_id") or "")
+            snapshot = engine.memory.read_agent_reasoning_snapshot(agent_id, task_id) if engine and agent_id and task_id else {}
+            if snapshot:
+                tool_label = snapshot.get("tool_name") or "unknown"
+                model_label = snapshot.get("model_name") or "default"
+                prompt_summary = redact_sensitive(str(snapshot.get("prompt_summary") or ""))[:1200]
+                result_summary = redact_sensitive(str(snapshot.get("result_summary") or ""))[:1800]
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "🧠 **执行摘要**\n\n"
+                    f"• Agent: `{agent_id[:8]}`\n"
+                    f"• 工具/模型: `{tool_label}` / `{model_label}`\n\n"
+                    f"**输入摘要**\n{prompt_summary or '(空)'}\n\n"
+                    f"**输出摘要**\n{result_summary or '(空)'}",
+                )
+                return
+            self.send_text_to_chat(open_chat_id, "当前 Agent 回复未保存可展示的执行摘要；可查看任务执行卡和消息归档。")
             return
 
         if action_type == "slock_agent_mark_done":

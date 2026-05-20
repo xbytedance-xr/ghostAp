@@ -232,6 +232,26 @@ class TestBuildStatusPanelCard:
             right_md = cs["columns"][1]["elements"][0]
             assert right_md["text_align"] == "right"
 
+    def test_status_panel_shows_current_task_for_running_agent(self):
+        """The status panel row includes the current task required by the Slock spec."""
+        agent = AgentIdentity(agent_id="a1", name="Alice", emoji="🤖", role="coder")
+        task = SlockTask(
+            task_id="task-current",
+            content="Implement payment webhook retry policy",
+            status=TaskStatus.IN_PROGRESS,
+            claimed_by="a1",
+        )
+
+        card = build_status_panel_card(
+            [(agent, AgentStatus.RUNNING)],
+            team_name="Team",
+            current_tasks={"a1": task},
+        )
+
+        combined = "\n".join(_all_markdown_content(card))
+        assert "Implement payment webhook retry policy" in combined
+        assert "当前任务" in combined
+
 
 _TASK_BOARD_BG_COLORS = {"grey", "blue", "yellow", "green"}
 

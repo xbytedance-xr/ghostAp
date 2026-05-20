@@ -2,7 +2,7 @@
 
 Covers:
 - AC2: unmanaged chat /role /task /team passthrough; /slock captured
-- AC3: managed chat normal message routes to engine.execute()
+- AC3: managed chat normal message routes through explicit smart route execution
 - AC4: @AgentName precise routing
 - AC10: unmanaged chat normal message passthrough
 """
@@ -91,21 +91,24 @@ class TestManagedChatMessageRouting:
         return handler
 
     def test_normal_message_calls_engine_execute(self):
-        """AC3: Normal text in managed chat routes to engine.execute()."""
+        """AC3: Normal text in managed chat routes to the selected agent."""
         handler = self._make_handler()
         handler.send_card_to_chat = MagicMock(return_value="placeholder-msg-001")
         handler.update_card = MagicMock(return_value=True)
 
         engine = MagicMock()
-        engine.execute.return_value = "Agent response"
         engine.channel = MagicMock()
         engine.channel.channel_id = "chat_123"
         engine._mouthpiece = MagicMock()
         engine._mouthpiece.format_card.return_value = {"header": {}, "elements": []}
 
         mock_agent = MagicMock()
+        mock_agent.agent_id = "agent-default"
         mock_agent.agent_type = "coco"
+        mock_agent.model_name = ""
         engine.registry.list_agents.return_value = [mock_agent]
+        engine.router.route_message.return_value = mock_agent
+        engine._execute_agent.return_value = "Agent response"
 
         executor = MagicMock()
         executor.submit.side_effect = _sync_submit
@@ -117,7 +120,8 @@ class TestManagedChatMessageRouting:
 
         handler.handle_message("msg_1", "chat_123", "hello team", None)
 
-        engine.execute.assert_called_once()
+        engine.router.route_message.assert_called_once_with("hello team", [mock_agent])
+        engine._execute_agent.assert_called_once_with(mock_agent, "hello team", ANY)
 
     def test_no_engine_silently_returns(self):
         """If no engine active, handle_message does nothing."""
@@ -170,11 +174,11 @@ class TestAtMentionRouting:
 
         handler.handle_message("msg_1", "chat_123", "@Coder please fix the bug", None)
 
-        engine.registry.find_by_name.assert_called_with("Coder")
+        engine.registry.find_by_name.assert_called_with("Coder", channel_id="chat_123")
         engine._execute_agent.assert_called_once_with(target_agent, "@Coder please fix the bug", ANY)
 
     def test_at_mention_unknown_agent_falls_to_smart_route(self):
-        """If @UnknownAgent doesn't match, fall through to engine.execute()."""
+        """If @UnknownAgent doesn't match, fall through to explicit smart routing."""
         from src.feishu.handlers.slock import SlockHandler
 
         ctx = MagicMock()
@@ -192,8 +196,12 @@ class TestAtMentionRouting:
         engine._mouthpiece.format_card.return_value = {"header": {}, "elements": []}
 
         mock_agent = MagicMock()
+        mock_agent.agent_id = "agent-default"
         mock_agent.agent_type = "coco"
+        mock_agent.model_name = ""
         engine.registry.list_agents.return_value = [mock_agent]
+        engine.router.route_message.return_value = mock_agent
+        engine._execute_agent.return_value = "Handled by default agent"
 
         executor = MagicMock()
         executor.submit.side_effect = _sync_submit
@@ -205,7 +213,8 @@ class TestAtMentionRouting:
 
         handler.handle_message("msg_1", "chat_123", "@UnknownBot do something", None)
 
-        engine.execute.assert_called_once()
+        engine.router.route_message.assert_called_once_with("@UnknownBot do something", [mock_agent])
+        engine._execute_agent.assert_called_once_with(mock_agent, "@UnknownBot do something", ANY)
 
 
 # ============================================================

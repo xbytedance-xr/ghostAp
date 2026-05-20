@@ -130,6 +130,8 @@ class AgentIdentity:
     role: str = "custom"  # coder/writer/reviewer/tester/planner/architect/custom
     permissions: list[str] = field(default_factory=lambda: ["shell", "file_write", "git"])
     memory_path: str = ""
+    notes_path: str = ""
+    workspace_path: str = ""
     owner_group: str = ""  # chat_id of owning group
     member_groups: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
@@ -157,6 +159,8 @@ class AgentIdentity:
             "role": self.role,
             "permissions": self.permissions,
             "memory_path": self.memory_path,
+            "notes_path": self.notes_path,
+            "workspace_path": self.workspace_path,
             "owner_group": self.owner_group,
             "member_groups": self.member_groups,
             "created_at": self.created_at,
@@ -174,6 +178,8 @@ class AgentIdentity:
             role=data.get("role", "custom"),
             permissions=data.get("permissions", ["shell", "file_write", "git"]),
             memory_path=data.get("memory_path", ""),
+            notes_path=data.get("notes_path", ""),
+            workspace_path=data.get("workspace_path", ""),
             owner_group=data.get("owner_group", ""),
             member_groups=data.get("member_groups", []),
             created_at=data.get("created_at", time.time()),

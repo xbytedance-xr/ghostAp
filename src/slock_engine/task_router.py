@@ -361,6 +361,7 @@ class TaskRouter:
             "test": ["test", "coverage", "assert", "测试", "用例"],
             "design": ["design", "architecture", "pattern", "设计", "架构"],
             "deploy": ["deploy", "release", "ci", "cd", "部署", "发布"],
+            "debug": ["debug", "troubleshoot", "root cause", "timeout", "排查", "故障", "定位", "根因"],
         }
 
         text_lower = text.lower()

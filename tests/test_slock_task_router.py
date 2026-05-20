@@ -164,6 +164,18 @@ class TestTaskRouter:
         keywords = router._extract_skill_keywords("review this change")
         assert "review" in keywords
 
+    def test_extract_skill_keywords_debug(self):
+        """Long-term evolution profiles keep debug as its own durable skill tag."""
+        router = TaskRouter()
+        keywords = router._extract_skill_keywords("排查线上 timeout 故障并定位 root cause")
+        assert "debug" in keywords
+
+    def test_extract_skill_keywords_multi_skill(self):
+        """A single task can update multiple skill dimensions for evolution."""
+        router = TaskRouter()
+        keywords = router._extract_skill_keywords("设计架构并补充测试文档")
+        assert {"design", "test", "docs"}.issubset(set(keywords))
+
     def test_extract_skill_keywords_default(self):
         router = TaskRouter()
         keywords = router._extract_skill_keywords("something unrelated xyz")

@@ -47,6 +47,38 @@ class TestMemoryManagerL1:
         path = mm._agent_memory_path("agent-42")
         assert path.endswith(os.path.join("agents", "agent-42", "MEMORY.md"))
 
+    def test_initialize_agent_workspace_creates_notes_and_task_dirs(self, tmp_path):
+        """Each Agent gets the workspace/notes structure described in the Slock spec."""
+        mm = MemoryManager(base_path=str(tmp_path))
+
+        paths = mm.initialize_agent_workspace("agent-42")
+
+        assert paths["memory_path"].endswith(os.path.join("agents", "agent-42", "MEMORY.md"))
+        assert paths["notes_path"].endswith(os.path.join("agents", "agent-42", "NOTES.md"))
+        assert paths["workspace_path"].endswith(os.path.join("agents", "agent-42", "workspace"))
+        assert os.path.isfile(paths["notes_path"])
+        assert os.path.isdir(os.path.join(paths["workspace_path"], "current-task"))
+        assert os.path.isdir(os.path.join(paths["workspace_path"], "history"))
+
+    def test_write_and_read_agent_reasoning_snapshot(self, tmp_path):
+        """Agent reply cards can show a persisted execution summary instead of a placeholder."""
+        mm = MemoryManager(base_path=str(tmp_path))
+
+        snapshot_path = mm.write_agent_reasoning_snapshot(
+            "agent-42",
+            "task-1",
+            prompt_summary="Review login bug",
+            result_summary="Found missing test",
+            tool_name="codex",
+            model_name="gpt-5",
+        )
+        restored = mm.read_agent_reasoning_snapshot("agent-42", "task-1")
+
+        assert snapshot_path.endswith(os.path.join("agents", "agent-42", "reasoning", "task-1.json"))
+        assert restored["prompt_summary"] == "Review login bug"
+        assert restored["result_summary"] == "Found missing test"
+        assert restored["tool_name"] == "codex"
+
 
 class TestMemoryManagerL2:
     """L2: Group shared memory."""

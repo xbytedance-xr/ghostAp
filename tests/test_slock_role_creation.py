@@ -82,6 +82,27 @@ class TestCreateRoleWithParams:
         assert agent.model_name == "o3-pro"
         assert agent.emoji == "🔧"
 
+    def test_create_role_records_workspace_and_notes_paths(self):
+        """AgentIdentity persists the per-agent workspace and notes paths from the spec."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+        engine.memory.initialize_agent_workspace.return_value = {
+            "memory_path": "/tmp/slock/agents/codex-default-Coder/MEMORY.md",
+            "notes_path": "/tmp/slock/agents/codex-default-Coder/NOTES.md",
+            "workspace_path": "/tmp/slock/agents/codex-default-Coder/workspace",
+        }
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.create_role("msg_1", "chat_test", "Coder --tool codex")
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.memory_path.endswith("MEMORY.md")
+        assert agent.notes_path.endswith("NOTES.md")
+        assert agent.workspace_path.endswith("workspace")
+
     def test_create_role_with_prompt(self):
         """--prompt sets system_prompt field."""
         handler = self._make_handler()
@@ -209,6 +230,28 @@ class TestCreateRoleDefaults:
             and v.get("model_name") == "gpt-5"
             for v in values
         )
+
+    def test_select_ttadk_tool_creates_default_cli_bridge_role_without_acp_models(self):
+        """TTADK is CLI-bridge only, so the Slock role flow must not fetch ACP models."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        with patch("src.feishu.handlers.slock.fetch_acp_models", side_effect=AssertionError("ACP fetch used")):
+            handler.handle_new_role_select_tool(
+                "msg_1",
+                "chat_test",
+                {"role_name": "Bridge", "tool_name": "ttadk"},
+            )
+
+        agent = engine.registry.register.call_args[0][0]
+        assert agent.name == "Bridge"
+        assert agent.agent_type == "ttadk_coco"
+        assert agent.model_name == ""
+        assert agent.agent_id == "ttadk_coco:default:Bridge"
 
     def test_select_model_creates_role(self):
         """Model choice is the point where the role is actually created."""

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import Future
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel
 from src.slock_engine.slash_commands import is_slock_command
@@ -144,11 +144,11 @@ class TestE2EHandlerToEngine:
         handler.handle_message("msg_2", "chat_e2e", "@Coder-E2E please review this code")
 
         # Agent was found by name and executed
-        engine.registry.find_by_name.assert_called_with("Coder-E2E")
-        engine._execute_agent.assert_called_once()
+        engine.registry.find_by_name.assert_called_with("Coder-E2E", channel_id="chat_e2e")
+        engine._execute_agent.assert_called_once_with(agent, "@Coder-E2E please review this code", ANY)
 
     def test_smart_routing_when_no_mention(self):
-        """AC-05: Messages without @mention go through engine.execute() smart routing."""
+        """AC-05: Messages without @mention go through explicit smart routing."""
         handler = self._make_handler_with_engine()
         engine, agent = self._make_engine_with_agent()
 
@@ -158,7 +158,8 @@ class TestE2EHandlerToEngine:
 
         # No @mention in text → find_by_name returns None
         engine.registry.find_by_name.return_value = None
-        engine.execute.return_value = "Smart routed response"
+        engine.router.route_message.return_value = agent
+        engine._execute_agent.return_value = "Smart routed response"
         engine._mouthpiece.format_card.return_value = {
             "header": {"title": {"content": "🔧 Coder-E2E"}},
             "elements": [{"tag": "markdown", "content": "Smart routed response"}],
@@ -171,7 +172,8 @@ class TestE2EHandlerToEngine:
 
         handler.handle_message("msg_3", "chat_e2e", "implement login feature")
 
-        engine.execute.assert_called_once()
+        engine.router.route_message.assert_called_once()
+        engine._execute_agent.assert_called_once_with(agent, "implement login feature", ANY)
 
     def test_card_output_contains_required_fields(self):
         """AC-06: Agent reply card contains color Header, emoji+name, content, footer."""
