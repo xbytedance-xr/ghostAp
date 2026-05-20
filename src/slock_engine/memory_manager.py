@@ -79,6 +79,27 @@ class MemoryManager:
             memory.active_context = context_update
         self.write_agent_memory(agent_id, memory)
 
+    def redact_active_context_for_move(
+        self, agent_id: str, source_channel_id: str, target_channel_id: str
+    ) -> None:
+        """Redact active_context during cross-group move to prevent source-group history leakage.
+
+        Preserves role and key_knowledge unchanged. Replaces active_context with
+        a single migration record line.  This is an irreversible operation —
+        source-group conversation history is permanently removed from the L1 file.
+        """
+        memory = self.read_agent_memory(agent_id)
+        migration_record = (
+            f"[{time.strftime('%Y-%m-%d %H:%M')}] "
+            f"Context redacted on move: {source_channel_id} → {target_channel_id}"
+        )
+        memory.active_context = migration_record
+        self.write_agent_memory(agent_id, memory)
+        logger.info(
+            "L1 active_context redacted for move | agent=%s source=%s target=%s",
+            agent_id, source_channel_id, target_channel_id,
+        )
+
     def _skill_profile_path(self, agent_id: str) -> str:
         return os.path.join(self._base_path, "agents", agent_id, "skill_profile.json")
 

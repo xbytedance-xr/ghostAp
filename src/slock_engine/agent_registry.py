@@ -10,12 +10,35 @@ import json
 import logging
 import os
 import threading
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 from .memory_manager import default_slock_storage_base
 from .models import AgentIdentity
 
 logger = logging.getLogger(__name__)
+
+
+class MoveResult(Enum):
+    """Structured result codes for move_agent operations."""
+
+    SUCCESS = "success"
+    NOT_FOUND = "not_found"
+    NOT_IN_SOURCE = "not_in_source"
+    PERSIST_FAILED = "persist_failed"
+
+
+@dataclass
+class MoveOutcome:
+    """Structured outcome of a move_agent operation."""
+
+    status: MoveResult
+    error_msg: str | None = None
+
+    @property
+    def success(self) -> bool:
+        return self.status == MoveResult.SUCCESS
 
 
 class AgentRegistry:
@@ -124,6 +147,53 @@ class AgentRegistry:
             self._persist(agent)
             return True
 
+    def move_agent(self, agent_id: str, source_channel_id: str, target_channel_id: str) -> MoveOutcome:
+        """Atomically move an agent from source channel to target channel.
+
+        Uses copy-on-write: snapshots the agent state before mutation, and
+        rolls back if persistence fails. Returns a structured MoveOutcome
+        with explicit error codes.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return MoveOutcome(status=MoveResult.NOT_FOUND)
+            # Verify agent belongs to source channel
+            if not self._belongs_to_channel(agent, source_channel_id):
+                return MoveOutcome(status=MoveResult.NOT_IN_SOURCE)
+            # Snapshot for rollback
+            snapshot = agent.to_dict()
+            # Mutate in-place
+            groups = [g for g in (agent.member_groups or []) if g != source_channel_id]
+            if target_channel_id not in groups:
+                groups.append(target_channel_id)
+            agent.member_groups = groups
+            agent.owner_group = target_channel_id
+            # Persist — rollback on failure
+            try:
+                self._persist(agent)
+            except OSError as e:
+                # Rollback: restore agent fields from snapshot
+                agent.member_groups = snapshot.get("member_groups", [])
+                agent.owner_group = snapshot.get("owner_group", "")
+                logger.warning(
+                    "move_agent: persist failed, rolled back agent=%s error=%s",
+                    agent_id, str(e),
+                )
+                return MoveOutcome(status=MoveResult.PERSIST_FAILED, error_msg=str(e))
+            # Defensive: verify persisted identity and L1 memory path
+            identity_file = self._agent_file(agent_id)
+            memory_path = os.path.join(self._agents_dir(), agent_id, "MEMORY.md")
+            logger.debug(
+                "move_agent: persisted agent=%s to=%s identity_exists=%s memory_path=%s",
+                agent_id,
+                target_channel_id,
+                os.path.isfile(identity_file),
+                memory_path,
+            )
+            return MoveOutcome(status=MoveResult.SUCCESS)
+
     def _persist(self, agent: AgentIdentity) -> None:
         """Write agent identity to disk (caller must hold _lock)."""
         identity_file = self._agent_file(agent.agent_id)
@@ -132,6 +202,30 @@ class AgentRegistry:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(agent.to_dict(), f, ensure_ascii=False, indent=2)
         os.replace(tmp_path, identity_file)
+
+    def refresh_agent(self, agent_id: str) -> Optional[AgentIdentity]:
+        """Re-read a single agent's identity from disk and update the in-memory cache.
+
+        Use this after a cross-engine move to ensure the target engine's
+        registry sees the updated membership without a full reload.
+        Returns the refreshed AgentIdentity, or None if the file does not exist.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            identity_file = self._agent_file(agent_id)
+            if not os.path.isfile(identity_file):
+                # Agent was removed from disk — evict from cache if present
+                self._agents.pop(agent_id, None)
+                return None
+            try:
+                with open(identity_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                agent = AgentIdentity.from_dict(data)
+                self._agents[agent.agent_id] = agent
+                return agent
+            except Exception as e:
+                logger.warning("refresh_agent failed for %s: %s", agent_id, str(e))
+                return None
 
     @staticmethod
     def _normalize_groups(agent: AgentIdentity) -> AgentIdentity:

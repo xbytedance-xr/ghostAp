@@ -10,8 +10,9 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import Future, as_completed, wait as futures_wait
-from dataclasses import dataclass, field
+from concurrent.futures import Future, as_completed
+from concurrent.futures import wait as futures_wait
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..agent_session import close_session_safely, create_engine_session
@@ -189,6 +190,19 @@ class SlockEngine(BaseEngine):
     _gc_label = "Slock"
     _gc_threshold_default = 85.0
 
+    # Immutable state machine transition table — shared by transition_agent and
+    # try_lock_for_move to ensure a single source of truth.  Values are tuples
+    # (immutable) to prevent accidental runtime mutation.
+    VALID_TRANSITIONS: dict[AgentStatus, tuple[AgentStatus, ...]] = {
+        AgentStatus.IDLE: (AgentStatus.WAKING, AgentStatus.MOVING),
+        AgentStatus.WAKING: (AgentStatus.THINKING, AgentStatus.IDLE),
+        AgentStatus.THINKING: (AgentStatus.RUNNING, AgentStatus.IDLE),
+        AgentStatus.RUNNING: (AgentStatus.CHECKING, AgentStatus.IDLE),
+        AgentStatus.CHECKING: (AgentStatus.SENDING, AgentStatus.RUNNING, AgentStatus.IDLE),
+        AgentStatus.SENDING: (AgentStatus.IDLE,),
+        AgentStatus.MOVING: (AgentStatus.IDLE,),
+    }
+
     def __init__(
         self,
         chat_id: str,
@@ -303,18 +317,13 @@ class SlockEngine(BaseEngine):
 
         Valid transitions:
             IDLE → WAKING → THINKING → RUNNING → CHECKING → SENDING → IDLE
-        """
-        valid_transitions: dict[AgentStatus, list[AgentStatus]] = {
-            AgentStatus.IDLE: [AgentStatus.WAKING],
-            AgentStatus.WAKING: [AgentStatus.THINKING, AgentStatus.IDLE],
-            AgentStatus.THINKING: [AgentStatus.RUNNING, AgentStatus.IDLE],
-            AgentStatus.RUNNING: [AgentStatus.CHECKING, AgentStatus.IDLE],
-            AgentStatus.CHECKING: [AgentStatus.SENDING, AgentStatus.RUNNING, AgentStatus.IDLE],
-            AgentStatus.SENDING: [AgentStatus.IDLE],
-        }
 
+        Note: This method acquires self._lock (RLock) internally.  It is safe
+        to call while self._lock is already held by the same thread (re-entrant),
+        which is used by try_lock_for_move for atomic CAS semantics.
+        """
         current = self.get_agent_status(agent_id)
-        if to_status in valid_transitions.get(current, []):
+        if to_status in self.VALID_TRANSITIONS.get(current, ()):
             self.set_agent_status(agent_id, to_status)
             return True
 
@@ -323,6 +332,74 @@ class SlockEngine(BaseEngine):
             current.value, to_status.value, agent_id,
         )
         return False
+
+    def try_lock_for_move(self, agent_id: str) -> bool:
+        """Atomically check IDLE and transition to MOVING.
+
+        Returns True if the agent was IDLE and is now marked MOVING,
+        preventing task assignment or other transitions during the move.
+        Returns False if the agent is not IDLE (move should be rejected).
+
+        Uses transition_agent internally (RLock is re-entrant) to ensure all
+        state changes go through the unified state machine validation path.
+        """
+        with self._lock:
+            current = self._agent_statuses.get(agent_id, AgentStatus.IDLE)
+            if current != AgentStatus.IDLE:
+                return False
+            # Re-entrant call: self._lock is already held, transition_agent
+            # acquires it again via get_agent_status/set_agent_status (RLock).
+            return self.transition_agent(agent_id, AgentStatus.MOVING)
+
+    def unlock_after_move(self, agent_id: str) -> None:
+        """Release MOVING state back to IDLE after move completes or fails.
+
+        Should be called in a finally block to prevent MOVING state leakage.
+        """
+        with self._lock:
+            current = self._agent_statuses.get(agent_id)
+            if current == AgentStatus.MOVING:
+                self._agent_statuses[agent_id] = AgentStatus.IDLE
+        self._router.set_agent_status(agent_id, AgentStatus.IDLE)
+        # Defensive L1 memory readability check after move
+        self._verify_l1_memory_after_move(agent_id)
+
+    def _verify_l1_memory_after_move(self, agent_id: str) -> str:
+        """Verify L1 memory is readable after cross-group move (non-blocking).
+
+        Logs ERROR if memory file cannot be read or if role is unexpectedly
+        empty for an established agent — provides observability without
+        disrupting the move flow.
+
+        Returns a diagnostic string (empty string means all OK).
+        """
+        try:
+            memory = self._memory.read_agent_memory(agent_id)
+            path = self._memory.agent_memory_path(agent_id)
+            if not memory.role and not memory.key_knowledge and not memory.active_context:
+                logger.debug(
+                    "L1 memory empty after move (may be expected for new agents) | agent=%s path=%s",
+                    agent_id, path,
+                )
+                return ""
+            if not memory.role and (memory.key_knowledge or memory.active_context):
+                # Agent has history but role is missing — persona consistency at risk
+                diag = (
+                    f"L1 role section empty but agent has history | agent={agent_id} "
+                    f"has_knowledge={bool(memory.key_knowledge)} has_context={bool(memory.active_context)} "
+                    f"path={path}"
+                )
+                logger.error(diag)
+                return diag
+            logger.debug(
+                "L1 memory verified after move | agent=%s has_role=%s has_knowledge=%s has_context=%s",
+                agent_id, bool(memory.role), bool(memory.key_knowledge), bool(memory.active_context),
+            )
+            return ""
+        except Exception as exc:
+            diag = f"L1 memory read FAILED after move — persona consistency at risk | agent={agent_id} error={exc}"
+            logger.error(diag)
+            return diag
 
     # ------------------------------------------------------------------
     # Agent Cancellation
@@ -446,10 +523,10 @@ class SlockEngine(BaseEngine):
                     self._run_state = EngineRunState.IDLE
                 return None
 
-            # Route message to agent
+            # Route message to agent (only IDLE agents considered by router)
             target_agent = self._router.route_message(message, agents)
             if not target_agent:
-                target_agent = agents[0]  # fallback to first agent
+                return None
 
             if callbacks and callbacks.on_message_routed:
                 callbacks.on_message_routed(message, target_agent)
@@ -493,6 +570,11 @@ class SlockEngine(BaseEngine):
         watchdog.start()
 
         try:
+            # IDLE → WAKING (early-return if agent is not IDLE)
+            if not self.transition_agent(agent_id, AgentStatus.WAKING):
+                logger.info("Agent %s busy, skipping execution", agent_id)
+                return None
+
             self._memory.append_message_archive(
                 channel_id,
                 sender_type="user",
@@ -502,8 +584,6 @@ class SlockEngine(BaseEngine):
                 metadata={"routed_to": agent_id},
             )
 
-            # IDLE → WAKING
-            self.transition_agent(agent_id, AgentStatus.WAKING)
             if callbacks and callbacks.on_agent_wake:
                 callbacks.on_agent_wake(agent)
 
@@ -610,6 +690,14 @@ class SlockEngine(BaseEngine):
 
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
         """Build the full prompt for an agent including system prompt and memory."""
+        logger.debug(
+            "_build_agent_prompt: agent=%s memory_path=%s has_role=%s has_knowledge=%s has_context=%s",
+            agent.agent_id,
+            self._memory.agent_memory_path(agent.agent_id),
+            bool(memory.role),
+            bool(memory.key_knowledge),
+            bool(memory.active_context),
+        )
         parts: list[str] = []
 
         if agent.system_prompt:
@@ -917,13 +1005,16 @@ class SlockEngine(BaseEngine):
 
         limit = max_concurrent or self._max_parallel_agents
         assignments: list[tuple[str, str]] = []
+        assigned_agents: set[str] = set()
 
         for task in pending[:limit]:
-            # Route task content to best agent
-            target = self._router.route_message(task.content, agents)
+            # Route task content to best available agent (not already assigned)
+            available = [a for a in agents if a.agent_id not in assigned_agents]
+            target = self._router.route_message(task.content, available)
             if not target:
-                target = agents[0]
+                continue  # no idle agent available for this task
             assignments.append((task.task_id, target.agent_id))
+            assigned_agents.add(target.agent_id)
 
         if not assignments:
             return {}

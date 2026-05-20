@@ -238,17 +238,27 @@ class TaskRouter:
         """Route a message to the most appropriate agent.
 
         Returns the target agent, or None if no suitable agent found.
+        Only IDLE agents are considered for routing; agents in MOVING,
+        RUNNING, or any other non-IDLE state are excluded.
         """
         if not available_agents:
             return None
 
+        # Hard filter: only consider IDLE agents
+        idle_agents = [
+            a for a in available_agents
+            if self.get_agent_status(a.agent_id) == AgentStatus.IDLE
+        ]
+        if not idle_agents:
+            return None
+
         # Priority 1: @mention routing
-        mentioned = self._extract_mention(text, available_agents)
+        mentioned = self._extract_mention(text, idle_agents)
         if mentioned:
             return mentioned
 
         # Priority 2: Skill-based scoring for normal messages
-        return self._score_and_assign(text, available_agents)
+        return self._score_and_assign(text, idle_agents)
 
     def _extract_mention(self, text: str, agents: list[AgentIdentity]) -> Optional[AgentIdentity]:
         """Extract @mention and match to an agent."""

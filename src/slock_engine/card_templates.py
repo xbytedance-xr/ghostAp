@@ -12,7 +12,15 @@ from zoneinfo import ZoneInfo
 from src.card.shared import apply_compact_style, build_responsive_layout
 from src.utils.redact import redact_sensitive
 
-from .models import AgentIdentity, AgentStatus, EscalationLevel, EscalationRequest, SlockTask, TaskStatus, ABORT_OPTIONS
+from .models import (
+    ABORT_OPTIONS,
+    AgentIdentity,
+    AgentStatus,
+    EscalationLevel,
+    EscalationRequest,
+    SlockTask,
+    TaskStatus,
+)
 
 _DISPLAY_TZ = ZoneInfo("Asia/Shanghai")
 
@@ -23,6 +31,7 @@ _STATUS_LABEL_ZH: dict[str, str] = {
     "running": "运行中",
     "checking": "检查中",
     "sending": "发送中",
+    "moving": "迁移中",
 }
 
 _TASK_STATUS_LABEL_ZH: dict[str, str] = {
@@ -378,6 +387,176 @@ def build_task_board_card(
 
 
 # ------------------------------------------------------------------
+# Agent move notification
+# ------------------------------------------------------------------
+
+
+def build_agent_move_departure_card(
+    agent: AgentIdentity,
+    target_team: str,
+) -> dict:
+    """Build a departure notification card sent to the SOURCE group.
+
+    Informs all members that an agent has been moved out.  Uses orange header
+    to signal a change event (not green/completion).  No jump button — keeps
+    the card simple and informational.
+
+    Args:
+        agent: The agent identity being moved away.
+        target_team: Display name of the target team/group.
+    """
+    from datetime import datetime
+
+    content = (
+        f"{agent.emoji} **{agent.name}** 已迁出至「{target_team}」\n\n"
+        "角色记忆与技能画像已随迁，如需协作请前往目标团队。"
+    )
+
+    elements: list[dict] = [{"tag": "markdown", "content": content}]
+
+    # Footer note
+    footer_parts: list[str] = []
+    if agent.agent_type:
+        footer_parts.append(agent.agent_type)
+    if agent.model_name:
+        footer_parts.append(agent.model_name)
+    footer_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": " | ".join(footer_parts)}
+        ],
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"➡️ 角色迁出: {agent.name}"},
+            "template": "orange",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_agent_move_notification_card(
+    agent: AgentIdentity,
+    source_team: str,
+    target_team: str,
+    *,
+    operator_display: str = "",
+) -> dict:
+    """Build a notification card for an agent being moved to a new team.
+
+    Sent to the TARGET group to inform members about the newly arrived agent.
+    Does not include a jump button (the target group IS the destination).
+
+    Args:
+        agent: The agent identity being moved.
+        source_team: Display name of the source team/group.
+        target_team: Display name of the target team/group.
+        operator_display: Display name of the operator who initiated the move.
+    """
+    operator_line = f"由 {operator_display} 迁移至此" if operator_display else "已迁移至此"
+    content = (
+        f"{agent.emoji} **{agent.name}** 已从「{source_team}」迁移至本团队\n\n"
+        f"• 角色: {agent.role or 'custom'}\n"
+        f"• 工具: {agent.agent_type}\n"
+        f"• 模型: {agent.model_name or '默认'}\n"
+        f"• {operator_line}\n\n"
+        "角色定义、关键知识与技能画像已保留；活跃上下文已按跨群策略重置，可立即参与任务分配。"
+    )
+
+    elements: list[dict] = [{"tag": "markdown", "content": content}]
+
+    # Footer note: agent_type | model_name | timestamp
+    from datetime import datetime
+
+    footer_parts: list[str] = []
+    if agent.agent_type:
+        footer_parts.append(agent.agent_type)
+    if agent.model_name:
+        footer_parts.append(agent.model_name)
+    footer_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": " | ".join(footer_parts)}
+        ],
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"👋 角色加入: {agent.name}"},
+            "template": "indigo",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_agent_move_confirm_card(
+    agent: AgentIdentity,
+    source_team: str,
+    target_team: str,
+    target_channel_id: str,
+) -> dict:
+    """Build a confirmation card sent to the SOURCE group after a successful move.
+
+    Includes a jump button pointing to the target group so the operator can
+    quickly follow the agent to its new home.
+
+    Args:
+        agent: The agent identity that was moved.
+        source_team: Display name of the source team/group.
+        target_team: Display name of the target team/group.
+        target_channel_id: Channel ID of the target group for jump button.
+    """
+    content = (
+        f"✅ 角色 **{agent.emoji} {agent.name}** 已成功移动到团队「{target_team}」\n\n"
+        f"• 角色: {agent.role or 'custom'}\n"
+        f"• 工具: {agent.agent_type}\n"
+        f"• 模型: {agent.model_name or '默认'}\n\n"
+        "角色定义与技能画像已保留，活跃上下文已按跨群隐私策略脱敏。\n\n"
+        "ℹ️ Active Context 已按跨群策略重置以保护源团队隐私"
+    )
+
+    elements: list[dict] = [{"tag": "markdown", "content": content}]
+
+    if target_channel_id:
+        elements.extend(
+            build_responsive_layout([_build_slock_group_jump_button(target_channel_id)])
+        )
+
+    # Footer note: agent_type | model_name | timestamp
+    from datetime import datetime
+
+    footer_parts: list[str] = []
+    if agent.agent_type:
+        footer_parts.append(agent.agent_type)
+    if agent.model_name:
+        footer_parts.append(agent.model_name)
+    footer_parts.append(datetime.now().strftime("%Y-%m-%d %H:%M"))
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": " | ".join(footer_parts)}
+        ],
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"✅ 角色迁移完成: {agent.name}"},
+            "template": "green",
+        },
+        "body": {"elements": elements},
+    }
+
+
+# ------------------------------------------------------------------
 # Internal constants
 # ------------------------------------------------------------------
 
@@ -388,6 +567,7 @@ _STATUS_ICON_MAP: dict[AgentStatus, str] = {
     AgentStatus.RUNNING: "🔵",
     AgentStatus.CHECKING: "🔵",
     AgentStatus.SENDING: "⚪",
+    AgentStatus.MOVING: "🔶",
 }
 
 # Background color mapping for column_set status rows (Feishu card background_style)
@@ -398,6 +578,7 @@ _STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = {
     AgentStatus.RUNNING: "blue",
     AgentStatus.CHECKING: "blue",
     AgentStatus.SENDING: "grey",
+    AgentStatus.MOVING: "orange",
 }
 
 _TASK_STATUS_ICONS: dict[TaskStatus, str] = {
@@ -597,13 +778,13 @@ def build_resolved_escalation_card(
         "content": (
             f"**级别:** {escalation.level.value.upper()}\n"
             f"**代理:** {escalation.agent_name} (`{escalation.agent_id}`)\n"
-            f"**原因:** {escalation.reason}"
+            f"**原因:** {redact_sensitive(escalation.reason)}"
         ),
     })
 
     # Context details (truncated) — keep for reference
     if escalation.context:
-        context_display = escalation.context[:500]
+        context_display = redact_sensitive(escalation.context[:500])
         if len(escalation.context) > 500:
             context_display += "\n..."
         elements.append({"tag": "hr"})

@@ -29,6 +29,7 @@ class SlockCommandAction(Enum):
     ROLE_LIST = "role_list"
     ROLE_REMOVE = "role_remove"
     ROLE_INFO = "role_info"
+    ROLE_MOVE = "role_move"
 
     # Task management
     TASK_LIST = "task_list"
@@ -140,6 +141,31 @@ def _parse_role_subcommand(args: str) -> SlockCommand:
         return SlockCommand(action=SlockCommandAction.ROLE_REMOVE, target=sub_args)
     elif subcmd == "info":
         return SlockCommand(action=SlockCommandAction.ROLE_INFO, target=sub_args)
+    elif subcmd == "move":
+        # /role move <agent_name> <target_team>
+        # Supports quoted multi-word arguments: /role move "Coder Alpha" "前端团队"
+        import shlex
+
+        agent_name = ""
+        target_team = ""
+        if sub_args:
+            try:
+                tokens = shlex.split(sub_args)
+            except ValueError:
+                # Unclosed quote — return empty to let caller show usage hint
+                tokens = None
+
+            if tokens and len(tokens) >= 2:
+                target_team = tokens[-1]
+                agent_name = " ".join(tokens[:-1])
+            elif tokens and len(tokens) == 1:
+                agent_name = tokens[0]
+
+        return SlockCommand(
+            action=SlockCommandAction.ROLE_MOVE,
+            target=agent_name,
+            args=target_team,
+        )
     else:
         # Treat first word as subcommand target
         return SlockCommand(action=SlockCommandAction.ROLE_INFO, target=subcmd)

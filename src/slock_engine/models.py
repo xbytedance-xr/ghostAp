@@ -26,6 +26,7 @@ class AgentStatus(Enum):
     RUNNING = "running"
     CHECKING = "checking"
     SENDING = "sending"
+    MOVING = "moving"
 
 
 class TaskStatus(Enum):
@@ -281,16 +282,23 @@ class SlockMemory:
         if not content.strip():
             return cls()
 
+        _KNOWN_SECTIONS = {"role", "key knowledge", "active context"}
+
         sections: dict[str, str] = {}
         current_section = ""
         current_lines: list[str] = []
 
         for line in content.split("\n"):
             if line.startswith("# "):
-                if current_section:
-                    sections[current_section] = "\n".join(current_lines).strip()
-                current_section = line[2:].strip().lower()
-                current_lines = []
+                candidate = line[2:].strip().lower()
+                if candidate in _KNOWN_SECTIONS:
+                    if current_section:
+                        sections[current_section] = "\n".join(current_lines).strip()
+                    current_section = candidate
+                    current_lines = []
+                else:
+                    # Not a known section header — treat as content
+                    current_lines.append(line)
             else:
                 current_lines.append(line)
 

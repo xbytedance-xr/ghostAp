@@ -18,7 +18,7 @@ from ...slock_engine.slash_commands import (
     is_slock_command,
     parse_slock_command,
 )
-from ...utils.errors import get_error_detail, safe_error_message
+from ...utils.errors import safe_error_message
 from ...utils.redact import redact_sensitive
 from ..emoji import EmojiReaction
 from ..user_cache import resolve_display_name
@@ -122,6 +122,7 @@ class SlockHandler(BaseEngineHandler):
             SlockCommandAction.NEW_ROLE: lambda: self.create_role(message_id, chat_id, cmd.args, project),
             SlockCommandAction.ROLE_LIST: lambda: self.list_roles(message_id, chat_id, project),
             SlockCommandAction.ROLE_REMOVE: lambda: self.remove_role(message_id, chat_id, cmd.target, project),
+            SlockCommandAction.ROLE_MOVE: lambda: self.move_role(message_id, chat_id, cmd.target, cmd.args, project),
             SlockCommandAction.ROLE_INFO: lambda: self.show_role_info(message_id, chat_id, cmd.target, project),
             SlockCommandAction.TASK_LIST: lambda: self.list_tasks(message_id, chat_id, project),
             SlockCommandAction.TASK_ASSIGN: lambda: self.assign_task(message_id, chat_id, cmd.args, cmd.target, project),
@@ -193,13 +194,18 @@ class SlockHandler(BaseEngineHandler):
                     self.update_card(card_message_id, error_card)
                 return
 
-            if not result:
+            if result is None:
                 empty_card = empty_card_fn()
                 if card_message_id:
                     self.update_card(card_message_id, empty_card)
                 return
 
             duration = _time.time() - start_time
+
+            if not result:
+                # Empty string — agent ran successfully but produced no output
+                result = "✅ 处理完成"
+
             success_card = result_card_fn(result, duration)
             if card_message_id:
                 self.update_card(card_message_id, success_card)
@@ -289,8 +295,8 @@ class SlockHandler(BaseEngineHandler):
             return json.dumps({
                 "schema": "2.0",
                 "config": {"wide_screen_mode": True},
-                "header": {"title": {"tag": "plain_text", "content": "✅ 处理完成"}, "template": "green"},
-                "body": {"elements": [{"tag": "markdown", "content": "Agent 已处理，无额外输出。"}]},
+                "header": {"title": {"tag": "plain_text", "content": "⚠️ 角色忙碌"}, "template": "orange"},
+                "body": {"elements": [{"tag": "markdown", "content": "所有角色正在忙碌中，请稍后再试。"}]},
             }, ensure_ascii=False)
 
         def _busy_card() -> str:
@@ -298,7 +304,7 @@ class SlockHandler(BaseEngineHandler):
                 "schema": "2.0",
                 "config": {"wide_screen_mode": True},
                 "header": {"title": {"tag": "plain_text", "content": "⚠️ 团队繁忙"}, "template": "orange"},
-                "body": {"elements": [{"tag": "markdown", "content": "当前所有 Agent 均在忙碌中，请稍后重试。"}]},
+                "body": {"elements": [{"tag": "markdown", "content": "当前所有角色均在忙碌中，请稍后重试。"}]},
             }, ensure_ascii=False)
 
         placeholder_card = json.dumps({
@@ -443,7 +449,8 @@ class SlockHandler(BaseEngineHandler):
             "• `/new-role <名称> --fork <已有角色>` — 复制角色的指令、记忆和技能画像\n"
             "• `/role list` — 查看所有角色\n"
             "• `/role info <名称>` — 查看角色记忆、任务统计和技能画像\n"
-            "• `/role remove <名称>` — 移除角色\n\n"
+            "• `/role remove <名称>` — 移除角色\n"
+            "• `/role move <名称> <目标团队>` — 将角色迁移到另一个 Slock 团队\n\n"
             "**任务管理**\n"
             "• `/task list` — 查看任务列表\n"
             "• `/task assign <任务> [角色]` — 分配任务；省略角色时按技能画像自动选择\n"
@@ -995,7 +1002,7 @@ class SlockHandler(BaseEngineHandler):
         if not self._check_slock_permission(engine, message_id, chat_id):
             return
 
-        agent = engine.registry.find_by_name(name)
+        agent = engine.registry.find_by_name(name, channel_id=chat_id)
         if not agent:
             self.reply_text(message_id, f"未找到角色: **{name}**")
             return
@@ -1003,10 +1010,223 @@ class SlockHandler(BaseEngineHandler):
         engine.registry.remove(agent.agent_id)
         self.reply_text(message_id, f"✅ 角色 **{agent.emoji} {agent.name}** 已移除")
 
+    def move_role(
+        self,
+        message_id: str,
+        chat_id: str,
+        name: str = "",
+        target_team_name: str = "",
+        project: Optional["ProjectContext"] = None,
+    ):
+        """Move an agent from the current team to a target team.
+
+        Flow: validate → permission(source+target) → try_lock_for_move (atomic
+        IDLE→MOVING) → registry.move_agent → unlock → refresh target cache →
+        notify target (best-effort) → append L1 context → reply confirm card.
+
+        Design: 'move first, notify second' — registry persistence is the
+        authoritative operation; notification card is best-effort UI.  If the
+        notification fails, the move still stands and source group receives a
+        degraded warning instead of a rollback.
+        """
+        import time as _time
+
+        from ...slock_engine.card_templates import (
+            build_agent_move_confirm_card,
+            build_agent_move_departure_card,
+            build_agent_move_notification_card,
+        )
+        from ...thread.manager import get_current_sender_id
+
+        if not name or not target_team_name:
+            self.reply_text(
+                message_id,
+                "请提供角色名称和目标团队\n\n用法: `/role move <角色名> <目标团队名>`",
+            )
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            return
+
+        # Permission check: source group
+        if not self._check_slock_permission(engine, message_id, chat_id):
+            return
+
+        agent = engine.registry.find_by_name(name, channel_id=chat_id)
+        if not agent:
+            self.reply_text(message_id, f"未找到角色: **{name}**")
+            return
+
+        # Find target team
+        target_engine = manager.find_team(target_team_name)
+        if not target_engine or not target_engine.channel:
+            self.reply_text(message_id, f"未找到目标团队: **{target_team_name}**")
+            return
+
+        target_channel_id = target_engine.channel.channel_id
+        if target_channel_id == chat_id:
+            self.reply_text(message_id, "⚠️ 目标团队与当前团队相同，无需移动")
+            return
+
+        # Permission check: target group (operator must be global admin or target owner)
+        if not self._check_slock_permission(target_engine, message_id, chat_id):
+            return
+
+        # Atomic: check IDLE and lock agent in MOVING state
+        if not engine.try_lock_for_move(agent.agent_id):
+            status = engine.get_agent_status(agent.agent_id)
+            self.reply_text(
+                message_id,
+                f"⚠️ 角色 **{agent.name}** 当前状态为 {status.value}，仅 IDLE 状态可移动",
+            )
+            return
+
+        source_team_display = (engine.channel.team_name if engine.channel else chat_id) or chat_id
+        target_team_display = target_engine.channel.team_name or target_team_name
+        operator_id = get_current_sender_id() or ""
+
+        try:
+            # Step 1: Perform atomic move in registry (authoritative operation)
+            outcome = engine.registry.move_agent(agent.agent_id, chat_id, target_channel_id)
+            if not outcome.success:
+                from ...slock_engine.agent_registry import MoveResult
+
+                if outcome.status == MoveResult.NOT_FOUND:
+                    err_msg = f"❌ 移动失败：角色 **{name}** 未找到"
+                elif outcome.status == MoveResult.NOT_IN_SOURCE:
+                    err_msg = "❌ 移动失败，请确认角色属于当前团队"
+                elif outcome.status == MoveResult.PERSIST_FAILED:
+                    err_msg = "❌ 迁移失败：数据持久化异常，角色仍留在原团队，请稍后重试"
+                else:
+                    err_msg = "❌ 移动失败，请确认角色属于当前团队"
+                logger.warning(
+                    "slock move_role: registry move_agent failed | agent=%s source=%s target=%s operator=%s status=%s",
+                    agent.agent_id, chat_id, target_channel_id, operator_id, outcome.status.value,
+                )
+                self.reply_text(message_id, err_msg)
+                return
+
+            # Step 1.5: Redact active_context to prevent source-group history leakage
+            import hashlib as _hashlib
+
+            try:
+                _pre_memory = engine.memory.read_agent_memory(agent.agent_id)
+                _ctx_len = len(_pre_memory.active_context) if _pre_memory.active_context else 0
+                _ctx_md5 = _hashlib.md5(_pre_memory.active_context.encode()).hexdigest() if _pre_memory.active_context else ""
+                logger.info(
+                    "slock move_role: pre-redact audit | agent=%s context_chars=%d md5=%s",
+                    agent.agent_id, _ctx_len, _ctx_md5,
+                )
+                engine.memory.redact_active_context_for_move(agent.agent_id, chat_id, target_channel_id)
+            except Exception as exc:
+                logger.warning(
+                    "slock move_role: redact_active_context failed (non-fatal) | agent=%s error=%s",
+                    agent.agent_id, exc,
+                )
+        finally:
+            engine.unlock_after_move(agent.agent_id)
+
+        # Refresh target engine's registry cache so it can discover the agent
+        target_engine.registry.refresh_agent(agent.agent_id)
+
+        # Verify L1 memory integrity after move (user-facing degradation notice)
+        _l1_memory_degraded = False
+        try:
+            _moved_memory = target_engine.memory.read_agent_memory(agent.agent_id)
+            if agent.system_prompt and not _moved_memory.role and not _moved_memory.key_knowledge:
+                logger.error(
+                    "slock move_role: L1 memory empty after move — persona may be inconsistent | agent=%s",
+                    agent.agent_id,
+                )
+                _l1_memory_degraded = True
+        except Exception as exc:
+            logger.error(
+                "slock move_role: L1 memory read failed after move | agent=%s error=%s",
+                agent.agent_id, exc,
+            )
+            _l1_memory_degraded = True
+
+        # Resolve operator display name for notification card
+        operator_display = resolve_display_name(operator_id, self.ctx.api_client_factory) if operator_id else ""
+
+        # Step 2: Send notification card to target group (best-effort)
+        notification_card = build_agent_move_notification_card(
+            agent=agent,
+            source_team=source_team_display,
+            target_team=target_team_display,
+            operator_display=operator_display,
+        )
+        sent_msg_id = self.send_card_to_chat(
+            target_channel_id, json.dumps(notification_card, ensure_ascii=False)
+        )
+        if not sent_msg_id:
+            logger.warning(
+                "slock move_role: notification card send failed (non-fatal) | agent=%s source=%s target=%s operator=%s",
+                agent.agent_id, chat_id, target_channel_id, operator_id,
+            )
+            self.reply_text(
+                message_id,
+                "✅ 移动成功，但目标群通知发送失败。目标群可通过 /role list 查看新成员。",
+            )
+            # Do NOT return — continue to append context and send confirm card
+
+        # Step 2.5: Send departure notification card to source group (best-effort)
+        try:
+            departure_card = build_agent_move_departure_card(
+                agent=agent,
+                target_team=target_team_display,
+            )
+            self.send_card_to_chat(chat_id, json.dumps(departure_card, ensure_ascii=False))
+        except Exception as exc:
+            logger.warning(
+                "slock move_role: departure card send failed (non-fatal) | agent=%s source=%s error=%s",
+                agent.agent_id, chat_id, exc,
+            )
+
+        # Step 3: Append migration record to L1 active context
+        context_record = (
+            f"[{_time.strftime('%Y-%m-%d %H:%M')}] "
+            f"Moved from {source_team_display} to {target_team_display}"
+        )
+        try:
+            engine.memory.update_agent_context(agent.agent_id, context_record)
+        except Exception as exc:
+            logger.warning(
+                "slock move_role: update_agent_context failed (non-fatal) | agent=%s error=%s",
+                agent.agent_id, exc,
+            )
+
+        # Step 4: Reply confirm card to source group with jump button
+        confirm_card = build_agent_move_confirm_card(
+            agent=agent,
+            source_team=source_team_display,
+            target_team=target_team_display,
+            target_channel_id=target_channel_id,
+        )
+        self.reply_card(message_id, json.dumps(confirm_card, ensure_ascii=False))
+
+        if _l1_memory_degraded:
+            self.reply_text(
+                message_id,
+                "⚠️ 注意：角色记忆加载异常，人格一致性可能受影响。请在目标群执行 /role info 确认。",
+            )
+
+        logger.info(
+            "slock move_role: success | agent=%s source=%s target=%s operator=%s",
+            agent.agent_id, chat_id, target_channel_id, operator_id,
+        )
+
     def show_role_info(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
     ):
-        """Show detailed info about a role."""
+        """Show detailed info about a role.
+
+        Permission-aware: admin/owner sees full details including Active Context
+        and permissions; regular members see only non-sensitive identity info.
+        """
         if not name:
             self.reply_text(message_id, "请提供角色名称\n\n用法: `/role info <名称>`")
             return
@@ -1017,10 +1237,13 @@ class SlockHandler(BaseEngineHandler):
             self.reply_text(message_id, "当前没有活跃的 Slock 团队")
             return
 
-        agent = engine.registry.find_by_name(name)
+        agent = engine.registry.find_by_name(name, channel_id=chat_id)
         if not agent:
             self.reply_text(message_id, f"未找到角色: **{name}**")
             return
+
+        # Permission check: admin/owner sees full info, members see limited info
+        is_privileged = self._has_slock_permission(engine)
 
         status = engine.get_agent_status(agent.agent_id)
         status_value = status.value if hasattr(status, "value") else str(status)
@@ -1038,28 +1261,42 @@ class SlockHandler(BaseEngineHandler):
             memory_lines.append(f"• Role: {memory.role[:160]}")
         if memory.key_knowledge:
             memory_lines.append(f"• Key Knowledge: {memory.key_knowledge[:160]}")
-        if memory.active_context:
+        # Detect migration redaction and show status indicator
+        _is_migrated = memory.active_context and "Context redacted on move:" in memory.active_context
+        if _is_migrated:
+            # Extract the migration info (everything after the timestamp prefix)
+            _migration_info = memory.active_context.strip()
+            memory_lines.append(f"• 🔄 迁移记录: {_migration_info[:120]}")
+            memory_lines.append("• ℹ️ Active Context 已脱敏（跨群隐私策略）")
+        elif is_privileged and memory.active_context:
             memory_lines.append(f"• Active Context: {memory.active_context[-160:]}")
         profile_lines = [
             f"• {profile.tag}: 成功率 {profile.success_rate:.0f}% · {profile.total_tasks} 次"
             for profile in profiles[:6]
         ]
-        info = (
-            f"{agent.emoji} **{agent.name}**\n\n"
+
+        # Build info string — permissions line only for privileged users
+        info_parts = [
+            f"{agent.emoji} **{agent.name}**\n",
             f"• ID: `{agent.agent_id[:8]}`\n"
             f"• 类型: `{agent.agent_type}`\n"
             f"• 模型: `{agent.model_name or 'default'}`\n"
             f"• 角色: {agent.role or '(未设置)'}\n"
-            f"• 状态: `{status_value}`\n"
-            f"• 权限: `{', '.join(agent.permissions) if agent.permissions else '默认'}`\n\n"
-            "**记忆摘要**\n"
+            f"• 状态: `{status_value}`\n",
+        ]
+        if is_privileged:
+            info_parts.append(
+                f"• 权限: `{', '.join(agent.permissions) if agent.permissions else '默认'}`\n"
+            )
+        info_parts.append(
+            "\n**记忆摘要**\n"
             f"{chr(10).join(memory_lines) if memory_lines else '• 暂无记忆'}\n\n"
             "**历史任务**\n"
             f"• 总数: {len(assigned_tasks)} · 已完成: {done_count} · 进行中: {active_count}\n\n"
             "**技能画像**\n"
             f"{chr(10).join(profile_lines) if profile_lines else '• 暂无技能画像'}"
         )
-        self.reply_text(message_id, info)
+        self.reply_text(message_id, "".join(info_parts))
 
     # ------------------------------------------------------------------
     # Task management
@@ -1233,7 +1470,7 @@ class SlockHandler(BaseEngineHandler):
                 "schema": "2.0",
                 "config": {"wide_screen_mode": True},
                 "header": {"title": {"tag": "plain_text", "content": "⚠️ 团队繁忙"}, "template": "orange"},
-                "body": {"elements": [{"tag": "markdown", "content": "当前所有 Agent 均在忙碌中，请稍后重试。"}]},
+                "body": {"elements": [{"tag": "markdown", "content": "当前所有角色均在忙碌中，请稍后重试。"}]},
             }, ensure_ascii=False)
 
         placeholder_card = json.dumps({
@@ -1359,8 +1596,8 @@ class SlockHandler(BaseEngineHandler):
         card = build_task_board_card(engine.tasks, agents, team_name=team_name, channel_id=channel_id)
         self.update_card(message_id, json.dumps(card, ensure_ascii=False))
 
-    def _check_slock_permission(self, engine, message_id: str, chat_id: str) -> bool:
-        """Check if current operator is admin or channel owner. Returns True if authorized."""
+    def _has_slock_permission(self, engine) -> bool:
+        """Pure boolean check: is current operator admin or channel owner? No side effects."""
         from ...config import get_settings
         from ...thread.manager import get_current_sender_id
 
@@ -1371,11 +1608,14 @@ class SlockHandler(BaseEngineHandler):
         if engine.channel:
             channel_owner_id = getattr(engine.channel, "owner_id", "") or ""
 
-        is_authorized = (
+        return (
             (operator_id and operator_id in admin_ids)
             or (operator_id and channel_owner_id and operator_id == channel_owner_id)
         )
-        if not is_authorized:
+
+    def _check_slock_permission(self, engine, message_id: str, chat_id: str) -> bool:
+        """Check if current operator is admin or channel owner. Returns True if authorized."""
+        if not self._has_slock_permission(engine):
             perm_msg = "⚠️ 权限不足，仅管理员或团队创建者可执行此操作。"
             if not self.reply_text(message_id, perm_msg):
                 self.send_text_to_chat(chat_id, perm_msg)
@@ -1487,7 +1727,7 @@ class SlockHandler(BaseEngineHandler):
 
         # (a) Get operator identity
         operator_id = get_current_sender_id() or ""
-        operator_display = resolve_display_name(operator_id) if operator_id else ""
+        operator_display = resolve_display_name(operator_id, self.ctx.api_client_factory) if operator_id else ""
 
         # (b) Permission check — admin or team owner (unified)
         manager = self._get_engine_manager()

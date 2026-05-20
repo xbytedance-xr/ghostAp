@@ -1114,8 +1114,10 @@ class TestSlockEngineParallelExecution:
         ch = SlockChannel(channel_id="ch_dispatch", name="Dispatch", team_name="DispatchTeam")
         engine.activate_channel(ch)
 
-        agent = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco", owner_group="ch_dispatch")
-        engine.registry.register(agent)
+        agent1 = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco", owner_group="ch_dispatch")
+        agent2 = AgentIdentity(agent_id="a2", name="Tester", agent_type="coco", owner_group="ch_dispatch")
+        engine.registry.register(agent1)
+        engine.registry.register(agent2)
 
         engine.add_task("Implement login")
         engine.add_task("Write tests")
@@ -1143,8 +1145,10 @@ class TestSlockEngineParallelExecution:
         ch = SlockChannel(channel_id="ch_limit", name="Limit", team_name="LimitTeam")
         engine.activate_channel(ch)
 
-        agent = AgentIdentity(agent_id="a1", name="Worker", agent_type="coco", owner_group="ch_limit")
-        engine.registry.register(agent)
+        # Register 3 agents so max_concurrent=2 is the binding constraint
+        for i in range(3):
+            agent = AgentIdentity(agent_id=f"a{i}", name=f"Worker{i}", agent_type="coco", owner_group="ch_limit")
+            engine.registry.register(agent)
 
         for i in range(5):
             engine.add_task(f"Task {i}")
@@ -1152,7 +1156,7 @@ class TestSlockEngineParallelExecution:
         with patch.object(engine, "_run_acp_session", return_value="done"):
             results = engine.dispatch_pending_tasks(max_concurrent=2)
 
-        # Only 2 should have been dispatched
+        # Only 2 should have been dispatched (limited by max_concurrent, not agent count)
         assert len(results) == 2
 
     def test_cleanup_shuts_down_executor(self, tmp_path):
@@ -1555,3 +1559,156 @@ class TestAddTaskOpenLimit:
         # Now open count = 3, should reject
         t5 = engine.add_task("Fifth task")
         assert t5 is None
+
+
+# ============================================================
+# State Machine Refactoring — VALID_TRANSITIONS class constant
+# ============================================================
+
+
+class TestValidTransitionsClassConstant:
+    """Verify VALID_TRANSITIONS is a proper class constant with immutable values."""
+
+    def test_valid_transitions_exists_as_class_attribute(self):
+        """AC-2: VALID_TRANSITIONS is a class-level attribute, not instance-level."""
+        assert hasattr(SlockEngine, "VALID_TRANSITIONS")
+        # Accessing via class (not instance) confirms it's a class constant
+        transitions = SlockEngine.VALID_TRANSITIONS
+        assert isinstance(transitions, dict)
+
+    def test_valid_transitions_values_are_tuples(self):
+        """AC-2: Values must be tuples (immutable) to prevent accidental mutation."""
+        for status, targets in SlockEngine.VALID_TRANSITIONS.items():
+            assert isinstance(targets, tuple), f"Value for {status} should be tuple, got {type(targets)}"
+
+    def test_valid_transitions_covers_all_statuses(self):
+        """All AgentStatus values should have an entry in VALID_TRANSITIONS."""
+        for status in AgentStatus:
+            assert status in SlockEngine.VALID_TRANSITIONS, f"Missing entry for {status}"
+
+    def test_valid_transitions_content_correctness(self):
+        """Validate the expected transition graph."""
+        t = SlockEngine.VALID_TRANSITIONS
+        assert AgentStatus.WAKING in t[AgentStatus.IDLE]
+        assert AgentStatus.MOVING in t[AgentStatus.IDLE]
+        assert AgentStatus.THINKING in t[AgentStatus.WAKING]
+        assert AgentStatus.RUNNING in t[AgentStatus.THINKING]
+        assert AgentStatus.CHECKING in t[AgentStatus.RUNNING]
+        assert AgentStatus.SENDING in t[AgentStatus.CHECKING]
+        assert AgentStatus.IDLE in t[AgentStatus.SENDING]
+        assert AgentStatus.IDLE in t[AgentStatus.MOVING]
+
+
+class TestTryLockForMoveUsesTransitionAgent:
+    """AC-1: try_lock_for_move delegates to transition_agent (no direct _agent_statuses write)."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _make_engine(self, mock_create_session, tmp_path=None):
+        mock_create_session.return_value = None
+        base_path = str(tmp_path) if tmp_path else "/tmp/test_slock"
+        return SlockEngine(
+            chat_id="chat1",
+            root_path="/tmp/test_root",
+            memory_base_path=base_path,
+        )
+
+    def test_try_lock_calls_transition_agent(self, tmp_path):
+        """Verify try_lock_for_move invokes transition_agent internally."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        with patch.object(engine, "transition_agent", wraps=engine.transition_agent) as mock_transition:
+            result = engine.try_lock_for_move("agent_x")
+            assert result is True
+            mock_transition.assert_called_once_with("agent_x", AgentStatus.MOVING)
+
+    def test_try_lock_fails_when_not_idle(self, tmp_path):
+        """try_lock_for_move returns False if agent is already WAKING."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        engine.transition_agent("agent_y", AgentStatus.WAKING)
+        result = engine.try_lock_for_move("agent_y")
+        assert result is False
+        assert engine.get_agent_status("agent_y") == AgentStatus.WAKING
+
+    def test_try_lock_atomicity_concurrent(self, tmp_path):
+        """NFR-1: Multiple threads racing try_lock_for_move — exactly one wins."""
+        engine = self._make_engine(tmp_path=tmp_path)
+        results = []
+        barrier = threading.Barrier(5)
+
+        def attempt():
+            barrier.wait(timeout=2)
+            results.append(engine.try_lock_for_move("agent_race"))
+
+        threads = [threading.Thread(target=attempt) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=3)
+
+        assert results.count(True) == 1
+        assert results.count(False) == 4
+        assert engine.get_agent_status("agent_race") == AgentStatus.MOVING
+
+
+# ---------------------------------------------------------------------------
+# Security: build_resolved_escalation_card redacts sensitive data
+# ---------------------------------------------------------------------------
+
+
+class TestResolvedEscalationCardRedaction:
+    """Verify build_resolved_escalation_card applies redact_sensitive() to reason and context."""
+
+    def _make_escalation(self, reason: str = "", context: str = ""):
+        from src.slock_engine.models import EscalationLevel, EscalationRequest
+
+        return EscalationRequest(
+            agent_id="agent_sec_test",
+            agent_name="SecBot",
+            level=EscalationLevel.BLOCKED,
+            reason=reason,
+            context=context,
+        )
+
+    def test_reason_with_api_key_is_redacted(self):
+        """API key pattern in reason must be redacted in card output."""
+        from src.slock_engine.card_templates import build_resolved_escalation_card
+
+        esc = self._make_escalation(reason="Failed auth: API_KEY=sk-12345abcdef67890")
+        card = build_resolved_escalation_card(esc, resolved_by="admin", resolution="Retry")
+        card_json = json.dumps(card)
+
+        assert "sk-12345abcdef67890" not in card_json
+        assert "<redacted>" in card_json
+
+    def test_context_with_password_is_redacted(self):
+        """Password pattern in context must be redacted in card output."""
+        from src.slock_engine.card_templates import build_resolved_escalation_card
+
+        esc = self._make_escalation(
+            reason="Connection failed",
+            context="DB_PASSWORD=hunter2secret\nSECRET_KEY=abc123xyz",
+        )
+        card = build_resolved_escalation_card(esc, resolved_by="admin", resolution="Skip")
+        card_json = json.dumps(card)
+
+        assert "hunter2secret" not in card_json
+        assert "abc123xyz" not in card_json
+        assert "<redacted>" in card_json
+
+    def test_empty_context_no_crash(self):
+        """Empty or missing context should not cause errors."""
+        from src.slock_engine.card_templates import build_resolved_escalation_card
+
+        esc = self._make_escalation(reason="Simple reason", context="")
+        card = build_resolved_escalation_card(esc, resolved_by="admin", resolution="Done")
+
+        assert card is not None
+        assert "header" in card
+
+    def test_none_like_empty_reason_no_crash(self):
+        """Empty reason should not crash redact_sensitive."""
+        from src.slock_engine.card_templates import build_resolved_escalation_card
+
+        esc = self._make_escalation(reason="", context="")
+        card = build_resolved_escalation_card(esc, resolved_by="admin", resolution="Done")
+
+        assert card is not None
