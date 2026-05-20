@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import dataclass, field
 from typing import Optional
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +25,7 @@ from src.slock_engine.discussion_manager import (
     UNCERTAINTY_MARKERS,
     DiscussionManager,
 )
+from src.slock_engine.engine import SlockEngine
 from src.slock_engine.models import (
     AgentIdentity,
     DiscussionConfig,
@@ -33,7 +33,6 @@ from src.slock_engine.models import (
     DiscussionStatus,
     DiscussionThread,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers & Fixtures
@@ -1155,6 +1154,41 @@ class TestExecuteAgentTurnIntegration:
         assert call_args[0][0] == mock_agent
         assert call_args[0][1] == "full prompt text"
 
+    def test_agent_turn_passes_discussion_timeout_budget(self):
+        """Discussion turns pass the derived per-turn timeout to the engine session."""
+        engine = self._make_mock_engine()
+        mock_agent = self._make_mock_agent()
+        engine.get_agent.return_value = mock_agent
+        engine.run_agent_session.return_value = "review response"
+        engine.build_agent_prompt.return_value = "full prompt text"
+        thread = DiscussionThread(
+            participants=["agent-001", "agent-002"],
+            config=DiscussionConfig(max_rounds=4, discussion_timeout=120),
+        )
+
+        dm = DiscussionManager(engine=engine)
+        result = dm._execute_agent_turn("agent-001", "Please review", thread=thread)
+
+        assert result == "review response"
+        assert engine.run_agent_session.call_args.kwargs["timeout"] == 30
+
+    def test_slock_engine_run_agent_session_accepts_timeout(self, tmp_path):
+        """The real SlockEngine public discussion API accepts a per-turn timeout."""
+        engine = SlockEngine("chat-1", str(tmp_path))
+        agent = _make_agent("agent-timeout", "TimeoutAgent")
+        captured: dict[str, object] = {}
+
+        def fake_run(agent_arg, prompt_arg, *, timeout=None):
+            captured["agent"] = agent_arg
+            captured["prompt"] = prompt_arg
+            captured["timeout"] = timeout
+            return "ok"
+
+        engine._run_acp_session = fake_run
+
+        assert engine.run_agent_session(agent, "prompt", timeout=12.5) == "ok"
+        assert captured == {"agent": agent, "prompt": "prompt", "timeout": 12.5}
+
     def test_engine_none_returns_placeholder(self):
         """When engine is None, placeholder fallback is returned."""
         dm = DiscussionManager(engine=None)
@@ -1232,9 +1266,9 @@ class TestCallLLMForSummaryIntegration:
         with patch(
             "src.agent_session.create_engine_session",
             return_value=mock_session,
-        ) as mock_create, patch(
+        ), patch(
             "src.agent_session.close_session_safely",
-        ) as mock_close:
+        ):
             result = dm._call_llm_for_summary("Summarize this discussion")
 
         assert result == "The agents agreed on using pattern A for the service layer."
@@ -1316,7 +1350,7 @@ class TestParallelDiscussionCapacity:
     def test_allows_up_to_max_parallel(self):
         engine = self._make_engine(max_parallel=3)
         for i in range(3):
-            result = engine._add_discussion(f"ch1", {"id": f"thread_{i}"})
+            result = engine._add_discussion("ch1", {"id": f"thread_{i}"})
             assert result is True
         assert len(engine._discussions["ch1"]) == 3
 

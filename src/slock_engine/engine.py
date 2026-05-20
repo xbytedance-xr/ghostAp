@@ -363,9 +363,15 @@ class SlockEngine(BaseEngine):
             memory = self._memory.read_agent_memory(agent.agent_id)
         return self._build_agent_prompt(agent, message, memory)
 
-    def run_agent_session(self, agent: AgentIdentity, prompt: str) -> Optional[str]:
+    def run_agent_session(
+        self,
+        agent: AgentIdentity,
+        prompt: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> Optional[str]:
         """Run an ACP session for the agent. Public wrapper around _run_acp_session."""
-        return self._run_acp_session(agent, prompt)
+        return self._run_acp_session(agent, prompt, timeout=timeout)
 
     # ------------------------------------------------------------------
     # Discussion Helpers: multi-thread parallel support
@@ -385,6 +391,7 @@ class SlockEngine(BaseEngine):
             max_rounds=settings.slock_max_discussion_rounds,
             token_budget=settings.slock_discussion_token_budget,
             trigger_rules=trigger_rules or ["coder->reviewer"],
+            discussion_timeout=settings.slock_discussion_timeout,
         )
 
     def _add_discussion(self, channel_id: str, thread) -> bool:
@@ -410,6 +417,36 @@ class SlockEngine(BaseEngine):
             ]
             if not self._active_discussions[channel_id]:
                 del self._active_discussions[channel_id]
+
+    def find_active_discussion(self, channel_id: str, thread_id: str):
+        """Find an active discussion thread by channel and thread id."""
+        with self._discussions_lock:
+            for thread in self._active_discussions.get(channel_id, []):
+                if getattr(thread, "thread_id", "") == thread_id:
+                    return thread
+        return None
+
+    def run_council(
+        self,
+        question: str,
+        *,
+        participants: Optional[list[AgentIdentity]] = None,
+        chairman: Optional[AgentIdentity] = None,
+        on_stage: Optional[Callable[[object], None]] = None,
+        timeout: float = 300.0,
+    ):
+        """Run a same-question council flow across multiple Slock agents."""
+        from .council_manager import CouncilManager
+
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        selected = participants or list(self._registry.list_agents(channel_id=channel_id))
+        return CouncilManager(engine=self).run(
+            question,
+            participants=list(selected),
+            chairman=chairman,
+            on_stage=on_stage,
+            timeout=timeout,
+        )
 
     def get_agent_status(self, agent_id: str) -> AgentStatus:
         """Get current status of an agent."""
@@ -948,8 +985,6 @@ class SlockEngine(BaseEngine):
                         return
                     if discussion_card_msg_id and callbacks and callbacks.on_card_update:
                         try:
-                            # Pass snapshot to avoid concurrent mutation
-                            snapshot = updated_thread.to_dict() if hasattr(updated_thread, 'to_dict') else updated_thread
                             card = build_discussion_card_from_thread(updated_thread)
                             callbacks.on_card_update(discussion_card_msg_id, card)
                         except Exception as upd_exc:
@@ -1041,7 +1076,7 @@ class SlockEngine(BaseEngine):
                 sender = entry.get("agent_name") or entry.get("sender_type", "user")
                 content = entry.get("content", "")[:500]
                 replay_lines.append(f"[{sender}]: {content}")
-            parts.append(f"\n# Recent Conversation\n" + "\n".join(replay_lines))
+            parts.append("\n# Recent Conversation\n" + "\n".join(replay_lines))
         elif memory.active_context:
             # Fallback: use summarized/truncated active_context
             parts.append(f"\n# Recent Context\n{memory.active_context[-2000:]}")
@@ -1067,14 +1102,20 @@ class SlockEngine(BaseEngine):
                         if hasattr(active_thread, 'channel_id') and active_thread.channel_id != channel_id:
                             content = redact_sensitive(content)
                         disc_lines.append(f"[Round {msg.round_num}] {msg.sender_agent_id}: {content}")
-                    parts.append(f"\n# Discussion Context\n" + "\n".join(disc_lines))
+                    parts.append("\n# Discussion Context\n" + "\n".join(disc_lines))
                     break  # Only inject the most recent active discussion
 
         parts.append(f"\n# User Message\n{message}")
 
         return "\n".join(parts)
 
-    def _run_acp_session(self, agent: AgentIdentity, prompt: str) -> Optional[str]:
+    def _run_acp_session(
+        self,
+        agent: AgentIdentity,
+        prompt: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> Optional[str]:
         """Run an ACP session for the agent. Returns response text or None.
 
         Security: auto_approve=True suppresses interactive prompts (zero HI).
@@ -1100,7 +1141,10 @@ class SlockEngine(BaseEngine):
             with self._lock:
                 self._agent_sessions[agent.agent_id] = session
             try:
-                result = session.send_prompt(prompt, timeout=self.settings.coco_execution_timeout)
+                result = session.send_prompt(
+                    prompt,
+                    timeout=timeout if timeout is not None else self.settings.coco_execution_timeout,
+                )
                 return result.text if result else None
             finally:
                 with self._lock:

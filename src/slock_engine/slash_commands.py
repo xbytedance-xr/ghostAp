@@ -38,6 +38,7 @@ class SlockCommandAction(Enum):
 
     # Discussion
     DISCUSSION = "discussion"
+    COUNCIL = "council"
 
     # Unknown
     UNKNOWN = "unknown"
@@ -57,7 +58,8 @@ def parse_slock_command(text: str) -> SlockCommand:
     """Parse a slock-related command from raw text.
 
     Recognizes:
-        /slock [status|help]
+        /slock [status|help|council]
+        /council <question>
         /new-team <name>
         /new-role <name>
         /role list|remove <name>|info <name>
@@ -93,6 +95,10 @@ def parse_slock_command(text: str) -> SlockCommand:
             return SlockCommand(action=SlockCommandAction.NEW_ROLE, args=remainder)
         return SlockCommand(action=SlockCommandAction.NEW_ROLE)
 
+    # /council <question>
+    if cmd == "/council":
+        return SlockCommand(action=SlockCommandAction.COUNCIL, args=remainder)
+
     # /role <subcommand>
     if cmd == "/role":
         return _parse_role_subcommand(remainder)
@@ -124,6 +130,9 @@ def _parse_slock_subcommand(args: str) -> SlockCommand:
         return SlockCommand(action=SlockCommandAction.HELP)
     elif subcmd in {"list", "team", "teams"}:
         return SlockCommand(action=SlockCommandAction.TEAM_LIST)
+    elif subcmd == "council":
+        question = sub[1].strip() if len(sub) > 1 else ""
+        return SlockCommand(action=SlockCommandAction.COUNCIL, args=question)
     else:
         # Treat as activate with requirement text
         return SlockCommand(action=SlockCommandAction.ACTIVATE, args=args)
@@ -284,7 +293,7 @@ def is_slock_command(
         return True
 
     # Team-internal commands require managed chat context
-    if normalized.startswith(("/new-role", "/role", "/task", "/team")):
+    if normalized.startswith(("/new-role", "/role", "/task", "/team", "/council")):
         if manager is not None and chat_id:
             return manager.is_managed_chat(chat_id)
         # No manager context — conservative: don't capture

@@ -8,10 +8,8 @@ from __future__ import annotations
 import os
 import tempfile
 
-import pytest
-
-from src.slock_engine.models import AgentIdentity
 from src.slock_engine.memory_manager import MemoryManager
+from src.slock_engine.models import AgentIdentity
 
 
 class TestAgentIdSanitization:
@@ -104,5 +102,6 @@ class TestMemoryManagerPathSafety:
             sanitized = re.sub(r'[^A-Za-z0-9_.:-]+', '_', malicious_input)
             path = mm._agent_memory_path(sanitized)
             # Resolved path must stay under base
+            resolved_base = os.path.realpath(tmpdir)
             resolved = os.path.realpath(path)
-            assert resolved.startswith(tmpdir)
+            assert resolved.startswith(resolved_base)

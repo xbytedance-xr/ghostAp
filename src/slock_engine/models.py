@@ -42,6 +42,19 @@ class DiscussionStatus(Enum):
     MANUALLY_STOPPED = "manually_stopped"
 
 
+class CouncilStatus(Enum):
+    """Council run lifecycle stages."""
+
+    STARTING = "starting"
+    STAGE1_RUNNING = "stage1_running"
+    STAGE1_DONE = "stage1_done"
+    STAGE2_RUNNING = "stage2_running"
+    STAGE2_DONE = "stage2_done"
+    STAGE3_RUNNING = "stage3_running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TaskStatus(Enum):
     """Task lifecycle states."""
 
@@ -358,6 +371,66 @@ class SkillProfile:
             total_tasks=data.get("total_tasks", 0),
             last_active=data.get("last_active", 0.0),
         )
+
+
+# ---------------------------------------------------------------------------
+# Council Protocol Models
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CouncilResponse:
+    """Independent answer from one Slock agent."""
+
+    label: str = ""
+    agent_id: str = ""
+    agent_name: str = ""
+    content: str = ""
+    error: str = ""
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass
+class CouncilReview:
+    """Anonymous peer review/ranking from one Slock agent."""
+
+    reviewer_agent_id: str = ""
+    reviewer_name: str = ""
+    content: str = ""
+    parsed_ranking: list[str] = field(default_factory=list)
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass
+class CouncilAggregate:
+    """Aggregated ranking for one response label."""
+
+    label: str = ""
+    agent_id: str = ""
+    agent_name: str = ""
+    average_rank: float = 0.0
+    rankings_count: int = 0
+    quality_score: float = 0.0
+
+
+@dataclass
+class CouncilRun:
+    """A full Slock council run: independent opinions, peer reviews, synthesis."""
+
+    run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    channel_id: str = ""
+    question: str = ""
+    participant_ids: list[str] = field(default_factory=list)
+    chairman_agent_id: str = ""
+    status: CouncilStatus = CouncilStatus.STARTING
+    responses: list[CouncilResponse] = field(default_factory=list)
+    reviews: list[CouncilReview] = field(default_factory=list)
+    aggregate_rankings: list[CouncilAggregate] = field(default_factory=list)
+    label_to_agent: dict[str, str] = field(default_factory=dict)
+    final_response: str = ""
+    error: str = ""
+    created_at: float = field(default_factory=time.time)
+    completed_at: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------

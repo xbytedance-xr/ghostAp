@@ -833,6 +833,23 @@ class TestExpandedPatterns:
         assert expected_a in participants
         assert expected_b in participants
 
+    # --- Council review/评议 -> COUNCIL with topic ---
+
+    @pytest.mark.parametrize(
+        "text,topic",
+        [
+            ("让大家评审一下 Slock council 方案", "Slock council 方案"),
+            ("多角色评议这个实现是否可靠", "这个实现是否可靠"),
+            ("council review restart plan", "restart plan"),
+        ],
+    )
+    def test_council_trigger_patterns(self, text: str, topic: str):
+        result = self.router._fast_pattern_match(text)
+        assert result is not None
+        assert result.action == SlockCommandAction.COUNCIL
+        assert result.confidence == 0.86
+        assert result.params.get("topic") == topic
+
 
 # ===========================================================================
 # TestLLMFallback — Mock _call_llm to verify fallback behavior
@@ -1119,8 +1136,9 @@ class TestNLIFeedbackCardStyling:
 
     def test_feedback_card_has_confirm_cancel_buttons(self):
         """Feedback card includes confirm and cancel action buttons."""
-        from src.slock_engine.card_templates import build_nli_feedback_card
         import json
+
+        from src.slock_engine.card_templates import build_nli_feedback_card
 
         card = build_nli_feedback_card(
             intent_description="创建角色",
@@ -1130,4 +1148,3 @@ class TestNLIFeedbackCardStyling:
         card_json = json.dumps(card, ensure_ascii=False)
         assert "确认执行" in card_json
         assert "取消" in card_json
-

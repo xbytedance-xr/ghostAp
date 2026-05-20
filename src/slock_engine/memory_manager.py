@@ -32,7 +32,7 @@ class MemoryManager:
     """
 
     def __init__(self, base_path: str = ""):
-        self._base_path = base_path or default_slock_storage_base()
+        self._base_path = os.path.realpath(base_path or default_slock_storage_base())
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._llm_callback: Optional[Callable[[str], Optional[str]]] = None
 
@@ -720,7 +720,7 @@ class MemoryManager:
 
         A 'round' is defined as one user message + one agent response.
         Returns list of dicts with keys: sender_type, agent_name, content, timestamp.
-        
+
         Uses tail-read (reverse scan from file end) to avoid loading the entire file.
         """
         import json
@@ -757,26 +757,26 @@ class MemoryManager:
 
     def _tail_read_lines(self, path: str, n: int, buf_size: int = 8192) -> list[str]:
         """Read the last n lines from a file using reverse seeking.
-        
+
         Must be called while self._lock is held (or with external synchronization).
         """
         with open(path, "rb") as f:
             # Seek to end to get file size
             f.seek(0, 2)
             file_size = f.tell()
-            
+
             if file_size == 0:
                 return []
-            
+
             lines: list[str] = []
             remaining = file_size
-            
+
             while len(lines) <= n and remaining > 0:
                 read_size = min(buf_size, remaining)
                 remaining -= read_size
                 f.seek(remaining)
                 chunk = f.read(read_size).decode("utf-8", errors="replace")
-                
+
                 # Split and accumulate lines
                 chunk_lines = chunk.split("\n")
                 if lines:
@@ -785,15 +785,15 @@ class MemoryManager:
                     lines = chunk_lines + lines[1:]
                 else:
                     lines = chunk_lines
-            
+
             # Remove empty first element if file doesn't start mid-line
             if lines and not lines[0]:
                 lines = lines[1:]
-            
+
             # Remove trailing empty element from final newline
             if lines and not lines[-1]:
                 lines = lines[:-1]
-            
+
             # Return only last n lines
             return lines[-n:] if len(lines) > n else lines
 

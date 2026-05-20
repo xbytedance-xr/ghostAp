@@ -16,6 +16,8 @@ from .models import (
     ABORT_OPTIONS,
     AgentIdentity,
     AgentStatus,
+    CouncilRun,
+    CouncilStatus,
     EscalationLevel,
     EscalationRequest,
     SlockTask,
@@ -988,6 +990,106 @@ def build_discussion_summary_card(
 
 
 # ------------------------------------------------------------------
+# Council cards
+# ------------------------------------------------------------------
+
+
+def build_council_card(run: CouncilRun, *, channel_id: str = "") -> dict:
+    """Build a staged Slock Council card."""
+    status_label = _COUNCIL_STATUS_LABEL_ZH.get(run.status, run.status.value)
+    header_template = "green" if run.status == CouncilStatus.COMPLETED else "red" if run.status == CouncilStatus.FAILED else "indigo"
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": f"**议题:** {redact_sensitive(run.question)[:300]}",
+        }
+    ]
+
+    if run.error:
+        elements.append({"tag": "markdown", "content": f"**错误:** {redact_sensitive(run.error)[:500]}"})
+
+    elements.append({"tag": "hr"})
+    elements.append(_build_council_stage_block("1", "独立意见", _format_council_responses(run)))
+    elements.append(_build_council_stage_block("2", "匿名互评", _format_council_reviews(run)))
+    elements.append(_build_council_stage_block("3", "主席综合", _format_council_final(run)))
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"`council: {run.run_id[:12]}...` · {status_label}",
+        "text_size": "notation",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🧭 Slock Council — {status_label}"},
+            "template": header_template,
+        },
+        "body": {"elements": elements},
+    }
+
+
+def _build_council_stage_block(index: str, title: str, content: str) -> dict:
+    return {
+        "tag": "column_set",
+        "flex_mode": "bisect",
+        "background_style": "grey",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "top",
+                "elements": [{"tag": "markdown", "content": f"**阶段 {index}**\n{title}"}],
+            },
+            {
+                "tag": "column",
+                "width": "weighted",
+                "weight": 3,
+                "vertical_align": "top",
+                "elements": [{"tag": "markdown", "content": content or "*等待中*"}],
+            },
+        ],
+    }
+
+
+def _format_council_responses(run: CouncilRun) -> str:
+    if not run.responses:
+        return "*等待 Agent 独立作答*"
+    lines: list[str] = []
+    for response in run.responses[:6]:
+        content = response.content or response.error or "(空)"
+        lines.append(
+            f"• **{response.label}** · {response.agent_name or response.agent_id[:8]}: "
+            f"{redact_sensitive(content)[:240]}"
+        )
+    return "\n".join(lines)
+
+
+def _format_council_reviews(run: CouncilRun) -> str:
+    if run.aggregate_rankings:
+        return "\n".join(
+            f"• #{idx + 1} **{item.label}** · {item.agent_name or item.agent_id[:8]} "
+            f"(avg {item.average_rank:.2f}, score {item.quality_score:.1f})"
+            for idx, item in enumerate(run.aggregate_rankings[:6])
+        )
+    if run.reviews:
+        return "\n".join(
+            f"• {review.reviewer_name or review.reviewer_agent_id[:8]}: "
+            f"{', '.join(review.parsed_ranking) or '未解析'}"
+            for review in run.reviews[:6]
+        )
+    return "*等待匿名互评*"
+
+
+def _format_council_final(run: CouncilRun) -> str:
+    if run.final_response:
+        return redact_sensitive(run.final_response)[:1200]
+    return "*等待主席综合*"
+
+
+# ------------------------------------------------------------------
 # Internal constants
 # ------------------------------------------------------------------
 
@@ -1027,6 +1129,17 @@ _TASK_STATUS_BG_COLOR_MAP: dict[TaskStatus, str] = {
     TaskStatus.IN_PROGRESS: "blue",
     TaskStatus.IN_REVIEW: "yellow",
     TaskStatus.DONE: "green",
+}
+
+_COUNCIL_STATUS_LABEL_ZH: dict[CouncilStatus, str] = {
+    CouncilStatus.STARTING: "准备中",
+    CouncilStatus.STAGE1_RUNNING: "独立作答中",
+    CouncilStatus.STAGE1_DONE: "独立意见完成",
+    CouncilStatus.STAGE2_RUNNING: "匿名互评中",
+    CouncilStatus.STAGE2_DONE: "匿名互评完成",
+    CouncilStatus.STAGE3_RUNNING: "主席综合中",
+    CouncilStatus.COMPLETED: "已完成",
+    CouncilStatus.FAILED: "失败",
 }
 
 

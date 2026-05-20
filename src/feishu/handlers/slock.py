@@ -198,6 +198,7 @@ class SlockHandler(BaseEngineHandler):
             SlockCommandAction.TASK_ASSIGN: lambda: self.assign_task(message_id, chat_id, cmd.args, cmd.target, project),
             SlockCommandAction.TASK_STATUS: lambda: self.show_task_status(message_id, chat_id, project),
             SlockCommandAction.DISCUSSION: lambda: self._trigger_nli_discussion(message_id, chat_id, cmd.args, {}, project),
+            SlockCommandAction.COUNCIL: lambda: self.run_council(message_id, chat_id, cmd.args, project),
         }
 
         handler = dispatch.get(cmd.action)
@@ -578,6 +579,7 @@ class SlockHandler(BaseEngineHandler):
             SlockCommandAction.TASK_ASSIGN: {"task", "target"},
             SlockCommandAction.NEW_ROLE: {"name", "tool", "role"},
             SlockCommandAction.DISCUSSION: {"participants", "topic"},
+            SlockCommandAction.COUNCIL: {"topic"},
             SlockCommandAction.NEW_TEAM: {"name"},
             SlockCommandAction.ROLE_REMOVE: {"target"},
             SlockCommandAction.ROLE_INFO: {"target"},
@@ -634,6 +636,8 @@ class SlockHandler(BaseEngineHandler):
         # --- Discussion action: trigger inter-agent discussion ---
         elif action == SlockCommandAction.DISCUSSION:
             self._trigger_nli_discussion(message_id, chat_id, text, params, project)
+        elif action == SlockCommandAction.COUNCIL:
+            self.run_council(message_id, chat_id, params.get("topic") or text, project)
 
         else:
             # Unhandled intent — fallback to reply
@@ -657,9 +661,8 @@ class SlockHandler(BaseEngineHandler):
         to 3 discussion triggers per 5 minutes.
         """
         import json as _json
-        import time as _time
 
-        from src.slock_engine.models import DiscussionThread, DiscussionStatus, AgentStatus
+        from src.slock_engine.models import AgentStatus, DiscussionStatus, DiscussionThread
 
         # Permission gate: check discussion trigger rate-limit for non-admin users
         if not self._check_discussion_permission(message_id, chat_id):
@@ -728,7 +731,10 @@ class SlockHandler(BaseEngineHandler):
             return
 
         # Send starting card
-        from src.slock_engine.card_templates import build_discussion_card_from_thread, build_discussion_summary_card_from_thread
+        from src.slock_engine.card_templates import (
+            build_discussion_card_from_thread,
+            build_discussion_summary_card_from_thread,
+        )
 
         try:
             card = build_discussion_card_from_thread(thread)
@@ -801,6 +807,133 @@ class SlockHandler(BaseEngineHandler):
             logger.warning("Failed to submit discussion to executor: %s", str(exc))
             engine._remove_discussion(chat_id, thread.thread_id)
             self.reply_text(message_id, "⏳ 执行队列已满，请稍后再试。")
+
+    def run_council(
+        self,
+        message_id: str,
+        chat_id: str,
+        question: str = "",
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Run a Slock Council: independent opinions, anonymous review, final synthesis."""
+        if not question.strip():
+            self.reply_text(message_id, "请提供 Council 议题\n\n用法: `/council <要评审的问题或方案>`")
+            return
+
+        if not self._check_discussion_permission(message_id, chat_id):
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self._send_no_engine_hint(message_id, chat_id)
+            return
+
+        from src.slock_engine.card_templates import build_council_card
+        from src.slock_engine.models import AgentStatus, CouncilRun, CouncilStatus
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agents = list(engine.registry.list_agents(channel_id=channel_id))
+        idle_agents = [
+            agent for agent in agents
+            if engine.get_agent_status(agent.agent_id) == AgentStatus.IDLE
+        ]
+        if len(idle_agents) < 2:
+            self.reply_text(message_id, "Council 至少需要两个空闲角色。可用 `/role list` 查看角色状态。")
+            return
+
+        rank_agents = getattr(engine.router, "rank_agents_for_claim", None)
+        ranked_agents = rank_agents(question, idle_agents) if callable(rank_agents) else idle_agents
+        if not isinstance(ranked_agents, list) or len(ranked_agents) < 2:
+            ranked_agents = idle_agents
+
+        max_agents = max(2, int(getattr(self.ctx.settings, "slock_max_parallel_agents", 4)))
+        participants = ranked_agents[:max_agents]
+        chairman = self._select_council_chairman(idle_agents, participants)
+
+        initial_run = CouncilRun(
+            channel_id=channel_id,
+            question=question,
+            participant_ids=[agent.agent_id for agent in participants],
+            chairman_agent_id=chairman.agent_id if chairman else "",
+            status=CouncilStatus.STARTING,
+        )
+        card_message_id = self.send_card_to_chat(
+            chat_id,
+            json.dumps(build_council_card(initial_run, channel_id=channel_id), ensure_ascii=False),
+            origin_message_id=message_id,
+        )
+
+        def _update_stage(run) -> None:
+            if not card_message_id:
+                return
+            try:
+                self.update_card(
+                    card_message_id,
+                    json.dumps(build_council_card(run, channel_id=channel_id), ensure_ascii=False),
+                )
+            except Exception as exc:
+                logger.debug("Council card update failed: %s", str(exc))
+
+        def _run() -> None:
+            try:
+                run = engine.run_council(
+                    question,
+                    participants=participants,
+                    chairman=chairman,
+                    on_stage=_update_stage,
+                    timeout=float(getattr(self.ctx.settings, "slock_discussion_timeout", 300)),
+                )
+                final_card = json.dumps(build_council_card(run, channel_id=channel_id), ensure_ascii=False)
+                if card_message_id:
+                    self.update_card(card_message_id, final_card)
+                else:
+                    self.send_card_to_chat(chat_id, final_card, origin_message_id=message_id)
+            except Exception as exc:
+                logger.error("Slock Council failed: %s", exc, exc_info=True)
+                failed = CouncilRun(
+                    channel_id=channel_id,
+                    question=question,
+                    participant_ids=[agent.agent_id for agent in participants],
+                    chairman_agent_id=chairman.agent_id if chairman else "",
+                    status=CouncilStatus.FAILED,
+                    error=safe_error_message(exc),
+                )
+                failed_card = json.dumps(build_council_card(failed, channel_id=channel_id), ensure_ascii=False)
+                if card_message_id:
+                    self.update_card(card_message_id, failed_card)
+                else:
+                    self.send_card_to_chat(chat_id, failed_card, origin_message_id=message_id)
+
+        try:
+            engine._get_executor().submit(_run)
+        except (QueueFullError, RuntimeError) as exc:
+            logger.warning("Failed to submit Slock Council: %s", repr(exc))
+            busy = CouncilRun(
+                channel_id=channel_id,
+                question=question,
+                participant_ids=[agent.agent_id for agent in participants],
+                chairman_agent_id=chairman.agent_id if chairman else "",
+                status=CouncilStatus.FAILED,
+                error="执行队列已满，请稍后重试。",
+            )
+            if card_message_id:
+                self.update_card(
+                    card_message_id,
+                    json.dumps(build_council_card(busy, channel_id=channel_id), ensure_ascii=False),
+                )
+            else:
+                self.reply_text(message_id, "⏳ 执行队列已满，请稍后重试。")
+
+    @staticmethod
+    def _select_council_chairman(agents: list, participants: list):
+        """Prefer a chair/architect/planner/reviewer, otherwise reuse the first participant."""
+        preferred_roles = ("chair", "architect", "planner", "reviewer")
+        for role in preferred_roles:
+            for agent in agents:
+                if getattr(agent, "role", "") == role:
+                    return agent
+        return participants[0] if participants else None
 
     # ------------------------------------------------------------------
     # Slock activation
@@ -931,7 +1064,10 @@ class SlockHandler(BaseEngineHandler):
             "• `/task list` — 查看任务列表\n"
             "• `/task assign <任务> [角色]` — 分配任务；省略角色时按技能画像自动选择\n"
             "• `/task assign \"多词任务\" \"角色名\"` — 支持引号包裹多词任务和角色\n"
-            "• `/task status` — 查看 Kanban 任务进度"
+            "• `/task status` — 查看 Kanban 任务进度\n\n"
+            "**Council 评议**\n"
+            "• `/council <议题>` — 多角色独立作答、匿名互评并由主席综合\n"
+            "• `/slock council <议题>` — 同上"
         )
         self.reply_text(message_id, help_text)
 
@@ -2112,8 +2248,7 @@ class SlockHandler(BaseEngineHandler):
             self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式。")
             return
 
-        discussions = getattr(engine, "_active_discussions", {})
-        thread = discussions.get(thread_id)
+        thread = SlockHandler._find_discussion_thread(engine, chat_id, thread_id)
         if not thread:
             self.send_text_to_chat(chat_id, "ℹ️ 讨论线程已结束或不存在。")
             return
@@ -2135,15 +2270,33 @@ class SlockHandler(BaseEngineHandler):
 
         dm = getattr(engine, "_discussion_manager", None)
         if dm and thread_id:
-            # Look up DiscussionThread object from engine._active_discussions
-            active_discussions = getattr(engine, "_active_discussions", {})
-            thread_obj = active_discussions.get(chat_id)
-            if thread_obj and thread_obj.thread_id == thread_id:
-                stopped = dm.stop_discussion(thread_obj)
-                if stopped:
-                    self.send_text_to_chat(chat_id, "⏹ 讨论已手动终止。")
-                    return
+            thread_obj = SlockHandler._find_discussion_thread(engine, chat_id, thread_id)
+            if thread_obj:
+                dm.stop_discussion(thread_obj)
+                self.send_text_to_chat(chat_id, "⏹ 讨论已手动终止。")
+                return
         self.send_text_to_chat(chat_id, "ℹ️ 讨论线程已结束或不存在。")
+
+    @staticmethod
+    def _find_discussion_thread(engine, chat_id: str, thread_id: str):
+        """Resolve an active discussion thread across real engine and old test-double shapes."""
+        finder = getattr(engine, "find_active_discussion", None)
+        if callable(finder):
+            try:
+                candidate = finder(chat_id, thread_id)
+            except Exception:
+                candidate = None
+            if getattr(candidate, "thread_id", None) == thread_id:
+                return candidate
+
+        active_discussions = getattr(engine, "_active_discussions", {})
+        candidates = active_discussions.get(chat_id, [])
+        if not isinstance(candidates, list):
+            candidates = [candidates]
+        for candidate in candidates:
+            if getattr(candidate, "thread_id", None) == thread_id:
+                return candidate
+        return None
 
     # ------------------------------------------------------------------
     # Card action handler
