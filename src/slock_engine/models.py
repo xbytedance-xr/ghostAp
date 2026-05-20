@@ -607,3 +607,26 @@ class DiscussionThread:
             created_at=data.get("created_at", time.time()),
             completed_at=data.get("completed_at"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Dissolve rollback snapshot
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TeamSnapshot:
+    """Snapshot of a team's state for dissolve rollback (30s TTL).
+
+    Captures enough information to restore a dissolved team entity
+    including its channel, agents, and task bindings.
+    """
+
+    channel_id: str
+    team_name: str
+    owner_id: str
+    channel: "SlockChannel | None" = None
+    agent_ids: list[str] = field(default_factory=list)
+    agent_bindings: dict[str, str] = field(default_factory=dict)  # agent_id -> role
+    task_ids: list[str] = field(default_factory=list)
+    created_at: float = field(default_factory=time.time)

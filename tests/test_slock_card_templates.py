@@ -875,3 +875,174 @@ class TestDiscussionCardProgress:
             channel_id="ch1",
         )
         assert card["header"]["template"] == "purple"
+
+
+class TestBuildCommandPanelCard:
+    """AC01: /slock returns interactive button card with at least 4 grouped buttons."""
+
+    def test_card_has_at_least_4_buttons(self):
+        from src.slock_engine.card_templates import build_command_panel_card
+
+        card = build_command_panel_card(channel_id="test_chat")
+        buttons = _collect_buttons(card)
+        assert len(buttons) >= 4, f"Expected >=4 buttons, got {len(buttons)}"
+
+    def test_all_buttons_have_slock_prefix(self):
+        from src.slock_engine.card_templates import build_command_panel_card
+
+        card = build_command_panel_card(channel_id="test_chat")
+        buttons = _collect_buttons(card)
+        for btn in buttons:
+            action = btn.get("value", {}).get("action", "")
+            assert action.startswith("slock_"), f"Button action {action!r} missing slock_ prefix"
+
+    def test_expected_actions_present(self):
+        from src.slock_engine.card_templates import build_command_panel_card
+
+        card = build_command_panel_card(channel_id="ch1")
+        buttons = _collect_buttons(card)
+        actions = {btn["value"]["action"] for btn in buttons if btn.get("value")}
+        expected = {
+            "slock_cmd_team_list",
+            "slock_cmd_role_list",
+            "slock_cmd_task_list",
+            "slock_cmd_discuss",
+        }
+        assert expected.issubset(actions), f"Missing actions: {expected - actions}"
+
+    def test_channel_id_propagated(self):
+        from src.slock_engine.card_templates import build_command_panel_card
+
+        card = build_command_panel_card(channel_id="my_channel")
+        buttons = _collect_buttons(card)
+        for btn in buttons:
+            assert btn["value"]["channel_id"] == "my_channel"
+
+    def test_card_schema_and_header(self):
+        from src.slock_engine.card_templates import build_command_panel_card
+
+        card = build_command_panel_card()
+        assert card["schema"] == "2.0"
+        assert card["config"]["wide_screen_mode"] is True
+        assert "Slock" in card["header"]["title"]["content"]
+
+    def test_buttons_have_valid_behaviors(self):
+        """Feishu requires behaviors field with callback type."""
+        from src.slock_engine.card_templates import build_command_panel_card
+
+        card = build_command_panel_card(channel_id="ch1")
+        buttons = _collect_buttons(card)
+        for btn in buttons:
+            behaviors = btn.get("behaviors", [])
+            assert len(behaviors) == 1, f"Button should have exactly 1 behavior: {btn}"
+            assert behaviors[0]["type"] == "callback"
+            assert behaviors[0]["value"]["action"] == btn["value"]["action"]
+
+
+class TestBuildMemoryDisplayCard:
+    """Tests for build_memory_display_card (Task 20)."""
+
+    def test_basic_structure(self):
+        from src.slock_engine.card_templates import build_memory_display_card
+        from src.slock_engine.models import SlockMemory
+
+        memory = SlockMemory(
+            role="coder: writes code",
+            key_knowledge="python, go",
+            active_context="working on auth module",
+        )
+        card = build_memory_display_card(memory, agent_name="TestBot")
+        assert card["schema"] == "2.0"
+        assert "TestBot" in card["header"]["title"]["content"]
+        body_text = str(card["body"])
+        assert "coder" in body_text
+        assert "python" in body_text
+        assert "auth module" in body_text
+
+    def test_empty_memory(self):
+        from src.slock_engine.card_templates import build_memory_display_card
+        from src.slock_engine.models import SlockMemory
+
+        memory = SlockMemory(role="", key_knowledge="", active_context="")
+        card = build_memory_display_card(memory, agent_name="Empty")
+        body_text = str(card["body"])
+        assert "未定义" in body_text or "空" in body_text
+
+
+class TestBuildRoleSwitchCard:
+    """Tests for build_role_switch_card (Task 21)."""
+
+    def test_produces_buttons_per_role(self):
+        from src.slock_engine.card_templates import build_role_switch_card
+
+        card = build_role_switch_card(
+            roles=["coder", "reviewer", "tester"],
+            agent_id="a1",
+            channel_id="ch1",
+            project_id="p1",
+        )
+        buttons = _collect_buttons(card)
+        # Each role should produce one button
+        assert len(buttons) >= 3
+        button_texts = [b.get("text", {}).get("content", "") for b in buttons]
+        assert any("coder" in t for t in button_texts)
+        assert any("reviewer" in t for t in button_texts)
+
+    def test_button_action_type(self):
+        from src.slock_engine.card_templates import build_role_switch_card
+
+        card = build_role_switch_card(roles=["coder"], agent_id="a1")
+        buttons = _collect_buttons(card)
+        for btn in buttons:
+            assert btn.get("value", {}).get("action") == "slock_confirm_switch_role"
+
+
+class TestDiscussionPersistence:
+    """Tests for discussion serialize/deserialize (Task 14)."""
+
+    def test_round_trip_serialization(self):
+        from src.slock_engine.discussion_manager import DiscussionManager
+        from src.slock_engine.models import DiscussionThread, DiscussionMessage, DiscussionStatus
+
+        dm = DiscussionManager()
+        thread = DiscussionThread(
+            thread_id="t1",
+            channel_id="ch1",
+            participants=["a1", "a2"],
+            messages=[
+                DiscussionMessage(
+                    message_id="m1",
+                    sender_agent_id="a1",
+                    receiver_agent_id="a2",
+                    content="hello",
+                    round_num=1,
+                    timestamp=1000.0,
+                    token_count=5,
+                )
+            ],
+            status=DiscussionStatus.ACTIVE,
+            trigger_reason="uncertainty:maybe",
+            conclusion="",
+            total_tokens_used=5,
+            created_at=1000.0,
+        )
+
+        serialized = dm.serialize_thread(thread)
+        restored = dm.deserialize_thread(serialized)
+
+        assert restored.thread_id == "t1"
+        assert restored.channel_id == "ch1"
+        assert restored.participants == ["a1", "a2"]
+        assert len(restored.messages) == 1
+        assert restored.messages[0].content == "hello"
+        assert restored.status == DiscussionStatus.ACTIVE
+        assert restored.trigger_reason == "uncertainty:maybe"
+
+    def test_deserialize_unknown_status_defaults_active(self):
+        from src.slock_engine.discussion_manager import DiscussionManager
+        from src.slock_engine.models import DiscussionStatus
+
+        dm = DiscussionManager()
+        data = {"thread_id": "t2", "status": "nonexistent", "messages": []}
+        restored = dm.deserialize_thread(data)
+        assert restored.status == DiscussionStatus.ACTIVE

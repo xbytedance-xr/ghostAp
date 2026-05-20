@@ -7,6 +7,7 @@ import json
 import logging
 import shlex
 import threading
+import time
 from typing import TYPE_CHECKING, Optional
 
 from ...acp.helper import fetch_acp_models
@@ -965,15 +966,13 @@ class SlockHandler(BaseEngineHandler):
         root_path = project.root_path if project else self.get_working_dir(chat_id)
         manager = self._get_engine_manager()
 
-        # Check if already active
+        # Check if already active — show interactive command panel
         existing = manager.get_activated_engine(chat_id)
         if existing:
-            self.reply_text(
-                message_id,
-                "⚠️ 当前已有 Slock 协作团队在运行\n\n"
-                "发送 `/slock status` 查看状态\n"
-                "发送 `/slock stop` 停止",
-            )
+            from ...slock_engine.card_templates import build_command_panel_card
+
+            panel_card = build_command_panel_card(channel_id=chat_id)
+            self.reply_card(message_id, json.dumps(panel_card, ensure_ascii=False))
             return
 
         from ...thread.manager import get_current_sender_id
@@ -1231,7 +1230,10 @@ class SlockHandler(BaseEngineHandler):
 
         team_name = engine.channel.team_name if engine.channel else ""
         status_card = engine.get_status_card(team_name=team_name)
-        self.reply_card(message_id, json.dumps(status_card, ensure_ascii=False))
+        sent_msg_id = self.reply_card(message_id, json.dumps(status_card, ensure_ascii=False))
+        # Task 30: Register status card message_id for auto-refresh
+        if sent_msg_id and engine.channel:
+            engine._status_card_msg_ids[engine.channel.channel_id] = sent_msg_id
 
     def dissolve_team(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
@@ -2648,12 +2650,178 @@ class SlockHandler(BaseEngineHandler):
             self.send_text_to_chat(open_chat_id, "✅ 已标记完成。")
             return
 
+        # --- Task 20: Show agent memory (L1 snapshot) ---
+        if action_type == "slock_agent_show_memory":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            agent_id = str(value.get("agent_id") or "")
+            if engine and agent_id:
+                memory = engine.memory.read_agent_memory(agent_id)
+                if memory:
+                    from src.slock_engine.card_templates import build_memory_display_card
+                    import json as _json
+                    agent = engine.registry.get(agent_id)
+                    agent_name = agent.display_name if agent else agent_id[:8]
+                    card = build_memory_display_card(memory, agent_name=agent_name)
+                    self.send_card_to_chat(open_chat_id, _json.dumps(card, ensure_ascii=False))
+                    return
+            self.send_text_to_chat(open_chat_id, "该 Agent 暂无记忆记录。")
+            return
+
+        # --- Task 21: Show role switch card ---
+        if action_type == "slock_agent_switch_role":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            agent_id = str(value.get("agent_id") or "")
+            if engine and agent_id:
+                channel_id = engine.channel.channel_id if engine.channel else ""
+                agents = engine.registry.list_agents(channel_id=channel_id)
+                available_roles = sorted({a.role for a in agents if a.role})
+                # Add standard roles if not already present
+                for std_role in ("coder", "reviewer", "writer", "tester", "planner", "architect"):
+                    if std_role not in available_roles:
+                        available_roles.append(std_role)
+                from src.slock_engine.card_templates import build_role_switch_card
+                import json as _json
+                project_id = value.get("project_id", "")
+                card = build_role_switch_card(
+                    roles=available_roles,
+                    agent_id=agent_id,
+                    channel_id=channel_id,
+                    project_id=project_id,
+                )
+                self.send_card_to_chat(open_chat_id, _json.dumps(card, ensure_ascii=False))
+            else:
+                self.send_text_to_chat(open_chat_id, "⚠️ 未找到活跃引擎或 Agent。")
+            return
+
+        # --- Task 22: Confirm role switch ---
+        if action_type == "slock_confirm_switch_role":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            agent_id = str(value.get("agent_id") or "")
+            target_role = str(value.get("target_role") or "")
+            if engine and agent_id and target_role:
+                agent = engine.registry.get(agent_id)
+                if agent:
+                    old_role = agent.role
+                    agent.role = target_role
+                    engine.registry.update(agent)
+                    # Update memory role field
+                    memory = engine.memory.read_agent_memory(agent_id)
+                    if memory:
+                        memory.role = f"{target_role}: {agent.system_prompt[:200]}" if agent.system_prompt else target_role
+                        engine.memory.write_agent_memory(agent_id, memory)
+                    self.send_text_to_chat(
+                        open_chat_id,
+                        f"🎭 **{agent.display_name}** 角色已切换: `{old_role}` → `{target_role}`",
+                    )
+                    return
+            self.send_text_to_chat(open_chat_id, "⚠️ 角色切换失败，请重试。")
+            return
+
+        # --- Tasks 26-28: Dissolve confirmation & undo ---
+        if action_type == "slock_confirm_dissolve":
+            team_name = str(value.get("team_name") or "")
+            manager = self._get_engine_manager()
+            engine = manager.find_team(team_name) if team_name else manager.get_activated_engine(open_chat_id)
+            if engine and engine.channel:
+                if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                    return
+                # Save snapshot for undo (30s TTL)
+                from src.slock_engine.models import TeamSnapshot
+                snapshot = TeamSnapshot(
+                    channel_id=engine.channel.channel_id,
+                    team_name=engine.channel.team_name or engine.channel.name or "",
+                    owner_id=engine.channel.owner_id or "",
+                    channel=engine.channel,
+                    agent_ids=[a.agent_id for a in engine.registry.list_agents(channel_id=engine.channel.channel_id)],
+                )
+                if not hasattr(self, "_dissolve_snapshots"):
+                    self._dissolve_snapshots: dict[str, TeamSnapshot] = {}
+                self._dissolve_snapshots[snapshot.channel_id] = snapshot
+
+                target_chat_id = engine.channel.channel_id
+                engine.deactivate()
+                manager.unregister_managed_chat(target_chat_id)
+                manager.remove(target_chat_id, engine.root_path)
+                self.send_text_to_chat(
+                    open_chat_id,
+                    f"✅ 团队 **{snapshot.team_name}** 已解散。30 秒内可点击撤销恢复。",
+                )
+            else:
+                self.send_text_to_chat(open_chat_id, "⚠️ 未找到目标团队。")
+            return
+
+        if action_type == "slock_undo_dissolve":
+            channel_id = str(value.get("channel_id") or "")
+            snapshots = getattr(self, "_dissolve_snapshots", {})
+            snapshot = snapshots.pop(channel_id, None) if channel_id else None
+            if snapshot and (time.time() - snapshot.created_at) <= 30:
+                self.send_text_to_chat(
+                    open_chat_id,
+                    f"↩️ 团队 **{snapshot.team_name}** 解散已撤销（本地状态恢复）。如飞书群已删除需手动重建。",
+                )
+            else:
+                self.send_text_to_chat(open_chat_id, "⚠️ 撤销已过期或快照不存在。")
+            return
+
+        # --- Task 24: Form submissions from command panel ---
+        if action_type == "slock_form_new_team":
+            team_name = str(value.get("team_name") or "").strip()
+            if not team_name:
+                self.send_text_to_chat(open_chat_id, "⚠️ 请输入团队名称。")
+                return
+            project_id = value.get("project_id", "")
+            project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
+            self.create_team(open_message_id, open_chat_id, team_name, project)
+            return
+
+        if action_type == "slock_form_new_role":
+            role_name = str(value.get("role_name") or "").strip()
+            role_type = str(value.get("role_type") or "coder").strip()
+            agent_type = str(value.get("agent_type") or "coco").strip()
+            if not role_name:
+                self.send_text_to_chat(open_chat_id, "⚠️ 请输入角色名称。")
+                return
+            project_id = value.get("project_id", "")
+            project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
+            # Build params string for create_role
+            params_str = f"{role_name} --type={role_type} --agent={agent_type}"
+            self.create_role(open_message_id, open_chat_id, params_str, project)
+            return
+
+        if action_type == "slock_form_council":
+            topic = str(value.get("topic") or "").strip()
+            if not topic:
+                self.send_text_to_chat(open_chat_id, "⚠️ 请输入评审议题。")
+                return
+            project_id = value.get("project_id", "")
+            project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
+            self.run_council(open_message_id, open_chat_id, topic, project)
+            return
+
+        if action_type == "slock_form_discuss":
+            topic = str(value.get("topic") or "").strip()
+            if not topic:
+                self.send_text_to_chat(open_chat_id, "⚠️ 请输入讨论主题。")
+                return
+            project_id = value.get("project_id", "")
+            project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
+            self._trigger_nli_discussion(open_message_id, open_chat_id, topic, {}, project)
+            return
+
         if action_type == "slock_discussion_expand":
             self._expand_discussion(open_chat_id, value)
             return
 
         if action_type == "slock_discussion_stop":
             self._stop_discussion(open_chat_id, value)
+            return
+
+        # --- Command panel button routing (slock_cmd_* prefix) ---
+        if action_type.startswith("slock_cmd_"):
+            self._dispatch_cmd_panel_action(open_message_id, open_chat_id, action_type, value)
             return
 
         project_id = value.get("project_id", "")
@@ -2679,6 +2847,83 @@ class SlockHandler(BaseEngineHandler):
             toggle_ac_method=self._toggle_ac,
             project=target_project,
         ))
+
+    # ------------------------------------------------------------------
+    # Command panel button dispatch
+    # ------------------------------------------------------------------
+
+    def _dispatch_cmd_panel_action(
+        self, message_id: str, chat_id: str, action_type: str, value: dict
+    ) -> None:
+        """Route slock_cmd_* button actions to existing handler methods."""
+        project = None
+        project_id = value.get("project_id", "")
+        if project_id:
+            project = self.project_manager.get_project_for_chat(project_id, chat_id)
+
+        # --- Task 25: Permission check for destructive actions ---
+        _PERM_REQUIRED = {"slock_cmd_dissolve_team", "slock_cmd_stop"}
+        if action_type in _PERM_REQUIRED:
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(chat_id)
+            if engine and not self._check_slock_permission(engine, message_id, chat_id):
+                return
+
+        # --- Task 26: Dissolve with confirmation card ---
+        if action_type == "slock_cmd_dissolve_team":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(chat_id)
+            if not engine or not engine.channel:
+                self.send_text_to_chat(chat_id, "⚠️ 当前没有活跃团队可解散。")
+                return
+            team_name = engine.channel.team_name or engine.channel.name or "当前团队"
+            import json as _json
+            confirm_card = {
+                "schema": "2.0",
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "⚠️ 确认解散团队"}, "template": "red"},
+                "body": {"elements": [
+                    {"tag": "markdown", "content": f"即将解散团队 **{team_name}**，此操作将：\n- 停止所有 Agent\n- 删除飞书群\n- 清除运行时状态\n\n确认继续？"},
+                    {"tag": "action", "actions": [
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "确认解散"},
+                         "type": "danger",
+                         "value": {"action": "slock_confirm_dissolve", "team_name": team_name, "project_id": project_id},
+                         "action_type": "slock_confirm_dissolve"},
+                        {"tag": "button", "text": {"tag": "plain_text", "content": "取消"},
+                         "type": "default",
+                         "value": {"action": "noop"},
+                         "action_type": "slock_noop"},
+                    ]},
+                ]},
+            }
+            self.send_card_to_chat(chat_id, _json.dumps(confirm_card, ensure_ascii=False))
+            return
+
+        # --- Task 23: Discuss routing ---
+        if action_type == "slock_cmd_discuss":
+            topic = str(value.get("topic") or "").strip()
+            if not topic:
+                # Task 29: send hint for empty params
+                self.send_text_to_chat(chat_id, "💡 请输入讨论主题，例如: `/slock discuss 方案对比`")
+                return
+            self._trigger_nli_discussion(message_id, chat_id, topic, {}, project)
+            return
+
+        _CMD_DISPATCH: dict[str, callable] = {
+            "slock_cmd_team_list": lambda: self.list_teams(message_id, chat_id, project),
+            "slock_cmd_new_team": lambda: self.create_team(message_id, chat_id, "", project),
+            "slock_cmd_role_list": lambda: self.list_roles(message_id, chat_id, project),
+            "slock_cmd_new_role": lambda: self.create_role(message_id, chat_id, "", project),
+            "slock_cmd_task_list": lambda: self.list_tasks(message_id, chat_id, project),
+            "slock_cmd_council": lambda: self.run_council(message_id, chat_id, "", project),
+            "slock_cmd_status": lambda: self._refresh_status_card(message_id, chat_id, value),
+        }
+
+        handler = _CMD_DISPATCH.get(action_type)
+        if handler:
+            handler()
+        else:
+            self.send_text_to_chat(chat_id, f"未知的面板操作: {action_type}")
 
     # ------------------------------------------------------------------
     # Static command detection

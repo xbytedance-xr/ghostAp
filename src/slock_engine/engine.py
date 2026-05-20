@@ -258,6 +258,10 @@ class SlockEngine(BaseEngine):
         self._discussions_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._discussion_manager: Optional[object] = None  # Lazy-initialized
 
+        # Status card auto-refresh: channel_id → last sent status card message_id
+        self._status_card_msg_ids: dict[str, str] = {}
+        self._status_refresh_timer: Optional[threading.Timer] = None
+
         # Composed managers (share lock and state references)
         self._task_mgr = TaskBoardManager(
             lock=self._lock,
@@ -1209,6 +1213,45 @@ class SlockEngine(BaseEngine):
     def _set_dirty(self, value: bool) -> None:
         """Set the dirty flag (used by composed managers)."""
         self._dirty = value
+        # Task 19: Schedule debounced status card refresh on state change
+        if value:
+            self._schedule_status_refresh()
+
+    def _schedule_status_refresh(self, delay: float = 3.0) -> None:
+        """Schedule a debounced status card refresh.
+
+        Cancels any pending timer and sets a new one. The actual refresh
+        is performed by the on_status_refresh callback if registered.
+        """
+        if self._status_refresh_timer is not None:
+            self._status_refresh_timer.cancel()
+
+        if not self._status_card_msg_ids:
+            return
+
+        def _do_refresh():
+            self._status_refresh_timer = None
+            channel_id = self._channel.channel_id if self._channel else ""
+            msg_id = self._status_card_msg_ids.get(channel_id)
+            if not msg_id:
+                return
+            # Emit refresh via callback (handler registers this)
+            cb = getattr(self, "_on_status_refresh_cb", None)
+            if cb:
+                try:
+                    team_name = self._channel.team_name if self._channel else ""
+                    status_card = self.get_status_card(team_name=team_name)
+                    cb(msg_id, status_card)
+                except Exception as exc:
+                    logger.debug("Status refresh callback error: %s", exc)
+
+        self._status_refresh_timer = threading.Timer(delay, _do_refresh)
+        self._status_refresh_timer.daemon = True
+        self._status_refresh_timer.start()
+
+    def register_status_refresh_callback(self, callback) -> None:
+        """Register callback(msg_id, card_dict) for auto-refresh."""
+        self._on_status_refresh_cb = callback
 
     # ------------------------------------------------------------------
     # Task Management (delegated to TaskBoardManager)

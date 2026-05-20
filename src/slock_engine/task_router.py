@@ -231,6 +231,27 @@ class TaskRouter:
             self._skill_profiles[agent_id] = profiles
             self._skill_profile_ts[agent_id] = now
 
+    # ------------------------------------------------------------------
+    # CHITCHAT filter (Task 18)
+    # ------------------------------------------------------------------
+
+    _CHITCHAT_PATTERNS: tuple[re.Pattern, ...] = (
+        re.compile(r"^(你好|嗨|hi|hello|hey|早上好|晚上好|下午好|早安|晚安)[!！。.~]*$", re.IGNORECASE),
+        re.compile(r"^(谢谢|thanks|thank\s*you|thx|ok|好的|收到了?|了解|明白)[!！。.~]*$", re.IGNORECASE),
+        re.compile(r"^(哈哈|嘿嘿|呵呵|lol|haha|😂|👍|🙏|666|nb)[!！。.~]*$", re.IGNORECASE),
+        re.compile(r"^.{0,5}$"),  # Very short messages (≤5 chars)
+    )
+
+    def _is_chitchat(self, text: str) -> bool:
+        """Return True if message is casual chitchat that should not be routed to agents."""
+        stripped = text.strip()
+        if not stripped:
+            return True
+        for pattern in self._CHITCHAT_PATTERNS:
+            if pattern.match(stripped):
+                return True
+        return False
+
     def route_message(
         self,
         text: str,
@@ -241,8 +262,14 @@ class TaskRouter:
         Returns the target agent, or None if no suitable agent found.
         Only IDLE agents are considered for routing; agents in MOVING,
         RUNNING, or any other non-IDLE state are excluded.
+        CHITCHAT messages are filtered out to prevent skill profile pollution.
         """
         if not available_agents:
+            return None
+
+        # Task 18: CHITCHAT filter — prevent casual messages from reaching agents
+        if self._is_chitchat(text):
+            logger.debug("Message filtered as CHITCHAT, not routing to agents: %s", text[:50])
             return None
 
         # Hard filter: only consider IDLE agents

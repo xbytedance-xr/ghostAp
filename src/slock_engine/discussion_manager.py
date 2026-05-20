@@ -915,3 +915,87 @@ class DiscussionManager:
         union = words1 | words2
 
         return len(intersection) / len(union) if union else 0.0
+
+    # ------------------------------------------------------------------
+    # Discussion Persistence (Task 14)
+    # ------------------------------------------------------------------
+
+    def serialize_thread(self, thread: DiscussionThread) -> dict:
+        """Serialize a DiscussionThread to a JSON-compatible dict for persistence."""
+        return {
+            "thread_id": thread.thread_id,
+            "channel_id": thread.channel_id,
+            "participants": thread.participants,
+            "messages": [
+                {
+                    "message_id": m.message_id,
+                    "sender_agent_id": m.sender_agent_id,
+                    "receiver_agent_id": m.receiver_agent_id,
+                    "content": m.content,
+                    "round_num": m.round_num,
+                    "timestamp": m.timestamp,
+                    "token_count": m.token_count,
+                }
+                for m in thread.messages
+            ],
+            "status": thread.status.value,
+            "trigger_reason": thread.trigger_reason,
+            "conclusion": thread.conclusion,
+            "total_tokens_used": thread.total_tokens_used,
+            "created_at": thread.created_at,
+            "completed_at": thread.completed_at,
+        }
+
+    def deserialize_thread(self, data: dict) -> DiscussionThread:
+        """Deserialize a dict back into a DiscussionThread."""
+        messages = [
+            DiscussionMessage(
+                message_id=m.get("message_id", ""),
+                sender_agent_id=m.get("sender_agent_id", ""),
+                receiver_agent_id=m.get("receiver_agent_id", ""),
+                content=m.get("content", ""),
+                round_num=m.get("round_num", 0),
+                timestamp=m.get("timestamp", 0.0),
+                token_count=m.get("token_count", 0),
+            )
+            for m in data.get("messages", [])
+        ]
+        status_str = data.get("status", "active")
+        try:
+            status = DiscussionStatus(status_str)
+        except (ValueError, KeyError):
+            status = DiscussionStatus.ACTIVE
+
+        return DiscussionThread(
+            thread_id=data.get("thread_id", ""),
+            channel_id=data.get("channel_id", ""),
+            participants=data.get("participants", []),
+            messages=messages,
+            status=status,
+            trigger_reason=data.get("trigger_reason", ""),
+            conclusion=data.get("conclusion", ""),
+            total_tokens_used=data.get("total_tokens_used", 0),
+            created_at=data.get("created_at", 0.0),
+            completed_at=data.get("completed_at"),
+        )
+
+    def persist_discussions(self, channel_id: str, threads: list[DiscussionThread]) -> None:
+        """Persist active discussion threads for a channel via memory manager."""
+        if self._memory_manager is None:
+            return
+        serialized = [self.serialize_thread(t) for t in threads if t.is_active]
+        try:
+            self._memory_manager.write_discussions(channel_id, serialized)
+        except Exception as exc:
+            logger.debug("Failed to persist discussions for %s: %s", channel_id, exc)
+
+    def load_discussions(self, channel_id: str) -> list[DiscussionThread]:
+        """Load persisted discussion threads for a channel."""
+        if self._memory_manager is None:
+            return []
+        try:
+            data_list = self._memory_manager.read_discussions(channel_id)
+            return [self.deserialize_thread(d) for d in data_list]
+        except Exception as exc:
+            logger.debug("Failed to load discussions for %s: %s", channel_id, exc)
+            return []

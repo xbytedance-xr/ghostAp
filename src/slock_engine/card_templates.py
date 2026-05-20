@@ -20,6 +20,7 @@ from .models import (
     CouncilStatus,
     EscalationLevel,
     EscalationRequest,
+    SlockMemory,
     SlockTask,
     TaskStatus,
 )
@@ -133,6 +134,13 @@ def build_agent_message_card(
         _build_callback_button(
             "查看推理",
             "slock_agent_show_reasoning",
+            channel_id=channel_id,
+            button_type="text",
+            extra_value=action_value,
+        ),
+        _build_callback_button(
+            "查看记忆",
+            "slock_agent_show_memory",
             channel_id=channel_id,
             button_type="text",
             extra_value=action_value,
@@ -1171,10 +1179,13 @@ def _build_callback_button(
     action: str,
     *,
     channel_id: str = "",
+    project_id: str = "",
     button_type: str = "default",
     extra_value: dict | None = None,
 ) -> dict:
     value = {"action": action, "channel_id": channel_id}
+    if project_id:
+        value["project_id"] = project_id
     if extra_value:
         value.update(extra_value)
     return apply_compact_style(
@@ -1186,6 +1197,80 @@ def _build_callback_button(
             "behaviors": [{"type": "callback", "value": value}],
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Memory & Role switch cards
+# ---------------------------------------------------------------------------
+
+
+def build_memory_display_card(memory: SlockMemory, agent_name: str = "Agent") -> dict:
+    """Build a card displaying an agent's L1 memory (role/key_knowledge/active_context)."""
+    elements: list[dict] = []
+
+    elements.append({"tag": "markdown", "content": f"🧠 **{agent_name}** 的记忆快照"})
+    elements.append({"tag": "hr"})
+
+    # Role section
+    role_text = memory.role.strip() if memory.role else "(未定义)"
+    elements.append({"tag": "markdown", "content": f"**📋 角色定义**\n{role_text[:800]}"})
+
+    # Key Knowledge section
+    kk_text = memory.key_knowledge.strip() if memory.key_knowledge else "(空)"
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "markdown", "content": f"**🔑 关键知识**\n{kk_text[:1500]}"})
+
+    # Active Context section
+    ctx_text = memory.active_context.strip() if memory.active_context else "(空)"
+    if len(ctx_text) > 1500:
+        ctx_text = ctx_text[:1500] + "\n..."
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "markdown", "content": f"**💭 活跃上下文**\n{ctx_text}"})
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🧠 Agent 记忆 — {agent_name}"},
+            "template": "turquoise",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_role_switch_card(
+    roles: list[str],
+    agent_id: str,
+    channel_id: str = "",
+    project_id: str = "",
+) -> dict:
+    """Build a card with role selection buttons for switching an agent's role."""
+    elements: list[dict] = []
+
+    elements.append({"tag": "markdown", "content": "请选择要切换到的角色："})
+
+    role_buttons = [
+        _build_callback_button(
+            f"🎭 {role}",
+            "slock_confirm_switch_role",
+            channel_id=channel_id,
+            project_id=project_id,
+            button_type="default",
+            extra_value={"agent_id": agent_id, "target_role": role},
+        )
+        for role in roles
+    ]
+    elements.extend(build_responsive_layout(role_buttons))
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🎭 切换角色"},
+            "template": "indigo",
+        },
+        "body": {"elements": elements},
+    }
 
 
 def build_escalation_card(
@@ -1424,44 +1509,141 @@ def build_crash_recovery_card(
 # ---------------------------------------------------------------------------
 
 
-def build_command_panel_card(*, channel_id: str = "") -> dict:
-    """Build a command panel showing available slock management commands."""
+def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> dict:
+    """Build an interactive command panel with grouped action buttons.
+
+    Returns a card with 5 grouped sections that trigger slock
+    sub-commands via callback actions (slock_cmd_* prefix).
+    Actions requiring input use form_container for parameter collection.
+    """
     elements: list[dict] = []
 
-    command_groups = [
+    # --- Read-only groups: buttons that trigger immediately ---
+    read_groups: list[tuple[str, list[tuple[str, str, str]]]] = [
         (
-            "Team 团队管理",
+            "🏠 Team 团队管理",
             [
-                ("`/team`", "查看当前团队状态"),
-                ("`/new-team`", "创建新的 Agent 团队"),
+                ("查看团队", "slock_cmd_team_list", "default"),
             ],
         ),
         (
-            "Role 角色管理",
+            "🎭 Role 角色管理",
             [
-                ("`/role`", "查看角色列表"),
-                ("`/new-role`", "创建自定义角色"),
+                ("查看角色", "slock_cmd_role_list", "default"),
             ],
         ),
         (
-            "Task 任务管理",
+            "📋 Task 任务管理",
             [
-                ("`/task`", "查看任务面板与分配"),
-            ],
-        ),
-        (
-            "Council 评审",
-            [
-                ("`/council`", "发起 Council 多角色评审"),
+                ("任务面板", "slock_cmd_task_list", "default"),
             ],
         ),
     ]
 
-    for group_title, commands in command_groups:
-        lines = [f"**{group_title}**"]
-        for cmd, desc in commands:
-            lines.append(f"  {cmd} — {desc}")
-        elements.append({"tag": "markdown", "content": "\n".join(lines)})
+    for group_title, buttons_def in read_groups:
+        elements.append({"tag": "markdown", "content": f"**{group_title}**"})
+        group_buttons = [
+            _build_callback_button(
+                label,
+                action,
+                channel_id=channel_id,
+                project_id=project_id,
+                button_type=btn_type,
+            )
+            for label, action, btn_type in buttons_def
+        ]
+        elements.extend(build_responsive_layout(group_buttons))
+
+    # --- Form-based groups: require user input ---
+    elements.append({"tag": "hr"})
+
+    # Team creation form
+    elements.append({"tag": "markdown", "content": "**🏠 创建团队**"})
+    elements.append({
+        "tag": "form",
+        "name": "slock_form_new_team",
+        "elements": [
+            {
+                "tag": "input",
+                "name": "team_name",
+                "placeholder": {"tag": "plain_text", "content": "输入团队名称"},
+                "width": "fill",
+            },
+            _build_callback_button(
+                "创建团队",
+                "slock_form_new_team",
+                channel_id=channel_id,
+                project_id=project_id,
+                button_type="primary",
+            ),
+        ],
+    })
+
+    # Role creation form
+    elements.append({"tag": "markdown", "content": "**🎭 创建角色**"})
+    elements.append({
+        "tag": "form",
+        "name": "slock_form_new_role",
+        "elements": [
+            {
+                "tag": "input",
+                "name": "role_name",
+                "placeholder": {"tag": "plain_text", "content": "输入角色名称（如: coder-小明）"},
+                "width": "fill",
+            },
+            _build_callback_button(
+                "创建角色",
+                "slock_form_new_role",
+                channel_id=channel_id,
+                project_id=project_id,
+                button_type="primary",
+            ),
+        ],
+    })
+
+    # Council form
+    elements.append({"tag": "markdown", "content": "**🧑\u200d⚖️ Council 评审**"})
+    elements.append({
+        "tag": "form",
+        "name": "slock_form_council",
+        "elements": [
+            {
+                "tag": "input",
+                "name": "council_topic",
+                "placeholder": {"tag": "plain_text", "content": "输入评审议题"},
+                "width": "fill",
+            },
+            _build_callback_button(
+                "发起评审",
+                "slock_form_council",
+                channel_id=channel_id,
+                project_id=project_id,
+                button_type="primary",
+            ),
+        ],
+    })
+
+    # Discussion group
+    elements.append({"tag": "hr"})
+    elements.append({"tag": "markdown", "content": "**🗣 Discussion 讨论**"})
+    elements.extend(build_responsive_layout([
+        _build_callback_button(
+            "发起讨论",
+            "slock_cmd_discuss",
+            channel_id=channel_id,
+            project_id=project_id,
+            button_type="primary",
+        ),
+    ]))
+
+    # Bottom hint — use note + plain_text for cross-platform rendering
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": "💡 也可直接输入命令：/team、/role、/task、/council、/discuss"},
+        ],
+    })
 
     return {
         "schema": "2.0",
@@ -1479,8 +1661,9 @@ def build_error_suggestion_card(
     suggestions: list[str],
     *,
     channel_id: str = "",
+    project_id: str = "",
 ) -> dict:
-    """Build an error card with correction suggestions when intent routing fails."""
+    """Build an error card with clickable correction suggestion buttons."""
     elements: list[dict] = []
 
     # Truncate and redact user input for display
@@ -1493,21 +1676,28 @@ def build_error_suggestion_card(
         "content": f"无法识别您的输入：`{display_input}`",
     })
 
-    # Show up to 5 suggestions
+    # Render suggestions as clickable buttons
     if suggestions:
-        suggestion_lines = ["**您是否想要：**"]
-        for suggestion in suggestions[:5]:
-            suggestion_lines.append(f"• {suggestion}")
-        elements.append({
-            "tag": "markdown",
-            "content": "\n".join(suggestion_lines),
-        })
+        elements.append({"tag": "markdown", "content": "**您是否想要：**"})
+        suggestion_buttons = [
+            _build_callback_button(
+                f"➡️ {suggestion}",
+                "slock_cmd_fix",
+                channel_id=channel_id,
+                project_id=project_id,
+                button_type="default",
+                extra_value={"fix_command": suggestion},
+            )
+            for suggestion in suggestions[:5]
+        ]
+        elements.extend(build_responsive_layout(suggestion_buttons))
 
     elements.append({"tag": "hr"})
     elements.append({
-        "tag": "markdown",
-        "content": "💡 也可以输入 /help 查看所有可用命令",
-        "text_size": "notation",
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": "💡 也可以输入 /help 查看所有可用命令"},
+        ],
     })
 
     return {
@@ -1574,13 +1764,15 @@ def build_council_detail_card(
     *,
     final_summary: str = "",
     channel_id: str = "",
+    scores: list[dict] | None = None,
 ) -> dict:
-    """Build an expanded council review detail card.
+    """Build an expanded council review detail card with collapsible opinions.
 
     Args:
         topic: The council review topic.
         opinions: List of dicts with keys: agent_name, emoji, role, opinion_text.
         final_summary: Optional synthesis summary.
+        scores: Optional list of dicts with keys: agent_name, score (for ranking).
     """
     elements: list[dict] = []
 
@@ -1588,19 +1780,40 @@ def build_council_detail_card(
     elements.append({"tag": "markdown", "content": f"**议题：** {topic}"})
     elements.append({"tag": "hr"})
 
-    # Each opinion as a collapsible section
+    # Score ranking summary (if provided)
+    if scores:
+        sorted_scores = sorted(scores, key=lambda x: x.get("score", 0), reverse=True)
+        ranking_lines = ["**📊 评分排名**"]
+        for idx, s in enumerate(sorted_scores):
+            medal = ["🥇", "🥈", "🥉"][idx] if idx < 3 else f"{idx + 1}."
+            ranking_lines.append(f"{medal} {s.get('agent_name', 'Agent')} — {s.get('score', 0)}分")
+        elements.append({"tag": "markdown", "content": "\n".join(ranking_lines)})
+        elements.append({"tag": "hr"})
+
+    # Each opinion in a collapsible_panel (with fallback to plain markdown)
     for idx, opinion in enumerate(opinions):
         agent_name = opinion.get("agent_name", "Agent")
         emoji = opinion.get("emoji", "\U0001f916")
         role = opinion.get("role", "")
         opinion_text = opinion.get("opinion_text", "")
 
-        content = f"**{emoji} {agent_name}** ({role})\n{opinion_text}"
-        elements.append({"tag": "markdown", "content": content})
-
-        # Add hr separator between opinions (not after the last one)
-        if idx < len(opinions) - 1:
-            elements.append({"tag": "hr"})
+        # Use collapsible_panel for expandable sections
+        elements.append({
+            "tag": "collapsible_panel",
+            "expanded": idx == 0,  # First one expanded by default
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"{emoji} {agent_name} ({role})",
+                },
+            },
+            "border": {"color": "grey"},
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": opinion_text[:2000] if opinion_text else "(无回答)"},
+                ],
+            },
+        })
 
     # Final summary section
     if final_summary:

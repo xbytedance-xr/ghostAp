@@ -420,14 +420,19 @@ class MemoryManager:
             if content_size <= max_size:
                 return
 
-            # FIFO truncation on active_context: keep the tail that fits
-            # Calculate how much we need to trim from active_context
+            # FIFO truncation on active_context ONLY — key_knowledge is protected.
+            # Calculate overhead = role + key_knowledge + markdown headers
+            key_knowledge_size = len(memory.key_knowledge.encode("utf-8"))
+            role_size = len(memory.role.encode("utf-8"))
+            # Overhead includes everything except active_context content
             overhead = content_size - len(memory.active_context.encode("utf-8"))
-            available_for_context = max(0, max_size - overhead)
 
-            if available_for_context == 0:
+            # If role + key_knowledge alone already exceeds max_size,
+            # only clear active_context — never truncate key_knowledge
+            if overhead >= max_size:
                 memory.active_context = ""
             else:
+                available_for_context = max_size - overhead
                 ctx_bytes = memory.active_context.encode("utf-8")
                 if len(ctx_bytes) > available_for_context:
                     # Keep the tail portion that fits within the budget
@@ -677,6 +682,38 @@ class MemoryManager:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump({"tasks": [task.to_dict() for task in tasks]}, f, ensure_ascii=False, indent=2)
             os.replace(tmp_path, path)
+
+    # ------------------------------------------------------------------
+    # Discussion Persistence (Task 14)
+    # ------------------------------------------------------------------
+
+    def _discussions_path(self, channel_id: str) -> str:
+        """Return the persisted discussions JSON path for a channel."""
+        return os.path.join(self.team_workspace_path(channel_id), ".discussions.json")
+
+    def write_discussions(self, channel_id: str, discussions: list[dict]) -> None:
+        """Persist active discussion threads for a channel."""
+        import json
+
+        path = self._discussions_path(channel_id)
+        with self._get_channel_lock(channel_id):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(discussions, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+
+    def read_discussions(self, channel_id: str) -> list[dict]:
+        """Read persisted discussion threads for a channel."""
+        import json
+
+        path = self._discussions_path(channel_id)
+        with self._get_channel_lock(channel_id):
+            if not os.path.exists(path):
+                return []
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        return data if isinstance(data, list) else []
 
     # ------------------------------------------------------------------
     # Message Archive

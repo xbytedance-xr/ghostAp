@@ -40,6 +40,9 @@ class SlockCommandAction(Enum):
     DISCUSSION = "discussion"
     COUNCIL = "council"
 
+    # Non-technical / casual message (filtered out)
+    CHITCHAT = "chitchat"
+
     # Unknown
     UNKNOWN = "unknown"
 

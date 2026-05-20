@@ -180,3 +180,42 @@ class TestTaskRouter:
         router = TaskRouter()
         keywords = router._extract_skill_keywords("something unrelated xyz")
         assert keywords == ["general"]  # default fallback
+
+
+class TestChitchatFilter:
+    """Tests for CHITCHAT filtering in TaskRouter (Task 18)."""
+
+    def test_empty_message_is_chitchat(self):
+        router = TaskRouter()
+        assert router._is_chitchat("") is True
+        assert router._is_chitchat("   ") is True
+
+    def test_greetings_are_chitchat(self):
+        router = TaskRouter()
+        for msg in ("你好", "Hi", "hello!", "早上好", "Hey"):
+            assert router._is_chitchat(msg) is True, f"Expected chitchat: {msg}"
+
+    def test_acknowledgments_are_chitchat(self):
+        router = TaskRouter()
+        for msg in ("ok", "好的", "收到", "thanks", "明白"):
+            assert router._is_chitchat(msg) is True, f"Expected chitchat: {msg}"
+
+    def test_short_messages_are_chitchat(self):
+        router = TaskRouter()
+        assert router._is_chitchat("嗯") is True
+        assert router._is_chitchat("哦") is True
+
+    def test_technical_messages_not_chitchat(self):
+        router = TaskRouter()
+        for msg in ("帮我写一个排序算法", "review the login flow", "运行测试用例"):
+            assert router._is_chitchat(msg) is False, f"Not chitchat: {msg}"
+
+    def test_route_message_filters_chitchat(self):
+        router = TaskRouter()
+        agent = AgentIdentity(agent_id="a1", name="Coder", role="coder")
+        router.set_agent_status("a1", AgentStatus.IDLE)
+        # Chitchat should return None
+        assert router.route_message("你好", [agent]) is None
+        # Real task should route
+        result = router.route_message("帮我写一个排序算法", [agent])
+        assert result is not None
