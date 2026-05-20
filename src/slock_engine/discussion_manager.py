@@ -108,6 +108,16 @@ class DiscussionManager:
         self._memory_manager = memory_manager
         self._config = config or DiscussionConfig()
         self._on_unavailable_notify = on_unavailable_notify
+
+        # Task 26: Cooldown and depth limit tracking
+        self._last_discussion_time: dict[str, float] = {}
+        self._discussion_depth: dict[str, int] = {}
+        self._cooldown_seconds = 60.0
+        self._max_depth = 3
+
+        # Task 27: Discussion-task binding
+        self._task_bindings: dict[str, str] = {}  # thread_id -> task_id
+
         logger.info(
             "DiscussionManager initialized (max_rounds=%d, token_budget=%d)",
             self._config.max_rounds,
@@ -140,6 +150,11 @@ class DiscussionManager:
             A new DiscussionThread if triggered, or None.
         """
         cfg = config or self._config
+
+        # Cooldown check
+        if self._is_on_cooldown(agent.agent_id):
+            logger.debug("Discussion suppressed: agent %s is on cooldown", agent.agent_id)
+            return None
 
         # --- Strategy 1: Rule-based trigger ---
         thread = self._check_rule_trigger(agent, cfg)
@@ -245,6 +260,51 @@ class DiscussionManager:
                 return thread
 
         return None
+
+    # ------------------------------------------------------------------
+    # Cooldown & Depth Limit (Task 26)
+    # ------------------------------------------------------------------
+
+    def _is_on_cooldown(self, agent_id: str) -> bool:
+        """Check if agent is on discussion cooldown."""
+        last_time = self._last_discussion_time.get(agent_id, 0)
+        return (time.time() - last_time) < self._cooldown_seconds
+
+    def _record_discussion_participation(self, agent_id: str) -> None:
+        """Record that an agent participated in a discussion."""
+        self._last_discussion_time[agent_id] = time.time()
+
+    def _check_depth_limit(self, parent_thread_id: Optional[str] = None) -> bool:
+        """Check if discussion depth limit would be exceeded.
+
+        Returns True if within limits, False if exceeded.
+        """
+        if parent_thread_id is None:
+            return True
+        depth = self._discussion_depth.get(parent_thread_id, 0)
+        return depth < self._max_depth
+
+    def _increment_depth(self, thread_id: str, parent_thread_id: Optional[str] = None) -> None:
+        """Increment the depth counter for a new sub-discussion."""
+        parent_depth = self._discussion_depth.get(parent_thread_id, 0) if parent_thread_id else 0
+        self._discussion_depth[thread_id] = parent_depth + 1
+
+    # ------------------------------------------------------------------
+    # Discussion-Task Binding (Task 27)
+    # ------------------------------------------------------------------
+
+    def bind_to_task(self, thread_id: str, task_id: str) -> None:
+        """Bind a discussion thread to a specific task."""
+        self._task_bindings[thread_id] = task_id
+        logger.debug("Discussion %s bound to task %s", thread_id, task_id)
+
+    def get_bound_task(self, thread_id: str) -> Optional[str]:
+        """Get the task_id bound to a discussion thread."""
+        return self._task_bindings.get(thread_id)
+
+    def unbind_task(self, thread_id: str) -> None:
+        """Remove task binding when discussion completes."""
+        self._task_bindings.pop(thread_id, None)
 
     # ------------------------------------------------------------------
     # Discussion Lifecycle

@@ -20,6 +20,11 @@ from .models import AgentIdentity
 logger = logging.getLogger(__name__)
 
 
+class DuplicateAgentNameError(Exception):
+    """Raised when registering an agent with a name that already exists in the channel."""
+    pass
+
+
 class MoveResult(Enum):
     """Structured result codes for move_agent operations."""
 
@@ -53,6 +58,8 @@ class AgentRegistry:
         self._agents: dict[str, AgentIdentity] = {}
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._loaded = False
+        self._persist_queue: list[AgentIdentity] = []
+        self._persist_thread: Optional[threading.Thread] = None
 
     @property
     def base_path(self) -> str:
@@ -84,10 +91,38 @@ class AgentRegistry:
                     logger.warning("Failed to load agent %s: %s", entry, str(e))
         self._loaded = True
 
+    def _load_single_agent(self, agent_id: str) -> Optional[AgentIdentity]:
+        """Load a single agent from disk without full scan (on-demand)."""
+        if agent_id in self._agents:
+            return self._agents[agent_id]
+        identity_file = self._agent_file(agent_id)
+        if not os.path.isfile(identity_file):
+            return None
+        try:
+            with open(identity_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            agent = AgentIdentity.from_dict(data)
+            self._agents[agent.agent_id] = agent
+            return agent
+        except Exception as e:
+            logger.warning("Failed to load agent %s: %s", agent_id, str(e))
+            return None
+
     def register(self, agent: AgentIdentity) -> AgentIdentity:
         """Register a new agent and persist to disk."""
         with self._lock:
             self._ensure_loaded()
+            # Uniqueness check: (channel_id, name) must be unique
+            if agent.name and agent.owner_group:
+                for existing_agent in self._agents.values():
+                    if (
+                        existing_agent.agent_id != agent.agent_id
+                        and existing_agent.name.lower() == agent.name.lower()
+                        and self._belongs_to_channel(existing_agent, agent.owner_group)
+                    ):
+                        raise DuplicateAgentNameError(
+                            f"Agent name '{agent.name}' already exists in channel {agent.owner_group}"
+                        )
             existing = self._agents.get(agent.agent_id)
             if existing is not None:
                 agent = self._merge_agent(existing, agent)
@@ -100,6 +135,14 @@ class AgentRegistry:
     def get(self, agent_id: str) -> Optional[AgentIdentity]:
         """Find agent by ID."""
         with self._lock:
+            # Fast path: already in memory
+            if agent_id in self._agents:
+                return self._agents[agent_id]
+            # Try on-demand single load before full scan
+            if not self._loaded:
+                loaded = self._load_single_agent(agent_id)
+                if loaded:
+                    return loaded
             self._ensure_loaded()
             return self._agents.get(agent_id)
 
@@ -135,6 +178,13 @@ class AgentRegistry:
                     os.remove(identity_file)
                 except OSError as e:
                     logger.warning("Failed to remove identity file for %s: %s", agent_id, str(e))
+            # Clean up empty agent directory
+            agent_dir = os.path.dirname(identity_file)
+            try:
+                if os.path.isdir(agent_dir) and not os.listdir(agent_dir):
+                    os.rmdir(agent_dir)
+            except OSError:
+                pass  # Directory not empty or permission issue — skip silently
             return True
 
     def update(self, agent: AgentIdentity) -> bool:
@@ -170,9 +220,9 @@ class AgentRegistry:
                 groups.append(target_channel_id)
             agent.member_groups = groups
             agent.owner_group = target_channel_id
-            # Persist — rollback on failure
+            # Persist — rollback on failure (synchronous for atomicity guarantee)
             try:
-                self._persist(agent)
+                self._write_agent_to_disk(agent)
             except OSError as e:
                 # Rollback: restore agent fields from snapshot
                 agent.member_groups = snapshot.get("member_groups", [])
@@ -195,13 +245,38 @@ class AgentRegistry:
             return MoveOutcome(status=MoveResult.SUCCESS)
 
     def _persist(self, agent: AgentIdentity) -> None:
-        """Write agent identity to disk (caller must hold _lock)."""
+        """Schedule agent identity write to background thread (caller must hold _lock)."""
+        self._persist_queue.append(agent)
+        if self._persist_thread is None or not self._persist_thread.is_alive():
+            self._persist_thread = threading.Thread(
+                target=self._flush_persist_queue,
+                name="slock-registry-persist",
+                daemon=True,
+            )
+            self._persist_thread.start()
+
+    def _flush_persist_queue(self) -> None:
+        """Background worker: drain persist queue and write to disk."""
+        while True:
+            with self._lock:
+                if not self._persist_queue:
+                    return
+                batch = list(self._persist_queue)
+                self._persist_queue.clear()
+            for agent in batch:
+                self._write_agent_to_disk(agent)
+
+    def _write_agent_to_disk(self, agent: AgentIdentity) -> None:
+        """Write a single agent identity to disk (atomic)."""
         identity_file = self._agent_file(agent.agent_id)
-        os.makedirs(os.path.dirname(identity_file), exist_ok=True)
-        tmp_path = identity_file + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(agent.to_dict(), f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, identity_file)
+        try:
+            os.makedirs(os.path.dirname(identity_file), exist_ok=True)
+            tmp_path = identity_file + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(agent.to_dict(), f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, identity_file)
+        except OSError as e:
+            logger.warning("Failed to persist agent %s: %s", agent.agent_id, str(e))
 
     def refresh_agent(self, agent_id: str) -> Optional[AgentIdentity]:
         """Re-read a single agent's identity from disk and update the in-memory cache.

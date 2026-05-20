@@ -97,6 +97,11 @@ class ObserverLearningQueue:
             timestamp=time.time(),
         )
         with self._lock:
+            if self._queue.maxlen and len(self._queue) >= self._queue.maxlen:
+                logger.warning(
+                    "Observer queue full (maxlen=%d), oldest record will be discarded",
+                    self._queue.maxlen,
+                )
             self._queue.append(record)
 
     def flush(self) -> int:

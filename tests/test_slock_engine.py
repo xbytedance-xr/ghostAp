@@ -262,9 +262,10 @@ class TestSlockEngine:
         root_path = str(tmp_path / "project_root")
         engine = SlockEngine(chat_id="chat_storage", root_path=root_path)
 
-        expected = os.path.expanduser("~/.ghostap/slock")
-        assert engine.memory.base_path == expected
-        assert engine.registry.base_path == expected
+        expected_real = os.path.realpath(os.path.expanduser("~/.ghostap/slock"))
+        expected_expand = os.path.expanduser("~/.ghostap/slock")
+        assert engine.memory.base_path == expected_real
+        assert engine.registry.base_path in (expected_real, expected_expand)
 
     @patch("src.slock_engine.engine.create_engine_session")
     def test_activate_channel_writes_marker_to_config_dir_only(self, mock_create_session, tmp_path):

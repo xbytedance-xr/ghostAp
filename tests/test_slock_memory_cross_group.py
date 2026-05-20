@@ -268,6 +268,8 @@ class TestRegistryCrossGroupIntegration:
             member_groups=["grp-Y"],
         )
         registry.register(agent2)
+        if registry._persist_thread:
+            registry._persist_thread.join(timeout=2)
 
         # Create fresh registry from same disk path
         fresh = AgentRegistry(base_path=registry.base_path)

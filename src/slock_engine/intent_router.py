@@ -173,6 +173,22 @@ class IntentRouter:
         """
         normalized = text.lower().strip()
 
+        # Direct single-word Chinese command aliases
+        _CN_COMMAND_MAP = {
+            "角色": SlockCommandAction.ROLE_LIST,
+            "任务": SlockCommandAction.TASK_LIST,
+            "团队": SlockCommandAction.TEAM_STATUS,
+            "状态": SlockCommandAction.STATUS,
+            "评审": SlockCommandAction.COUNCIL,
+            "面板": SlockCommandAction.HELP,
+        }
+        if normalized in _CN_COMMAND_MAP:
+            return IntentResult(
+                action=_CN_COMMAND_MAP[normalized],
+                confidence=0.95,
+                params={},
+            )
+
         # --- STOP ---
         if re.search(r"(停掉|关闭|停止)\s*(slock|团队|引擎)?", normalized):
             return IntentResult(action=SlockCommandAction.STOP, confidence=0.95, params={})

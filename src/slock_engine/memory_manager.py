@@ -33,7 +33,11 @@ class MemoryManager:
 
     def __init__(self, base_path: str = ""):
         self._base_path = os.path.realpath(base_path or default_slock_storage_base())
-        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._lock = threading.Lock()  # legacy: kept for backward compat, used by global/template ops
+        self._agent_locks: dict[str, threading.Lock] = {}
+        self._channel_locks: dict[str, threading.Lock] = {}
+        self._global_lock = threading.Lock()
+        self._locks_lock = threading.Lock()  # meta-lock for creating per-agent/channel locks
         self._llm_callback: Optional[Callable[[str], Optional[str]]] = None
 
     @property
@@ -49,6 +53,24 @@ class MemoryManager:
         responsible for enforcing timeouts).
         """
         self._llm_callback = callback
+
+    def _get_agent_lock(self, agent_id: str) -> threading.Lock:
+        """Get or create a per-agent lock."""
+        if agent_id in self._agent_locks:
+            return self._agent_locks[agent_id]
+        with self._locks_lock:
+            if agent_id not in self._agent_locks:
+                self._agent_locks[agent_id] = threading.Lock()
+            return self._agent_locks[agent_id]
+
+    def _get_channel_lock(self, channel_id: str) -> threading.Lock:
+        """Get or create a per-channel lock."""
+        if channel_id in self._channel_locks:
+            return self._channel_locks[channel_id]
+        with self._locks_lock:
+            if channel_id not in self._channel_locks:
+                self._channel_locks[channel_id] = threading.Lock()
+            return self._channel_locks[channel_id]
 
     # ------------------------------------------------------------------
     # L1: Agent Private Memory
@@ -74,7 +96,7 @@ class MemoryManager:
         memory_path = self.agent_memory_path(agent_id)
         notes_path = self.agent_notes_path(agent_id)
         workspace_path = self.agent_workspace_path(agent_id)
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             os.makedirs(os.path.dirname(memory_path), exist_ok=True)
             os.makedirs(os.path.join(workspace_path, "current-task"), exist_ok=True)
             os.makedirs(os.path.join(workspace_path, "history"), exist_ok=True)
@@ -91,7 +113,7 @@ class MemoryManager:
 
     def read_agent_memory(self, agent_id: str) -> SlockMemory:
         """Read L1 agent private memory."""
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             return self._read_agent_memory_unlocked(agent_id)
 
     def _read_agent_memory_unlocked(self, agent_id: str) -> SlockMemory:
@@ -104,8 +126,9 @@ class MemoryManager:
 
     def write_agent_memory(self, agent_id: str, memory: SlockMemory) -> None:
         """Write L1 agent private memory."""
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             self._write_agent_memory_unlocked(agent_id, memory)
+        self._enforce_l1_capacity(agent_id)
 
     def _write_agent_memory_unlocked(self, agent_id: str, memory: SlockMemory) -> None:
         path = self._agent_memory_path(agent_id)
@@ -118,13 +141,14 @@ class MemoryManager:
 
     def update_agent_context(self, agent_id: str, context_update: str) -> None:
         """Append to the active context section of L1 memory."""
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
             if memory.active_context:
                 memory.active_context += f"\n{context_update}"
             else:
                 memory.active_context = context_update
             self._write_agent_memory_unlocked(agent_id, memory)
+        self._enforce_l1_capacity(agent_id)
 
     def redact_active_context_for_move(
         self, agent_id: str, source_channel_id: str, target_channel_id: str
@@ -135,7 +159,7 @@ class MemoryManager:
         a single migration record line.  This is an irreversible operation —
         source-group conversation history is permanently removed from the L1 file.
         """
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
             migration_record = (
                 f"[{time.strftime('%Y-%m-%d %H:%M')}] "
@@ -160,7 +184,7 @@ class MemoryManager:
         import json
 
         path = self._skill_profile_path(agent_id)
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             if not os.path.exists(path):
                 return []
             with open(path, "r", encoding="utf-8") as f:
@@ -172,7 +196,7 @@ class MemoryManager:
         import json
 
         path = self._skill_profile_path(agent_id)
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp_path = path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -236,7 +260,7 @@ class MemoryManager:
             "model_name": model_name,
             "created_at": time.time(),
         }
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp_path = path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -249,7 +273,7 @@ class MemoryManager:
         import json
 
         path = self._reasoning_snapshot_path(agent_id, task_id)
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             if not os.path.exists(path):
                 return {}
             with open(path, "r", encoding="utf-8") as f:
@@ -270,21 +294,23 @@ class MemoryManager:
     def read_group_memory(self, channel_id: str) -> str:
         """Read L2 group shared memory."""
         path = self._group_memory_path(channel_id)
-        with self._lock:
+        with self._get_channel_lock(channel_id):
             return self._read_text_unlocked(path)
 
     def write_group_memory(self, channel_id: str, content: str) -> None:
         """Write L2 group shared memory."""
+        content = self._enforce_text_capacity(content, self._get_l2_max_size(), "L2")
         path = self._group_memory_path(channel_id)
-        with self._lock:
+        with self._get_channel_lock(channel_id):
             self._write_text_unlocked(path, content)
 
     def append_group_memory(self, channel_id: str, entry: str) -> None:
         """Append to L2 group shared memory."""
         path = self._group_memory_path(channel_id)
-        with self._lock:
+        with self._get_channel_lock(channel_id):
             current = self._read_text_unlocked(path)
             content = f"{current}\n{entry}" if current else entry
+            content = self._enforce_text_capacity(content, self._get_l2_max_size(), "L2")
             self._write_text_unlocked(path, content)
 
     # ------------------------------------------------------------------
@@ -301,21 +327,23 @@ class MemoryManager:
     def read_global_wiki(self) -> str:
         """Read L3 global knowledge base."""
         path = self._global_wiki_path()
-        with self._lock:
+        with self._global_lock:
             return self._read_text_unlocked(path)
 
     def write_global_wiki(self, content: str) -> None:
         """Write L3 global knowledge base."""
+        content = self._enforce_text_capacity(content, self._get_l3_max_size(), "L3")
         path = self._global_wiki_path()
-        with self._lock:
+        with self._global_lock:
             self._write_text_unlocked(path, content)
 
     def append_global_wiki(self, entry: str) -> None:
         """Append to L3 global knowledge base."""
         path = self._global_wiki_path()
-        with self._lock:
+        with self._global_lock:
             current = self._read_text_unlocked(path)
             content = f"{current}\n{entry}" if current else entry
+            content = self._enforce_text_capacity(content, self._get_l3_max_size(), "L3")
             self._write_text_unlocked(path, content)
 
     def _read_text_unlocked(self, path: str) -> str:
@@ -330,6 +358,123 @@ class MemoryManager:
         with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(content)
         os.replace(tmp_path, path)
+
+    # ------------------------------------------------------------------
+    # Memory Capacity Management (B026)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_l1_max_size() -> int:
+        from ..config import get_settings
+        return get_settings().slock_l1_max_size
+
+    @staticmethod
+    def _get_l2_max_size() -> int:
+        from ..config import get_settings
+        return get_settings().slock_l2_max_size
+
+    @staticmethod
+    def _get_l3_max_size() -> int:
+        from ..config import get_settings
+        return get_settings().slock_l3_max_size
+
+    def _enforce_l1_capacity(self, agent_id: str) -> None:
+        """Enforce L1 memory capacity for an agent.
+
+        Must be called OUTSIDE the agent lock because summarize_context
+        acquires its own lock internally.
+
+        Strategy:
+        1. Check if the serialized memory exceeds slock_l1_max_size.
+        2. If over, attempt LLM summarization via summarize_context().
+        3. If still over after summarization (or summarize returned False),
+           fall back to FIFO truncation of active_context.
+        """
+        max_size = self._get_l1_max_size()
+
+        # Phase 1: check size
+        with self._get_agent_lock(agent_id):
+            memory = self._read_agent_memory_unlocked(agent_id)
+            content_size = len(memory.to_markdown().encode("utf-8"))
+        if content_size <= max_size:
+            return
+
+        logger.info(
+            "L1 capacity exceeded | agent=%s size=%d max=%d, attempting summarization",
+            agent_id, content_size, max_size,
+        )
+
+        # Phase 2: attempt summarization (acquires its own lock)
+        try:
+            self.summarize_context(agent_id, threshold=0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "L1 summarize_context failed for agent=%s: %s; falling back to FIFO truncation",
+                agent_id, exc,
+            )
+
+        # Phase 3: re-check and FIFO truncate if still over
+        with self._get_agent_lock(agent_id):
+            memory = self._read_agent_memory_unlocked(agent_id)
+            content_size = len(memory.to_markdown().encode("utf-8"))
+            if content_size <= max_size:
+                return
+
+            # FIFO truncation on active_context: keep the tail that fits
+            # Calculate how much we need to trim from active_context
+            overhead = content_size - len(memory.active_context.encode("utf-8"))
+            available_for_context = max(0, max_size - overhead)
+
+            if available_for_context == 0:
+                memory.active_context = ""
+            else:
+                ctx_bytes = memory.active_context.encode("utf-8")
+                if len(ctx_bytes) > available_for_context:
+                    # Keep the tail portion that fits within the budget
+                    truncated_bytes = ctx_bytes[-available_for_context:]
+                    # Decode safely; skip leading partial character
+                    memory.active_context = truncated_bytes.decode("utf-8", errors="ignore")
+
+            self._write_agent_memory_unlocked(agent_id, memory)
+
+        logger.info(
+            "L1 FIFO truncation applied | agent=%s new_context_len=%d",
+            agent_id, len(memory.active_context),
+        )
+
+    def _enforce_text_capacity(self, content: str, max_size: int, layer_label: str) -> str:
+        """Enforce capacity on plain-text memory content (L2/L3).
+
+        If content byte size exceeds max_size, FIFO truncate by keeping
+        the tail portion that fits within max_size.
+
+        Args:
+            content: The text content to check.
+            max_size: Maximum allowed size in bytes.
+            layer_label: Label for logging (e.g. "L2", "L3").
+
+        Returns:
+            The content, possibly truncated to fit within max_size.
+        """
+        content_bytes = content.encode("utf-8")
+        if len(content_bytes) <= max_size:
+            return content
+
+        logger.info(
+            "%s capacity exceeded | size=%d max=%d, applying FIFO truncation",
+            layer_label, len(content_bytes), max_size,
+        )
+
+        # Keep the tail that fits within max_size
+        truncated_bytes = content_bytes[-max_size:]
+        # Decode safely; skip leading partial UTF-8 character
+        truncated = truncated_bytes.decode("utf-8", errors="ignore")
+
+        logger.info(
+            "%s FIFO truncation complete | original_size=%d new_size=%d",
+            layer_label, len(content_bytes), len(truncated.encode("utf-8")),
+        )
+        return truncated
 
     # ------------------------------------------------------------------
     # Isolation verification
@@ -368,7 +513,7 @@ class MemoryManager:
             "project_path": project_path,
             "created_at": channel.created_at,
         }
-        with self._lock:
+        with self._get_channel_lock(channel.channel_id):
             for directory in directories:
                 os.makedirs(directory, exist_ok=True)
             if not os.path.exists(team_config_path):
@@ -513,7 +658,7 @@ class MemoryManager:
         import json
 
         path = self.task_board_path(channel_id)
-        with self._lock:
+        with self._get_channel_lock(channel_id):
             if not os.path.exists(path):
                 return []
             with open(path, "r", encoding="utf-8") as f:
@@ -526,7 +671,7 @@ class MemoryManager:
         import json
 
         path = self.task_board_path(channel_id)
-        with self._lock:
+        with self._get_channel_lock(channel_id):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             tmp_path = path + ".tmp"
             with open(tmp_path, "w", encoding="utf-8") as f:
@@ -564,7 +709,7 @@ class MemoryManager:
             "content": content,
             "metadata": metadata or {},
         }
-        with self._lock:
+        with self._get_channel_lock(channel_id):
             os.makedirs(os.path.dirname(path), exist_ok=True)
             # Rotation check: rotate if file exceeds 10000 lines or 5MB
             self._maybe_rotate_archive(path)
@@ -630,7 +775,7 @@ class MemoryManager:
         import shutil
 
         # Phase 1: read and backup under lock
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
             if len(memory.active_context) <= threshold:
                 return False
@@ -648,7 +793,7 @@ class MemoryManager:
         compressed = self._summarize_text(text_to_summarize)
 
         # Phase 3: write back under lock
-        with self._lock:
+        with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
             memory.active_context = compressed
             self._write_agent_memory_unlocked(agent_id, memory)

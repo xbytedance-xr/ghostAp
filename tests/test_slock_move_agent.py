@@ -939,6 +939,8 @@ class TestCrossEngineRegistryRefresh:
 
         agent = _make_agent("cross-002", owner_group="alpha")
         source.register(agent)
+        if source._persist_thread:
+            source._persist_thread.join(timeout=2)
 
         # Pre-load target
         target.get(agent.agent_id)

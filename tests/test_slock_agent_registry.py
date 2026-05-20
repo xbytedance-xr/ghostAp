@@ -90,6 +90,8 @@ class TestAgentRegistry:
     def test_persistence_across_instances(self, tmp_path):
         reg1 = AgentRegistry(base_path=str(tmp_path))
         reg1.register(self._make_agent(agent_id="a1", name="Persist"))
+        if reg1._persist_thread:
+            reg1._persist_thread.join(timeout=2)
 
         # New instance reads from disk
         reg2 = AgentRegistry(base_path=str(tmp_path))
@@ -100,6 +102,8 @@ class TestAgentRegistry:
     def test_clear_resets_memory_cache(self, tmp_path):
         reg = AgentRegistry(base_path=str(tmp_path))
         reg.register(self._make_agent(agent_id="a1"))
+        if reg._persist_thread:
+            reg._persist_thread.join(timeout=2)
         reg.clear()
         # After clear, lazy reload from disk on next access
         found = reg.get("a1")
@@ -109,6 +113,8 @@ class TestAgentRegistry:
         reg = AgentRegistry(base_path=str(tmp_path))
         agent = self._make_agent(agent_id="a1", name="JsonCheck")
         reg.register(agent)
+        if reg._persist_thread:
+            reg._persist_thread.join(timeout=2)
         identity_file = os.path.join(str(tmp_path), "agents", "a1", "identity.json")
         assert os.path.isfile(identity_file)
         with open(identity_file) as f:

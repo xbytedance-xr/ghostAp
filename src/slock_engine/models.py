@@ -365,9 +365,10 @@ class SkillProfile:
 
     @classmethod
     def from_dict(cls, data: dict) -> SkillProfile:
+        raw_rate = data.get("success_rate", 50.0)
         return cls(
             tag=data.get("tag", ""),
-            success_rate=data.get("success_rate", 50.0),
+            success_rate=max(0.0, min(100.0, float(raw_rate))),
             total_tasks=data.get("total_tasks", 0),
             last_active=data.get("last_active", 0.0),
         )

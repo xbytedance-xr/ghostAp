@@ -398,6 +398,21 @@ class SlockHandler(BaseEngineHandler):
                 self.reply_card(message_id, json.dumps(feedback_card, ensure_ascii=False))
                 return
 
+        # Priority 3.5: If text looks like a failed command, show error suggestion
+        if text and text.strip().startswith("/") and engine:
+            from ...slock_engine.card_templates import build_error_suggestion_card
+
+            suggestions = [
+                "`/role` — 角色管理",
+                "`/task` — 任务管理",
+                "`/team` — 团队管理",
+                "`/council` — 发起评审",
+                "`/slock help` — 查看帮助",
+            ]
+            error_card = build_error_suggestion_card(text, suggestions, channel_id=chat_id)
+            self.reply_card(message_id, json.dumps(error_card, ensure_ascii=False))
+            return
+
         # Priority 4: Smart routing — engine.execute() (fallback for UNKNOWN/low confidence)
         self._execute_routed_message(engine, message_id, chat_id, text, project, target_agent=None)
 
@@ -1012,7 +1027,7 @@ class SlockHandler(BaseEngineHandler):
     # ------------------------------------------------------------------
 
     def show_slock_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        """Show slock engine status."""
+        """Show slock engine status with refresh button."""
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         engine_name = self.get_engine_name(chat_id, project_id=(project.project_id if project else None))
@@ -1028,48 +1043,42 @@ class SlockHandler(BaseEngineHandler):
             self.reply_card(message_id, card_content)
             return
 
-        team_name = engine.channel.team_name if engine.channel else ""
-        status_card = engine.get_status_card(team_name=team_name)
-        card_content = json.dumps(status_card, ensure_ascii=False)
-        self.reply_card(message_id, card_content)
+        # Build enhanced status with refresh button
+        from ...slock_engine.card_templates import build_status_refresh_card
+        from ...slock_engine.models import TaskStatus
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agents_data = []
+        for agent in engine.registry.list_agents(channel_id=channel_id):
+            status = engine.get_agent_status(agent.agent_id)
+            agents_data.append({
+                "name": agent.name,
+                "emoji": agent.emoji,
+                "status": status.value if status else "idle",
+                "role": agent.role or "",
+            })
+
+        tasks = engine.tasks
+        tasks_summary = {
+            "total": len(tasks),
+            "todo": sum(1 for t in tasks if t.status == TaskStatus.TODO),
+            "in_progress": sum(1 for t in tasks if t.status == TaskStatus.IN_PROGRESS),
+            "done": sum(1 for t in tasks if t.status == TaskStatus.DONE),
+        }
+
+        status_card = build_status_refresh_card(agents_data, tasks_summary, channel_id=channel_id)
+        self.reply_card(message_id, json.dumps(status_card, ensure_ascii=False))
 
     # ------------------------------------------------------------------
     # Help
     # ------------------------------------------------------------------
 
     def show_slock_help(self, message_id: str):
-        """Show slock help information."""
-        help_text = (
-            "🎭 **Slock 协作模式 — 命令帮助**\n\n"
-            "**激活 & 状态**\n"
-            "• `/slock` — 激活协作模式\n"
-            "• `/slock status` — 查看团队状态\n"
-            "• `/slock list` / `/slocks` — 在主对话查询所有 Slock 群并跳转\n"
-            "• `/slock stop` — 停止协作\n\n"
-            "**团队管理**\n"
-            "• `/new-team <名称>` — 创建带 `[Slock]` 后缀的协作团队群\n"
-            "• `/team list` — 查看团队列表\n"
-            "• `/team status <名称>` — 查看团队详情\n"
-            "• `/team dissolve <名称>` — 解散团队\n\n"
-            "**角色管理**\n"
-            "• `/new-role <名称>` — 打开工具选择卡片，再选择模型创建虚拟 Agent\n"
-            "• `/new-role <名称> --tool codex --model <模型> --role coder` — 命令式指定工具/模型/角色类型\n"
-            "• `/new-role <名称> --template coder` — 从内置模板创建 Agent\n"
-            "• `/new-role <名称> --fork <已有角色>` — 复制角色的指令、记忆和技能画像\n"
-            "• `/role list` — 查看所有角色\n"
-            "• `/role info <名称>` — 查看角色记忆、任务统计和技能画像\n"
-            "• `/role remove <名称>` — 移除角色\n"
-            "• `/role move <名称> <目标团队>` — 将角色迁移到另一个 Slock 团队\n\n"
-            "**任务管理**\n"
-            "• `/task list` — 查看任务列表\n"
-            "• `/task assign <任务> [角色]` — 分配任务；省略角色时按技能画像自动选择\n"
-            "• `/task assign \"多词任务\" \"角色名\"` — 支持引号包裹多词任务和角色\n"
-            "• `/task status` — 查看 Kanban 任务进度\n\n"
-            "**Council 评议**\n"
-            "• `/council <议题>` — 多角色独立作答、匿名互评并由主席综合\n"
-            "• `/slock council <议题>` — 同上"
-        )
-        self.reply_text(message_id, help_text)
+        """Show slock help information using the command panel card."""
+        from ...slock_engine.card_templates import build_command_panel_card
+
+        panel_card = build_command_panel_card()
+        self.reply_card(message_id, json.dumps(panel_card, ensure_ascii=False))
 
     # ------------------------------------------------------------------
     # Team management

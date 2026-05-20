@@ -179,4 +179,4 @@ class TestTaskRouter:
     def test_extract_skill_keywords_default(self):
         router = TaskRouter()
         keywords = router._extract_skill_keywords("something unrelated xyz")
-        assert keywords == ["code"]  # default fallback
+        assert keywords == ["general"]  # default fallback

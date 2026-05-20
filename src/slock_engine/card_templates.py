@@ -1367,3 +1367,323 @@ def build_resolved_escalation_card(
         },
         "body": {"elements": elements},
     }
+
+
+def build_crash_recovery_card(
+    recovered_tasks: list[SlockTask],
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build a notification card for tasks recovered after crash/restart.
+
+    Shows the list of tasks that were downgraded from IN_PROGRESS/IN_REVIEW
+    back to TODO during channel activation.
+    """
+    elements: list[dict] = []
+
+    elements.append({
+        "tag": "markdown",
+        "content": "系统重启后发现以下任务处于中间状态，已自动降级为 **待办**：",
+    })
+
+    # Task list
+    task_lines = []
+    for task in recovered_tasks[:20]:  # Cap display at 20
+        task_id_short = task.task_id[:8]
+        content_preview = task.content[:60] + ("..." if len(task.content) > 60 else "")
+        task_lines.append(f"• `{task_id_short}` {content_preview}")
+
+    if len(recovered_tasks) > 20:
+        task_lines.append(f"• ... 还有 {len(recovered_tasks) - 20} 个任务")
+
+    elements.append({
+        "tag": "markdown",
+        "content": "\n".join(task_lines),
+    })
+
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "markdown",
+        "content": "💡 这些任务已重置为待办状态，可通过 `/task` 命令重新分配或触发执行。",
+        "text_size": "notation",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "⚡ 系统恢复通知"},
+            "template": "orange",
+        },
+        "body": {"elements": elements},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Task 14-18: UX Card Templates
+# ---------------------------------------------------------------------------
+
+
+def build_command_panel_card(*, channel_id: str = "") -> dict:
+    """Build a command panel showing available slock management commands."""
+    elements: list[dict] = []
+
+    command_groups = [
+        (
+            "Team 团队管理",
+            [
+                ("`/team`", "查看当前团队状态"),
+                ("`/new-team`", "创建新的 Agent 团队"),
+            ],
+        ),
+        (
+            "Role 角色管理",
+            [
+                ("`/role`", "查看角色列表"),
+                ("`/new-role`", "创建自定义角色"),
+            ],
+        ),
+        (
+            "Task 任务管理",
+            [
+                ("`/task`", "查看任务面板与分配"),
+            ],
+        ),
+        (
+            "Council 评审",
+            [
+                ("`/council`", "发起 Council 多角色评审"),
+            ],
+        ),
+    ]
+
+    for group_title, commands in command_groups:
+        lines = [f"**{group_title}**"]
+        for cmd, desc in commands:
+            lines.append(f"  {cmd} — {desc}")
+        elements.append({"tag": "markdown", "content": "\n".join(lines)})
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "\U0001f4cb Slock 命令面板"},
+            "template": "blue",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_error_suggestion_card(
+    user_input: str,
+    suggestions: list[str],
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build an error card with correction suggestions when intent routing fails."""
+    elements: list[dict] = []
+
+    # Truncate and redact user input for display
+    display_input = redact_sensitive(user_input)
+    if len(display_input) > 50:
+        display_input = display_input[:50] + "..."
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"无法识别您的输入：`{display_input}`",
+    })
+
+    # Show up to 5 suggestions
+    if suggestions:
+        suggestion_lines = ["**您是否想要：**"]
+        for suggestion in suggestions[:5]:
+            suggestion_lines.append(f"• {suggestion}")
+        elements.append({
+            "tag": "markdown",
+            "content": "\n".join(suggestion_lines),
+        })
+
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "markdown",
+        "content": "💡 也可以输入 /help 查看所有可用命令",
+        "text_size": "notation",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "❓ 无法识别指令"},
+            "template": "red",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_confirm_cancel_card(
+    title: str,
+    description: str,
+    *,
+    confirm_action: str = "slock_confirm",
+    cancel_action: str = "slock_cancel",
+    channel_id: str = "",
+    extra_value: dict | None = None,
+) -> dict:
+    """Build a reusable confirmation dialog card."""
+    elements: list[dict] = []
+
+    elements.append({"tag": "markdown", "content": description})
+
+    # Confirm + Cancel buttons
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "确认",
+                    confirm_action,
+                    channel_id=channel_id,
+                    button_type="primary",
+                    extra_value=extra_value,
+                ),
+                _build_callback_button(
+                    "取消",
+                    cancel_action,
+                    channel_id=channel_id,
+                    button_type="default",
+                    extra_value=extra_value,
+                ),
+            ]
+        )
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": "orange",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_council_detail_card(
+    topic: str,
+    opinions: list[dict],
+    *,
+    final_summary: str = "",
+    channel_id: str = "",
+) -> dict:
+    """Build an expanded council review detail card.
+
+    Args:
+        topic: The council review topic.
+        opinions: List of dicts with keys: agent_name, emoji, role, opinion_text.
+        final_summary: Optional synthesis summary.
+    """
+    elements: list[dict] = []
+
+    # Topic
+    elements.append({"tag": "markdown", "content": f"**议题：** {topic}"})
+    elements.append({"tag": "hr"})
+
+    # Each opinion as a collapsible section
+    for idx, opinion in enumerate(opinions):
+        agent_name = opinion.get("agent_name", "Agent")
+        emoji = opinion.get("emoji", "\U0001f916")
+        role = opinion.get("role", "")
+        opinion_text = opinion.get("opinion_text", "")
+
+        content = f"**{emoji} {agent_name}** ({role})\n{opinion_text}"
+        elements.append({"tag": "markdown", "content": content})
+
+        # Add hr separator between opinions (not after the last one)
+        if idx < len(opinions) - 1:
+            elements.append({"tag": "hr"})
+
+    # Final summary section
+    if final_summary:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "markdown",
+            "content": f"**\U0001f4dd 综合评估**\n{final_summary}",
+        })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "\U0001f3db\ufe0f Council 评审详情"},
+            "template": "purple",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_status_refresh_card(
+    agents: list[dict],
+    tasks_summary: dict,
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build a team status card with refresh button.
+
+    Args:
+        agents: List of dicts with keys: name, emoji, status, role.
+        tasks_summary: Dict with keys: total, todo, in_progress, done.
+    """
+    elements: list[dict] = []
+
+    # Agent list
+    if agents:
+        agent_lines = ["**Agent 状态**"]
+        for agent in agents:
+            emoji = agent.get("emoji", "\U0001f916")
+            name = agent.get("name", "Agent")
+            status = agent.get("status", "idle")
+            role = agent.get("role", "")
+            status_label = _STATUS_LABEL_ZH.get(status, status)
+            line = f"  {emoji} **{name}** — `{status_label}`"
+            if role:
+                line += f" ({role})"
+            agent_lines.append(line)
+        elements.append({"tag": "markdown", "content": "\n".join(agent_lines)})
+
+    elements.append({"tag": "hr"})
+
+    # Task summary
+    total = tasks_summary.get("total", 0)
+    todo = tasks_summary.get("todo", 0)
+    in_progress = tasks_summary.get("in_progress", 0)
+    done = tasks_summary.get("done", 0)
+
+    summary_content = (
+        f"**任务概览**\n"
+        f"  总计: **{total}** | 待办: **{todo}** | "
+        f"进行中: **{in_progress}** | 已完成: **{done}**"
+    )
+    elements.append({"tag": "markdown", "content": summary_content})
+
+    # Refresh button
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "\U0001f504 刷新",
+                    "slock_refresh_status",
+                    channel_id=channel_id,
+                ),
+            ]
+        )
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "\U0001f4ca 团队状态"},
+            "template": "blue",
+        },
+        "body": {"elements": elements},
+    }

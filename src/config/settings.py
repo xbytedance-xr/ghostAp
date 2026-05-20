@@ -559,6 +559,15 @@ class Settings(BaseSettings):
     slock_max_parallel_discussions: int = Field(default=3, ge=1, le=10, description="同一 channel 内最大并行讨论数，超出时排队")
     slock_discussion_timeout: int = Field(default=300, ge=30, description="讨论 watchdog 超时秒数，超时自动终止讨论")
 
+    # Slock Memory Capacity & Task Chain -------------------------------------------
+    slock_l1_max_size: int = Field(default=51200, ge=1024, description="L1 agent 私有记忆最大字节数（默认 50KB），超出触发摘要压缩")
+    slock_l2_max_size: int = Field(default=204800, ge=1024, description="L2 group 共享记忆最大字节数（默认 200KB），超出触发 FIFO 截断")
+    slock_l3_max_size: int = Field(default=1048576, ge=1024, description="L3 全局 wiki 最大字节数（默认 1MB），超出触发 FIFO 截断")
+    slock_chain_templates: str = Field(
+        default="coder->reviewer->tester",
+        description="预置任务协作链模板（role->role->role 格式，逗号分隔多条链）",
+    )
+
     @field_validator("slock_team_name_suffix", mode="before")
     @classmethod
     def _warn_deprecated_slock_prefix(cls, v: str) -> str:

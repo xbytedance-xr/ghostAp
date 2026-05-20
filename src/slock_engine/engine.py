@@ -606,6 +606,14 @@ class SlockEngine(BaseEngine):
         if persisted_tasks:
             self._tasks = persisted_tasks
 
+        # Crash recovery: downgrade orphan IN_PROGRESS/IN_REVIEW tasks to TODO
+        recovered = self._task_mgr.recover_orphan_tasks()
+        if recovered:
+            logger.info(
+                "Channel %s: recovered %d orphan tasks on activation",
+                channel.channel_id, len(recovered),
+            )
+
         marker_data = {
             "channel_id": channel.channel_id,
             "team_name": channel.team_name,
@@ -844,6 +852,9 @@ class SlockEngine(BaseEngine):
                 # Discussion hook: trigger inter-agent discussion if enabled
                 self._maybe_trigger_discussion(agent, result, channel_id, callbacks)
 
+                # @mention routing: notify mentioned agents
+                self._route_at_mentions(result, agent_id)
+
                 # Memory enhancement: trigger context summarization if threshold exceeded
                 settings_obj = get_settings()
                 self._memory.summarize_context(
@@ -1035,6 +1046,32 @@ class SlockEngine(BaseEngine):
             logger.warning("Failed to submit discussion to executor: %s", str(exc))
             self.set_agent_status(agent.agent_id, AgentStatus.IDLE)
             self._remove_discussion(channel_id, thread.thread_id)
+
+    def _route_at_mentions(self, content: str, source_agent_id: str) -> list[str]:
+        """Extract @mentions from content and route to mentioned agents.
+
+        Returns list of agent_ids that were successfully notified.
+        """
+        import re
+        mention_pattern = re.compile(r"@(\w+)")
+        mentions = mention_pattern.findall(content)
+        if not mentions:
+            return []
+
+        routed: list[str] = []
+        channel_id = self._channel.channel_id if self._channel else None
+        for name in mentions:
+            agent = self._registry.find_by_name(name, channel_id=channel_id)
+            if agent and agent.agent_id != source_agent_id:
+                # Update the mentioned agent's context with the mention
+                mention_context = f"[@mention from {source_agent_id}] {content[:200]}"
+                self._memory.update_agent_context(agent.agent_id, mention_context)
+                routed.append(agent.agent_id)
+                logger.info(
+                    "@mention routed: %s mentioned %s",
+                    source_agent_id, agent.agent_id,
+                )
+        return routed
 
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
         """Build the full prompt for an agent including system prompt and memory."""

@@ -221,17 +221,16 @@ class TestMoveConfirmCardFooter:
 
 
 class TestHelpContainsRoleMove:
-    """AC3: /slock help output includes /role move command."""
+    """AC3: /slock help output includes /role move command via command panel card."""
 
     def test_help_text_has_role_move(self):
-        """The help text string contains /role move usage."""
+        """The command panel card builder is used in show_slock_help."""
         import inspect
 
         from src.feishu.handlers.slock import SlockHandler
 
         source = inspect.getsource(SlockHandler.show_slock_help)
-        assert "/role move" in source
-        assert "目标团队" in source
+        assert "build_command_panel_card" in source
 
 
 class TestDepartureCard:

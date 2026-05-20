@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import threading
 
     from .memory_manager import MemoryManager
+    from .task_chain_manager import TaskChainManager
     from .task_router import TaskRouter
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class TaskBoardManager:
         memory: MemoryManager,
         registry_get: Callable[[str], Optional[object]],
         execute_agent_fn: Callable[..., Optional[str]],
+        chain_manager: Optional[TaskChainManager] = None,
     ) -> None:
         self._lock = lock
         self._tasks = tasks
@@ -54,6 +56,7 @@ class TaskBoardManager:
         self._memory = memory
         self._registry_get = registry_get
         self._execute_agent_fn = execute_agent_fn
+        self._chain_manager = chain_manager
 
     def add_task(self, content: str) -> Optional[SlockTask]:
         """Create a new task in the channel.
@@ -123,8 +126,50 @@ class TaskBoardManager:
                     break
         if snapshot:
             self._flush_if_dirty(snapshot)
+            # Check for chain successor
+            completed_task = None
+            for t in snapshot:
+                if t.task_id == task_id and t.status == TaskStatus.DONE:
+                    completed_task = t
+                    break
+            if completed_task:
+                self._maybe_spawn_chain_successor(completed_task, agent_id)
             return True
         return False
+
+    def _maybe_spawn_chain_successor(self, task: SlockTask, agent_id: str) -> Optional[SlockTask]:
+        """Check if a completed task should spawn a chain successor.
+
+        Returns the new successor task if created, else None.
+        """
+        if self._chain_manager is None:
+            return None
+
+        # Get the completing agent's role
+        agent = self._registry_get(agent_id)
+        if agent is None:
+            return None
+
+        role = getattr(agent, 'role', '')
+        if not role:
+            return None
+
+        successor_role = self._chain_manager.get_successor_role(role)
+        if successor_role is None:
+            return None
+
+        # Create follow-up task with chain context
+        chain_content = f"[chain:{role}->{successor_role}] {task.content}"
+        successor_task = self.add_task(chain_content)
+        if successor_task:
+            logger.info(
+                "Chain successor created: %s -> %s (task=%s -> %s)",
+                role, successor_role, task.task_id, successor_task.task_id,
+            )
+            # Track in chain manager
+            self._chain_manager.start_chain(task.task_id, role)
+            self._chain_manager.advance_chain(task.task_id, role, successor_task.task_id)
+        return successor_task
 
     def execute_task(
         self,
@@ -179,6 +224,39 @@ class TaskBoardManager:
             self._dirty_setter(True)
             snapshot = list(self._tasks)
         self._flush_if_dirty(snapshot)
+
+    def recover_orphan_tasks(self) -> list[SlockTask]:
+        """Recover orphan tasks (IN_PROGRESS/IN_REVIEW) by downgrading to TODO.
+
+        Called during channel activation after crash/restart to ensure
+        no tasks are stuck in intermediate states.
+
+        Returns:
+            List of tasks that were recovered (downgraded to TODO).
+        """
+        recovered: list[SlockTask] = []
+        snapshot: list[SlockTask] = []
+        with self._lock:
+            for task in self._tasks:
+                if task.status in (TaskStatus.IN_PROGRESS, TaskStatus.IN_REVIEW):
+                    if task.claimed_by:
+                        self._router.task_claim.release(task.task_id, task.claimed_by)
+                    task.status = TaskStatus.TODO
+                    task.claimed_by = None
+                    task.claimed_at = None
+                    recovered.append(task)
+            if recovered:
+                self._dirty_setter(True)
+                snapshot = list(self._tasks)
+        if snapshot:
+            self._flush_if_dirty(snapshot)
+        if recovered:
+            logger.info(
+                "Recovered %d orphan tasks during channel activation: %s",
+                len(recovered),
+                [t.task_id for t in recovered],
+            )
+        return recovered
 
     def _mark_task_in_review(self, task_id: str, agent_id: str) -> bool:
         """Persist the intermediate review state before marking a task done."""
@@ -244,6 +322,7 @@ class TaskBoardManager:
         done_tasks = [t for t in self._tasks if t.status == TaskStatus.DONE]
         if len(done_tasks) <= max_done:
             return
-        done_tasks.sort(key=lambda t: t.claimed_at or 0)
+        # Sort by created_at (oldest first) — more reliable than claimed_at which may be None
+        done_tasks.sort(key=lambda t: t.created_at)
         to_remove = set(id(t) for t in done_tasks[: len(done_tasks) - max_done])
         self._tasks[:] = [t for t in self._tasks if id(t) not in to_remove]

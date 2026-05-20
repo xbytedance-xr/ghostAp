@@ -331,7 +331,15 @@ class TaskRouter:
 
         for agent in agents:
             status = self.get_agent_status(agent.agent_id)
-            availability = 1.0 if status == AgentStatus.IDLE else 0.3
+            if status != AgentStatus.IDLE:
+                availability = 0.3
+            else:
+                # Soft availability score based on current task load (0.5-1.0)
+                active_claims = sum(
+                    1 for _, (aid, _) in self._task_claim._claims.items()
+                    if aid == agent.agent_id
+                )
+                availability = max(0.5, 1.0 - active_claims * 0.1)
             self._ensure_skill_profiles_loaded(agent.agent_id)
 
             with self._lock:
@@ -370,7 +378,7 @@ class TaskRouter:
             if any(kw in text_lower for kw in keywords):
                 matched.append(skill)
 
-        return matched if matched else ["code"]  # default to code
+        return matched if matched else ["general"]  # default to general (no skill inference)
 
     def _extract_skill_keywords(self, text: str) -> list[str]:
         """Backward-compatible alias for existing direct unit tests."""

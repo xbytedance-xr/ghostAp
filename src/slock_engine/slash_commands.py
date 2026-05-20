@@ -54,6 +54,18 @@ class SlockCommand:
     extra: str = ""  # additional argument (e.g., role name for task assign)
 
 
+# Command aliases for quick access
+_ALIASES: dict[str, str] = {
+    "/r": "/role",
+    "/t": "/task",
+    "/tm": "/team",
+    "/c": "/council",
+    "/nr": "/new-role",
+    "/nt": "/new-team",
+    "/s": "/slock",
+}
+
+
 def parse_slock_command(text: str) -> SlockCommand:
     """Parse a slock-related command from raw text.
 
@@ -74,6 +86,12 @@ def parse_slock_command(text: str) -> SlockCommand:
     parts = normalized.split(None, 1)
     cmd = parts[0].lower()
     remainder = parts[1].strip() if len(parts) > 1 else ""
+
+    # Resolve aliases
+    if cmd in _ALIASES:
+        cmd = _ALIASES[cmd]
+        # Reconstruct normalized with resolved command for downstream parsing
+        normalized = f"{cmd} {remainder}".strip() if remainder else cmd
 
     # /slock [subcommand]
     if cmd == "/slock":
