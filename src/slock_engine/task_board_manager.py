@@ -226,14 +226,16 @@ class TaskBoardManager:
         self._memory.write_task_board(channel_id, self._tasks)
 
     def _flush_if_dirty(self, snapshot: list[SlockTask]) -> None:
-        """Persist task board from a snapshot if dirty flag is set."""
-        if not self._dirty_getter():
-            return
+        """Persist the latest task board if dirty flag is set."""
         try:
-            channel = self._channel_getter()
-            channel_id = channel.channel_id if channel else self._chat_id_getter()
-            self._memory.write_task_board(channel_id, snapshot)
-            self._dirty_setter(False)
+            with self._lock:
+                if not self._dirty_getter():
+                    return
+                channel = self._channel_getter()
+                channel_id = channel.channel_id if channel else self._chat_id_getter()
+                latest_snapshot = list(self._tasks)
+                self._memory.write_task_board(channel_id, latest_snapshot)
+                self._dirty_setter(False)
         except OSError:
             logger.warning("Failed to persist task board (will retry on next mutation)", exc_info=True)
 

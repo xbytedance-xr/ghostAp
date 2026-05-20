@@ -139,6 +139,50 @@ class TestSlockStatusRefresh:
         call_text = handler.send_text_to_chat.call_args[0][1]
         assert "未激活" in call_text
 
+    def test_refresh_task_board_uses_activated_engine_when_idle(self):
+        """Task-board refresh should work for an activated but currently idle team."""
+        handler = self._make_handler()
+        engine = MagicMock()
+        engine.channel = SlockChannel(
+            channel_id="chat-001",
+            name="Test Team",
+            team_name="Team Alpha",
+        )
+        engine.registry.list_agents = MagicMock(return_value=[])
+        engine.tasks = []
+        handler.ctx.slock_engine_manager.get_active_engine = MagicMock(return_value=None)
+        handler.ctx.slock_engine_manager.get_activated_engine = MagicMock(return_value=engine)
+
+        value = {"action": "slock_refresh_task_board", "channel_id": "chat-001"}
+        handler.handle_card_action("msg-board-001", "chat-001", "slock_refresh_task_board", value)
+
+        handler.update_card.assert_called_once()
+        handler.send_text_to_chat.assert_not_called()
+
+    @patch("src.config.get_settings")
+    @patch("src.thread.manager.get_current_sender_id")
+    @patch("time.time")
+    def test_assign_rate_limit_tracker_prunes_inactive_keys(self, mock_time, mock_sender, mock_settings):
+        """Expired chat:sender buckets should not stay in memory forever."""
+        mock_time.return_value = 100.0
+        mock_sender.return_value = "user-001"
+        mock_settings.return_value = MagicMock(
+            admin_user_ids=frozenset(),
+            slock_assign_rate_limit=10,
+        )
+        handler = self._make_handler()
+        engine = MagicMock()
+        engine.channel.owner_id = "owner-001"
+        handler._rate_limit_tracker = {
+            "old-chat:old-user": [1.0, 2.0],
+            "chat-001:user-001": [95.0],
+        }
+
+        assert handler._check_assign_rate_limit(engine, "msg-001", "chat-001") is True
+
+        assert "old-chat:old-user" not in handler._rate_limit_tracker
+        assert handler._rate_limit_tracker["chat-001:user-001"] == [95.0, 100.0]
+
     # ------------------------------------------------------------------
     # Stop single agent via card action
     # ------------------------------------------------------------------

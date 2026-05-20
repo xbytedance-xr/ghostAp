@@ -103,7 +103,7 @@ class ObserverLearningQueue:
         """Flush all pending records to disk. Returns count of flushed records.
 
         Respects self._flush_timeout: if the batch processing exceeds the timeout,
-        the remaining records are discarded for this round with a warning.
+        the remaining records are placed back at the front of the queue.
         """
         with self._lock:
             batch = list(self._queue)
@@ -114,14 +114,15 @@ class ObserverLearningQueue:
 
         flushed = 0
         deadline = time.monotonic() + self._flush_timeout
-        for record in batch:
+        for index, record in enumerate(batch):
             if time.monotonic() > deadline:
-                remaining = len(batch) - flushed
+                remaining_records = batch[index:]
                 logger.warning(
-                    "Observer flush timeout (%.1fs): skipping %d remaining records",
+                    "Observer flush timeout (%.1fs): requeueing %d remaining records",
                     self._flush_timeout,
-                    remaining,
+                    len(remaining_records),
                 )
+                self._requeue_front(remaining_records)
                 break
             try:
                 profiles = self._memory.record_skill_feedback(
@@ -141,6 +142,24 @@ class ObserverLearningQueue:
                     "Failed to flush observer record for %s", record.observer_id
                 )
         return flushed
+
+    def _requeue_front(self, records: list[ObservationRecord]) -> None:
+        """Put unflushed records back before newer queued records."""
+        if not records:
+            return
+        with self._lock:
+            current = list(self._queue)
+            combined = list(records) + current
+            maxlen = self._queue.maxlen
+            if maxlen is not None and len(combined) > maxlen:
+                dropped = len(combined) - maxlen
+                combined = combined[:maxlen]
+                logger.warning(
+                    "Observer queue full while requeueing timed-out records; dropped %d newest records",
+                    dropped,
+                )
+            self._queue.clear()
+            self._queue.extend(combined)
 
     def shutdown(self) -> None:
         """Stop the background thread and flush remaining records."""

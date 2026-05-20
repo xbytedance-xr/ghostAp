@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory
@@ -41,6 +42,29 @@ class TestMemoryManagerL1:
         mm.update_agent_context("a2", "New context")
         restored = mm.read_agent_memory("a2")
         assert restored.active_context == "New context"
+
+    def test_parallel_update_agent_context_preserves_all_entries(self, tmp_path):
+        """Concurrent L1 appends must not overwrite each other."""
+        mm = MemoryManager(base_path=str(tmp_path))
+        mm.write_agent_memory("agent-parallel", SlockMemory(active_context="start"))
+        barrier = threading.Barrier(12)
+
+        def append_entry(index: int) -> None:
+            barrier.wait(timeout=5)
+            mm.update_agent_context("agent-parallel", f"entry-{index}")
+
+        threads = [
+            threading.Thread(target=append_entry, args=(index,))
+            for index in range(12)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        restored = mm.read_agent_memory("agent-parallel").active_context
+        for index in range(12):
+            assert f"entry-{index}" in restored
 
     def test_agent_memory_path(self, tmp_path):
         mm = MemoryManager(base_path=str(tmp_path))
@@ -105,6 +129,28 @@ class TestMemoryManagerL2:
         mm.append_group_memory("ch2", "First entry")
         assert mm.read_group_memory("ch2") == "First entry"
 
+    def test_parallel_append_group_memory_preserves_all_entries(self, tmp_path):
+        """Concurrent L2 appends must not overwrite each other."""
+        mm = MemoryManager(base_path=str(tmp_path))
+        barrier = threading.Barrier(12)
+
+        def append_entry(index: int) -> None:
+            barrier.wait(timeout=5)
+            mm.append_group_memory("ch-parallel", f"group-entry-{index}")
+
+        threads = [
+            threading.Thread(target=append_entry, args=(index,))
+            for index in range(12)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        content = mm.read_group_memory("ch-parallel")
+        for index in range(12):
+            assert f"group-entry-{index}" in content
+
 
 class TestMemoryManagerL3:
     """L3: Global knowledge base."""
@@ -125,6 +171,28 @@ class TestMemoryManagerL3:
         content = mm.read_global_wiki()
         assert "Entry A" in content
         assert "Entry B" in content
+
+    def test_parallel_append_global_wiki_preserves_all_entries(self, tmp_path):
+        """Concurrent L3 appends must not overwrite each other."""
+        mm = MemoryManager(base_path=str(tmp_path))
+        barrier = threading.Barrier(12)
+
+        def append_entry(index: int) -> None:
+            barrier.wait(timeout=5)
+            mm.append_global_wiki(f"wiki-entry-{index}")
+
+        threads = [
+            threading.Thread(target=append_entry, args=(index,))
+            for index in range(12)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        content = mm.read_global_wiki()
+        for index in range(12):
+            assert f"wiki-entry-{index}" in content
 
 
 class TestMemoryManagerIsolation:

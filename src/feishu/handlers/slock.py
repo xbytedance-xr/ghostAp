@@ -1674,7 +1674,7 @@ class SlockHandler(BaseEngineHandler):
         from ...slock_engine.card_templates import build_task_board_card
 
         manager = self._get_engine_manager()
-        engine = manager.get_active_engine(chat_id)
+        engine = manager.get_activated_engine(chat_id)
         if not engine:
             self.send_text_to_chat(chat_id, "⚠️ 当前群组未激活 Slock 模式，无法刷新任务看板。")
             return
@@ -1738,9 +1738,8 @@ class SlockHandler(BaseEngineHandler):
         now = _time.time()
         window = 60.0
 
+        self._prune_assign_rate_limit_tracker(now, window)
         timestamps = self._rate_limit_tracker.get(tracker_key, [])
-        # Prune expired entries
-        timestamps = [t for t in timestamps if now - t < window]
 
         if len(timestamps) >= rate_limit:
             self.reply_text(
@@ -1753,6 +1752,15 @@ class SlockHandler(BaseEngineHandler):
         timestamps.append(now)
         self._rate_limit_tracker[tracker_key] = timestamps
         return True
+
+    def _prune_assign_rate_limit_tracker(self, now: float, window: float) -> None:
+        """Remove expired assign-rate-limit entries for inactive chat/sender pairs."""
+        for key, timestamps in list(self._rate_limit_tracker.items()):
+            active = [timestamp for timestamp in timestamps if now - timestamp < window]
+            if active:
+                self._rate_limit_tracker[key] = active
+            else:
+                self._rate_limit_tracker.pop(key, None)
 
     def _check_queue_wait_timeout(self, future, start_time: float, card_message_id: str, chat_id: str) -> bool:
         """Check if task waited too long in queue. Returns True if timed out (caller should abort).

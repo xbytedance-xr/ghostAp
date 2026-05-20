@@ -36,6 +36,8 @@ def _make_engine_mock(tasks=None, escalations=None):
     engine._escalation_mgr = MagicMock(spec=EscalationManager)
     engine._escalation_mgr._escalations = engine._escalations
     engine._escalation_mgr._escalation_retry_counts = engine._escalation_retry_counts
+    engine._escalation_mgr._timeout_timers = {}
+    engine._escalation_mgr._half_timers = {}
     engine._escalation_mgr._lock = engine._lock
     engine._escalation_mgr._trim_escalations = EscalationManager._trim_escalations.__get__(engine._escalation_mgr, EscalationManager)
 
@@ -183,7 +185,7 @@ class TestTrimEscalations:
         assert "esc-100" in remaining_ids
 
     def test_trim_escalations_preserves_unresolved(self):
-        """Unresolved escalations must never be removed regardless of count."""
+        """Unresolved escalations under the pending cap are preserved."""
         # Create 101 resolved escalations plus some unresolved ones
         resolved = [_make_resolved_escalation(i) for i in range(101)]
         unresolved = [_make_unresolved_escalation(i) for i in range(5)]
@@ -203,6 +205,19 @@ class TestTrimEscalations:
         # Resolved escalations should be trimmed to 100
         resolved_count = sum(1 for e in engine._escalations if e.resolved)
         assert resolved_count == 100
+
+    def test_trim_escalations_caps_unresolved(self):
+        """Oldest unresolved escalations are capped to avoid unbounded growth."""
+        unresolved = [_make_unresolved_escalation(i) for i in range(101)]
+        engine = _make_engine_mock(escalations=unresolved)
+
+        with engine._lock:
+            engine._trim_escalations()
+
+        assert len(engine._escalations) == 100
+        remaining_ids = {e.escalation_id for e in engine._escalations}
+        assert "esc-unresolved-0" not in remaining_ids
+        assert "esc-unresolved-100" in remaining_ids
 
 
 class TestBoundedExecutorQueueFull:

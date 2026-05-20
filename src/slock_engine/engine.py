@@ -335,6 +335,18 @@ class SlockEngine(BaseEngine):
         )
         return False
 
+    def _transition_agent_or_abort(self, agent_id: str, to_status: AgentStatus) -> bool:
+        """Transition during execution, forcing IDLE if the state machine rejects it."""
+        if self.transition_agent(agent_id, to_status):
+            return True
+        logger.error(
+            "Aborting Slock agent execution after invalid transition to %s (agent=%s)",
+            to_status.value,
+            agent_id,
+        )
+        self.set_agent_status(agent_id, AgentStatus.IDLE)
+        return False
+
     def try_lock_for_move(self, agent_id: str) -> bool:
         """Atomically check IDLE and transition to MOVING.
 
@@ -597,7 +609,8 @@ class SlockEngine(BaseEngine):
             memory = self._memory.read_agent_memory(agent_id)
 
             # WAKING → THINKING
-            self.transition_agent(agent_id, AgentStatus.THINKING)
+            if not self._transition_agent_or_abort(agent_id, AgentStatus.THINKING):
+                return None
             if callbacks and callbacks.on_agent_thinking:
                 callbacks.on_agent_thinking(agent)
 
@@ -609,7 +622,8 @@ class SlockEngine(BaseEngine):
                 raise AgentCancellationError(f"Agent {agent_id} cancelled")
 
             # THINKING → RUNNING
-            self.transition_agent(agent_id, AgentStatus.RUNNING)
+            if not self._transition_agent_or_abort(agent_id, AgentStatus.RUNNING):
+                return None
             if callbacks and callbacks.on_agent_running:
                 callbacks.on_agent_running(agent, message)
 
@@ -617,7 +631,7 @@ class SlockEngine(BaseEngine):
             try:
                 result = self._run_acp_session(agent, prompt)
             except Exception as exc:
-                self.transition_agent(agent_id, AgentStatus.IDLE)
+                self.set_agent_status(agent_id, AgentStatus.IDLE)
                 self.escalate(
                     agent,
                     f"Agent execution failed: {exc}",
@@ -630,7 +644,7 @@ class SlockEngine(BaseEngine):
                 execution_errors = self._get_agent_execution_errors()
                 error_detail = execution_errors.pop(agent_id, "")
                 if error_detail:
-                    self.transition_agent(agent_id, AgentStatus.IDLE)
+                    self.set_agent_status(agent_id, AgentStatus.IDLE)
                     self.escalate(
                         agent,
                         f"Agent execution failed: {error_detail}",
@@ -645,10 +659,12 @@ class SlockEngine(BaseEngine):
                 raise AgentCancellationError(f"Agent {agent_id} cancelled")
 
             # RUNNING → CHECKING
-            self.transition_agent(agent_id, AgentStatus.CHECKING)
+            if not self._transition_agent_or_abort(agent_id, AgentStatus.CHECKING):
+                return None
 
             # CHECKING → SENDING
-            self.transition_agent(agent_id, AgentStatus.SENDING)
+            if not self._transition_agent_or_abort(agent_id, AgentStatus.SENDING):
+                return None
 
             # Format output through mouthpiece
             if result:
@@ -668,7 +684,8 @@ class SlockEngine(BaseEngine):
                 callbacks.on_agent_done(agent, result or "")
 
             # SENDING → IDLE
-            self.transition_agent(agent_id, AgentStatus.IDLE)
+            if not self._transition_agent_or_abort(agent_id, AgentStatus.IDLE):
+                return None
 
             # Update agent memory with new context
             if result:
@@ -683,7 +700,7 @@ class SlockEngine(BaseEngine):
 
         except AgentCancellationError:
             logger.warning("Agent %s execution cancelled", agent_id)
-            self.transition_agent(agent_id, AgentStatus.IDLE)
+            self.set_agent_status(agent_id, AgentStatus.IDLE)
             # Close any active session
             with self._lock:
                 session = self._agent_sessions.pop(agent_id, None)

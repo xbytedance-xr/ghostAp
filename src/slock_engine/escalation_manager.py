@@ -106,6 +106,7 @@ class EscalationManager:
 
     _MAX_ESCALATION_RETRIES = 3
     _MAX_RESOLVED_ESCALATIONS = 100
+    _MAX_PENDING_ESCALATIONS = 100
 
     def __init__(
         self,
@@ -197,6 +198,7 @@ class EscalationManager:
 
         with self._lock:
             self._escalations.append(escalation)
+            self._trim_escalations()
 
         # Pause the agent
         self._transition_agent(agent.agent_id, AgentStatus.IDLE)
@@ -340,18 +342,44 @@ class EscalationManager:
             logger.warning("Unknown escalation resolution '%s', no action taken", resolution)
             return None
 
-    def _trim_escalations(self, max_resolved: int = _MAX_RESOLVED_ESCALATIONS) -> None:
-        """Remove oldest resolved escalations when exceeding the cap. Must be called under lock."""
+    def _trim_escalations(
+        self,
+        max_resolved: int = _MAX_RESOLVED_ESCALATIONS,
+        max_pending: int = _MAX_PENDING_ESCALATIONS,
+    ) -> None:
+        """Remove oldest resolved/pending escalations when exceeding caps. Must be called under lock."""
         resolved = [e for e in self._escalations if e.resolved]
-        if len(resolved) <= max_resolved:
+        pending = [e for e in self._escalations if not e.resolved]
+        to_remove: set[int] = set()
+        if len(resolved) > max_resolved:
+            resolved.sort(key=lambda e: e.resolved_at or 0)
+            to_remove.update(id(e) for e in resolved[: len(resolved) - max_resolved])
+        if len(pending) > max_pending:
+            pending.sort(key=lambda e: e.created_at)
+            to_remove.update(id(e) for e in pending[: len(pending) - max_pending])
+        if not to_remove:
             return
-        resolved.sort(key=lambda e: e.resolved_at or 0)
-        to_remove = set(id(e) for e in resolved[: len(resolved) - max_resolved])
+
+        removed_escalation_ids: list[str] = []
         for esc in self._escalations:
             if id(esc) in to_remove:
+                removed_escalation_ids.append(esc.escalation_id)
                 retry_key = f"esc_retry:{esc.escalation_id}"
                 self._escalation_retry_counts.pop(retry_key, None)
         self._escalations[:] = [e for e in self._escalations if id(e) not in to_remove]
+        for escalation_id in removed_escalation_ids:
+            timer = self._timeout_timers.pop(escalation_id, None)
+            half_timer = self._half_timers.pop(escalation_id, None)
+            if timer is not None:
+                timer.cancel()
+            if half_timer is not None:
+                half_timer.cancel()
+        if len(pending) > max_pending:
+            logger.warning(
+                "Trimmed %d unresolved escalations over pending cap %d",
+                len(pending) - max_pending,
+                max_pending,
+            )
 
     # ------------------------------------------------------------------
     # Timeout auto-abort

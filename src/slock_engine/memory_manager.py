@@ -80,33 +80,40 @@ class MemoryManager:
 
     def read_agent_memory(self, agent_id: str) -> SlockMemory:
         """Read L1 agent private memory."""
-        path = self._agent_memory_path(agent_id)
         with self._lock:
-            if not os.path.exists(path):
-                return SlockMemory()
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
+            return self._read_agent_memory_unlocked(agent_id)
+
+    def _read_agent_memory_unlocked(self, agent_id: str) -> SlockMemory:
+        path = self._agent_memory_path(agent_id)
+        if not os.path.exists(path):
+            return SlockMemory()
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
         return SlockMemory.from_markdown(content)
 
     def write_agent_memory(self, agent_id: str, memory: SlockMemory) -> None:
         """Write L1 agent private memory."""
-        path = self._agent_memory_path(agent_id)
         with self._lock:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            content = memory.to_markdown()
-            tmp_path = path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, path)
+            self._write_agent_memory_unlocked(agent_id, memory)
+
+    def _write_agent_memory_unlocked(self, agent_id: str, memory: SlockMemory) -> None:
+        path = self._agent_memory_path(agent_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        content = memory.to_markdown()
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
 
     def update_agent_context(self, agent_id: str, context_update: str) -> None:
         """Append to the active context section of L1 memory."""
-        memory = self.read_agent_memory(agent_id)
-        if memory.active_context:
-            memory.active_context += f"\n{context_update}"
-        else:
-            memory.active_context = context_update
-        self.write_agent_memory(agent_id, memory)
+        with self._lock:
+            memory = self._read_agent_memory_unlocked(agent_id)
+            if memory.active_context:
+                memory.active_context += f"\n{context_update}"
+            else:
+                memory.active_context = context_update
+            self._write_agent_memory_unlocked(agent_id, memory)
 
     def redact_active_context_for_move(
         self, agent_id: str, source_channel_id: str, target_channel_id: str
@@ -117,13 +124,14 @@ class MemoryManager:
         a single migration record line.  This is an irreversible operation —
         source-group conversation history is permanently removed from the L1 file.
         """
-        memory = self.read_agent_memory(agent_id)
-        migration_record = (
-            f"[{time.strftime('%Y-%m-%d %H:%M')}] "
-            f"Context redacted on move: {source_channel_id} → {target_channel_id}"
-        )
-        memory.active_context = migration_record
-        self.write_agent_memory(agent_id, memory)
+        with self._lock:
+            memory = self._read_agent_memory_unlocked(agent_id)
+            migration_record = (
+                f"[{time.strftime('%Y-%m-%d %H:%M')}] "
+                f"Context redacted on move: {source_channel_id} → {target_channel_id}"
+            )
+            memory.active_context = migration_record
+            self._write_agent_memory_unlocked(agent_id, memory)
         logger.info(
             "L1 active_context redacted for move | agent=%s source=%s target=%s",
             agent_id, source_channel_id, target_channel_id,
@@ -252,29 +260,21 @@ class MemoryManager:
         """Read L2 group shared memory."""
         path = self._group_memory_path(channel_id)
         with self._lock:
-            if not os.path.exists(path):
-                return ""
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
+            return self._read_text_unlocked(path)
 
     def write_group_memory(self, channel_id: str, content: str) -> None:
         """Write L2 group shared memory."""
         path = self._group_memory_path(channel_id)
         with self._lock:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp_path = path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, path)
+            self._write_text_unlocked(path, content)
 
     def append_group_memory(self, channel_id: str, entry: str) -> None:
         """Append to L2 group shared memory."""
-        current = self.read_group_memory(channel_id)
-        if current:
-            content = f"{current}\n{entry}"
-        else:
-            content = entry
-        self.write_group_memory(channel_id, content)
+        path = self._group_memory_path(channel_id)
+        with self._lock:
+            current = self._read_text_unlocked(path)
+            content = f"{current}\n{entry}" if current else entry
+            self._write_text_unlocked(path, content)
 
     # ------------------------------------------------------------------
     # L3: Global Knowledge Base
@@ -291,29 +291,34 @@ class MemoryManager:
         """Read L3 global knowledge base."""
         path = self._global_wiki_path()
         with self._lock:
-            if not os.path.exists(path):
-                return ""
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read()
+            return self._read_text_unlocked(path)
 
     def write_global_wiki(self, content: str) -> None:
         """Write L3 global knowledge base."""
         path = self._global_wiki_path()
         with self._lock:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            tmp_path = path + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            os.replace(tmp_path, path)
+            self._write_text_unlocked(path, content)
 
     def append_global_wiki(self, entry: str) -> None:
         """Append to L3 global knowledge base."""
-        current = self.read_global_wiki()
-        if current:
-            content = f"{current}\n{entry}"
-        else:
-            content = entry
-        self.write_global_wiki(content)
+        path = self._global_wiki_path()
+        with self._lock:
+            current = self._read_text_unlocked(path)
+            content = f"{current}\n{entry}" if current else entry
+            self._write_text_unlocked(path, content)
+
+    def _read_text_unlocked(self, path: str) -> str:
+        if not os.path.exists(path):
+            return ""
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def _write_text_unlocked(self, path: str, content: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, path)
 
     # ------------------------------------------------------------------
     # Isolation verification
@@ -551,8 +556,7 @@ class MemoryManager:
         with self._lock:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False, sort_keys=True))
-                f.write("\n")
+                f.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
     def ensure_directories(self, agent_id: Optional[str] = None, channel_id: Optional[str] = None) -> None:
         """Pre-create directories for an agent and/or channel."""
