@@ -256,7 +256,9 @@ def _parse_role_subcommand(args: str) -> SlockCommand:
     elif subcmd == "remove":
         return SlockCommand(action=SlockCommandAction.ROLE_REMOVE, target=sub_args)
     elif subcmd == "info":
-        return SlockCommand(action=SlockCommandAction.ROLE_INFO, target=sub_args)
+        if sub_args:
+            return SlockCommand(action=SlockCommandAction.ROLE_INFO, target=sub_args)
+        return SlockCommand(action=SlockCommandAction.ROLE_INFO_USAGE)
     elif subcmd == "move":
         # /role move <agent_name> <target_team>
         # Supports quoted multi-word arguments: /role move "Coder Alpha" "前端团队"
