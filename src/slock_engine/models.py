@@ -30,16 +30,18 @@ class AgentStatus(Enum):
     SENDING = "sending"
     MOVING = "moving"
     DISCUSSING = "discussing"
+    PENDING_DISCUSSION = "pending_discussion"
 
 
 class DiscussionStatus(Enum):
     """Discussion thread lifecycle states."""
 
-    ACTIVE = "active"
-    CONVERGED = "converged"
-    TIMEOUT = "timeout"
-    BUDGET_EXHAUSTED = "budget_exhausted"
-    MANUALLY_STOPPED = "manually_stopped"
+    ACTIVE = "active"  # Triggered: discussion started, rounds in progress
+    CONVERGED = "converged"  # Triggered: convergence signals detected or arbiter concludes agreement
+    TIMEOUT = "timeout"  # Triggered: watchdog timer exceeds slock_discussion_timeout
+    MAX_ROUNDS_REACHED = "max_rounds_reached"  # Triggered: round count exceeds slock_max_discussion_rounds
+    BUDGET_EXHAUSTED = "budget_exhausted"  # Triggered: token usage exceeds slock_discussion_token_budget
+    MANUALLY_STOPPED = "manually_stopped"  # Triggered: user issues /discuss stop or admin intervention
 
 
 class CouncilStatus(Enum):
@@ -142,6 +144,20 @@ AGENT_ROLE_COLORS: dict[str, str] = {
     "custom": "grey",
 }
 
+# Single Source of Truth: Agent status → Feishu card background color.
+# All card rendering code MUST use this map (do NOT create local duplicates).
+AGENT_STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = {
+    AgentStatus.IDLE: "green",
+    AgentStatus.WAKING: "turquoise",
+    AgentStatus.THINKING: "yellow",
+    AgentStatus.RUNNING: "blue",
+    AgentStatus.CHECKING: "wathet",
+    AgentStatus.SENDING: "grey",
+    AgentStatus.MOVING: "orange",
+    AgentStatus.DISCUSSING: "purple",
+    AgentStatus.PENDING_DISCUSSION: "yellow",
+}
+
 
 @dataclass
 class AgentIdentity:
@@ -226,6 +242,9 @@ class SlockTask:
     created_in: str = ""  # channel_id
     created_at: float = field(default_factory=time.time)
     resolved_reason: Optional[str] = None  # Non-None for abnormal completion (e.g. "超时中止")
+    reasoning_snapshot: str = ""  # Snapshot of reasoning state when task was created
+    chain_next_agent_id: str = ""  # Next agent in chain to hand off to
+    predecessor_agent_name: str = ""  # Role-based breadcrumb: name of agent who handed off this task
 
     def to_dict(self) -> dict:
         return {
@@ -237,6 +256,9 @@ class SlockTask:
             "created_in": self.created_in,
             "created_at": self.created_at,
             "resolved_reason": self.resolved_reason,
+            "reasoning_snapshot": self.reasoning_snapshot,
+            "chain_next_agent_id": self.chain_next_agent_id,
+            "predecessor_agent_name": self.predecessor_agent_name,
         }
 
     @classmethod
@@ -250,6 +272,9 @@ class SlockTask:
             created_in=data.get("created_in", ""),
             created_at=data.get("created_at", time.time()),
             resolved_reason=data.get("resolved_reason"),
+            reasoning_snapshot=data.get("reasoning_snapshot", ""),
+            chain_next_agent_id=data.get("chain_next_agent_id", ""),
+            predecessor_agent_name=data.get("predecessor_agent_name", ""),
         )
 
 
@@ -296,6 +321,8 @@ class SlockMemory:
     role: str = ""  # Role definition
     key_knowledge: str = ""  # Long-term knowledge
     active_context: str = ""  # Active working context
+    archived_context: str = ""  # Archived context from cross-group moves
+    _version: int = 0  # OCC version for concurrent write detection
 
     def to_markdown(self) -> str:
         sections = []
@@ -305,24 +332,42 @@ class SlockMemory:
             sections.append(f"# Key Knowledge\n{self.key_knowledge}")
         if self.active_context:
             sections.append(f"# Active Context\n{self.active_context}")
-        return "\n\n".join(sections) if sections else ""
+        if self.archived_context:
+            sections.append(f"# Archived Context\n{self.archived_context}")
+        content = "\n\n".join(sections) if sections else ""
+        # Append version comment for dual-version OCC validation
+        if self._version > 0:
+            content = f"{content}\n<!-- version: {self._version} -->" if content else f"<!-- version: {self._version} -->"
+        return content
 
     @classmethod
     def from_markdown(cls, content: str) -> SlockMemory:
+        import re
+
         role = ""
         key_knowledge = ""
         active_context = ""
+        archived_context = ""
+        embedded_version = 0
 
         if not content.strip():
             return cls()
 
-        _KNOWN_SECTIONS = {"role", "key knowledge", "active context"}
+        # Extract embedded version from HTML comment (e.g., "<!-- version: 42 -->")
+        version_match = re.search(r"<!--\s*version:\s*(\d+)\s*-->", content)
+        if version_match:
+            embedded_version = int(version_match.group(1))
+
+        _KNOWN_SECTIONS = {"role", "key knowledge", "active context", "archived context"}
 
         sections: dict[str, str] = {}
         current_section = ""
         current_lines: list[str] = []
 
         for line in content.split("\n"):
+            # Skip version comment lines during section parsing
+            if line.strip().startswith("<!--") and "version:" in line:
+                continue
             if line.startswith("# "):
                 candidate = line[2:].strip().lower()
                 if candidate in _KNOWN_SECTIONS:
@@ -342,8 +387,15 @@ class SlockMemory:
         role = sections.get("role", "")
         key_knowledge = sections.get("key knowledge", "")
         active_context = sections.get("active context", "")
+        archived_context = sections.get("archived context", "")
 
-        return cls(role=role, key_knowledge=key_knowledge, active_context=active_context)
+        return cls(
+            role=role,
+            key_knowledge=key_knowledge,
+            active_context=active_context,
+            archived_context=archived_context,
+            _version=embedded_version,
+        )
 
 
 @dataclass
@@ -448,6 +500,7 @@ class DiscussionConfig:
     trigger_rules: list[str] = field(default_factory=lambda: ["coder->reviewer"])
     convergence_threshold: float = 0.85  # Similarity threshold to declare convergence
     discussion_timeout: int = 300  # Total discussion timeout in seconds
+    max_tokens_per_round: int = 8000  # Per-round output token hard cap
 
     def to_dict(self) -> dict:
         return {
@@ -456,6 +509,7 @@ class DiscussionConfig:
             "trigger_rules": self.trigger_rules,
             "convergence_threshold": self.convergence_threshold,
             "discussion_timeout": self.discussion_timeout,
+            "max_tokens_per_round": self.max_tokens_per_round,
         }
 
     @classmethod
@@ -466,6 +520,7 @@ class DiscussionConfig:
             trigger_rules=data.get("trigger_rules", ["coder->reviewer"]),
             convergence_threshold=data.get("convergence_threshold", 0.85),
             discussion_timeout=data.get("discussion_timeout", 300),
+            max_tokens_per_round=data.get("max_tokens_per_round", 8000),
         )
 
 
@@ -516,12 +571,17 @@ class DiscussionThread:
     messages: list[DiscussionMessage] = field(default_factory=list)
     _status_value: DiscussionStatus = field(default=DiscussionStatus.ACTIVE, init=False, repr=False)
     _status_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _data_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     config: DiscussionConfig = field(default_factory=DiscussionConfig)
     trigger_reason: str = ""  # Why this discussion was triggered
+    topic: str = ""  # Derived from trigger_reason[:100]; used for conclusion persistence
     conclusion: str = ""  # Final conclusion after convergence
     total_tokens_used: int = 0
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
+    triggerer_open_id: Optional[str] = None  # Feishu open_id of user who triggered this discussion
+    cancellation_event: Optional[threading.Event] = None  # Runtime-only; not serialized
+    pending_hints: list[str] = field(default_factory=list)  # User hints to inject into next round
 
     def __init__(
         self,
@@ -532,23 +592,37 @@ class DiscussionThread:
         status: DiscussionStatus = DiscussionStatus.ACTIVE,
         config: DiscussionConfig | None = None,
         trigger_reason: str = "",
+        topic: str = "",
         conclusion: str = "",
         total_tokens_used: int = 0,
         created_at: float | None = None,
         completed_at: Optional[float] = None,
+        triggerer_open_id: Optional[str] = None,
+        cancellation_event: Optional[threading.Event] = None,
+        pending_hints: list[str] | None = None,
     ) -> None:
         self.thread_id = thread_id if thread_id is not None else str(uuid.uuid4())
         self.channel_id = channel_id
         self.participants = participants if participants is not None else []
         self.messages = messages if messages is not None else []
         self._status_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._status_value = status
+        self._data_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self.status = status
         self.config = config if config is not None else DiscussionConfig()
         self.trigger_reason = trigger_reason
+        self.topic = topic
         self.conclusion = conclusion
         self.total_tokens_used = total_tokens_used
         self.created_at = created_at if created_at is not None else time.time()
         self.completed_at = completed_at
+        self.triggerer_open_id = triggerer_open_id
+        self.cancellation_event = cancellation_event
+        self.pending_hints = pending_hints if pending_hints is not None else []
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        if not self.channel_id:
+            raise ValueError("DiscussionThread.channel_id must be provided (non-empty)")
 
     @property
     def status(self) -> DiscussionStatus:
@@ -570,6 +644,47 @@ class DiscussionThread:
     def is_active(self) -> bool:
         return self.status == DiscussionStatus.ACTIVE
 
+    def add_message(self, msg: DiscussionMessage) -> None:
+        """Append a message to the thread in a thread-safe manner."""
+        with self._data_lock:
+            self.messages.append(msg)
+
+    def add_participant(self, agent_id: str) -> None:
+        """Add a participant to the thread if not already present (thread-safe)."""
+        with self._data_lock:
+            if agent_id not in self.participants:
+                self.participants.append(agent_id)
+
+    def add_hint(self, hint: str) -> None:
+        """Add a user hint to be injected into the next discussion round (thread-safe).
+
+        Args:
+            hint: The user-provided guidance to inject into the discussion.
+        """
+        with self._data_lock:
+            self.pending_hints.append(hint)
+
+    def consume_hints(self) -> list[str]:
+        """Consume and clear all pending hints (thread-safe).
+
+        Returns:
+            List of hints to inject; list is cleared after calling.
+        """
+        with self._data_lock:
+            hints = list(self.pending_hints)
+            self.pending_hints = []
+            return hints
+
+    def get_messages(self) -> list[DiscussionMessage]:
+        """Return a shallow copy of messages under lock."""
+        with self._data_lock:
+            return list(self.messages)
+
+    def get_participants(self) -> list[str]:
+        """Return a copy of participants under lock."""
+        with self._data_lock:
+            return list(self.participants)
+
     def to_dict(self) -> dict:
         return {
             "thread_id": self.thread_id,
@@ -579,10 +694,13 @@ class DiscussionThread:
             "status": self.status.value,
             "config": self.config.to_dict(),
             "trigger_reason": self.trigger_reason,
+            "topic": self.topic,
             "conclusion": self.conclusion,
             "total_tokens_used": self.total_tokens_used,
             "created_at": self.created_at,
             "completed_at": self.completed_at,
+            "triggerer_open_id": self.triggerer_open_id,
+            "pending_hints": self.pending_hints,
         }
 
     @classmethod
@@ -602,10 +720,13 @@ class DiscussionThread:
             status=status,
             config=config,
             trigger_reason=data.get("trigger_reason", ""),
+            topic=data.get("topic", ""),
             conclusion=data.get("conclusion", ""),
             total_tokens_used=data.get("total_tokens_used", 0),
             created_at=data.get("created_at", time.time()),
             completed_at=data.get("completed_at"),
+            triggerer_open_id=data.get("triggerer_open_id"),
+            pending_hints=data.get("pending_hints", []),
         )
 
 
@@ -629,4 +750,5 @@ class TeamSnapshot:
     agent_ids: list[str] = field(default_factory=list)
     agent_bindings: dict[str, str] = field(default_factory=dict)  # agent_id -> role
     task_ids: list[str] = field(default_factory=list)
+    task_board_data: list[dict] = field(default_factory=list)  # serialized SlockTask dicts
     created_at: float = field(default_factory=time.time)

@@ -14,6 +14,7 @@ from src.utils.redact import redact_sensitive
 
 from .models import (
     ABORT_OPTIONS,
+    AGENT_STATUS_BG_COLOR_MAP,
     AgentIdentity,
     AgentStatus,
     CouncilRun,
@@ -36,6 +37,7 @@ _STATUS_LABEL_ZH: dict[str, str] = {
     "sending": "发送中",
     "moving": "迁移中",
     "discussing": "讨论中",
+    "pending_discussion": "等待确认",
 }
 
 _TASK_STATUS_LABEL_ZH: dict[str, str] = {
@@ -69,7 +71,8 @@ def build_agent_message_card(
 
     elements: list[dict] = []
 
-    # Main content
+    # Main content — redact sensitive tokens before rendering
+    content = redact_sensitive(content)
     elements.append({"tag": "markdown", "content": content})
 
     # Footer note with metadata
@@ -102,7 +105,7 @@ def build_agent_message_card(
         "task_id": task_id,
     }
 
-    # Row 1: core action buttons
+    # Row 1: core action buttons (3 buttons: ask, done, continue)
     elements.extend(
         build_responsive_layout(
             [
@@ -110,26 +113,28 @@ def build_agent_message_card(
                     "@追问",
                     "slock_agent_follow_up",
                     channel_id=channel_id,
-                    extra_value=action_value,
-                ),
-                _build_callback_button(
-                    "让TA继续",
-                    "slock_agent_continue",
-                    channel_id=channel_id,
+                    button_type="primary",
                     extra_value=action_value,
                 ),
                 _build_callback_button(
                     "标记完成",
                     "slock_agent_mark_done",
                     channel_id=channel_id,
-                    button_type="primary_text",
+                    button_type="default",
+                    extra_value=action_value,
+                ),
+                _build_callback_button(
+                    "▶️ 让TA继续",
+                    "slock_agent_continue",
+                    channel_id=channel_id,
+                    button_type="default",
                     extra_value=action_value,
                 ),
             ]
         )
     )
 
-    # Row 2: secondary buttons (text style, visually lighter)
+    # Row 2: secondary buttons in collapsible panel (AC23: mobile-friendly)
     secondary_buttons = [
         _build_callback_button(
             "查看推理",
@@ -139,7 +144,7 @@ def build_agent_message_card(
             extra_value=action_value,
         ),
         _build_callback_button(
-            "查看记忆",
+            "🧠 查看记忆",
             "slock_agent_show_memory",
             channel_id=channel_id,
             button_type="text",
@@ -163,7 +168,18 @@ def build_agent_message_card(
                 extra_value=action_value,
             )
         )
-    elements.extend(build_responsive_layout(secondary_buttons))
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {
+            "title": {
+                "tag": "markdown",
+                "content": "**⚙️ 更多（讨论/记忆/换角色）**",
+            },
+        },
+        "vertical_spacing": "8px",
+        "elements": build_responsive_layout(secondary_buttons),
+    })
 
     header: dict = {
         "title": {"tag": "plain_text", "content": header_title},
@@ -309,13 +325,13 @@ def build_welcome_card(*, team_name: str) -> dict:
         "• 「看看任务进度」 — 查看任务看板\n"
         "• 「让 coder 和 reviewer 讨论一下」 — 触发讨论\n\n"
         "---\n"
-        "📎 *也支持斜杠命令*: `/new-role`、`/role list`、`/task assign`、`/slock help`"
+        "📎 *也支持斜杠命令*: `/new-role`、`/role list`、`/task assign`、`/memory @角色名`、`/discuss 主题`、`/slock help`"
     )
     elements: list[dict] = [{"tag": "markdown", "content": content}]
     return {
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
-        "header": {"title": {"tag": "plain_text", "content": f"👋 欢迎加入 {team_name}"}, "template": "green"},
+        "header": {"title": {"tag": "plain_text", "content": f"👋 欢迎加入 {team_name}"}, "template": "indigo"},
         "body": {"elements": elements},
     }
 
@@ -360,8 +376,8 @@ def build_status_panel_card(
 ) -> dict:
     """Build a status panel card showing all agents and their states.
 
-    Uses Feishu column_set components with colored backgrounds for native
-    status color-coding: green=IDLE, yellow=THINKING, blue=RUNNING, grey=SENDING.
+    Uses pure markdown elements for agent status rows (mobile-friendly,
+    no column_set overflow on 320px screens).
 
     Args:
         agents: List of (AgentIdentity, AgentStatus) tuples.
@@ -376,79 +392,61 @@ def build_status_panel_card(
     if not agents:
         elements.append({"tag": "markdown", "content": "*当前团队暂无已注册的 Agent。*"})
     else:
-        # Build column_set rows — one per agent with colored status indicator
+        # Two-row layout per agent (Task-11: mobile-friendly, no pipe overflow on 320px)
+        # Row 1: core info (emoji + name + status)
+        # Row 2: auxiliary info (task preview, if any)
         for agent, status in agents:
             status_icon = _STATUS_ICON_MAP.get(status, "⚪")
             status_label = _STATUS_LABEL_ZH.get(status.value, status.value)
-            bg_color = _STATUS_BG_COLOR_MAP.get(status, "grey")
             current_task = (current_tasks or {}).get(agent.agent_id)
-            agent_content = f"{agent.emoji} **{agent.name}** — {status_icon}"
+            # Truncate task preview to 25 chars for mobile
+            task_text = ""
             if current_task:
-                task_text = current_task.content[:80]
-                agent_content += f"\n当前任务: {task_text}"
+                task_text = current_task.content[:25] + ("…" if len(current_task.content) > 25 else "")
 
-            column_set: dict = {
-                "tag": "column_set",
-                "flex_mode": "bisect",
-                "background_style": bg_color,
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 3,
-                        "elements": [
-                            {
-                                "tag": "markdown",
-                                "content": agent_content,
-                            }
-                        ],
-                    },
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "center",
-                        "elements": [
-                            {
-                                "tag": "markdown",
-                                "content": f"**{status_label}**",
-                                "text_align": "right",
-                            }
-                        ],
-                    },
-                ],
-            }
-            elements.append(column_set)
+            # Row 1: core status (emoji + name + status)
+            row1 = f"{agent.emoji} **{agent.name}** {status_icon} {status_label}"
+            elements.append({"tag": "markdown", "content": row1})
 
-    elements.extend(
-        build_responsive_layout(
-            [
+            # Row 2: auxiliary info (task preview, if any)
+            if task_text:
+                row2 = f"   📋 {task_text}"
+                elements.append({"tag": "markdown", "content": row2})
+
+    # Collect non-IDLE agents for stop actions
+    non_idle_agents = [(agent, status) for agent, status in agents if status not in (AgentStatus.IDLE,)]
+
+    base_buttons = [
+        _build_callback_button(
+            "🔄 刷新",
+            "slock_refresh_status",
+            channel_id=channel_id,
+            button_type="primary_text",
+        ),
+        _build_callback_button(
+            "⏹ 全部停止",
+            "slock_stop",
+            channel_id=channel_id,
+            button_type="danger",
+        ),
+    ]
+
+    elements.extend(build_responsive_layout(base_buttons))
+
+    # Individual danger buttons per non-idle agent (full-width vertical stack, 18-char truncation)
+    if non_idle_agents:
+        elements.append({"tag": "hr"})
+        for agent, _status in non_idle_agents:
+            label = _truncate_dynamic_label(f"⏹ 停止 {agent.name}", max_len=18)
+            elements.append(
                 _build_callback_button(
-                    "🔄 刷新",
-                    "slock_refresh_status",
-                    channel_id=channel_id,
-                    button_type="primary_text",
-                ),
-                _build_callback_button(
-                    "⏹ 全部停止",
-                    "slock_stop",
-                    channel_id=channel_id,
-                    button_type="danger",
-                ),
-            ]
-            + [
-                _build_callback_button(
-                    f"⏹ 停止 {agent.name}",
+                    label,
                     "slock_stop_agent",
                     channel_id=channel_id,
                     button_type="danger",
                     extra_value={"agent_id": agent.agent_id},
                 )
-                for agent, status in agents
-                if status not in (AgentStatus.IDLE,)
-            ]
-        )
-    )
+            )
 
     header: dict = {
         "title": {"tag": "plain_text", "content": header_title},
@@ -468,12 +466,16 @@ def build_task_board_card(
     agents: list[AgentIdentity],
     team_name: str = "",
     channel_id: str = "",
+    summary_mode: bool = True,
 ) -> dict:
     """Build a Kanban-style task board card using column_set with colored backgrounds.
 
     Each TaskStatus occupies one row as a column_set with background_style color-coding:
     TODO=grey, IN_PROGRESS=blue, IN_REVIEW=yellow, DONE=green.
     Inside each row, a two-column layout separates the status header from the task list.
+
+    When summary_mode=True, only shows task counts per status and the 3 most recent
+    activities instead of the full task list (mobile-friendly).
     """
     header_title = f"📋 {team_name} 任务看板" if team_name else "📋 Slock 任务看板"
 
@@ -484,60 +486,80 @@ def build_task_board_card(
     for task in tasks:
         grouped[task.status].append(task)
 
-    # Build each status row as a column_set with colored background
-    agent_map = {a.agent_id: a for a in agents}
+    if summary_mode:
+        # Summary mode: compact overview with counts and recent activity
+        summary_lines = []
+        for status in TaskStatus:
+            icon = _TASK_STATUS_ICONS.get(status, "⬜")
+            label = _TASK_STATUS_LABEL_ZH.get(status.value, status.value)
+            count = len(grouped[status])
+            summary_lines.append(f"{icon} **{label}**: {count}")
+        elements.append({"tag": "markdown", "content": "\n".join(summary_lines)})
 
-    for status in TaskStatus:
-        status_tasks = grouped[status]
-        icon = _TASK_STATUS_ICONS.get(status, "⬜")
-        bg_color = _TASK_STATUS_BG_COLOR_MAP.get(status, "grey")
-        status_title = f"**{icon} {_TASK_STATUS_LABEL_ZH.get(status.value, status.value)}** ({len(status_tasks)})"
-
-        # Build task list content for the right column
-        if status_tasks:
-            task_lines: list[str] = []
-            for task in status_tasks[:5]:  # limit display
+        # Recent 3 activities (most recently created tasks across all statuses)
+        all_tasks_sorted = sorted(tasks, key=lambda t: t.created_at or "", reverse=True)
+        recent = all_tasks_sorted[:3]
+        if recent:
+            elements.append({"tag": "hr"})
+            elements.append({"tag": "markdown", "content": "**📌 最近动态**"})
+            agent_map = {a.agent_id: a for a in agents}
+            for task in recent:
                 assignee = ""
                 if task.claimed_by and task.claimed_by in agent_map:
                     a = agent_map[task.claimed_by]
                     assignee = f" → {a.emoji}{a.name}"
-                # Differentiate aborted tasks from normal completion
-                if status == TaskStatus.DONE and task.resolved_reason:
-                    task_lines.append(f"• ⚠️ ~~{task.content[:60]}~~{assignee}")
-                else:
-                    task_lines.append(f"• {task.content[:60]}{assignee}")
-            task_content = "\n".join(task_lines)
-        else:
-            task_content = "*暂无*"
+                icon = _TASK_STATUS_ICONS.get(task.status, "⬜")
+                elements.append({"tag": "markdown", "content": f"• {icon} {task.content[:50]}{assignee}"})
+    else:
+        # Full mode: Kanban columns
+        # Build each status row as a column_set with colored background
+        agent_map = {a.agent_id: a for a in agents}
 
-        column_set: dict = {
-            "tag": "column_set",
-            "flex_mode": "bisect",
-            "background_style": bg_color,
-            "columns": [
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "vertical_align": "top",
-                    "elements": [
-                        {"tag": "markdown", "content": status_title},
-                    ],
-                },
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 3,
-                    "vertical_align": "top",
-                    "elements": [
-                        {"tag": "markdown", "content": task_content},
-                    ],
-                },
-            ],
-        }
-        elements.append(column_set)
+        for status in TaskStatus:
+            status_tasks = grouped[status]
+            icon = _TASK_STATUS_ICONS.get(status, "⬜")
+            bg_color = _TASK_STATUS_BG_COLOR_MAP.get(status, "grey")
+            status_title = f"**{icon} {_TASK_STATUS_LABEL_ZH.get(status.value, status.value)}** ({len(status_tasks)})"
 
-    # Refresh button
+            # Build task list content for the right column
+            if status_tasks:
+                task_lines: list[str] = []
+                for task in status_tasks[:5]:  # limit display
+                    assignee = ""
+                    if task.claimed_by and task.claimed_by in agent_map:
+                        a = agent_map[task.claimed_by]
+                        assignee = f" → {a.emoji}{a.name}"
+                    # Differentiate aborted tasks from normal completion
+                    if status == TaskStatus.DONE and task.resolved_reason:
+                        task_lines.append(f"• ⚠️ ~~{task.content[:40]}~~{assignee}")
+                    else:
+                        task_lines.append(f"• {task.content[:40]}{assignee}")
+                task_content = "\n".join(task_lines)
+            else:
+                task_content = "*暂无*"
+
+            column_set: dict = {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": bg_color,
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "top",
+                        "elements": [
+                            {"tag": "markdown", "content": status_title},
+                            {"tag": "markdown", "content": task_content},
+                        ],
+                    },
+                ],
+            }
+            elements.append(column_set)
+
+    # Refresh + toggle mode button
+    toggle_label = "📊 详细模式" if summary_mode else "📋 摘要模式"
+    toggle_action = "slock_toggle_board_mode"
     elements.extend(
         build_responsive_layout(
             [
@@ -547,6 +569,13 @@ def build_task_board_card(
                     channel_id=channel_id,
                     button_type="primary_text",
                     extra_value={"chat_id": channel_id},
+                ),
+                _build_callback_button(
+                    toggle_label,
+                    toggle_action,
+                    channel_id=channel_id,
+                    button_type="default",
+                    extra_value={"chat_id": channel_id, "summary_mode": not summary_mode},
                 ),
             ]
         )
@@ -758,10 +787,13 @@ def build_discussion_card_from_thread(thread, engine=None) -> dict:
                     resolved.append(pid)
             participants_display = resolved
 
-    # Resolve message sender IDs
+    # Resolve message sender IDs and redact sensitive content
     messages = []
     for m in thread.messages:
         msg_dict = m.to_dict()
+        # AC16: Redact sensitive info (API keys, tokens) before rendering to card
+        if 'content' in msg_dict:
+            msg_dict['content'] = redact_sensitive(msg_dict['content'])
         if engine:
             registry = getattr(engine, 'registry', None) or getattr(engine, '_registry', None)
             if registry:
@@ -803,10 +835,13 @@ def build_discussion_summary_card_from_thread(thread, engine=None) -> dict:
                     resolved.append(pid)
             participants_display = resolved
 
+    # AC16: Redact sensitive info from conclusion before rendering
+    conclusion = redact_sensitive(thread.conclusion) if thread.conclusion else ""
+
     return build_discussion_summary_card(
         thread_id=thread.thread_id,
         participants=participants_display,
-        conclusion=thread.conclusion,
+        conclusion=conclusion,
         total_rounds=thread.current_round,
         total_tokens=thread.total_tokens_used,
         status=thread.status.value if hasattr(thread.status, "value") else str(thread.status),
@@ -835,8 +870,11 @@ def build_discussion_card(
         trigger_reason: Why the discussion was triggered.
         channel_id: Channel ID for action buttons.
     """
-    header_title = f"💬 Agent 讨论 (轮次 {current_round}/{max_rounds})"
-    header_subtitle = f"👥 {' · '.join(participants)}"
+    header_title = f"💬 讨论 R{current_round}/{max_rounds}"
+    if len(participants) > 2:
+        header_subtitle = f"👥 {' · '.join(participants[:2])} 等 {len(participants)} 人"
+    else:
+        header_subtitle = f"👥 {' · '.join(participants)}"
 
     elements: list[dict] = []
 
@@ -846,56 +884,72 @@ def build_discussion_card(
         "content": f"**参与者:** {' ↔ '.join(participants)}",
     })
 
-    # Progress bar: visualize completed vs remaining rounds
-    progress_columns = []
-    for i in range(1, max_rounds + 1):
-        color = "purple" if i <= current_round else "grey"
-        progress_columns.append({
-            "tag": "column",
-            "width": "weighted",
-            "weight": 1,
-            "elements": [{
-                "tag": "markdown",
-                "content": f"{'●' if i <= current_round else '○'}",
-                "text_align": "center",
-            }],
-            "background_style": color,
-        })
+    # Progress bar: single-line Markdown for mobile compatibility (AC24: ≤30 chars)
+    if max_rounds >= 10:
+        # Percentage + fraction format for large round counts
+        pct = round(current_round / max_rounds * 100)
+        progress_text = f"**进度:** {pct}% ({current_round}/{max_rounds})"
+    else:
+        progress_filled = "●" * current_round
+        progress_empty = "○" * (max_rounds - current_round)
+        progress_text = f"**进度:** {progress_filled}{progress_empty} ({current_round}/{max_rounds})"
     elements.append({
-        "tag": "column_set",
-        "columns": progress_columns,
-        "flex_mode": "stretch",
-        "horizontal_spacing": "small",
+        "tag": "markdown",
+        "content": progress_text,
     })
 
     if trigger_reason:
+        # Determine colored tag based on trigger source
+        if "manual" in trigger_reason:
+            _trigger_color = "blue"
+            _trigger_label = "人工触发"
+        elif "uncertainty" in trigger_reason or "auto_uncertainty" in trigger_reason:
+            _trigger_color = "orange"
+            _trigger_label = "系统检测"
+        elif "chain" in trigger_reason or "auto_chain" in trigger_reason:
+            _trigger_color = "green"
+            _trigger_label = "链式触发"
+        else:
+            _trigger_color = "neutral"
+            _trigger_label = trigger_reason
         elements.append({
             "tag": "markdown",
-            "content": f"**触发原因:** {trigger_reason}",
+            "content": f"**触发原因:** <font color='{_trigger_color}'>{_trigger_label}</font>",
             "text_size": "notation",
         })
 
     elements.append({"tag": "hr"})
 
-    # Show last N messages (limit to 5 to keep card compact)
-    display_messages = messages[-5:] if len(messages) > 5 else messages
-    if len(messages) > 5:
+    # Show last N messages (limit to 8 to keep card compact)
+    display_messages = messages[-8:] if len(messages) > 8 else messages
+    if len(messages) > 8:
         elements.append({
             "tag": "markdown",
-            "content": f"*... 已省略 {len(messages) - 5} 条早期消息*",
+            "content": f"*... 已省略 {len(messages) - 8} 条早期消息*",
             "text_size": "notation",
         })
 
+    # Color palette for speaker differentiation (maps participant index to color)
+    _SPEAKER_COLORS = ["blue", "green", "orange", "purple", "red", "carmine", "violet", "wathet"]
+
     for msg in display_messages:
         sender = msg.get("sender", "Agent")
-        content = msg.get("content", "")[:200]
+        raw_content = msg.get("content", "")
+        if len(raw_content) > 120:
+            content = raw_content[:120] + "(已截断)"
+        else:
+            content = raw_content
         round_num = msg.get("round_num", "?")
+        # Assign color based on participant index
+        speaker_idx = participants.index(sender) if sender in participants else 0
+        speaker_color = _SPEAKER_COLORS[speaker_idx % len(_SPEAKER_COLORS)]
         elements.append({
             "tag": "markdown",
-            "content": f"**{sender}** (R{round_num}):\n{content}",
+            "content": f"**💬 {sender} (R{round_num}):**\n{content}",
+            "text_size": "normal",
         })
 
-    # Action buttons: expand full / stop discussion
+    # Action buttons: expand / inject hint / stop discussion (3 buttons for mobile horizontal layout)
     elements.append({"tag": "hr"})
     elements.extend(
         build_responsive_layout(
@@ -904,6 +958,13 @@ def build_discussion_card(
                     "📖 展开全部",
                     "slock_discussion_expand",
                     channel_id=channel_id,
+                    extra_value={"thread_id": thread_id},
+                ),
+                _build_callback_button(
+                    "💡 人工干预",
+                    "inject_discussion_hint",
+                    channel_id=channel_id,
+                    button_type="primary",
                     extra_value={"thread_id": thread_id},
                 ),
                 _build_callback_button(
@@ -924,6 +985,196 @@ def build_discussion_card(
             "title": {"tag": "plain_text", "content": header_title},
             "subtitle": {"tag": "plain_text", "content": header_subtitle},
             "template": "purple",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_discussion_expand_card(
+    *,
+    thread_id: str,
+    messages: list[dict],
+    participants: list[str],
+    channel_id: str = "",
+    page: int = 0,
+) -> dict:
+    """Build a paginated discussion thread card (true pagination)."""
+    PAGE_SIZE = 10
+    elements: list[dict] = []
+
+    # Header participants line
+    if len(participants) > 2:
+        participants_text = f"👥 {' · '.join(participants[:2])} 等 {len(participants)} 人"
+    else:
+        participants_text = f"👥 {' · '.join(participants)}"
+    elements.append({"tag": "markdown", "content": participants_text})
+
+    # Paginate: only render current page
+    total = len(messages)
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+    page_messages = messages[start:end]
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"第 {start + 1}-{end} 条，共 {total} 条",
+        "text_size": "notation",
+    })
+
+    # Color palette for speaker differentiation
+    _SPEAKER_COLORS = ["blue", "green", "orange", "purple", "red", "carmine", "violet", "wathet"]
+
+    for msg in page_messages:
+        sender = msg.get("sender", "Agent")
+        content = msg.get("content", "")
+        round_num = msg.get("round_num", "?")
+        speaker_idx = participants.index(sender) if sender in participants else 0
+        speaker_color = _SPEAKER_COLORS[speaker_idx % len(_SPEAKER_COLORS)]
+        elements.append({
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "plain_text",
+                    "content": f"💬 {sender} (R{round_num}):\n{content}",
+                },
+            ],
+            "icon": {
+                "tag": "standard_icon",
+                "token": "chat-forbidden_outlined",
+                "color": speaker_color,
+            },
+        })
+
+    # "Load more" button only if there are more messages
+    if end < total:
+        next_page = page + 1
+        elements.append({"tag": "hr"})
+        elements.extend(
+            build_responsive_layout(
+                [
+                    _build_callback_button(
+                        f"加载更多 ({end}/{total})",
+                        "slock_discussion_expand_page",
+                        channel_id=channel_id,
+                        extra_value={
+                            "thread_id": thread_id,
+                            "page_num": next_page,
+                        },
+                    ),
+                ]
+            )
+        )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"💬 讨论详情 — {thread_id[:8]}"},
+            "template": "purple",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_discussion_history_card(
+    *,
+    history: list[dict],
+    channel_id: str = "",
+) -> dict:
+    """Build a card showing discussion history entries from L2 memory.
+
+    Args:
+        history: List of dicts with keys: topic_hash, title, participants, time, conclusion.
+        channel_id: Channel ID for context.
+    """
+    elements: list[dict] = []
+
+    for entry in history:
+        title = entry.get("title", "Untitled")
+        topic_hash = entry.get("topic_hash", "")[:8]
+        participants = entry.get("participants", "")
+        time_str = entry.get("time", "")
+        conclusion = entry.get("conclusion", "")
+        if len(conclusion) > 200:
+            conclusion = conclusion[:200] + "..."
+
+        entry_text = f"**{title}** `{topic_hash}`\n"
+        if participants:
+            entry_text += f"👥 {participants}\n"
+        if time_str:
+            entry_text += f"🕐 {time_str}\n"
+        if conclusion:
+            entry_text += f"\n{conclusion}"
+
+        elements.append({"tag": "markdown", "content": entry_text})
+        elements.append({"tag": "hr"})
+
+    # Remove trailing hr
+    if elements and elements[-1].get("tag") == "hr":
+        elements.pop()
+
+    if not elements:
+        elements.append({"tag": "markdown", "content": "📭 暂无讨论历史。"})
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "📋 讨论历史"},
+            "template": "purple",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_budget_warning_card(
+    *,
+    thread_id: str,
+    current_pct: int,
+    channel_id: str = "",
+) -> dict:
+    """Build a warning card when discussion token budget reaches 80%.
+
+    Args:
+        thread_id: The discussion thread identifier.
+        current_pct: Current budget usage percentage (e.g. 81).
+        channel_id: Channel ID for action buttons.
+    """
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"⚠️ **讨论预算预警**\n\n"
+                f"当前讨论已消耗 **{current_pct}%** 的 Token 预算。\n"
+                f"如不干预，预算耗尽后讨论将自动终止。"
+            ),
+        },
+    ]
+    elements.extend(
+        build_responsive_layout([
+            _build_callback_button(
+                "⏹ 手动终止",
+                "slock_discussion_stop",
+                channel_id=channel_id,
+                button_type="danger",
+                extra_value={"thread_id": thread_id},
+            ),
+            _build_callback_button(
+                "💰 续费（翻倍预算）",
+                "slock_discussion_extend_budget",
+                channel_id=channel_id,
+                button_type="primary",
+                extra_value={"thread_id": thread_id},
+            ),
+        ])
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "⚠️ 讨论预算预警"},
+            "template": "orange",
         },
         "body": {"elements": elements},
     }
@@ -953,6 +1204,7 @@ def build_discussion_summary_card(
     status_labels = {
         "converged": "✅ 达成共识",
         "timeout": "⏰ 超时结束",
+        "max_rounds_reached": "🔄 已达最大轮次",
         "budget_exhausted": "💰 预算耗尽",
         "manually_stopped": "⏹ 手动终止",
     }
@@ -1040,25 +1292,8 @@ def build_council_card(run: CouncilRun, *, channel_id: str = "") -> dict:
 
 def _build_council_stage_block(index: str, title: str, content: str) -> dict:
     return {
-        "tag": "column_set",
-        "flex_mode": "bisect",
-        "background_style": "grey",
-        "columns": [
-            {
-                "tag": "column",
-                "width": "weighted",
-                "weight": 1,
-                "vertical_align": "top",
-                "elements": [{"tag": "markdown", "content": f"**阶段 {index}**\n{title}"}],
-            },
-            {
-                "tag": "column",
-                "width": "weighted",
-                "weight": 3,
-                "vertical_align": "top",
-                "elements": [{"tag": "markdown", "content": content or "*等待中*"}],
-            },
-        ],
+        "tag": "markdown",
+        "content": f"**阶段 {index} — {title}**\n{content or '*等待中*'}",
     }
 
 
@@ -1097,6 +1332,78 @@ def _format_council_final(run: CouncilRun) -> str:
     return "*等待主席综合*"
 
 
+def build_council_expandable_card(run: CouncilRun, *, channel_id: str = "") -> dict:
+    """Build a compact council card with collapsible panels for each stage.
+
+    Unlike build_council_card which always shows all stages expanded,
+    this variant uses collapsible_panel elements — only the latest active
+    stage is expanded by default, keeping the card compact in chat.
+    """
+    status_label = _COUNCIL_STATUS_LABEL_ZH.get(run.status, run.status.value)
+    header_template = (
+        "green" if run.status == CouncilStatus.COMPLETED
+        else "red" if run.status == CouncilStatus.FAILED
+        else "indigo"
+    )
+
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": f"**议题:** {redact_sensitive(run.question)[:300]}",
+        }
+    ]
+
+    if run.error:
+        elements.append({"tag": "markdown", "content": f"**错误:** {redact_sensitive(run.error)[:500]}"})
+
+    elements.append({"tag": "hr"})
+
+    # Determine which stage to expand (latest non-empty stage)
+    stage_data = [
+        ("1", "独立意见", _format_council_responses(run)),
+        ("2", "匿名互评", _format_council_reviews(run)),
+        ("3", "主席综合", _format_council_final(run)),
+    ]
+    last_active_idx = 0
+    for idx, (_, _, content) in enumerate(stage_data):
+        if content and not content.startswith("*等待"):
+            last_active_idx = idx
+
+    for idx, (stage_num, title, content) in enumerate(stage_data):
+        elements.append({
+            "tag": "collapsible_panel",
+            "expanded": idx == last_active_idx,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": f"阶段 {stage_num} — {title}",
+                },
+            },
+            "border": {"color": "grey"},
+            "body": {
+                "elements": [
+                    {"tag": "markdown", "content": content or "*等待中*"},
+                ],
+            },
+        })
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"`council: {run.run_id[:12]}...` · {status_label}",
+        "text_size": "notation",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🧭 Slock Council — {status_label}"},
+            "template": header_template,
+        },
+        "body": {"elements": elements},
+    }
+
+
 # ------------------------------------------------------------------
 # Internal constants
 # ------------------------------------------------------------------
@@ -1110,19 +1417,11 @@ _STATUS_ICON_MAP: dict[AgentStatus, str] = {
     AgentStatus.SENDING: "⚪",
     AgentStatus.MOVING: "🔶",
     AgentStatus.DISCUSSING: "💬",
+    AgentStatus.PENDING_DISCUSSION: "⏳",
 }
 
-# Background color mapping for column_set status rows (Feishu card background_style)
-_STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = {
-    AgentStatus.IDLE: "green",
-    AgentStatus.WAKING: "yellow",
-    AgentStatus.THINKING: "yellow",
-    AgentStatus.RUNNING: "blue",
-    AgentStatus.CHECKING: "blue",
-    AgentStatus.SENDING: "grey",
-    AgentStatus.MOVING: "orange",
-    AgentStatus.DISCUSSING: "purple",
-}
+# Background color mapping: use the Single Source of Truth from models.py
+# (Legacy _STATUS_BG_COLOR_MAP removed — use AGENT_STATUS_BG_COLOR_MAP directly)
 
 _TASK_STATUS_ICONS: dict[TaskStatus, str] = {
     TaskStatus.TODO: "⬜",
@@ -1199,6 +1498,235 @@ def _build_callback_button(
     )
 
 
+def build_console_card(
+    *,
+    channel_id: str = "",
+    agents: list[str] | None = None,
+    tasks: list[dict] | None = None,
+    team_name: str = "",
+) -> dict:
+    """Build the interactive console card for /slock root command.
+
+    Uses collapsible panels for mobile-friendly layout:
+    - Task Management (high-frequency): expanded by default
+    - Agent/Team/Advanced (lower-frequency): collapsed by default
+    """
+    agents = agents or []
+    tasks = tasks or []
+
+    elements: list[dict] = []
+
+    # Header info
+    if team_name:
+        elements.append({
+            "tag": "markdown",
+            "content": f"**团队:** {team_name}  |  **Agents:** {len(agents)}  |  **任务:** {len(tasks)}",
+        })
+        elements.append({"tag": "hr"})
+
+    # Group 1: Task Management (high-frequency, expanded by default)
+    task_buttons = [
+        _build_callback_button("📌 分配任务", "slock_cmd_task_assign", channel_id=channel_id),
+        _build_callback_button("📋 任务列表", "slock_cmd_task_list", channel_id=channel_id),
+        _build_callback_button("📊 任务状态", "slock_cmd_task_status", channel_id=channel_id),
+    ]
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": True,
+        "header": {"title": {"tag": "markdown", "content": "📝 **任务管理**"}},
+        "vertical_spacing": "8px",
+        "elements": build_responsive_layout(task_buttons),
+    })
+
+    # Group 2: Agent Management (collapsed)
+    agent_buttons = [
+        _build_callback_button("➕ 新建角色", "slock_cmd_new_role", channel_id=channel_id),
+        _build_callback_button("📋 角色列表", "slock_cmd_role_list", channel_id=channel_id),
+        _build_callback_button("ℹ️ 角色详情", "slock_cmd_role_info", channel_id=channel_id),
+        _build_callback_button("🗑️ 移除角色", "slock_cmd_role_remove", channel_id=channel_id),
+    ]
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "🤖 **Agent 管理**"}},
+        "vertical_spacing": "8px",
+        "elements": build_responsive_layout(agent_buttons),
+    })
+
+    # Group 3: Team Management (collapsed)
+    team_buttons = [
+        _build_callback_button("📋 团队列表", "slock_cmd_team_list", channel_id=channel_id),
+        _build_callback_button("📊 团队状态", "slock_cmd_team_status", channel_id=channel_id),
+        _build_callback_button("⚠️ 解散团队", "slock_cmd_dissolve_team", channel_id=channel_id, button_type="danger"),
+    ]
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "👥 **团队管理**"}},
+        "vertical_spacing": "8px",
+        "elements": build_responsive_layout(team_buttons),
+    })
+
+    # Group 4: Advanced Features (collapsed)
+    advanced_buttons = [
+        _build_callback_button("💬 发起讨论", "slock_cmd_discuss", channel_id=channel_id),
+        _build_callback_button("🏛️ Council", "slock_cmd_council", channel_id=channel_id),
+        _build_callback_button("🧠 记忆管理", "slock_cmd_memory", channel_id=channel_id),
+        _build_callback_button("📊 状态面板", "slock_cmd_status", channel_id=channel_id),
+    ]
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "⚡ **高级功能**"}},
+        "vertical_spacing": "8px",
+        "elements": build_responsive_layout(advanced_buttons),
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🎛️ Slock 控制台"},
+            "subtitle": {"tag": "plain_text", "content": "点击按钮快速执行命令"},
+            "template": "indigo",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_error_suggestion_card(
+    error_msg: str,
+    suggestions: list[dict],
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build an error card with clickable correction suggestion buttons.
+
+    Args:
+        error_msg: The error description to display.
+        suggestions: List of dicts with 'label' (button text) and 'command' (full command to execute).
+        channel_id: Channel context for button callbacks.
+    """
+    elements: list[dict] = []
+
+    # Error message
+    elements.append({
+        "tag": "markdown",
+        "content": f"⚠️ **错误:** {error_msg}",
+    })
+
+    if suggestions:
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "markdown",
+            "content": "💡 **建议修正:**",
+        })
+
+        suggestion_buttons = []
+        for s in suggestions:
+            label = s.get("label", "")
+            command = s.get("command", "")
+            suggestion_buttons.append(
+                _build_callback_button(
+                    f"▶ {label}",
+                    "slock_execute_command",
+                    channel_id=channel_id,
+                    extra_value={"command": command},
+                )
+            )
+        elements.extend(build_responsive_layout(suggestion_buttons))
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "❌ 命令错误"},
+            "template": "red",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_dissolve_confirm_card(
+    team_name: str,
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build a confirmation card before team dissolution."""
+    elements: list[dict] = []
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"⚠️ 确认要解散团队 **{team_name}** 吗？\n\n此操作将移除所有 Agent 绑定和任务分配。",
+    })
+
+    elements.append({"tag": "hr"})
+
+    buttons = [
+        _build_callback_button(
+            "✅ 确认解散",
+            "slock_dissolve_confirm",
+            channel_id=channel_id,
+            button_type="danger",
+            extra_value={"team_name": team_name},
+        ),
+        _build_callback_button(
+            "❌ 取消",
+            "slock_dissolve_cancel",
+            channel_id=channel_id,
+        ),
+    ]
+    elements.extend(build_responsive_layout(buttons))
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "⚠️ 解散团队确认"},
+            "template": "orange",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_dissolve_undo_card(
+    snapshot_id: str,
+    *,
+    channel_id: str = "",
+    ttl: int = 30,
+) -> dict:
+    """Build a success card with undo button after team dissolution."""
+    elements: list[dict] = []
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"✅ 团队已解散。\n\n⏱️ 你有 **{ttl}秒** 可以撤销此操作。",
+    })
+
+    elements.append({"tag": "hr"})
+
+    buttons = [
+        _build_callback_button(
+            "↩️ 撤销解散",
+            "slock_dissolve_undo",
+            channel_id=channel_id,
+            button_type="primary",
+            extra_value={"snapshot_id": snapshot_id},
+        ),
+    ]
+    elements.extend(build_responsive_layout(buttons))
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "✅ 团队已解散"},
+            "template": "green",
+        },
+        "body": {"elements": elements},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Memory & Role switch cards
 # ---------------------------------------------------------------------------
@@ -1208,24 +1736,40 @@ def build_memory_display_card(memory: SlockMemory, agent_name: str = "Agent") ->
     """Build a card displaying an agent's L1 memory (role/key_knowledge/active_context)."""
     elements: list[dict] = []
 
-    elements.append({"tag": "markdown", "content": f"🧠 **{agent_name}** 的记忆快照"})
-    elements.append({"tag": "hr"})
-
-    # Role section
+    # Role section (expanded by default)
     role_text = memory.role.strip() if memory.role else "(未定义)"
-    elements.append({"tag": "markdown", "content": f"**📋 角色定义**\n{role_text[:800]}"})
+    role_text = redact_sensitive(role_text)
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": True,
+        "header": {"title": {"tag": "markdown", "content": "**📋 角色定义**"}},
+        "vertical_spacing": "8px",
+        "elements": [{"tag": "markdown", "content": role_text[:800]}],
+    })
 
-    # Key Knowledge section
+    # Key Knowledge section (collapsed)
     kk_text = memory.key_knowledge.strip() if memory.key_knowledge else "(空)"
-    elements.append({"tag": "hr"})
-    elements.append({"tag": "markdown", "content": f"**🔑 关键知识**\n{kk_text[:1500]}"})
+    kk_text = redact_sensitive(kk_text)
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "**🔑 关键知识**"}},
+        "vertical_spacing": "8px",
+        "elements": [{"tag": "markdown", "content": kk_text[:1500]}],
+    })
 
-    # Active Context section
+    # Active Context section (collapsed)
     ctx_text = memory.active_context.strip() if memory.active_context else "(空)"
+    ctx_text = redact_sensitive(ctx_text)
     if len(ctx_text) > 1500:
         ctx_text = ctx_text[:1500] + "\n..."
-    elements.append({"tag": "hr"})
-    elements.append({"tag": "markdown", "content": f"**💭 活跃上下文**\n{ctx_text}"})
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "**💭 活跃上下文**"}},
+        "vertical_spacing": "8px",
+        "elements": [{"tag": "markdown", "content": ctx_text}],
+    })
 
     return {
         "schema": "2.0",
@@ -1233,6 +1777,143 @@ def build_memory_display_card(memory: SlockMemory, agent_name: str = "Agent") ->
         "header": {
             "title": {"tag": "plain_text", "content": f"🧠 Agent 记忆 — {agent_name}"},
             "template": "turquoise",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_memory_manage_card(
+    memory: "SlockMemory",
+    agent_name: str,
+    agent_id: str,
+    can_edit: bool = False,
+    channel_id: str = "",
+) -> dict:
+    """Build memory management card with action buttons.
+
+    Extends build_memory_display_card with edit/clear/archive buttons.
+    Only shows edit buttons if can_edit is True (owner/admin).
+    """
+    elements: list[dict] = []
+
+    # Role section (expanded by default)
+    role_text = memory.role.strip() if memory.role else "(未定义)"
+    role_text = redact_sensitive(role_text)
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": True,
+        "header": {"title": {"tag": "markdown", "content": "**📋 角色定义**"}},
+        "vertical_spacing": "8px",
+        "elements": [{"tag": "markdown", "content": role_text[:800]}],
+    })
+
+    # Key Knowledge section (collapsed)
+    kk_text = memory.key_knowledge.strip() if memory.key_knowledge else "(空)"
+    kk_text = redact_sensitive(kk_text)
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "**🔑 关键知识**"}},
+        "vertical_spacing": "8px",
+        "elements": [{"tag": "markdown", "content": kk_text[:1500]}],
+    })
+
+    # Active Context section (collapsed)
+    ctx_text = memory.active_context.strip() if memory.active_context else "(空)"
+    ctx_text = redact_sensitive(ctx_text)
+    if len(ctx_text) > 1500:
+        ctx_text = ctx_text[:1500] + "\n..."
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "**💭 活跃上下文**"}},
+        "vertical_spacing": "8px",
+        "elements": [{"tag": "markdown", "content": ctx_text}],
+    })
+
+    # Archived Context section (collapsed)
+    arch_text = memory.archived_context.strip() if memory.archived_context else "(空)"
+    arch_text = redact_sensitive(arch_text)
+    if len(arch_text) > 1500:
+        arch_text = arch_text[:1500] + "\n..."
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": "**📦 归档上下文**"}},
+        "vertical_spacing": "8px",
+        "elements": [{"tag": "markdown", "content": arch_text}],
+    })
+
+    # Action buttons (only for authorized users)
+    if can_edit:
+        elements.append({"tag": "hr"})
+        action_buttons: list[dict] = []
+        action_buttons.append(
+            _build_callback_button(
+                "✏️ 编辑角色定义",
+                "slock_memory_edit_role",
+                channel_id=channel_id,
+                button_type="default",
+                extra_value={"agent_id": agent_id},
+            )
+        )
+        action_buttons.append(
+            _build_callback_button(
+                "🗑️ 清空活跃上下文",
+                "slock_memory_clear_context",
+                channel_id=channel_id,
+                button_type="danger",
+                extra_value={"agent_id": agent_id},
+            )
+        )
+        elements.extend(build_responsive_layout(action_buttons))
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"🧠 记忆管理 — {agent_name}"},
+            "template": "turquoise",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_conclusion_notification_card(
+    conclusion_preview: str,
+    participants: list[str],
+) -> dict:
+    """Build a lightweight notification card after discussion conclusion is persisted.
+
+    Shows the first 100 chars of the conclusion and the participant list.
+    """
+    preview = conclusion_preview[:100]
+    if len(conclusion_preview) > 100:
+        preview += "..."
+
+    participants_text = "、".join(participants) if participants else "(无)"
+
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"**📝 结论摘要:**\n{preview}\n\n"
+                f"**👥 参与者:** {participants_text}"
+            ),
+        },
+        {"tag": "hr"},
+        {
+            "tag": "markdown",
+            "content": "✅ 讨论结论已同步至参与 Agent 的 L1 记忆",
+        },
+    ]
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "💬 讨论结论已持久化"},
+            "template": "green",
         },
         "body": {"elements": elements},
     }
@@ -1271,6 +1952,18 @@ def build_role_switch_card(
         },
         "body": {"elements": elements},
     }
+
+
+def _wrap_text(text: str, width: int = 80) -> str:
+    """Wrap lines longer than *width* characters by inserting newlines."""
+    lines = text.split("\n")
+    wrapped: list[str] = []
+    for line in lines:
+        while len(line) > width:
+            wrapped.append(line[:width])
+            line = line[width:]
+        wrapped.append(line)
+    return "\n".join(wrapped)
 
 
 def build_escalation_card(
@@ -1316,10 +2009,11 @@ def build_escalation_card(
         context_display = redact_sensitive(escalation.context[:500])
         if len(escalation.context) > 500:
             context_display += "\n..."
+        context_display = _wrap_text(context_display)
         elements.append({"tag": "hr"})
         elements.append({
             "tag": "markdown",
-            "content": f"**上下文:**\n```\n{context_display}\n```",
+            "content": f"**上下文:**\n{context_display}",
         })
 
     # Task reference
@@ -1504,65 +2198,220 @@ def build_crash_recovery_card(
     }
 
 
+def build_review_degradation_card(
+    degraded_tasks: list[SlockTask],
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build a notification card for IN_REVIEW tasks degraded to TODO on restart.
+
+    These tasks lost their review context and need re-review.
+    """
+    elements: list[dict] = []
+
+    elements.append({
+        "tag": "markdown",
+        "content": "以下任务在重启前处于 **审阅中** 状态，审阅上下文已丢失，已降级为 **待办**：",
+    })
+
+    task_lines = []
+    for task in degraded_tasks[:20]:
+        task_id_short = task.task_id[:8]
+        content_preview = task.content[:60] + ("..." if len(task.content) > 60 else "")
+        task_lines.append(f"• `{task_id_short}` {content_preview}")
+
+    if len(degraded_tasks) > 20:
+        task_lines.append(f"• ... 还有 {len(degraded_tasks) - 20} 个任务")
+
+    elements.append({
+        "tag": "markdown",
+        "content": "\n".join(task_lines),
+    })
+
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "markdown",
+        "content": "⚠️ 这些任务需要重新进入审阅流程。可使用 `/task review <ID>` 重新提交审阅。",
+        "text_size": "notation",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "⚠️ 审阅状态降级通知"},
+            "template": "yellow",
+        },
+        "body": {"elements": elements},
+    }
+
+
 # ---------------------------------------------------------------------------
 # Task 14-18: UX Card Templates
 # ---------------------------------------------------------------------------
 
 
-def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> dict:
-    """Build an interactive command panel with grouped action buttons.
+def build_command_hub_card(*, channel_id: str = "") -> dict:
+    """Build the /slock entry-point hub card with 4 grouped action panels.
 
-    Returns a card with 5 grouped sections that trigger slock
-    sub-commands via callback actions (slock_cmd_* prefix).
-    Actions requiring input use form_container for parameter collection.
+    Groups:
+    1. Agent 管理 (create role, list roles, role info, remove role)
+    2. 任务管理 (assign task, list tasks, task status)
+    3. 团队管理 (create team, list teams, dissolve team)
+    4. 系统控制 (status, stop, council, help)
+    """
+
+    def _hub_btn(label: str, command: str, *, style: str = "default") -> dict:
+        value = {"action": "slock_hub_cmd", "cmd": command, "channel_id": channel_id}
+        return apply_compact_style({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": label},
+            "type": style,
+            "value": value,
+            "behaviors": [{"type": "callback", "value": value}],
+        }, skip_compact=True)
+
+    groups = [
+        {
+            "title": "🤖 Agent 管理",
+            "buttons": [
+                _hub_btn("➕ 新建角色", "/new-role"),
+                _hub_btn("📋 角色列表", "/role list"),
+                _hub_btn("ℹ️ 角色详情", "/role info"),
+                _hub_btn("🗑 移除角色", "/role remove", style="danger"),
+            ],
+        },
+        {
+            "title": "📝 任务管理",
+            "buttons": [
+                _hub_btn("📌 分配任务", "/task assign"),
+                _hub_btn("📋 任务列表", "/task list"),
+                _hub_btn("📊 任务状态", "/task status"),
+            ],
+        },
+        {
+            "title": "👥 团队管理",
+            "buttons": [
+                _hub_btn("➕ 新建团队", "/new-team"),
+                _hub_btn("📋 团队列表", "/team list"),
+                _hub_btn("🗑 解散团队", "/team dissolve", style="danger"),
+            ],
+        },
+        {
+            "title": "⚙️ 系统控制",
+            "buttons": [
+                _hub_btn("📊 状态面板", "/slock status"),
+                _hub_btn("🏛 Council", "/council"),
+                _hub_btn("⏹ 停止引擎", "/slock stop", style="danger"),
+                _hub_btn("❓ 帮助", "/slock help"),
+            ],
+        },
+    ]
+
+    elements: list[dict] = []
+    for group in groups:
+        # Group title
+        elements.append({
+            "tag": "markdown",
+            "content": f"**{group['title']}**",
+        })
+        # Buttons via responsive layout (mobile-friendly vertical stacking for >2 buttons)
+        elements.extend(build_responsive_layout(group["buttons"], mobile_force_vertical=True))
+        # Divider between groups (except last)
+        if group != groups[-1]:
+            elements.append({"tag": "hr"})
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🎛 Slock 命令面板"},
+            "template": "indigo",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> dict:
+    """Build a compact command panel with core actions and a 'more' button.
+
+    Primary level shows 4 quick-action buttons + expand trigger.
+    Extended forms are served via build_command_panel_extended_card().
     """
     elements: list[dict] = []
 
-    # --- Read-only groups: buttons that trigger immediately ---
-    read_groups: list[tuple[str, list[tuple[str, str, str]]]] = [
-        (
-            "🏠 Team 团队管理",
-            [
-                ("查看团队", "slock_cmd_team_list", "default"),
-            ],
-        ),
-        (
-            "🎭 Role 角色管理",
-            [
-                ("查看角色", "slock_cmd_role_list", "default"),
-            ],
-        ),
-        (
-            "📋 Task 任务管理",
-            [
-                ("任务面板", "slock_cmd_task_list", "default"),
-            ],
-        ),
+    # Primary quick-action buttons (first screen, max 3)
+    primary_buttons = [
+        _build_callback_button("🏠 查看团队", "slock_cmd_team_list", channel_id=channel_id, project_id=project_id, button_type="default"),
+        _build_callback_button("🎭 查看角色", "slock_cmd_role_list", channel_id=channel_id, project_id=project_id, button_type="default"),
+        _build_callback_button("📋 任务面板", "slock_cmd_task_list", channel_id=channel_id, project_id=project_id, button_type="default"),
     ]
+    elements.extend(build_responsive_layout(primary_buttons))
 
-    for group_title, buttons_def in read_groups:
-        elements.append({"tag": "markdown", "content": f"**{group_title}**"})
-        group_buttons = [
-            _build_callback_button(
-                label,
-                action,
-                channel_id=channel_id,
-                project_id=project_id,
-                button_type=btn_type,
-            )
-            for label, action, btn_type in buttons_def
-        ]
-        elements.extend(build_responsive_layout(group_buttons))
+    # Secondary buttons in collapsible panel (default collapsed for mobile)
+    secondary_buttons = [
+        _build_callback_button("🧠 查看记忆", "slock_cmd_memory", channel_id=channel_id, project_id=project_id, button_type="default"),
+        _build_callback_button("🗣 发起讨论", "slock_cmd_discuss", channel_id=channel_id, project_id=project_id, button_type="primary"),
+    ]
+    collapsible_elements = build_responsive_layout(secondary_buttons)
+    # Add role naming guidance inside collapsible panel
+    collapsible_elements.append({
+        "tag": "markdown",
+        "content": "📌 **角色名语法提示**: 带空格的角色名请使用 `@role` 或双引号包裹（如 `\"Senior Coder\"`），避免解析歧义。",
+    })
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "plain_text", "content": "📂 更多快捷操作"}},
+        "vertical_spacing": "8px",
+        "elements": collapsible_elements,
+    })
 
-    # --- Form-based groups: require user input ---
+    # Expand button for extended operations
     elements.append({"tag": "hr"})
+    elements.extend(build_responsive_layout([
+        _build_callback_button(
+            "⚙️ 更多操作...",
+            "slock_cmd_panel_extended",
+            channel_id=channel_id,
+            project_id=project_id,
+            button_type="default",
+        ),
+    ]))
 
-    # Team creation form
+    # Bottom hint
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": "💡 也可直接输入命令：/team、/role、/task、/council、/discuss、/memory"},
+        ],
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "\U0001f4cb Slock 命令面板"},
+            "template": "blue",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_command_panel_extended_card(*, channel_id: str = "", project_id: str = "") -> dict:
+    """Build the extended command panel with action-based input forms.
+
+    This is the second-level card triggered by '更多操作' button.
+    Contains team creation, role creation, and council forms.
+    Uses standard 'action' elements (not 'form') for Feishu Schema 2.0 compatibility.
+    """
+    elements: list[dict] = []
+
+    # Team creation action
     elements.append({"tag": "markdown", "content": "**🏠 创建团队**"})
     elements.append({
-        "tag": "form",
-        "name": "slock_form_new_team",
-        "elements": [
+        "tag": "action",
+        "actions": [
             {
                 "tag": "input",
                 "name": "team_name",
@@ -1579,12 +2428,12 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
         ],
     })
 
-    # Role creation form
+    # Role creation action
+    elements.append({"tag": "hr"})
     elements.append({"tag": "markdown", "content": "**🎭 创建角色**"})
     elements.append({
-        "tag": "form",
-        "name": "slock_form_new_role",
-        "elements": [
+        "tag": "action",
+        "actions": [
             {
                 "tag": "input",
                 "name": "role_name",
@@ -1601,12 +2450,12 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
         ],
     })
 
-    # Council form
+    # Council action
+    elements.append({"tag": "hr"})
     elements.append({"tag": "markdown", "content": "**🧑\u200d⚖️ Council 评审**"})
     elements.append({
-        "tag": "form",
-        "name": "slock_form_council",
-        "elements": [
+        "tag": "action",
+        "actions": [
             {
                 "tag": "input",
                 "name": "council_topic",
@@ -1623,25 +2472,12 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
         ],
     })
 
-    # Discussion group
-    elements.append({"tag": "hr"})
-    elements.append({"tag": "markdown", "content": "**🗣 Discussion 讨论**"})
-    elements.extend(build_responsive_layout([
-        _build_callback_button(
-            "发起讨论",
-            "slock_cmd_discuss",
-            channel_id=channel_id,
-            project_id=project_id,
-            button_type="primary",
-        ),
-    ]))
-
-    # Bottom hint — use note + plain_text for cross-platform rendering
+    # Bottom hint
     elements.append({"tag": "hr"})
     elements.append({
         "tag": "note",
         "elements": [
-            {"tag": "plain_text", "content": "💡 也可直接输入命令：/team、/role、/task、/council、/discuss"},
+            {"tag": "plain_text", "content": "💡 返回主面板：输入 /slock"},
         ],
     })
 
@@ -1649,7 +2485,7 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": "\U0001f4cb Slock 命令面板"},
+            "title": {"tag": "plain_text", "content": "⚙️ Slock 扩展操作"},
             "template": "blue",
         },
         "body": {"elements": elements},
@@ -1704,23 +2540,142 @@ def build_error_suggestion_card(
         "schema": "2.0",
         "config": {"wide_screen_mode": True},
         "header": {
-            "title": {"tag": "plain_text", "content": "❓ 无法识别指令"},
-            "template": "red",
+            "title": {"tag": "plain_text", "content": "💡 无法识别指令"},
+            "template": "wathet",
         },
         "body": {"elements": elements},
     }
+
+
+def build_cmd_arg_error_card(
+    user_input: str,
+    usage_hint: str,
+    suggestions: list[str],
+    *,
+    channel_id: str = "",
+    project_id: str = "",
+    prefix_label: str = "",
+) -> dict:
+    """Build an error card for missing command arguments with fix suggestion buttons.
+
+    Args:
+        user_input: The original command text the user typed (e.g. "/role remove").
+        usage_hint: A usage example line (e.g. "用法: `/role remove <名称>`").
+        suggestions: List of corrected command strings (e.g. ["/role remove Alice"]).
+        channel_id: Feishu chat/channel ID for callback routing.
+        project_id: Project ID for callback routing.
+        prefix_label: Optional markdown annotation displayed above button group.
+
+    Returns:
+        Feishu card dict (schema 2.0) with clickable suggestion buttons.
+    """
+    elements: list[dict] = []
+
+    display_input = redact_sensitive(user_input)
+    if len(display_input) > 80:
+        display_input = display_input[:80] + "..."
+
+    elements.append({
+        "tag": "markdown",
+        "content": f"⚠️ 参数缺失：`{display_input}`",
+    })
+
+    # Visual separator before usage hint
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "markdown",
+        "content": usage_hint,
+    })
+
+    if suggestions:
+        if prefix_label:
+            elements.append({"tag": "markdown", "content": prefix_label})
+        else:
+            elements.append({"tag": "markdown", "content": "**可选角色：**"})
+        suggestion_buttons = [
+            _build_callback_button(
+                _truncate_button_label(suggestion),
+                "slock_cmd_fix",
+                channel_id=channel_id,
+                project_id=project_id,
+                button_type="default",
+                extra_value={"fix_command": suggestion},
+            )
+            for suggestion in suggestions[:5]
+        ]
+        elements.extend(build_responsive_layout(suggestion_buttons))
+
+    elements.append({"tag": "hr"})
+    has_placeholder = any("<" in s and ">" in s for s in suggestions)
+    note_text = (
+        "💡 点击按钮可复制命令模板，请替换 `<...>` 占位符后发送"
+        if has_placeholder
+        else "💡 点击按钮可直接执行修正后的命令"
+    )
+    elements.append({
+        "tag": "note",
+        "elements": [
+            {"tag": "plain_text", "content": note_text},
+        ],
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "⚠️ 命令参数缺失"},
+            "template": "orange",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def _truncate_button_label(suggestion: str) -> str:
+    """Extract core parameter from a command suggestion for button display (≤20 chars).
+
+    Given "/role remove Alice", returns "➡️ Alice".
+    Given "/task assign fix-bug Coder", returns "➡️ Coder".
+    """
+    parts = suggestion.strip().split()
+    # Skip command prefix parts (start with /)
+    core_parts = [p for p in parts if not p.startswith("/")]
+    # Use the last meaningful token as the button label (typically the role/agent name)
+    label = core_parts[-1] if core_parts else suggestion
+    label = f"➡️ {label}"
+    if len(label) > 20:
+        label = label[:19] + "…"
+    return label
+
+
+def _truncate_dynamic_label(text: str, max_len: int = 20) -> str:
+    """Truncate dynamic button label to max_len characters."""
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 1] + "…"
+
+
+# Backward-compatible alias
+build_role_arg_error_card = build_cmd_arg_error_card
 
 
 def build_confirm_cancel_card(
     title: str,
     description: str,
     *,
+    severity: str = "warning",
     confirm_action: str = "slock_confirm",
     cancel_action: str = "slock_cancel",
     channel_id: str = "",
     extra_value: dict | None = None,
 ) -> dict:
     """Build a reusable confirmation dialog card."""
+    _severity_map: dict[str, dict[str, str]] = {
+        "info": {"template": "blue", "button_type": "primary"},
+        "warning": {"template": "orange", "button_type": "primary"},
+        "danger": {"template": "red", "button_type": "danger"},
+    }
+    sev = _severity_map.get(severity, _severity_map["warning"])
+
     elements: list[dict] = []
 
     elements.append({"tag": "markdown", "content": description})
@@ -1733,7 +2688,7 @@ def build_confirm_cancel_card(
                     "确认",
                     confirm_action,
                     channel_id=channel_id,
-                    button_type="primary",
+                    button_type=sev["button_type"],
                     extra_value=extra_value,
                 ),
                 _build_callback_button(
@@ -1752,7 +2707,58 @@ def build_confirm_cancel_card(
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": title},
-            "template": "orange",
+            "template": sev["template"],
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_dissolve_confirm_card(
+    team_name: str,
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build a team dissolution confirmation card with 30s undo window notice.
+
+    Shows a danger-level confirmation with team name, warns about irreversibility,
+    and indicates that an undo window will be available for 30 seconds after confirm.
+    """
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"⚠️ 确认解散团队 **{team_name}**？\n\n"
+                "此操作将移除所有 Agent 绑定和角色分配。\n"
+                "确认后有 **30 秒** 撤销窗口。"
+            ),
+        },
+    ]
+
+    elements.extend(
+        build_responsive_layout([
+            _build_callback_button(
+                "🗑️ 确认解散",
+                "slock_confirm_dissolve",
+                channel_id=channel_id,
+                button_type="danger",
+                extra_value={"team_name": team_name},
+            ),
+            _build_callback_button(
+                "取消",
+                "slock_cancel_dissolve",
+                channel_id=channel_id,
+                button_type="default",
+                extra_value={"team_name": team_name},
+            ),
+        ])
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🗑️ 解散团队确认"},
+            "template": "red",
         },
         "body": {"elements": elements},
     }
@@ -1834,6 +2840,55 @@ def build_council_detail_card(
     }
 
 
+def _build_agent_status_rows(agents_data: list[dict]) -> list[dict]:
+    """Produce column_set elements with background_style color coding for agents.
+
+    Args:
+        agents_data: List of dicts with keys: name, emoji, status, role.
+
+    Returns:
+        A list of column_set card element dicts, one per agent.
+    """
+    # Derive string-based lookup from canonical AGENT_STATUS_BG_COLOR_MAP
+    _str_bg_color_map: dict[str, str] = {s.value: c for s, c in AGENT_STATUS_BG_COLOR_MAP.items()}
+    _str_bg_color_map["error"] = "red"  # Extra pseudo-state for error display
+    _str_icon_map: dict[str, str] = {
+        "idle": "\U0001f7e2",
+        "waking": "\U0001f7e1",
+        "thinking": "\U0001f7e1",
+        "running": "\U0001f535",
+        "checking": "\U0001f535",
+        "sending": "\u26aa",
+        "moving": "\U0001f536",
+        "discussing": "\U0001f4ac",
+        "pending_discussion": "\u23f3",
+        "error": "\U0001f534",
+    }
+
+    rows: list[dict] = []
+    for agent in agents_data:
+        emoji = agent.get("emoji", "\U0001f916")
+        name = agent.get("name", "Agent")
+        status = agent.get("status", "idle").lower()
+        role = agent.get("role", "")
+
+        bg_color = _str_bg_color_map.get(status, "grey")
+        status_icon = _str_icon_map.get(status, "\u26aa")
+        status_label = _STATUS_LABEL_ZH.get(status, status)
+
+        # Single-line inline markdown — avoids column_set/flex_mode mobile overflow
+        line = f"{emoji} **{name}** {status_icon} {status_label}"
+        if role:
+            line += f" · {role}"
+
+        rows.append({
+            "tag": "markdown",
+            "content": line,
+            "text_size": "normal",
+        })
+    return rows
+
+
 def build_status_refresh_card(
     agents: list[dict],
     tasks_summary: dict,
@@ -1848,20 +2903,10 @@ def build_status_refresh_card(
     """
     elements: list[dict] = []
 
-    # Agent list
+    # Agent status rows (colored column_set)
     if agents:
-        agent_lines = ["**Agent 状态**"]
-        for agent in agents:
-            emoji = agent.get("emoji", "\U0001f916")
-            name = agent.get("name", "Agent")
-            status = agent.get("status", "idle")
-            role = agent.get("role", "")
-            status_label = _STATUS_LABEL_ZH.get(status, status)
-            line = f"  {emoji} **{name}** — `{status_label}`"
-            if role:
-                line += f" ({role})"
-            agent_lines.append(line)
-        elements.append({"tag": "markdown", "content": "\n".join(agent_lines)})
+        elements.append({"tag": "markdown", "content": "**Agent 状态**"})
+        elements.extend(_build_agent_status_rows(agents))
 
     elements.append({"tag": "hr"})
 
@@ -1896,7 +2941,427 @@ def build_status_refresh_card(
         "config": {"wide_screen_mode": True},
         "header": {
             "title": {"tag": "plain_text", "content": "\U0001f4ca 团队状态"},
+            "template": "indigo",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_council_result_card(
+    question: str,
+    agents_answers: list[dict],
+    rankings: list[dict],
+    *,
+    channel_id: str = "",
+) -> dict:
+    """Build a council result card with collapsible agent answers and rankings.
+
+    Args:
+        question: The original question posed to the council.
+        agents_answers: List of dicts with keys: agent_name, answer, score.
+        rankings: List of dicts with keys: rank, agent_name, score.
+        channel_id: Optional channel identifier.
+    """
+    # Build ranking section
+    ranking_lines = []
+    for r in rankings:
+        medal = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(r.get("rank", 0), f"#{r.get('rank', '?')}")
+        ranking_lines.append(f"{medal} **{r.get('agent_name', '?')}** \u2014 {r.get('score', 0):.1f}\u5206")
+
+    ranking_text = "\n".join(ranking_lines) if ranking_lines else "\u65e0\u8bc4\u5206\u6570\u636e"
+
+    # Build collapsible agent answer elements (sorted by ranking order with ordinal)
+    # Create rank lookup from rankings
+    _rank_by_name: dict[str, int] = {r.get("agent_name", ""): r.get("rank", 0) for r in rankings}
+    agent_elements = []
+    for idx, ans in enumerate(agents_answers, 1):
+        agent_name = ans.get("agent_name", "?")
+        score = ans.get("score", 0)
+        rank = _rank_by_name.get(agent_name, idx)
+        ordinal = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"#{rank}")
+        response_text = (ans.get("answer", "") or "\u65e0\u56de\u7b54")[:2000]
+        agent_elements.append({
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {"tag": "markdown", "content": f"\U0001f4dd **{agent_name}** (\u8bc4\u5206: {score:.1f}/10)"},
+            "vertical_spacing": "8px",
+            "elements": [
+                {"tag": "markdown", "content": response_text},
+            ],
+        })
+
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "\U0001f4cb Council \u8bc4\u5ba1\u7ed3\u679c"},
             "template": "blue",
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**\u95ee\u9898\uff1a** {question[:200]}",
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": f"**\u8bc4\u5206\u6392\u540d**\n{ranking_text}",
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "markdown",
+                    "content": "**\u5404 Agent \u539f\u59cb\u56de\u7b54** (\u70b9\u51fb\u5c55\u5f00)",
+                },
+                *agent_elements,
+            ],
+        },
+    }
+    return card
+
+
+def build_chitchat_hint_card(
+    original_message: str,
+    *,
+    channel_id: str = "",
+    timestamp: Optional[float] = None,
+) -> dict:
+    """Build a hint card when a message is filtered as chitchat.
+
+    Includes a 'force process' button that allows the user to override
+    the chitchat classification and re-route the message to an agent.
+
+    Args:
+        original_message: The original message text that was filtered.
+        channel_id: Optional channel identifier.
+        timestamp: Unix timestamp of the message (for TTL validation).
+    """
+    import time as _time
+
+    ts = timestamp or _time.time()
+    preview = original_message[:100] + ("..." if len(original_message) > 100 else "")
+
+    button = _build_callback_button(
+        "⚡ 强制处理",
+        "force_process",
+        channel_id=channel_id,
+        button_type="primary",
+        extra_value={
+            "original_message": original_message[:2000],
+            "timestamp": str(ts),
+        },
+    )
+
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": f"💬 **消息预览：** {preview}",
+        },
+        {
+            "tag": "markdown",
+            "content": "ℹ️ 此消息被判定为非技术内容，未路由到 Agent。\n如需强制处理，请点击下方按钮或在消息前加 `!` 前缀重新发送。",
+        },
+    ]
+    elements.extend(build_responsive_layout([button]))
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "💡 消息未处理"},
+            "template": "orange",
+        },
+        "body": {"elements": elements},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routing enhancement cards — queue & transfer
+# ---------------------------------------------------------------------------
+
+
+def build_queue_waiting_card(
+    agent: AgentIdentity,
+    *,
+    channel_id: str = "",
+    position: int = 1,
+    current_status: str = "running",
+) -> dict:
+    """Build a card notifying the user that their request is queued.
+
+    Shown when the @mentioned agent is BUSY (non-IDLE status).
+    """
+    status_zh = _STATUS_LABEL_ZH.get(current_status, current_status)
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"⏳ **{agent.emoji} {agent.name}** 当前状态: **{status_zh}**\n"
+                f"您的请求已排入队列（位置 #{position}），Agent 空闲后将自动处理。"
+            ),
+        },
+    ]
+    # AC26: Use build_responsive_layout for mobile-friendly button rendering
+    elements.extend(
+        build_responsive_layout([
+            _build_callback_button(
+                "🔄 查看可用 Agent",
+                "slock_show_idle_agents",
+                channel_id=channel_id,
+                button_type="default",
+            ),
+            _build_callback_button(
+                "❌ 取消排队",
+                "slock_cancel_queue",
+                channel_id=channel_id,
+                button_type="danger",
+                extra_value={"agent_id": agent.agent_id},
+            ),
+        ])
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "📋 请求已排队"},
+            "template": "orange",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_queue_full_card(
+    agent: AgentIdentity,
+    *,
+    channel_id: str = "",
+    original_message: str = "",
+) -> dict:
+    """Build an error card when the mention queue for an agent is full.
+
+    Provides retry and force-interrupt options.
+    """
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"🚫 **{agent.emoji} {agent.name}** 的消息队列已满（最多 8 条排队）。\n"
+                f"您的消息未能入队：\n> {original_message[:200]}"
+            ),
+        },
+    ]
+    elements.extend(
+        build_responsive_layout([
+            _build_callback_button(
+                "🔄 重试",
+                "slock_queue_retry",
+                channel_id=channel_id,
+                button_type="primary",
+                extra_value={"agent_id": agent.agent_id, "original_message": original_message[:2000]},
+            ),
+            _build_callback_button(
+                "⚡ 强制介入",
+                "slock_force_interrupt",
+                channel_id=channel_id,
+                button_type="danger",
+                extra_value={"agent_id": agent.agent_id, "original_message": original_message[:2000]},
+            ),
+        ])
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🚫 队列已满"},
+            "template": "red",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_transfer_suggestion_card(
+    busy_agent: AgentIdentity,
+    idle_agent: AgentIdentity,
+    *,
+    channel_id: str = "",
+    original_message: str = "",
+) -> dict:
+    """Build a card suggesting transfer from busy agent to an idle same-role agent.
+
+    Shown when @mentioned agent is busy but another agent with the same role is idle.
+    """
+    preview = original_message[:80] + ("..." if len(original_message) > 80 else "")
+    elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": (
+                f"🔀 **{busy_agent.emoji} {busy_agent.name}** 当前忙碌\n"
+                f"发现同角色空闲 Agent: **{idle_agent.emoji} {idle_agent.name}**\n"
+                f"是否将此请求转交？"
+            ),
+        },
+    ]
+    if preview:
+        elements.append(
+            {"tag": "markdown", "content": f"> {preview}"}
+        )
+    # AC26: Use build_responsive_layout for mobile-friendly button rendering
+    elements.extend(
+        build_responsive_layout([
+            _build_callback_button(
+                _truncate_dynamic_label(f"✅ 转交给 {idle_agent.name}", max_len=16),
+                "slock_transfer_accept",
+                channel_id=channel_id,
+                button_type="primary",
+                extra_value={
+                    "from_agent_id": busy_agent.agent_id,
+                    "to_agent_id": idle_agent.agent_id,
+                    "original_message": original_message[:2000],
+                },
+            ),
+            _build_callback_button(
+                "⏳ 继续等待",
+                "slock_queue_keep_waiting",
+                channel_id=channel_id,
+                button_type="default",
+                extra_value={"agent_id": busy_agent.agent_id},
+            ),
+        ])
+    )
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "🔀 转交建议"},
+            "template": "indigo",
+        },
+        "body": {"elements": elements},
+    }
+
+
+def build_conflict_escalation_card(
+    *,
+    agent_name: str,
+    conflict_details: str,
+    conclusion: str,
+    key_knowledge: str,
+    channel_id: str = "",
+    thread_id: str = "",
+) -> dict:
+    """Build a conflict escalation card for human confirmation.
+
+    Shows the detected conflict, conclusion preview, key knowledge preview,
+    and provides accept/reject buttons for human decision.
+
+    Args:
+        agent_name: Name of the agent whose memory has the conflict.
+        conflict_details: Details about the detected conflict.
+        conclusion: The discussion conclusion text.
+        key_knowledge: The existing key knowledge that conflicts.
+        channel_id: Channel ID for action routing.
+        thread_id: Discussion thread ID.
+
+    Returns:
+        Feishu interactive card dict.
+    """
+    elements: list[dict] = []
+
+    # Conflict details
+    elements.append({
+        "tag": "markdown",
+        "content": f"**⚠️ 检测到知识冲突**\n\n**Agent:** {agent_name}\n\n**冲突详情:**\n{conflict_details[:300]}",
+    })
+
+    elements.append({"tag": "hr"})
+
+    # Conclusion preview (collapsible)
+    conclusion_preview = conclusion[:400]
+    if len(conclusion) > 400:
+        conclusion_preview += "..."
+
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "plain_text", "content": "📝 讨论结论"}},
+        "vertical_spacing": "8px",
+        "elements": [
+            {"tag": "markdown", "content": redact_sensitive(conclusion_preview)},
+        ],
+    })
+
+    # Key Knowledge preview (collapsible)
+    kk_preview = key_knowledge[:400]
+    if len(key_knowledge) > 400:
+        kk_preview += "..."
+
+    elements.append({
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "plain_text", "content": "🔑 关键知识 (Key Knowledge)"}},
+        "vertical_spacing": "8px",
+        "elements": [
+            {"tag": "markdown", "content": redact_sensitive(kk_preview)},
+        ],
+    })
+
+    elements.append({"tag": "hr"})
+
+    # Action buttons: Accept (override) / Reject (keep)
+    accept_value = {
+        "action": "slock_conflict_resolve",
+        "decision": "accept",
+        "thread_id": thread_id,
+        "agent_name": agent_name,
+        "channel_id": channel_id,
+    }
+    reject_value = {
+        "action": "slock_conflict_resolve",
+        "decision": "reject",
+        "thread_id": thread_id,
+        "agent_name": agent_name,
+        "channel_id": channel_id,
+    }
+
+    elements.extend(
+        build_responsive_layout(
+            [
+                _build_callback_button(
+                    "✅ 接受结论（覆盖）",
+                    "slock_conflict_resolve",
+                    channel_id=channel_id,
+                    button_type="primary",
+                    extra_value=accept_value,
+                ),
+                _build_callback_button(
+                    "❌ 拒绝结论（保留）",
+                    "slock_conflict_resolve",
+                    channel_id=channel_id,
+                    button_type="danger",
+                    extra_value=reject_value,
+                ),
+            ]
+        )
+    )
+
+    # Footer hint
+    elements.append({
+        "tag": "markdown",
+        "content": (
+            "💡 **说明:**\n"
+            "- 「接受结论」将用新结论覆盖 Agent 的 Key Knowledge\n"
+            "- 「拒绝结论」将保留现有 Key Knowledge，跳过本次同步"
+        ),
+        "text_size": "notation",
+    })
+
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "⚠️ 知识冲突确认"},
+            "template": "orange",
         },
         "body": {"elements": elements},
     }
