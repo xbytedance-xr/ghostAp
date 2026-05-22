@@ -29,6 +29,7 @@ class SlockCommandAction(Enum):
     ROLE_LIST = "role_list"
     ROLE_REMOVE = "role_remove"
     ROLE_INFO = "role_info"
+    ROLE_INFO_USAGE = "role_info_usage"
     ROLE_MOVE = "role_move"
 
     # Task management
@@ -38,7 +39,18 @@ class SlockCommandAction(Enum):
 
     # Discussion
     DISCUSSION = "discussion"
+    STOP_DISCUSSION = "stop_discussion"
+    DISCUSSION_HISTORY = "discussion_history"
+    DISCUSSION_LIST = "discussion_list"
     COUNCIL = "council"
+
+    # Memory management
+    MEMORY = "memory"
+    MEMORY_LIST = "memory_list"
+
+    # Missing name indicators
+    NEW_TEAM_MISSING_NAME = "new_team_missing_name"
+    NEW_ROLE_MISSING_NAME = "new_role_missing_name"
 
     # Non-technical / casual message (filtered out)
     CHITCHAT = "chitchat"
@@ -67,6 +79,15 @@ _ALIASES: dict[str, str] = {
     "/nt": "/new-team",
     "/s": "/slock",
 }
+
+
+def get_all_command_prefixes() -> set[str]:
+    """Return all recognized slock command prefixes (canonical + aliases).
+
+    Useful for validating command fix suggestions in card actions.
+    """
+    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/council", "/role", "/task", "/team"}
+    return canonical | set(_ALIASES.keys())
 
 
 def parse_slock_command(text: str) -> SlockCommand:
@@ -108,17 +129,33 @@ def parse_slock_command(text: str) -> SlockCommand:
     if cmd == "/new-team":
         if remainder:
             return SlockCommand(action=SlockCommandAction.NEW_TEAM, args=remainder)
-        return SlockCommand(action=SlockCommandAction.NEW_TEAM)
+        return SlockCommand(action=SlockCommandAction.NEW_TEAM_MISSING_NAME)
 
     # /new-role <name>
     if cmd == "/new-role":
         if remainder:
             return SlockCommand(action=SlockCommandAction.NEW_ROLE, args=remainder)
-        return SlockCommand(action=SlockCommandAction.NEW_ROLE)
+        return SlockCommand(action=SlockCommandAction.NEW_ROLE_MISSING_NAME)
 
     # /council <question>
     if cmd == "/council":
         return SlockCommand(action=SlockCommandAction.COUNCIL, args=remainder)
+
+    # /discuss [stop|history|<topic>] [@agent1 @agent2 ...]
+    if cmd == "/discuss":
+        return _parse_discuss_args(remainder)
+
+    # /memory [list|@agent_name]
+    if cmd == "/memory":
+        if remainder:
+            parts = remainder.split(None, 1)
+            subcmd = parts[0].lower()
+            if subcmd == "list":
+                return SlockCommand(action=SlockCommandAction.MEMORY_LIST)
+            # Otherwise treat as agent name
+            target = remainder.lstrip("@").strip()
+            return SlockCommand(action=SlockCommandAction.MEMORY, target=target)
+        return SlockCommand(action=SlockCommandAction.MEMORY, target="")
 
     # /role <subcommand>
     if cmd == "/role":
@@ -157,6 +194,52 @@ def _parse_slock_subcommand(args: str) -> SlockCommand:
     else:
         # Treat as activate with requirement text
         return SlockCommand(action=SlockCommandAction.ACTIVATE, args=args)
+
+
+def _parse_discuss_args(text: str) -> SlockCommand:
+    """Parse /discuss arguments supporting subcommands and @mentions.
+    
+    Syntax:
+        /discuss stop [thread_id]     → STOP_DISCUSSION
+        /discuss history [n]          → DISCUSSION_HISTORY
+        /discuss list                 → DISCUSSION_LIST
+        /discuss <topic> [@agent ...]  → DISCUSSION with extra=comma-separated mentions
+    """
+    import re
+
+    if not text:
+        return SlockCommand(action=SlockCommandAction.DISCUSSION, args="")
+
+    parts = text.split(None, 1)
+    subcmd = parts[0].lower()
+    sub_args = parts[1].strip() if len(parts) > 1 else ""
+
+    # /discuss stop [thread_id]
+    if subcmd == "stop":
+        return SlockCommand(action=SlockCommandAction.STOP_DISCUSSION, args=sub_args)
+
+    # /discuss history [n]
+    if subcmd == "history":
+        return SlockCommand(action=SlockCommandAction.DISCUSSION_HISTORY, args=sub_args)
+
+    # /discuss list
+    if subcmd == "list":
+        return SlockCommand(action=SlockCommandAction.DISCUSSION_LIST, args=sub_args)
+
+    # /discuss <topic> @agent1 @agent2
+    # Extract @mentions from the full text
+    mentions = re.findall(r"@(\w+)", text)
+    if mentions:
+        # Remove @mentions from topic text
+        topic = re.sub(r"\s*@\w+", "", text).strip()
+        # Store mentions as comma-separated in extra field
+        return SlockCommand(
+            action=SlockCommandAction.DISCUSSION,
+            args=topic,
+            extra=",".join(m.lower() for m in mentions),
+        )
+
+    return SlockCommand(action=SlockCommandAction.DISCUSSION, args=text)
 
 
 def _parse_role_subcommand(args: str) -> SlockCommand:
@@ -208,17 +291,28 @@ def _parse_assign_args(text: str) -> tuple[str, str]:
     """Parse /task assign arguments, supporting quoted multi-word values.
 
     Returns (content, role_name) tuple. Supports:
+        "multi word task" @role
         "multi word task" "Role Name"
         "multi word task" role
         simple_task role
         simple task role   (last word = role, rest = content)
+        fix the login bug @coder  (@role explicit syntax)
     """
+    import re
     import shlex
 
     if not text:
         return ("", "")
 
-    # Try shlex parsing first for proper quote handling
+    # Priority 1: Explicit @role syntax (unambiguous)
+    at_match = re.search(r"@(\S+)", text)
+    if at_match:
+        role = at_match.group(1)
+        content = text[: at_match.start()].strip() + " " + text[at_match.end() :].strip()
+        content = content.strip()
+        return (content, role)
+
+    # Priority 2: shlex parsing with quote support
     try:
         tokens = shlex.split(text)
     except ValueError:
@@ -294,7 +388,7 @@ def is_slock_command(
     manager=None,
     *,
     intent_result=None,
-) -> bool:
+) -> "bool | str":
     """Check if text is a slock-related command.
 
     /slock and /new-team are always captured globally.
@@ -304,6 +398,12 @@ def is_slock_command(
     If *intent_result* is provided (an IntentResult from the NLI router) and
     has high confidence for a management action, this also returns True — even
     without a slash prefix.
+
+    Returns:
+        True — text is a slock command and should be handled.
+        False — text is not a slock command at all.
+        "NEEDS_ACTIVATION" — text is a managed-chat-only slock command but
+            the chat is not managed; caller should prompt user to activate.
     """
     if not text:
         return False
@@ -314,9 +414,11 @@ def is_slock_command(
         return True
 
     # Team-internal commands require managed chat context
-    if normalized.startswith(("/new-role", "/role", "/task", "/team", "/council")):
+    if normalized.startswith(("/new-role", "/role", "/task", "/team", "/council", "/discuss", "/memory")):
         if manager is not None and chat_id:
-            return manager.is_managed_chat(chat_id)
+            if manager.is_managed_chat(chat_id):
+                return True
+            return "NEEDS_ACTIVATION"
         # No manager context — conservative: don't capture
         return False
 
