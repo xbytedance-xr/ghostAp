@@ -46,6 +46,17 @@ class TestRoleHelpUX:
                 if "@role" in content or "Role Name" in content:
                     guidance_found = True
                     break
+            # Also check inside collapsible_panel elements
+            if elem.get("tag") == "collapsible_panel":
+                panel_elems = elem.get("elements", [])
+                for pelem in panel_elems:
+                    if pelem.get("tag") == "markdown":
+                        content = pelem.get("content", "")
+                        if "@role" in content or "Role Name" in content:
+                            guidance_found = True
+                            break
+                if guidance_found:
+                    break
 
         assert guidance_found, "Command panel should include role naming guidance"
 

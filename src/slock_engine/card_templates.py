@@ -931,23 +931,52 @@ def build_discussion_card(
 
     # Color palette for speaker differentiation (maps participant index to color)
     _SPEAKER_COLORS = ["blue", "green", "orange", "purple", "red", "carmine", "violet", "wathet"]
+    _CONTENT_THRESHOLD = 120  # Threshold for using collapsible_panel
 
     for msg in display_messages:
         sender = msg.get("sender", "Agent")
         raw_content = msg.get("content", "")
-        if len(raw_content) > 120:
-            content = raw_content[:120] + "(已截断)"
-        else:
-            content = raw_content
         round_num = msg.get("round_num", "?")
         # Assign color based on participant index
         speaker_idx = participants.index(sender) if sender in participants else 0
         speaker_color = _SPEAKER_COLORS[speaker_idx % len(_SPEAKER_COLORS)]
-        elements.append({
-            "tag": "markdown",
-            "content": f"**💬 {sender} (R{round_num}):**\n{content}",
-            "text_size": "normal",
-        })
+
+        if len(raw_content) > _CONTENT_THRESHOLD:
+            # Long message: use collapsible_panel with full content in elements
+            truncated_preview = raw_content[:_CONTENT_THRESHOLD] + "..."
+            elements.append({
+                "tag": "collapsible_panel",
+                "expanded": False,
+                "header": {
+                    "title": {
+                        "tag": "markdown",
+                        "content": f"💬 {sender} (R{round_num}): {truncated_preview}",
+                    },
+                },
+                "vertical_spacing": "8px",
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": raw_content,
+                    },
+                ],
+            })
+        else:
+            # Short message: use note element with colored icon (same as build_discussion_expand_card)
+            elements.append({
+                "tag": "note",
+                "elements": [
+                    {
+                        "tag": "plain_text",
+                        "content": f"💬 {sender} (R{round_num}):\n{raw_content}",
+                    },
+                ],
+                "icon": {
+                    "tag": "standard_icon",
+                    "token": "chat-forbidden_outlined",
+                    "color": speaker_color,
+                },
+            })
 
     # Action buttons: expand / inject hint / stop discussion (3 buttons for mobile horizontal layout)
     elements.append({"tag": "hr"})

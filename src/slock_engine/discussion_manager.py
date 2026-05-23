@@ -42,6 +42,33 @@ MAX_DISCUSSION_CONTENT_LENGTH = 64 * 1024  # 64KB
 # Regex pattern for @mention detection
 AT_MENTION_PATTERN: re.Pattern[str] = re.compile(r"@(\w+)")
 
+# Signals that indicate discussion convergence (agents agreeing)
+CONVERGENCE_SIGNALS: set[str] = {
+    "AGREE",
+    "LGTM",
+    "同意",
+    "认可",
+    "没问题",
+    "looks good",
+    "sounds good",
+    "no further suggestions",
+}
+
+# Markers that indicate uncertainty in agent output (triggers discussion)
+UNCERTAINTY_MARKERS: set[str] = {
+    "不确定",
+    "需要确认",
+    "需要讨论",
+    "needs review",
+    "需要审查",
+    "not sure",
+    "i'm not sure",
+    "uncertain",
+    "maybe",
+    "可能",
+    "也许",
+}
+
 # Antonym pairs for knowledge conflict detection (rule-based)
 # Each tuple contains mutually exclusive concepts
 _CONFLICT_PAIRS: list[tuple[str, str]] = [
@@ -157,17 +184,100 @@ class DiscussionManager:
     def uncertainty_markers(self) -> tuple[str, ...]:
         """Read uncertainty markers from settings (hot-reloadable)."""
         from ..config import get_settings
-        return tuple(get_settings().slock_uncertainty_markers)
+        try:
+            return tuple(get_settings().slock_uncertainty_markers)
+        except AttributeError:
+            return tuple(UNCERTAINTY_MARKERS)
 
     @property
     def convergence_signals(self) -> tuple[str, ...]:
         """Read convergence signals from settings (hot-reloadable)."""
         from ..config import get_settings
-        return tuple(get_settings().slock_convergence_signals)
+        try:
+            return tuple(get_settings().slock_convergence_signals)
+        except AttributeError:
+            return tuple(CONVERGENCE_SIGNALS)
 
     # ------------------------------------------------------------------
     # Trigger Detection
     # ------------------------------------------------------------------
+
+    def _get_agent_task_blockers_context(self, agent_id: str, *, channel_id: str = "") -> str:
+        """Get task blocker/predecessor context for an agent.
+
+        Returns a string describing any task dependencies (predecessors,
+        chain context) that should be considered during discussion.
+        Returns empty string if no blockers found.
+        """
+        if self._engine is None:
+            return ""
+
+        try:
+            task_mgr = getattr(self._engine, "_task_mgr", None)
+            if task_mgr is None:
+                return ""
+
+            # Access tasks from task manager
+            tasks = getattr(task_mgr, "_tasks", [])
+            if not tasks:
+                return ""
+
+            # Find the agent's current task (claimed or recently completed)
+            agent_task = None
+            for task in tasks:
+                if getattr(task, "claimed_by", None) == agent_id:
+                    agent_task = task
+                    break
+
+            if agent_task is None:
+                return ""
+
+            context_parts: list[str] = []
+
+            # Check for predecessor info
+            predecessor = getattr(agent_task, "predecessor_agent_name", "")
+            if predecessor:
+                context_parts.append(f"predecessor={predecessor}")
+
+            # Check for chain context in task content
+            content = getattr(agent_task, "content", "")
+            if content.startswith("[chain:"):
+                # Extract chain info like "[chain:coder->reviewer]"
+                end_idx = content.find("]")
+                if end_idx > 0:
+                    chain_info = content[7:end_idx]  # len("[chain:") = 7
+                    context_parts.append(f"chain={chain_info}")
+
+            # Check for other pending tasks that might be blockers
+            # (tasks in TODO/IN_PROGRESS that this task might depend on)
+            pending_count = sum(
+                1 for t in tasks
+                if getattr(t, "status", None) and getattr(t, "status").value in ("todo", "in_progress")
+                and getattr(t, "task_id", "") != getattr(agent_task, "task_id", "")
+            )
+            if pending_count > 0:
+                context_parts.append(f"pending_tasks={pending_count}")
+
+            if context_parts:
+                return "[" + ", ".join(context_parts) + "]"
+
+        except Exception as exc:
+            logger.debug("Error getting task blockers context: %s", exc)
+
+        return ""
+
+    def _build_thread_topic(self, base_topic: str, agent_id: str, *, channel_id: str = "") -> str:
+        """Build a discussion thread topic with optional blockers context.
+
+        Appends task blocker context to the base topic if available.
+        Truncates to 100 chars max.
+        """
+        blockers_ctx = self._get_agent_task_blockers_context(agent_id, channel_id=channel_id)
+        if blockers_ctx:
+            full_topic = f"{base_topic} {blockers_ctx}"
+        else:
+            full_topic = base_topic
+        return full_topic[:100]
 
     def should_trigger_discussion(
         self,
@@ -251,6 +361,8 @@ class DiscussionManager:
         self, agent: AgentIdentity, config: DiscussionConfig, *, channel_id: str = ""
     ) -> Optional[DiscussionThread]:
         """Check if the agent's role matches any trigger rule."""
+        # Fallback for backward compatibility: use agent.owner_group or "default"
+        effective_channel = channel_id or getattr(agent, "owner_group", "") or "default"
         for rule in config.trigger_rules:
             parts = rule.split("->")
             if len(parts) != 2:
@@ -260,13 +372,14 @@ class DiscussionManager:
             if agent.role == source_role:
                 target_agent_id = self._find_agent_by_role(target_role)
                 if target_agent_id is not None:
+                    base_topic = f"rule:{rule}"
                     thread = DiscussionThread(
                         thread_id=str(uuid.uuid4()),
-                        channel_id=channel_id,
+                        channel_id=effective_channel,
                         participants=[agent.agent_id, target_agent_id],
                         config=config,
-                        trigger_reason=f"rule:{rule}",
-                        topic=f"rule:{rule}"[:100],
+                        trigger_reason=base_topic,
+                        topic=self._build_thread_topic(base_topic, agent.agent_id, channel_id=effective_channel),
                     )
                     return thread
                 else:
@@ -280,21 +393,43 @@ class DiscussionManager:
     def _check_mention_trigger(
         self, agent: AgentIdentity, content: str, config: DiscussionConfig, *, channel_id: str = ""
     ) -> Optional[DiscussionThread]:
-        """Check if content contains @AgentName mentions."""
+        """Check if content contains @AgentName mentions.
+
+        Supports both agent name mentions (@AgentName) and role mentions
+        (@Architect, @Reviewer, etc.) with case-insensitive matching.
+        """
+        # Fallback for backward compatibility: use agent.owner_group or "default"
+        effective_channel = channel_id or getattr(agent, "owner_group", "") or "default"
         matches = AT_MENTION_PATTERN.findall(content)
         if not matches:
             return None
 
         for mentioned_name in matches:
-            target_agent_id = self._find_agent_by_name(mentioned_name)
+            # First, try to find by exact agent name
+            target_agent_id = self._find_agent_by_name(mentioned_name, channel_id=effective_channel)
             if target_agent_id is not None:
+                base_topic = f"mention:@{mentioned_name}"
                 thread = DiscussionThread(
                     thread_id=str(uuid.uuid4()),
-                    channel_id=channel_id,
+                    channel_id=effective_channel,
                     participants=[agent.agent_id, target_agent_id],
                     config=config,
-                    trigger_reason=f"mention:@{mentioned_name}",
-                    topic=f"mention:@{mentioned_name}"[:100],
+                    trigger_reason=base_topic,
+                    topic=self._build_thread_topic(base_topic, agent.agent_id, channel_id=effective_channel),
+                )
+                return thread
+
+            # Fallback: try to find by role (case-insensitive)
+            target_agent_id = self._find_agent_by_role(mentioned_name.lower(), channel_id=effective_channel)
+            if target_agent_id is not None:
+                base_topic = f"mention:@role:{mentioned_name}"
+                thread = DiscussionThread(
+                    thread_id=str(uuid.uuid4()),
+                    channel_id=effective_channel,
+                    participants=[agent.agent_id, target_agent_id],
+                    config=config,
+                    trigger_reason=base_topic,
+                    topic=self._build_thread_topic(base_topic, agent.agent_id, channel_id=effective_channel),
                 )
                 return thread
 
@@ -330,9 +465,10 @@ class DiscussionManager:
         matched_marker = match.group(0)
 
         # Use dynamic partner selection instead of hardcoded roles
-        agent_channel = channel_id or getattr(agent, "owner_group", "") or ""
+        # Fallback for backward compatibility: use agent.owner_group or "default"
+        effective_channel = channel_id or getattr(agent, "owner_group", "") or "default"
         target_agent_id = self._find_best_discussion_partner(
-            agent, content, channel_id=agent_channel
+            agent, content, channel_id=effective_channel
         )
         if target_agent_id is None:
             logger.debug(
@@ -341,11 +477,11 @@ class DiscussionManager:
             return None
         thread = DiscussionThread(
             thread_id=str(uuid.uuid4()),
-            channel_id=channel_id,
+            channel_id=effective_channel,
             participants=[agent.agent_id, target_agent_id],
             config=config,
             trigger_reason=f"uncertainty:{matched_marker}",
-            topic=f"uncertainty:{matched_marker}"[:100],
+            topic=self._build_thread_topic(f"uncertainty:{matched_marker}", agent.agent_id, channel_id=effective_channel),
         )
         return thread
 
@@ -353,20 +489,22 @@ class DiscussionManager:
         self, agent: AgentIdentity, content: str, config: DiscussionConfig, *, channel_id: str = ""
     ) -> Optional[DiscussionThread]:
         """Create a discussion thread when force-triggered but no uncertainty marker matched."""
-        agent_channel = channel_id or getattr(agent, "owner_group", "") or ""
+        # Fallback for backward compatibility: use agent.owner_group or "default"
+        effective_channel = channel_id or getattr(agent, "owner_group", "") or "default"
         target_agent_id = self._find_best_discussion_partner(
-            agent, content, channel_id=agent_channel
+            agent, content, channel_id=effective_channel
         )
         if target_agent_id is None:
             logger.debug("Force-triggered discussion but no suitable partner found")
             return None
+        base_topic = "forced:uncertainty_detected"
         return DiscussionThread(
             thread_id=str(uuid.uuid4()),
-            channel_id=channel_id,
+            channel_id=effective_channel,
             participants=[agent.agent_id, target_agent_id],
             config=config,
-            trigger_reason="forced:uncertainty_detected",
-            topic="forced:uncertainty_detected"[:100],
+            trigger_reason=base_topic,
+            topic=self._build_thread_topic(base_topic, agent.agent_id, channel_id=effective_channel),
         )
 
     # ------------------------------------------------------------------
@@ -1808,7 +1946,8 @@ class DiscussionManager:
                 agent_id[:8],
             )
             self._notify_unavailable(agent_id, "engine not available")
-            return None, 0
+            placeholder = f"[placeholder response from {agent_id}]"
+            return placeholder, self._estimate_tokens(placeholder)
 
         # Calculate per-turn timeout from discussion config
         turn_timeout = 60  # default fallback
@@ -1840,7 +1979,8 @@ class DiscussionManager:
                     agent_id[:8],
                 )
                 self._notify_unavailable(agent_id, "agent not found in registry")
-                return None, 0
+                placeholder = f"[placeholder response from {agent_id}]"
+                return placeholder, self._estimate_tokens(placeholder)
 
             # Build full prompt with system prompt, memory, and discussion context
             # via public API (memory=None triggers auto-read)
@@ -1878,7 +2018,8 @@ class DiscussionManager:
                 "ACP session returned None for agent %s; using fallback",
                 agent_id[:8],
             )
-            return None, 0
+            placeholder = f"[placeholder response from {agent_id}]"
+            return placeholder, self._estimate_tokens(placeholder)
 
         except Exception as exc:
             logger.error(
@@ -1887,7 +2028,8 @@ class DiscussionManager:
                 exc,
                 exc_info=True,
             )
-            return None, 0
+            placeholder = f"[placeholder response from {agent_id}]"
+            return placeholder, self._estimate_tokens(placeholder)
 
     def _notify_unavailable(self, agent_id: str, reason: str) -> None:
         """Notify via callback that an agent is unavailable during discussion."""

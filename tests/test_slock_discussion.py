@@ -630,7 +630,7 @@ class TestRunDiscussion:
         with patch.object(
             manager,
             "_execute_agent_turn",
-            return_value="I AGREE with this approach.",
+            return_value=("I AGREE with this approach.", 10),
         ):
             result = manager.run_discussion(thread, "Please review this code.")
 
@@ -639,21 +639,25 @@ class TestRunDiscussion:
         assert result.completed_at is not None
 
     def test_run_discussion_timeout_after_max_rounds(self, manager: DiscussionManager):
-        """Discussion times out after max_rounds with no convergence."""
+        """Discussion reaches max_rounds without converging."""
         config = DiscussionConfig(max_rounds=2, token_budget=100000)
         thread = _make_thread(config=config)
 
-        # Never converge: respond with unique content each time
-        call_count = [0]
+        # Never converge: respond with completely different content each time
+        responses = iter([
+            ("The database layer should use connection pooling for better scalability", 30),
+            ("Authentication must implement JWT with refresh token rotation", 25),
+            ("API rate limiting needs to be per-user with sliding window algorithm", 28),
+            ("Logging should use structured JSON with correlation IDs", 22),
+        ])
 
         def unique_response(agent_id, prompt, **kwargs):
-            call_count[0] += 1
-            return f"Unique response number {call_count[0]} with different words each time"
+            return next(responses)
 
         with patch.object(manager, "_execute_agent_turn", side_effect=unique_response):
             result = manager.run_discussion(thread, "Initial content")
 
-        assert result.status == DiscussionStatus.TIMEOUT
+        assert result.status == DiscussionStatus.MAX_ROUNDS_REACHED
         assert result.conclusion != ""
 
     def test_run_discussion_budget_exhausted(self, manager: DiscussionManager):
@@ -665,7 +669,7 @@ class TestRunDiscussion:
         with patch.object(
             manager,
             "_execute_agent_turn",
-            return_value="A" * 1000,  # 250 tokens (1000 // 4)
+            return_value=("A" * 1000, 250),  # 250 tokens (1000 // 4)
         ):
             result = manager.run_discussion(thread, "Start content " * 20)
 
@@ -676,7 +680,7 @@ class TestRunDiscussion:
         config = DiscussionConfig(max_rounds=2, token_budget=100000)
         thread = _make_thread(config=config)
 
-        responses = iter(["First response", "Second response AGREE"])
+        responses = iter([("First response", 10), ("Second response AGREE", 15)])
         with patch.object(
             manager, "_execute_agent_turn", side_effect=lambda *a, **kw: next(responses)
         ):
@@ -693,7 +697,7 @@ class TestRunDiscussion:
         thread = _make_thread(config=config)
 
         with patch.object(
-            manager, "_execute_agent_turn", return_value="LGTM, looks good!"
+            manager, "_execute_agent_turn", return_value=("LGTM, looks good!", 8)
         ):
             result = manager.run_discussion(thread, "Quick check needed")
 
@@ -718,16 +722,22 @@ class TestTextSimilarity:
         assert sim == 1.0
 
     def test_completely_different_texts(self, manager: DiscussionManager):
-        """Completely different texts have similarity of 0.0."""
+        """Completely different texts have low similarity (hybrid scoring).
+
+        Jaccard = 0 but SequenceMatcher gives some character-level overlap.
+        The hybrid approach returns max(seq_score, jaccard_score).
+        """
         sim = manager._calculate_text_similarity("alpha beta gamma", "delta epsilon zeta")
-        assert sim == 0.0
+        # No shared words, but some character overlap at character level
+        assert sim < 0.5  # Low but not necessarily 0.0
 
     def test_partial_overlap(self, manager: DiscussionManager):
-        """Partial overlap gives intermediate similarity."""
+        """Partial overlap gives intermediate similarity (hybrid scoring)."""
         # "hello world" and "hello earth" share 1 word out of 3 unique
         sim = manager._calculate_text_similarity("hello world", "hello earth")
-        # intersection = {hello}, union = {hello, world, earth}
-        assert abs(sim - 1 / 3) < 0.01
+        # Hybrid approach: max(SequenceMatcher ratio, Jaccard)
+        # Jaccard = 1/3 ≈ 0.333, SequenceMatcher gives higher character-level similarity
+        assert 0.3 < sim < 0.8  # Intermediate value, exact value depends on algorithm
 
     def test_empty_first_text(self, manager: DiscussionManager):
         """Empty first text returns 0.0."""
@@ -980,12 +990,12 @@ class TestEdgeCases:
         assert DiscussionStatus.MANUALLY_STOPPED.value == "manually_stopped"
 
     def test_run_discussion_zero_max_rounds(self, manager: DiscussionManager):
-        """Discussion with max_rounds=0 immediately times out."""
+        """Discussion with max_rounds=0 immediately reaches max rounds."""
         config = DiscussionConfig(max_rounds=0, token_budget=100000)
         thread = _make_thread(config=config)
 
         result = manager.run_discussion(thread, "Will this even run?")
-        assert result.status == DiscussionStatus.TIMEOUT
+        assert result.status == DiscussionStatus.MAX_ROUNDS_REACHED
 
     def test_multiple_discussions_independent(self, manager: DiscussionManager):
         """Multiple discussion threads do not interfere with each other."""
@@ -1120,9 +1130,11 @@ class TestExecuteAgentTurnIntegration:
 
     def _make_mock_engine(self):
         """Create a mock engine with public API methods."""
+        from src.acp.models import PromptResult
+
         engine = MagicMock()
         engine.get_agent = MagicMock()
-        engine.run_agent_session = MagicMock()
+        engine.run_agent_session_full = MagicMock()
         engine.build_agent_prompt = MagicMock()
         return engine
 
@@ -1136,21 +1148,31 @@ class TestExecuteAgentTurnIntegration:
         memory_manager.read_agent_memory.return_value = memory
         return memory_manager
 
+    def _make_prompt_result(self, text: str, output_tokens: int = 10):
+        """Create a mock PromptResult."""
+        from src.acp.models import PromptResult
+        return PromptResult(
+            stop_reason="end_turn",
+            text=text,
+            output_tokens=output_tokens,
+        )
+
     def test_registered_agent_returns_acp_response(self):
-        """When engine has a registered agent and run_agent_session returns a response, it's returned correctly."""
+        """When engine has a registered agent and run_agent_session_full returns a response, it's returned correctly."""
         engine = self._make_mock_engine()
         mock_agent = self._make_mock_agent()
         engine.get_agent.return_value = mock_agent
-        engine.run_agent_session.return_value = "I agree with the approach"
+        engine.run_agent_session_full.return_value = self._make_prompt_result("I agree with the approach")
         engine.build_agent_prompt.return_value = "full prompt text"
 
         dm = DiscussionManager(engine=engine)
         result = dm._execute_agent_turn("agent-001", "Please review this code")
 
-        assert result == "I agree with the approach"
+        assert result[0] == "I agree with the approach"
+        assert result[1] == 10
         engine.get_agent.assert_called_once_with("agent-001")
-        engine.run_agent_session.assert_called_once()
-        call_args = engine.run_agent_session.call_args
+        engine.run_agent_session_full.assert_called_once()
+        call_args = engine.run_agent_session_full.call_args
         assert call_args[0][0] == mock_agent
         assert call_args[0][1] == "full prompt text"
 
@@ -1159,9 +1181,10 @@ class TestExecuteAgentTurnIntegration:
         engine = self._make_mock_engine()
         mock_agent = self._make_mock_agent()
         engine.get_agent.return_value = mock_agent
-        engine.run_agent_session.return_value = "review response"
+        engine.run_agent_session_full.return_value = self._make_prompt_result("review response")
         engine.build_agent_prompt.return_value = "full prompt text"
         thread = DiscussionThread(
+            channel_id="channel-test",
             participants=["agent-001", "agent-002"],
             config=DiscussionConfig(max_rounds=4, discussion_timeout=120),
         )
@@ -1169,8 +1192,8 @@ class TestExecuteAgentTurnIntegration:
         dm = DiscussionManager(engine=engine)
         result = dm._execute_agent_turn("agent-001", "Please review", thread=thread)
 
-        assert result == "review response"
-        assert engine.run_agent_session.call_args.kwargs["timeout"] == 30
+        assert result[0] == "review response"
+        assert engine.run_agent_session_full.call_args.kwargs["timeout"] == 30
 
     def test_slock_engine_run_agent_session_accepts_timeout(self, tmp_path):
         """The real SlockEngine public discussion API accepts a per-turn timeout."""
@@ -1194,7 +1217,8 @@ class TestExecuteAgentTurnIntegration:
         dm = DiscussionManager(engine=None)
         result = dm._execute_agent_turn("agent-001", "some prompt")
 
-        assert "[placeholder response from agent-00" in result
+        assert "[placeholder response from agent-001" in result[0]
+        assert result[1] > 0  # Token count estimated from placeholder text
 
     def test_agent_not_in_registry_returns_placeholder(self):
         """When agent is not in registry, placeholder is returned."""
@@ -1204,28 +1228,30 @@ class TestExecuteAgentTurnIntegration:
         dm = DiscussionManager(engine=engine)
         result = dm._execute_agent_turn("unknown-agent", "some prompt")
 
-        assert "[placeholder response from unknown-" in result
-        engine.run_agent_session.assert_not_called()
+        assert "[placeholder response from unknown-agent" in result[0]
+        assert result[1] > 0  # Token count estimated from placeholder text
+        engine.run_agent_session_full.assert_not_called()
 
     def test_acp_session_raises_exception_returns_placeholder(self):
-        """When run_agent_session raises an exception, placeholder is returned."""
+        """When run_agent_session_full raises an exception, placeholder is returned."""
         engine = self._make_mock_engine()
         mock_agent = self._make_mock_agent()
         engine.get_agent.return_value = mock_agent
-        engine.run_agent_session.side_effect = RuntimeError("ACP connection failed")
+        engine.run_agent_session_full.side_effect = RuntimeError("ACP connection failed")
         engine.build_agent_prompt.return_value = "full prompt text"
 
         dm = DiscussionManager(engine=engine)
         result = dm._execute_agent_turn("agent-001", "some prompt")
 
-        assert "[placeholder response from agent-00" in result
+        assert "[placeholder response from agent-001" in result[0]
+        assert result[1] > 0  # Token count estimated from placeholder text
 
     def test_memory_read_and_build_agent_prompt_called(self):
         """build_agent_prompt is called with the agent and prompt."""
         engine = self._make_mock_engine()
         mock_agent = self._make_mock_agent()
         engine.get_agent.return_value = mock_agent
-        engine.run_agent_session.return_value = "response text"
+        engine.run_agent_session_full.return_value = self._make_prompt_result("response text")
         engine.build_agent_prompt.return_value = "enriched prompt"
 
         dm = DiscussionManager(engine=engine)
@@ -1234,12 +1260,12 @@ class TestExecuteAgentTurnIntegration:
         # Verify build_agent_prompt was called with agent and prompt
         engine.build_agent_prompt.assert_called_once_with(mock_agent, "discussion prompt")
 
-        # Verify the enriched prompt was passed to run_agent_session
-        engine.run_agent_session.assert_called_once()
-        call_args = engine.run_agent_session.call_args
+        # Verify the enriched prompt was passed to run_agent_session_full
+        engine.run_agent_session_full.assert_called_once()
+        call_args = engine.run_agent_session_full.call_args
         assert call_args[0][0] == mock_agent
         assert call_args[0][1] == "enriched prompt"
-        assert result == "response text"
+        assert result[0] == "response text"
 
 
 # ===========================================================================
@@ -1457,7 +1483,11 @@ class TestConvergenceAndTimeout:
                 content=m["content"],
                 round_num=m.get("round_num", 1),
             ))
-        return DiscussionThread(messages=messages)
+        return DiscussionThread(
+            channel_id="channel-test",
+            participants=["agent-001", "agent-002"],
+            messages=messages,
+        )
 
     def test_max_rounds_stops_discussion(self):
         """Discussion must stop after max_rounds even without convergence."""
@@ -1707,34 +1737,39 @@ class TestWatchdogTimeout:
     """Tests for discussion watchdog timer behavior."""
 
     def test_run_discussion_respects_max_rounds_timeout(self):
-        """Discussion stops at max_rounds even without convergence (watchdog-equivalent)."""
+        """Discussion stops at max_rounds even without convergence."""
         config = DiscussionConfig(max_rounds=2, token_budget=100000)
         dm = DiscussionManager()
 
         thread = _make_thread(config=config)
 
-        call_count = [0]
+        # Use completely different responses to avoid convergence detection
+        responses = iter([
+            ("Redis caching strategy with TTL based on data freshness requirements", 25),
+            ("Circuit breaker pattern for external service fault tolerance", 22),
+            ("Event-driven architecture using message queues for async processing", 28),
+            ("Health check endpoints with detailed service discovery integration", 24),
+        ])
 
         def never_converge(agent_id, prompt, **kwargs):
-            call_count[0] += 1
-            return f"Response #{call_count[0]} with unique content to avoid convergence detection"
+            return next(responses)
 
         with patch.object(dm, "_execute_agent_turn", side_effect=never_converge):
             result = dm.run_discussion(thread, "Start")
 
-        assert result.status == DiscussionStatus.TIMEOUT
+        assert result.status == DiscussionStatus.MAX_ROUNDS_REACHED
         assert result.completed_at is not None
 
     def test_discussion_sets_completed_at_on_timeout(self):
-        """Timed-out discussion has completed_at timestamp set."""
+        """Max-rounds discussion has completed_at timestamp set."""
         config = DiscussionConfig(max_rounds=1, token_budget=100000)
         dm = DiscussionManager()
         thread = _make_thread(config=config)
 
-        with patch.object(dm, "_execute_agent_turn", return_value="diverging content xyz"):
+        with patch.object(dm, "_execute_agent_turn", return_value=("distributed transaction saga pattern implementation details", 15)):
             result = dm.run_discussion(thread, "Init")
 
-        assert result.status == DiscussionStatus.TIMEOUT
+        assert result.status == DiscussionStatus.MAX_ROUNDS_REACHED
         assert result.completed_at is not None
         assert result.completed_at > 0
 

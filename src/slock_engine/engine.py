@@ -377,6 +377,35 @@ class SlockEngine(BaseEngine):
         """Run an ACP session for the agent. Public wrapper around _run_acp_session."""
         return self._run_acp_session(agent, prompt, timeout=timeout)
 
+    def run_agent_session_full(
+        self,
+        agent: AgentIdentity,
+        prompt: str,
+        *,
+        timeout: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[object]:
+        """Run an ACP session and return a result object with text and metadata.
+
+        Returns a PromptResult-like object with .text, .stop_reason, and .output_tokens
+        attributes for discussion token tracking. Falls back to run_agent_session
+        for the actual execution.
+        """
+        from src.acp.models import PromptResult
+
+        text = self._run_acp_session(agent, prompt, timeout=timeout)
+        if text is None:
+            return None
+
+        # Estimate tokens from text length (4 chars per token as rough estimate)
+        output_tokens = len(text) // 4 if text else 0
+
+        return PromptResult(
+            stop_reason="end_turn",
+            text=text,
+            output_tokens=output_tokens,  # type: ignore[call-arg]
+        )
+
     # ------------------------------------------------------------------
     # Discussion Helpers: multi-thread parallel support
     # ------------------------------------------------------------------
@@ -940,7 +969,7 @@ class SlockEngine(BaseEngine):
             )
 
         dm: DiscussionManager = self._discussion_manager  # type: ignore[assignment]
-        thread = dm.should_trigger_discussion(agent, result)
+        thread = dm.should_trigger_discussion(agent, result, channel_id=channel_id)
         if thread is None:
             return
 

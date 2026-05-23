@@ -782,3 +782,183 @@ class TestTailRead:
 
         result = mm.read_conversation_replay(channel_id, n_rounds=5)
         assert len(result) == 3
+
+
+# ===========================================================================
+# Test Class: Rationale Retention in Summarization
+# ===========================================================================
+
+
+class TestRationaleRetention:
+    """Tests for [RATIONALE] marker preservation during text summarization.
+
+    Verifies that sections marked with [RATIONALE] are prioritized for
+    preservation when context is compressed.
+    """
+
+    def test_rationale_sections_extracted_from_text(self, mm: MemoryManager):
+        """[RATIONALE] sections are identified and extracted from text."""
+        text = """Regular content line 1.
+[RATIONALE] Key decision: use PostgreSQL for data persistence.
+Regular content line 2.
+[RATIONALE] Security requirement: all API calls must be authenticated.
+Regular content line 3."""
+        result = mm._summarize_text(text, max_output_chars=300)
+        # Both rationale sections should be preserved
+        assert "[RATIONALE] Key decision" in result
+        assert "[RATIONALE] Security requirement" in result
+
+    def test_rationale_preserved_before_regular_content(self, mm: MemoryManager):
+        """When truncating, [RATIONALE] sections come before remaining content."""
+        # Create text with rationale at the beginning and lots of filler at the end
+        rationale = "[RATIONALE] Critical architecture decision: use event-driven pattern."
+        filler = "X" * 500
+        text = f"{rationale}\n{filler}"
+
+        result = mm._summarize_text(text, max_output_chars=200)
+        # Rationale should be at the start (after timestamp marker)
+        assert "[RATIONALE] Critical architecture" in result
+        # The filler should be truncated (not all 500 X's)
+        assert result.count("X") < 400
+
+    def test_rationale_with_multiline_content(self, mm: MemoryManager):
+        """Multiline [RATIONALE] sections are preserved as a unit."""
+        text = """Preliminary content.
+[RATIONALE] We chose Redis over Memcached because:
+1. Redis supports persistence
+2. Redis has richer data structures
+3. Redis supports pub/sub natively
+
+This concludes the rationale.
+More regular content here."""
+        result = mm._summarize_text(text, max_output_chars=400)
+        # The entire rationale block should be preserved
+        assert "[RATIONALE] We chose Redis" in result
+        assert "1. Redis supports persistence" in result
+        assert "3. Redis supports pub/sub natively" in result
+
+    def test_rationale_with_multi_paragraph_content(self, mm: MemoryManager):
+        """Multi-paragraph [RATIONALE] sections preserve blank lines between paragraphs.
+
+        Regression test: Previously, blank lines terminated RATIONALE extraction,
+        causing multi-paragraph reasoning content to be truncated.
+        RATIONALE should only terminate at next [RATIONALE] marker or EOF.
+        """
+        text = """Preliminary content.
+[RATIONALE] Paragraph 1: Initial analysis of the problem.
+We need to consider multiple factors.
+
+Paragraph 2: Second part of the reasoning.
+This continues the rationale across a blank line.
+
+Paragraph 3: Final conclusion.
+The decision is made based on all the above.
+
+Regular content after rationale."""
+        result = mm._summarize_text(text, max_output_chars=800)
+        # All three paragraphs should be preserved in the rationale
+        assert "[RATIONALE] Paragraph 1" in result
+        assert "Paragraph 2: Second part" in result
+        assert "Paragraph 3: Final conclusion" in result
+        # The key assertion: Paragraph 2 and 3 should be part of the RATIONALE block,
+        # not mixed with regular content. With the bug, they would appear after
+        # the rationale ends at the first blank line.
+        # Verify that "Regular content after rationale" comes AFTER all three paragraphs
+        idx_p3 = result.find("Paragraph 3: Final conclusion")
+        idx_regular = result.find("Regular content after rationale")
+        assert idx_p3 != -1, "Paragraph 3 should be in result"
+        assert idx_regular != -1, "Regular content should be in result"
+        assert idx_p3 < idx_regular, "Paragraph 3 should come before regular content"
+
+    def test_rationale_blank_line_not_terminator(self, mm: MemoryManager):
+        """Blank lines do NOT terminate RATIONALE extraction — only next [RATIONALE] or EOF does."""
+        text = """Before.
+[RATIONALE] First paragraph.
+
+Second paragraph with blank line separator.
+
+Third paragraph.
+[RATIONALE] Separate rationale block.
+After."""
+        result = mm._summarize_text(text, max_output_chars=500)
+        # Should have 2 separate rationale sections
+        assert "First paragraph" in result
+        assert "Second paragraph" in result
+        assert "Third paragraph" in result
+        assert "Separate rationale block" in result
+        # First, second, third paragraphs should all be in the FIRST rationale block
+        # (before "Separate rationale block")
+        idx_first = result.find("First paragraph")
+        idx_second = result.find("Second paragraph")
+        idx_third = result.find("Third paragraph")
+        idx_separate = result.find("Separate rationale block")
+        assert idx_first < idx_separate, "First paragraph should be in first rationale"
+        assert idx_second < idx_separate, "Second paragraph should be in first rationale"
+        assert idx_third < idx_separate, "Third paragraph should be in first rationale"
+
+    def test_multiple_rationale_sections_all_preserved(self, mm: MemoryManager):
+        """All [RATIONALE] sections are preserved when within budget."""
+        text = """Content A
+[RATIONALE] Rationale one: performance requirements demand caching.
+Content B
+[RATIONALE] Rationale two: security audit requires detailed logging.
+Content C
+[RATIONALE] Rationale three: scalability needs horizontal partitioning.
+Content D"""
+        result = mm._summarize_text(text, max_output_chars=500)
+        assert "Rationale one" in result
+        assert "Rationale two" in result
+        assert "Rationale three" in result
+
+    def test_rationale_exceeds_budget_truncated_gracefully(self, mm: MemoryManager):
+        """When rationale alone exceeds budget, it's truncated but still included."""
+        # Create a very long rationale
+        long_rationale = "[RATIONALE] " + "detail " * 1000
+        text = f"{long_rationale}\nSome other content."
+
+        result = mm._summarize_text(text, max_output_chars=300)
+        # Should still start with the rationale marker
+        assert "[RATIONALE]" in result
+        # Should be within the budget
+        assert len(result) <= 300
+
+    def test_no_rationale_falls_back_to_tail_truncation(self, mm: MemoryManager):
+        """Text without [RATIONALE] uses standard tail truncation."""
+        text = "A" * 100 + "B" * 100 + "C" * 100
+        result = mm._summarize_text(text, max_output_chars=150)
+        # Without rationale markers, should preserve the tail (mostly C's)
+        assert result.count("C") > result.count("A")
+
+    def test_sync_discussion_conclusion_adds_rationale_marker(self, mm: MemoryManager, tmp_path):
+        """sync_discussion_conclusion_to_agents adds [RATIONALE] marker when rationale provided."""
+        agent_id = "agent_with_rationale"
+        memory = SlockMemory(role="coder", active_context="existing context")
+        _write_agent_memory(mm, agent_id, memory)
+
+        mm.sync_discussion_conclusion_to_agents(
+            agent_ids=[agent_id],
+            conclusion="Use Redis for caching layer.",
+            trigger_reason="uncertainty:needs review",
+            rationale="Redis was chosen for its persistence and pub/sub capabilities.",
+        )
+
+        after = mm.read_agent_memory(agent_id)
+        assert "Discussion conclusion" in after.active_context
+        assert "[RATIONALE] Redis was chosen" in after.active_context
+
+    def test_sync_discussion_conclusion_without_rationale(self, mm: MemoryManager, tmp_path):
+        """sync_discussion_conclusion_to_agents works without rationale parameter."""
+        agent_id = "agent_no_rationale"
+        memory = SlockMemory(role="reviewer", active_context="existing")
+        _write_agent_memory(mm, agent_id, memory)
+
+        mm.sync_discussion_conclusion_to_agents(
+            agent_ids=[agent_id],
+            conclusion="Approach looks good.",
+            trigger_reason="rule:coder->reviewer",
+        )
+
+        after = mm.read_agent_memory(agent_id)
+        assert "Discussion conclusion" in after.active_context
+        # No rationale marker should be present
+        assert "[RATIONALE]" not in after.active_context

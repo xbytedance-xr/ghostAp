@@ -198,17 +198,18 @@ def _parse_slock_subcommand(args: str) -> SlockCommand:
 
 def _parse_discuss_args(text: str) -> SlockCommand:
     """Parse /discuss arguments supporting subcommands and @mentions.
-    
+
     Syntax:
         /discuss stop [thread_id]     → STOP_DISCUSSION
         /discuss history [n]          → DISCUSSION_HISTORY
         /discuss list                 → DISCUSSION_LIST
+        /discuss                      → DISCUSSION_LIST (shows active discussions)
         /discuss <topic> [@agent ...]  → DISCUSSION with extra=comma-separated mentions
     """
     import re
 
     if not text:
-        return SlockCommand(action=SlockCommandAction.DISCUSSION, args="")
+        return SlockCommand(action=SlockCommandAction.DISCUSSION_LIST)
 
     parts = text.split(None, 1)
     subcmd = parts[0].lower()

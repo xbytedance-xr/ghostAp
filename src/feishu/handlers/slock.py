@@ -2909,13 +2909,54 @@ class SlockHandler(BaseEngineHandler):
             self._trigger_nli_discussion(message_id, chat_id, topic, {}, project)
             return
 
+        # --- Task 23: Council routing (empty topic → hint) ---
+        if action_type == "slock_cmd_council":
+            topic = str(value.get("topic") or "").strip()
+            if not topic:
+                self.send_text_to_chat(chat_id, "💡 请输入评审议题，例如: `/council 方案是否可行`")
+                return
+            self.run_council(message_id, chat_id, topic, project)
+            return
+
+        # --- Task 22: Extended panel routing ---
+        if action_type == "slock_cmd_panel_extended":
+            from ...slock_engine.card_templates import build_command_panel_extended_card
+            import json as _json
+            extended_card = build_command_panel_extended_card(channel_id=chat_id, project_id=project_id)
+            self.send_card_to_chat(chat_id, _json.dumps(extended_card, ensure_ascii=False))
+            return
+
+        # --- Task 21: Memory routing (empty target → hint) ---
+        if action_type == "slock_cmd_memory":
+            target = str(value.get("target") or "").strip()
+            if not target:
+                self.send_text_to_chat(chat_id, "💡 请指定角色，例如: `/memory @coder` 或 `/memory coder`")
+                return
+            # Delegate to handle_slock_command with /memory syntax
+            self.handle_slock_command(message_id, chat_id, f"/memory {target}", project)
+            return
+
+        # --- Task 20: Parameter-required actions with hints ---
+        if action_type == "slock_cmd_task_assign":
+            self.send_text_to_chat(chat_id, "💡 请使用命令分配任务，例如: `/task assign 修复登录bug @coder`")
+            return
+        if action_type == "slock_cmd_role_info":
+            self.send_text_to_chat(chat_id, "💡 请指定角色，例如: `/role info coder`")
+            return
+        if action_type == "slock_cmd_role_remove":
+            self.send_text_to_chat(chat_id, "💡 请指定要移除的角色，例如: `/role remove coder`")
+            return
+        if action_type == "slock_cmd_team_status":
+            self.send_text_to_chat(chat_id, "💡 请指定团队，例如: `/team status 前端团队` 或直接使用 `/slock status`")
+            return
+
         _CMD_DISPATCH: dict[str, callable] = {
             "slock_cmd_team_list": lambda: self.list_teams(message_id, chat_id, project),
             "slock_cmd_new_team": lambda: self.create_team(message_id, chat_id, "", project),
             "slock_cmd_role_list": lambda: self.list_roles(message_id, chat_id, project),
             "slock_cmd_new_role": lambda: self.create_role(message_id, chat_id, "", project),
             "slock_cmd_task_list": lambda: self.list_tasks(message_id, chat_id, project),
-            "slock_cmd_council": lambda: self.run_council(message_id, chat_id, "", project),
+            "slock_cmd_task_status": lambda: self.show_task_status(message_id, chat_id, project),
             "slock_cmd_status": lambda: self._refresh_status_card(message_id, chat_id, value),
         }
 

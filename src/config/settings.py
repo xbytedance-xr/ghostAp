@@ -13,6 +13,41 @@ from .card import CardSessionConfig
 from .spec import SpecReviewConfig
 
 
+# ---------------------------------------------------------------------------
+# Slock discussion constants (copied from src/slock_engine/discussion_manager.py)
+# Keep in sync with discussion_manager.py when updating.
+# Using static copies here to avoid circular imports and ensure Settings can
+# be imported independently without triggering slock_engine imports.
+# ---------------------------------------------------------------------------
+
+# Signals that indicate discussion convergence (agents agreeing)
+_DEFAULT_CONVERGENCE_SIGNALS: frozenset[str] = frozenset({
+    "AGREE",
+    "LGTM",
+    "同意",
+    "认可",
+    "没问题",
+    "looks good",
+    "sounds good",
+    "no further suggestions",
+})
+
+# Markers that indicate uncertainty in agent output (triggers discussion)
+_DEFAULT_UNCERTAINTY_MARKERS: frozenset[str] = frozenset({
+    "不确定",
+    "需要确认",
+    "需要讨论",
+    "needs review",
+    "需要审查",
+    "not sure",
+    "i'm not sure",
+    "uncertain",
+    "maybe",
+    "可能",
+    "也许",
+})
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -547,6 +582,14 @@ class Settings(BaseSettings):
     # Slock Discussion / NLI / Memory Enhancement ----------------------------
     slock_discussion_enabled: bool = Field(default=True, description="是否启用 Agent 间自动讨论（默认开启）")
     slock_max_discussion_rounds: int = Field(default=3, ge=1, le=10, description="讨论链最大轮次，超限强制收敛")
+    slock_uncertainty_markers: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_UNCERTAINTY_MARKERS),
+        description="触发讨论的不确定性标记词列表（如 '不确定', 'needs review'）",
+    )
+    slock_convergence_signals: list[str] = Field(
+        default_factory=lambda: list(_DEFAULT_CONVERGENCE_SIGNALS),
+        description="讨论收敛信号词列表（如 'AGREE', 'LGTM', '同意'）",
+    )
     slock_discussion_trigger_rules: str = Field(
         default="coder->reviewer,architect->coder",
         description="讨论触发规则（role->role 格式，逗号分隔）",
@@ -558,6 +601,7 @@ class Settings(BaseSettings):
     slock_discussion_token_budget: int = Field(default=50000, ge=1000, description="单次讨论链的 token 预算上限")
     slock_max_parallel_discussions: int = Field(default=3, ge=1, le=10, description="同一 channel 内最大并行讨论数，超出时排队")
     slock_discussion_timeout: int = Field(default=300, ge=30, description="讨论 watchdog 超时秒数，超时自动终止讨论")
+    slock_arbiter_max_tokens: int = Field(default=2000, ge=100, description="讨论最终仲裁者（final arbiter）的最大输出 token 数")
 
     # Slock Memory Capacity & Task Chain -------------------------------------------
     slock_l1_max_size: int = Field(default=51200, ge=1024, description="L1 agent 私有记忆最大字节数（默认 50KB），超出触发摘要压缩")

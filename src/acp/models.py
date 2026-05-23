@@ -111,6 +111,7 @@ class PromptResult:
     tool_results: list[dict] = field(default_factory=list)
     plan: Optional[PlanInfo] = None
     modified_files: set[str] = field(default_factory=set)
+    output_tokens: Optional[int] = None  # Output token count for discussion budget tracking
 
     # ---- aggregation helpers ----
     def add_text(self, chunk: str) -> None:

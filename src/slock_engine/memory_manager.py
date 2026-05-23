@@ -847,6 +847,9 @@ class MemoryManager:
         If an LLM callback has been registered via `set_llm_callback`, it is
         invoked to produce a high-quality summary.  On any failure the method
         falls back to simple tail-truncation.
+
+        [RATIONALE] marked paragraphs are prioritized for preservation in both
+        the LLM prompt and the truncation fallback.
         """
         from datetime import datetime, timezone
 
@@ -855,14 +858,57 @@ class MemoryManager:
 
         timestamp_marker = f"[Context summarized at {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}]"
 
+        # Extract and preserve [RATIONALE] sections
+        rationale_sections: list[str] = []
+        remaining_lines: list[str] = []
+        in_rationale = False
+        rationale_buffer: list[str] = []
+
+        for line in text.split("\n"):
+            if line.strip().startswith("[RATIONALE]"):
+                in_rationale = True
+                rationale_buffer = [line]
+            elif in_rationale:
+                # Rationale ends at blank line or next [RATIONALE]
+                if line.strip() == "" or line.strip().startswith("[RATIONALE]"):
+                    if rationale_buffer:
+                        rationale_sections.append("\n".join(rationale_buffer))
+                    rationale_buffer = []
+                    in_rationale = False
+                    if line.strip().startswith("[RATIONALE]"):
+                        in_rationale = True
+                        rationale_buffer = [line]
+                    else:
+                        remaining_lines.append(line)
+                else:
+                    rationale_buffer.append(line)
+            else:
+                remaining_lines.append(line)
+
+        # Flush any remaining rationale
+        if rationale_buffer:
+            rationale_sections.append("\n".join(rationale_buffer))
+
+        rationale_text = "\n\n".join(rationale_sections)
+        remaining_text = "\n".join(remaining_lines)
+        rationale_len = len(rationale_text)
+
         # --- Attempt LLM-based summarization ---
         if self._llm_callback is not None:
+            # Build prompt with explicit instruction to preserve rationale
+            rationale_instruction = (
+                f"CRITICAL: The following sections marked [RATIONALE] MUST be preserved "
+                f"VERBATIM in the output (do not summarize or rephrase them):\n\n"
+                f"{rationale_text}\n\n"
+                if rationale_sections else ""
+            )
             prompt = (
+                f"{rationale_instruction}"
                 "Summarize the following context into key facts, decisions, and "
                 "important details. Preserve all role-relevant information, "
                 "technical decisions, and action items. Output a concise summary "
                 f"under {max_output_chars} characters.\n\n"
-                f"{text}"
+                f"{remaining_text}"
             )
             try:
                 response = self._llm_callback(prompt)
@@ -886,12 +932,29 @@ class MemoryManager:
                     exc,
                 )
 
-        # --- Fallback: keep the last max_output_chars with a prefix ---
+        # --- Fallback: keep rationale first, then tail of remaining ---
         logger.debug(
-            "Using truncation fallback for summarization | original_len=%d max_output_chars=%d",
-            len(text), max_output_chars,
+            "Using truncation fallback for summarization | original_len=%d max_output_chars=%d rationale_len=%d",
+            len(text), max_output_chars, rationale_len,
         )
-        return f"{timestamp_marker}\n\n{text[-max_output_chars:]}"
+
+        # If no rationale sections, use original behavior: simple tail truncation
+        if rationale_len == 0:
+            return f"{timestamp_marker}\n\n{text[-max_output_chars:]}"
+
+        # Reserve space for timestamp + rationale; fill rest with tail of remaining text
+        timestamp_overhead = len(timestamp_marker) + 2  # +2 for "\n\n"
+        available_for_content = max_output_chars - timestamp_overhead
+
+        if rationale_len >= available_for_content:
+            # Rationale alone exceeds budget; truncate rationale itself
+            preserved = rationale_text[:available_for_content]
+        else:
+            remaining_budget = available_for_content - rationale_len - 2  # -2 for "\n\n"
+            tail = remaining_text[-remaining_budget:] if remaining_budget > 0 else ""
+            preserved = f"{rationale_text}\n\n{tail}" if tail else rationale_text
+
+        return f"{timestamp_marker}\n\n{preserved}"
 
     # ------------------------------------------------------------------
     # Memory Enhancement: Conversation Replay
@@ -1066,7 +1129,7 @@ class MemoryManager:
         self.append_group_memory_section(channel_id, section, formatted_entry)
 
     def sync_discussion_conclusion_to_agents(
-        self, agent_ids: list[str], conclusion: str, *, trigger_reason: str = ""
+        self, agent_ids: list[str], conclusion: str, *, trigger_reason: str = "", rationale: str = ""
     ) -> None:
         """Write discussion conclusion to L1 active_context of all participating agents.
 
@@ -1077,16 +1140,21 @@ class MemoryManager:
             agent_ids: List of participating agent IDs.
             conclusion: The discussion conclusion text.
             trigger_reason: Optional trigger reason for context.
+            rationale: Optional rationale explaining why this conclusion was reached.
+                Marked with [RATIONALE] for semantic retention during summarization.
         """
         import time as _time
 
         timestamp = _time.strftime("%Y-%m-%d %H:%M")
         for agent_id in agent_ids:
-            context_entry = (
+            context_parts = [
                 f"[{timestamp}] Discussion conclusion"
                 f"{' (' + trigger_reason + ')' if trigger_reason else ''}: "
                 f"{conclusion[:500]}"
-            )
+            ]
+            if rationale:
+                context_parts.append(f"[RATIONALE] {rationale}")
+            context_entry = "\n".join(context_parts)
             try:
                 self.update_agent_context(agent_id, context_entry)
                 logger.debug(
