@@ -10,7 +10,7 @@ from ...card.ui_text import UI_TEXT
 from ...deep_engine import DeepEngineCallbacks
 from ...project import ContextSourceMode
 from ._deep_stream_processor import DeepStreamProcessor
-from .base import BaseRenderer
+from .base import BaseRenderer, EngineProfile
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
@@ -24,6 +24,14 @@ class DeepRenderer(BaseRenderer):
     Handles UI rendering and state management for Deep Engine interactions.
     Separated from DeepHandler to improve maintainability.
     """
+
+    _PROFILE = EngineProfile(
+        engine_type="deep",
+        mode_name="Deep",
+        mode_emoji="🧠",
+        engine_cmd="/deep",
+        include_context_hook=True,
+    )
 
     def __init__(self, handler: "DeepHandler") -> None:
         super().__init__(handler)
@@ -63,34 +71,14 @@ class DeepRenderer(BaseRenderer):
                         summary="Deep Engine completed",
                     )
 
-        hooks = self._build_hooks(
-            message_id,
-            include_context_hook=True,
-            context_update_fn=context_update_fn,
+        rotator = self._setup_engine_session(
+            self._PROFILE,
             chat_id=chat_id,
-            engine_type="deep",
-            success_emoji="",
+            message_id=message_id,
+            engine_name=engine_name,
+            project=project,
+            context_update_fn=context_update_fn,
         )
-
-        # New pipeline: CardSession (event-driven)
-        metadata = CardMetadata(
-            project_name=project.project_id if project else None,
-            mode_name="Deep",
-            mode_emoji="🧠",
-            engine_type="deep",
-            tool_name=engine_name,
-            working_dir=project.root_path if project else None,
-        )
-        _deep_budget = RenderBudget(engine_cmd="/deep")
-
-        rotator = self._create_rotator(
-            chat_id,
-            message_id,
-            metadata,
-            hooks=hooks,
-            budget=_deep_budget,
-        )
-        self._current_session = rotator
 
         return DeepStreamProcessor(
             rotator=rotator,

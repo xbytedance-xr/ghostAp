@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Optional
 
 from ...card.events import CardEvent
@@ -12,7 +11,7 @@ from ...spec_engine import SpecEngineCallbacks
 from ...spec_engine.review_display import build_review_role_payloads, format_review_overview
 from ._rotating_mixin import EngineView, RotatingRendererMixin
 from ._spec_stream_processor import SpecStreamProcessor
-from .base import BaseRenderer, _StreamThrottle
+from .base import BaseRenderer, EngineProfile, _StreamThrottle
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
@@ -29,10 +28,18 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
     Handles UI rendering and state management for Spec Engine interactions.
     """
 
-    _engine_type = "spec"
-    _mode_prefix = "Spec"
-    _mode_emoji = "📋"
-    _engine_cmd = "/spec"
+    _PROFILE = EngineProfile(
+        engine_type="spec",
+        mode_name="Spec",
+        mode_emoji="📋",
+        engine_cmd="/spec",
+    )
+
+    # Backward-compat aliases used by RotatingRendererMixin
+    _engine_type = _PROFILE.engine_type
+    _mode_prefix = _PROFILE.mode_name
+    _mode_emoji = _PROFILE.mode_emoji
+    _engine_cmd = _PROFILE.engine_cmd
 
     def __init__(self, handler: "SpecHandler") -> None:
         super().__init__(handler)
@@ -102,32 +109,28 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
             message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
         )
         reporter = self.ctx.spec_reporter
+        profile = self._PROFILE
 
         spec_project_id = project.project_id if project else self.handler.get_working_dir(chat_id)
 
-        # Build metadata for card sessions
+        # Build metadata from profile + per-invocation dynamic values
         metadata = CardMetadata(
-            engine_type="spec",
-            mode_name="Spec",
-            mode_emoji="📋",
+            engine_type=profile.engine_type,
+            mode_name=profile.mode_name,
+            mode_emoji=profile.mode_emoji,
             tool_name=engine_name,
             model_name=model_name or None,
             working_dir=project.root_path if project else None,
             project_name=project.project_name if project else None,
-            session_started_at=time.monotonic(),
         )
 
-        # Session rotator: manages atomic session rotation at cycle boundaries
-        # Hooks handle emoji reactions automatically on terminal events
         hooks = self._build_hooks(message_id)
-
-        _spec_budget = RenderBudget(engine_cmd="/spec")
+        budget = RenderBudget(engine_cmd=profile.engine_cmd)
         # Spec engine runs can take hours (review cycles, build phases).
-        # Use spec_execution_timeout as session TTL to prevent premature idle-timeout.
         _spec_ttl = float(self.settings.spec_execution_timeout)
         rotator: SessionRotator = self._create_rotator(
             chat_id, message_id, metadata,
-            hooks=hooks, budget=_spec_budget, ttl_seconds=_spec_ttl,
+            hooks=hooks, budget=budget, ttl_seconds=_spec_ttl,
         )
         self._current_session = rotator
 
@@ -141,7 +144,7 @@ class SpecRenderer(RotatingRendererMixin, BaseRenderer):
             reporter=reporter,
             metadata=metadata,
             hooks=hooks,
-            budget=_spec_budget,
+            budget=budget,
             spec_project_id=spec_project_id,
             message_id=message_id,
             chat_id=chat_id,

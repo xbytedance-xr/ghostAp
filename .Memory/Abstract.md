@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-05-23
+- **AI Agent 产品调研** — 产出 OpenClaw/Hermes/Codex/Claude/Gemini/Cline/OpenHands/Devin/Copilot/Cursor/Windsurf 等横向评估报告，结论用于 GhostAP 多渠道 Gateway、记忆技能、安全治理和异步 PR agent 方向参考 → [详细记录](2026-05-23.md)
 ## 2026-05-20
 - **Slock Council 评议落地** — 新增 Council 三阶段流程：同题多 Agent 独立作答、匿名互评排序、主席综合，并接入 `/council`、`/slock council`、自然语言评议触发、Feishu 阶段卡片和技能画像反哺；discussion 真实执行补 timeout 契约。Slock 专项 1252 passed，ruff/validate 通过 → [详细记录](2026-05-20.md)
 - **Slock 结果卡表格超限修复** — 12:35 现场不是 Agent 未完成，而是结果卡更新被飞书 `card table number over limit` 连续拒绝；Slock mouthpiece 结果卡接入共享 payload guard，超限 Markdown 表格改为代码块展示。Slock 专项 875 passed → [详细记录](2026-05-20.md)

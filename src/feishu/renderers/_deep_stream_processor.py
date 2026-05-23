@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ...acp import ACPEvent, ACPEventRenderer, ACPEventType
+from ...acp import ACPEvent, ACPEventType
 from ...card.events import CardEvent, CardEventType
 from ...card.orchestrator import TaskOrchestrator
-from ...card.stream_bridge import ACPStreamBridge
 from ...card.task_registry import TaskRegistry, tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
 from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ..emoji import EmojiReaction
+from ._base_stream_processor import BaseStreamProcessor
 
 if TYPE_CHECKING:
     from ...card.session.rotator import SessionRotator
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
     from .deep_renderer import DeepRenderer
 
 
-class DeepStreamProcessor:
+class DeepStreamProcessor(BaseStreamProcessor):
     """Render Deep engine progress through the shared Spec-style card pipeline."""
 
     _CYCLE = 1
@@ -37,21 +36,14 @@ class DeepStreamProcessor:
         root_path: str | None,
         project: "ProjectContext | None",
     ) -> None:
-        self._rotator = rotator
-        self._renderer = renderer
-        self._message_id = message_id
-        self._chat_id = chat_id
+        super().__init__(rotator=rotator, renderer=renderer, message_id=message_id, chat_id=chat_id)
         self._root_path = root_path
         self._project = project
-        self._acp_renderer = ACPEventRenderer()
-        self._stream_bridge = ACPStreamBridge(rotator)
         self._task_registry = TaskRegistry()
-        self._start_time = time.time()
         self._tool_count = 0
         self._plan_steps = 0
         self._phase = "analyzing"
         self._current_task_id = ""
-        self._started_dispatched = False
 
     def build_callbacks(self) -> DeepEngineCallbacks:
         return DeepEngineCallbacks(
@@ -69,13 +61,11 @@ class DeepStreamProcessor:
         self._dispatch_start(deep_project)
 
     def _dispatch_start(self, deep_project: DeepProject | None = None) -> None:
-        if self._started_dispatched:
+        if not self._dispatch_started_once():
             return
-        self._started_dispatched = True
 
         project_name = self._resolve_project_name(deep_project)
         root_path = self._resolve_root_path(deep_project)
-        self._rotator.dispatch(CardEvent.started())
         self._rotator.dispatch(CardEvent.cycle_started(self._CYCLE, 1))
         self._rotator.dispatch(CardEvent.phase_started(
             self._CYCLE,
@@ -135,12 +125,7 @@ class DeepStreamProcessor:
                 label=UI_TEXT["deep_phase_executing"],
             ))
 
-        warning = self._renderer.check_warning_banner(
-            time.time() - self._start_time,
-            is_executing=self._phase == "build",
-        )
-        if warning:
-            self._rotator.dispatch(CardEvent.warning_updated(warning))
+        self._dispatch_warning_if_needed(is_executing=self._phase == "build")
 
     def on_project_done(self, deep_project: DeepProject) -> None:
         self._stream_bridge.close_open_blocks()
@@ -164,9 +149,7 @@ class DeepStreamProcessor:
         self._renderer._current_session = None
 
     def on_error(self, error: str) -> None:
-        self._stream_bridge.close_open_blocks()
-        self._rotator.dispatch(CardEvent.failed(error))
-        self._renderer._current_session = None
+        self._dispatch_failed(error)
 
     def _task_payload(self) -> list[dict]:
         return [
@@ -261,18 +244,15 @@ class DeepStreamProcessor:
     def _ensure_build_phase(self) -> None:
         if self._phase == "build":
             return
-        self._rotator.dispatch(CardEvent.phase_done(
-            self._CYCLE,
-            "analyzing",
-            UI_TEXT["deep_spec_style_analyzing_done"],
-            subtitle=UI_TEXT["deep_spec_style_subtitle_build"],
-        ))
-        self._rotator.dispatch(CardEvent.phase_started(
-            self._CYCLE,
-            "build",
-            subtitle=UI_TEXT["deep_spec_style_subtitle_build"],
-            content=UI_TEXT["deep_phase_executing"],
-        ))
+        self._dispatch_phase_transition(
+            cycle=self._CYCLE,
+            from_phase="analyzing",
+            to_phase="build",
+            done_content=UI_TEXT["deep_spec_style_analyzing_done"],
+            done_subtitle=UI_TEXT["deep_spec_style_subtitle_build"],
+            started_subtitle=UI_TEXT["deep_spec_style_subtitle_build"],
+            started_content=UI_TEXT["deep_phase_executing"],
+        )
         self._phase = "build"
 
     def _complete_active_phase(self) -> None:

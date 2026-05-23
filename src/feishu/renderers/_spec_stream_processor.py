@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, NamedTuple, Optional
 
-from ...acp import ACPEventRenderer, ACPEventType
+from ...acp import ACPEventType
 from ...card.events import CardEvent, card_event_from_acp
 from ...card.orchestrator import TaskOrchestrator
 from ...card.render.budget import RenderBudget
@@ -28,6 +28,7 @@ from ...spec_engine.models import (
 )
 from ...spec_engine.retry_status import RetryEvent, RetryStatus
 from ...spec_engine.review_display import build_review_role_payloads, format_review_overview
+from ._base_stream_processor import BaseStreamProcessor
 from .base import _dispatch_text_block
 
 if TYPE_CHECKING:
@@ -59,7 +60,7 @@ class _EngineContext(NamedTuple):
     max_cycles: int
 
 
-class SpecStreamProcessor:
+class SpecStreamProcessor(BaseStreamProcessor):
     """Holds mutable state and implements all Spec Engine event callbacks.
 
     Constructed once per `create_spec_callbacks` invocation.  The renderer
@@ -86,27 +87,24 @@ class SpecStreamProcessor:
         project_root_path: str,
         throttle: StreamThrottle,
     ) -> None:
+        # Base class handles: rotator, renderer, message_id, chat_id,
+        # _acp_renderer, _stream_bridge, _started_dispatched, _start_time
+        super().__init__(rotator=rotator, renderer=renderer, message_id=message_id, chat_id=chat_id)
+
         # Immutable dependencies
-        self._rotator = rotator
         self._reporter = reporter
         self._metadata = metadata
         self._hooks = hooks
         self._budget = budget
         self._spec_project_id = spec_project_id
-        self._message_id = message_id
-        self._chat_id = chat_id
-        self._renderer = renderer
         self._project_root_path = project_root_path
 
         # Mutable state (previously closure-captured variables)
         self._max_cycles: int = 0
         self._throttle: StreamThrottle = throttle
-        self._acp_renderer: ACPEventRenderer = ACPEventRenderer()
         self._footer_status: Optional[str] = None
         self._last_phase_content: str = ""
         self._current_cycle: int = 0
-        self._stream_bridge = ACPStreamBridge(self._rotator)
-        self._started_dispatched: bool = False
         # Build phase tool tracking
         self._build_tool_count: int = 0
         self._build_file_set: set[str] = set()
@@ -192,12 +190,6 @@ class SpecStreamProcessor:
         self._dispatch_started_once()
         content = self._reporter.format_analyzing_done(spec_project)
         self._rotator.dispatch(CardEvent.text_delta("_main", content))
-
-    def _dispatch_started_once(self) -> None:
-        if self._started_dispatched:
-            return
-        self._started_dispatched = True
-        self._rotator.dispatch(CardEvent.started())
 
     def on_cycle_start(self, current: int, max_cycles: int) -> None:
         self._max_cycles = max_cycles
@@ -319,10 +311,7 @@ class SpecStreamProcessor:
         if self._orchestrator.has_plan and not self._orchestrator.is_fallback_mode:
             self._orchestrator.close()
 
-        # Hooks fire emoji automatically on terminal delivery
-        self._stream_bridge.close_open_blocks()
-        self._rotator.dispatch(CardEvent.failed(error))
-        self._renderer._current_session = None
+        self._dispatch_failed(error)
 
     def on_phase_start(self, cycle_num: int, phase: SpecPhase) -> None:
         self._acp_renderer.reset()

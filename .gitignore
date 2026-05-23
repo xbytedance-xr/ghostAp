@@ -86,4 +86,6 @@ slock/
 .worktrees/
 
 .superpowers/
+.codegraph/
+.planning/
 result.json

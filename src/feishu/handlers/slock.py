@@ -116,7 +116,11 @@ class SlockHandler(BaseEngineHandler):
     def _create_callbacks(
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
     ):
+        from ...slock_engine.card_channel import SlockCardChannel
         from ...slock_engine.engine import SlockEngineCallbacks
+
+        # Unified card channel — routes through CardDelivery for payload guard + retry
+        channel = SlockCardChannel(self.get_card_delivery(), chat_id)
 
         def on_agent_wake(agent):
             logger.debug("Slock agent waking: %s in chat %s", agent.name, chat_id)
@@ -141,25 +145,19 @@ class SlockHandler(BaseEngineHandler):
             if not card:
                 logger.warning("on_escalation: failed to build card for esc %s", esc.escalation_id)
                 return
-            import json as _json
-            card_json = _json.dumps(card) if isinstance(card, dict) else card
-            sent_msg_id = self.send_card_to_chat(chat_id, card_json)
+            sent_msg_id = channel.send_card(card, reply_to=message_id)
             if sent_msg_id:
                 esc.card_message_id = sent_msg_id
             else:
                 logger.warning("on_escalation: send_card_to_chat returned None for esc %s", esc.escalation_id)
 
         def on_card_send(card):
-            """Send a card to the chat and return the message_id."""
-            import json as _json
-            card_json = _json.dumps(card) if isinstance(card, dict) else card
-            return self.send_card_to_chat(chat_id, card_json)
+            """Send a card via unified channel (payload guard + retry)."""
+            return channel.send_card(card, reply_to=message_id)
 
         def on_card_update(msg_id, card):
-            """Update an existing card by message_id."""
-            import json as _json
-            card_json = _json.dumps(card) if isinstance(card, dict) else card
-            return self.update_card(msg_id, card_json)
+            """Update an existing card via unified channel."""
+            channel.update_card(msg_id, card)
 
         return SlockEngineCallbacks(
             on_agent_wake=on_agent_wake,

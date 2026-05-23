@@ -197,7 +197,7 @@ class TestDeepRenderer:
         mock_handler.ctx.deep_engine_manager.get.return_value = None
 
         with patch("src.feishu.renderers.base.BaseRenderer.create_session") as mock_create, \
-             patch("src.feishu.renderers._deep_stream_processor.ACPEventRenderer") as mock_renderer_cls:
+             patch("src.feishu.renderers._base_stream_processor.ACPEventRenderer") as mock_renderer_cls:
             mock_session = MagicMock()
             mock_create.return_value = mock_session
             mock_renderer_cls.return_value = MagicMock()

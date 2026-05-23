@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from src.card.render.payload_truncator import check_and_truncate_payload as _check_and_truncate
@@ -94,6 +94,25 @@ class _ACPStreamBridge:
 
     def close_open_blocks(self) -> None:
         self._impl.close_open_blocks()
+
+
+@dataclass(frozen=True)
+class EngineProfile:
+    """Declarative engine identity — define once, reuse for session creation.
+
+    Captures the static parts of CardMetadata + RenderBudget that are identical
+    across all invocations of an engine type.  Dynamic per-invocation values
+    (tool_name, working_dir, project_name, model_name) are passed separately
+    to ``BaseRenderer._setup_engine_session``.
+    """
+
+    engine_type: str       # "deep" | "spec" | "worktree"
+    mode_name: str         # "Deep" | "Spec"
+    mode_emoji: str        # "🧠" | "📋"
+    engine_cmd: str        # "/deep" | "/spec"
+    include_context_hook: bool = False
+    success_emoji: str = ""
+    ttl_seconds: float | None = None
 
 
 class BaseRenderer:
@@ -423,6 +442,65 @@ class BaseRenderer:
             ttl_seconds=ttl_seconds,
         )
         return SessionRotator(session)
+
+    def _setup_engine_session(
+        self,
+        profile: "EngineProfile",
+        *,
+        chat_id: str,
+        message_id: str,
+        engine_name: str = "",
+        model_name: str = "",
+        project=None,
+        context_update_fn=None,
+        ttl_seconds: float | None = None,
+    ) -> "SessionRotator":
+        """Create a full session from an EngineProfile in one call.
+
+        Replaces the repeated 5-step boilerplate (metadata → hooks → budget →
+        rotator → assign session) in each renderer's create_*_callbacks method.
+
+        Args:
+            ttl_seconds: Override profile.ttl_seconds if provided.
+
+        Returns:
+            A SessionRotator ready to dispatch events.
+        """
+        from ...card.render.budget import RenderBudget
+        from ...card.session.rotator import SessionRotator
+        from ...card.state.models import CardMetadata
+
+        metadata = CardMetadata(
+            engine_type=profile.engine_type,
+            mode_name=profile.mode_name,
+            mode_emoji=profile.mode_emoji,
+            tool_name=engine_name or None,
+            model_name=model_name or None,
+            working_dir=project.root_path if project else None,
+            project_name=(
+                getattr(project, "project_name", None)
+                or (project.project_id if project else None)
+            ),
+        )
+
+        hooks = self._build_hooks(
+            message_id,
+            include_context_hook=profile.include_context_hook,
+            context_update_fn=context_update_fn,
+            chat_id=chat_id,
+            engine_type=profile.engine_type,
+            success_emoji=profile.success_emoji or None,
+        )
+
+        budget = RenderBudget(engine_cmd=profile.engine_cmd)
+
+        effective_ttl = ttl_seconds if ttl_seconds is not None else profile.ttl_seconds
+        rotator = self._create_rotator(
+            chat_id, message_id, metadata,
+            hooks=hooks, budget=budget, ttl_seconds=effective_ttl,
+        )
+        self._current_session = rotator
+        return rotator
 
     def _render_empty_status(self, engine_cmd: str) -> str:
         """Render a default empty-status placeholder when no engine snapshot is available.
