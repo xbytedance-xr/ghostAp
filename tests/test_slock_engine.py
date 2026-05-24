@@ -259,8 +259,10 @@ class TestSlockEngine:
         assert marker["name"] == "ws-group"
         assert "activated_at" in marker
 
+    @patch("src.slock_engine.memory_manager.default_slock_storage_base",
+           return_value=os.path.expanduser("~/.ghostap/slock"))
     @patch("src.slock_engine.engine.create_engine_session")
-    def test_default_storage_base_is_user_config_slock(self, mock_create_session, tmp_path):
+    def test_default_storage_base_is_user_config_slock(self, mock_create_session, mock_default, tmp_path):
         """Default Slock storage follows the existing global ~/.ghostap/slock contract."""
         mock_create_session.return_value = None
         root_path = str(tmp_path / "project_root")

@@ -332,6 +332,29 @@ def _block_real_ttadk_subprocess(request):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _block_real_slock_storage(monkeypatch, tmp_path):
+    """Prevent tests from accidentally writing to ~/.ghostap/slock/.
+
+    Any test that creates a SlockEngine or MemoryManager without explicitly
+    passing memory_base_path/base_path will get a RuntimeError instead of
+    silently polluting the real storage directory.
+    """
+    def _guarded_default():
+        raise RuntimeError(
+            "[conftest] Real default_slock_storage_base() called in tests! "
+            "Pass memory_base_path=str(tmp_path) to SlockEngine or "
+            "base_path=str(tmp_path) to MemoryManager."
+        )
+    try:
+        monkeypatch.setattr(
+            "src.slock_engine.memory_manager.default_slock_storage_base",
+            _guarded_default,
+        )
+    except Exception:
+        pass  # Module not yet imported — safe to skip
+
+
 # ---------------------------------------------------------------------------
 # lru_cache hygiene — clear module-level caches between tests.
 # MAINTAIN: when adding a new @lru_cache in src/, register its cache_clear here.
