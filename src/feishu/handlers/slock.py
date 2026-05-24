@@ -3836,6 +3836,15 @@ class SlockHandler(BaseEngineHandler):
             self.send_text_to_chat(chat_id, "💡 请指定团队，例如: `/team status 前端团队` 或直接使用 `/slock status`")
             return
 
+        # --- Command fix suggestion: execute the suggested command ---
+        if action_type == "slock_cmd_fix":
+            fix_command = str(value.get("fix_command") or "").strip()
+            if fix_command:
+                self.handle_slock_command(message_id, chat_id, fix_command, project)
+            else:
+                self.send_text_to_chat(chat_id, "⚠️ 修正命令为空，请手动输入命令")
+            return
+
         _CMD_DISPATCH: dict[str, callable] = {
             "slock_cmd_team_list": lambda: self.list_teams(message_id, chat_id, project),
             "slock_cmd_new_team": lambda: self.create_team(message_id, chat_id, "", project),
