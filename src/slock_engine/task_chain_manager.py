@@ -48,6 +48,11 @@ class ChainTemplate:
     def last_role(self) -> str:
         return self.steps[-1].role if self.steps else ""
 
+    @property
+    def roles(self) -> list[str]:
+        """Return list of role names in order (compatibility with handler usage)."""
+        return [s.role for s in self.steps]
+
 
 @dataclass
 class ChainInstance:
@@ -174,23 +179,124 @@ class TaskChainManager:
         """Check if a chain is still active (not completed)."""
         return origin_task_id in self._active_chains
 
+    def find_chain_for_task(
+        self, task_content: str, starting_role: str = ""
+    ) -> Optional[ChainTemplate]:
+        """Select the appropriate chain template based on task context.
+
+        Selection logic:
+        1. If starting_role is provided, find the longest chain that starts
+           with or contains that role.
+        2. Otherwise, use keyword matching on task_content:
+           - "plan"/"设计"/"architect" → prefer chain with "planner" as first role
+           - "review"/"审查"/"检查" → prefer chain that includes "reviewer"
+           - "test"/"测试" → prefer chain that includes "tester"
+        3. Default: return the longest (most comprehensive) chain template
+           to ensure thorough multi-role collaboration.
+        4. Return None if no templates configured.
+
+        Args:
+            task_content: The task description text for keyword matching.
+            starting_role: Optional role name to match against chain membership.
+
+        Returns:
+            The best-matching ChainTemplate, or None if no templates exist.
+        """
+        if not self._templates:
+            return None
+
+        # Strategy 1: Match by starting_role
+        if starting_role:
+            candidates: list[ChainTemplate] = []
+            for template in self._templates:
+                roles = template.roles
+                if starting_role in roles:
+                    candidates.append(template)
+            if candidates:
+                # Return the longest chain that contains the role
+                return max(candidates, key=lambda t: len(t.steps))
+            # If no match found by role, fall through to keyword matching
+
+        # Strategy 2: Keyword matching on task_content
+        content_lower = task_content.lower()
+
+        # Check for "plan"/"设计"/"architect" → prefer chain with "planner" first
+        if any(kw in content_lower for kw in ("plan", "设计", "architect")):
+            for template in self._templates:
+                if template.first_role == "planner":
+                    return template
+
+        # Check for "review"/"审查"/"检查" → prefer chain that includes "reviewer"
+        if any(kw in content_lower for kw in ("review", "审查", "检查")):
+            for template in self._templates:
+                roles = template.roles
+                if "reviewer" in roles:
+                    return template
+
+        # Check for "test"/"测试" → prefer chain that includes "tester"
+        if any(kw in content_lower for kw in ("test", "测试")):
+            for template in self._templates:
+                roles = template.roles
+                if "tester" in roles:
+                    return template
+
+        # Default: prefer the most comprehensive chain (planner→coder→reviewer→tester pattern)
+        # rather than the shortest chain, to ensure thorough collaboration
+        return max(self._templates, key=lambda t: len(t.steps))
+
+    def get_template_by_name(self, name: str) -> Optional[ChainTemplate]:
+        """Look up a chain template by its name (the "role->role->role" string).
+
+        Args:
+            name: Exact template name to search for.
+
+        Returns:
+            The matching ChainTemplate, or None if not found.
+        """
+        for template in self._templates:
+            if template.name == name:
+                return template
+        return None
+
+    def list_templates(self) -> list[dict]:
+        """Return serialized info about all configured templates for card rendering.
+
+        Returns:
+            List of dicts with keys: name, roles, step_count.
+        """
+        return [
+            {
+                "name": template.name,
+                "roles": template.roles,
+                "step_count": len(template.steps),
+            }
+            for template in self._templates
+        ]
+
     @staticmethod
     def _parse_templates(config: str) -> list[ChainTemplate]:
         """Parse chain template configuration string.
 
-        Format: "role1->role2->role3, roleA->roleB"
+        Format: "role1->role2->role3, roleA+roleB->roleC"
         Each comma-separated segment is one template.
+        Within a segment, '->' separates sequential groups.
+        Within a group, '+' separates parallel roles (same order).
         """
         templates: list[ChainTemplate] = []
         for segment in config.split(","):
             segment = segment.strip()
             if not segment:
                 continue
-            roles = [r.strip() for r in segment.split("->") if r.strip()]
-            if len(roles) < 2:
-                logger.warning("Ignoring invalid chain template (need >=2 roles): %s", segment)
+            groups = [g.strip() for g in segment.split("->") if g.strip()]
+            if len(groups) < 2:
+                logger.warning("Ignoring invalid chain template (need >=2 groups): %s", segment)
                 continue
-            steps = [ChainStep(role=role, order=i) for i, role in enumerate(roles)]
-            template = ChainTemplate(name="->".join(roles), steps=steps)
+            steps: list[ChainStep] = []
+            for order, group in enumerate(groups):
+                # Each group may contain parallel roles separated by '+'
+                roles_in_group = [r.strip() for r in group.split("+") if r.strip()]
+                for role in roles_in_group:
+                    steps.append(ChainStep(role=role, order=order))
+            template = ChainTemplate(name=segment.strip(), steps=steps)
             templates.append(template)
         return templates

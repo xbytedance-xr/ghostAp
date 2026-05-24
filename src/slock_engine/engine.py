@@ -34,8 +34,11 @@ from .models import (
     TaskStatus,
 )
 from .mouthpiece import Mouthpiece
-from .observer_queue import ObserverLearningQueue
+from .collaboration_orchestrator import CollaborationOrchestrator
+from .observer_queue import ObserverLearningQueue, TaskStatusNotifier
+from .progress_tracker import ProgressTracker
 from .task_board_manager import TaskBoardManager
+from .task_chain_manager import TaskChainManager
 from .task_router import TaskRouter
 
 logger = logging.getLogger(__name__)
@@ -207,6 +210,7 @@ class SlockEngine(BaseEngine):
         AgentStatus.SENDING: (AgentStatus.IDLE,),
         AgentStatus.MOVING: (AgentStatus.IDLE,),
         AgentStatus.DISCUSSING: (AgentStatus.IDLE,),
+        AgentStatus.PENDING_DISCUSSION: (AgentStatus.DISCUSSING, AgentStatus.IDLE),
     }
 
     def __init__(
@@ -249,6 +253,10 @@ class SlockEngine(BaseEngine):
         self._escalations: list[EscalationRequest] = []
         self._escalation_retry_counts: dict[str, int] = {}
 
+        # Persistent card delivery callbacks (set via set_card_callbacks)
+        self._card_send_fn: Optional[Callable[[dict], Optional[str]]] = None
+        self._card_update_fn: Optional[Callable[[str, dict], bool]] = None
+
         # Cancellation tokens for per-agent execution control
         self._cancel_events: dict[str, threading.Event] = {}
         self._cancel_events_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
@@ -262,6 +270,10 @@ class SlockEngine(BaseEngine):
         self._status_card_msg_ids: dict[str, str] = {}
         self._status_refresh_timer: Optional[threading.Timer] = None
 
+        # Collaboration subsystem prerequisites (must precede TaskBoardManager)
+        self._chain_manager = TaskChainManager()
+        self._task_notifier = TaskStatusNotifier()
+
         # Composed managers (share lock and state references)
         self._task_mgr = TaskBoardManager(
             lock=self._lock,
@@ -274,6 +286,9 @@ class SlockEngine(BaseEngine):
             memory=self._memory,
             registry_get=self._registry.get,
             execute_agent_fn=lambda agent, content, callbacks: self._execute_agent(agent, content, callbacks),
+            chain_manager=self._chain_manager,
+            notifier=self._task_notifier,
+            resolve_agent_for_role=lambda role: self._resolve_agent_for_role(role, self._channel.channel_id if self._channel else ""),
         )
         self._escalation_mgr = EscalationManager(
             lock=self._lock,
@@ -292,6 +307,43 @@ class SlockEngine(BaseEngine):
             get_executor_fn=self._get_executor,
             escalation_timeout_s=get_settings().slock_escalation_timeout,
         )
+
+        # Collaboration orchestration subsystem
+        self._collaboration_orchestrator = CollaborationOrchestrator(
+            chain_manager=self._chain_manager,
+            notifier=self._task_notifier,
+            resolve_agent=self._resolve_agent_for_role,
+            dispatch_task=self._dispatch_collaboration_task,
+            register_task=self._register_collaboration_task,
+            add_task_fn=self._task_mgr.add_task,
+            claim_task_fn=self._task_mgr.claim_task,
+            persist_fn=self._persist_plans,
+        )
+        self._task_notifier.subscribe(self._collaboration_orchestrator)
+
+        # Progress tracker for rate-limited card updates
+        from .card_channel_adapter import LazyCardChannel
+        from .card_templates.progress import build_progress_overview_card
+
+        _card_channel = LazyCardChannel(
+            send_fn_getter=lambda: self._card_send_fn,
+            update_fn_getter=lambda: self._card_update_fn,
+        )
+
+        self._progress_tracker = ProgressTracker(
+            card_channel=_card_channel,
+            card_builder=lambda state: build_progress_overview_card(
+                plans=self._collaboration_orchestrator.list_active_plans(),
+                agents=list(self._registry.list_agents()),
+                team_name=getattr(self._channel, 'team_name', '') if self._channel else '',
+                channel_id=getattr(self._channel, 'channel_id', '') if self._channel else '',
+                highlight_plan_id=state.entity_id if state.entity_type == "plan" else "",
+            ),
+            min_interval=1.0,
+            auto_flush=True,
+            flush_period=3.0,
+        )
+        self._collaboration_orchestrator.set_progress_tracker(self._progress_tracker)
 
         # Register LLM summarization callback for memory compression
         self._memory.set_llm_callback(self._summarize_via_llm)
@@ -346,13 +398,155 @@ class SlockEngine(BaseEngine):
     def tasks(self) -> list[SlockTask]:
         return list(self._tasks)
 
+    @property
+    def collaboration_orchestrator(self) -> CollaborationOrchestrator:
+        """Access the collaboration orchestrator for plan management."""
+        return self._collaboration_orchestrator
+
+    @property
+    def task_notifier(self) -> TaskStatusNotifier:
+        """Access the task status notifier for event subscription."""
+        return self._task_notifier
+
+    # ------------------------------------------------------------------
+    # Collaboration helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_agent_for_role(self, role: str, channel_id: str) -> Optional[AgentIdentity]:
+        """Find the best idle agent matching a role in this channel.
+
+        Uses skill-based scoring when multiple agents match the same role:
+        prefers idle agents with higher average skill success rate.
+        Falls back to first idle agent when no skill data exists.
+        """
+        if not self._channel:
+            return None
+
+        candidates: list[tuple[AgentIdentity, float]] = []
+        for agent_id in self._channel.agents:
+            agent = self._registry.get(agent_id)
+            if agent and agent.role == role:
+                status = self._agent_statuses.get(agent_id, AgentStatus.IDLE)
+                if status == AgentStatus.IDLE:
+                    # Score by skill profiles (higher is better)
+                    score = self._compute_skill_score(agent_id)
+                    candidates.append((agent, score))
+
+        if not candidates:
+            return None
+
+        # Return highest-scoring idle agent
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]
+
+    def _compute_skill_score(self, agent_id: str) -> float:
+        """Compute a skill score for agent selection (0.0 - 100.0).
+
+        Returns 50.0 (neutral) when no skill data is available,
+        ensuring new agents don't get unfairly deprioritized.
+        """
+        try:
+            profiles = self._router.get_skill_profiles(agent_id)
+            if not profiles:
+                return 50.0
+            total_rate = sum(p.success_rate for p in profiles)
+            return total_rate / len(profiles)
+        except Exception:
+            return 50.0
+
+    def _dispatch_collaboration_task(self, task: SlockTask, agent: AgentIdentity) -> None:
+        """Dispatch a collaboration task to an agent.
+
+        NOTE: Task must already be registered in the task board via
+        _register_collaboration_task or TaskBoardManager.add_task before
+        calling this method. This method only tracks progress and executes.
+        """
+        # Track progress for this task
+        self._progress_tracker.update(
+            task.task_id, entity_type="task", status="dispatched",
+            detail=f"{agent.name} 执行中",
+        )
+        # Execute via the engine's execute_task method
+        self.execute_task(task.task_id, agent.agent_id, callbacks=None)
+
+    def _register_collaboration_task(self, task: SlockTask) -> None:
+        """Register a collaboration task in the task list for tracking/persistence.
+
+        Called by CollaborationOrchestrator when creating step tasks.
+        Since _dispatch_collaboration_task already appends to _tasks, this is a no-op
+        if the task is already present (avoids duplication).
+        """
+        with self._lock:
+            if not any(t.task_id == task.task_id for t in self._tasks):
+                self._tasks.append(task)
+                self._dirty = True
+
+    def _persist_plans(self) -> None:
+        """Persist all plans to disk (called by orchestrator after state changes)."""
+        channel = self._channel
+        if not channel:
+            return
+        channel_id = channel.channel_id if hasattr(channel, 'channel_id') else ""
+        if not channel_id:
+            return
+        try:
+            plans = self._collaboration_orchestrator.get_all_plans()
+            self._memory.write_plans(channel_id, plans)
+        except OSError:
+            logger.warning("Failed to persist collaboration plans")
+
+    def _restore_plans(self) -> None:
+        """Restore collaboration plans from disk (called on engine activation)."""
+        channel = self._channel
+        if not channel:
+            return
+        channel_id = channel.channel_id if hasattr(channel, 'channel_id') else ""
+        if not channel_id:
+            return
+        try:
+            plans = self._memory.read_plans(channel_id)
+            if plans:
+                self._collaboration_orchestrator.restore_plans(plans, channel_id)
+                logger.info("Restored %d plans from disk", len(plans))
+        except Exception:
+            logger.warning("Failed to restore collaboration plans")
+
     # ------------------------------------------------------------------
     # Public API: exposed for DiscussionManager (avoids private access)
     # ------------------------------------------------------------------
 
+    def set_card_callbacks(
+        self,
+        send_fn: Optional[Callable[[dict], Optional[str]]],
+        update_fn: Optional[Callable[[str, dict], bool]],
+    ) -> None:
+        """Set persistent card delivery callbacks for progress tracking.
+
+        Should be called by the handler once card delivery is available.
+        """
+        self._card_send_fn = send_fn
+        self._card_update_fn = update_fn
+
     def get_agent(self, agent_id: str) -> Optional[AgentIdentity]:
         """Get agent identity by ID. Public API for discussion/external use."""
         return self._registry.get(agent_id)
+
+    def assign_task_to_agent(self, task_id: str, agent_id: str) -> bool:
+        """Assign (claim) an existing task to an agent."""
+        return self._task_mgr.claim_task(task_id, agent_id)
+
+    def create_and_assign_task(self, content: str, agent_id: str) -> Optional["SlockTask"]:
+        """Create a new task and immediately assign it to an agent.
+
+        Returns the created SlockTask or None on failure.
+        """
+        task = self._task_mgr.add_task(content)
+        if not task:
+            return None
+        success = self._task_mgr.claim_task(task.task_id, agent_id)
+        if not success:
+            return task  # Created but not claimed — still return it
+        return task
 
     def find_agent_by_name(self, name: str, channel_id: Optional[str] = None) -> Optional[AgentIdentity]:
         """Find agent by display name. Public API for NLI discussion routing."""
@@ -637,7 +831,8 @@ class SlockEngine(BaseEngine):
         self._memory.initialize_team_workspace(channel, project_path=self.root_path)
         persisted_tasks = self._memory.read_task_board(channel.channel_id)
         if persisted_tasks:
-            self._tasks = persisted_tasks
+            self._tasks.clear()
+            self._tasks.extend(persisted_tasks)
 
         # Crash recovery: downgrade orphan IN_PROGRESS/IN_REVIEW tasks to TODO
         recovered = self._task_mgr.recover_orphan_tasks()
@@ -646,6 +841,12 @@ class SlockEngine(BaseEngine):
                 "Channel %s: recovered %d orphan tasks on activation",
                 channel.channel_id, len(recovered),
             )
+
+        # Restore collaboration plans from disk
+        self._restore_plans()
+
+        # Start idle scan for auto-claiming orphan TODO tasks
+        self._task_mgr.start_idle_scan()
 
         marker_data = {
             "channel_id": channel.channel_id,
@@ -799,6 +1000,10 @@ class SlockEngine(BaseEngine):
                 return None
             if callbacks and callbacks.on_agent_thinking:
                 callbacks.on_agent_thinking(agent)
+            self._progress_tracker.update(
+                agent_id, entity_type="agent", progress_pct=20,
+                status="thinking", detail=f"{agent.name} 构思中",
+            )
 
             # Build prompt with memory context and system prompt
             prompt = self._build_agent_prompt(agent, message, memory)
@@ -812,6 +1017,10 @@ class SlockEngine(BaseEngine):
                 return None
             if callbacks and callbacks.on_agent_running:
                 callbacks.on_agent_running(agent, message)
+            self._progress_tracker.update(
+                agent_id, entity_type="agent", progress_pct=50,
+                status="running", detail=f"{agent.name} 执行中",
+            )
 
             # Execute via ACP session
             try:
@@ -847,10 +1056,18 @@ class SlockEngine(BaseEngine):
             # RUNNING → CHECKING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.CHECKING):
                 return None
+            self._progress_tracker.update(
+                agent_id, entity_type="agent", progress_pct=75,
+                status="checking", detail=f"{agent.name} 检查中",
+            )
 
             # CHECKING → SENDING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.SENDING):
                 return None
+            self._progress_tracker.update(
+                agent_id, entity_type="agent", progress_pct=90,
+                status="sending", detail=f"{agent.name} 发送中",
+            )
 
             # Format output through mouthpiece
             if result:
@@ -868,6 +1085,14 @@ class SlockEngine(BaseEngine):
 
             if callbacks and callbacks.on_agent_done:
                 callbacks.on_agent_done(agent, result or "")
+
+            # Mark progress complete and remove tracking
+            self._progress_tracker.update(
+                agent_id, entity_type="agent", progress_pct=100,
+                status="done", detail=f"{agent.name} 完成",
+            )
+            self._progress_tracker.force_push(agent_id)
+            self._progress_tracker.remove(agent_id)
 
             # SENDING → IDLE
             if not self._transition_agent_or_abort(agent_id, AgentStatus.IDLE):
@@ -1272,7 +1497,7 @@ class SlockEngine(BaseEngine):
                     status_card = self.get_status_card(team_name=team_name)
                     cb(msg_id, status_card)
                 except Exception as exc:
-                    logger.debug("Status refresh callback error: %s", exc)
+                    logger.debug("Status refresh callback error: %s", str(exc))
 
         self._status_refresh_timer = threading.Timer(delay, _do_refresh)
         self._status_refresh_timer.daemon = True
@@ -1392,9 +1617,9 @@ class SlockEngine(BaseEngine):
         """Resume agent work after an escalation has been resolved."""
         return self._escalation_mgr.resume_after_escalation(escalation, callbacks)
 
-    def _force_complete_task(self, task_id: str) -> None:
+    def _force_complete_task(self, task_id: str, *, reason: str = "", actor_id: str = "system:engine") -> None:
         """Force-mark a task as DONE regardless of claimer."""
-        self._task_mgr.force_complete_task(task_id)
+        self._task_mgr.force_complete_task(task_id, reason=reason, actor_id=actor_id)
 
     def _trim_escalations(self) -> None:
         """Delegate escalation trimming to the escalation manager."""
@@ -1587,6 +1812,9 @@ class SlockEngine(BaseEngine):
         # Cancel escalation timeout timers
         self._escalation_mgr.shutdown_timers()
 
+        # Shutdown progress tracker
+        self._progress_tracker.shutdown()
+
         # Shutdown thread pool executor
         if self._executor is not None:
             self._executor.shutdown(wait=False)
@@ -1638,6 +1866,12 @@ class SlockEngine(BaseEngine):
 
         # Cancel escalation timeout timers
         self._escalation_mgr.shutdown_timers()
+
+        # Stop idle scan thread
+        self._task_mgr.stop_idle_scan()
+
+        # Shutdown collaboration orchestrator (cancel plan timers)
+        self._collaboration_orchestrator.shutdown()
 
         # Flush and stop observer learning queue
         self._observer_queue.shutdown()

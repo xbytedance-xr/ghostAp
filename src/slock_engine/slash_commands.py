@@ -47,6 +47,11 @@ class SlockCommandAction(Enum):
     # Memory management
     MEMORY = "memory"
     MEMORY_LIST = "memory_list"
+    MEMORY_GROUP = "memory_group"
+
+    # Plan management
+    PLAN_LIST = "plan_list"
+    PLAN_DETAIL = "plan_detail"
 
     # Missing name indicators
     NEW_TEAM_MISSING_NAME = "new_team_missing_name"
@@ -78,6 +83,7 @@ _ALIASES: dict[str, str] = {
     "/nr": "/new-role",
     "/nt": "/new-team",
     "/s": "/slock",
+    "/p": "/plan",
 }
 
 
@@ -86,7 +92,7 @@ def get_all_command_prefixes() -> set[str]:
 
     Useful for validating command fix suggestions in card actions.
     """
-    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/council", "/role", "/task", "/team"}
+    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/council", "/role", "/task", "/team", "/plan"}
     return canonical | set(_ALIASES.keys())
 
 
@@ -145,13 +151,15 @@ def parse_slock_command(text: str) -> SlockCommand:
     if cmd == "/discuss":
         return _parse_discuss_args(remainder)
 
-    # /memory [list|@agent_name]
+    # /memory [list|group|@agent_name]
     if cmd == "/memory":
         if remainder:
             parts = remainder.split(None, 1)
             subcmd = parts[0].lower()
             if subcmd == "list":
                 return SlockCommand(action=SlockCommandAction.MEMORY_LIST)
+            if subcmd == "group":
+                return SlockCommand(action=SlockCommandAction.MEMORY_GROUP)
             # Otherwise treat as agent name
             target = remainder.lstrip("@").strip()
             return SlockCommand(action=SlockCommandAction.MEMORY, target=target)
@@ -160,6 +168,12 @@ def parse_slock_command(text: str) -> SlockCommand:
     # /role <subcommand>
     if cmd == "/role":
         return _parse_role_subcommand(remainder)
+
+    # /plan [list|<plan_id>]
+    if cmd == "/plan":
+        if not remainder or remainder.strip().lower() == "list":
+            return SlockCommand(action=SlockCommandAction.PLAN_LIST)
+        return SlockCommand(action=SlockCommandAction.PLAN_DETAIL, target=remainder.strip())
 
     # /task <subcommand>
     if cmd == "/task":
@@ -417,7 +431,7 @@ def is_slock_command(
         return True
 
     # Team-internal commands require managed chat context
-    if normalized.startswith(("/new-role", "/role", "/task", "/team", "/council", "/discuss", "/memory")):
+    if normalized.startswith(("/new-role", "/role", "/task", "/team", "/council", "/discuss", "/memory", "/plan")):
         if manager is not None and chat_id:
             if manager.is_managed_chat(chat_id):
                 return True

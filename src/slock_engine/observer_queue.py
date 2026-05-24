@@ -193,3 +193,132 @@ class ObserverLearningQueue:
             self.flush()
         except Exception:
             logger.exception("Observer final flush error")
+
+
+class TaskStatusObserver(Protocol):
+    """Protocol for observing task status changes.
+
+    Implementers receive notifications when tasks transition between states,
+    enabling event-driven role participation (e.g., reviewer auto-starts when
+    coder finishes).
+    """
+
+    def on_task_status_changed(
+        self,
+        task_id: str,
+        old_status: str,
+        new_status: str,
+        agent_id: str,
+        channel_id: str,
+    ) -> None:
+        """Called when a task's status changes."""
+        ...
+
+    def on_plan_step_completed(
+        self,
+        plan_id: str,
+        step_id: str,
+        role: str,
+        agent_id: str,
+    ) -> None:
+        """Called when a collaboration plan step completes."""
+        ...
+
+    def on_task_created(
+        self,
+        task_id: str,
+        content: str,
+        channel_id: str,
+    ) -> None:
+        """Called when a new task is created (enables auto-plan triggering)."""
+        ...
+
+
+class TaskStatusNotifier:
+    """Manages TaskStatusObserver subscriptions and dispatches events.
+
+    Thread-safe notification dispatcher that fans out task status change
+    events to all registered observers. Used by the collaboration orchestrator
+    to trigger next-role activation when a predecessor completes.
+    """
+
+    def __init__(self) -> None:
+        self._observers: list[TaskStatusObserver] = []
+        self._lock = threading.Lock()
+
+    def subscribe(self, observer: TaskStatusObserver) -> None:
+        """Register an observer for task status events."""
+        with self._lock:
+            if observer not in self._observers:
+                self._observers.append(observer)
+
+    def unsubscribe(self, observer: TaskStatusObserver) -> None:
+        """Remove an observer."""
+        with self._lock:
+            self._observers = [o for o in self._observers if o is not observer]
+
+    def notify_status_changed(
+        self,
+        task_id: str,
+        old_status: str,
+        new_status: str,
+        agent_id: str,
+        channel_id: str,
+    ) -> None:
+        """Notify all observers of a task status change."""
+        with self._lock:
+            observers = list(self._observers)
+
+        for obs in observers:
+            try:
+                obs.on_task_status_changed(task_id, old_status, new_status, agent_id, channel_id)
+            except Exception:
+                logger.exception(
+                    "TaskStatusObserver error on status change: task=%s observer=%r",
+                    task_id, obs,
+                )
+
+    def notify_plan_step_completed(
+        self,
+        plan_id: str,
+        step_id: str,
+        role: str,
+        agent_id: str,
+    ) -> None:
+        """Notify all observers that a plan step completed."""
+        with self._lock:
+            observers = list(self._observers)
+
+        for obs in observers:
+            try:
+                obs.on_plan_step_completed(plan_id, step_id, role, agent_id)
+            except Exception:
+                logger.exception(
+                    "TaskStatusObserver error on plan step: plan=%s step=%s observer=%r",
+                    plan_id, step_id, obs,
+                )
+
+    def notify_task_created(
+        self,
+        task_id: str,
+        content: str,
+        channel_id: str,
+    ) -> None:
+        """Notify all observers that a new task was created."""
+        with self._lock:
+            observers = list(self._observers)
+
+        for obs in observers:
+            try:
+                obs.on_task_created(task_id, content, channel_id)
+            except Exception:
+                logger.exception(
+                    "TaskStatusObserver error on task created: task=%s observer=%r",
+                    task_id, obs,
+                )
+
+    @property
+    def observer_count(self) -> int:
+        """Number of registered observers."""
+        with self._lock:
+            return len(self._observers)

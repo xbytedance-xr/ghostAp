@@ -262,7 +262,7 @@ class DiscussionManager:
                 return "[" + ", ".join(context_parts) + "]"
 
         except Exception as exc:
-            logger.debug("Error getting task blockers context: %s", exc)
+            logger.debug("Error getting task blockers context: %s", str(exc))
 
         return ""
 

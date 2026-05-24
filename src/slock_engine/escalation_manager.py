@@ -297,7 +297,7 @@ class EscalationManager:
                         count, escalation.escalation_id,
                     )
                     if task_id and self._force_complete_task_fn:
-                        self._force_complete_task_fn(task_id, reason="重试次数超限")
+                        self._force_complete_task_fn(task_id, reason="重试次数超限", actor_id="system:escalation")
                     return None
                 self._escalation_retry_counts[retry_key] = count + 1
 
@@ -334,7 +334,7 @@ class EscalationManager:
 
         elif resolution in ABORT_OPTIONS:
             if task_id and self._force_complete_task_fn:
-                self._force_complete_task_fn(task_id, reason="超时中止")
+                self._force_complete_task_fn(task_id, reason="超时中止", actor_id="system:timeout")
                 logger.info("Escalation Abort: task %s marked DONE (abandoned)", task_id)
             return None
 
@@ -557,7 +557,7 @@ class EscalationManager:
             # Fallback: force-complete the task to prevent inconsistent state
             if esc_copy.task_id and self._force_complete_task_fn:
                 try:
-                    self._force_complete_task_fn(esc_copy.task_id, reason="系统错误:需人工介入")
+                    self._force_complete_task_fn(esc_copy.task_id, reason="系统错误:需人工介入", actor_id="system:escalation")
                 except Exception:
                     logger.error("Fallback force_complete also failed for task %s", esc_copy.task_id)
             # Send alert to chat for admin manual intervention

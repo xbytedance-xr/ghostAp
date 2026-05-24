@@ -106,14 +106,21 @@ class MessageDispatcher:
             self.client._handle_spec_command(message_id, chat_id, text, project)
             return
 
-        if self.client._is_slock_command(text, chat_id):
+        _slock_result = self.client._is_slock_command(text, chat_id)
+        if _slock_result is True:
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
             self.client._handle_slock_command(message_id, chat_id, text, project)
             return
+        if _slock_result == "NEEDS_ACTIVATION":
+            self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
+            self.client._reply_text(message_id, "💡 此命令需要先激活 Slock 团队。请使用 `/slock` 激活后重试。")
+            return
 
         # Slock active chat: route non-command messages to slock engine
-        if self.client._is_slock_active(chat_id):
+        # Both activation AND managed-chat registration are required to prevent
+        # unregistered chats from routing (e.g. stale channel without register).
+        if self.client._is_slock_active(chat_id) and self.client._is_slock_managed_chat(chat_id):
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
             self.client._handle_slock_message(message_id, chat_id, text, project)
             return

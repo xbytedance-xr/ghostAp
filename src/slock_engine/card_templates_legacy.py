@@ -1,6 +1,35 @@
-"""Card templates for Slock Engine — Agent identity cards and status panels.
+"""Slock Engine card templates — LEGACY monolithic module (pending migration).
 
-Uses CoreBuilder._wrap_card pattern from the existing card system.
+⚠️ MIGRATION STATUS:
+Functions ALREADY migrated to card_templates/ subpackage (do NOT modify here):
+  - build_status_panel_card → card_templates/status.py
+  - build_role_info_card → card_templates/role.py
+  - build_role_list_card → card_templates/role.py
+  - build_task_board_card → card_templates/task.py
+  - build_progress_overview_card → card_templates/progress.py
+  - build_collaboration_plan_card → card_templates/progress.py
+  - build_discussion_live_card → card_templates/discussion.py
+  - build_discussion_conclusion_card → card_templates/discussion.py
+  - build_discussion_history_list_card → card_templates/discussion.py
+
+Functions PENDING migration (still authoritative in this file):
+  - build_welcome_card
+  - build_team_created_card
+  - build_team_list_card
+  - build_command_hub_card
+  - build_command_panel_card / build_command_panel_extended_card
+  - build_council_card / build_council_detail_card / build_council_result_card
+  - build_discussion_card / build_discussion_history_card / build_discussion_summary_card
+  - build_memory_display_card / build_memory_manage_card
+  - build_role_switch_card / build_role_arg_error_card
+  - build_agent_message_card / build_agent_action_buttons
+  - build_escalation_card / build_conflict_escalation_card / build_resolved_escalation_card
+  - build_dissolve_confirm_card / build_dissolve_undo_card
+  - build_crash_recovery_card / build_error_suggestion_card
+  - build_status_refresh_card
+  - All other build_* and helper functions below
+
+This file will be deleted once all functions are migrated.
 """
 
 from __future__ import annotations
@@ -28,6 +57,84 @@ from .models import (
 
 _DISPLAY_TZ = ZoneInfo("Asia/Shanghai")
 
+
+# ---------------------------------------------------------------------------
+# Local card wrapper — mirrors card_templates/common.py:build_card_wrapper
+# to ensure visual consistency without circular imports.
+# ---------------------------------------------------------------------------
+
+_CARD_BYTE_BUDGET = 27 * 1024
+_CARD_NODE_BUDGET = 180
+
+
+def _count_tagged_nodes(obj) -> int:
+    """Count dicts with a 'tag' key (Feishu element nodes)."""
+    count = 0
+    if isinstance(obj, dict):
+        if "tag" in obj:
+            count += 1
+        for v in obj.values():
+            count += _count_tagged_nodes(v)
+    elif isinstance(obj, list):
+        for item in obj:
+            count += _count_tagged_nodes(item)
+    return count
+
+
+def _guard_card_payload(card: dict) -> dict:
+    """Truncate elements from the end if card exceeds byte/node budget."""
+    import json
+
+    elements = card.get("body", {}).get("elements", [])
+    if not elements:
+        return card
+
+    serialized = json.dumps(card, ensure_ascii=False)
+    byte_size = len(serialized.encode("utf-8"))
+    node_count = _count_tagged_nodes(card)
+
+    if byte_size <= _CARD_BYTE_BUDGET and node_count <= _CARD_NODE_BUDGET:
+        return card
+
+    while len(elements) > 1 and (byte_size > _CARD_BYTE_BUDGET or node_count > _CARD_NODE_BUDGET):
+        elements.pop()
+        card["body"]["elements"] = elements
+        serialized = json.dumps(card, ensure_ascii=False)
+        byte_size = len(serialized.encode("utf-8"))
+        node_count = _count_tagged_nodes(card)
+
+    elements.append({"tag": "markdown", "content": "*⚠️ 内容过长，部分已截断*"})
+    card["body"]["elements"] = elements
+    return card
+
+
+def _build_card_wrapper(
+    *,
+    header_title: str,
+    header_template: str = "indigo",
+    header_subtitle: str = "",
+    elements: list[dict],
+    mobile_optimize: bool = True,
+) -> dict:
+    """Wrap elements into a Feishu Interactive Card 2.0 structure with payload guard.
+
+    Mirrors card_templates/common.py:build_card_wrapper for visual consistency.
+    """
+    header: dict = {
+        "title": {"tag": "plain_text", "content": header_title},
+        "template": header_template,
+    }
+    if header_subtitle:
+        header["subtitle"] = {"tag": "plain_text", "content": header_subtitle}
+
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": not mobile_optimize},
+        "header": header,
+        "body": {"elements": elements},
+    }
+    return _guard_card_payload(card)
+
 _STATUS_LABEL_ZH: dict[str, str] = {
     "idle": "空闲",
     "waking": "唤醒中",
@@ -46,6 +153,17 @@ _TASK_STATUS_LABEL_ZH: dict[str, str] = {
     "in_review": "审查中",
     "done": "已完成",
 }
+
+
+def _make_collapsible(title: str, elements: list[dict]) -> dict:
+    """Create a Feishu collapsible_panel element (collapsed by default)."""
+    return {
+        "tag": "collapsible_panel",
+        "expanded": False,
+        "header": {"title": {"tag": "markdown", "content": title}},
+        "vertical_spacing": "8px",
+        "elements": elements,
+    }
 
 
 def build_agent_message_card(
@@ -181,17 +299,12 @@ def build_agent_message_card(
         "elements": build_responsive_layout(secondary_buttons),
     })
 
-    header: dict = {
-        "title": {"tag": "plain_text", "content": header_title},
-        "template": header_template,
-    }
-
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": header,
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=header_title,
+        header_template=header_template,
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_agent_action_buttons(
@@ -278,15 +391,12 @@ def build_nli_feedback_card(
         )
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🤔 意图识别"},
-            "template": "wathet",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🤔 意图识别",
+        header_template="wathet",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_team_created_card(
@@ -306,12 +416,12 @@ def build_team_created_card(
     )
     elements: list[dict] = [{"tag": "markdown", "content": content}]
     elements.extend(build_responsive_layout([_build_slock_group_jump_button(channel_id)]))
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {"title": {"tag": "plain_text", "content": "🎭 Slock 协作群已创建"}, "template": "indigo"},
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🎭 Slock 协作群已创建",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_welcome_card(*, team_name: str) -> dict:
@@ -328,12 +438,12 @@ def build_welcome_card(*, team_name: str) -> dict:
         "📎 *也支持斜杠命令*: `/new-role`、`/role list`、`/task assign`、`/memory @角色名`、`/discuss 主题`、`/slock help`"
     )
     elements: list[dict] = [{"tag": "markdown", "content": content}]
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {"title": {"tag": "plain_text", "content": f"👋 欢迎加入 {team_name}"}, "template": "indigo"},
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"👋 欢迎加入 {team_name}",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_team_list_card(teams: list[dict]) -> dict:
@@ -360,238 +470,13 @@ def build_team_list_card(teams: list[dict]) -> dict:
     if elements and elements[-1].get("tag") == "hr":
         elements.pop()
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {"title": {"tag": "plain_text", "content": "🎭 Slock 协作群"}, "template": "indigo"},
-        "body": {"elements": elements},
-    }
-
-
-def build_status_panel_card(
-    agents: list[tuple[AgentIdentity, AgentStatus]],
-    team_name: str = "",
-    channel_id: str = "",
-    current_tasks: Optional[dict[str, SlockTask]] = None,
-) -> dict:
-    """Build a status panel card showing all agents and their states.
-
-    Uses pure markdown elements for agent status rows (mobile-friendly,
-    no column_set overflow on 320px screens).
-
-    Args:
-        agents: List of (AgentIdentity, AgentStatus) tuples.
-        team_name: Optional team name for the header.
-        channel_id: Optional channel identifier.
-        current_tasks: Optional agent_id to active task mapping.
-    """
-    header_title = f"📊 {team_name} Agent 状态" if team_name else "📊 Slock Agent 状态"
-
-    elements: list[dict] = []
-
-    if not agents:
-        elements.append({"tag": "markdown", "content": "*当前团队暂无已注册的 Agent。*"})
-    else:
-        # Two-row layout per agent (Task-11: mobile-friendly, no pipe overflow on 320px)
-        # Row 1: core info (emoji + name + status)
-        # Row 2: auxiliary info (task preview, if any)
-        for agent, status in agents:
-            status_icon = _STATUS_ICON_MAP.get(status, "⚪")
-            status_label = _STATUS_LABEL_ZH.get(status.value, status.value)
-            current_task = (current_tasks or {}).get(agent.agent_id)
-            # Truncate task preview to 25 chars for mobile
-            task_text = ""
-            if current_task:
-                task_text = current_task.content[:25] + ("…" if len(current_task.content) > 25 else "")
-
-            # Row 1: core status (emoji + name + status)
-            row1 = f"{agent.emoji} **{agent.name}** {status_icon} {status_label}"
-            elements.append({"tag": "markdown", "content": row1})
-
-            # Row 2: auxiliary info (task preview, if any)
-            if task_text:
-                row2 = f"   📋 {task_text}"
-                elements.append({"tag": "markdown", "content": row2})
-
-    # Collect non-IDLE agents for stop actions
-    non_idle_agents = [(agent, status) for agent, status in agents if status not in (AgentStatus.IDLE,)]
-
-    base_buttons = [
-        _build_callback_button(
-            "🔄 刷新",
-            "slock_refresh_status",
-            channel_id=channel_id,
-            button_type="primary_text",
-        ),
-        _build_callback_button(
-            "⏹ 全部停止",
-            "slock_stop",
-            channel_id=channel_id,
-            button_type="danger",
-        ),
-    ]
-
-    elements.extend(build_responsive_layout(base_buttons))
-
-    # Individual danger buttons per non-idle agent (full-width vertical stack, 18-char truncation)
-    if non_idle_agents:
-        elements.append({"tag": "hr"})
-        for agent, _status in non_idle_agents:
-            label = _truncate_dynamic_label(f"⏹ 停止 {agent.name}", max_len=18)
-            elements.append(
-                _build_callback_button(
-                    label,
-                    "slock_stop_agent",
-                    channel_id=channel_id,
-                    button_type="danger",
-                    extra_value={"agent_id": agent.agent_id},
-                )
-            )
-
-    header: dict = {
-        "title": {"tag": "plain_text", "content": header_title},
-        "template": "indigo",
-    }
-
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": header,
-        "body": {"elements": elements},
-    }
-
-
-def build_task_board_card(
-    tasks: list[SlockTask],
-    agents: list[AgentIdentity],
-    team_name: str = "",
-    channel_id: str = "",
-    summary_mode: bool = True,
-) -> dict:
-    """Build a Kanban-style task board card using column_set with colored backgrounds.
-
-    Each TaskStatus occupies one row as a column_set with background_style color-coding:
-    TODO=grey, IN_PROGRESS=blue, IN_REVIEW=yellow, DONE=green.
-    Inside each row, a two-column layout separates the status header from the task list.
-
-    When summary_mode=True, only shows task counts per status and the 3 most recent
-    activities instead of the full task list (mobile-friendly).
-    """
-    header_title = f"📋 {team_name} 任务看板" if team_name else "📋 Slock 任务看板"
-
-    elements: list[dict] = []
-
-    # Group tasks by status
-    grouped: dict[TaskStatus, list[SlockTask]] = {s: [] for s in TaskStatus}
-    for task in tasks:
-        grouped[task.status].append(task)
-
-    if summary_mode:
-        # Summary mode: compact overview with counts and recent activity
-        summary_lines = []
-        for status in TaskStatus:
-            icon = _TASK_STATUS_ICONS.get(status, "⬜")
-            label = _TASK_STATUS_LABEL_ZH.get(status.value, status.value)
-            count = len(grouped[status])
-            summary_lines.append(f"{icon} **{label}**: {count}")
-        elements.append({"tag": "markdown", "content": "\n".join(summary_lines)})
-
-        # Recent 3 activities (most recently created tasks across all statuses)
-        all_tasks_sorted = sorted(tasks, key=lambda t: t.created_at or "", reverse=True)
-        recent = all_tasks_sorted[:3]
-        if recent:
-            elements.append({"tag": "hr"})
-            elements.append({"tag": "markdown", "content": "**📌 最近动态**"})
-            agent_map = {a.agent_id: a for a in agents}
-            for task in recent:
-                assignee = ""
-                if task.claimed_by and task.claimed_by in agent_map:
-                    a = agent_map[task.claimed_by]
-                    assignee = f" → {a.emoji}{a.name}"
-                icon = _TASK_STATUS_ICONS.get(task.status, "⬜")
-                elements.append({"tag": "markdown", "content": f"• {icon} {task.content[:50]}{assignee}"})
-    else:
-        # Full mode: Kanban columns
-        # Build each status row as a column_set with colored background
-        agent_map = {a.agent_id: a for a in agents}
-
-        for status in TaskStatus:
-            status_tasks = grouped[status]
-            icon = _TASK_STATUS_ICONS.get(status, "⬜")
-            bg_color = _TASK_STATUS_BG_COLOR_MAP.get(status, "grey")
-            status_title = f"**{icon} {_TASK_STATUS_LABEL_ZH.get(status.value, status.value)}** ({len(status_tasks)})"
-
-            # Build task list content for the right column
-            if status_tasks:
-                task_lines: list[str] = []
-                for task in status_tasks[:5]:  # limit display
-                    assignee = ""
-                    if task.claimed_by and task.claimed_by in agent_map:
-                        a = agent_map[task.claimed_by]
-                        assignee = f" → {a.emoji}{a.name}"
-                    # Differentiate aborted tasks from normal completion
-                    if status == TaskStatus.DONE and task.resolved_reason:
-                        task_lines.append(f"• ⚠️ ~~{task.content[:40]}~~{assignee}")
-                    else:
-                        task_lines.append(f"• {task.content[:40]}{assignee}")
-                task_content = "\n".join(task_lines)
-            else:
-                task_content = "*暂无*"
-
-            column_set: dict = {
-                "tag": "column_set",
-                "flex_mode": "none",
-                "background_style": bg_color,
-                "columns": [
-                    {
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "vertical_align": "top",
-                        "elements": [
-                            {"tag": "markdown", "content": status_title},
-                            {"tag": "markdown", "content": task_content},
-                        ],
-                    },
-                ],
-            }
-            elements.append(column_set)
-
-    # Refresh + toggle mode button
-    toggle_label = "📊 详细模式" if summary_mode else "📋 摘要模式"
-    toggle_action = "slock_toggle_board_mode"
-    elements.extend(
-        build_responsive_layout(
-            [
-                _build_callback_button(
-                    "🔄 刷新",
-                    "slock_refresh_task_board",
-                    channel_id=channel_id,
-                    button_type="primary_text",
-                    extra_value={"chat_id": channel_id},
-                ),
-                _build_callback_button(
-                    toggle_label,
-                    toggle_action,
-                    channel_id=channel_id,
-                    button_type="default",
-                    extra_value={"chat_id": channel_id, "summary_mode": not summary_mode},
-                ),
-            ]
-        )
+    return _build_card_wrapper(
+        header_title="🎭 Slock 协作群",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
     )
 
-    header: dict = {
-        "title": {"tag": "plain_text", "content": header_title},
-        "template": "wathet",
-    }
-
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": header,
-        "body": {"elements": elements},
-    }
 
 
 # ------------------------------------------------------------------
@@ -635,15 +520,12 @@ def build_agent_move_departure_card(
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"➡️ 角色迁出: {agent.name}"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"➡️ 角色迁出: {agent.name}",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_agent_move_notification_card(
@@ -691,15 +573,12 @@ def build_agent_move_notification_card(
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"👋 角色加入: {agent.name}"},
-            "template": "indigo",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"👋 角色加入: {agent.name}",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_agent_move_confirm_card(
@@ -750,15 +629,12 @@ def build_agent_move_confirm_card(
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"✅ 角色迁移完成: {agent.name}"},
-            "template": "green",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"✅ 角色迁移完成: {agent.name}",
+        header_template="green",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 # ------------------------------------------------------------------
@@ -937,25 +813,13 @@ def build_discussion_card(
         round_num = msg.get("round_num", "?")
 
         if len(raw_content) > _CONTENT_THRESHOLD:
-            # Long message: use collapsible_panel with full content in elements
-            truncated_preview = raw_content[:_CONTENT_THRESHOLD] + "..."
-            elements.append({
-                "tag": "collapsible_panel",
-                "expanded": False,
-                "header": {
-                    "title": {
-                        "tag": "markdown",
-                        "content": f"💬 {sender} (R{round_num}): {truncated_preview}",
-                    },
-                },
-                "vertical_spacing": "8px",
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": raw_content,
-                    },
-                ],
-            })
+            # Long message: wrap in collapsible panel for mobile-friendly display
+            md_element = {"tag": "markdown", "content": f"💬 **{sender}** (R{round_num}):\n{raw_content}"}
+            # Header shows truncated preview (first 80 chars)
+            preview = raw_content[:80] + "…" if len(raw_content) > 80 else raw_content
+            elements.append(
+                _make_collapsible(f"💬 {sender} (R{round_num}): {preview}", [md_element])
+            )
         else:
             # Short message: use markdown element (note tag removed for Schema V2 compatibility)
             elements.append({
@@ -993,16 +857,13 @@ def build_discussion_card(
         )
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": header_title},
-            "subtitle": {"tag": "plain_text", "content": header_subtitle},
-            "template": "purple",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=header_title,
+        header_template="purple",
+        header_subtitle=header_subtitle,
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_discussion_expand_card(
@@ -1066,15 +927,12 @@ def build_discussion_expand_card(
             )
         )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"💬 讨论详情 — {thread_id[:8]}"},
-            "template": "purple",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"💬 讨论详情 — {thread_id[:8]}",
+        header_template="purple",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_discussion_history_card(
@@ -1117,15 +975,12 @@ def build_discussion_history_card(
     if not elements:
         elements.append({"tag": "markdown", "content": "📭 暂无讨论历史。"})
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "📋 讨论历史"},
-            "template": "purple",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="📋 讨论历史",
+        header_template="purple",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_budget_warning_card(
@@ -1170,15 +1025,12 @@ def build_budget_warning_card(
         ])
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚠️ 讨论预算预警"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="⚠️ 讨论预算预警",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_discussion_summary_card(
@@ -1239,15 +1091,12 @@ def build_discussion_summary_card(
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": header_title},
-            "template": "green" if status == "converged" else "grey",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=header_title,
+        header_template="green",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 # ------------------------------------------------------------------
@@ -1280,15 +1129,12 @@ def build_council_card(run: CouncilRun, *, channel_id: str = "") -> dict:
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"🧭 Slock Council — {status_label}"},
-            "template": header_template,
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"🧭 Slock Council — {status_label}",
+        header_template=header_template,
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def _build_council_stage_block(index: str, title: str, content: str) -> dict:
@@ -1394,15 +1240,12 @@ def build_council_expandable_card(run: CouncilRun, *, channel_id: str = "") -> d
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"🧭 Slock Council — {status_label}"},
-            "template": header_template,
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"🧭 Slock Council — {status_label}",
+        header_template=header_template,
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 # ------------------------------------------------------------------
@@ -1583,16 +1426,13 @@ def build_console_card(
         "elements": build_responsive_layout(advanced_buttons),
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🎛️ Slock 控制台"},
-            "subtitle": {"tag": "plain_text", "content": "点击按钮快速执行命令"},
-            "template": "indigo",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🎛️ Slock 控制台",
+        header_template="indigo",
+        header_subtitle="点击按钮快速执行命令",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_error_suggestion_card(
@@ -1637,15 +1477,12 @@ def build_error_suggestion_card(
             )
         elements.extend(build_responsive_layout(suggestion_buttons))
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "❌ 命令错误"},
-            "template": "red",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="❌ 命令错误",
+        header_template="red",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_dissolve_confirm_card(
@@ -1679,15 +1516,12 @@ def build_dissolve_confirm_card(
     ]
     elements.extend(build_responsive_layout(buttons))
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚠️ 解散团队确认"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="⚠️ 解散团队确认",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_dissolve_undo_card(
@@ -1717,15 +1551,12 @@ def build_dissolve_undo_card(
     ]
     elements.extend(build_responsive_layout(buttons))
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "✅ 团队已解散"},
-            "template": "green",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="✅ 团队已解散",
+        header_template="green",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1772,15 +1603,12 @@ def build_memory_display_card(memory: SlockMemory, agent_name: str = "Agent") ->
         "elements": [{"tag": "markdown", "content": ctx_text}],
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"🧠 Agent 记忆 — {agent_name}"},
-            "template": "turquoise",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"🧠 Agent 记忆 — {agent_name}",
+        header_template="turquoise",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_memory_manage_card(
@@ -1869,15 +1697,12 @@ def build_memory_manage_card(
         )
         elements.extend(build_responsive_layout(action_buttons))
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": f"🧠 记忆管理 — {agent_name}"},
-            "template": "turquoise",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=f"🧠 记忆管理 — {agent_name}",
+        header_template="turquoise",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_conclusion_notification_card(
@@ -1909,15 +1734,12 @@ def build_conclusion_notification_card(
         },
     ]
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "💬 讨论结论已持久化"},
-            "template": "green",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="💬 讨论结论已持久化",
+        header_template="green",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_role_switch_card(
@@ -1944,15 +1766,12 @@ def build_role_switch_card(
     ]
     elements.extend(build_responsive_layout(role_buttons))
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🎭 切换角色"},
-            "template": "indigo",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🎭 切换角色",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def _wrap_text(text: str, width: int = 80) -> str:
@@ -2056,15 +1875,12 @@ def build_escalation_card(
     if option_buttons:
         elements.extend(build_responsive_layout(option_buttons))
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": header_title},
-            "template": header_color,
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=header_title,
+        header_template=header_color,
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_resolved_escalation_card(
@@ -2138,15 +1954,12 @@ def build_resolved_escalation_card(
         "content": f"✅ **已解决:** {resolution}，由 {operator_display} 处理\n📅 {time_str}",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": header_title},
-            "template": "green",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=header_title,
+        header_template="green",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_crash_recovery_card(
@@ -2188,15 +2001,12 @@ def build_crash_recovery_card(
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚡ 系统恢复通知"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="⚡ 系统恢复通知",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_review_degradation_card(
@@ -2236,15 +2046,12 @@ def build_review_degradation_card(
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚠️ 审阅状态降级通知"},
-            "template": "yellow",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="⚠️ 审阅状态降级通知",
+        header_template="yellow",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2322,15 +2129,12 @@ def build_command_hub_card(*, channel_id: str = "") -> dict:
         if group != groups[-1]:
             elements.append({"tag": "hr"})
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🎛 Slock 命令面板"},
-            "template": "indigo",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🎛 Slock 命令面板",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> dict:
@@ -2386,15 +2190,12 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
         "content": "<font color='grey'>💡 也可直接输入命令：/team、/role、/task、/council、/discuss、/memory</font>",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "\U0001f4cb Slock 命令面板"},
-            "template": "blue",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="\U0001f4cb Slock 命令面板",
+        header_template="blue",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_command_panel_extended_card(*, channel_id: str = "", project_id: str = "") -> dict:
@@ -2478,15 +2279,12 @@ def build_command_panel_extended_card(*, channel_id: str = "", project_id: str =
         "content": "<font color='grey'>💡 返回主面板：输入 /slock</font>",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚙️ Slock 扩展操作"},
-            "template": "blue",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="⚙️ Slock 扩展操作",
+        header_template="blue",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_error_suggestion_card(
@@ -2531,15 +2329,12 @@ def build_error_suggestion_card(
         "content": "<font color='grey'>💡 也可以输入 /help 查看所有可用命令</font>",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "💡 无法识别指令"},
-            "template": "wathet",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="💡 无法识别指令",
+        header_template="wathet",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_cmd_arg_error_card(
@@ -2612,15 +2407,12 @@ def build_cmd_arg_error_card(
         "content": f"<font color='grey'>{note_text}</font>",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚠️ 命令参数缺失"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="⚠️ 命令参数缺失",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def _truncate_button_label(suggestion: str) -> str:
@@ -2695,15 +2487,12 @@ def build_confirm_cancel_card(
         )
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": title},
-            "template": sev["template"],
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title=title,
+        header_template=sev["template"],
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_dissolve_confirm_card(
@@ -2746,15 +2535,12 @@ def build_dissolve_confirm_card(
         ])
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🗑️ 解散团队确认"},
-            "template": "red",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🗑️ 解散团队确认",
+        header_template="red",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_council_detail_card(
@@ -2822,15 +2608,12 @@ def build_council_detail_card(
             "content": f"**\U0001f4dd 综合评估**\n{final_summary}",
         })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "\U0001f3db\ufe0f Council 评审详情"},
-            "template": "purple",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="\U0001f3db\ufe0f Council 评审详情",
+        header_template="purple",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def _build_agent_status_rows(agents_data: list[dict]) -> list[dict]:
@@ -2929,15 +2712,12 @@ def build_status_refresh_card(
         )
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "\U0001f4ca 团队状态"},
-            "template": "indigo",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="\U0001f4ca 团队状态",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_council_result_card(
@@ -2983,33 +2763,29 @@ def build_council_result_card(
             ],
         })
 
-    card = {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "\U0001f4cb Council \u8bc4\u5ba1\u7ed3\u679c"},
-            "template": "blue",
+    card_elements: list[dict] = [
+        {
+            "tag": "markdown",
+            "content": f"**\u95ee\u9898\uff1a** {question[:200]}",
         },
-        "body": {
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"**\u95ee\u9898\uff1a** {question[:200]}",
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "markdown",
-                    "content": f"**\u8bc4\u5206\u6392\u540d**\n{ranking_text}",
-                },
-                {"tag": "hr"},
-                {
-                    "tag": "markdown",
-                    "content": "**\u5404 Agent \u539f\u59cb\u56de\u7b54** (\u70b9\u51fb\u5c55\u5f00)",
-                },
-                *agent_elements,
-            ],
+        {"tag": "hr"},
+        {
+            "tag": "markdown",
+            "content": f"**\u8bc4\u5206\u6392\u540d**\n{ranking_text}",
         },
-    }
+        {"tag": "hr"},
+        {
+            "tag": "markdown",
+            "content": "**\u5404 Agent \u539f\u59cb\u56de\u7b54** (\u70b9\u51fb\u5c55\u5f00)",
+        },
+        *agent_elements,
+    ]
+    card = _build_card_wrapper(
+        header_title="\U0001f4cb Council \u8bc4\u5ba1\u7ed3\u679c",
+        header_template="blue",
+        elements=card_elements,
+        mobile_optimize=False,
+    )
     return card
 
 
@@ -3057,15 +2833,12 @@ def build_chitchat_hint_card(
     ]
     elements.extend(build_responsive_layout([button]))
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "💡 消息未处理"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="💡 消息未处理",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3113,15 +2886,12 @@ def build_queue_waiting_card(
         ])
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "📋 请求已排队"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="📋 请求已排队",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_queue_full_card(
@@ -3162,15 +2932,12 @@ def build_queue_full_card(
         ])
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🚫 队列已满"},
-            "template": "red",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🚫 队列已满",
+        header_template="red",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_transfer_suggestion_card(
@@ -3223,15 +2990,12 @@ def build_transfer_suggestion_card(
         ])
     )
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "🔀 转交建议"},
-            "template": "indigo",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="🔀 转交建议",
+        header_template="indigo",
+        elements=elements,
+        mobile_optimize=False,
+    )
 
 
 def build_conflict_escalation_card(
@@ -3349,12 +3113,9 @@ def build_conflict_escalation_card(
         "text_size": "notation",
     })
 
-    return {
-        "schema": "2.0",
-        "config": {"wide_screen_mode": True},
-        "header": {
-            "title": {"tag": "plain_text", "content": "⚠️ 知识冲突确认"},
-            "template": "orange",
-        },
-        "body": {"elements": elements},
-    }
+    return _build_card_wrapper(
+        header_title="⚠️ 知识冲突确认",
+        header_template="orange",
+        elements=elements,
+        mobile_optimize=False,
+    )

@@ -197,7 +197,15 @@ class SlockHandler(BaseEngineHandler):
             SlockCommandAction.TASK_ASSIGN: lambda: self.assign_task(message_id, chat_id, cmd.args, cmd.target, project),
             SlockCommandAction.TASK_STATUS: lambda: self.show_task_status(message_id, chat_id, project),
             SlockCommandAction.DISCUSSION: lambda: self._trigger_nli_discussion(message_id, chat_id, cmd.args, {}, project),
+            SlockCommandAction.STOP_DISCUSSION: lambda: self.stop_discussion(message_id, chat_id, project),
+            SlockCommandAction.DISCUSSION_HISTORY: lambda: self.show_discussion_history(message_id, chat_id, cmd.target, project),
+            SlockCommandAction.DISCUSSION_LIST: lambda: self.list_discussions(message_id, chat_id, project),
             SlockCommandAction.COUNCIL: lambda: self.run_council(message_id, chat_id, cmd.args, project),
+            SlockCommandAction.MEMORY: lambda: self.show_agent_memory(message_id, chat_id, cmd.target, project),
+            SlockCommandAction.MEMORY_LIST: lambda: self.show_memory_list(message_id, chat_id, project),
+            SlockCommandAction.MEMORY_GROUP: lambda: self.show_memory_group(message_id, chat_id, project),
+            SlockCommandAction.PLAN_LIST: lambda: self.list_plans(message_id, chat_id, project),
+            SlockCommandAction.PLAN_DETAIL: lambda: self.show_plan_detail(message_id, chat_id, cmd.target, project),
         }
 
         handler = dispatch.get(cmd.action)
@@ -998,6 +1006,17 @@ class SlockHandler(BaseEngineHandler):
             send_text_fn=self.send_text_to_chat,
         )
 
+        # Wire card delivery callbacks for progress tracking
+        def _send_card(card: dict) -> "Optional[str]":
+            card_json = json.dumps(card, ensure_ascii=False)
+            return self.send_card_to_chat(chat_id, card_json)
+
+        def _update_card(msg_id: str, card: dict) -> bool:
+            card_json = json.dumps(card, ensure_ascii=False)
+            return self.update_card(msg_id, card_json)
+
+        engine.set_card_callbacks(send_fn=_send_card, update_fn=_update_card)
+
         self.add_reaction(message_id, EmojiReaction.on_multi_task_start())
 
         # Use unified welcome card with team/channel info prepended
@@ -1040,30 +1059,49 @@ class SlockHandler(BaseEngineHandler):
             self.reply_card(message_id, card_content)
             return
 
-        # Build enhanced status with refresh button
-        from ...slock_engine.card_templates import build_status_refresh_card
-        from ...slock_engine.models import TaskStatus
+        # Build status panel card with clear sections:
+        # 1) Team overview (name + member count)
+        # 2) Role status table (emoji | name | status | current task)
+        # 3) Action buttons (refresh, stop all, per-agent stop)
+        from ...slock_engine.card_templates import build_status_panel_card
+        from ...slock_engine.models import AgentStatus as AgentStatusEnum, TaskStatus
 
         channel_id = engine.channel.channel_id if engine.channel else chat_id
-        agents_data = []
+        team_name = engine.channel.team_name if engine.channel else ""
+
+        agents: list[tuple] = []
+        current_tasks: dict = {}
+        skill_profiles: dict = {}
         for agent in engine.registry.list_agents(channel_id=channel_id):
-            status = engine.get_agent_status(agent.agent_id)
-            agents_data.append({
-                "name": agent.name,
-                "emoji": agent.emoji,
-                "status": status.value if status else "idle",
-                "role": agent.role or "",
-            })
+            status = engine.get_agent_status(agent.agent_id) or AgentStatusEnum.IDLE
+            agents.append((agent, status))
+            # Find active task claimed by this agent
+            for task in engine.tasks:
+                if task.claimed_by == agent.agent_id and task.status == TaskStatus.IN_PROGRESS:
+                    current_tasks[agent.agent_id] = task
+                    break
+            # Collect skill profiles
+            profiles = engine.memory.read_skill_profiles(agent.agent_id)
+            if profiles:
+                skill_profiles[agent.agent_id] = [
+                    {"tag": p.tag, "success_rate": p.success_rate, "total_tasks": p.total_tasks}
+                    for p in profiles
+                ]
 
-        tasks = engine.tasks
-        tasks_summary = {
-            "total": len(tasks),
-            "todo": sum(1 for t in tasks if t.status == TaskStatus.TODO),
-            "in_progress": sum(1 for t in tasks if t.status == TaskStatus.IN_PROGRESS),
-            "done": sum(1 for t in tasks if t.status == TaskStatus.DONE),
-        }
-
-        status_card = build_status_refresh_card(agents_data, tasks_summary, channel_id=channel_id)
+        status_card = build_status_panel_card(
+            agents=agents,
+            team_name=team_name,
+            channel_id=channel_id,
+            current_tasks=current_tasks,
+            skill_profiles=skill_profiles,
+            tasks_summary={
+                "total": len(engine.tasks),
+                "todo": sum(1 for t in engine.tasks if t.status == TaskStatus.TODO),
+                "in_progress": sum(1 for t in engine.tasks if t.status == TaskStatus.IN_PROGRESS),
+                "in_review": sum(1 for t in engine.tasks if t.status == TaskStatus.IN_REVIEW),
+                "done": sum(1 for t in engine.tasks if t.status == TaskStatus.DONE),
+            },
+        )
         self.reply_card(message_id, json.dumps(status_card, ensure_ascii=False))
 
     # ------------------------------------------------------------------
@@ -1223,7 +1261,7 @@ class SlockHandler(BaseEngineHandler):
         manager = self._get_engine_manager()
         engine = manager.find_team(name) if name else manager.get_activated_engine(chat_id)
         if not engine or not engine.channel:
-            self.reply_text(message_id, f"未找到团队: **{name}**" if name else "当前没有活跃的团队")
+            self.reply_text(message_id, f"未找到团队: **{redact_sensitive(name)}**" if name else "当前没有活跃的团队")
             return
 
         team_name = engine.channel.team_name if engine.channel else ""
@@ -1240,7 +1278,7 @@ class SlockHandler(BaseEngineHandler):
         manager = self._get_engine_manager()
         engine = manager.find_team(name) if name else manager.get_activated_engine(chat_id)
         if not engine or not engine.channel:
-            self.reply_text(message_id, f"未找到团队: **{name}**" if name else "当前没有活跃的团队")
+            self.reply_text(message_id, f"未找到团队: **{redact_sensitive(name)}**" if name else "当前没有活跃的团队")
             return
 
         if not self._check_slock_permission(engine, message_id, chat_id):
@@ -1278,6 +1316,17 @@ class SlockHandler(BaseEngineHandler):
         "aiden": "coder",
         "gemini": "coder",
         "ttadk": "custom",
+    }
+
+    # role → default personality traits (used when --traits not specified)
+    DEFAULT_PERSONALITY_TRAITS: dict[str, list[str]] = {
+        "coder": ["严谨", "注重细节"],
+        "reviewer": ["批判性思维", "追求质量"],
+        "tester": ["细致", "追求覆盖"],
+        "planner": ["全局视角", "有条理"],
+        "architect": ["抽象思维", "系统设计"],
+        "writer": ["表达清晰", "注重结构"],
+        "custom": [],
     }
     TOOL_SELECT_OPTIONS: tuple[dict[str, str], ...] = (
         {"name": "coco", "label": "Coco", "emoji": "🥥", "description": "默认协作工具"},
@@ -1332,6 +1381,7 @@ class SlockHandler(BaseEngineHandler):
         explicit_role: str | None = None
         template_name = ""
         fork_name = ""
+        explicit_traits: str | None = None
         tool_explicit = False
         model_explicit = False
         emoji_explicit = False
@@ -1364,6 +1414,9 @@ class SlockHandler(BaseEngineHandler):
                 i += 2
             elif tok == "--fork" and i + 1 < len(tokens):
                 fork_name = tokens[i + 1]
+                i += 2
+            elif tok == "--traits" and i + 1 < len(tokens):
+                explicit_traits = tokens[i + 1]
                 i += 2
             else:
                 i += 1
@@ -1446,6 +1499,12 @@ class SlockHandler(BaseEngineHandler):
                 team_name=(engine.channel.team_name if engine.channel else chat_id),
             )
 
+        # Determine personality traits: explicit --traits overrides default role mapping
+        if explicit_traits:
+            personality_traits = [t.strip() for t in explicit_traits.replace("，", ",").split(",") if t.strip()]
+        else:
+            personality_traits = list(self.DEFAULT_PERSONALITY_TRAITS.get(role, []))
+
         agent = AgentIdentity(
             agent_id=agent_id,
             name=role_name,
@@ -1456,6 +1515,7 @@ class SlockHandler(BaseEngineHandler):
             role=role,
             owner_group=chat_id,
             member_groups=[chat_id],
+            personality_traits=personality_traits,
         )
         workspace_paths = engine.memory.initialize_agent_workspace(agent.agent_id)
         agent.memory_path = workspace_paths.get("memory_path") or engine.memory.agent_memory_path(agent.agent_id)
@@ -1615,26 +1675,61 @@ class SlockHandler(BaseEngineHandler):
         )
 
     def list_roles(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
-        """List all roles in the current channel."""
+        """List all roles in the current channel using a structured card."""
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
-            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("👥 角色列表", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
         channel_id = engine.channel.channel_id if engine.channel else chat_id
-        agents = engine.registry.list_agents(channel_id=channel_id)
+        agent_list = engine.registry.list_agents(channel_id=channel_id)
 
-        if not agents:
-            self.reply_text(message_id, "当前没有角色\n\n发送 `/new-role <名称>` 创建角色")
+        if not agent_list:
+            from ...slock_engine.card_templates.common import build_empty_state_card, build_callback_button
+            create_btn = build_callback_button(
+                "➕ 创建角色", "slock_new_role_hint",
+                channel_id=chat_id, button_type="primary",
+            )
+            card = build_empty_state_card(
+                "👥 角色列表",
+                "当前没有角色，发送 `/new-role <名称>` 创建角色",
+                guide_buttons=[create_btn],
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
-        lines = ["📋 **角色列表**\n"]
-        for a in agents:
-            status = engine.get_agent_status(a.agent_id)
-            lines.append(f"• {a.emoji} **{a.name}** — `{status.value}` · ID: `{a.agent_id[:8]}`")
+        from ...slock_engine.card_templates import build_role_list_card
+        from ...slock_engine.models import AgentStatus as AgentStatusEnum, TaskStatus
 
-        self.reply_text(message_id, "\n".join(lines))
+        agents: list[tuple] = []
+        current_tasks: dict = {}
+        skill_profiles: dict = {}
+        for agent in agent_list:
+            status = engine.get_agent_status(agent.agent_id) or AgentStatusEnum.IDLE
+            agents.append((agent, status))
+            for task in engine.tasks:
+                if task.claimed_by == agent.agent_id and task.status == TaskStatus.IN_PROGRESS:
+                    current_tasks[agent.agent_id] = task
+                    break
+            profiles = engine.memory.read_skill_profiles(agent.agent_id)
+            if profiles:
+                skill_profiles[agent.agent_id] = [
+                    {"tag": p.tag, "success_rate": p.success_rate, "total_tasks": p.total_tasks}
+                    for p in profiles
+                ]
+
+        team_name = engine.channel.team_name if engine.channel else ""
+        card = build_role_list_card(
+            agents=agents,
+            team_name=team_name,
+            channel_id=channel_id,
+            current_tasks=current_tasks,
+            skill_profiles=skill_profiles,
+        )
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
 
     def remove_role(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
@@ -1647,7 +1742,9 @@ class SlockHandler(BaseEngineHandler):
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
-            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("👥 角色管理", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
         if not self._check_slock_permission(engine, message_id, chat_id):
@@ -1655,7 +1752,7 @@ class SlockHandler(BaseEngineHandler):
 
         agent = engine.registry.find_by_name(name, channel_id=chat_id)
         if not agent:
-            self.reply_text(message_id, f"未找到角色: **{name}**")
+            self.reply_text(message_id, f"未找到角色: **{redact_sensitive(name)}**")
             return
 
         engine.registry.remove(agent.agent_id)
@@ -1699,7 +1796,9 @@ class SlockHandler(BaseEngineHandler):
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
-            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("👥 角色管理", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
         # Permission check: source group
@@ -1708,13 +1807,13 @@ class SlockHandler(BaseEngineHandler):
 
         agent = engine.registry.find_by_name(name, channel_id=chat_id)
         if not agent:
-            self.reply_text(message_id, f"未找到角色: **{name}**")
+            self.reply_text(message_id, f"未找到角色: **{redact_sensitive(name)}**")
             return
 
         # Find target team
         target_engine = manager.find_team(target_team_name)
         if not target_engine or not target_engine.channel:
-            self.reply_text(message_id, f"未找到目标团队: **{target_team_name}**")
+            self.reply_text(message_id, f"未找到目标团队: **{redact_sensitive(target_team_name)}**")
             return
 
         target_channel_id = target_engine.channel.channel_id
@@ -1746,7 +1845,7 @@ class SlockHandler(BaseEngineHandler):
                 from ...slock_engine.agent_registry import MoveResult
 
                 if outcome.status == MoveResult.NOT_FOUND:
-                    err_msg = f"❌ 移动失败：角色 **{name}** 未找到"
+                    err_msg = f"❌ 移动失败：角色 **{redact_sensitive(name)}** 未找到"
                 elif outcome.status == MoveResult.NOT_IN_SOURCE:
                     err_msg = "❌ 移动失败，请确认角色属于当前团队"
                 elif outcome.status == MoveResult.PERSIST_FAILED:
@@ -1873,81 +1972,66 @@ class SlockHandler(BaseEngineHandler):
     def show_role_info(
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
     ):
-        """Show detailed info about a role.
+        """Show detailed info about a role using structured card.
 
         Permission-aware: admin/owner sees full details including Active Context
         and permissions; regular members see only non-sensitive identity info.
         """
         if not name:
-            self.reply_text(message_id, "请提供角色名称\n\n用法: `/role info <名称>`")
+            from ...slock_engine.card_templates.common import build_usage_hint_card
+            card = build_usage_hint_card(
+                "/role info <名称>",
+                ["/role info coder", "/role info reviewer", "/r info tester"],
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
-            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("👤 角色详情", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
         agent = engine.registry.find_by_name(name, channel_id=chat_id)
         if not agent:
-            self.reply_text(message_id, f"未找到角色: **{name}**")
+            self.reply_text(message_id, f"未找到角色: **{redact_sensitive(name)}**")
             return
 
-        # Permission check: admin/owner sees full info, members see limited info
-        is_privileged = self._has_slock_permission(engine)
+        from ...slock_engine.card_templates import build_role_info_card
+        from ...slock_engine.models import AgentStatus as AgentStatusEnum, TaskStatus
 
-        status = engine.get_agent_status(agent.agent_id)
-        status_value = status.value if hasattr(status, "value") else str(status)
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        status = engine.get_agent_status(agent.agent_id) or AgentStatusEnum.IDLE
         memory = engine.memory.read_agent_memory(agent.agent_id)
         profiles = engine.memory.read_skill_profiles(agent.agent_id)
-        assigned_tasks = [task for task in engine.tasks if task.claimed_by == agent.agent_id]
-        done_count = sum(1 for task in assigned_tasks if getattr(task.status, "value", task.status) == "done")
-        active_count = sum(
-            1
-            for task in assigned_tasks
-            if getattr(task.status, "value", task.status) in {"in_progress", "in_review"}
-        )
-        memory_lines: list[str] = []
-        if memory.role:
-            memory_lines.append(f"• Role: {memory.role[:160]}")
-        if memory.key_knowledge:
-            memory_lines.append(f"• Key Knowledge: {memory.key_knowledge[:160]}")
-        # Detect migration redaction and show status indicator
-        _is_migrated = memory.active_context and "Context redacted on move:" in memory.active_context
-        if _is_migrated:
-            # Extract the migration info (everything after the timestamp prefix)
-            _migration_info = memory.active_context.strip()
-            memory_lines.append(f"• 🔄 迁移记录: {_migration_info[:120]}")
-            memory_lines.append("• ℹ️ Active Context 已脱敏（跨群隐私策略）")
-        elif is_privileged and memory.active_context:
-            memory_lines.append(f"• Active Context: {memory.active_context[-160:]}")
-        profile_lines = [
-            f"• {profile.tag}: 成功率 {profile.success_rate:.0f}% · {profile.total_tasks} 次"
-            for profile in profiles[:6]
+        skill_profiles = [
+            {"tag": p.tag, "success_rate": p.success_rate, "total_tasks": p.total_tasks}
+            for p in profiles
         ]
 
-        # Build info string — permissions line only for privileged users
-        info_parts = [
-            f"{agent.emoji} **{agent.name}**\n",
-            f"• ID: `{agent.agent_id[:8]}`\n"
-            f"• 类型: `{agent.agent_type}`\n"
-            f"• 模型: `{agent.model_name or 'default'}`\n"
-            f"• 角色: {agent.role or '(未设置)'}\n"
-            f"• 状态: `{status_value}`\n",
-        ]
-        if is_privileged:
-            info_parts.append(
-                f"• 权限: `{', '.join(agent.permissions) if agent.permissions else '默认'}`\n"
-            )
-        info_parts.append(
-            "\n**记忆摘要**\n"
-            f"{chr(10).join(memory_lines) if memory_lines else '• 暂无记忆'}\n\n"
-            "**历史任务**\n"
-            f"• 总数: {len(assigned_tasks)} · 已完成: {done_count} · 进行中: {active_count}\n\n"
-            "**技能画像**\n"
-            f"{chr(10).join(profile_lines) if profile_lines else '• 暂无技能画像'}"
+        # Current and recent tasks
+        current_task = None
+        recent_tasks: list = []
+        for task in engine.tasks:
+            if task.claimed_by == agent.agent_id:
+                if task.status == TaskStatus.IN_PROGRESS:
+                    current_task = task
+                elif task.status == TaskStatus.DONE:
+                    recent_tasks.append(task)
+        recent_tasks = recent_tasks[-3:]  # Last 3 completed
+
+        card = build_role_info_card(
+            agent,
+            status=status,
+            memory=memory,
+            skill_profiles=skill_profiles,
+            current_task=current_task,
+            recent_tasks=recent_tasks,
+            channel_id=channel_id,
         )
-        self.reply_text(message_id, "".join(info_parts))
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
 
     # ------------------------------------------------------------------
     # Task management
@@ -1958,20 +2042,33 @@ class SlockHandler(BaseEngineHandler):
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
-            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("📋 任务列表", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
         tasks = engine.tasks
         if not tasks:
-            self.reply_text(message_id, "当前没有任务\n\n发送 `/task assign <任务> <角色>` 分配任务")
+            from ...slock_engine.card_templates.common import build_empty_state_card, build_callback_button
+            guide_btn = build_callback_button(
+                "➕ 分配任务", "slock_assign_task_hint",
+                channel_id=chat_id, button_type="primary",
+            )
+            card = build_empty_state_card(
+                "📋 任务列表",
+                "当前没有任务。\n\n发送 `/task assign <任务描述>` 或点击下方按钮分配任务。",
+                guide_buttons=[guide_btn],
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
-        lines = ["📋 **任务列表**\n"]
-        for t in tasks:
-            assignee = t.claimed_by[:8] if t.claimed_by else "未分配"
-            lines.append(f"• `{t.task_id[:8]}` — {t.content[:60]} · `{t.status.value}` · 🧑 {assignee}")
+        from ...slock_engine.card_templates import build_task_board_card
 
-        self.reply_text(message_id, "\n".join(lines))
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agents = engine.registry.list_agents(channel_id=channel_id)
+        team_name = engine.channel.team_name if engine.channel else ""
+        card = build_task_board_card(engine.tasks, agents, team_name=team_name, channel_id=channel_id)
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
 
     def assign_task(
         self,
@@ -2014,7 +2111,7 @@ class SlockHandler(BaseEngineHandler):
             if not agent:
                 self.reply_text(
                     message_id,
-                    f"⚠️ 任务已创建但未找到角色 **{role_name}**\n"
+                    f"⚠️ 任务已创建但未找到角色 **{redact_sensitive(role_name)}**\n"
                     f"• 任务 ID: `{task.task_id[:8]}`\n"
                     f"• 发送 `/role list` 查看可用角色",
                 )
@@ -2033,13 +2130,31 @@ class SlockHandler(BaseEngineHandler):
 
         # No role specified — use skill-based automatic assignment.
         channel_id = engine.channel.channel_id if engine.channel else chat_id
+
+        # Auto-detect multi-role collaboration: if a chain template matches,
+        # create a collaboration plan instead of single-agent execution.
+        chain = engine._chain_manager.find_chain_for_task(content)
+        if chain and len(chain.roles) > 1:
+            plan = engine._collaboration_orchestrator.create_plan(task, channel_id)
+            if plan:
+                from ...slock_engine.card_templates.progress import build_collaboration_plan_card
+                agents = list(engine.registry.list_agents(channel_id=channel_id))
+                card = build_collaboration_plan_card(plan, agents, channel_id=channel_id)
+                card_msg_id = self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+                # Register overview message_id for in-place card updates
+                if card_msg_id and hasattr(engine, '_progress_tracker'):
+                    engine._progress_tracker.set_overview_message_id(plan.plan_id, card_msg_id)
+                # Confirm delivery — reset auto-start timer from this point
+                engine._collaboration_orchestrator.confirm_plan_delivery(plan.plan_id)
+                return
+
         agents = list(engine.registry.list_agents(channel_id=channel_id))
         if not agents:
             self.reply_text(
                 message_id,
                 f"✅ 任务已创建（等待分配）\n"
                 f"• ID: `{task.task_id[:8]}`\n"
-                f"• 内容: {content[:80]}\n"
+                f"• 内容: {redact_sensitive(content[:80])}\n"
                 f"• 当前没有可用角色，发送 `/new-role <名称>` 创建角色",
             )
             return
@@ -2054,7 +2169,7 @@ class SlockHandler(BaseEngineHandler):
                 message_id,
                 f"✅ 任务已创建（等待分配）\n"
                 f"• ID: `{task.task_id[:8]}`\n"
-                f"• 内容: {content[:80]}\n"
+                f"• 内容: {redact_sensitive(content[:80])}\n"
                 f"• 暂无匹配角色，发送 `/role list` 查看可用角色",
             )
             return
@@ -2187,7 +2302,9 @@ class SlockHandler(BaseEngineHandler):
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
-            self.reply_text(message_id, "当前没有活跃的 Slock 团队")
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("📊 任务状态", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
             return
 
         from ...slock_engine.card_templates import build_task_board_card
@@ -2196,6 +2313,464 @@ class SlockHandler(BaseEngineHandler):
         agents = engine.registry.list_agents(channel_id=channel_id)
         team_name = engine.channel.team_name if engine.channel else ""
         card = build_task_board_card(engine.tasks, agents, team_name=team_name, channel_id=channel_id)
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    # ------------------------------------------------------------------
+    # Memory management
+    # ------------------------------------------------------------------
+
+    def show_memory_group(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Show L2 shared group memory for the current slock team."""
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("🧠 群组记忆", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        group_memory = engine.memory.read_group_memory(channel_id)
+        if not group_memory:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card(
+                "🧠 群组共享记忆",
+                "当前群组暂无共享记忆。\n\nAgent 协作过程中会自动积累群组知识。",
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        from ...slock_engine.card_templates.memory import build_memory_group_card
+
+        # Parse group memory text into structured memory_items
+        lines = [line.strip() for line in group_memory.strip().split("\n") if line.strip()]
+        memory_items: list[dict] = []
+        current_category = "context"
+        for line in lines[:50]:  # NFR-6: limit to 50 items per read
+            if line.startswith("## ") or line.startswith("# "):
+                current_category = line.lstrip("#").strip().lower() or "context"
+            else:
+                memory_items.append({
+                    "category": current_category,
+                    "content": line[:200],
+                    "timestamp": None,
+                })
+
+        total_lines = len(lines)
+        team_name = engine.channel.team_name if engine.channel else "群组"
+
+        card = build_memory_group_card(
+            agent_name=f"{team_name} (共享)",
+            agent_emoji="🧠",
+            memory_items=memory_items,
+            channel_id=channel_id,
+        )
+
+        # Inject meta-info row at the top of elements (after header)
+        truncated = total_lines > 50
+        meta_text = f"📊 共 {total_lines} 条记录"
+        if truncated:
+            meta_text += f" | ⚠️ 内容已截断，仅显示前 50 条"
+        if card.get("body", {}).get("elements"):
+            card["body"]["elements"].insert(0, {"tag": "markdown", "content": meta_text})
+
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    # ------------------------------------------------------------------
+    # Agent Memory (per-agent L1 memory)
+    # ------------------------------------------------------------------
+
+    def show_agent_memory(self, message_id: str, chat_id: str, agent_name: str = "", project: Optional["ProjectContext"] = None):
+        """Show L1 memory for a specific agent."""
+        if not agent_name:
+            from ...slock_engine.card_templates.common import build_usage_hint_card
+            card = build_usage_hint_card(
+                "/memory <agent_name>",
+                ["/memory coder", "/memory list"],
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("🧠 角色记忆", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agent = engine.registry.find_by_name(agent_name, channel_id=channel_id)
+        if not agent:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card("🧠 角色记忆", f"未找到角色 `{agent_name}`")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        from ...slock_engine.card_templates.memory import build_memory_group_card
+
+        memory = engine.memory.read_agent_memory(agent.agent_id)
+        memory_items: list[dict] = []
+
+        # Add key_knowledge entries
+        if memory.key_knowledge:
+            for line in memory.key_knowledge.strip().split("\n"):
+                line = line.strip()
+                if line:
+                    memory_items.append({"category": "key_knowledge", "content": line[:200], "timestamp": None})
+
+        # Add active_context entries
+        if memory.active_context:
+            for line in memory.active_context.strip().split("\n"):
+                line = line.strip()
+                if line:
+                    memory_items.append({"category": "context", "content": line[:200], "timestamp": None})
+
+        # Add role definition
+        if memory.role:
+            memory_items.append({"category": "role", "content": memory.role[:200], "timestamp": None})
+
+        if not memory_items:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card("🧠 角色记忆", f"{agent.display_name} 暂无记忆数据")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        card = build_memory_group_card(
+            agent_name=agent.name,
+            agent_emoji=agent.emoji,
+            memory_items=memory_items,
+            channel_id=channel_id,
+            agent_id=agent.agent_id,
+        )
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    def show_memory_list(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Show memory summary for all agents in the channel."""
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("🧠 记忆列表", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        agents = engine.registry.list_agents(channel_id=channel_id)
+
+        if not agents:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card("🧠 记忆列表", "当前团队暂无角色")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        from ...slock_engine.card_templates.common import build_card_wrapper
+
+        rows: list[str] = []
+        for agent in agents:
+            memory = engine.memory.read_agent_memory(agent.agent_id)
+            item_count = 0
+            if memory.key_knowledge:
+                item_count += len([l for l in memory.key_knowledge.split("\n") if l.strip()])
+            if memory.active_context:
+                item_count += len([l for l in memory.active_context.split("\n") if l.strip()])
+            rows.append(f"| {agent.emoji} | {agent.name} | {item_count} 条 |")
+
+        table_md = "| 头像 | 角色 | 记忆条数 |\n| --- | --- | --- |\n" + "\n".join(rows)
+        elements: list[dict] = [{"tag": "markdown", "content": table_md}]
+
+        card = build_card_wrapper(
+            header_title="🧠 团队记忆概览",
+            header_template="turquoise",
+            elements=elements,
+        )
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    # ------------------------------------------------------------------
+    # Discussion management (stop/history/list)
+    # ------------------------------------------------------------------
+
+    def stop_discussion(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Stop the active discussion in the current channel."""
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("💬 停止讨论", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+
+        # Find active discussion threads
+        active_thread = None
+        with engine._discussions_lock:
+            threads = engine._active_discussions.get(channel_id, [])
+            if threads:
+                active_thread = threads[0]
+
+        if not active_thread:
+            self.reply_text(message_id, "💬 当前无进行中的讨论")
+            return
+
+        # Stop the discussion via DiscussionManager
+        from ...slock_engine.discussion_manager import DiscussionManager
+
+        if engine._discussion_manager is not None:
+            stopped_thread = engine._discussion_manager.stop_discussion(active_thread)
+            engine._remove_discussion(channel_id, stopped_thread.thread_id)
+
+            from ...slock_engine.card_templates.discussion import build_discussion_conclusion_card
+            card = build_discussion_conclusion_card(
+                thread_id=stopped_thread.thread_id,
+                participants=getattr(stopped_thread, "participants", []),
+                conclusion=getattr(stopped_thread, "conclusion", "") or "讨论已手动停止",
+                total_rounds=getattr(stopped_thread, "current_round", 0),
+                total_tokens=getattr(stopped_thread, "total_tokens", 0),
+                status="manually_stopped",
+                channel_id=channel_id,
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+        else:
+            self.reply_text(message_id, "💬 讨论管理器未初始化，无法停止讨论")
+
+    def show_discussion_history(self, message_id: str, chat_id: str, thread_id: str = "", project: Optional["ProjectContext"] = None):
+        """Show discussion history for a specific thread."""
+        if not thread_id:
+            from ...slock_engine.card_templates.common import build_usage_hint_card
+            card = build_usage_hint_card(
+                "/discussion history <thread_id>",
+                ["/discussion list", "/discussion history abc123"],
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("💬 讨论历史", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+
+        # Try to find in active discussions first
+        thread = engine.find_active_discussion(channel_id, thread_id)
+
+        # Try loading from persisted discussions if not active
+        if not thread and engine._discussion_manager is not None:
+            persisted = engine._discussion_manager.load_discussions(channel_id)
+            for t in persisted:
+                if getattr(t, "thread_id", "") == thread_id:
+                    thread = t
+                    break
+
+        if not thread:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card("💬 讨论历史", f"未找到讨论 `{thread_id[:12]}`")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        from ...slock_engine.card_templates import build_discussion_history_card
+
+        # Convert thread to history format expected by the card builder
+        messages = getattr(thread, "messages", [])
+        history_entry = {
+            "topic_hash": getattr(thread, "thread_id", "")[:8],
+            "title": getattr(thread, "topic", "") or "讨论",
+            "participants": getattr(thread, "participants", []),
+            "time": getattr(thread, "created_at", 0),
+            "conclusion": getattr(thread, "conclusion", "") or "",
+            "messages": [
+                {"speaker": getattr(m, "speaker", ""), "content": getattr(m, "content", "")[:200]}
+                for m in messages[-20:]
+            ],
+        }
+        card = build_discussion_history_card(history=[history_entry], channel_id=channel_id)
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    def list_discussions(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """List all discussions (active + recent persisted) in the channel."""
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("💬 讨论列表", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+
+        # Collect active threads
+        all_threads = []
+        with engine._discussions_lock:
+            active = engine._active_discussions.get(channel_id, [])
+            all_threads.extend(active)
+
+        # Load persisted threads
+        if engine._discussion_manager is not None:
+            persisted = engine._discussion_manager.load_discussions(channel_id)
+            existing_ids = {getattr(t, "thread_id", "") for t in all_threads}
+            for t in persisted:
+                if getattr(t, "thread_id", "") not in existing_ids:
+                    all_threads.append(t)
+
+        if not all_threads:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card("💬 讨论列表", "当前暂无讨论记录")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        from ...slock_engine.card_templates.common import build_card_wrapper
+        import time as _time
+
+        rows: list[str] = []
+        for thread in all_threads[:20]:
+            tid = getattr(thread, "thread_id", "?")[:8]
+            status = getattr(thread, "status", "unknown")
+            status_label = status.value if hasattr(status, "value") else str(status)
+            participants = getattr(thread, "participants", [])
+            p_names = ", ".join(participants[:3]) if participants else "-"
+            created = getattr(thread, "created_at", 0)
+            ts = _time.strftime("%m-%d %H:%M", _time.localtime(created)) if created else "-"
+            rows.append(f"| `{tid}` | {status_label} | {p_names} | {ts} |")
+
+        table_md = "| ID | 状态 | 参与者 | 创建时间 |\n| --- | --- | --- | --- |\n" + "\n".join(rows)
+        elements: list[dict] = [{"tag": "markdown", "content": table_md}]
+
+        card = build_card_wrapper(
+            header_title="💬 讨论列表",
+            header_template="blue",
+            elements=elements,
+        )
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    # ------------------------------------------------------------------
+    # Plan management
+    # ------------------------------------------------------------------
+
+    def list_plans(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """List all collaboration plans in the current slock session."""
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("📋 协作计划", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        from ...slock_engine.card_templates.progress import build_progress_overview_card
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        plans = engine.collaboration_orchestrator.list_active_plans(channel_id=channel_id)
+        agents = engine.registry.list_agents(channel_id=channel_id)
+        if not plans:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card(
+                "📋 协作计划",
+                "当前没有协作计划。\n\n任务创建后会自动触发协作规划。",
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        card = build_progress_overview_card(
+            plans=plans,
+            agents=agents,
+            team_name=engine.channel.team_name if engine.channel else "",
+            channel_id=channel_id,
+        )
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    def show_plan_detail(self, message_id: str, chat_id: str, plan_id: str = "", project: Optional["ProjectContext"] = None):
+        """Show detailed view of a specific collaboration plan."""
+        if not plan_id:
+            from ...slock_engine.card_templates.common import build_usage_hint_card
+            card = build_usage_hint_card(
+                "/plan <plan_id>",
+                ["/plan list", "/plan abc123"],
+            )
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            from ...slock_engine.card_templates.common import build_error_state_card
+            card = build_error_state_card("📋 协作计划", "当前没有活跃的 Slock 团队，请先 /slock activate")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        from ...slock_engine.card_templates.progress import build_task_overview_card
+        from ...slock_engine.models import AgentStatus as AgentStatusEnum
+
+        channel_id = engine.channel.channel_id if engine.channel else chat_id
+        plan = engine.collaboration_orchestrator.get_plan(plan_id)
+        if not plan:
+            from ...slock_engine.card_templates.common import build_empty_state_card
+            card = build_empty_state_card("📋 协作计划", f"未找到计划 `{plan_id[:12]}`，可能已结束或不存在")
+            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        # Build agents with status for the task overview card
+        agents: list[tuple] = []
+        for agent in engine.registry.list_agents(channel_id=channel_id):
+            status = engine.get_agent_status(agent.agent_id) or AgentStatusEnum.IDLE
+            agents.append((agent, status))
+
+        # Extract latest output from the last completed step
+        latest_output_summary = ""
+        if plan.steps:
+            completed_steps = [s for s in plan.steps if s.get("status") == "DONE"]
+            if completed_steps:
+                last_step = completed_steps[-1]
+                latest_output_summary = last_step.get("output_summary", "")[:200]
+
+        # Gather discussion entries (last 5) from active discussions
+        discussion_entries: list[dict] = []
+        try:
+            with engine._discussions_lock:
+                active_threads = engine._active_discussions.get(channel_id, [])
+            for thread in active_threads[:5]:
+                for msg in getattr(thread, "messages", [])[-5:]:
+                    discussion_entries.append({
+                        "speaker": getattr(msg, "speaker", ""),
+                        "content": getattr(msg, "content", "")[:100],
+                        "timestamp": getattr(msg, "timestamp", 0),
+                    })
+        except Exception:
+            pass
+        discussion_entries = discussion_entries[-5:]
+
+        # Gather timeline events (last 10) from plan step history
+        timeline_events: list[dict] = []
+        if plan.steps:
+            for step in plan.steps:
+                if step.get("started_at"):
+                    timeline_events.append({
+                        "event_type": "step_started",
+                        "agent_id": step.get("agent_id", ""),
+                        "timestamp": step.get("started_at", 0),
+                        "detail": step.get("name", ""),
+                    })
+                if step.get("completed_at"):
+                    timeline_events.append({
+                        "event_type": "step_completed",
+                        "agent_id": step.get("agent_id", ""),
+                        "timestamp": step.get("completed_at", 0),
+                        "detail": step.get("name", ""),
+                    })
+        timeline_events.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+        timeline_events = timeline_events[:10]
+
+        card = build_task_overview_card(
+            plan=plan,
+            agents=agents,
+            channel_id=channel_id,
+            latest_output_summary=latest_output_summary,
+            discussion_entries=discussion_entries or None,
+            timeline_events=timeline_events or None,
+        )
         self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
 
     # ------------------------------------------------------------------
@@ -2363,6 +2938,36 @@ class SlockHandler(BaseEngineHandler):
                 self.send_text_to_chat(chat_id, perm_msg)
             return False
         return True
+
+    def _require_slock_permission(self, engine, action_type: str, *, allow_assignee: bool = False, task_id: str = "") -> dict | None:
+        """Check permission and return rejection card if denied, None if allowed.
+
+        Authorized: admin_user_ids | channel_owner | (task claimed_by if allow_assignee).
+        """
+        from ...config import get_settings
+        from ...thread.manager import get_current_sender_id
+
+        settings = get_settings()
+        sender_id = get_current_sender_id() or ""
+
+        # Check admin
+        admin_ids = settings.admin_user_ids if hasattr(settings, "admin_user_ids") else frozenset()
+        if sender_id and sender_id in admin_ids:
+            return None  # allowed
+
+        # Check channel owner
+        if engine and engine.channel:
+            if sender_id and sender_id == (getattr(engine.channel, "owner_id", "") or ""):
+                return None  # allowed
+
+        # Check task assignee
+        if allow_assignee and task_id and engine:
+            for task in engine.tasks:
+                if task.task_id == task_id and task.claimed_by == sender_id:
+                    return None  # allowed
+
+        # Denied - return rejection toast
+        return {"toast": {"type": "error", "content": "\u26d4 权限不足：仅管理员、群主或任务负责人可执行此操作"}}
 
     def _check_assign_rate_limit(self, engine, message_id: str, chat_id: str) -> bool:
         """Check rate-limit for task assignment. Admin/owner bypass. Returns True if allowed."""
@@ -2621,6 +3226,9 @@ class SlockHandler(BaseEngineHandler):
             engine = manager.get_activated_engine(open_chat_id) or manager.get_active_engine(open_chat_id)
             agent_id = str(value.get("agent_id") or "")
             task_id = str(value.get("task_id") or "")
+            rejection = self._require_slock_permission(engine, action_type, allow_assignee=True, task_id=task_id)
+            if rejection:
+                return rejection
             snapshot = engine.memory.read_agent_reasoning_snapshot(agent_id, task_id) if engine and agent_id and task_id else {}
             if snapshot:
                 tool_label = snapshot.get("tool_name") or "unknown"
@@ -2643,6 +3251,9 @@ class SlockHandler(BaseEngineHandler):
             task_id = value.get("task_id", "")
             manager = self._get_engine_manager()
             engine = manager.get_activated_engine(open_chat_id)
+            rejection = self._require_slock_permission(engine, action_type, allow_assignee=True, task_id=task_id)
+            if rejection:
+                return rejection
             if task_id and engine:
                 engine._force_complete_task(task_id)
             self.send_text_to_chat(open_chat_id, "✅ 已标记完成。")
@@ -2653,6 +3264,9 @@ class SlockHandler(BaseEngineHandler):
             manager = self._get_engine_manager()
             engine = manager.get_activated_engine(open_chat_id)
             agent_id = str(value.get("agent_id") or "")
+            rejection = self._require_slock_permission(engine, action_type)
+            if rejection:
+                return rejection
             if engine and agent_id:
                 memory = engine.memory.read_agent_memory(agent_id)
                 if memory:
@@ -2671,6 +3285,9 @@ class SlockHandler(BaseEngineHandler):
             manager = self._get_engine_manager()
             engine = manager.get_activated_engine(open_chat_id)
             agent_id = str(value.get("agent_id") or "")
+            rejection = self._require_slock_permission(engine, action_type)
+            if rejection:
+                return rejection
             if engine and agent_id:
                 channel_id = engine.channel.channel_id if engine.channel else ""
                 agents = engine.registry.list_agents(channel_id=channel_id)
@@ -2699,6 +3316,9 @@ class SlockHandler(BaseEngineHandler):
             engine = manager.get_activated_engine(open_chat_id)
             agent_id = str(value.get("agent_id") or "")
             target_role = str(value.get("target_role") or "")
+            rejection = self._require_slock_permission(engine, action_type)
+            if rejection:
+                return rejection
             if engine and agent_id and target_role:
                 agent = engine.registry.get(agent_id)
                 if agent:
@@ -2817,6 +3437,271 @@ class SlockHandler(BaseEngineHandler):
             self._stop_discussion(open_chat_id, value)
             return
 
+        # --- Tasks 19+20: Collaboration plan actions & user intervention ---
+        if action_type == "slock_plan_approve":
+            plan_id = value.get("plan_id", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine and plan_id:
+                if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                    return
+                success = engine.collaboration_orchestrator.approve_plan(plan_id)
+                if success:
+                    from src.slock_engine.card_templates.progress import build_collaboration_plan_card
+                    import json as _json
+                    plan = engine.collaboration_orchestrator.get_plan(plan_id)
+                    if plan:
+                        channel_id = engine.channel.channel_id if engine.channel else ""
+                        agents = engine.registry.list_agents(channel_id=channel_id)
+                        card = build_collaboration_plan_card(plan, agents, channel_id=channel_id)
+                        self.update_card(open_message_id, _json.dumps(card, ensure_ascii=False))
+            return
+
+        if action_type == "slock_plan_cancel":
+            plan_id = value.get("plan_id", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine and plan_id:
+                if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                    return
+                engine.collaboration_orchestrator.cancel_plan(plan_id)
+            return
+
+        if action_type == "slock_progress_refresh":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine:
+                from src.slock_engine.card_templates.progress import build_progress_overview_card
+                import json as _json
+                channel_id = engine.channel.channel_id if engine.channel else ""
+                plans = engine.collaboration_orchestrator.list_active_plans(channel_id)
+                agents = engine.registry.list_agents(channel_id=channel_id)
+                card = build_progress_overview_card(plans, agents, channel_id=channel_id)
+                self.send_card_to_chat(open_chat_id, _json.dumps(card, ensure_ascii=False))
+            return
+
+        if action_type == "slock_user_intervention":
+            plan_id = value.get("plan_id", "")
+            message = value.get("message", "") or value.get("supplement_content", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if not engine or not plan_id:
+                self.send_text_to_chat(open_chat_id, "⚠️ 引擎未激活或缺少 plan_id。")
+                return
+            if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                return
+
+            plan = engine.collaboration_orchestrator.get_plan(plan_id)
+            if not plan:
+                self.send_text_to_chat(open_chat_id, "⚠️ 未找到该计划。")
+                return
+
+            # If no message provided, pause the plan and prompt user for input
+            if not message:
+                engine.collaboration_orchestrator.pause_plan(plan_id)
+                self.send_text_to_chat(
+                    open_chat_id,
+                    f"⏸ 计划已暂停。请在讨论面板中输入补充信息后点击发送，或使用 ▶️ 恢复 按钮继续。",
+                )
+                return
+
+            # Inject intervention message into current step's agent context
+            current = plan.current_step
+            if current and current.agent_id:
+                engine.memory.update_agent_context(
+                    current.agent_id,
+                    f"[用户干预] {message[:200]}",
+                )
+                self.send_text_to_chat(
+                    open_chat_id,
+                    f"✅ 已将干预信息注入 Agent `{current.agent_id[:8]}` 上下文。",
+                )
+                # Resume if paused
+                from ...slock_engine.models import CollaborationPlanStatus
+                if plan.status == CollaborationPlanStatus.PAUSED:
+                    engine.collaboration_orchestrator.resume_plan(plan_id)
+                    self.send_text_to_chat(open_chat_id, "▶️ 计划已恢复执行。")
+            else:
+                self.send_text_to_chat(open_chat_id, "⚠️ 当前步骤无执行中的 Agent，无法注入干预信息。")
+            return
+
+        if action_type == "slock_plan_supplement":
+            plan_id = value.get("plan_id", "")
+            # 兼容读取: 优先 _form_value 子字典，回退顶层
+            form_value = value.get("_form_value", {})
+            content = (form_value.get("supplement_content") or value.get("supplement_content", "")).strip()
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if not engine or not plan_id:
+                return
+            if not content:
+                return {"toast": {"type": "error", "content": "请输入补充信息内容"}}
+            # Permission check
+            rejection = self._require_slock_permission(engine, action_type)
+            if rejection:
+                return rejection
+            # Text length check
+            if len(content) > 2000:
+                return {"toast": {"type": "error", "content": "补充内容过长，请限制在 2000 字符以内"}}
+            # Sensitive content filter
+            import re as _re
+            if _re.search(r'(token|key|secret|password|credential)[=:]\s*\S{8,}', content, _re.I):
+                return {"toast": {"type": "error", "content": "检测到疑似敏感凭据信息，请移除后重试"}}
+            plan = engine.collaboration_orchestrator.get_plan(plan_id)
+            if not plan:
+                return
+            # Inject to all collaborating agents in this plan
+            agent_ids = {step.agent_id for step in plan.steps if step.agent_id}
+            if agent_ids:
+                supplement_text = f"[用户补充] {content[:500]}"
+                for agent_id in agent_ids:
+                    engine.memory.update_agent_context(agent_id, supplement_text)
+                self.send_text_to_chat(
+                    open_chat_id,
+                    f"✅ 补充信息已注入 {len(agent_ids)} 个协作 Agent 上下文。",
+                )
+            else:
+                self.send_text_to_chat(open_chat_id, "⚠️ 计划中暂无已分配的 Agent。")
+            return
+
+        # --- Collaboration plan detail / pause / resume ---
+        if action_type == "slock_show_plan_detail":
+            plan_id = value.get("plan_id", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine and plan_id:
+                from ...slock_engine.card_templates.progress import build_collaboration_plan_card
+                plan = engine.collaboration_orchestrator.get_plan(plan_id)
+                if plan:
+                    channel_id = engine.channel.channel_id if engine.channel else ""
+                    agents = engine.registry.list_agents(channel_id=channel_id)
+                    card = build_collaboration_plan_card(plan, agents, channel_id=channel_id)
+                    self.send_card_to_chat(open_chat_id, json.dumps(card, ensure_ascii=False))
+                    return
+            self.send_text_to_chat(open_chat_id, "⚠️ 未找到该计划。")
+            return
+
+        if action_type == "slock_pause_plan":
+            plan_id = value.get("plan_id", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine and plan_id:
+                if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                    return
+                success = engine.collaboration_orchestrator.pause_plan(plan_id)
+                if success:
+                    self.send_text_to_chat(open_chat_id, f"⏸ 计划 `{plan_id[:8]}` 已暂停。")
+                    return
+            self.send_text_to_chat(open_chat_id, "⚠️ 暂停失败，计划不存在或状态不允许。")
+            return
+
+        if action_type == "slock_resume_plan":
+            plan_id = value.get("plan_id", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine and plan_id:
+                if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                    return
+                success = engine.collaboration_orchestrator.resume_plan(plan_id)
+                if success:
+                    self.send_text_to_chat(open_chat_id, f"▶️ 计划 `{plan_id[:8]}` 已恢复执行。")
+                    return
+            self.send_text_to_chat(open_chat_id, "⚠️ 恢复失败，计划不存在或状态不允许。")
+            return
+
+        # --- Role info from card button ---
+        if action_type == "slock_role_info":
+            agent_id = value.get("agent_id", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine and agent_id:
+                agent = engine.registry.get(agent_id)
+                if agent:
+                    self.show_role_info(open_message_id, open_chat_id, agent.name)
+                    return
+            self.send_text_to_chat(open_chat_id, "⚠️ 未找到该角色。")
+            return
+
+        # --- Task board actions ---
+        if action_type == "slock_new_task":
+            content = value.get("content", "")
+            if not content:
+                self.send_text_to_chat(open_chat_id, "⚠️ 请输入任务内容。")
+                return
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine:
+                self.assign_task(open_message_id, open_chat_id, content)
+            return
+
+        if action_type == "slock_dispatch_tasks":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine:
+                engine.dispatch_pending_tasks()
+                self.send_text_to_chat(open_chat_id, "✅ 已派发待处理任务。")
+            return
+
+        if action_type == "slock_show_task_board":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if engine:
+                from ...slock_engine.card_templates import build_task_board_card
+                channel_id = engine.channel.channel_id if engine.channel else ""
+                agents = engine.registry.list_agents(channel_id=channel_id)
+                card = build_task_board_card(
+                    tasks=engine.tasks,
+                    agents=agents,
+                    channel_id=channel_id,
+                )
+                self.send_card_to_chat(open_chat_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        if action_type == "slock_assign_task_to_agent":
+            task_id = value.get("task_id", "")
+            agent_id = value.get("agent_id", "")
+            task_content = value.get("task_content", "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if not engine or not agent_id:
+                self.send_text_to_chat(open_chat_id, "⚠️ 引擎未激活或缺少 agent_id。")
+                return
+
+            # Case 1: Form submission with task_content → create + assign
+            if task_content and not task_id:
+                new_task = engine.create_and_assign_task(task_content.strip(), agent_id)
+                if new_task:
+                    self.send_text_to_chat(
+                        open_chat_id,
+                        f"✅ 任务已创建并分配给 `{agent_id[:8]}`。",
+                    )
+                else:
+                    self.send_text_to_chat(open_chat_id, "⚠️ 任务创建失败。")
+                return
+
+            # Case 2: Existing task_id → reassign
+            if task_id:
+                success = engine.assign_task_to_agent(task_id, agent_id)
+                if success:
+                    self.send_text_to_chat(open_chat_id, f"✅ 任务已分配给 `{agent_id[:8]}`。")
+                else:
+                    self.send_text_to_chat(open_chat_id, "⚠️ 任务分配失败。")
+                return
+
+            self.send_text_to_chat(open_chat_id, "⚠️ 缺少任务内容或任务 ID。")
+            return
+
+        # --- Hub card button routing (slock_hub_cmd) ---
+        if action_type == "slock_hub_cmd":
+            cmd_text = str(value.get("cmd") or "").strip()
+            if not cmd_text:
+                self.send_text_to_chat(open_chat_id, "⚠️ 无效的命令。")
+                return
+            project_id = value.get("project_id", "")
+            project = self.project_manager.get_project_for_chat(project_id, open_chat_id) if project_id else None
+            self.handle_slock_command(open_message_id, open_chat_id, cmd_text, project)
+            return
+
         # --- Command panel button routing (slock_cmd_* prefix) ---
         if action_type.startswith("slock_cmd_"):
             self._dispatch_cmd_panel_action(open_message_id, open_chat_id, action_type, value)
@@ -2832,6 +3717,9 @@ class SlockHandler(BaseEngineHandler):
             "slock_refresh_status": self._refresh_status_card,
             "slock_refresh_task_board": self._refresh_task_board_card,
         }
+
+        if action_type not in slock_actions:
+            logger.warning("Unhandled slock card action: %s", action_type)
 
         self._dispatch_standard_card_action(CardActionContext(
             open_message_id=open_message_id,

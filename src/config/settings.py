@@ -578,6 +578,8 @@ class Settings(BaseSettings):
     slock_observer_max_queue_size: int = Field(default=10000, ge=100, description="ObserverLearningQueue 最大队列深度，超出时丢弃最旧记录")
     slock_assign_rate_limit: int = Field(default=5, ge=1, description="非管理员每分钟最大任务提交数（rate-limit）")
     slock_escalation_timeout: int = Field(default=1800, ge=60, description="Slock 升级请求自动中止超时（秒），默认 30 分钟")
+    slock_idle_scan_interval: int = Field(default=10, ge=1, description="空闲角色扫描 TODO 池间隔（秒）")
+    slock_auto_plan_delay: int = Field(default=5, ge=1, le=30, description="任务创建后自动触发规划的延迟（秒）")
 
     # Slock Discussion / NLI / Memory Enhancement ----------------------------
     slock_discussion_enabled: bool = Field(default=True, description="是否启用 Agent 间自动讨论（默认开启）")
@@ -608,9 +610,15 @@ class Settings(BaseSettings):
     slock_l2_max_size: int = Field(default=204800, ge=1024, description="L2 group 共享记忆最大字节数（默认 200KB），超出触发 FIFO 截断")
     slock_l3_max_size: int = Field(default=1048576, ge=1024, description="L3 全局 wiki 最大字节数（默认 1MB），超出触发 FIFO 截断")
     slock_chain_templates: str = Field(
-        default="coder->reviewer->tester",
+        default="coder->reviewer->tester,planner->coder->reviewer->tester",
         description="预置任务协作链模板（role->role->role 格式，逗号分隔多条链）",
+        # MIGRATION NOTE (v2.x): Default changed from "coder->reviewer->tester" to include
+        # planner chain. For existing deployments, this may trigger auto-planning if planner
+        # role exists. The orchestrator guards against creating plans when required roles
+        # are missing — no action needed unless you want to opt out (override via env var).
     )
+    slock_auto_plan_timeout: int = Field(default=30, ge=5, le=300, description="协作计划自动启动等待秒数（用户无否决则自动执行）")
+    slock_role_response_timeout: int = Field(default=120, ge=10, le=300, description="角色主动参与的响应超时秒数，超时则 escalate 或选择次优角色")
 
     @field_validator("slock_team_name_suffix", mode="before")
     @classmethod

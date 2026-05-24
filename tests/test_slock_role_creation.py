@@ -434,6 +434,7 @@ class TestRoleInfoDetails:
         ctx = MagicMock()
         handler = SlockHandler(ctx)
         handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
         handler.send_card_to_chat = MagicMock()
         return handler
 
@@ -461,6 +462,7 @@ class TestRoleInfoDetails:
         engine = MagicMock()
         engine.registry.find_by_name.return_value = agent
         engine.get_agent_status.return_value = "idle"
+        engine.channel.channel_id = "chat_test"
         engine.tasks = [done_task, active_task]
         engine.memory.read_agent_memory.return_value = SlockMemory(
             role="Backend coder",
@@ -475,13 +477,27 @@ class TestRoleInfoDetails:
 
         handler.show_role_info("msg_info", "chat_test", "Coder")
 
-        handler.reply_text.assert_called_once()
-        text = handler.reply_text.call_args[0][1]
-        assert "记忆摘要" in text
-        assert "Backend coder" in text
-        assert "Python service conventions" in text
-        assert "历史任务" in text
-        assert "已完成: 1" in text
+        # Current implementation renders a card (not plain text)
+        handler.reply_card.assert_called_once()
+        import json
+        card_json = handler.reply_card.call_args[0][1]
+        card = json.loads(card_json)
+        elements = card["body"]["elements"]
+        # Collect all markdown content including inside collapsible panels
+        all_content = ""
+        for e in elements:
+            if e.get("tag") == "markdown":
+                all_content += " " + e.get("content", "")
+            elif e.get("tag") == "collapsible_panel":
+                for inner in e.get("elements", []):
+                    if inner.get("tag") == "markdown":
+                        all_content += " " + inner.get("content", "")
+        # Verify memory key_knowledge is shown in collapsible panel
+        assert "Python service conventions" in all_content
+        # Verify current task is shown
+        assert "Active task" in all_content
+        # Verify history task is shown
+        assert "Done task" in all_content
 
     def test_create_role_from_onboarding_template(self):
         """`--template onboarding` uses the global template market defaults."""
@@ -789,14 +805,19 @@ class TestRoleListShowsCreatedAgent:
 
         handler.list_roles("msg_1", "chat_test")
 
-        handler.reply_text.assert_called_once()
-        reply = handler.reply_text.call_args[0][1]
-        assert "TestCoder" in reply
-        assert "🔧" in reply
-        assert "角色列表" in reply
+        # Current implementation renders a card (not plain text)
+        handler.reply_card.assert_called_once()
+        import json
+        card_json = handler.reply_card.call_args[0][1]
+        card = json.loads(card_json)
+        # Verify header
+        assert "角色列表" in card["header"]["title"]["content"]
+        # Verify agent name appears somewhere in serialized card
+        assert "TestCoder" in card_json
+        assert "🔧" in card_json
 
     def test_list_roles_empty_shows_hint(self):
-        """When no roles exist, shows hint to create one."""
+        """When no roles exist, shows hint card to create one."""
         handler = self._make_handler()
         engine = self._make_engine_with_agents([])
         manager = MagicMock()
@@ -805,7 +826,7 @@ class TestRoleListShowsCreatedAgent:
 
         handler.list_roles("msg_1", "chat_test")
 
-        handler.reply_text.assert_called_once()
-        reply = handler.reply_text.call_args[0][1]
-        assert "没有角色" in reply
-        assert "/new-role" in reply
+        handler.reply_card.assert_called_once()
+        card_json = handler.reply_card.call_args[0][1]
+        assert "没有角色" in card_json
+        assert "/new-role" in card_json

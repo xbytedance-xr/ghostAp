@@ -212,6 +212,12 @@ class TaskRouter:
             self._skill_profiles[agent_id] = profiles
             self._skill_profile_ts[agent_id] = time.time()
 
+    def get_skill_profiles(self, agent_id: str) -> list[SkillProfile]:
+        """Get skill profiles for an agent (lazy-loads from memory if needed)."""
+        self._ensure_skill_profiles_loaded(agent_id)
+        with self._lock:
+            return list(self._skill_profiles.get(agent_id, []))
+
     def _ensure_skill_profiles_loaded(self, agent_id: str) -> None:
         """Lazy-load skill profiles from memory backend with TTL caching.
 

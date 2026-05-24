@@ -40,6 +40,36 @@ class MemoryManager:
         self._locks_lock = threading.Lock()  # meta-lock for creating per-agent/channel locks
         self._llm_callback: Optional[Callable[[str], Optional[str]]] = None
 
+    @staticmethod
+    def _sanitize_path_component(component: str) -> str:
+        """Sanitize a path component to prevent directory traversal.
+
+        Strips any characters that are not alphanumeric, underscore,
+        colon, or hyphen. Dots are excluded to prevent '..' traversal.
+        This matches the agent_id sanitization in models.py.
+        """
+        result = re.sub(r'[^A-Za-z0-9_:-]+', '_', component)
+        if '..' in result or result.startswith('.'):
+            raise ValueError(
+                f"Path component '{component}' sanitizes to '{result}' "
+                f"which contains '..' or starts with '.'"
+            )
+        return result
+
+    def _safe_path(self, *parts: str) -> str:
+        """Join path parts under base_path with traversal protection.
+
+        Raises ValueError if the resolved path escapes base_path.
+        """
+        raw = os.path.join(self._base_path, *parts)
+        resolved = os.path.realpath(raw)
+        if not resolved.startswith(self._base_path + os.sep) and resolved != self._base_path:
+            raise ValueError(
+                f"Path traversal detected: component resolves to '{resolved}' "
+                f"which is outside base '{self._base_path}'"
+            )
+        return resolved
+
     @property
     def base_path(self) -> str:
         return self._base_path
@@ -77,7 +107,8 @@ class MemoryManager:
     # ------------------------------------------------------------------
 
     def _agent_memory_path(self, agent_id: str) -> str:
-        return os.path.join(self._base_path, "agents", agent_id, "MEMORY.md")
+        safe_id = self._sanitize_path_component(agent_id)
+        return self._safe_path("agents", safe_id, "MEMORY.md")
 
     def agent_memory_path(self, agent_id: str) -> str:
         """Return the canonical L1 memory path for an agent."""
@@ -85,11 +116,13 @@ class MemoryManager:
 
     def agent_notes_path(self, agent_id: str) -> str:
         """Return the canonical notes path for an agent."""
-        return os.path.join(self._base_path, "agents", agent_id, "NOTES.md")
+        safe_id = self._sanitize_path_component(agent_id)
+        return self._safe_path("agents", safe_id, "NOTES.md")
 
     def agent_workspace_path(self, agent_id: str) -> str:
         """Return the canonical workspace path for an agent."""
-        return os.path.join(self._base_path, "agents", agent_id, "workspace")
+        safe_id = self._sanitize_path_component(agent_id)
+        return self._safe_path("agents", safe_id, "workspace")
 
     def initialize_agent_workspace(self, agent_id: str) -> dict[str, str]:
         """Create per-agent MEMORY/NOTES/workspace directories from the Slock spec."""
@@ -100,7 +133,8 @@ class MemoryManager:
             os.makedirs(os.path.dirname(memory_path), exist_ok=True)
             os.makedirs(os.path.join(workspace_path, "current-task"), exist_ok=True)
             os.makedirs(os.path.join(workspace_path, "history"), exist_ok=True)
-            os.makedirs(os.path.join(self._base_path, "agents", agent_id, "reasoning"), exist_ok=True)
+            safe_id = self._sanitize_path_component(agent_id)
+            os.makedirs(self._safe_path("agents", safe_id, "reasoning"), exist_ok=True)
             if not os.path.exists(notes_path):
                 with open(notes_path + ".tmp", "w", encoding="utf-8") as f:
                     f.write("# Notes\n")
@@ -173,7 +207,8 @@ class MemoryManager:
         )
 
     def _skill_profile_path(self, agent_id: str) -> str:
-        return os.path.join(self._base_path, "agents", agent_id, "skill_profile.json")
+        safe_id = self._sanitize_path_component(agent_id)
+        return self._safe_path("agents", safe_id, "skill_profile.json")
 
     def skill_profile_path(self, agent_id: str) -> str:
         """Return the canonical skill profile path for an agent."""
@@ -234,8 +269,9 @@ class MemoryManager:
         return ordered
 
     def _reasoning_snapshot_path(self, agent_id: str, task_id: str) -> str:
+        safe_id = self._sanitize_path_component(agent_id)
         safe_task_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", task_id or "message").strip("_") or "message"
-        return os.path.join(self._base_path, "agents", agent_id, "reasoning", f"{safe_task_id}.json")
+        return self._safe_path("agents", safe_id, "reasoning", f"{safe_task_id}.json")
 
     def write_agent_reasoning_snapshot(
         self,
@@ -285,7 +321,8 @@ class MemoryManager:
     # ------------------------------------------------------------------
 
     def _group_memory_path(self, channel_id: str) -> str:
-        return os.path.join(self._base_path, "groups", channel_id, "SHARED_MEMORY.md")
+        safe_id = self._sanitize_path_component(channel_id)
+        return self._safe_path("groups", safe_id, "SHARED_MEMORY.md")
 
     def group_memory_path(self, channel_id: str) -> str:
         """Return the canonical L2 shared memory path for a group."""
@@ -487,7 +524,8 @@ class MemoryManager:
 
     def get_group_base_path(self, channel_id: str) -> str:
         """Return the base directory for a group's memory — useful for isolation checks."""
-        return os.path.join(self._base_path, "groups", channel_id)
+        safe_id = self._sanitize_path_component(channel_id)
+        return self._safe_path("groups", safe_id)
 
     def team_workspace_path(self, channel_id: str) -> str:
         """Return the canonical team workspace path for a group."""
@@ -684,6 +722,44 @@ class MemoryManager:
             os.replace(tmp_path, path)
 
     # ------------------------------------------------------------------
+    # Collaboration Plan Persistence
+    # ------------------------------------------------------------------
+
+    def _plans_path(self, channel_id: str) -> str:
+        """Return the persisted plans JSON path for a channel."""
+        return os.path.join(self.team_workspace_path(channel_id), ".plans.json")
+
+    def write_plans(self, channel_id: str, plans: list) -> None:
+        """Persist active collaboration plans for a channel (atomic write)."""
+        import json
+        from .models import CollaborationPlan
+
+        path = self._plans_path(channel_id)
+        with self._get_channel_lock(channel_id):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {"plans": [p.to_dict() for p in plans]},
+                    f, ensure_ascii=False, indent=2,
+                )
+            os.replace(tmp_path, path)
+
+    def read_plans(self, channel_id: str) -> list:
+        """Read persisted collaboration plans for a channel."""
+        import json
+        from .models import CollaborationPlan
+
+        path = self._plans_path(channel_id)
+        with self._get_channel_lock(channel_id):
+            if not os.path.exists(path):
+                return []
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        items = data.get("plans", []) if isinstance(data, dict) else []
+        return [CollaborationPlan.from_dict(item) for item in items if isinstance(item, dict)]
+
+    # ------------------------------------------------------------------
     # Discussion Persistence (Task 14)
     # ------------------------------------------------------------------
 
@@ -721,7 +797,8 @@ class MemoryManager:
 
     def message_archive_path(self, channel_id: str) -> str:
         """Return the JSONL archive path for a channel's Slock messages."""
-        return os.path.join(self._base_path, "archives", channel_id, "messages.jsonl")
+        safe_id = self._sanitize_path_component(channel_id)
+        return self._safe_path("archives", safe_id, "messages.jsonl")
 
     def append_message_archive(
         self,
@@ -792,9 +869,11 @@ class MemoryManager:
         """Pre-create directories for an agent and/or channel."""
         with self._lock:
             if agent_id:
-                os.makedirs(os.path.join(self._base_path, "agents", agent_id), exist_ok=True)
+                safe_agent = self._sanitize_path_component(agent_id)
+                os.makedirs(self._safe_path("agents", safe_agent), exist_ok=True)
             if channel_id:
-                os.makedirs(os.path.join(self._base_path, "groups", channel_id, "tasks"), exist_ok=True)
+                safe_channel = self._sanitize_path_component(channel_id)
+                os.makedirs(self._safe_path("groups", safe_channel, "tasks"), exist_ok=True)
             os.makedirs(os.path.join(self._base_path, "global"), exist_ok=True)
 
     # ------------------------------------------------------------------

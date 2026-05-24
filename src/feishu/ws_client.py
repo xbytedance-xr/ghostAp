@@ -673,7 +673,7 @@ class FeishuWSClient:
         """判断是否为 Spec Engine 命令。"""
         return SystemHandler.is_spec_command(text)
 
-    def _is_slock_command(self, text: str, chat_id: str = "") -> bool:
+    def _is_slock_command(self, text: str, chat_id: str = "") -> "bool | str":
         """判断是否为 Slock Engine 命令。"""
         from ..slock_engine.slash_commands import is_slock_command
         manager = getattr(self, '_slock_engine_manager', None)
@@ -685,6 +685,13 @@ class FeishuWSClient:
         if manager is None:
             return False
         return manager.is_slock_active(chat_id)
+
+    def _is_slock_managed_chat(self, chat_id: str) -> bool:
+        """Check if a chat is registered as managed by the slock engine."""
+        manager = getattr(self, '_slock_engine_manager', None)
+        if manager is None:
+            return False
+        return manager.is_managed_chat(chat_id)
 
     @staticmethod
     def _is_interceptable_command_match(command_match: CommandMatch | None) -> bool:

@@ -66,6 +66,16 @@ class TaskStatus(Enum):
     DONE = "done"
 
 
+class PlanStepStatus(Enum):
+    """Step-level status for collaboration plan steps (decoupled from TaskStatus)."""
+
+    TODO = "todo"
+    IN_PROGRESS = "in_progress"
+    DONE = "done"
+    SKIPPED = "skipped"
+    TIMED_OUT = "timed_out"
+
+
 class EscalationLevel(Enum):
     """Escalation severity levels."""
 
@@ -177,10 +187,13 @@ class AgentIdentity:
     owner_group: str = ""  # chat_id of owning group
     member_groups: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
+    personality_traits: list[str] = field(default_factory=list)  # e.g. ['严谨', '注重细节']
 
     def __post_init__(self) -> None:
-        # Sanitize agent_id to prevent path traversal
-        self.agent_id = re.sub(r'[^A-Za-z0-9_.:-]+', '_', self.agent_id)
+        # Sanitize agent_id to prevent path traversal (dots excluded)
+        self.agent_id = re.sub(r'[^A-Za-z0-9_:-]+', '_', self.agent_id)
+        if '..' in self.agent_id or self.agent_id.startswith('.'):
+            self.agent_id = self.agent_id.lstrip('.').replace('..', '_')
         if self.owner_group and self.owner_group not in self.member_groups:
             self.member_groups.append(self.owner_group)
 
@@ -208,6 +221,7 @@ class AgentIdentity:
             "owner_group": self.owner_group,
             "member_groups": self.member_groups,
             "created_at": self.created_at,
+            "personality_traits": self.personality_traits,
         }
 
     @classmethod
@@ -227,7 +241,18 @@ class AgentIdentity:
             owner_group=data.get("owner_group", ""),
             member_groups=data.get("member_groups", []),
             created_at=data.get("created_at", time.time()),
+            personality_traits=data.get("personality_traits", []),
         )
+
+
+@dataclass
+class TaskTimelineEvent:
+    """A single event in a task's lifecycle timeline."""
+
+    event_type: str  # e.g., "claimed", "started", "completed", "rejected", "blocked"
+    agent_id: str
+    timestamp: float  # unix timestamp
+    detail: str = ""
 
 
 @dataclass
@@ -245,6 +270,12 @@ class SlockTask:
     reasoning_snapshot: str = ""  # Snapshot of reasoning state when task was created
     chain_next_agent_id: str = ""  # Next agent in chain to hand off to
     predecessor_agent_name: str = ""  # Role-based breadcrumb: name of agent who handed off this task
+    sub_tasks: list[str] = field(default_factory=list)  # child task IDs
+    parent_task_id: Optional[str] = None  # parent task ID (for sub-tasks)
+    collaborators: list[str] = field(default_factory=list)  # agent_ids participating
+    progress_pct: int = 0  # 0-100 progress percentage
+    discussion_ids: list[str] = field(default_factory=list)  # linked DiscussionThread IDs
+    timeline: list[TaskTimelineEvent] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -259,6 +290,15 @@ class SlockTask:
             "reasoning_snapshot": self.reasoning_snapshot,
             "chain_next_agent_id": self.chain_next_agent_id,
             "predecessor_agent_name": self.predecessor_agent_name,
+            "sub_tasks": self.sub_tasks,
+            "parent_task_id": self.parent_task_id,
+            "collaborators": self.collaborators,
+            "progress_pct": self.progress_pct,
+            "discussion_ids": self.discussion_ids,
+            "timeline": [
+                {"event_type": e.event_type, "agent_id": e.agent_id, "timestamp": e.timestamp, "detail": e.detail}
+                for e in self.timeline
+            ],
         }
 
     @classmethod
@@ -275,6 +315,20 @@ class SlockTask:
             reasoning_snapshot=data.get("reasoning_snapshot", ""),
             chain_next_agent_id=data.get("chain_next_agent_id", ""),
             predecessor_agent_name=data.get("predecessor_agent_name", ""),
+            sub_tasks=data.get("sub_tasks", []),
+            parent_task_id=data.get("parent_task_id"),
+            collaborators=data.get("collaborators", []),
+            progress_pct=data.get("progress_pct", 0),
+            discussion_ids=data.get("discussion_ids", []),
+            timeline=[
+                TaskTimelineEvent(
+                    event_type=e.get("event_type", ""),
+                    agent_id=e.get("agent_id", ""),
+                    timestamp=e.get("timestamp", 0.0),
+                    detail=e.get("detail", ""),
+                )
+                for e in data.get("timeline", [])
+            ],
         )
 
 
@@ -752,3 +806,117 @@ class TeamSnapshot:
     task_ids: list[str] = field(default_factory=list)
     task_board_data: list[dict] = field(default_factory=list)  # serialized SlockTask dicts
     created_at: float = field(default_factory=time.time)
+
+
+# ---------------------------------------------------------------------------
+# Collaboration Plan Models
+# ---------------------------------------------------------------------------
+
+
+class CollaborationPlanStatus(Enum):
+    """Collaboration plan lifecycle."""
+
+    PLANNING = "planning"  # Planner is decomposing the task
+    PENDING_APPROVAL = "pending_approval"  # Waiting for user confirmation (30s timeout)
+    EXECUTING = "executing"  # Auto-started or user-approved
+    PAUSED = "paused"  # User paused; no new steps will start
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+@dataclass
+class PlanStep:
+    """A single step in a collaboration plan."""
+
+    step_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    role: str = ""  # Target role (coder/reviewer/tester/etc.)
+    agent_id: str = ""  # Assigned agent_id (resolved at execution time)
+    description: str = ""  # What this step should accomplish
+    order: int = 0  # Execution order (0-based)
+    status: PlanStepStatus = PlanStepStatus.TODO
+    task_id: str = ""  # Created SlockTask ID once started
+    depends_on: list[str] = field(default_factory=list)  # step_ids that must complete first
+
+    def to_dict(self) -> dict:
+        return {
+            "step_id": self.step_id,
+            "role": self.role,
+            "agent_id": self.agent_id,
+            "description": self.description,
+            "order": self.order,
+            "status": self.status.value,
+            "task_id": self.task_id,
+            "depends_on": self.depends_on,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PlanStep":
+        return cls(
+            step_id=data.get("step_id", str(uuid.uuid4())),
+            role=data.get("role", ""),
+            agent_id=data.get("agent_id", ""),
+            description=data.get("description", ""),
+            order=data.get("order", 0),
+            status=PlanStepStatus(data.get("status", "todo")),
+            task_id=data.get("task_id", ""),
+            depends_on=data.get("depends_on", []),
+        )
+
+
+@dataclass
+class CollaborationPlan:
+    """A multi-role collaboration plan for a task."""
+
+    plan_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    task_id: str = ""  # The parent task this plan is for
+    task_content: str = ""  # Human-readable task description (from SlockTask.content)
+    steps: list[PlanStep] = field(default_factory=list)
+    status: CollaborationPlanStatus = CollaborationPlanStatus.PLANNING
+    created_at: float = field(default_factory=time.time)
+    auto_start_at: Optional[float] = None  # Unix timestamp when auto-execution begins
+    chain_template: str = ""  # Which chain template was used
+    planner_agent_id: str = ""  # Agent that created this plan
+
+    def to_dict(self) -> dict:
+        return {
+            "plan_id": self.plan_id,
+            "task_id": self.task_id,
+            "task_content": self.task_content,
+            "steps": [s.to_dict() for s in self.steps],
+            "status": self.status.value,
+            "created_at": self.created_at,
+            "auto_start_at": self.auto_start_at,
+            "chain_template": self.chain_template,
+            "planner_agent_id": self.planner_agent_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CollaborationPlan":
+        return cls(
+            plan_id=data.get("plan_id", str(uuid.uuid4())),
+            task_id=data.get("task_id", ""),
+            task_content=data.get("task_content", ""),
+            steps=[PlanStep.from_dict(s) for s in data.get("steps", [])],
+            status=CollaborationPlanStatus(data.get("status", "planning")),
+            created_at=data.get("created_at", time.time()),
+            auto_start_at=data.get("auto_start_at"),
+            chain_template=data.get("chain_template", ""),
+            planner_agent_id=data.get("planner_agent_id", ""),
+        )
+
+    @property
+    def progress_pct(self) -> int:
+        """Calculate overall progress based on step completion."""
+        if not self.steps:
+            return 0
+        done = sum(1 for s in self.steps if s.status in (PlanStepStatus.DONE, PlanStepStatus.SKIPPED, PlanStepStatus.TIMED_OUT))
+        return int(done / len(self.steps) * 100)
+
+    @property
+    def current_step(self) -> Optional[PlanStep]:
+        """Get the first non-done step in execution order."""
+        for step in sorted(self.steps, key=lambda s: s.order):
+            if step.status not in (PlanStepStatus.DONE, PlanStepStatus.SKIPPED, PlanStepStatus.TIMED_OUT):
+                return step
+        return None

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
+import threading
+import time
+from typing import Callable, Optional
 
 from ..card.delivery.engine import CardDelivery
 from ..card.session.static import StaticCardSession
@@ -36,6 +38,8 @@ class SlockCardChannel:
         self._delivery = delivery
         self._chat_id = chat_id
         self._sessions: dict[str, StaticCardSession] = {}
+        self._periodic_updates: dict[str, threading.Timer] = {}  # msg_id -> timer
+        self._periodic_lock = threading.Lock()
 
     def send_card(
         self, card: dict | str, *, reply_to: str | None = None
@@ -67,8 +71,70 @@ class SlockCardChannel:
             self._sessions[message_id] = fallback
         return result is not None
 
+    def schedule_periodic_update(
+        self,
+        message_id: str,
+        card_builder: Callable[[], dict],
+        interval: float = 5.0,
+        max_updates: int = 60,
+    ) -> None:
+        """Schedule periodic card updates for a message.
+
+        Args:
+            message_id: The card message to update periodically.
+            card_builder: Zero-arg callable that returns the latest card dict.
+            interval: Seconds between updates (minimum 2.0 to respect rate limits).
+            max_updates: Maximum number of updates before auto-stopping.
+        """
+        interval = max(interval, 2.0)  # Enforce minimum interval
+        self.cancel_periodic_update(message_id)  # Cancel existing if any
+
+        counter = {"remaining": max_updates}
+
+        def _tick() -> None:
+            if counter["remaining"] <= 0:
+                self.cancel_periodic_update(message_id)
+                return
+            counter["remaining"] -= 1
+            try:
+                card = card_builder()
+                self.update_card(message_id, card)
+            except Exception:
+                logger.exception("Periodic card update failed for %s", message_id)
+            # Reschedule
+            with self._periodic_lock:
+                if message_id in self._periodic_updates:
+                    timer = threading.Timer(interval, _tick)
+                    timer.daemon = True
+                    timer.name = f"slock-periodic-{message_id[:12]}"
+                    timer.start()
+                    self._periodic_updates[message_id] = timer
+
+        timer = threading.Timer(interval, _tick)
+        timer.daemon = True
+        timer.name = f"slock-periodic-{message_id[:12]}"
+        timer.start()
+        with self._periodic_lock:
+            self._periodic_updates[message_id] = timer
+
+    def cancel_periodic_update(self, message_id: str) -> None:
+        """Cancel periodic updates for a message."""
+        with self._periodic_lock:
+            timer = self._periodic_updates.pop(message_id, None)
+        if timer:
+            timer.cancel()
+
+    def cancel_all_periodic_updates(self) -> None:
+        """Cancel all periodic update timers."""
+        with self._periodic_lock:
+            timers = list(self._periodic_updates.values())
+            self._periodic_updates.clear()
+        for timer in timers:
+            timer.cancel()
+
     def close(self) -> None:
-        """Release all sessions. Safe to call multiple times."""
+        """Release all sessions and cancel periodic updates. Safe to call multiple times."""
+        self.cancel_all_periodic_updates()
         for session in self._sessions.values():
             if not session.closed:
                 session.close()

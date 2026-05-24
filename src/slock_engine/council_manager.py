@@ -250,7 +250,7 @@ class CouncilManager:
                 )
                 self._engine.router.set_skill_profiles(item.agent_id, profiles)
             except Exception as exc:
-                logger.debug("Council skill feedback failed for %s: %s", item.agent_id, exc)
+                logger.debug("Council skill feedback failed for %s: %s", item.agent_id, str(exc))
 
     @staticmethod
     def _emit(on_stage: Optional[Callable[[CouncilRun], None]], run: CouncilRun) -> None:
@@ -259,7 +259,7 @@ class CouncilManager:
         try:
             on_stage(run)
         except Exception as exc:
-            logger.debug("Council stage callback failed: %s", exc)
+            logger.debug("Council stage callback failed: %s", str(exc))
 
 
 def parse_ranking_from_text(text: str, valid_labels: list[str]) -> list[str]:
