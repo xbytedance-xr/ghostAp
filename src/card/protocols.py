@@ -4,9 +4,9 @@ Provides a minimal protocol that CardSession, StaticCardSession, and
 SessionRotator all implement, enabling session registry / GC / monitoring
 to operate on a single type constraint.
 
-Also provides TTL management protocols: TTLDecider (read-only) and three
-actuator sub-protocols (TTLStateMutator, TTLDeliverer, TTLTimerScheduler)
-for TTLHandler to interact with CardSession through semantic operations,
+Also provides TTL management protocols: TTLDecider (read-only state query)
+and TTLActuator (combined mutation/delivery/timer/idle interface) for
+TTLHandler to interact with CardSession through semantic operations,
 fully decoupling TTL management from CardSession's internal attributes.
 """
 
@@ -91,16 +91,15 @@ class TTLDecider(Protocol):
         ...
 
 
-# ---------------------------------------------------------------------------
-# TTL Actuator sub-protocols (split for single-responsibility, ≤5 methods each)
-# ---------------------------------------------------------------------------
+class TTLActuator(Protocol):
+    """Combined TTL actuator protocol for TTL lifecycle management.
 
-
-class TTLStateMutator(Protocol):
-    """State mutation interface for TTL lifecycle.
-
-    Methods that change session state flags under lock.
+    Aggregates state mutation, delivery, timer/notification, and idle
+    extension methods into a single protocol. CardSession owns a
+    composition-based implementation of this protocol.
     """
+
+    # --- State mutation ---
 
     def mark_ttl_expired(self) -> None:
         """Atomically set ttl_warned=True and terminal_reason='ttl_expired' (under lock)."""
@@ -126,12 +125,7 @@ class TTLStateMutator(Protocol):
         """Flag that a terminal retry is pending in the delivery tracker."""
         ...
 
-
-class TTLDeliverer(Protocol):
-    """Delivery interface for TTL lifecycle.
-
-    Methods that reduce/render state and deliver card payloads.
-    """
+    # --- Delivery ---
 
     def reduce_and_render(self, events: "list[CardEvent]") -> "list[RenderedCard]":
         """Apply events to state and render; returns rendered payload.
@@ -161,12 +155,7 @@ class TTLDeliverer(Protocol):
         """Close the delivery channel for this session."""
         ...
 
-
-class TTLTimerScheduler(Protocol):
-    """Timer and notification interface for TTL lifecycle.
-
-    Methods that send user notifications, fire hooks, and manage timers.
-    """
+    # --- Timer and notification ---
 
     def notify_user(self, text: str) -> None:
         """Send a notification to the user (notify_callback or reply_text fallback)."""
@@ -188,9 +177,7 @@ class TTLTimerScheduler(Protocol):
         """Schedule a terminal delivery retry timer."""
         ...
 
-
-class TTLIdleExtender(Protocol):
-    """Timer refresh interface for active long-running work."""
+    # --- Idle extension ---
 
     def defer_idle_timeout(
         self,
@@ -199,16 +186,6 @@ class TTLIdleExtender(Protocol):
     ) -> None:
         """Refresh idle activity and reschedule TTL timers."""
         ...
-
-
-class TTLActuator(TTLStateMutator, TTLDeliverer, TTLTimerScheduler, TTLIdleExtender, Protocol):
-    """Combined TTL actuator protocol (union of all 3 sub-protocols).
-
-    Provided as a convenience for type annotations that need the full
-    actuator interface. CardSession implements all three sub-protocols.
-    """
-
-    ...
 
 
 # ---------------------------------------------------------------------------
@@ -370,9 +347,6 @@ __all__ = [
     "Session",
     "TTLState",
     "TTLDecider",
-    "TTLStateMutator",
-    "TTLDeliverer",
-    "TTLTimerScheduler",
     "TTLActuator",
     "TTLManager",
     "ActionDispatcher",

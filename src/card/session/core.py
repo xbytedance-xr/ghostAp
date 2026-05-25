@@ -290,7 +290,7 @@ class CardSession:
     def closed(self) -> bool:
         return self._closed.is_set()
 
-    # TTLDecider protocol implementation (get_ttl_state delegated to actuator)
+    # TTLDecider protocol (get_ttl_state delegated to actuator)
     def get_ttl_state(self):
         """Return a consistent snapshot of TTL-relevant session state."""
         return self._ttl_actuator.get_ttl_state()
