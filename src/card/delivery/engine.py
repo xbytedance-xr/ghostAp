@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 
 _RECREATE_OUTCOME_PREFIX = "recreate:"
 
+# Maximum pages to create at once when binding is None (recreation scenario).
+# Prevents flooding the chat with many historical pages after a stale binding discard.
+_MAX_RECREATE_PAGES = 3
+
 
 # ---------------------------------------------------------------------------
 # Outcome types (re-exported from src.card.delivery.types for backwards compat)
@@ -189,7 +193,10 @@ class CardDelivery:
 
         if binding is None:
             binding = self._bindings.create(session_id, chat_id)
-            for card in rendered:
+            # Limit pages created at once to prevent flooding after stale binding discard.
+            # Only create the most recent pages (latest content is most relevant).
+            pages_to_create = rendered[-_MAX_RECREATE_PAGES:] if len(rendered) > _MAX_RECREATE_PAGES else rendered
+            for card in pages_to_create:
                 outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to)
                 outcomes.append(outcome)
         else:

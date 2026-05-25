@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 # Maximum number of completed tool blocks to retain (sliding window)
 MAX_COMPLETED_TOOL_BLOCKS = 50
 
+# Safety cap: maximum total content blocks allowed in a single card state.
+# Prevents unbounded growth from any accumulation path.
+MAX_TOTAL_BLOCKS = 100
+
 
 # --- Inline handlers for events that don't warrant their own module ---
 
@@ -335,5 +339,10 @@ def reduce_card_state(state: CardState | None, event: CardEvent, metadata: CardM
                 to_remove = {b.block_id for b in completed_tool_blocks[:excess]}
                 trimmed = tuple(b for b in new_state.blocks if b.block_id not in to_remove)
                 new_state = replace(new_state, blocks=trimmed)
+
+        # Safety cap: prevent unbounded block accumulation from any path.
+        # Keep the most recent blocks when total exceeds the limit.
+        if len(new_state.blocks) > MAX_TOTAL_BLOCKS:
+            new_state = replace(new_state, blocks=new_state.blocks[-MAX_TOTAL_BLOCKS:])
 
     return new_state

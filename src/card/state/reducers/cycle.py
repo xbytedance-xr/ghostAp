@@ -34,6 +34,12 @@ def reduce_cycle(state: CardState, event: CardEvent) -> CardState:
             changes: dict = {"engine_ext": ext, "footer": footer, "terminal": "running", "metadata": metadata}
             if header:
                 changes["header"] = header
+            # Clear old content blocks on new cycle start to prevent unbounded
+            # accumulation in truncation mode (when session rotation is capped).
+            # For fresh sessions after successful rotation, blocks is already ()
+            # so this is effectively a no-op.
+            if state.blocks:
+                changes["blocks"] = ()
             return replace(state, **changes)
 
         case CardEventType.CYCLE_DONE:
