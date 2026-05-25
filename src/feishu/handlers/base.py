@@ -535,6 +535,14 @@ class BaseHandler:
         if not os.path.isabs(expanded_path):
             current_dir = self.get_working_dir(chat_id)
             expanded_path = os.path.normpath(os.path.join(current_dir, expanded_path))
+
+        # 路径范围校验
+        from src.config import get_settings as _get_settings
+        allowed_roots = _get_settings().project_allowed_roots
+        if allowed_roots:
+            if not any(expanded_path.startswith(os.path.normpath(root)) for root in allowed_roots):
+                return False, f"目录不在允许范围内: {expanded_path}"
+
         if os.path.isdir(expanded_path):
             with self.ctx.working_dir_lock:
                 self.ctx.working_dirs[chat_id] = expanded_path

@@ -12,7 +12,9 @@ from src.sandbox.executor import ExecutionResult, SandboxExecutor, SubprocessExe
 
 class TestSandboxExecutor:
     def setup_method(self):
-        self.executor = SandboxExecutor()
+        # Disable whitelist for general execution tests (whitelist tested separately)
+        settings = Settings(sandbox_use_whitelist=False)
+        self.executor = SandboxExecutor(settings=settings)
 
     def test_safe_command_ls(self):
         result = self.executor.execute("ls -la")
@@ -81,9 +83,10 @@ class TestSandboxExecutor:
         assert "测试错误" in message
 
     def test_command_with_pipe(self):
+        # Pipe character is now blocked by DangerousPatternCheckStrategy (shell control char)
         result = self.executor.execute("echo 'hello' | grep 'hello'")
-        assert result.success is True
-        assert "hello" in result.stdout
+        assert result.success is False
+        assert "shell 控制字符" in result.error_message
 
     def test_command_whoami(self):
         result = self.executor.execute("whoami")
@@ -163,7 +166,8 @@ class TestSandboxExecutorDependencyInjection:
         mock_result.stderr = ""
         mock_executor.run.return_value = mock_result
 
-        executor = SandboxExecutor(subprocess_executor=mock_executor)
+        settings = Settings(sandbox_use_whitelist=False)
+        executor = SandboxExecutor(settings=settings, subprocess_executor=mock_executor)
         result = executor.execute("echo test")
 
         # 验证 mock_executor 被调用

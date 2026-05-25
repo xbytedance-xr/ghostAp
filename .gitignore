@@ -89,3 +89,4 @@ slock/
 .codegraph/
 .planning/
 result.json
+.claude/

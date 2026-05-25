@@ -68,8 +68,11 @@ class Settings(BaseSettings):
     sandbox_command_blacklist: str = (
         "rm -rf /,rm -rf /*,mkfs,dd if=,shutdown,reboot,halt,poweroff,init 0,init 6,:(){ :|:& };:"
     )
-    sandbox_use_whitelist: bool = False
+    sandbox_use_whitelist: bool = True
     sandbox_command_whitelist: str = ""
+
+    # 允许 set_working_dir 切换到的根目录列表
+    project_allowed_roots: list[str] = [os.path.expanduser("~/workspaces")]
 
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..config import get_settings
 from ..utils.errors import get_error_detail
+from ..utils.redact import redact_sensitive
 from ..utils.text import truncate_output
 
 logger = logging.getLogger(__name__)
@@ -136,6 +137,12 @@ class DangerousPatternCheckStrategy(SecurityCheckStrategy):
         self._compiled_patterns = [re.compile(p, re.IGNORECASE) for p in self.DANGEROUS_PATTERNS]
 
     def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
+        # 无条件检查 shell 控制字符（不依赖白名单模式）
+        shell_control_chars = [';', '&&', '||', '|', '`', '$(', ')']
+        for char in shell_control_chars:
+            if char in command:
+                return False, f"包含不安全的 shell 控制字符: {char}"
+
         for pattern in self._compiled_patterns:
             if pattern.search(command):
                 return False, f"命令包含危险操作模式: {pattern.pattern}"
@@ -309,6 +316,9 @@ class SandboxExecutor:
 
             stdout = truncate_output(stdout, max_len)
             stderr = truncate_output(stderr, max_len, label="错误输出被截断")
+
+            stdout = redact_sensitive(stdout)
+            stderr = redact_sensitive(stderr)
 
             return ExecutionResult(
                 success=process.returncode == 0,
