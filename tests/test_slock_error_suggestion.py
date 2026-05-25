@@ -55,10 +55,12 @@ class TestErrorSuggestionCardBasicStructure:
     def test_footer_note_present(self):
         card = build_error_suggestion_card("err", [])
         elements = card["body"]["elements"]
-        notes = [e for e in elements if e.get("tag") == "note"]
-        assert len(notes) == 1
-        note_text = notes[0]["elements"][0]["content"]
-        assert "/help" in note_text
+        # New implementation uses markdown with font color for footer hint
+        footer_elements = [
+            e for e in elements
+            if e.get("tag") == "markdown" and "/help" in e.get("content", "")
+        ]
+        assert len(footer_elements) == 1
 
 
 class TestErrorSuggestionCardWithSuggestions:

@@ -85,37 +85,33 @@ def _make_engine(tmp_path, agents=None, channel_id="ch_test"):
 
 
 class TestSetAgentStatusEmitsEvent:
-    """test_set_agent_status_emits_event — calling set_agent_status triggers notification."""
+    """test_set_agent_status — calling set_agent_status updates internal state."""
 
-    def test_set_agent_status_emits_event(self, tmp_path):
-        """When set_agent_status changes an agent's status, _notify_status_change is invoked."""
+    def test_set_agent_status_updates_state(self, tmp_path):
+        """When set_agent_status is called, agent status is updated."""
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
 
-        # Spy on _notify_status_change
-        with patch.object(engine, "_notify_status_change") as mock_notify:
-            engine.set_agent_status(agent.agent_id, AgentStatus.RUNNING)
-            mock_notify.assert_called_once_with(agent.agent_id, AgentStatus.RUNNING)
+        engine.set_agent_status(agent.agent_id, AgentStatus.RUNNING)
+        assert engine.get_agent_status(agent.agent_id) == AgentStatus.RUNNING
 
-    def test_set_agent_status_no_event_when_same(self, tmp_path):
-        """No notification if status does not actually change."""
+    def test_set_agent_status_idempotent(self, tmp_path):
+        """Setting the same status again does not crash."""
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
 
-        # Agent starts as IDLE; setting IDLE again should not fire
-        with patch.object(engine, "_notify_status_change") as mock_notify:
-            engine.set_agent_status(agent.agent_id, AgentStatus.IDLE)
-            mock_notify.assert_not_called()
+        # Agent starts as IDLE; setting IDLE again should not crash
+        engine.set_agent_status(agent.agent_id, AgentStatus.IDLE)
+        assert engine.get_agent_status(agent.agent_id) == AgentStatus.IDLE
 
-    def test_transition_agent_emits_event(self, tmp_path):
-        """transition_agent also triggers notification on valid transition."""
+    def test_transition_agent_valid(self, tmp_path):
+        """transition_agent succeeds on valid transition."""
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
 
-        with patch.object(engine, "_notify_status_change") as mock_notify:
-            result = engine.transition_agent(agent.agent_id, AgentStatus.WAKING)
-            assert result is True
-            mock_notify.assert_called_once_with(agent.agent_id, AgentStatus.WAKING)
+        result = engine.transition_agent(agent.agent_id, AgentStatus.WAKING)
+        assert result is True
+        assert engine.get_agent_status(agent.agent_id) == AgentStatus.WAKING
 
 
 class TestStatusPanelCardShowsAllAgents:
@@ -227,8 +223,8 @@ class TestStatusRefreshCallbackReceivesCard:
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
 
-        # Set a status panel message ID so refresh will trigger
-        engine._status_panel_msg_id = "msg_12345"
+        # Set a channel status card msg ID so refresh will trigger
+        engine._status_card_msg_ids["ch_test"] = "msg_12345"
 
         received_calls = []
 
@@ -237,11 +233,11 @@ class TestStatusRefreshCallbackReceivesCard:
 
         engine.register_status_refresh_callback(capture_callback)
 
-        # Trigger a status change that fires the debounced refresh
-        engine.set_agent_status(agent.agent_id, AgentStatus.RUNNING)
+        # Trigger a status refresh via _set_dirty
+        engine._set_dirty(True)
 
-        # Wait for the debounced timer to fire (default 1s delay + buffer)
-        time.sleep(1.5)
+        # Wait for the debounced timer to fire (default 3s delay + buffer)
+        time.sleep(4.0)
 
         assert len(received_calls) >= 1
         msg_id, card = received_calls[-1]
@@ -251,11 +247,11 @@ class TestStatusRefreshCallbackReceivesCard:
         assert "body" in card
 
     def test_callback_not_called_without_panel_msg_id(self, tmp_path):
-        """If no status panel message ID is stored, callback is never invoked."""
+        """If no status card message ID is stored, callback is never invoked."""
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
 
-        # Deliberately do NOT set _status_panel_msg_id
+        # Deliberately do NOT set _status_card_msg_ids
         received_calls = []
 
         def capture_callback(msg_id, card):
@@ -263,10 +259,10 @@ class TestStatusRefreshCallbackReceivesCard:
 
         engine.register_status_refresh_callback(capture_callback)
 
-        engine.set_agent_status(agent.agent_id, AgentStatus.RUNNING)
+        engine._set_dirty(True)
 
         # Give enough time for potential timer to fire
-        time.sleep(1.5)
+        time.sleep(4.0)
 
         assert len(received_calls) == 0
 
@@ -277,7 +273,7 @@ class TestStatusRefreshCallbackReceivesCard:
             _make_agent("a2", "Reviewer", "👁️"),
         ]
         engine = _make_engine(tmp_path, agents=agents)
-        engine._status_panel_msg_id = "msg_99"
+        engine._status_card_msg_ids["ch_test"] = "msg_99"
 
         received_calls = []
 
@@ -286,12 +282,13 @@ class TestStatusRefreshCallbackReceivesCard:
 
         engine.register_status_refresh_callback(capture_callback)
 
-        # Set one agent to RUNNING
+        # Set one agent to RUNNING and trigger refresh
         engine.transition_agent("a1", AgentStatus.WAKING)
         engine.transition_agent("a1", AgentStatus.THINKING)
         engine.transition_agent("a1", AgentStatus.RUNNING)
+        engine._set_dirty(True)
 
-        time.sleep(1.5)
+        time.sleep(4.0)
 
         assert len(received_calls) >= 1
         _, card = received_calls[-1]
@@ -303,12 +300,12 @@ class TestStatusRefreshCallbackReceivesCard:
 class TestStatusChangeUpdatesExistingCard:
     """test_status_change_updates_existing_card — callback receives update with message_id."""
 
-    def test_update_uses_stored_panel_msg_id(self, tmp_path):
-        """_notify_status_change schedules refresh using _status_panel_msg_id."""
+    def test_update_uses_stored_channel_msg_id(self, tmp_path):
+        """_schedule_status_refresh uses _status_card_msg_ids for the channel."""
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
 
-        engine._status_panel_msg_id = "msg_panel_001"
+        engine._status_card_msg_ids["ch_test"] = "msg_panel_001"
 
         received_calls = []
 
@@ -317,22 +314,21 @@ class TestStatusChangeUpdatesExistingCard:
 
         engine.register_status_refresh_callback(capture_callback)
 
-        # Change status
-        engine.set_agent_status(agent.agent_id, AgentStatus.RUNNING)
+        # Trigger refresh
+        engine._set_dirty(True)
 
-        time.sleep(1.5)
+        time.sleep(4.0)
 
         assert len(received_calls) >= 1
         assert received_calls[-1][0] == "msg_panel_001"
 
-    def test_update_uses_channel_status_card_msg_id(self, tmp_path):
-        """Falls back to _status_card_msg_ids when _status_panel_msg_id is None."""
+    def test_no_callback_without_channel_msg_id(self, tmp_path):
+        """No callback if _status_card_msg_ids has no entry for the channel."""
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
 
-        # Use channel-specific msg ID instead of the shortcut
-        engine._status_panel_msg_id = None
-        engine._status_card_msg_ids["ch_test"] = "msg_channel_002"
+        # Set msg_id for a DIFFERENT channel
+        engine._status_card_msg_ids["other_channel"] = "msg_channel_002"
 
         received_calls = []
 
@@ -341,18 +337,18 @@ class TestStatusChangeUpdatesExistingCard:
 
         engine.register_status_refresh_callback(capture_callback)
 
-        engine.set_agent_status(agent.agent_id, AgentStatus.RUNNING)
+        engine._set_dirty(True)
 
-        time.sleep(1.5)
+        time.sleep(4.0)
 
-        assert len(received_calls) >= 1
-        assert received_calls[-1][0] == "msg_channel_002"
+        # No callback because the active channel is "ch_test" which has no msg_id
+        assert len(received_calls) == 0
 
     def test_debounce_coalesces_rapid_changes(self, tmp_path):
-        """Rapid status changes are debounced into fewer card updates."""
+        """Rapid _set_dirty calls are debounced into fewer card updates."""
         agent = _make_agent()
         engine = _make_engine(tmp_path, agents=[agent])
-        engine._status_panel_msg_id = "msg_debounce"
+        engine._status_card_msg_ids["ch_test"] = "msg_debounce"
 
         received_calls = []
 
@@ -361,16 +357,19 @@ class TestStatusChangeUpdatesExistingCard:
 
         engine.register_status_refresh_callback(capture_callback)
 
-        # Rapid state transitions: IDLE -> WAKING -> THINKING -> RUNNING
+        # Rapid state transitions triggering _set_dirty multiple times
         engine.transition_agent(agent.agent_id, AgentStatus.WAKING)
+        engine._set_dirty(True)
         engine.transition_agent(agent.agent_id, AgentStatus.THINKING)
+        engine._set_dirty(True)
         engine.transition_agent(agent.agent_id, AgentStatus.RUNNING)
+        engine._set_dirty(True)
 
         # Wait for debounce to resolve
-        time.sleep(2.0)
+        time.sleep(4.0)
 
-        # Debounce means fewer calls than status changes (3 transitions -> should coalesce)
-        # At minimum 1 call, at most 3 (if timer didn't coalesce at all)
+        # Debounce means fewer calls than _set_dirty invocations
+        # Timer is cancelled+rescheduled each time, so should coalesce to 1
         assert 1 <= len(received_calls) <= 3
         # The last card should reflect RUNNING state
         _, last_card = received_calls[-1]

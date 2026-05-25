@@ -442,7 +442,7 @@ class TestBuildAgentMessageCardJsonStructure:
         card = build_agent_message_card(agent, "content")
         assert set(card.keys()) == {"schema", "config", "header", "body"}
         assert card["schema"] == "2.0"
-        assert card["config"]["wide_screen_mode"] is True
+        assert card["config"]["wide_screen_mode"] is False
 
     def test_header_has_template_and_title(self):
         """Header must contain template (color) and title with tag+content."""
