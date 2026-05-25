@@ -13,8 +13,6 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.slock_engine.models import AgentIdentity, AgentStatus
 
 # ============================================================

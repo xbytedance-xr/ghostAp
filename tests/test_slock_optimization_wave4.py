@@ -8,7 +8,8 @@ Task 16: Status panel auto-refresh meets 3s SLA with debounce regression test.
 """
 
 import threading
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 # The slock engine modules have heavy deps (acp); skip gracefully if unavailable.
@@ -24,11 +25,9 @@ class TestNoDuplicateConclusionWrites:
         """Verify _persist_conclusion is called exactly once during a discussion."""
         from src.slock_engine.discussion_manager import DiscussionManager
         from src.slock_engine.models import (
-            AgentIdentity,
             DiscussionConfig,
-            DiscussionThread,
-            DiscussionStatus,
             DiscussionMessage,
+            DiscussionThread,
         )
 
         dm = DiscussionManager.__new__(DiscussionManager)

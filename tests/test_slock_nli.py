@@ -342,7 +342,6 @@ class TestFastPatternMatchNoMatch:
     @pytest.mark.parametrize(
         "text",
         [
-            "今天天气不错",
             "我想讨论一下架构方案",
             "Hello world",
             "这个 bug 怎么修",
@@ -353,6 +352,12 @@ class TestFastPatternMatchNoMatch:
     def test_no_match_returns_none(self, text: str):
         result = self.router._fast_pattern_match(text)
         assert result is None
+
+    def test_chitchat_detected(self):
+        """今天天气不错 matches chitchat pattern and returns CHITCHAT."""
+        result = self.router._fast_pattern_match("今天天气不错")
+        assert result is not None
+        assert result.action == SlockCommandAction.CHITCHAT
 
 
 # ===========================================================================
@@ -584,34 +589,34 @@ class TestIsSlockCommandWithIntentResult:
 
     def test_high_confidence_known_action_returns_true(self):
         intent = _make_intent(SlockCommandAction.STOP, confidence=0.95)
-        assert is_slock_command("停掉引擎", intent_result=intent) is True
+        assert is_slock_command("停掉引擎", intent_result=intent)
 
     def test_confidence_at_threshold_returns_true(self):
         intent = _make_intent(SlockCommandAction.STATUS, confidence=0.6)
-        assert is_slock_command("看看状态", intent_result=intent) is True
+        assert is_slock_command("看看状态", intent_result=intent)
 
     def test_confidence_below_threshold_returns_false(self):
         intent = _make_intent(SlockCommandAction.STATUS, confidence=0.59)
-        assert is_slock_command("看看状态", intent_result=intent) is False
+        assert not is_slock_command("看看状态", intent_result=intent)
 
     def test_unknown_action_returns_false_even_high_confidence(self):
         intent = _make_intent(SlockCommandAction.UNKNOWN, confidence=0.99)
-        assert is_slock_command("随便说点什么", intent_result=intent) is False
+        assert not is_slock_command("随便说点什么", intent_result=intent)
 
     def test_none_intent_result_no_slash_returns_false(self):
         """Without intent_result and no slash prefix, should return False."""
-        assert is_slock_command("停掉引擎", intent_result=None) is False
+        assert not is_slock_command("停掉引擎", intent_result=None)
 
     def test_slash_command_always_captured_regardless_of_intent(self):
         """/slock prefix always returns True regardless of intent_result."""
-        assert is_slock_command("/slock status") is True
+        assert is_slock_command("/slock status")
         # Even with a low-confidence intent, slash takes precedence
         intent = _make_intent(SlockCommandAction.UNKNOWN, confidence=0.0)
-        assert is_slock_command("/slock status", intent_result=intent) is True
+        assert is_slock_command("/slock status", intent_result=intent)
 
     def test_empty_text_returns_false(self):
         intent = _make_intent(SlockCommandAction.STOP, confidence=0.95)
-        assert is_slock_command("", intent_result=intent) is False
+        assert not is_slock_command("", intent_result=intent)
 
     def test_various_actions_above_threshold(self):
         """All non-UNKNOWN actions with >= 0.6 confidence should return True."""
@@ -619,7 +624,7 @@ class TestIsSlockCommandWithIntentResult:
             if action == SlockCommandAction.UNKNOWN:
                 continue
             intent = _make_intent(action, confidence=0.6)
-            assert is_slock_command("一些文本", intent_result=intent) is True
+            assert is_slock_command("一些文本", intent_result=intent)
 
 
 # ===========================================================================
@@ -1074,7 +1079,7 @@ class TestDiscussionTriggerNLI:
     def test_is_slock_command_accepts_discussion_intent(self):
         """is_slock_command returns True for high-confidence DISCUSSION intent."""
         intent = _make_intent(SlockCommandAction.DISCUSSION, confidence=0.88, params={"participants": ["a", "b"]})
-        assert is_slock_command("让a和b讨论", intent_result=intent) is True
+        assert is_slock_command("让a和b讨论", intent_result=intent)
 
 
 # ===========================================================================

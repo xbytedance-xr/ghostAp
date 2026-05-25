@@ -10,12 +10,9 @@ Verifies:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.feishu.handlers.slock import SlockHandler
-
 
 CHAT_ID = "oc_form_test_001"
 

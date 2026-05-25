@@ -18,10 +18,7 @@ import json
 import logging
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.feishu.handlers.slock import SlockHandler
-
 
 # ---------------------------------------------------------------------------
 # Helpers

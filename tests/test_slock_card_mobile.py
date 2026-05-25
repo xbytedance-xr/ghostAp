@@ -6,8 +6,6 @@ Tests AC-FIX-03, AC-FIX-09, AC-FIX-10, AC-FIX-11.
 import json
 import uuid
 
-import pytest
-
 from src.slock_engine.card_templates import (
     _truncate_dynamic_label,
     build_agent_message_card,
@@ -1624,3 +1622,72 @@ class TestDiscussionCardCollapsiblePanel:
                 break
 
         assert found, "121-char message should be in a collapsible_panel"
+
+
+# ---------------------------------------------------------------------------
+# Mouthpiece card mobile optimization: wide_screen_mode=false
+# ---------------------------------------------------------------------------
+
+
+class TestMouthpieceCardMobileOptimization:
+    """Mouthpiece.format_card returns cards with wide_screen_mode=false for mobile optimization."""
+
+    def test_format_card_wide_screen_mode_false(self):
+        """Mouthpiece.format_card returns card with config.wide_screen_mode=false."""
+        from src.slock_engine.mouthpiece import Mouthpiece
+
+        agent = _make_agent("TestAgent", "coder")
+        mouthpiece = Mouthpiece()
+
+        card = mouthpiece.format_card(
+            agent=agent,
+            content="Test message content",
+            channel_id="test-ch",
+            task_id="task-123",
+        )
+
+        # Verify card has config
+        assert "config" in card, "Card should have 'config' key"
+        config = card["config"]
+
+        # Verify wide_screen_mode is false
+        assert "wide_screen_mode" in config, "Config should have 'wide_screen_mode' key"
+        assert config["wide_screen_mode"] is False, (
+            f"Expected wide_screen_mode=False, got {config['wide_screen_mode']}"
+        )
+
+    def test_format_card_with_model_info_wide_screen_mode_false(self):
+        """Mouthpiece.format_card with model_info still has wide_screen_mode=false."""
+        from src.slock_engine.mouthpiece import Mouthpiece
+
+        agent = _make_agent("ReviewerAgent", "reviewer")
+        mouthpiece = Mouthpiece()
+
+        card = mouthpiece.format_card(
+            agent=agent,
+            content="Review complete",
+            model_info="claude-3-opus",
+            duration_s=12.5,
+            channel_id="test-ch-2",
+        )
+
+        assert card["config"]["wide_screen_mode"] is False, (
+            "wide_screen_mode should be false even with model_info and duration_s"
+        )
+
+    def test_format_escalation_wide_screen_mode_false(self):
+        """Mouthpiece.format_escalation also returns card with wide_screen_mode=false."""
+        from src.slock_engine.mouthpiece import Mouthpiece
+
+        agent = _make_agent("EscalationAgent", "coder")
+        mouthpiece = Mouthpiece()
+
+        card = mouthpiece.format_escalation(
+            agent=agent,
+            reason="Need human assistance with this task",
+        )
+
+        assert "config" in card, "Escalation card should have 'config' key"
+        assert card["config"]["wide_screen_mode"] is False, (
+            "format_escalation should also have wide_screen_mode=false"
+        )

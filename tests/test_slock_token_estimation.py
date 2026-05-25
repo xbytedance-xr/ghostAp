@@ -1,5 +1,4 @@
 """Tests for _estimate_tokens weighted CJK formula (AC17)."""
-import pytest
 
 from src.slock_engine.discussion_manager import DiscussionManager
 
@@ -83,7 +82,7 @@ class TestEstimateTokensWeighted:
         cjk_part = "测试内容" * 7  # 28 CJK chars
         latin_part = "hello world " * 6  # 72 chars
         text = cjk_part + latin_part  # 100 chars, 28% CJK
-        
+
         result = dm._estimate_tokens(text)
         # Expected: 28 * 1.5 + 72 * 0.25 = 42 + 18 = 60
         expected_baseline = int(28 * 1.5 + 72 * 0.25)

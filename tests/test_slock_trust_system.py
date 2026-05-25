@@ -9,14 +9,13 @@ AC21: After storing 1-hour trust, discussions skip confirmation within 60 minute
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 _acp_available = pytest.importorskip("acp", reason="acp package not installed")
 
 from src.slock_engine.engine import SlockEngine  # noqa: E402
-
 
 # ------------------------------------------------------------------
 # Helpers

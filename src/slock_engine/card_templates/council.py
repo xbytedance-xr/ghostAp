@@ -5,13 +5,13 @@ Migrated from card_templates_legacy.py — council-related card builders.
 
 from __future__ import annotations
 
+from ..models import CouncilRun, CouncilStatus
 from .common import (
     COUNCIL_STATUS_LABEL_ZH,
     build_card_wrapper,
     build_collapsible_panel,
     redact_sensitive,
 )
-from ..models import CouncilRun, CouncilStatus
 
 __all__ = [
     "build_council_card",

@@ -8,8 +8,6 @@ Verifies:
 
 from __future__ import annotations
 
-import pytest
-
 from src.slock_engine.models import DiscussionStatus
 
 

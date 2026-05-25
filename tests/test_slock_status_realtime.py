@@ -8,11 +8,8 @@ agent information and states.
 from __future__ import annotations
 
 import sys
-import threading
 import time
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 # ---------------------------------------------------------------------------
 # Stub missing acp submodules so that importing the slock engine does not fail.
@@ -26,7 +23,7 @@ for _mod_name in ("acp.interfaces", "acp.schema", "acp.helpers", "acp.stdio"):
 
 from src.slock_engine.card_templates import build_status_panel_card
 from src.slock_engine.engine import SlockEngine  # noqa: F401 — force module load for patching
-from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel, SlockTask, TaskStatus
+from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel
 
 
 def _make_agent(agent_id: str = "agent_1", name: str = "Coder", emoji: str = "🔧", role: str = "coder", owner_group: str = "ch_test") -> AgentIdentity:

@@ -23,7 +23,6 @@ from src.slock_engine.models import (
     TaskStatus,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers & Fixtures
 # ---------------------------------------------------------------------------
@@ -1250,9 +1249,10 @@ class TestTaskContextInjection:
         with patch.object(dm, 'execute_round') as mock_execute:
             # Make first round converge - add new message instead of modifying existing
             def mock_execute_round(t):
-                from src.slock_engine.models import DiscussionMessage
-                import uuid
                 import time
+                import uuid
+
+                from src.slock_engine.models import DiscussionMessage
                 # Add a new response message instead of modifying the initial one
                 response = DiscussionMessage(
                     message_id=str(uuid.uuid4()),

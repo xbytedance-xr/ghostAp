@@ -11,7 +11,8 @@ import time
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..config import get_settings
-from .models import SlockTask, TaskStatus, TaskTimelineEvent
+from .models import AgentIdentity, SlockTask, TaskStatus, TaskTimelineEvent
+from .protocols import SlockEngineContext
 
 if TYPE_CHECKING:
     import threading
@@ -37,40 +38,30 @@ class TaskBoardManager:
         *,
         lock: threading.RLock,
         tasks: list[SlockTask],
-        channel_getter: Callable[[], Optional[object]],
-        chat_id_getter: Callable[[], str],
-        dirty_getter: Callable[[], bool],
-        dirty_setter: Callable[[bool], None],
+        context: SlockEngineContext,
         router: TaskRouter,
         memory: MemoryManager,
-        registry_get: Callable[[str], Optional[object]],
-        execute_agent_fn: Callable[..., Optional[str]],
+        registry_get: Callable[[str], Optional[AgentIdentity]],
         chain_manager: Optional[TaskChainManager] = None,
         notifier: "Optional[TaskStatusNotifier]" = None,
-        resolve_agent_for_role: Callable[[str], Optional[object]] | None = None,
         get_parallel_plan_tasks: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self._lock = lock
         self._tasks = tasks
-        self._channel_getter = channel_getter
-        self._chat_id_getter = chat_id_getter
-        self._dirty_getter = dirty_getter
-        self._dirty_setter = dirty_setter
+        self._context = context
         self._router = router
         self._memory = memory
         self._registry_get = registry_get
-        self._execute_agent_fn = execute_agent_fn
         self._chain_manager = chain_manager
         self._notifier = notifier
-        self._resolve_agent_for_role = resolve_agent_for_role
         self._get_parallel_plan_tasks = get_parallel_plan_tasks
 
     def _notify_status_change(self, task_id: str, old_status: str, new_status: str, agent_id: str = "") -> None:
         """Notify observers of task status change (no-op if notifier not set)."""
         if self._notifier:
             try:
-                ch = self._channel_getter() if self._channel_getter else None
-                channel_id: str = getattr(ch, 'channel_id', '') or self._chat_id_getter()
+                ch = self._context.channel
+                channel_id: str = getattr(ch, 'channel_id', '') or self._context.chat_id
                 self._notifier.notify_status_changed(task_id, old_status, new_status, agent_id, channel_id)
             except Exception:
                 pass  # Notification failure must not break task flow
@@ -95,20 +86,20 @@ class TaskBoardManager:
                     open_count, settings.slock_max_open_tasks,
                 )
                 return None
-            channel = self._channel_getter()
+            channel = self._context.channel
             task = SlockTask(
                 content=content,
-                created_in=channel.channel_id if channel else self._chat_id_getter(),
+                created_in=channel.channel_id if channel else self._context.chat_id,
             )
             self._tasks.append(task)
-            self._dirty_setter(True)
+            self._context.set_dirty(True)
             snapshot = list(self._tasks)
         self._flush_if_dirty(snapshot)
         # Notify observers OUTSIDE lock to avoid deadlock (notifier has its own lock)
         if self._notifier:
             try:
-                ch = self._channel_getter() if self._channel_getter else None
-                channel_id: str = getattr(ch, 'channel_id', '') or self._chat_id_getter()
+                ch = self._context.channel
+                channel_id: str = getattr(ch, 'channel_id', '') or self._context.chat_id
                 self._notifier.notify_task_created(task.task_id, content, channel_id)
             except Exception:
                 logger.debug("notify_task_created failed for task %s", task.task_id[:8], exc_info=True)
@@ -140,7 +131,7 @@ class TaskBoardManager:
                         event_type="claimed", agent_id=agent_id,
                         timestamp=time.time(), detail=f"Task claimed by {agent_id}",
                     ))
-                    self._dirty_setter(True)
+                    self._context.set_dirty(True)
                     snapshot = list(self._tasks)
                     break
         if snapshot:
@@ -163,7 +154,7 @@ class TaskBoardManager:
                         event_type="completed", agent_id=agent_id,
                         timestamp=time.time(), detail="Task completed",
                     ))
-                    self._dirty_setter(True)
+                    self._context.set_dirty(True)
                     self._trim_done_tasks()
                     snapshot = list(self._tasks)
                     break
@@ -216,15 +207,16 @@ class TaskBoardManager:
             self._chain_manager.advance_chain(task.task_id, role, successor_task.task_id)
 
             # Auto-execute: find agent for successor role and dispatch immediately
-            if self._resolve_agent_for_role:
-                successor_agent = self._resolve_agent_for_role(successor_role)
-                if successor_agent:
-                    claimed = self.claim_task(successor_task.task_id, successor_agent.agent_id)
-                    if claimed:
-                        logger.info(
-                            "Chain successor auto-dispatched: %s claimed by %s",
-                            successor_task.task_id, successor_agent.name,
-                        )
+            channel = self._context.channel
+            channel_id = channel.channel_id if channel else self._context.chat_id
+            successor_agent = self._context.resolve_agent_for_role(successor_role, channel_id)
+            if successor_agent:
+                claimed = self.claim_task(successor_task.task_id, successor_agent.agent_id)
+                if claimed:
+                    logger.info(
+                        "Chain successor auto-dispatched: %s claimed by %s",
+                        successor_task.task_id, successor_agent.name,
+                    )
         return successor_task
 
     def execute_task(
@@ -254,7 +246,7 @@ class TaskBoardManager:
                 return None
 
         try:
-            result = self._execute_agent_fn(agent, task_content, callbacks)
+            result = self._context.execute_agent(agent, task_content, callbacks)
             if result:
                 self._mark_task_in_review(task_id, agent_id)
                 self.complete_task(task_id, agent_id)
@@ -279,7 +271,7 @@ class TaskBoardManager:
                     task.claimed_at = None
                     break
             self._router.task_claim.release(task_id, agent_id)
-            self._dirty_setter(True)
+            self._context.set_dirty(True)
             snapshot = list(self._tasks)
         self._flush_if_dirty(snapshot)
         self._notify_status_change(task_id, old_status_value, "todo", agent_id)
@@ -305,7 +297,7 @@ class TaskBoardManager:
                     task.claimed_at = None
                     recovered.append(task)
             if recovered:
-                self._dirty_setter(True)
+                self._context.set_dirty(True)
                 snapshot = list(self._tasks)
         if snapshot:
             self._flush_if_dirty(snapshot)
@@ -326,7 +318,7 @@ class TaskBoardManager:
                     if task.status != TaskStatus.IN_PROGRESS:
                         return False
                     task.status = TaskStatus.IN_REVIEW
-                    self._dirty_setter(True)
+                    self._context.set_dirty(True)
                     snapshot = list(self._tasks)
                     break
         if snapshot:
@@ -410,7 +402,7 @@ class TaskBoardManager:
                         event_type="force_completed", agent_id=actor_id,
                         timestamp=time.time(), detail=reason or "Force completed",
                     ))
-                    self._dirty_setter(True)
+                    self._context.set_dirty(True)
                     snapshot = list(self._tasks)
                     break
         if snapshot:
@@ -419,21 +411,21 @@ class TaskBoardManager:
 
     def _persist_task_board(self) -> None:
         """Persist task state for the active channel."""
-        channel = self._channel_getter()
-        channel_id = channel.channel_id if channel else self._chat_id_getter()
+        channel = self._context.channel
+        channel_id = channel.channel_id if channel else self._context.chat_id
         self._memory.write_task_board(channel_id, self._tasks)
 
     def _flush_if_dirty(self, snapshot: list[SlockTask]) -> None:
         """Persist the latest task board if dirty flag is set."""
         try:
             with self._lock:
-                if not self._dirty_getter():
+                if not self._context.dirty:
                     return
-                channel = self._channel_getter()
-                channel_id = channel.channel_id if channel else self._chat_id_getter()
+                channel = self._context.channel
+                channel_id = channel.channel_id if channel else self._context.chat_id
                 latest_snapshot = list(self._tasks)
                 self._memory.write_task_board(channel_id, latest_snapshot)
-                self._dirty_setter(False)
+                self._context.set_dirty(False)
         except OSError:
             logger.warning("Failed to persist task board (will retry on next mutation)", exc_info=True)
 
@@ -489,9 +481,6 @@ class TaskBoardManager:
         busy (non-IDLE status) to avoid overwhelming them.
         Uses execute_task for full lifecycle (execute → complete/rollback).
         """
-        if not self._resolve_agent_for_role:
-            return
-
         # Prevent nested triggering (execute_task → notifier → orchestrator → idle scan)
         if getattr(self, '_is_scanning', False):
             return
@@ -509,6 +498,9 @@ class TaskBoardManager:
         if not todo_tasks:
             return
 
+        channel = self._context.channel
+        channel_id = channel.channel_id if channel else self._context.chat_id
+
         for task in todo_tasks:
             # Try to find a suitable idle agent based on task content keywords
             if self._chain_manager:
@@ -520,7 +512,7 @@ class TaskBoardManager:
             else:
                 target_role = "coder"
 
-            agent = self._resolve_agent_for_role(target_role)
+            agent = self._context.resolve_agent_for_role(target_role, channel_id)
             if not agent or not hasattr(agent, 'agent_id'):
                 continue
 

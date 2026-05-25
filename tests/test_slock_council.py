@@ -36,10 +36,10 @@ def test_parse_council_commands():
 def test_council_command_requires_managed_chat():
     manager = MagicMock()
     manager.is_managed_chat.return_value = True
-    assert is_slock_command("/council 评审方案", chat_id="chat-1", manager=manager) is True
+    assert is_slock_command("/council 评审方案", chat_id="chat-1", manager=manager)
 
     manager.is_managed_chat.return_value = False
-    assert is_slock_command("/council 评审方案", chat_id="chat-1", manager=manager) is False
+    assert not is_slock_command("/council 评审方案", chat_id="chat-1", manager=manager)
 
 
 def test_council_run_collects_anonymous_reviews_and_final_synthesis():

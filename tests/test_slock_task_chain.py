@@ -10,7 +10,6 @@ Verifies that task chain propagation works correctly when a task completes:
 
 from __future__ import annotations
 
-import logging
 import uuid
 from unittest.mock import patch
 

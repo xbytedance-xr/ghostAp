@@ -6,10 +6,9 @@ and that exceptions are properly propagated (not swallowed).
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from src.slock_engine.engine import SlockEngine, SlockEngineCallbacks
+from src.slock_engine.engine import SlockEngine
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockChannel
 
 

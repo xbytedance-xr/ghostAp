@@ -5,7 +5,6 @@ instead of False (allow), preventing path restriction bypass.
 """
 
 import logging
-import os
 from unittest.mock import patch
 
 import pytest

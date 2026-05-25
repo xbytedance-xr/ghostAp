@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-
 # ---------------------------------------------------------------------------
 # Task 12: _maybe_trigger_discussion removed from handler
 # ---------------------------------------------------------------------------

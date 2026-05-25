@@ -1130,7 +1130,6 @@ class TestExecuteAgentTurnIntegration:
 
     def _make_mock_engine(self):
         """Create a mock engine with public API methods."""
-        from src.acp.models import PromptResult
 
         engine = MagicMock()
         engine.get_agent = MagicMock()

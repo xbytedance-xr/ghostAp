@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 import pytest
 
@@ -627,7 +626,6 @@ class TestSummarizeContextThreePhase:
 
     def test_llm_callback_not_held_under_lock(self, tmp_path):
         """LLM callback is invoked outside the lock (validated by concurrent access)."""
-        import threading
 
         mm = MemoryManager(base_path=str(tmp_path / "slock"))
         agent_id = "agent_lock_test"

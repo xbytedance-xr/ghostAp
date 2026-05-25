@@ -9,6 +9,7 @@ import re
 import threading
 import time
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -156,7 +157,12 @@ AGENT_ROLE_COLORS: dict[str, str] = {
 
 # Single Source of Truth: Agent status → Feishu card background color.
 # All card rendering code MUST use this map (do NOT create local duplicates).
-AGENT_STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = {
+#
+# DEPRECATED: This map will be moved to src/slock_engine/card_templates/common.py
+# in a future release. Import from there instead of models.py.
+# The STATUS_BG_STYLE_MAP in card_templates/common.py is the preferred
+# three-tier visual system for modern card rendering.
+_AGENT_STATUS_BG_COLOR_MAP_INTERNAL: dict[AgentStatus, str] = {
     AgentStatus.IDLE: "green",
     AgentStatus.WAKING: "turquoise",
     AgentStatus.THINKING: "yellow",
@@ -167,6 +173,41 @@ AGENT_STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = {
     AgentStatus.DISCUSSING: "purple",
     AgentStatus.PENDING_DISCUSSION: "yellow",
 }
+
+
+class _DeprecatedColorMap(dict):
+    """Dict wrapper that emits deprecation warning on first access."""
+
+    _warned: bool = False
+
+    def __getitem__(self, key):
+        if not self._warned:
+            warnings.warn(
+                "AGENT_STATUS_BG_COLOR_MAP is deprecated and will be moved to "
+                "src/slock_engine/card_templates/common.py in a future release. "
+                "Use STATUS_BG_STYLE_MAP for the new three-tier visual system.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._warned = True
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        if not self._warned:
+            warnings.warn(
+                "AGENT_STATUS_BG_COLOR_MAP is deprecated and will be moved to "
+                "src/slock_engine/card_templates/common.py in a future release. "
+                "Use STATUS_BG_STYLE_MAP for the new three-tier visual system.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self._warned = True
+        return super().get(key, default)
+
+
+AGENT_STATUS_BG_COLOR_MAP: dict[AgentStatus, str] = _DeprecatedColorMap(
+    _AGENT_STATUS_BG_COLOR_MAP_INTERNAL
+)
 
 
 @dataclass
@@ -190,8 +231,8 @@ class AgentIdentity:
     personality_traits: list[str] = field(default_factory=list)  # e.g. ['严谨', '注重细节']
 
     def __post_init__(self) -> None:
-        # Sanitize agent_id to prevent path traversal (dots excluded)
-        self.agent_id = re.sub(r'[^A-Za-z0-9_:-]+', '_', self.agent_id)
+        # Sanitize agent_id to prevent path traversal; dots are allowed (e.g. model versions like v3.5)
+        self.agent_id = re.sub(r'[^A-Za-z0-9_.:-]+', '_', self.agent_id)
         if '..' in self.agent_id or self.agent_id.startswith('.'):
             self.agent_id = self.agent_id.lstrip('.').replace('..', '_')
         if self.owner_group and self.owner_group not in self.member_groups:
@@ -343,6 +384,7 @@ class SlockChannel:
     team_name: str = ""
     owner_id: str = ""  # User who created this team (for permission checks)
     created_at: float = field(default_factory=time.time)
+    bootstrap_failed: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -353,6 +395,7 @@ class SlockChannel:
             "team_name": self.team_name,
             "owner_id": self.owner_id,
             "created_at": self.created_at,
+            "bootstrap_failed": self.bootstrap_failed,
         }
 
     @classmethod
@@ -365,6 +408,7 @@ class SlockChannel:
             team_name=data.get("team_name", ""),
             owner_id=data.get("owner_id", ""),
             created_at=data.get("created_at", time.time()),
+            bootstrap_failed=data.get("bootstrap_failed", False),
         )
 
 

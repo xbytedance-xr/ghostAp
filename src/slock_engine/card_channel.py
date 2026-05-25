@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from typing import Callable, Optional
 
 from ..card.delivery.engine import CardDelivery
@@ -38,6 +37,7 @@ class SlockCardChannel:
         self._delivery = delivery
         self._chat_id = chat_id
         self._sessions: dict[str, StaticCardSession] = {}
+        self._sessions_lock = threading.Lock()  # 保护 _sessions 并发读写
         self._periodic_updates: dict[str, threading.Timer] = {}  # msg_id -> timer
         self._periodic_lock = threading.Lock()
 
@@ -51,13 +51,15 @@ class SlockCardChannel:
         )
         msg_id = session.send(card_dict)
         if msg_id:
-            self._sessions[msg_id] = session
+            with self._sessions_lock:
+                self._sessions[msg_id] = session
         return msg_id
 
     def update_card(self, message_id: str, card: dict | str) -> bool:
         """Update an existing card. Returns True on success."""
         card_dict = json.loads(card) if isinstance(card, str) else card
-        session = self._sessions.get(message_id)
+        with self._sessions_lock:
+            session = self._sessions.get(message_id)
         if session and not session.closed:
             result = session.send(card_dict)
             return result is not None
@@ -68,7 +70,8 @@ class SlockCardChannel:
         # Directly deliver as update (session handles create-vs-patch internally)
         result = fallback.send(card_dict)
         if result:
-            self._sessions[message_id] = fallback
+            with self._sessions_lock:
+                self._sessions[message_id] = fallback
         return result is not None
 
     def schedule_periodic_update(

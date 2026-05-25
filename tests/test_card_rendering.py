@@ -11,8 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
-
 from src.slock_engine.card_templates import (
     build_collaboration_plan_card,
     build_progress_overview_card,
@@ -31,7 +29,6 @@ from src.slock_engine.models import (
     SlockTask,
     TaskStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -1011,8 +1008,8 @@ class TestStatusBgStyleMapIntegration:
 
     def test_status_panel_uses_semantic_bg_for_discussing(self):
         """Status panel should use 'purple' background for DISCUSSING agents."""
-        from src.slock_engine.card_templates.status import build_status_panel_card
         from src.slock_engine.card_templates.common import STATUS_BG_STYLE_MAP
+        from src.slock_engine.card_templates.status import build_status_panel_card
         from src.slock_engine.models import AgentIdentity, AgentStatus
 
         agent = AgentIdentity(
@@ -1053,8 +1050,10 @@ class TestHighlightPlanId:
         """Highlighted plan should get 'blue' background_style."""
         from src.slock_engine.card_templates.progress import build_progress_overview_card
         from src.slock_engine.models import (
-            CollaborationPlan, CollaborationPlanStatus,
-            PlanStep, PlanStepStatus, AgentIdentity,
+            AgentIdentity,
+            CollaborationPlan,
+            CollaborationPlanStatus,
+            PlanStep,
         )
 
         plan = CollaborationPlan(
@@ -1080,8 +1079,10 @@ class TestHighlightPlanId:
         """Without highlight, plan rows should get 'default' background."""
         from src.slock_engine.card_templates.progress import build_progress_overview_card
         from src.slock_engine.models import (
-            CollaborationPlan, CollaborationPlanStatus,
-            PlanStep, AgentIdentity,
+            AgentIdentity,
+            CollaborationPlan,
+            CollaborationPlanStatus,
+            PlanStep,
         )
 
         plan = CollaborationPlan(
@@ -1191,7 +1192,7 @@ class TestMigratedCardTemplates:
 
     def test_escalation_card_structure(self):
         from src.slock_engine.card_templates.escalation import build_escalation_card
-        from src.slock_engine.models import EscalationRequest, EscalationLevel
+        from src.slock_engine.models import EscalationLevel, EscalationRequest
 
         esc = EscalationRequest(
             agent_id="agent-1",
@@ -1206,7 +1207,7 @@ class TestMigratedCardTemplates:
 
     def test_resolved_escalation_card_structure(self):
         from src.slock_engine.card_templates.escalation import build_resolved_escalation_card
-        from src.slock_engine.models import EscalationRequest, EscalationLevel
+        from src.slock_engine.models import EscalationLevel, EscalationRequest
 
         esc = EscalationRequest(
             agent_id="agent-1",

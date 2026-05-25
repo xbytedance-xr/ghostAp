@@ -303,7 +303,7 @@ def build_agent_message_card(
         header_title=header_title,
         header_template=header_template,
         elements=elements,
-        mobile_optimize=False,
+        mobile_optimize=True,
     )
 
 
@@ -1055,13 +1055,13 @@ def build_discussion_summary_card(
         channel_id: Channel ID for action buttons.
     """
     status_labels = {
-        "converged": "✅ 达成共识",
-        "timeout": "⏰ 超时结束",
-        "max_rounds_reached": "🔄 已达最大轮次",
-        "budget_exhausted": "💰 预算耗尽",
-        "manually_stopped": "⏹ 手动终止",
+        "converged": ("✅ 达成共识", "green"),
+        "timeout": ("⏰ 超时结束", "grey"),
+        "max_rounds_reached": ("🔄 已达最大轮次", "grey"),
+        "budget_exhausted": ("💰 预算耗尽", "orange"),
+        "manually_stopped": ("⏹ 手动终止", "grey"),
     }
-    status_display = status_labels.get(status, status)
+    status_display, header_template = status_labels.get(status, (status, "grey"))
     header_title = f"💬 讨论结论 — {status_display}"
 
     elements: list[dict] = []
@@ -1093,7 +1093,7 @@ def build_discussion_summary_card(
 
     return _build_card_wrapper(
         header_title=header_title,
-        header_template="green",
+        header_template=header_template,
         elements=elements,
         mobile_optimize=False,
     )

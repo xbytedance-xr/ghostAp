@@ -12,16 +12,13 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.slock_engine.intent_router import IntentRouter
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory, SlockTask, TaskStatus
 from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
 from src.slock_engine.task_board_manager import TaskBoardManager
-from src.slock_engine.task_chain_manager import ChainStep, ChainTemplate, TaskChainManager
+from src.slock_engine.task_chain_manager import TaskChainManager
 from src.slock_engine.task_router import TaskRouter
-
 
 # ===========================================================================
 # Task 29: Memory Capacity Enforcement

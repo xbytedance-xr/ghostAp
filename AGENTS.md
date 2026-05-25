@@ -90,6 +90,15 @@ Start from these modules instead of reading the whole tree:
 - `src/chat_lock.py`, `src/repo_lock.py`, `src/utils/lock_order.py`: chat/repo
   locking and lock-order enforcement.
 - `src/config/`: pydantic settings package and config validation.
+- `src/slock_engine/activation_guard.py`: permission check and rate limiting guard for
+  passive auto-activation.
+- `src/slock_engine/autonomous_resolver.py`: autonomous resolver for uncertain intents.
+- `src/slock_engine/role_bootstrap.py`: automatic role creation bootstrap when creating
+  new slock groups.
+- `src/slock_engine/task_classifier.py`: message classifier (task/chat/uncertain).
+- `src/slock_engine/task_queue.py`: task queue management.
+- `src/slock_engine/safe_error.py`: safe error message utility (re-export from
+  `src/utils/errors`).
 
 ## Strategy And Transport
 

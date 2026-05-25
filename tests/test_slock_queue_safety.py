@@ -2,8 +2,7 @@
 import collections
 import threading
 import time
-from unittest.mock import MagicMock, patch, PropertyMock
-import pytest
+from unittest.mock import MagicMock
 
 
 class TestQueueThreadSafety:
@@ -11,8 +10,6 @@ class TestQueueThreadSafety:
 
     def _make_handler(self):
         """Create a minimal SlockHandler with mocked dependencies."""
-        from unittest.mock import MagicMock
-        import collections
         import threading
 
         handler = MagicMock()
@@ -63,7 +60,6 @@ class TestDrainAll:
         """Pre-fill 5 messages, drain should process all 5."""
         import collections
         import threading
-        from unittest.mock import MagicMock, call
 
         # Set up handler-like object
         handler = MagicMock()
@@ -89,14 +85,12 @@ class TestDrainAll:
         engine.registry.get_agent.return_value = agent_identity
 
         # Import and call the actual drain method
-        from src.feishu.handlers.slock import SlockHandler
         dispatch_count = [0]
 
         def mock_execute_routed(eng, msg_id, chat, text, sender, agent):
             dispatch_count[0] += 1
 
         # Use the real drain logic with our mock
-        from src.feishu.handlers.slock import SlockHandler
         # We'll simulate the drain logic directly
         timeout_s = 60
         while True:

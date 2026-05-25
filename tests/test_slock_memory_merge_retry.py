@@ -9,11 +9,8 @@ Tests cover the _write_agent_memory_async method's read-merge-retry strategy:
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory

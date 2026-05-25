@@ -12,7 +12,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .card import CardSessionConfig
 from .spec import SpecReviewConfig
 
-
 # ---------------------------------------------------------------------------
 # Slock discussion constants (copied from src/slock_engine/discussion_manager.py)
 # Keep in sync with discussion_manager.py when updating.
@@ -571,7 +570,7 @@ class Settings(BaseSettings):
     # Slock 引擎运行参数 --------------------------------------------------------
     slock_max_parallel_agents: int = Field(default=4, ge=1, description="Slock 最大并行 Agent 数（ThreadPool workers）")
     slock_max_queue_size: int = Field(default=8, ge=1, description="Slock 执行队列最大深度，超出时拒绝提交")
-    slock_queue_wait_timeout: int = Field(default=60, ge=1, description="Slock 排队等待超时（秒），超时未执行则取消")
+    slock_queue_wait_timeout: int = Field(default=60, ge=1, le=600, description="Slock 排队等待超时（秒），超时未执行则取消")
     slock_max_open_tasks: int = Field(default=50, ge=1, description="Slock 单群最大未完成任务数，超出时拒绝创建")
     slock_agent_execution_timeout: int = Field(default=600, ge=30, description="Slock 单 Agent 执行超时（秒），超时后取消 ACP session")
     slock_observer_flush_timeout: int = Field(default=30, ge=5, description="ObserverLearningQueue flush 操作超时（秒）")
@@ -619,6 +618,72 @@ class Settings(BaseSettings):
     )
     slock_auto_plan_timeout: int = Field(default=30, ge=5, le=300, description="协作计划自动启动等待秒数（用户无否决则自动执行）")
     slock_role_response_timeout: int = Field(default=120, ge=10, le=300, description="角色主动参与的响应超时秒数，超时则 escalate 或选择次优角色")
+    slock_passive_mode: bool = Field(
+        default=True,
+        description="被动模式：True 时 dispatcher 仅检查 is_managed_chat 即路由消息到 slock，无需 is_slock_active 前置检查",
+    )
+    slock_default_roles: str = Field(
+        default="",
+        description=(
+            "新建 slock 群时自动创建的预置角色（格式: role:tool_type,role:tool_type）；留空则不自动创建。"
+            " 合法 tool_type: codex, claude, coco, aiden, gemini, ttadk"
+        ),
+    )
+
+    # Slock Auto-Activation Guard ------------------------------------------------
+    slock_auto_activate_whitelist_user_ids: str = Field(
+        default="",
+        description="被动激活白名单用户 ID（逗号分隔），留空则根据 slock_auto_activate_default_policy 决定权限范围",
+    )
+    slock_auto_activate_default_policy: str = Field(
+        default="allow_all",
+        description=(
+            "自动激活默认策略：'allow_all'（默认）时白名单为空则允许所有用户触发；"
+            "'admin_only' 时白名单为空则仅 admin 可触发"
+        ),
+    )
+
+    @field_validator("slock_auto_activate_default_policy")
+    @classmethod
+    def _validate_auto_activate_policy(cls, v: str) -> str:
+        valid = {"admin_only", "allow_all"}
+        if v not in valid:
+            raise ValueError(f"slock_auto_activate_default_policy 必须是 {valid} 之一，当前值: {v!r}")
+        return v
+
+    @field_validator("slock_default_roles")
+    @classmethod
+    def _validate_default_roles(cls, v: str) -> str:
+        if not v:
+            return v
+        valid_tool_types = {"codex", "claude", "coco", "aiden", "gemini", "ttadk"}
+        for pair in v.split(","):
+            pair = pair.strip()
+            if not pair:
+                continue
+            if ":" not in pair:
+                raise ValueError(
+                    f"slock_default_roles 格式错误: {pair!r}，应为 role:tool_type"
+                )
+            _, tool_type = pair.rsplit(":", 1)
+            tool_type = tool_type.strip().lower()
+            if tool_type not in valid_tool_types:
+                raise ValueError(
+                    f"slock_default_roles 非法 tool_type: {tool_type!r}，合法值: {valid_tool_types}"
+                )
+        return v
+    slock_auto_activate_rate_limit_per_user: int = Field(
+        default=3, ge=1, le=30,
+        description="单用户每分钟最大自动激活次数",
+    )
+    slock_auto_activate_rate_limit_global: int = Field(
+        default=10, ge=1, le=100,
+        description="全局每分钟最大自动激活次数",
+    )
+    slock_bootstrap_timeout: int = Field(
+        default=10, ge=1, le=60,
+        description="默认角色 bootstrap 同步等待超时（秒），超时后队列仍继续消费",
+    )
 
     @field_validator("slock_team_name_suffix", mode="before")
     @classmethod
@@ -840,6 +905,17 @@ class Settings(BaseSettings):
                 "confirmation timeout exceeds undo window, which may confuse users. "
                 "Consider increasing lock_undo_window_seconds or decreasing lock_confirm_timeout.",
                 self.lock_undo_window_seconds, self.lock_confirm_timeout,
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _warn_slock_default_roles_empty(self) -> "Settings":
+        """Warn if slock_default_roles is empty (no preset roles will be auto-created)."""
+        if not self.slock_default_roles:
+            _logging.getLogger(__name__).warning(
+                "slock_default_roles is empty. No preset roles will be auto-created when creating new slock groups. "
+                "Configure SLOCK_DEFAULT_ROLES in .env if you want automatic role provisioning "
+                "(e.g., 'planner:claude,coder:codex,reviewer:claude,tester:codex')."
             )
         return self
 

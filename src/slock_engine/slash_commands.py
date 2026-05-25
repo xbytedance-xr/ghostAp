@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional
 
 
 class SlockCommandAction(Enum):
@@ -34,8 +35,8 @@ class SlockCommandAction(Enum):
 
     # Task management
     TASK_LIST = "task_list"
-    TASK_ASSIGN = "task_assign"
     TASK_STATUS = "task_status"
+    TASK_ASSIGN = "task_assign"  # Deprecated: NLI-only, auto-routed via dispatch loop
 
     # Discussion
     DISCUSSION = "discussion"
@@ -62,6 +63,20 @@ class SlockCommandAction(Enum):
 
     # Unknown
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True, slots=True)
+class SlockCommandResult:
+    """Result of is_slock_command check. Supports bool() for backward compatibility."""
+
+    is_command: bool
+    action: Optional[SlockCommandAction] = None
+
+    def __bool__(self) -> bool:
+        return self.is_command
+
+
+NEEDS_ACTIVATION = SlockCommandResult(is_command=False, action=SlockCommandAction.ACTIVATE)
 
 
 @dataclass(frozen=True)
@@ -364,18 +379,8 @@ def _parse_task_subcommand(args: str) -> SlockCommand:
     elif subcmd == "status":
         return SlockCommand(action=SlockCommandAction.TASK_STATUS)
     elif subcmd == "assign":
-        # /task assign <content> <role_name>
-        # Supports quoted multi-word arguments:
-        #   /task assign "implement login" "Coder Alpha"
-        #   /task assign implement_login coder
-        content, role = _parse_assign_args(sub_args)
-        if content and role:
-            return SlockCommand(
-                action=SlockCommandAction.TASK_ASSIGN,
-                args=content,
-                target=role,
-            )
-        return SlockCommand(action=SlockCommandAction.TASK_ASSIGN, args=sub_args)
+        # Deprecated: tasks are now auto-routed; return UNKNOWN with hint
+        return SlockCommand(action=SlockCommandAction.UNKNOWN, args="[deprecated] /task assign 已移除，任务会自动分配给最合适的角色")
     else:
         return SlockCommand(action=SlockCommandAction.TASK_LIST)
 
@@ -405,7 +410,7 @@ def is_slock_command(
     manager=None,
     *,
     intent_result=None,
-) -> "bool | str":
+) -> SlockCommandResult:
     """Check if text is a slock-related command.
 
     /slock and /new-team are always captured globally.
@@ -417,27 +422,26 @@ def is_slock_command(
     without a slash prefix.
 
     Returns:
-        True — text is a slock command and should be handled.
-        False — text is not a slock command at all.
-        "NEEDS_ACTIVATION" — text is a managed-chat-only slock command but
-            the chat is not managed; caller should prompt user to activate.
+        SlockCommandResult with is_command=True when text is a slock command.
+        SlockCommandResult with is_command=False when text is not a slock command.
+        NEEDS_ACTIVATION when the command needs activation first.
     """
     if not text:
-        return False
+        return SlockCommandResult(is_command=False)
     normalized = text.strip().lower()
 
     # Always capture /slock and /new-team regardless of chat state
     if normalized.startswith(("/slock", "/new-team")):
-        return True
+        return SlockCommandResult(is_command=True)
 
     # Team-internal commands require managed chat context
     if normalized.startswith(("/new-role", "/role", "/task", "/team", "/council", "/discuss", "/memory", "/plan")):
         if manager is not None and chat_id:
             if manager.is_managed_chat(chat_id):
-                return True
-            return "NEEDS_ACTIVATION"
+                return SlockCommandResult(is_command=True)
+            return NEEDS_ACTIVATION
         # No manager context — conservative: don't capture
-        return False
+        return SlockCommandResult(is_command=False)
 
     # NLI fallback: high-confidence intent classification also counts
     if intent_result is not None:
@@ -447,6 +451,6 @@ def is_slock_command(
             intent_result.action != SlockCommandAction.UNKNOWN
             and intent_result.confidence >= nli_threshold
         ):
-            return True
+            return SlockCommandResult(is_command=True, action=intent_result.action)
 
-    return False
+    return SlockCommandResult(is_command=False)

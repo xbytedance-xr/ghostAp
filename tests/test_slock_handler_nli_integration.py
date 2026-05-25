@@ -6,7 +6,7 @@ Covers AC14: 5 core NLI routing paths.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -135,7 +135,6 @@ class TestNLITimeoutDegradation:
 
         # Mock the NLI loop call to raise TimeoutError
         with patch("src.feishu.handlers.slock._get_nli_loop") as mock_loop:
-            import asyncio
             import concurrent.futures
 
             mock_future = MagicMock()

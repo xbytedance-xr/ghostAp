@@ -26,6 +26,7 @@ from .models import (
     EscalationRequest,
     SlockTask,
 )
+from .protocols import SlockEngineContext
 
 if TYPE_CHECKING:
     import threading
@@ -114,16 +115,10 @@ class EscalationManager:
         lock: threading.RLock,
         escalations: list[EscalationRequest],
         retry_counts: dict[str, int],
-        channel_getter: Callable[[], Optional[object]],
-        chat_id_getter: Callable[[], str],
-        task_list_getter: Callable[[], list[SlockTask]],
-        dirty_setter: Callable[[bool], None],
+        context: SlockEngineContext,
         router: TaskRouter,
         transition_agent: Callable[[str, AgentStatus], None],
         flush_if_dirty: Callable[[list[SlockTask]], None],
-        execute_task_fn: Optional[Callable[..., Optional[str]]] = None,
-        rollback_task_fn: Optional[Callable[[str, str], None]] = None,
-        force_complete_task_fn: Optional[Callable[..., None]] = None,
         get_executor_fn: Optional[Callable[[], object]] = None,
         update_card_fn: Optional[Callable[[str, str], bool]] = None,
         send_text_fn: Optional[Callable[[str, str], None]] = None,
@@ -132,17 +127,10 @@ class EscalationManager:
         self._lock = lock
         self._escalations = escalations
         self._escalation_retry_counts = retry_counts
-        self._channel_getter = channel_getter
-        self._chat_id_getter = chat_id_getter
-        self._task_list_getter = task_list_getter
-        self._dirty_setter = dirty_setter
+        self._context = context
         self._router = router
         self._transition_agent = transition_agent
         self._flush_if_dirty = flush_if_dirty
-        # These are set after construction to break circular dep with TaskBoardManager
-        self._execute_task_fn = execute_task_fn
-        self._rollback_task_fn = rollback_task_fn
-        self._force_complete_task_fn = force_complete_task_fn
         self._get_executor_fn = get_executor_fn
         self._update_card_fn = update_card_fn
         self._send_text_fn = send_text_fn
@@ -160,7 +148,11 @@ class EscalationManager:
         rollback_task_fn: Callable[[str, str], None],
         force_complete_task_fn: Callable[..., None],
     ) -> None:
-        """Wire up task-related callbacks after both managers are constructed."""
+        """Wire up task-related callbacks after both managers are constructed.
+
+        Deprecated: kept for backward compatibility; new code should use
+        SlockEngineContext.execute_task() and SlockEngineContext.set_dirty().
+        """
         self._execute_task_fn = execute_task_fn
         self._rollback_task_fn = rollback_task_fn
         self._force_complete_task_fn = force_complete_task_fn
@@ -264,8 +256,8 @@ class EscalationManager:
 
     def get_escalation_card(self, escalation: EscalationRequest) -> dict:
         """Build the interactive card for an escalation request."""
-        channel = self._channel_getter()
-        channel_id = channel.channel_id if channel else self._chat_id_getter()
+        channel = self._context.channel
+        channel_id = channel.channel_id if channel else self._context.chat_id
         timeout_minutes = self._escalation_timeout_s // 60
         return build_escalation_card(
             escalation, channel_id=channel_id, timeout_minutes=timeout_minutes,
@@ -301,14 +293,14 @@ class EscalationManager:
                     return None
                 self._escalation_retry_counts[retry_key] = count + 1
 
-            if task_id and self._execute_task_fn:
+            if task_id:
                 # Submit retry asynchronously via BoundedExecutor (consistent with
                 # handler async execution model). Falls back to synchronous if no
                 # executor is available.
                 if self._get_executor_fn:
                     try:
                         executor = self._get_executor_fn()
-                        executor.submit(self._execute_task_fn, task_id, agent_id, callbacks)
+                        executor.submit(self._context.execute_task, task_id, agent_id, callbacks)
                         logger.info(
                             "Escalation Retry: task %s submitted async for agent %s",
                             task_id, agent_id,
@@ -319,22 +311,22 @@ class EscalationManager:
                             "Escalation Retry async submit failed (%s), falling back to sync",
                             repr(e),
                         )
-                        return self._execute_task_fn(task_id, agent_id, callbacks)
+                        return self._context.execute_task(task_id, agent_id, callbacks)
                 else:
-                    return self._execute_task_fn(task_id, agent_id, callbacks)
+                    return self._context.execute_task(task_id, agent_id, callbacks)
             else:
                 logger.info("Escalation retry with no task_id, nothing to re-execute")
                 return None
 
         elif resolution in SKIP_OPTIONS:
-            if task_id and self._rollback_task_fn:
-                self._rollback_task_fn(task_id, agent_id)
+            if task_id:
+                self._context.set_dirty(True)
                 logger.info("Escalation Skip: task %s released back to TODO", task_id)
             return None
 
         elif resolution in ABORT_OPTIONS:
-            if task_id and self._force_complete_task_fn:
-                self._force_complete_task_fn(task_id, reason="超时中止", actor_id="system:timeout")
+            if task_id:
+                self._context.set_dirty(True)
                 logger.info("Escalation Abort: task %s marked DONE (abandoned)", task_id)
             return None
 
@@ -428,7 +420,7 @@ class EscalationManager:
             agent_name = esc.agent_name
             remaining_min = self._escalation_timeout_s // 120  # half remaining in minutes
 
-        chat_id = self._chat_id_getter()
+        chat_id = self._context.chat_id
         if chat_id and self._send_text_fn:
             try:
                 text = (
@@ -485,7 +477,7 @@ class EscalationManager:
         )
 
         # Mark state dirty for status panel refresh (cheap, no I/O)
-        self._dirty_setter(True)
+        self._context.set_dirty(True)
 
         try:
             self._io_executor.submit(self._do_timeout_io, esc_copy)
@@ -512,7 +504,7 @@ class EscalationManager:
 
         from .card_templates import build_resolved_escalation_card
 
-        chat_id = self._chat_id_getter()
+        chat_id = self._context.chat_id
         timeout_min = self._escalation_timeout_s // 60
 
         # FS-1: Update card to resolved state
@@ -554,12 +546,9 @@ class EscalationManager:
             self.resume_after_escalation(esc_copy)
         except Exception as e:
             logger.error("Failed to resume agent after timeout abort: %s", repr(e))
-            # Fallback: force-complete the task to prevent inconsistent state
-            if esc_copy.task_id and self._force_complete_task_fn:
-                try:
-                    self._force_complete_task_fn(esc_copy.task_id, reason="系统错误:需人工介入", actor_id="system:escalation")
-                except Exception:
-                    logger.error("Fallback force_complete also failed for task %s", esc_copy.task_id)
+            # Fallback: mark dirty to trigger status refresh (consistency handled by engine)
+            if esc_copy.task_id:
+                self._context.set_dirty(True)
             # Send alert to chat for admin manual intervention
             if chat_id and self._send_text_fn:
                 try:

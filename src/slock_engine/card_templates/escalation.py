@@ -12,11 +12,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .common import (
+from ..models import (
     ABORT_OPTIONS,
-    DISPLAY_TZ,
     EscalationLevel,
     EscalationRequest,
+)
+from .common import (
+    DISPLAY_TZ,
     apply_compact_style,
     build_card_wrapper,
     build_responsive_layout,

@@ -102,7 +102,6 @@ try:
         AgentIdentity,
         AgentStatus,
         SlockChannel,
-        SlockTask,
         TaskStatus,
         TeamSnapshot,
     )

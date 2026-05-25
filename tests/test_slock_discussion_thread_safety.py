@@ -5,10 +5,7 @@ Validates that concurrent access via _data_lock does not corrupt shared state.
 
 import threading
 
-import pytest
-
 from src.slock_engine.models import DiscussionMessage, DiscussionThread
-
 
 # ---------------------------------------------------------------------------
 # Helpers

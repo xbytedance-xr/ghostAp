@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from src.slock_engine.card_templates.role import build_role_list_card
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
 

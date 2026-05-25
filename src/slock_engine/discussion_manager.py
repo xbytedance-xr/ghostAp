@@ -22,7 +22,6 @@ from typing import Any, Optional
 
 from .models import (
     AgentIdentity,
-    AgentStatus,
     DiscussionConfig,
     DiscussionMessage,
     DiscussionStatus,
@@ -1418,7 +1417,8 @@ class DiscussionManager:
 只返回 JSON，不要添加其他解释。"""
 
         try:
-            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+            from concurrent.futures import ThreadPoolExecutor
+            from concurrent.futures import TimeoutError as FutureTimeoutError
 
             def _call_llm() -> tuple[bool, str]:
                 try:
@@ -1593,7 +1593,6 @@ class DiscussionManager:
             # Write conclusion to first participant's reasoning snapshot
             primary_agent_id = thread.participants[0]
             try:
-                import json
                 from datetime import datetime, timezone
 
                 conclusion_data = {
@@ -2063,7 +2062,7 @@ class DiscussionManager:
             return fallback
 
         try:
-            from ..agent_session import create_engine_session, close_session_safely
+            from ..agent_session import close_session_safely, create_engine_session
 
             agent_type = getattr(self._engine, "agent_type", "coco") or "coco"
             cwd = getattr(self._engine, "root_path", ".") or "."

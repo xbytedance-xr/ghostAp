@@ -5,57 +5,6 @@ All public build_* functions are re-exported here for backward compatibility.
 """
 
 # Re-export common utilities (new canonical location)
-from .common import (  # noqa: F401
-    COUNCIL_STATUS_LABEL_ZH,
-    DISPLAY_TZ,
-    STATUS_BG_STYLE_MAP,
-    STATUS_ICON_MAP,
-    STATUS_LABEL_ZH,
-    TASK_STATUS_BG_COLOR_MAP,
-    TASK_STATUS_ICONS,
-    TASK_STATUS_LABEL_ZH,
-    build_callback_button,
-    build_card_wrapper,
-    build_chat_multi_url,
-    build_collapsible_panel,
-    build_slock_group_jump_button,
-    truncate_dynamic_label,
-)
-
-# New canonical status panel card (migrated from legacy)
-from .status import build_status_panel_card  # noqa: F401
-
-# Migrated submodule cards
-from .role import build_role_info_card, build_role_list_card  # noqa: F401
-from .task import build_task_board_card  # noqa: F401
-from .memory import build_memory_group_card  # noqa: F401
-from .welcome import build_welcome_card  # noqa: F401
-from .command import (  # noqa: F401
-    build_command_hub_card,
-    build_command_panel_card,
-    build_command_panel_extended_card,
-)
-from .council import (  # noqa: F401
-    build_council_card,
-    build_council_expandable_card,
-    build_council_detail_card,
-    build_council_result_card,
-)
-from .escalation import (  # noqa: F401
-    build_escalation_card,
-    build_resolved_escalation_card,
-)
-from .progress import (  # noqa: F401
-    build_progress_overview_card,
-    build_collaboration_plan_card,
-    build_task_overview_card,
-)
-from .discussion import (  # noqa: F401
-    build_discussion_live_card,
-    build_discussion_conclusion_card,
-    build_discussion_history_list_card,
-)
-
 # Re-export remaining build_* from the legacy monolithic module
 # (excluding those already migrated to submodules above)
 from ..card_templates_legacy import (  # noqa: F401
@@ -98,6 +47,66 @@ from ..card_templates_legacy import (  # noqa: F401
     build_team_list_card,
     build_transfer_suggestion_card,
 )
+from .command import (  # noqa: F401
+    build_command_hub_card,
+    build_command_panel_card,
+    build_command_panel_extended_card,
+)
+from .common import (  # noqa: F401
+    AGENT_STATUS_BG_COLOR_MAP,
+    COUNCIL_STATUS_LABEL_ZH,
+    DISPLAY_TZ,
+    STATUS_BG_STYLE_MAP,
+    STATUS_ICON_MAP,
+    STATUS_LABEL_ZH,
+    TASK_STATUS_BG_COLOR_MAP,
+    TASK_STATUS_ICONS,
+    TASK_STATUS_LABEL_ZH,
+    build_callback_button,
+    build_card_wrapper,
+    build_chat_multi_url,
+    build_collapsible_panel,
+    build_slock_group_jump_button,
+    truncate_dynamic_label,
+)
+from .council import (  # noqa: F401
+    build_council_card,
+    build_council_detail_card,
+    build_council_expandable_card,
+    build_council_result_card,
+)
+from .discussion import (  # noqa: F401
+    build_discussion_conclusion_card,
+    build_discussion_history_list_card,
+    build_discussion_live_card,
+)
+from .escalation import (  # noqa: F401
+    build_escalation_card,
+    build_resolved_escalation_card,
+)
+from .memory import build_memory_group_card  # noqa: F401
+from .progress import (  # noqa: F401
+    build_collaboration_plan_card,
+    build_progress_overview_card,
+    build_task_overview_card,
+)
+from .queue_feedback import (  # noqa: F401
+    build_activation_confirm_card,
+    build_clarification_confirmed_card,
+    build_clarification_ignored_card,
+    build_queue_wait_card,
+    build_result_card,
+    build_retry_swap_card,
+    build_timeout_notify_card,
+)
+
+# Migrated submodule cards
+from .role import build_role_info_card, build_role_list_card  # noqa: F401
+
+# New canonical status panel card (migrated from legacy)
+from .status import build_status_panel_card  # noqa: F401
+from .task import build_task_board_card  # noqa: F401
+from .welcome import build_welcome_card  # noqa: F401
 
 # Backward-compatible aliases: old underscore-prefixed names → new public names
 _DISPLAY_TZ = DISPLAY_TZ
@@ -106,4 +115,5 @@ _TASK_STATUS_LABEL_ZH = TASK_STATUS_LABEL_ZH
 _STATUS_ICON_MAP = STATUS_ICON_MAP
 _TASK_STATUS_ICONS = TASK_STATUS_ICONS
 _TASK_STATUS_BG_COLOR_MAP = TASK_STATUS_BG_COLOR_MAP
+_AGENT_STATUS_BG_COLOR_MAP = AGENT_STATUS_BG_COLOR_MAP
 _COUNCIL_STATUS_LABEL_ZH = COUNCIL_STATUS_LABEL_ZH

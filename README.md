@@ -280,40 +280,48 @@ uv run python -m src.main
 
 ### Slock 协作模式
 
-Slock 是飞书群内的多 Agent 团队模式。先激活团队，再创建角色，最后把任务交给指定角色或让系统按技能画像自动分配。
+Slock 是飞书群内的多 Agent 团队模式。**进群直接发送任务即可**，系统自动创建默认角色、路由任务、排队执行、交付结果。无需任何前置命令。
+
+**使用方式：** 在 Slock 群中直接发送自然语言任务（如「帮我写一个快速排序函数」），Agent 会自动处理并交付结果。
+
+#### 默认角色
+
+系统会自动创建以下默认角色，各司其职：
+
+| 角色 | 职责 |
+|------|------|
+| 📋 规划师 (planner) | 分析任务需求，拆解为可执行的子任务 |
+| 👨‍💻 编码师 (coder) | 实现代码，完成具体开发任务 |
+| 🔍 审查员 (reviewer) | 检查代码质量，确保符合规范 |
+| 🧪 测试员 (tester) | 验证功能，编写和运行测试 |
+
+#### 自定义角色
+
+通过环境变量 `SLOCK_DEFAULT_ROLES` 可以自定义默认角色集合：
+
+```env
+# 格式：角色名:模型类型,角色名:模型类型
+# 支持的模型类型：codex, claude, coco, aiden, gemini, ttadk
+SLOCK_DEFAULT_ROLES=planner:claude,coder:codex,reviewer:claude,tester:codex
+```
+
+也可以使用 `/new-role <名称>` 命令在群内手动创建自定义角色。
+
+#### 高级管理 / 运维
+
+以下命令用于团队配置和状态查看，日常使用无需关注：
 
 | 命令 | 作用 |
 |------|------|
-| `/slock` | 在当前群激活 Slock 协作模式 |
+| `/slock` | 手动激活 Slock 协作模式（通常无需，系统会自动激活） |
 | `/slock status` | 查看当前团队状态 |
-| `/slocks` / `/slock list` | 在主机器人对话查询所有 Slock 群并跳转 |
-| `/slock help` | 查看 Slock 命令帮助 |
 | `/slock stop` | 停止当前群的 Slock 协作 |
-| `/new-team <名称>` | 创建新的飞书协作群并激活 Slock，默认群名为 `[Slock] <名称>` |
-| `/team list` | 查看所有活跃团队 |
-| `/team status <名称>` | 查看指定团队状态 |
-| `/team dissolve <名称>` | 停止并移除指定团队 |
-| `/new-role <名称>` | 打开工具选择卡片，选择 Coco/Codex/Aiden/Claude/Gemini 后再选择模型创建虚拟 Agent |
-| `/new-role <名称> --tool codex --model <模型> [--role <角色>] [--prompt <指令>]` | 命令式创建虚拟 Agent |
-| `/new-role <名称> --template coder` | 从内置模板创建 Agent |
-| `/new-role <名称> --fork <已有角色>` | 复制已有角色的指令、记忆和技能画像 |
+| `/slocks` / `/slock list` | 查询所有 Slock 群并跳转 |
+| `/new-team <名称>` | 创建新的飞书协作群，默认群名为 `<名称> [Slock]` |
+| `/new-role <名称>` | 创建自定义 Agent 角色 |
 | `/role list` | 查看团队角色 |
-| `/role info <名称>` | 查看角色记忆、任务统计和技能画像 |
-| `/role remove <名称>` | 移除角色 |
-| `/task assign <任务> [角色]` | 分配任务；省略角色时自动按技能画像选择 |
 | `/task status` | 查看 Kanban 任务看板 |
-
-常用流程：
-
-```text
-/slock
-/new-role Coder
-/new-role Reviewer --tool claude --role reviewer
-/new-role Writer --template writer
-/task assign "实现登录接口并补测试" Coder
-/task assign "审查登录接口的边界条件"
-/task status
-```
+| `/team dissolve <名称>` | 停止并移除指定团队 |
 
 ### 项目管理
 

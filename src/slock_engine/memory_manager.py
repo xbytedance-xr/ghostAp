@@ -732,7 +732,7 @@ class MemoryManager:
     def write_plans(self, channel_id: str, plans: list) -> None:
         """Persist active collaboration plans for a channel (atomic write)."""
         import json
-        from .models import CollaborationPlan
+
 
         path = self._plans_path(channel_id)
         with self._get_channel_lock(channel_id):
@@ -748,6 +748,7 @@ class MemoryManager:
     def read_plans(self, channel_id: str) -> list:
         """Read persisted collaboration plans for a channel."""
         import json
+
         from .models import CollaborationPlan
 
         path = self._plans_path(channel_id)

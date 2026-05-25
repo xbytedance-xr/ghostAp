@@ -58,7 +58,6 @@ def build_command_hub_card(*, channel_id: str = "") -> dict:
         {
             "title": "\U0001f4dd 任务管理",
             "buttons": [
-                _hub_btn("\U0001f4cc 分配任务", "/task assign"),
                 _hub_btn("\U0001f4cb 任务列表", "/task list"),
                 _hub_btn("\U0001f4ca 任务状态", "/task status"),
             ],

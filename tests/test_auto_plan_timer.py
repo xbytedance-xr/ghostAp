@@ -5,16 +5,12 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.slock_engine.collaboration_orchestrator import CollaborationOrchestrator
 from src.slock_engine.models import (
     CollaborationPlan,
     CollaborationPlanStatus,
     PlanStep,
-    PlanStepStatus,
     SlockTask,
-    TaskStatus,
 )
 from src.slock_engine.observer_queue import TaskStatusNotifier
 from src.slock_engine.task_chain_manager import ChainStep, ChainTemplate, TaskChainManager

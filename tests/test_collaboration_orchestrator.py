@@ -28,7 +28,6 @@ from src.slock_engine.models import (
 from src.slock_engine.observer_queue import TaskStatusNotifier
 from src.slock_engine.task_chain_manager import ChainStep, ChainTemplate, TaskChainManager
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

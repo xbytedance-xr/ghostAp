@@ -3,8 +3,7 @@
 AC-R13: Verifies unified discussion path via actual behavior, not source inspection.
 """
 
-from unittest.mock import MagicMock, patch
-import pytest
+from unittest.mock import MagicMock
 
 
 class TestUnifiedDiscussionPath:
@@ -13,7 +12,7 @@ class TestUnifiedDiscussionPath:
     def test_maybe_trigger_routes_through_start_confirmed(self):
         """When discussion is triggered, _start_confirmed_discussion is called."""
         from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.models import AgentIdentity, DiscussionThread, DiscussionConfig
+        from src.slock_engine.models import AgentIdentity, DiscussionThread
 
         engine = SlockEngine.__new__(SlockEngine)
         engine._settings = MagicMock()

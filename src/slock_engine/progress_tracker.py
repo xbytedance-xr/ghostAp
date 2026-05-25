@@ -6,12 +6,11 @@ progress without exceeding Feishu API rate limits (≤2 updates/sec).
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 import threading
+import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 logger = logging.getLogger(__name__)
 

@@ -3,8 +3,6 @@
 import threading
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.slock_engine.discussion_manager import DiscussionManager
 from src.slock_engine.models import (
     DiscussionConfig,

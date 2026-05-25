@@ -6,7 +6,6 @@ reading the embedded version from the Markdown file.
 """
 
 import os
-import shutil
 
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory

@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
-
 from src.slock_engine.card_templates.progress import build_task_overview_card
 from src.slock_engine.models import (
     AgentIdentity,

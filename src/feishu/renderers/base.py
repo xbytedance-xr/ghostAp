@@ -467,7 +467,6 @@ class BaseRenderer:
             A SessionRotator ready to dispatch events.
         """
         from ...card.render.budget import RenderBudget
-        from ...card.session.rotator import SessionRotator
         from ...card.state.models import CardMetadata
 
         metadata = CardMetadata(

@@ -9,8 +9,6 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
-
 from src.slock_engine.card_templates.status import build_status_panel_card
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
 

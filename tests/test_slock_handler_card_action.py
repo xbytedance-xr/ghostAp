@@ -6,7 +6,7 @@ sub-command handler methods.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 class TestSlockCmdPanelRouting:
@@ -61,12 +61,20 @@ class TestSlockCmdPanelRouting:
         )
         handler.list_tasks.assert_called_once_with("msg1", "chat1", None)
 
-    def test_council_routes_to_run_council(self):
+    def test_council_empty_topic_sends_hint(self):
         handler = self._make_handler()
         handler._dispatch_cmd_panel_action(
             "msg1", "chat1", "slock_cmd_council", {"channel_id": "chat1"}
         )
-        handler.run_council.assert_called_once_with("msg1", "chat1", "", None)
+        handler.send_text_to_chat.assert_called_once()
+        assert "评审议题" in handler.send_text_to_chat.call_args[0][1]
+
+    def test_council_with_topic_routes_to_run_council(self):
+        handler = self._make_handler()
+        handler._dispatch_cmd_panel_action(
+            "msg1", "chat1", "slock_cmd_council", {"channel_id": "chat1", "topic": "方案评审"}
+        )
+        handler.run_council.assert_called_once_with("msg1", "chat1", "方案评审", None)
 
     def test_unknown_cmd_sends_error_text(self):
         handler = self._make_handler()
@@ -115,6 +123,7 @@ class TestHandleCardActionNewHandlers:
         handler = MagicMock(spec=SlockHandler)
         handler.handle_card_action = SlockHandler.handle_card_action.__get__(handler, SlockHandler)
         handler._get_engine_manager = MagicMock()
+        handler._require_slock_permission = MagicMock(return_value=None)  # Allow all actions
         handler.send_text_to_chat = MagicMock()
         handler.send_card_to_chat = MagicMock()
         handler.project_manager = MagicMock()
@@ -126,7 +135,7 @@ class TestHandleCardActionNewHandlers:
         handler._get_engine_manager.return_value.get_activated_engine.return_value = None
         handler.handle_card_action("msg1", "chat1", "slock_agent_show_memory", {"agent_id": "a1"})
         handler.send_text_to_chat.assert_called_once()
-        assert "暂无记忆" in handler.send_text_to_chat.call_args[0][1]
+        assert "暂无记忆记录" in handler.send_text_to_chat.call_args[0][1]
 
     def test_show_memory_with_engine_sends_card(self):
         handler = self._make_handler()

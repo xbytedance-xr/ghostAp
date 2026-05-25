@@ -693,6 +693,139 @@ class FeishuWSClient:
             return False
         return manager.is_managed_chat(chat_id)
 
+    # ------------------------------------------------------------------
+    # Passive mode auto-activate helpers
+    # ------------------------------------------------------------------
+
+    _chat_locks: dict[str, threading.Lock] = {}
+    _chat_locks_meta: dict[str, float] = {}  # chat_id → last_used timestamp
+    _chat_locks_guard = threading.Lock()
+
+    def _get_chat_lock(self, chat_id: str) -> threading.Lock:
+        """Get or create a per-chat activation lock."""
+        with self._chat_locks_guard:
+            if chat_id not in self._chat_locks:
+                self._chat_locks[chat_id] = threading.Lock()
+            self._chat_locks_meta[chat_id] = time.time()
+            return self._chat_locks[chat_id]
+
+    @classmethod
+    def _gc_chat_locks(cls, max_age: float = 300.0) -> int:
+        """Remove chat locks unused for more than max_age seconds."""
+        now = time.time()
+        removed = 0
+        with cls._chat_locks_guard:
+            stale = [
+                cid for cid, ts in cls._chat_locks_meta.items()
+                if now - ts > max_age
+            ]
+            for cid in stale:
+                # Only remove if lock is not currently held
+                lock = cls._chat_locks.get(cid)
+                if lock and not lock.locked():
+                    del cls._chat_locks[cid]
+                    del cls._chat_locks_meta[cid]
+                    removed += 1
+        return removed
+
+    def _should_auto_activate_slock(self, chat_id: str, text: str, *, chat_type: str = "group") -> bool:
+        """Check if message should trigger slock auto-activation.
+
+        Short-circuits for already-managed chats to avoid redundant classification
+        overhead. Only performs task classification for unmanaged group chats.
+
+        Returns True if:
+        - Chat is already managed by slock (short-circuit), or
+        - Chat is an unmanaged group AND text is classified as a task
+        """
+        if chat_type != "group":
+            return False
+        # Short-circuit: already managed chats don't need classification
+        if self._is_slock_managed_chat(chat_id):
+            return True
+        from src.slock_engine.task_classifier import TaskClassifier
+
+        return TaskClassifier.is_task(text)
+
+    def _auto_activate_slock(
+        self, chat_id: str, text: str, project: "Optional[ProjectContext]" = None
+    ) -> tuple[bool, str]:
+        """Auto-activate slock for an unmanaged chat on first valid task message.
+
+        Returns a tuple of (success, reason):
+        - success: True if activation succeeded, False if denied/failed.
+        - reason: A string indicating the result. One of:
+            - ACTIVATION_ALLOWED: activation succeeded
+            - ACTIVATION_DENIED_RATE_LIMIT: rate limit exceeded
+            - ACTIVATION_DENIED_ADMIN_REQUIRED: admin-only policy
+            - ACTIVATION_DENIED_NOT_WHITELISTED: not in whitelist
+            - "error": activation failed with exception
+
+        Idempotent: if the chat becomes managed between check and call, the
+        slock handler's activate_slock will detect the existing engine and
+        short-circuit. Uses _auto_activate_lock to prevent concurrent bootstrap
+        for the same chat.
+
+        Guarded by ActivationGuard for permission and rate-limit checks.
+        """
+        from src.slock_engine.activation_guard import (
+            ACTIVATION_ALLOWED,
+            get_activation_guard,
+        )
+
+        # Permission and rate-limit gate
+        guard = get_activation_guard()
+        from src.thread.manager import get_current_sender_id
+        sender_id = get_current_sender_id() or ""
+        allowed, reason = guard.can_auto_activate(sender_id, chat_id, self.settings)
+        if not allowed:
+            logger.debug(
+                "Auto-activate blocked by guard for user=%s chat=%s: reason=%s",
+                sender_id, chat_id, reason,
+            )
+            return False, reason
+
+        chat_lock = self._get_chat_lock(chat_id)
+        with chat_lock:
+            # Double-check after acquiring lock
+            if self._is_slock_managed_chat(chat_id):
+                return True, ACTIVATION_ALLOWED
+            try:
+                # Use a synthetic message_id since passive activation has no
+                # user-initiated command message to reply to.
+                # skip_guard_check=True: guard was already checked above to avoid
+                # double consumption of rate-limit budget.
+                synthetic_msg_id = f"passive-activate-{chat_id}"
+                success = self._slock_handler.activate_slock(
+                    message_id=synthetic_msg_id,
+                    chat_id=chat_id,
+                    requirement=text,
+                    project=project,
+                    skip_guard_check=True,
+                )
+                return success, ACTIVATION_ALLOWED if success else "error"
+            except Exception:
+                logger.warning(
+                    "Failed to auto-activate slock for chat %s", chat_id, exc_info=True
+                )
+                # Send user-friendly card notification
+                try:
+                    from src.slock_engine.card_templates.common import build_error_state_card
+                    card = build_error_state_card(
+                        title="任务暂时无法自动处理",
+                        error_msg="你的消息暂时无法被自动分配，正在通过其他方式处理。请稍后重试，或直接描述你的需求让系统尝试其他方式处理。",
+                    )
+                    self._system_handler.send_card_to_chat(
+                        chat_id,
+                        json.dumps(card, ensure_ascii=False),
+                    )
+                except Exception as card_err:
+                    logger.warning(
+                        "Failed to send activation failure card to chat %s: %s",
+                        chat_id, card_err,
+                    )
+                return False, "error"
+
     @staticmethod
     def _is_interceptable_command_match(command_match: CommandMatch | None) -> bool:
         """SSOT variant: decide based on request-scoped CommandMatch."""
@@ -1008,6 +1141,7 @@ class FeishuWSClient:
             set_current_sender_name(_display_name or (_sender_id[:8] if _sender_id else ""))
             _is_p2p = task_ctx.spec.is_p2p if task_ctx and hasattr(task_ctx, "spec") else False
             set_current_is_p2p(_is_p2p)
+            chat_type = "p2p" if _is_p2p else "group"
 
             root_id = getattr(message, "root_id", None)
             if root_id and self.settings.thread_programming_enabled:
@@ -1096,6 +1230,7 @@ class FeishuWSClient:
                 command_match=command_match,
                 is_image_only=is_image_only,
                 shell_fast_tracked=shell_fast_tracked,
+                chat_type=chat_type,
             )
 
         except asyncio.TimeoutError as e:
@@ -1106,13 +1241,19 @@ class FeishuWSClient:
                 classify_ws_error(RuntimeError("reply timeout failed"), phase="dispatch")
                 logger.debug("failed to reply timeout message", exc_info=True)
         except (RuntimeError, OSError, TimeoutError, TypeError, ValueError) as e:
-            classify_ws_error(e, phase="dispatch")
-            logger.error("处理消息异常: %s", e, exc_info=True)
-            try:
-                self._reply_text(message_id, UI_TEXT["ws_message_internal_error"])
-            except (RuntimeError, OSError, TimeoutError, TypeError, ValueError):
-                classify_ws_error(RuntimeError("reply internal error failed"), phase="dispatch")
-                logger.debug("failed to reply internal error message", exc_info=True)
+            classification = classify_ws_error(e, phase="dispatch")
+            if classification.action == WSErrorAction.REPLY_INTERNAL_ERROR:
+                logger.error("处理消息异常: %s", get_error_detail(e), exc_info=True)
+                try:
+                    self._reply_text(message_id, UI_TEXT["ws_message_internal_error"])
+                except (RuntimeError, OSError, TimeoutError, TypeError, ValueError):
+                    classify_ws_error(RuntimeError("reply internal error failed"), phase="best_effort_notify")
+                    logger.debug("failed to reply internal error message", exc_info=True)
+            elif classification.action == WSErrorAction.LOG_AND_CONTINUE:
+                logger.debug("处理消息 best-effort 失败: %s", get_error_detail(e), exc_info=True)
+            elif classification.action == WSErrorAction.PROPAGATE:
+                logger.error("处理消息异常: %s", get_error_detail(e), exc_info=True)
+                raise
         finally:
             set_current_thread_id(None)
             set_current_sender_id(None)
@@ -1311,6 +1452,7 @@ class FeishuWSClient:
         command_match=_COMMAND_MATCH_MISSING,
         is_image_only=False,
         shell_fast_tracked=False,
+        chat_type: str = "group",
     ):
         """根据 auto-enter 与当前模式，将消息路由到对应编程模式或 SMART 处理路径。"""
         # Compatibility: some unit tests call _dispatch_message_logic directly.
@@ -1348,6 +1490,7 @@ class FeishuWSClient:
                     project,
                     command_match=command_match,
                     shell_fast_tracked=shell_fast_tracked,
+                    chat_type=chat_type,
                 )
                 return
             normalized_entry = (text or "").strip().lower()
@@ -1379,6 +1522,7 @@ class FeishuWSClient:
                     project,
                     command_match=command_match,
                     shell_fast_tracked=shell_fast_tracked,
+                    chat_type=chat_type,
                 )
                 return
         if auto_enter_mode in {"worktree", "deep", "spec"}:
@@ -1390,6 +1534,7 @@ class FeishuWSClient:
                     project,
                     command_match=command_match,
                     shell_fast_tracked=shell_fast_tracked,
+                    chat_type=chat_type,
                 )
                 return
             if project is None:
@@ -1400,6 +1545,7 @@ class FeishuWSClient:
                     project,
                     command_match=command_match,
                     shell_fast_tracked=shell_fast_tracked,
+                    chat_type=chat_type,
                 )
                 return
             self._add_reaction(message_id, EmojiReaction.on_processing())
@@ -1426,6 +1572,7 @@ class FeishuWSClient:
                     project,
                     command_match=command_match,
                     shell_fast_tracked=shell_fast_tracked,
+                    chat_type=chat_type,
                 )
         else:
             # Project-chat default: when the chat is bound to a project via
@@ -1455,6 +1602,7 @@ class FeishuWSClient:
                             bound_project,
                             command_match=command_match,
                             shell_fast_tracked=shell_fast_tracked,
+                            chat_type=chat_type,
                         )
                         return
 
@@ -1494,6 +1642,7 @@ class FeishuWSClient:
                 project,
                 command_match=command_match,
                 shell_fast_tracked=shell_fast_tracked,
+                chat_type=chat_type,
             )
 
     @staticmethod
@@ -1903,6 +2052,7 @@ class FeishuWSClient:
         *,
         command_match=_COMMAND_MATCH_MISSING,
         shell_fast_tracked: bool = False,
+        chat_type: str = "group",
     ):
         """SMART 模式下的主路由：控制命令优先，其次进入意图识别/多任务执行。"""
         # Compatibility: allow callers outside ws message ingress to omit command_match.
@@ -1921,6 +2071,7 @@ class FeishuWSClient:
                 project=project,
                 command_match=command_match,
                 shell_fast_tracked=shell_fast_tracked,
+                chat_type=chat_type,
             )
         )
 

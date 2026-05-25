@@ -9,13 +9,13 @@ WP-A: Knowledge Conflict Detection Upgrade
 - Conflict escalation card
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
+from src.slock_engine.card_templates import build_conflict_escalation_card
 from src.slock_engine.discussion_manager import (
     _CONFLICT_PAIRS,
     DiscussionManager,
 )
-from src.slock_engine.card_templates import build_conflict_escalation_card
 
 
 class TestKnowledgeConflictDetection:

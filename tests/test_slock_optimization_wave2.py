@@ -15,7 +15,6 @@ import json
 import re
 import threading
 import time
-from typing import Optional
 
 import pytest
 
@@ -37,7 +36,6 @@ from src.slock_engine.models import (
     SlockTask,
     TaskStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Task 33: Discussion Cooldown & Depth Limit

@@ -2,9 +2,7 @@
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.slock_engine.models import (
     DiscussionConfig,

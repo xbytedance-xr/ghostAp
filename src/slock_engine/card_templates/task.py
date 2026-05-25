@@ -7,24 +7,23 @@ Todo → In Progress → In Review → Done.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from .common import (
     DISPLAY_TZ,
     TASK_CONTENT_PREVIEW_LEN,
-    TASK_STATUS_BG_COLOR_MAP,
     TASK_STATUS_ICONS,
     TASK_STATUS_LABEL_ZH,
-    AgentIdentity,
-    SlockTask,
-    TaskStatus,
     build_callback_button,
     build_card_wrapper,
     build_collapsible_panel,
     build_column,
     build_column_set_row,
     build_responsive_layout,
-    truncate_dynamic_label,
+)
+from ..models import (
+    AgentIdentity,
+    SlockTask,
+    TaskStatus,
 )
 
 

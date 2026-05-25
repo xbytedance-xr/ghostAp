@@ -30,3 +30,13 @@ class SecurityPolicyDegradedError(RuntimeError):
             self.agent_id = kwargs.get('agent_id', '')
             self.restriction_paths = kwargs.get('restriction_paths', [])
             super().__init__(message)
+
+
+class TaskQueueFullError(Exception):
+    """Raised when attempting to enqueue a task into a full TaskQueue."""
+    pass
+
+
+class ExecutorQueueFullError(Exception):
+    """Raised when a submit is rejected because the BoundedExecutor pending queue is at capacity."""
+    pass

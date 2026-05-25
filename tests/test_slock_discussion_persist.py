@@ -9,13 +9,10 @@ Verifies:
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 from src.slock_engine.discussion_manager import DiscussionManager
 from src.slock_engine.models import (
-    AgentIdentity,
     DiscussionConfig,
     DiscussionMessage,
     DiscussionStatus,
@@ -176,9 +173,9 @@ class TestDiscussionConclusionToKeyKnowledge:
 
     def test_sync_conclusion_writes_to_key_knowledge(self):
         """sync_discussion_conclusion_to_agents calls append_to_agent_key_knowledge."""
-        from src.slock_engine.memory_manager import MemoryManager
         import tempfile
-        import os
+
+        from src.slock_engine.memory_manager import MemoryManager
 
         with tempfile.TemporaryDirectory() as tmpdir:
             mm = MemoryManager(base_path=tmpdir)

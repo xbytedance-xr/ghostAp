@@ -4,6 +4,7 @@ Implements:
 - @mention routing: direct message to specific agent
 - Skill-based routing: score agents by skill profile and assign to best match
 - Task Claim: exclusive lock mechanism (first-come-first-served, timeout release)
+- Fallback routing: degrade to busy agents when no IDLE agent available
 """
 
 from __future__ import annotations
@@ -12,9 +13,12 @@ import logging
 import re
 import threading
 import time
+from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from .models import AgentIdentity, AgentStatus, SkillProfile
+from .task_classifier import TaskClassifier
 
 if TYPE_CHECKING:
     from .memory_manager import MemoryManager
@@ -25,6 +29,23 @@ logger = logging.getLogger(__name__)
 _WEIGHT_SUCCESS_RATE = 0.4
 _WEIGHT_SKILL_RELEVANCE = 0.35
 _WEIGHT_AVAILABILITY = 0.25
+
+
+class RoutingStatus(Enum):
+    """Result status from route_message."""
+
+    ASSIGNED = "assigned"       # An idle agent was found
+    QUEUE_WAIT = "queue_wait"   # All agents busy but running; caller should wait/retry
+    NO_MATCH = "no_match"       # No agent scored (chitchat or no agents at all)
+
+
+@dataclass
+class RoutingResult:
+    """Extended routing result that conveys both the selected agent and routing status."""
+
+    status: RoutingStatus
+    agent: Optional[AgentIdentity] = None
+    busy_count: int = 0  # number of running agents (useful for queue estimation)
 
 
 class TaskClaim:
@@ -119,6 +140,28 @@ class TaskClaim:
                 self._persist()
         return purged
 
+    def get_active_claim_count(self, agent_id: Optional[str] = None) -> int:
+        """Return count of active (non-expired) claims, optionally filtered by agent_id.
+
+        Args:
+            agent_id: If provided, count only claims held by this agent.
+                      If None, count all active claims.
+
+        Returns:
+            Number of active claims.
+        """
+        now = time.time()
+        with self._lock:
+            if agent_id is None:
+                return sum(
+                    1 for _, (_, claimed_at) in self._claims.items()
+                    if now - claimed_at < self._default_ttl
+                )
+            return sum(
+                1 for _, (aid, claimed_at) in self._claims.items()
+                if aid == agent_id and now - claimed_at < self._default_ttl
+            )
+
     def _persist(self) -> None:
         """Write claims to disk (must be called under self._lock)."""
         if not self._persist_path:
@@ -183,28 +226,42 @@ class TaskRouter:
         task_claim_ttl: float = 3600.0,
         persist_path: Optional[str] = None,
         memory_backend: Optional["MemoryManager"] = None,
+        engine_status_getter: Optional[object] = None,
     ):
         self._task_claim = TaskClaim(default_ttl=task_claim_ttl, persist_path=persist_path)
-        self._agent_statuses: dict[str, AgentStatus] = {}
+        # Lock hierarchy: engine._lock → router._lock (never acquire engine._lock while holding router._lock)
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._skill_profiles: dict[str, list[SkillProfile]] = {}  # agent_id -> profiles
         self._skill_profile_ts: dict[str, float] = {}  # agent_id -> last_load_time
         self._memory_backend = memory_backend
         self._round_robin_index = 0
-        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        # Agent status is read from the engine via this getter (single source of truth).
+        # Signature: (agent_id: str) -> AgentStatus
+        self._engine_status_getter = engine_status_getter
+        # Fallback status dict for standalone/test usage (when no engine_status_getter)
+        self._fallback_statuses: dict[str, AgentStatus] = {}
 
     @property
     def task_claim(self) -> TaskClaim:
         return self._task_claim
 
-    def set_agent_status(self, agent_id: str, status: AgentStatus) -> None:
-        """Update an agent's status."""
-        with self._lock:
-            self._agent_statuses[agent_id] = status
-
     def get_agent_status(self, agent_id: str) -> AgentStatus:
-        """Get an agent's current status."""
-        with self._lock:
-            return self._agent_statuses.get(agent_id, AgentStatus.IDLE)
+        """Get an agent's current status from the engine (single source of truth).
+
+        In production, delegates to engine.get_agent_status() via the getter.
+        In standalone/test mode (no getter), reads from internal fallback dict.
+        """
+        if self._engine_status_getter is not None:
+            return self._engine_status_getter(agent_id)
+        return self._fallback_statuses.get(agent_id, AgentStatus.IDLE)
+
+    def set_agent_status(self, agent_id: str, status: AgentStatus) -> None:
+        """Set agent status in fallback dict (test/standalone mode only).
+
+        In production, status is managed exclusively by the engine.
+        This method exists for backward compatibility with standalone tests.
+        """
+        self._fallback_statuses[agent_id] = status
 
     def set_skill_profiles(self, agent_id: str, profiles: list[SkillProfile]) -> None:
         """Set skill profiles for an agent."""
@@ -238,25 +295,35 @@ class TaskRouter:
             self._skill_profile_ts[agent_id] = now
 
     # ------------------------------------------------------------------
-    # CHITCHAT filter (Task 18)
+    # CHITCHAT filter — prevents casual/noise messages from reaching agents.
+    # Design: explicit blacklist patterns + CJK whitelist rule.
+    # Short messages containing CJK ideographs (verbs/nouns) are NOT filtered,
+    # e.g. "修bug", "写测试", "部署", "加日志" are valid tasks.
     # ------------------------------------------------------------------
 
     _CHITCHAT_PATTERNS: tuple[re.Pattern, ...] = (
         re.compile(r"^(你好|嗨|hi|hello|hey|早上好|晚上好|下午好|早安|晚安)[!！。.~]*$", re.IGNORECASE),
-        re.compile(r"^(谢谢|thanks|thank\s*you|thx|ok|好的|收到了?|了解|明白)[!！。.~]*$", re.IGNORECASE),
-        re.compile(r"^(哈哈|嘿嘿|呵呵|lol|haha|😂|👍|🙏|666|nb)[!！。.~]*$", re.IGNORECASE),
-        re.compile(r"^.{0,5}$"),  # Very short messages (≤5 chars)
+        re.compile(r"^(谢谢|thanks|thank\s*you|thx|ok|好的|收到了?|了解|明白|嗯|对)[!！。.~]*$", re.IGNORECASE),
+        re.compile(r"^(哈哈|嘿嘿|呵呵|lol|haha|😂|👍|🙏|666|nb|yes|no|k|y|n)[!！。.~]*$", re.IGNORECASE),
+    )
+
+    # Regex to detect CJK Unified Ideographs (Chinese characters)
+    _CJK_PATTERN: re.Pattern = re.compile(r"[\u4e00-\u9fff]")
+
+    # Pure punctuation/emoji pattern — messages consisting only of these are chitchat
+    # Matches strings that contain NO word characters and NO CJK characters
+    _PURE_PUNCT_EMOJI: re.Pattern = re.compile(
+        r"^[^\w\u4e00-\u9fff]+$",
+        re.UNICODE,
     )
 
     def _is_chitchat(self, text: str) -> bool:
-        """Return True if message is casual chitchat that should not be routed to agents."""
-        stripped = text.strip()
-        if not stripped:
-            return True
-        for pattern in self._CHITCHAT_PATTERNS:
-            if pattern.match(stripped):
-                return True
-        return False
+        """Return True if message is casual chitchat that should not be routed to agents.
+
+        Delegates to the unified TaskClassifier to ensure consistent behavior
+        between dispatcher auto-activation and router message filtering.
+        """
+        return TaskClassifier.is_chitchat(text)
 
     def route_message(
         self,
@@ -264,6 +331,9 @@ class TaskRouter:
         available_agents: list[AgentIdentity],
     ) -> Optional[AgentIdentity]:
         """Route a message to the most appropriate agent.
+
+        .. deprecated::
+            Use :meth:`route_message_with_fallback` instead for consistent fallback semantics.
 
         Returns the target agent, or None if no suitable agent found.
         Only IDLE agents are considered for routing; agents in MOVING,
@@ -293,6 +363,55 @@ class TaskRouter:
 
         # Priority 2: Skill-based scoring for normal messages
         return self._score_and_assign(text, idle_agents)
+
+    def route_message_with_fallback(
+        self,
+        text: str,
+        available_agents: list[AgentIdentity],
+    ) -> RoutingResult:
+        """Route with fallback: if no IDLE agent, degrade to busy agents or queue.
+
+        Returns a RoutingResult with status indicating whether assignment succeeded,
+        or whether the caller should wait (QUEUE_WAIT) or give up (NO_MATCH).
+        """
+        if not available_agents:
+            return RoutingResult(status=RoutingStatus.NO_MATCH)
+
+        # CHITCHAT filter
+        if self._is_chitchat(text):
+            logger.debug("Message filtered as CHITCHAT, not routing: %s", text[:50])
+            return RoutingResult(status=RoutingStatus.NO_MATCH)
+
+        # Try IDLE agents first (normal path)
+        idle_agents = [
+            a for a in available_agents
+            if self.get_agent_status(a.agent_id) == AgentStatus.IDLE
+        ]
+        if idle_agents:
+            mentioned = self._extract_mention(text, idle_agents)
+            if mentioned:
+                return RoutingResult(status=RoutingStatus.ASSIGNED, agent=mentioned)
+            assigned = self._score_and_assign(text, idle_agents)
+            if assigned:
+                return RoutingResult(status=RoutingStatus.ASSIGNED, agent=assigned)
+
+        # Fallback: check for RUNNING agents → queue wait signal
+        running_agents = [
+            a for a in available_agents
+            if self.get_agent_status(a.agent_id) == AgentStatus.RUNNING
+        ]
+        if running_agents:
+            # Degrade: pick highest-scored non-IDLE agent as fallback candidate
+            scored = self._score_agents(text, available_agents)
+            fallback_agent = scored[0][0] if scored else None
+            return RoutingResult(
+                status=RoutingStatus.QUEUE_WAIT,
+                agent=fallback_agent,
+                busy_count=len(running_agents),
+            )
+
+        # All agents in abnormal states — no match
+        return RoutingResult(status=RoutingStatus.NO_MATCH)
 
     def rank_agents_for_claim(
         self,
@@ -368,10 +487,7 @@ class TaskRouter:
                 availability = 0.3
             else:
                 # Soft availability score based on current task load (0.5-1.0)
-                active_claims = sum(
-                    1 for _, (aid, _) in self._task_claim._claims.items()
-                    if aid == agent.agent_id
-                )
+                active_claims = self._task_claim.get_active_claim_count(agent.agent_id)
                 availability = max(0.5, 1.0 - active_claims * 0.1)
             self._ensure_skill_profiles_loaded(agent.agent_id)
 

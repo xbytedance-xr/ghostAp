@@ -3,6 +3,8 @@ import logging
 import re
 from typing import Union
 
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "GhostAPError",
     "sanitize_futures_msg",
@@ -12,6 +14,7 @@ __all__ = [
     "fmt_exception",
     "log_exception",
     "safe_error_message",
+    "redact_sensitive",
 ]
 
 """Unified error formatting and base exception for user-facing messages.
@@ -57,6 +60,43 @@ _CHAIN_MAX_DEPTH = 10
 # stdlib concurrent.futures 在 TimeoutError 中注入的内部诊断格式，不应暴露给用户。
 # 示例: "1 (of 5) futures unfinished", "3 (of 5) futures unfinished"
 _FUTURES_UNFINISHED_RE = re.compile(r"\d+\s*\(of\s*\d+\)\s*futures?\s*unfinished")
+
+# ---------------------------------------------------------------------------
+# Safe message mapping — exception type name -> user-friendly message
+# ---------------------------------------------------------------------------
+
+_SAFE_MESSAGES: dict[str, str] = {
+    "TimeoutError": "执行超时，请稍后重试",
+    "asyncio.TimeoutError": "执行超时，请稍后重试",
+    "ConnectionError": "服务暂时不可用，请稍后重试",
+    "ConnectionRefusedError": "服务暂时不可用，请稍后重试",
+    "ConnectionResetError": "连接被重置，请稍后重试",
+    "OSError": "系统资源暂时不可用",
+    "MemoryError": "系统资源不足，请稍后重试",
+    "PermissionError": "权限不足，请联系管理员",
+    "FileNotFoundError": "所需资源未找到",
+    "RuntimeError": "执行过程中出现异常，请重试",
+    "ValueError": "参数异常，请检查输入后重试",
+    "KeyError": "执行过程中出现异常，请重试",
+    "TypeError": "执行过程中出现异常，请重试",
+    "QueueFullError": "当前任务队列已满，请稍后重试",
+    "TaskQueueFullError": "当前任务队列已满，请稍后重试",
+    "ExecutorQueueFullError": "系统繁忙，请稍后重试",
+}
+
+_DEFAULT_SAFE_MESSAGE = "执行过程中出现异常，请稍后重试"
+
+# Patterns that indicate sensitive content
+_SENSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"/[\w./]+\.py", re.IGNORECASE),  # File paths
+    re.compile(r"line \d+", re.IGNORECASE),  # Line numbers
+    re.compile(r"Traceback \(most recent", re.IGNORECASE),  # Stack traces
+    re.compile(r"File \"[^\"]+\"", re.IGNORECASE),  # File references
+    re.compile(r"\w+Error\(", re.IGNORECASE),  # Exception constructors
+    re.compile(r"\w+Exception\(", re.IGNORECASE),  # Exception constructors
+    re.compile(r"0x[0-9a-fA-F]+"),  # Memory addresses
+    re.compile(r"(password|secret|token|key|credential)s?\s*[=:]", re.IGNORECASE),  # Credentials
+)
 
 
 def sanitize_futures_msg(msg: str) -> str:
@@ -137,7 +177,10 @@ def fmt_error(action: str, detail: Union[str, Exception] = "") -> str:
 
 
 def get_error_detail(exc: Exception, *, default: str = "未知错误") -> str:
-    """统一把异常转成可展示的 detail（不含 "❌ 失败" 前缀）。"""
+    """统一把异常转成可展示的 detail（不含 "❌ 失败" 前缀）。
+
+    所有返回值都会经过敏感数据脱敏处理。
+    """
     try:
         formatted = fmt_error("", exc)
     except Exception:
@@ -150,13 +193,13 @@ def get_error_detail(exc: Exception, *, default: str = "未知错误") -> str:
             tail = s.split("失败: ", 1)[1]
             tail = str(tail or "").strip()
             if tail:
-                return tail
+                return redact_sensitive(tail)
         if s.endswith("失败"):
             msg = str(exc or "").strip()
-            return msg or default
+            return redact_sensitive(msg or default)
 
     # 非标准格式：保持原样
-    return s
+    return redact_sensitive(s)
 
 
 def fmt_exception(action: str, exc: BaseException) -> str:
@@ -178,16 +221,80 @@ def log_exception(logger: logging.Logger, msg: str, exc: Exception, level: int =
         logger.log(level, msg, exc_info=exc)
 
 
-def safe_error_message(exc: Exception) -> str:
-    """Return a user-safe error description without leaking internal details.
+def safe_error_message(exc: Union[BaseException, str, None]) -> str:
+    """Convert an exception or error string to a safe user-facing message.
 
-    Known exception types get specific Chinese messages; unknown exceptions
-    get a generic message.  Full details should be logged separately via logger.
+    Ensures that raw exception details (stack traces, file paths, class names)
+    are never exposed to users. Maps exceptions to predefined safe messages.
+
+    Args:
+        exc: An exception instance, error string, or None.
+
+    Returns:
+        A safe, user-friendly error message string.
     """
-    if isinstance(exc, TimeoutError):
-        return "执行超时"
-    if isinstance(exc, PermissionError):
-        return "权限不足"
-    if isinstance(exc, (ConnectionError, OSError)):
-        return "连接失败"
-    return "内部错误，请联系管理员"
+    if exc is None:
+        return _DEFAULT_SAFE_MESSAGE
+
+    if isinstance(exc, str):
+        # String errors: apply redact_sensitive first (consistent with exception handling)
+        redacted = redact_sensitive(exc)
+        # Check if redaction removed all meaningful content
+        if not redacted.strip() or all(part.strip() in ("", "[redacted]") for part in redacted.split()):
+            return _DEFAULT_SAFE_MESSAGE
+        # Cap length for user display
+        return redacted[:80] if len(redacted) <= 80 else _DEFAULT_SAFE_MESSAGE
+
+    # Map by exception type name
+    exc_type_name = type(exc).__name__
+    exc_module = type(exc).__module__ or ""
+
+    # Try full qualified name first, then just class name
+    full_name = f"{exc_module}.{exc_type_name}" if exc_module != "builtins" else exc_type_name
+    safe_msg = _SAFE_MESSAGES.get(full_name) or _SAFE_MESSAGES.get(exc_type_name)
+
+    if safe_msg:
+        # Log mapped exceptions with full stack trace for observability
+        logger.warning(
+            "Mapped exception %s -> user message: %s",
+            full_name,
+            safe_msg,
+            exc_info=exc,
+        )
+        return safe_msg
+
+    # Log unmapped exceptions with full stack trace for debugging
+    logger.warning(
+        "Unmapped exception type %s: %s",
+        full_name,
+        redact_sensitive(str(exc)[:200]),
+        exc_info=exc,
+    )
+    return _DEFAULT_SAFE_MESSAGE
+
+
+def redact_sensitive(text: str) -> str:
+    """Remove sensitive information from a text string.
+
+    Replaces file paths, line numbers, stack traces, memory addresses,
+    and credential patterns with '[redacted]'.
+
+    Args:
+        text: Raw text that may contain sensitive information.
+
+    Returns:
+        Text with sensitive patterns replaced by '[redacted]'.
+    """
+    if not text:
+        return text
+
+    result = text
+    for pattern in _SENSITIVE_PATTERNS:
+        result = pattern.sub("[redacted]", result)
+
+    return result
+
+
+def _contains_sensitive(text: str) -> bool:
+    """Check if text contains any sensitive patterns."""
+    return any(pattern.search(text) for pattern in _SENSITIVE_PATTERNS)

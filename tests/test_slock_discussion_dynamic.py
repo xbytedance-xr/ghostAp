@@ -1,14 +1,13 @@
 """Dynamic discussion routing and placeholder removal tests (AC-R02, AC-R05, AC-R10)."""
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock
+
 import pytest
 
 from src.slock_engine.discussion_manager import DiscussionManager
 from src.slock_engine.models import (
     AgentIdentity,
     DiscussionConfig,
-    DiscussionStatus,
-    DiscussionThread,
 )
 
 

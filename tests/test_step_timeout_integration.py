@@ -24,7 +24,6 @@ from src.slock_engine.models import (
 )
 from src.slock_engine.observer_queue import TaskStatusNotifier
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

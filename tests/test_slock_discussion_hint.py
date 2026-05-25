@@ -13,7 +13,6 @@ import json
 import time
 import uuid
 from typing import Optional
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -26,7 +25,6 @@ from src.slock_engine.models import (
     DiscussionStatus,
     DiscussionThread,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers & Fixtures

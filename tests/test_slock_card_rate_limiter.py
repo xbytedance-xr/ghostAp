@@ -12,9 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, call
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.slock_engine.card_rate_limiter import CardRateLimiter
 

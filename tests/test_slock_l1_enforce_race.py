@@ -15,13 +15,12 @@ from __future__ import annotations
 import os
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -431,7 +430,6 @@ class TestLLMTimeoutFallback:
 
     def test_slow_llm_triggers_truncation_fallback(self, mm):
         """When LLM takes longer than 10s, fallback truncation is used."""
-        import concurrent.futures
 
         call_log = []
 
@@ -654,7 +652,7 @@ class TestCriticalSectionsPreservation:
         # Key Knowledge 应该保留最近 3 条
         expected_kk = "\n".join(key_knowledge_lines[-3:])
         assert result.key_knowledge == expected_kk, (
-            f"Expected last 3 Key Knowledge lines should be preserved"
+            "Expected last 3 Key Knowledge lines should be preserved"
         )
 
         # active_context 应该被截断

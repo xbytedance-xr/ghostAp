@@ -1,11 +1,10 @@
 """Tests for dispatcher NEEDS_ACTIVATION routing (AC-14)."""
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.feishu.dispatcher import MessageDispatcher
+from src.slock_engine.slash_commands import NEEDS_ACTIVATION
 
 
 class TestSlockActivationRouting:
@@ -20,12 +19,16 @@ class TestSlockActivationRouting:
         self.client._get_effective_mode.return_value = ("SMART", False)
         self.client._is_slock_active.return_value = False
         self.client._is_exit_command.return_value = False
+        # Default: don't auto-activate
+        self.client._should_auto_activate_slock.return_value = False
+        self.client.settings = MagicMock()
+        self.client.settings.slock_passive_mode = True
 
         self.dispatcher = MessageDispatcher(self.client)
 
     def test_needs_activation_returns_hint(self):
-        """When _is_slock_command returns 'NEEDS_ACTIVATION', _reply_text is called with activation hint."""
-        self.client._is_slock_command.return_value = "NEEDS_ACTIVATION"
+        """When _is_slock_command returns NEEDS_ACTIVATION, _reply_text is called with activation hint."""
+        self.client._is_slock_command.return_value = NEEDS_ACTIVATION
 
         self.dispatcher.process_with_intent(
             message_id="msg_001",
@@ -38,7 +41,7 @@ class TestSlockActivationRouting:
         self.client._reply_text.assert_called_once()
         reply_args = self.client._reply_text.call_args
         reply_text = reply_args[0][1] if reply_args[0] else reply_args[1].get("text", "")
-        assert "激活" in reply_text
+        assert "自动处理" in reply_text or "激活" in reply_text
 
         # _handle_slock_command must NOT be called
         self.client._handle_slock_command.assert_not_called()
@@ -86,6 +89,12 @@ class TestSlockManagedChatRouting:
         self.client._get_effective_mode.return_value = (mock_mode, False)
         self.client._is_exit_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
+
+        # Use LEGACY mode (not passive) for these tests - they verify the old
+        # behavior where BOTH _is_slock_active AND _is_slock_managed_chat must be True
+        self.client.settings = MagicMock()
+        self.client.settings.slock_passive_mode = False
+        self.client._should_auto_activate_slock.return_value = False
 
         # Default: neither active nor managed
         self.client._is_slock_active.return_value = False
@@ -170,11 +179,11 @@ class TestSlockManagedChatRouting:
         self.client._handle_slock_message.assert_not_called()
 
     # ------------------------------------------------------------------
-    # Additional: verify short-circuit - _is_slock_managed_chat not called
-    # when _is_slock_active is False (Python `and` short-circuits)
+    # Additional: verify _is_slock_managed_chat is called early (for both
+    # passive mode routing check and legacy mode check)
     # ------------------------------------------------------------------
-    def test_short_circuit_skips_managed_check_when_not_active(self):
-        """When _is_slock_active returns False, _is_slock_managed_chat should not be called (short-circuit)."""
+    def test_managed_chat_check_is_called_early(self):
+        """_is_slock_managed_chat is called early in the dispatch flow for mode routing."""
         self.client._is_slock_active.return_value = False
         self.client._is_slock_managed_chat.return_value = True
 
@@ -185,6 +194,82 @@ class TestSlockManagedChatRouting:
             project=None,
         )
 
-        # Due to Python's `and` short-circuit, if _is_slock_active is False,
-        # _is_slock_managed_chat should never be evaluated.
-        self.client._is_slock_managed_chat.assert_not_called()
+        # _is_slock_managed_chat is called early (line 137 in dispatcher) to
+        # determine _is_managed for both passive mode routing and legacy mode.
+        # It is NOT short-circuited by _is_slock_active being False.
+        self.client._is_slock_managed_chat.assert_called_once_with("chat_shortcircuit")
+        # Message should NOT be routed to slock (active=False in legacy mode)
+        self.client._handle_slock_message.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# WP1: Default policy allow_all in managed chat
+# --------------------------------------------------------------------------- #
+
+
+class TestDefaultPolicyAllowAllInManagedChat:
+    """WP1: Default policy allow_all - non-admin users can trigger auto-activation in managed chats.
+
+    AC-R1: Default policy should be allow_all (open-by-default for Slock groups).
+    Non-admin users in managed slock chats should be able to trigger auto-activation.
+    """
+
+    def test_default_policy_is_allow_all(self):
+        """Verify default configuration has slock_auto_activate_default_policy == 'allow_all'."""
+        import os
+        from unittest.mock import patch
+
+        from src.config.settings import Settings
+
+        env = os.environ.copy()
+        env.pop("SLOCK_AUTO_ACTIVATE_DEFAULT_POLICY", None)
+        with patch.dict("os.environ", env, clear=True):
+            s = Settings()
+            assert s.slock_auto_activate_default_policy == "allow_all"
+
+    def test_non_admin_in_managed_chat_can_trigger_auto_activate(self):
+        """Non-admin user in managed slock chat can trigger auto-activation with allow_all policy."""
+        from src.slock_engine.activation_guard import (
+            ACTIVATION_ALLOWED,
+            ActivationGuard,
+        )
+
+        guard = ActivationGuard()
+
+        # Default settings: allow_all policy, passive_mode=True, no whitelist
+        settings = type(
+            "Settings",
+            (),
+            {
+                "admin_user_ids": "admin_001",
+                "slock_auto_activate_whitelist_user_ids": "",
+                "slock_auto_activate_default_policy": "allow_all",
+                "slock_passive_mode": True,
+                "slock_auto_activate_rate_limit_per_user": 5,
+                "slock_auto_activate_rate_limit_global": 10,
+            },
+        )()
+
+        # Non-admin user should be allowed
+        allowed, reason = guard.can_auto_activate("regular_user_123", "chat_managed", settings)
+        assert allowed is True
+        assert reason == ACTIVATION_ALLOWED
+
+    def test_managed_chat_short_circuits_classification(self):
+        """In managed chats, _should_auto_activate_slock returns True without classification."""
+        from unittest.mock import MagicMock
+
+        from src.feishu.ws_client import FeishuWSClient
+
+        client = MagicMock(spec=FeishuWSClient)
+        client._is_slock_managed_chat.return_value = True
+
+        # Call the method with the mock client bound
+        result = FeishuWSClient._should_auto_activate_slock(
+            client, "chat_managed", "any text", chat_type="group"
+        )
+
+        # Managed chat should short-circuit and return True
+        assert result is True
+        # TaskClassifier should NOT be called (short-circuit)
+        client._is_slock_managed_chat.assert_called_once_with("chat_managed")

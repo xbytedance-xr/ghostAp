@@ -10,7 +10,7 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import Future, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -20,7 +20,8 @@ from ..config import get_settings
 from ..engine_base import BaseEngine, EngineRunState
 from .agent_registry import AgentRegistry
 from .bounded_executor import BoundedExecutor, QueueFullError
-from .card_templates import build_status_panel_card
+from .card_templates import build_card_wrapper, build_status_panel_card
+from .collaboration_orchestrator import CollaborationOrchestrator
 from .escalation_manager import EscalationManager
 from .memory_manager import MemoryManager, default_slock_storage_base
 from .models import (
@@ -34,14 +35,46 @@ from .models import (
     TaskStatus,
 )
 from .mouthpiece import Mouthpiece
-from .collaboration_orchestrator import CollaborationOrchestrator
 from .observer_queue import ObserverLearningQueue, TaskStatusNotifier
 from .progress_tracker import ProgressTracker
 from .task_board_manager import TaskBoardManager
 from .task_chain_manager import TaskChainManager
+from .task_queue import TaskQueue
 from .task_router import TaskRouter
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Shared asyncio event loop for async operations from worker threads.
+# Avoids creating/destroying event loops per agent execution.
+# ---------------------------------------------------------------------------
+import asyncio as _asyncio
+
+_SHARED_LOOP: _asyncio.AbstractEventLoop | None = None
+_SHARED_LOOP_LOCK = threading.Lock()
+
+
+def _get_shared_loop() -> _asyncio.AbstractEventLoop:
+    """Get or create a persistent asyncio event loop running in a daemon thread.
+
+    Thread-safe singleton. Used for autonomous resolver and other async ops
+    that need to run from synchronous worker threads.
+    """
+    global _SHARED_LOOP
+    with _SHARED_LOOP_LOCK:
+        if _SHARED_LOOP is not None and _SHARED_LOOP.is_running():
+            return _SHARED_LOOP
+
+        loop = _asyncio.new_event_loop()
+
+        def _run_loop():
+            _asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        t = threading.Thread(target=_run_loop, name="slock_shared_loop", daemon=True)
+        t.start()
+        _SHARED_LOOP = loop
+        return _SHARED_LOOP
 
 
 @dataclass
@@ -60,6 +93,8 @@ class SlockEngineCallbacks:
     # Discussion card lifecycle callbacks
     on_card_send: Optional[Callable[[dict], Optional[str]]] = None
     on_card_update: Optional[Callable[[str, dict], bool]] = None
+    # Final result delivery callback for queued tasks
+    on_final_result: Optional[Callable[[str, str, Optional[str]], None]] = None  # (task_id, result, card_message_id)
 
 
 class SlockStreamProcessor:
@@ -166,15 +201,12 @@ class SlockStreamProcessor:
             "text_size": "notation",
         })
 
-        return {
-            "schema": "2.0",
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"tag": "plain_text", "content": header_title},
-                "template": "blue",
-            },
-            "body": {"elements": elements},
-        }
+        return build_card_wrapper(
+            header_title=header_title,
+            header_template="blue",
+            elements=elements,
+            mobile_optimize=True,
+        )
 
 
 class AgentCancellationError(Exception):
@@ -188,11 +220,41 @@ class SlockEngine(BaseEngine):
     routing messages, managing tasks, and formatting output through
     the mouthpiece mechanism.
 
+    Implements SlockEngineContext protocol to expose shared state to
+    composed managers (TaskBoardManager, EscalationManager) via
+    readonly properties/methods, eliminating lambda closure injection.
+
     Lock ordering (always acquire in this order to prevent deadlocks):
         1. self._lock (inherited RLock from BaseEngine)
         2. self._executor_lock (plain threading.Lock)
         3. BoundedExecutor._lock (leaf lock, never held while acquiring above)
     """
+
+    # ------------------------------------------------------------------
+    # SlockEngineContext protocol implementation
+    # ------------------------------------------------------------------
+
+    @property
+    def channel(self) -> Optional[SlockChannel]:
+        """当前激活的 SlockChannel（只读）。"""
+        return self._channel
+
+    @property
+    def dirty(self) -> bool:
+        """任务看板是否需要持久化（只读）。"""
+        return self._dirty
+
+    def set_dirty(self, value: bool) -> None:
+        """设置 dirty 标志。"""
+        self._set_dirty(value)
+
+    def execute_agent(self, agent: AgentIdentity, content: str, callbacks: Any) -> Optional[str]:
+        """执行单个 agent 的响应周期。"""
+        return self._execute_agent(agent, content, callbacks)
+
+    def resolve_agent_for_role(self, role: str, channel_id: str) -> Optional[AgentIdentity]:
+        """为指定角色在 channel 中解析最佳可用 agent。"""
+        return self._resolve_agent_for_role(role, channel_id)
 
     _state_filename = ".slock_engine_state.json"
     _gc_label = "Slock"
@@ -230,9 +292,17 @@ class SlockEngine(BaseEngine):
         self._registry = AgentRegistry(base_path=storage_base_path)
         self._memory = MemoryManager(base_path=storage_base_path)
         claims_path = os.path.join(storage_base_path, "claims", f"{chat_id}.json")
-        self._router = TaskRouter(persist_path=claims_path, memory_backend=self._memory)
+        self._router = TaskRouter(persist_path=claims_path, memory_backend=self._memory, engine_status_getter=self.get_agent_status)
         self._observer_queue = ObserverLearningQueue(memory=self._memory, router=self._router)
         self._mouthpiece = Mouthpiece()
+        self._task_queue = TaskQueue(max_size=get_settings().slock_max_queue_size)
+
+        # Dispatch loop: event-driven consumer that dequeues tasks on IDLE signals
+        # Use prepare_bootstrap() / finish_bootstrap() public API to control this.
+        self._bootstrap_ready = threading.Event()
+        self._bootstrap_ready.set()  # Default: ready. Call prepare_bootstrap() to clear.
+        self._dispatch_thread: Optional[threading.Thread] = None
+        self._dispatch_stop = threading.Event()
 
         # Thread pool for parallel agent execution
         self._executor: Optional[BoundedExecutor] = None
@@ -240,8 +310,7 @@ class SlockEngine(BaseEngine):
         self._max_parallel_agents = 4
 
         # Independent executor for inter-agent discussions (decoupled from main agent execution)
-        from concurrent.futures import ThreadPoolExecutor as _TPE
-        self._discussion_executor = _TPE(max_workers=2, thread_name_prefix="slock_discussion")
+        self._discussion_executor = BoundedExecutor(max_workers=2, max_queue_size=6)
 
         # Channel state
         self._channel: Optional[SlockChannel] = None
@@ -266,6 +335,12 @@ class SlockEngine(BaseEngine):
         self._discussions_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._discussion_manager: Optional[object] = None  # Lazy-initialized
 
+        # Autonomous resolver for ambiguity handling (AC-5)
+        from .autonomous_resolver import AutonomousResolver
+        self._autonomous_resolver: Optional[AutonomousResolver] = AutonomousResolver(
+            llm_callback=self._summarize_via_llm,
+        )
+
         # Status card auto-refresh: channel_id → last sent status card message_id
         self._status_card_msg_ids: dict[str, str] = {}
         self._status_refresh_timer: Optional[threading.Timer] = None
@@ -274,36 +349,25 @@ class SlockEngine(BaseEngine):
         self._chain_manager = TaskChainManager()
         self._task_notifier = TaskStatusNotifier()
 
-        # Composed managers (share lock and state references)
+        # Composed managers (share lock and state references via SlockEngineContext)
         self._task_mgr = TaskBoardManager(
             lock=self._lock,
             tasks=self._tasks,
-            channel_getter=lambda: self._channel,
-            chat_id_getter=lambda: self.chat_id,
-            dirty_getter=lambda: self._dirty,
-            dirty_setter=self._set_dirty,
+            context=self,
             router=self._router,
             memory=self._memory,
             registry_get=self._registry.get,
-            execute_agent_fn=lambda agent, content, callbacks: self._execute_agent(agent, content, callbacks),
             chain_manager=self._chain_manager,
             notifier=self._task_notifier,
-            resolve_agent_for_role=lambda role: self._resolve_agent_for_role(role, self._channel.channel_id if self._channel else ""),
         )
         self._escalation_mgr = EscalationManager(
             lock=self._lock,
             escalations=self._escalations,
             retry_counts=self._escalation_retry_counts,
-            channel_getter=lambda: self._channel,
-            chat_id_getter=lambda: self.chat_id,
-            task_list_getter=lambda: self._tasks,
-            dirty_setter=self._set_dirty,
+            context=self,
             router=self._router,
             transition_agent=self.transition_agent,
             flush_if_dirty=self._task_mgr._flush_if_dirty,
-            execute_task_fn=lambda task_id, agent_id, callbacks: self.execute_task(task_id, agent_id, callbacks),
-            rollback_task_fn=self._task_mgr._rollback_task,
-            force_complete_task_fn=self._task_mgr.force_complete_task,
             get_executor_fn=self._get_executor,
             escalation_timeout_s=get_settings().slock_escalation_timeout,
         )
@@ -351,32 +415,54 @@ class SlockEngine(BaseEngine):
     def _summarize_via_llm(self, prompt: str) -> Optional[str]:
         """LLM callback for memory summarization via ACP session.
 
-        Creates a lightweight engine session to execute the summarization prompt.
+        Submits summarization to the discussion bounded executor so the calling
+        agent worker slot is released immediately. Returns None to caller;
+        the actual result is stored asynchronously by the memory manager.
+
         Must NOT be called while holding self._memory._lock (caller ensures this).
         """
-        try:
-            session = create_engine_session(
-                agent_type=self._agent_type,
-                cwd=self.root_path,
-                model_name=None,
-                thread_id="slock_memory_summarize",
-                auto_approve=True,
-            )
-            if session is None:
-                logger.warning("Failed to create session for memory summarization")
-                return None
+        def _do_summarize():
             try:
-                result = session.send_prompt(prompt, timeout=60)
-                return result.text if result else None
-            finally:
-                close_session_safely(session)
-        except Exception as exc:
-            logger.warning("Memory summarization LLM call failed: %s", str(exc))
-            return None
+                session = create_engine_session(
+                    agent_type=self._agent_type,
+                    cwd=self.root_path,
+                    model_name=None,
+                    thread_id="slock_memory_summarize",
+                    auto_approve=False,
+                )
+                if session is None:
+                    logger.warning("Failed to create session for memory summarization")
+                    return
+                try:
+                    result = session.send_prompt(prompt, timeout=60)
+                    if result and result.text:
+                        self._memory.store_summary(result.text)
+                except Exception as exc:
+                    from src.utils.errors import redact_sensitive
+                    logger.warning("Memory summarization LLM call failed: %s", redact_sensitive(str(exc)))
+                finally:
+                    close_session_safely(session)
+            except Exception as exc:
+                from src.utils.errors import redact_sensitive
+                logger.warning("Memory summarization setup failed: %s", redact_sensitive(str(exc)))
+
+        try:
+            # Use discussion executor for background summarization tasks
+            self._discussion_executor.submit(_do_summarize)
+            logger.debug("Memory summarization submitted to executor")
+        except QueueFullError:
+            logger.warning(
+                "Memory summarization executor queue full, skipping summarization"
+            )
+        return None
 
     @property
     def registry(self) -> AgentRegistry:
         return self._registry
+
+    def list_agents(self, channel_id=None):
+        """List all registered agents. Delegates to registry."""
+        return self._registry.list_agents(channel_id=channel_id)
 
     @property
     def memory(self) -> MemoryManager:
@@ -394,6 +480,19 @@ class SlockEngine(BaseEngine):
     def channel(self) -> Optional[SlockChannel]:
         return self._channel
 
+    def get_channel(self) -> Optional[SlockChannel]:
+        """Public accessor for the active SlockChannel instance."""
+        return self._channel
+
+    def send_card(self, card_dict: dict) -> Optional[str]:
+        """Send a card via the registered card delivery callback.
+
+        Returns the message_id on success, or None if no callback is set.
+        """
+        if self._card_send_fn is None:
+            return None
+        return self._card_send_fn(card_dict)
+
     @property
     def tasks(self) -> list[SlockTask]:
         return list(self._tasks)
@@ -407,6 +506,326 @@ class SlockEngine(BaseEngine):
     def task_notifier(self) -> TaskStatusNotifier:
         """Access the task status notifier for event subscription."""
         return self._task_notifier
+
+    @property
+    def task_queue(self) -> TaskQueue:
+        """Access the event-driven task queue for QUEUE_WAIT consumers."""
+        return self._task_queue
+
+    # ------------------------------------------------------------------
+    # Dispatch loop — event-driven queue consumer
+    # ------------------------------------------------------------------
+
+    def enqueue_task(self, task: "QueuedTask") -> int:
+        """Enqueue a task for dispatch-loop consumption.
+
+        The handler calls this instead of blocking on wait_for_idle.
+        Returns the 1-based queue position.
+        """
+        return self._task_queue.enqueue(task)
+
+    def prepare_bootstrap(self) -> None:
+        """Signal that bootstrap is about to start.
+
+        Clears the bootstrap-ready event so the dispatch loop will wait
+        until finish_bootstrap() is called. Should be called before
+        activate_channel() or start_dispatch_loop() to ensure tasks are
+        not dispatched before agents are registered.
+
+        This is the public API; callers should use this instead of
+        manipulating _bootstrap_ready directly.
+        """
+        self._bootstrap_ready.clear()
+        logger.info("Bootstrap prepared: dispatch loop will wait for finish_bootstrap()")
+
+    def signal_bootstrap_complete(self) -> None:
+        """Signal that default role bootstrap has finished.
+
+        The dispatch loop waits for this event before consuming queued tasks,
+        ensuring agents are registered before routing.
+
+        .. deprecated::
+            Prefer finish_bootstrap() as the public API. This method is
+            kept for backward compatibility with existing callers.
+        """
+        self._bootstrap_ready.set()
+        logger.info("Bootstrap complete signal received, dispatch loop unblocked")
+
+    def finish_bootstrap(self) -> None:
+        """Signal that bootstrap has completed.
+
+        Sets the bootstrap-ready event, unblocking the dispatch loop.
+        This is the public API; handlers should call this instead of
+        signal_bootstrap_complete() directly.
+
+        Pair with prepare_bootstrap() to ensure the dispatch loop waits
+        for agent registration before consuming tasks.
+        """
+        self.signal_bootstrap_complete()
+
+    def start_dispatch_loop(self) -> None:
+        """Start the background dispatch loop thread (idempotent)."""
+        if self._dispatch_thread and self._dispatch_thread.is_alive():
+            return
+        self._dispatch_stop.clear()
+        self._dispatch_thread = threading.Thread(
+            target=self._dispatch_loop,
+            name=f"slock-dispatch-{self.chat_id[:8]}",
+            daemon=True,
+        )
+        self._dispatch_thread.start()
+        logger.info("Dispatch loop started for chat=%s", self.chat_id)
+
+    def _dispatch_loop(self) -> None:
+        """Background loop: wait for IDLE signal → dequeue → route → execute.
+
+        Design constraints:
+        - Does NOT hold Condition lock while calling _execute_agent
+        - Uses single-consumer dequeue to prevent thundering herd
+        - Respects _dispatch_stop for graceful shutdown
+        - Bootstrap self-healing: retries up to 3 times with exponential backoff
+          if registry is empty after bootstrap timeout, sends recovery card,
+          and retains all queued tasks.
+        """
+        import time as _time
+
+        # Wait for bootstrap with self-healing retries
+        bootstrap_timeout = getattr(get_settings(), "slock_bootstrap_timeout", 10)
+        max_retries = 3
+        bootstrap_ok = False
+
+        for attempt in range(max_retries + 1):
+            self._bootstrap_ready.wait(timeout=bootstrap_timeout)
+            if self._bootstrap_ready.is_set() and self.list_agents():
+                bootstrap_ok = True
+                break
+
+            if self._dispatch_stop.is_set():
+                return
+
+            if attempt < max_retries:
+                backoff = min(2 ** (attempt + 1), 30)
+                logger.warning(
+                    "Bootstrap attempt %d/%d: registry empty after %ds, "
+                    "retrying in %ds (tasks retained)",
+                    attempt + 1, max_retries, bootstrap_timeout, backoff,
+                )
+                # Send recovery status card
+                self._send_bootstrap_recovery_card(attempt + 1, max_retries)
+                # Reset the event so next wait is fresh
+                self._bootstrap_ready.clear()
+                _time.sleep(backoff)
+            else:
+                logger.error(
+                    "Bootstrap failed after %d retries, dispatch loop proceeding "
+                    "with empty registry — tasks will be retained and retried on agent arrival",
+                    max_retries,
+                )
+
+        if bootstrap_ok:
+            logger.info("Dispatch loop active, waiting for tasks...")
+        else:
+            logger.info("Dispatch loop active (degraded: no agents yet), waiting for tasks...")
+
+        while not self._dispatch_stop.is_set():
+            # Block until IDLE notification or timeout (for periodic liveness check)
+            self._task_queue.wait_for_idle(timeout=5.0)
+
+            if self._dispatch_stop.is_set():
+                break
+
+            # Dequeue and dispatch tasks while agents are available
+            while not self._dispatch_stop.is_set():
+                task = self._task_queue.dequeue()
+                if task is None:
+                    break  # Queue empty, go back to waiting
+
+                self._dispatch_single_task(task)
+
+        logger.info("Dispatch loop stopped for chat=%s", self.chat_id)
+
+    def _dispatch_single_task(self, task: "QueuedTask") -> None:
+        """Route and submit a single dequeued task to the executor.
+
+        Called from _dispatch_loop. Finds the best idle agent and submits
+        execution to the bounded executor. If no agent is idle, re-enqueues
+        with a next_retry_at timestamp (non-blocking backoff).
+        Sends timeout notification if the task has waited too long.
+
+        Thread-safety: self._channel is read under self._lock to avoid
+        race with activate_channel/deactivate_channel. Snapshot is taken
+        inside the lock and used outside to minimize critical section.
+        """
+        import time as _time
+
+        # Non-blocking backoff: skip tasks not yet eligible for retry
+        if task.next_retry_at > 0 and _time.time() < task.next_retry_at:
+            # Put it back and let the loop continue to other tasks
+            try:
+                self._task_queue.enqueue(task)
+            except Exception:
+                pass
+            return
+
+        # 锁内快照：避免与 activate_channel/deactivate_channel 的并发修改
+        with self._lock:
+            channel_snapshot = self._channel
+
+        if not channel_snapshot:
+            logger.warning("Dispatch loop: no channel active, dropping task %s", task.task_id)
+            return
+
+        # If the task was enqueued before bootstrap and the channel bootstrap failed,
+        # mark it unschedulable and dequeue (do not leave waiting forever).
+        if task.bootstrap_pending and getattr(channel_snapshot, 'bootstrap_failed', False):
+            logger.warning(
+                "Task %s marked unschedulable: channel %s bootstrap failed",
+                task.task_id, task.chat_id,
+            )
+            task.status = 'unschedulable'
+            self._send_bootstrap_failed_card(task)
+            return
+
+        # Check if task has exceeded queue wait timeout
+        wait_timeout = get_settings().slock_queue_wait_timeout
+        waited = _time.time() - task.enqueue_time
+        if waited > wait_timeout:
+            logger.warning(
+                "Dispatch: task %s waited %.1fs (timeout=%ds), sending timeout card",
+                task.task_id, waited, wait_timeout,
+            )
+            self._send_timeout_card(task, waited)
+            return
+
+        agents = self.list_agents()
+        if not agents:
+            # No agents registered yet — re-enqueue with non-blocking backoff
+            task.retry_count += 1
+            task.next_retry_at = _time.time() + min(2 ** task.retry_count, 30)
+            logger.debug("Dispatch: no agents registered, re-enqueueing task %s (retry=%d, next_at=+%ds)", task.task_id, task.retry_count, min(2 ** task.retry_count, 30))
+            try:
+                self._task_queue.enqueue(task)
+            except Exception:
+                pass
+            return
+
+        # Find idle agent via router
+        routing_result = self._router.route_message_with_fallback(task.text, agents)
+
+        from .task_router import RoutingStatus
+        if routing_result.status == RoutingStatus.ASSIGNED and routing_result.agent:
+            # Submit to executor (non-blocking)
+            agent = routing_result.agent
+            callbacks = task.callbacks
+
+            # Wrap callbacks to deliver final result via task's callback
+            original_on_done = callbacks.on_agent_done if callbacks else None
+            task_id = task.task_id
+            card_message_id = task.card_message_id
+            final_callback = task.final_result_callback
+
+            def wrapped_on_done(a: AgentIdentity, result: str) -> None:
+                if original_on_done:
+                    original_on_done(a, result)
+                # Deliver final result via callback
+                if final_callback:
+                    try:
+                        final_callback(task_id, result, card_message_id)
+                    except Exception as e:
+                        logger.error("Failed to deliver final result for task %s: %s", task_id, e)
+                # Notify queue that agent is idle
+                self._task_queue.notify_idle()
+
+            wrapped_callbacks = SlockEngineCallbacks(
+                on_agent_wake=callbacks.on_agent_wake if callbacks else None,
+                on_agent_thinking=callbacks.on_agent_thinking if callbacks else None,
+                on_agent_running=callbacks.on_agent_running if callbacks else None,
+                on_agent_done=wrapped_on_done,
+                on_agent_error=callbacks.on_agent_error if callbacks else None,
+                on_task_claimed=callbacks.on_task_claimed if callbacks else None,
+                on_message_routed=callbacks.on_message_routed if callbacks else None,
+                on_escalation=callbacks.on_escalation if callbacks else None,
+                on_error=callbacks.on_error if callbacks else None,
+                on_card_send=callbacks.on_card_send if callbacks else None,
+                on_card_update=callbacks.on_card_update if callbacks else None,
+            )
+
+            logger.info(
+                "Dispatch: assigning task %s to agent %s (waited %.1fs)",
+                task.task_id, agent.name, waited,
+            )
+            self._submit_to_executor(agent, task.text, wrapped_callbacks)
+        elif routing_result.status == RoutingStatus.QUEUE_WAIT:
+            # All agents still busy — put task back with non-blocking backoff
+            task.retry_count += 1
+            task.next_retry_at = _time.time() + min(2 ** task.retry_count, 30)
+            try:
+                self._task_queue.enqueue(task)
+            except Exception:
+                logger.error("Failed to re-enqueue task %s", task.task_id)
+        else:
+            # NO_MATCH — likely chitchat that slipped through, just drop
+            logger.debug("Dispatch: NO_MATCH for task %s, dropping", task.task_id)
+
+    def _submit_to_executor(
+        self, agent: "AgentIdentity", message: str, callbacks: "Optional[SlockEngineCallbacks]"
+    ) -> None:
+        """Submit agent execution to the bounded thread pool."""
+        executor = self._get_or_create_executor()
+        try:
+            executor.submit(self._execute_agent, agent, message, callbacks)
+        except Exception as exc:
+            logger.error("Failed to submit to executor: %s", exc)
+
+    def _send_timeout_card(self, task: "QueuedTask", waited_seconds: float) -> None:
+        """Send a timeout notification card for a task that waited too long."""
+        try:
+            from .card_templates.queue_feedback import build_timeout_notify_card
+
+            card = build_timeout_notify_card(
+                task_id=task.task_id,
+                message_preview=task.text,
+                waited_seconds=waited_seconds,
+            )
+            if self._card_send_fn:
+                self._card_send_fn(card)
+        except Exception:
+            logger.debug("Failed to send timeout card for task %s", task.task_id)
+
+    def _send_bootstrap_recovery_card(self, attempt: int, max_retries: int) -> None:
+        """Send a status card informing users that bootstrap is being retried."""
+        try:
+            from .card_templates.queue_feedback import build_no_agent_available_card
+
+            card = build_no_agent_available_card(
+                team_name=self.chat_id or "Team",
+                hint=f"正在第 {attempt}/{max_retries} 次尝试恢复角色注册...",
+            )
+            if self._card_send_fn:
+                self._card_send_fn(card)
+        except Exception:
+            logger.debug("Failed to send bootstrap recovery card (attempt %d)", attempt)
+
+    def _send_bootstrap_failed_card(self, task: "QueuedTask") -> None:
+        """Send a notification card when a task is unschedulable due to bootstrap failure."""
+        try:
+            from .card_templates.queue_feedback import build_no_agent_available_card
+
+            card = build_no_agent_available_card(
+                team_name=task.chat_id,
+                hint="Bootstrap failed — no agents were created. Task marked unschedulable.",
+            )
+            if self._card_send_fn:
+                self._card_send_fn(card)
+        except Exception:
+            logger.debug("Failed to send bootstrap-failed card for task %s", task.task_id)
+
+    def stop_dispatch_loop(self) -> None:
+        """Stop the dispatch loop gracefully."""
+        self._dispatch_stop.set()
+        self._task_queue.notify_idle()  # Wake the loop so it can check the stop flag
+        if self._dispatch_thread and self._dispatch_thread.is_alive():
+            self._dispatch_thread.join(timeout=5.0)
 
     # ------------------------------------------------------------------
     # Collaboration helpers
@@ -681,10 +1100,22 @@ class SlockEngine(BaseEngine):
             return self._agent_statuses.get(agent_id, AgentStatus.IDLE)
 
     def set_agent_status(self, agent_id: str, status: AgentStatus) -> None:
-        """Update agent status (thread-safe)."""
+        """Update agent status (thread-safe, single source of truth).
+
+        Lock hierarchy: engine._lock is the authoritative lock for agent status.
+        Router reads status via engine.get_agent_status() — no dual-write.
+        When transitioning to IDLE, notify the task queue so waiting consumers
+        can dispatch queued work without polling.
+        """
         with self._lock:
             self._agent_statuses[agent_id] = status
-        self._router.set_agent_status(agent_id, status)
+        # 设计意图：notify_idle 必须在锁外调用。
+        # 原因：notify_idle 内部会获取 TaskQueue._cond（条件变量锁），
+        # 若在 engine._lock 内调用，可能形成锁顺序反转导致死锁。
+        # 同时保持临界区最小化，避免阻塞队列消费者线程。
+        # 后续重构请勿将此调用移入锁内。
+        if status == AgentStatus.IDLE:
+            self._task_queue.notify_idle()
 
     def transition_agent(self, agent_id: str, to_status: AgentStatus) -> bool:
         """Transition agent through valid state machine paths.
@@ -746,7 +1177,8 @@ class SlockEngine(BaseEngine):
             current = self._agent_statuses.get(agent_id)
             if current == AgentStatus.MOVING:
                 self._agent_statuses[agent_id] = AgentStatus.IDLE
-        self._router.set_agent_status(agent_id, AgentStatus.IDLE)
+        # Notify queue consumers that an agent is now available
+        self._task_queue.notify_idle()
         # Defensive L1 memory readability check after move
         self._verify_l1_memory_after_move(agent_id)
 
@@ -783,7 +1215,8 @@ class SlockEngine(BaseEngine):
             )
             return ""
         except Exception as exc:
-            diag = f"L1 memory read FAILED after move — persona consistency at risk | agent={agent_id} error={exc}"
+            from src.utils.errors import redact_sensitive
+            diag = f"L1 memory read FAILED after move — persona consistency at risk | agent={agent_id} error={redact_sensitive(str(exc))}"
             logger.error(diag)
             return diag
 
@@ -825,6 +1258,13 @@ class SlockEngine(BaseEngine):
         """Activate slock mode for a channel.
 
         Creates memory directories and a workspace directory with a marker file.
+        Starts the dispatch loop for event-driven task consumption.
+
+        .. note::
+            If default role bootstrap is needed, call prepare_bootstrap()
+            BEFORE this method to ensure the dispatch loop waits for
+            agent registration. Call finish_bootstrap() after roles
+            are registered to unblock the dispatch loop.
         """
         self._channel = channel
         self._memory.ensure_directories(channel_id=channel.channel_id)
@@ -848,11 +1288,15 @@ class SlockEngine(BaseEngine):
         # Start idle scan for auto-claiming orphan TODO tasks
         self._task_mgr.start_idle_scan()
 
+        # Start dispatch loop for event-driven task consumption
+        self.start_dispatch_loop()
+
         marker_data = {
             "channel_id": channel.channel_id,
             "team_name": channel.team_name,
             "name": channel.name,
             "owner_id": channel.owner_id,
+            "bootstrap_failed": channel.bootstrap_failed,
             "activated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
 
@@ -924,20 +1368,36 @@ class SlockEngine(BaseEngine):
                     self._run_state = EngineRunState.IDLE
                 return None
 
-            # Route message to agent (only IDLE agents considered by router)
-            target_agent = self._router.route_message(message, agents)
-            if not target_agent:
+            # Route message to agent with fallback semantics
+            from .task_router import RoutingStatus
+            routing_result = self._router.route_message_with_fallback(message, agents)
+
+            if routing_result.status == RoutingStatus.ASSIGNED and routing_result.agent:
+                target_agent = routing_result.agent
+                if callbacks and callbacks.on_message_routed:
+                    callbacks.on_message_routed(message, target_agent)
+
+                # Execute agent lifecycle
+                result = self._execute_agent(target_agent, message, callbacks)
+                return result
+
+            elif routing_result.status == RoutingStatus.QUEUE_WAIT:
+                # All agents busy — enqueue to task queue for deferred execution
+                logger.info(
+                    "execute: all agents busy (busy_count=%d), enqueueing message",
+                    routing_result.busy_count,
+                )
+                task = SlockTask(text=message, callbacks=callbacks)
+                self._task_queue.enqueue(task)
                 return None
 
-            if callbacks and callbacks.on_message_routed:
-                callbacks.on_message_routed(message, target_agent)
-
-            # Execute agent lifecycle
-            result = self._execute_agent(target_agent, message, callbacks)
-            return result
+            else:
+                # NO_MATCH — no suitable agent found
+                return None
 
         except Exception as e:
-            error_msg = f"Slock engine error: {e}"
+            from src.utils.errors import redact_sensitive
+            error_msg = f"Slock engine error: {redact_sensitive(str(e))}"
             logger.error(error_msg, exc_info=True)
             if callbacks and callbacks.on_error:
                 callbacks.on_error(error_msg)
@@ -1053,6 +1513,50 @@ class SlockEngine(BaseEngine):
             if cancel_event.is_set():
                 raise AgentCancellationError(f"Agent {agent_id} cancelled")
 
+            # Autonomous resolution: if agent output shows uncertainty, attempt
+            # autonomous resolution before delivering to user (AC-5)
+            if result and self._autonomous_resolver and self._autonomous_resolver.has_ambiguity_markers(result):
+                task_id = f"message:{channel_id}:{agent_id}"
+                if self._autonomous_resolver.can_ask_question(task_id):
+                    try:
+                        _loop = _get_shared_loop()
+                        _future = _asyncio.run_coroutine_threadsafe(
+                            self._autonomous_resolver.attempt_resolve(
+                                task_text=message,
+                                context=result,
+                                memory=self._memory,
+                                task_id=task_id,
+                                channel_id=channel_id,
+                            ),
+                            _loop,
+                        )
+                        resolve_result = _future.result(timeout=15)
+
+                        from .autonomous_resolver import ResolveStatus
+                        if resolve_result.status == ResolveStatus.RESOLVED:
+                            # Use resolved text as augmented context, annotate assumptions
+                            assumptions_note = ""
+                            if resolve_result.assumptions:
+                                assumptions_note = (
+                                    "\n\n---\n⚠️ **基于以下假设完成:**\n"
+                                    + "\n".join(f"- {a}" for a in resolve_result.assumptions)
+                                )
+                            result = result + assumptions_note
+                        elif resolve_result.status in (
+                            ResolveStatus.NEEDS_CLARIFICATION,
+                            ResolveStatus.TIMEOUT,
+                        ):
+                            # Format structured question and include in output
+                            question = self._autonomous_resolver.format_structured_question(
+                                attempts_summary=resolve_result.reasoning_trace,
+                                blocker="需要更多信息才能继续",
+                                candidates=["请提供具体目标", "请描述期望结果", "请指定范围"],
+                            )
+                            self._autonomous_resolver.record_question_asked(task_id)
+                            result = result + "\n\n---\n" + question
+                    except Exception as e:
+                        logger.debug("Autonomous resolution failed, continuing with original result: %s", e)
+
             # RUNNING → CHECKING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.CHECKING):
                 return None
@@ -1133,6 +1637,14 @@ class SlockEngine(BaseEngine):
         finally:
             watchdog.cancel()
             self._clear_cancel_event(agent_id)
+            # Clean up autonomous resolver state for this task
+            if self._autonomous_resolver:
+                task_id = f"message:{channel_id}:{agent_id}"
+                try:
+                    self._autonomous_resolver.cleanup_task(task_id)
+                    self._autonomous_resolver.cleanup_stale()
+                except Exception:
+                    pass
 
     def _record_observer_learning(
         self,
@@ -1291,7 +1803,8 @@ class SlockEngine(BaseEngine):
                         f"[Discussion {completed_thread.status.value}] {completed_thread.conclusion[:200]}",
                     )
             except Exception as exc:
-                logger.error("Discussion failed: %s", exc, exc_info=True)
+                from src.utils.errors import redact_sensitive
+                logger.error("Discussion failed: %s", redact_sensitive(str(exc)), exc_info=True)
             finally:
                 watchdog.cancel()
                 self.set_agent_status(agent.agent_id, AgentStatus.IDLE)
@@ -1301,7 +1814,8 @@ class SlockEngine(BaseEngine):
         try:
             self._discussion_executor.submit(_run_discussion)
         except Exception as exc:
-            logger.warning("Failed to submit discussion to executor: %s", str(exc))
+            from src.utils.errors import redact_sensitive
+            logger.warning("Failed to submit discussion to executor: %s", redact_sensitive(str(exc)))
             self.set_agent_status(agent.agent_id, AgentStatus.IDLE)
             self._remove_discussion(channel_id, thread.thread_id)
 
@@ -1364,7 +1878,26 @@ class SlockEngine(BaseEngine):
         channel_id = self._channel.channel_id if self._channel else self.chat_id
         settings = get_settings()
         replay_rounds = settings.slock_conversation_replay_rounds
-        replay = self._memory.read_conversation_replay(channel_id, replay_rounds)
+
+        # Parallel memory reads across tiers (L1/L2/L3)
+        def _read_replay():
+            return self._memory.read_conversation_replay(channel_id, replay_rounds)
+
+        def _read_group():
+            return self._memory.read_group_memory(channel_id)
+
+        def _read_global():
+            return self._memory.read_global_wiki()
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            future_replay = executor.submit(_read_replay)
+            future_group = executor.submit(_read_group)
+            future_global = executor.submit(_read_global)
+
+            replay = future_replay.result()
+            group_memory = future_group.result()
+            global_wiki = future_global.result()
+
         if replay:
             replay_lines = []
             for entry in replay:
@@ -1376,11 +1909,9 @@ class SlockEngine(BaseEngine):
             # Fallback: use summarized/truncated active_context
             parts.append(f"\n# Recent Context\n{memory.active_context[-2000:]}")
 
-        group_memory = self._memory.read_group_memory(channel_id)
         if group_memory:
             parts.append(f"\n# Team Shared Memory\n{group_memory[-2000:]}")
 
-        global_wiki = self._memory.read_global_wiki()
         if global_wiki:
             parts.append(f"\n# Global Knowledge\n{global_wiki[-2000:]}")
 
@@ -1422,12 +1953,16 @@ class SlockEngine(BaseEngine):
         try:
             execution_errors.pop(agent.agent_id, None)
             thread_id = f"slock_agent_{agent.agent_id}"
+            # NOTE: agent.permissions defines the least-privilege tool set for
+            # this role (e.g. ["file_read"] for planner). Tool authorization should
+            # be handled by the session layer once allowed_tools filtering is
+            # supported natively in create_engine_session.
             session = create_engine_session(
                 agent_type=agent.agent_type,
                 cwd=self.root_path,
                 model_name=agent.model_name or None,
                 thread_id=thread_id,
-                auto_approve=True,  # Zero HI; tool scope bounded by agent.permissions
+                auto_approve=True,
             )
             if session is None:
                 logger.warning("Failed to create ACP session for agent %s", agent.name)
@@ -1448,8 +1983,9 @@ class SlockEngine(BaseEngine):
                 close_session_safely(session)
 
         except Exception as e:
-            execution_errors[agent.agent_id] = str(e)
-            logger.error("ACP session error for agent %s: %s", agent.name, str(e))
+            from src.utils.errors import redact_sensitive
+            execution_errors[agent.agent_id] = redact_sensitive(str(e))
+            logger.error("ACP session error for agent %s: %s", agent.name, redact_sensitive(str(e)))
             return None
 
     def _get_agent_execution_errors(self) -> dict[str, str]:
@@ -1674,20 +2210,22 @@ class SlockEngine(BaseEngine):
                     future = executor.submit(self.execute_task, task_id, agent_id, callbacks)
                     futures[future] = task_id
                 except (QueueFullError, RuntimeError) as e:
-                    logger.warning("Failed to submit task %s: %s", task_id, repr(e))
+                    from src.utils.errors import redact_sensitive
+                    logger.warning("Failed to submit task %s: %s", task_id, redact_sensitive(repr(e)))
                     results[task_id] = None
                     if callbacks and callbacks.on_error:
-                        callbacks.on_error(f"Task {task_id} rejected: {e}")
+                        callbacks.on_error(f"Task {task_id} rejected: {redact_sensitive(str(e))}")
 
             for future in as_completed(futures, timeout=timeout):
                 task_id = futures[future]
                 try:
                     results[task_id] = future.result()
                 except Exception as e:
-                    logger.error("Parallel task %s failed: %s", task_id, repr(e))
+                    from src.utils.errors import redact_sensitive
+                    logger.error("Parallel task %s failed: %s", task_id, redact_sensitive(repr(e)))
                     results[task_id] = None
                     if callbacks and callbacks.on_error:
-                        callbacks.on_error(f"Task {task_id} failed: {e}")
+                        callbacks.on_error(f"Task {task_id} failed: {redact_sensitive(str(e))}")
 
         except TimeoutError:
             logger.warning("Parallel execution timed out after %.1fs", timeout)
@@ -1898,6 +2436,9 @@ class SlockEngine(BaseEngine):
                 return False
             self._agent_statuses[agent_id] = AgentStatus.IDLE
             agent_session = self._agent_sessions.pop(agent_id, None)
+
+        # Wake queue consumers since agent is now available
+        self._task_queue.notify_idle()
 
         # Signal cancellation to the executing thread
         self.cancel_agent(agent_id)

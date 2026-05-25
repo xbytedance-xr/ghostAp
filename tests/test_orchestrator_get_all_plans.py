@@ -14,7 +14,6 @@ import pytest
 
 from src.slock_engine.collaboration_orchestrator import CollaborationOrchestrator
 from src.slock_engine.models import (
-    CollaborationPlan,
     CollaborationPlanStatus,
     SlockTask,
     TaskStatus,

@@ -55,7 +55,6 @@ class CouncilParams:
 
 # Map action -> param schema for validation
 _PARAM_SCHEMAS: dict[SlockCommandAction, type] = {
-    SlockCommandAction.TASK_ASSIGN: TaskAssignParams,
     SlockCommandAction.NEW_ROLE: NewRoleParams,
     SlockCommandAction.DISCUSSION: DiscussionParams,
     SlockCommandAction.COUNCIL: CouncilParams,
@@ -327,22 +326,8 @@ class IntentRouter:
         if re.search(r"^(开始干活|开工|开始工作|启动|start\s*working|let.?s\s*go)$", normalized):
             return IntentResult(action=SlockCommandAction.ACTIVATE, confidence=0.85, params={})
 
-        # --- CHITCHAT: non-technical casual messages (greetings, small talk) ---
-        _CHITCHAT_PATTERNS = (
-            r"^(你好|嗨|hi|hello|hey|早上好|晚上好|下午好|早安|晚安)$",
-            r"^(谢谢|thanks|thank\s*you|thx|ok|好的|收到了?|了解|明白)$",
-            r"^(哈哈|haha|lol|呵呵|嘻嘻|666|牛|厉害|强|nb|awesome|nice|cool)$",
-            r"^(再见|bye|拜拜|下次见|see\s*you)$",
-            r"(今天天气|明天天气|天气怎么样|weather)",
-            r"^(吃了吗|吃饭了吗|中午吃什么|喝咖啡|摸鱼)",
-            r"^(辛苦了|加油|fighting|晚安|周末愉快|节日快乐)",
-            r"^(无聊|好无聊|闲着|没事做|发呆)$",
-            r"^(在吗|在不在|有人吗|hello.?anyone)$",
-        )
-        for pattern in _CHITCHAT_PATTERNS:
-            if re.search(pattern, normalized):
-                return IntentResult(action=SlockCommandAction.CHITCHAT, confidence=0.90, params={})
-
+        # CHITCHAT 过滤统一委托给 TaskClassifier.is_chitchat()（单一职责）。
+        # IntentRouter 仅负责命令意图分类，不处理闲聊。
         return None
 
     # ------------------------------------------------------------------

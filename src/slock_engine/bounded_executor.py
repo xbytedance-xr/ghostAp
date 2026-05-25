@@ -12,9 +12,10 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable
 
+from .exceptions import ExecutorQueueFullError
 
-class QueueFullError(Exception):
-    """Raised when a submit is rejected because the pending queue is at capacity."""
+# Backward compatibility alias (deprecated)
+QueueFullError = ExecutorQueueFullError
 
 
 class BoundedExecutor:
@@ -22,7 +23,7 @@ class BoundedExecutor:
 
     This executor guarantees that at most *max_queue_size* tasks are pending
     (submitted but not yet completed) at any time.  Attempts to submit beyond
-    this limit raise :class:`QueueFullError`.
+    this limit raise :class:`ExecutorQueueFullError`.
 
     Each returned :class:`~concurrent.futures.Future` is annotated with an
     ``enqueue_time`` attribute (a :func:`time.time` timestamp) indicating when
@@ -77,14 +78,14 @@ class BoundedExecutor:
 
         Raises
         ------
-        QueueFullError
+        ExecutorQueueFullError
             If the number of pending tasks has reached *max_queue_size*.
         """
         with self._lock:
             if self._shutdown:
                 raise RuntimeError("executor已关闭")
             if self._pending >= self._max_queue_size:
-                raise QueueFullError(
+                raise ExecutorQueueFullError(
                     f"Pending task count ({self._pending}) has reached the "
                     f"maximum queue size ({self._max_queue_size})"
                 )

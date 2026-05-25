@@ -8,10 +8,12 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from ..agent.intent_recognizer import IntentResult, TaskStep
     from ..project import ProjectContext
+    from ..slock_engine.protocols import ActivationGuardProtocol
 
 
 from ..agent.intent_recognizer import IntentType
 from ..card.ui_text import UI_TEXT
+from ..slock_engine.slash_commands import NEEDS_ACTIVATION
 from ..utils.errors import get_error_detail
 from .emoji import EmojiReaction
 from .message_formatter import FeishuMessageFormatter as fmt
@@ -56,6 +58,7 @@ class FeishuRequestContext:
     project: Optional['ProjectContext'] = None
     command_match: CommandMatch | None = None
     shell_fast_tracked: bool = False
+    chat_type: str = "group"
 
 
 class MessageDispatcher:
@@ -73,6 +76,7 @@ class MessageDispatcher:
             request.project,
             command_match=request.command_match,
             shell_fast_tracked=request.shell_fast_tracked,
+            chat_type=request.chat_type,
         )
 
     def process_with_intent(
@@ -84,6 +88,7 @@ class MessageDispatcher:
         *,
         command_match: CommandMatch | None = None,
         shell_fast_tracked: bool = False,
+        chat_type: str = "group",
     ):
         """SMART mode routing logic."""
         from .slash_command_parser import SlashCommandParser
@@ -107,23 +112,153 @@ class MessageDispatcher:
             return
 
         _slock_result = self.client._is_slock_command(text, chat_id)
-        if _slock_result is True:
+        if _slock_result:
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
             self.client._handle_slock_command(message_id, chat_id, text, project)
             return
-        if _slock_result == "NEEDS_ACTIVATION":
+        if _slock_result == NEEDS_ACTIVATION:
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
-            self.client._reply_text(message_id, "💡 此命令需要先激活 Slock 团队。请使用 `/slock` 激活后重试。")
+            # In passive mode, auto-activate instead of asking user to run /slock
+            _passive_mode = getattr(self.client.settings, "slock_passive_mode", True)
+            if _passive_mode and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type):
+                activated, _ = self.client._auto_activate_slock(chat_id, text, project)
+                if activated:
+                    self.client._add_reaction(message_id, EmojiReaction.on_processing())
+                    return
+            # Fallback: user-friendly message without /slock requirement
+            self.client._reply_text(message_id, "💡 **直接在群里发任务即可，Agent 自动处理。** 无需任何前置命令。")
             return
 
         # Slock active chat: route non-command messages to slock engine
-        # Both activation AND managed-chat registration are required to prevent
-        # unregistered chats from routing (e.g. stale channel without register).
-        if self.client._is_slock_active(chat_id) and self.client._is_slock_managed_chat(chat_id):
-            self.client._add_reaction(message_id, EmojiReaction.on_processing())
-            self.client._handle_slock_message(message_id, chat_id, text, project)
-            return
+        # Passive mode (default): only managed-chat check is needed.
+        # Legacy mode: both activation AND managed-chat registration required.
+        # Auto-activate: in passive mode, if chat is not yet managed but message
+        # looks like a valid task, auto-activate slock for this chat (idempotent).
+        _is_managed = self.client._is_slock_managed_chat(chat_id)
+        _passive_mode = getattr(self.client.settings, "slock_passive_mode", True)
+        # Global command check BEFORE slock routing: valid global commands must not
+        # be intercepted by Slock in passive managed chat mode.
+        _is_global_command = (
+            command_match is not None
+            or self.client._is_interceptable_command_match(command_match)
+        )
+        if _passive_mode:
+            if _is_managed and not _is_global_command:
+                # Passive mode: managed chat alone is sufficient for routing
+                # BUT skip if this is a valid global command
+                self.client._add_reaction(message_id, EmojiReaction.on_processing())
+                self.client._handle_slock_message(message_id, chat_id, text, project)
+                return
+            # Auto-activate: use 3-way classification (task/chat/uncertain)
+            # Skip auto-activate for explicit slash commands
+            _is_command_intent = command_match is not None or (text or "").lstrip().startswith("/")
+            if not _is_command_intent:
+                from src.slock_engine.task_classifier import TaskClassifier
+                classification, _ = TaskClassifier.classify_with_uncertainty(text or "")
+
+                if classification == "chat":
+                    # Definitely chitchat — ignore
+                    logger.debug("Slock: message classified as chat, ignoring: chat=%s", chat_id)
+                elif classification == "uncertain":
+                    # Uncertain — try autonomous resolution first, then ask user
+                    logger.info("Slock: message classification uncertain, attempting autonomous resolution: chat=%s", chat_id)
+                    import json
+
+                    from src.slock_engine.autonomous_resolver import (
+                        AutonomousResolver,
+                        ResolveStatus,
+                    )
+                    from src.thread.manager import get_current_sender_id
+                    from src.slock_engine.card_templates.queue_feedback import build_clarification_card
+
+                    # Try autonomous resolution first
+                    resolver = AutonomousResolver()
+                    try:
+                        from src.slock_engine.engine import _get_shared_loop
+                        loop = _get_shared_loop()
+                        import asyncio
+                        resolve_result = loop.run_until_complete(
+                            resolver.attempt_resolve(
+                                task_text=text or "",
+                                context="",
+                                task_id=message_id,
+                                channel_id=chat_id,
+                            )
+                        )
+                    except Exception as e:
+                        logger.warning("Autonomous resolution failed, falling back to clarification: %s", e)
+                        resolve_result = None
+
+                    # If resolved, treat as task and try auto-activate
+                    if resolve_result and resolve_result.status == ResolveStatus.RESOLVED:
+                        logger.info(
+                            "Slock: autonomous resolution succeeded (status=%s), treating as task",
+                            resolve_result.status,
+                        )
+                        resolved_text = resolve_result.resolved_text or text or ""
+                        if self.client._should_auto_activate_slock(chat_id, resolved_text, chat_type=chat_type):
+                            activated, reason = self.client._auto_activate_slock(chat_id, resolved_text, project)
+                            if activated:
+                                self.client._add_reaction(message_id, EmojiReaction.on_processing())
+                                return
+                            else:
+                                from src.slock_engine.card_templates.queue_feedback import build_activation_denied_card
+                                card = build_activation_denied_card(
+                                    reason=reason,
+                                    hint="自动协作模式激活受限。",
+                                )
+                                self.client._reply_card(
+                                    message_id,
+                                    json.dumps(card, ensure_ascii=False),
+                                )
+                                return
+
+                    # Resolution failed or needs clarification — ask user
+                    logger.info("Slock: autonomous resolution inconclusive, asking user clarification: chat=%s", chat_id)
+                    sender_id = get_current_sender_id() or ""
+                    card = build_clarification_card(
+                        message_preview=text or "",
+                        channel_id=chat_id,
+                        message_id=message_id,
+                        sender_id=sender_id,
+                    )
+                    self.client._reply_card(
+                        message_id,
+                        json.dumps(card, ensure_ascii=False),
+                    )
+                elif classification == "task" and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type):
+                    # Definitely a task — try to auto-activate
+                    activated, reason = self.client._auto_activate_slock(chat_id, text, project)
+                    if activated:
+                        # First message is enqueued atomically during bootstrap via
+                        # activate_slock(requirement=text); do NOT handle again here.
+                        self.client._add_reaction(message_id, EmojiReaction.on_processing())
+                        return
+                    else:
+                        # Activation denied — notify user and STOP (do NOT fall through to shell)
+                        logger.info(
+                            "Slock auto-activation denied for chat=%s, reason=%s",
+                            chat_id, reason,
+                        )
+                        import json
+
+                        from src.slock_engine.card_templates.queue_feedback import build_activation_denied_card
+                        card = build_activation_denied_card(
+                            reason=reason,
+                            hint="自动协作模式激活受限。",
+                        )
+                        self.client._reply_card(
+                            message_id,
+                            json.dumps(card, ensure_ascii=False),
+                        )
+                        return
+        else:
+            # Legacy mode: require both active AND managed
+            if self.client._is_slock_active(chat_id) and _is_managed:
+                self.client._add_reaction(message_id, EmojiReaction.on_processing())
+                self.client._handle_slock_message(message_id, chat_id, text, project)
+                return
 
         if is_in_programming and self.client._is_exit_command(text):
             self.client._add_reaction(message_id, EmojiReaction.on_coco_mode())
@@ -183,7 +318,19 @@ class MessageDispatcher:
         try:
             intent_result = self.client._intent_recognizer.recognize(text, current_mode.value)
         except (RuntimeError, TimeoutError, ValueError, TypeError) as e:
-            classify_dispatch_error(e, phase="intent_recognition")
+            classification = classify_dispatch_error(e, phase="intent_recognition")
+            if classification.action == DispatchErrorAction.FALLBACK_TO_SHELL:
+                logger.warning("意图识别异常，回退到 shell: %s", get_error_detail(e))
+                working_dir = self.client._get_working_dir(chat_id)
+                self.client._submit_shell_command(message_id, chat_id, text, working_dir, project)
+                return
+            elif classification.action == DispatchErrorAction.LOG_AND_CONTINUE:
+                logger.debug("意图识别 best-effort 失败: %s", get_error_detail(e))
+                return
+            elif classification.action == DispatchErrorAction.RAISE:
+                logger.error("意图识别异常: %s", get_error_detail(e), exc_info=True)
+                raise
+            # Default: log and fallback to shell
             logger.error("意图识别异常: %s", get_error_detail(e))
             working_dir = self.client._get_working_dir(chat_id)
             self.client._submit_shell_command(message_id, chat_id, text, working_dir, project)

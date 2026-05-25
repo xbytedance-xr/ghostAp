@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.slock_engine.slash_commands import SlockCommandAction, is_slock_command, parse_slock_command
 
 
@@ -39,17 +37,18 @@ class TestDiscussCommandParsing:
         """/discuss is recognized in managed chats."""
         manager = MagicMock()
         manager.is_managed_chat.return_value = True
-        assert is_slock_command("/discuss topic", chat_id="chat1", manager=manager) is True
+        assert is_slock_command("/discuss topic", chat_id="chat1", manager=manager)
 
     def test_is_slock_command_discuss_not_in_unmanaged_chat(self):
         """/discuss returns NEEDS_ACTIVATION without managed chat context."""
+        from src.slock_engine.slash_commands import NEEDS_ACTIVATION
         manager = MagicMock()
         manager.is_managed_chat.return_value = False
-        assert is_slock_command("/discuss topic", chat_id="chat1", manager=manager) == "NEEDS_ACTIVATION"
+        assert is_slock_command("/discuss topic", chat_id="chat1", manager=manager) == NEEDS_ACTIVATION
 
     def test_is_slock_command_discuss_no_manager(self):
         """/discuss returns False when no manager context is available."""
-        assert is_slock_command("/discuss topic", chat_id="chat1", manager=None) is False
+        assert not is_slock_command("/discuss topic", chat_id="chat1", manager=None)
 
     def test_parse_discuss_list(self):
         """/discuss list -> DISCUSSION_LIST action."""

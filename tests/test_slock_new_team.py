@@ -39,6 +39,13 @@ def _make_handler_ctx(tmp_path, *, api_client_factory=None, settings=None):
     s.slock_execution_timeout = 3600
     s.slock_max_agents_per_team = 10
     s.slock_task_claim_ttl = 3600.0
+    s.slock_default_roles = ""
+    # Activation guard: allow all users in tests
+    s.admin_user_ids = ""
+    s.slock_auto_activate_whitelist_user_ids = ""
+    s.slock_auto_activate_default_policy = "allow_all"
+    s.slock_passive_mode = True
+    s.slock_auto_activate_rate_limit = 100
     if settings:
         for k, v in settings.items():
             setattr(s, k, v)
@@ -319,10 +326,12 @@ class TestDispatcherSlockRouting:
 class TestActivateSlockOwnerId:
     """AC-14: activate_slock() must pass sender_open_id as owner_id to SlockChannel."""
 
+    @patch("src.slock_engine.activation_guard.get_activation_guard")
     @patch("src.slock_engine.engine.create_engine_session")
     @patch("src.thread.manager.get_current_sender_id", return_value="user-sender-123")
-    def test_activate_slock_passes_owner_id(self, mock_sender, mock_session, tmp_path):
+    def test_activate_slock_passes_owner_id(self, mock_sender, mock_session, mock_guard, tmp_path):
         """Channel created via /slock activate should have owner_id == sender_open_id."""
+        mock_guard.return_value.can_auto_activate.return_value = (True, "allowed")
         ctx = _make_handler_ctx(tmp_path)
         handler = _make_slock_handler(ctx)
         project = MagicMock()
@@ -340,10 +349,12 @@ class TestActivateSlockOwnerId:
         assert engine.channel is not None
         assert engine.channel.owner_id == "user-sender-123"
 
+    @patch("src.slock_engine.activation_guard.get_activation_guard")
     @patch("src.slock_engine.engine.create_engine_session")
     @patch("src.thread.manager.get_current_sender_id", return_value="")
-    def test_activate_slock_empty_sender_still_works(self, mock_sender, mock_session, tmp_path):
+    def test_activate_slock_empty_sender_still_works(self, mock_sender, mock_session, mock_guard, tmp_path):
         """Even with empty sender_id, activation should not crash (owner_id='')."""
+        mock_guard.return_value.can_auto_activate.return_value = (True, "allowed")
         ctx = _make_handler_ctx(tmp_path)
         handler = _make_slock_handler(ctx)
         project = MagicMock()
@@ -425,9 +436,11 @@ class TestTeamAdminCommands:
 
 
 class TestActivateSlockManagedChat:
+    @patch("src.slock_engine.activation_guard.get_activation_guard")
     @patch("src.slock_engine.engine.create_engine_session")
-    def test_activate_slock_registers_current_chat_for_team_commands(self, mock_session, tmp_path):
+    def test_activate_slock_registers_current_chat_for_team_commands(self, mock_session, mock_guard, tmp_path):
         """After `/slock`, team-local commands such as `/new-role` must be captured."""
+        mock_guard.return_value.can_auto_activate.return_value = (True, "allowed")
         from src.slock_engine.slash_commands import is_slock_command
 
         ctx = _make_handler_ctx(tmp_path)
@@ -446,7 +459,7 @@ class TestActivateSlockManagedChat:
 
         manager = ctx.slock_engine_manager
         assert manager.is_managed_chat("oc_current") is True
-        assert is_slock_command("/new-role Coder", chat_id="oc_current", manager=manager) is True
+        assert is_slock_command("/new-role Coder", chat_id="oc_current", manager=manager)
 
     def test_slock_help_mentions_templates_fork_and_auto_routing(self, tmp_path):
         """Slock's own help should use the command panel card."""

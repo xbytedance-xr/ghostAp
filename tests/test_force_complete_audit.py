@@ -4,11 +4,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from src.slock_engine.models import SlockTask, TaskStatus, TaskTimelineEvent
+from src.slock_engine.models import SlockTask, TaskStatus
 from src.slock_engine.task_board_manager import TaskBoardManager
 
 

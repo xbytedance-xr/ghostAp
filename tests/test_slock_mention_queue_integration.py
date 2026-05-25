@@ -3,9 +3,7 @@
 import collections
 import json
 import threading
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 
 class TestMentionQueueFullIntegration:

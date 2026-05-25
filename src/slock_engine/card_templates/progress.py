@@ -7,31 +7,21 @@ Provides progress visualization cards for collaboration plans:
 
 from __future__ import annotations
 
-from typing import Optional
-
-from .common import (
-    TASK_STATUS_BG_COLOR_MAP,
-    TASK_STATUS_ICONS,
-    TASK_STATUS_LABEL_ZH,
-    build_callback_button,
-    build_card_wrapper,
-    build_collapsible_panel,
-    build_column,
-    build_column_set_row,
-    build_mobile_card_row,
-    build_responsive_layout,
-    redact_sensitive,
-    truncate_dynamic_label,
-)
-
 from ..models import (
     AgentIdentity,
     CollaborationPlan,
     CollaborationPlanStatus,
     PlanStep,
     PlanStepStatus,
-    SlockTask,
-    TaskStatus,
+)
+from .common import (
+    build_callback_button,
+    build_card_wrapper,
+    build_collapsible_panel,
+    build_mobile_card_row,
+    build_responsive_layout,
+    redact_sensitive,
+    truncate_dynamic_label,
 )
 
 # ---------------------------------------------------------------------------

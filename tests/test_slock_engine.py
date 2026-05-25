@@ -37,7 +37,7 @@ class TestIsSLockCommand:
     ])
     def test_globally_recognized(self, text):
         """These commands are always captured regardless of chat context."""
-        assert is_slock_command(text) is True
+        assert is_slock_command(text)
 
     @pytest.mark.parametrize("text", [
         "/new-role Coder",
@@ -49,7 +49,7 @@ class TestIsSLockCommand:
         """These commands are only captured in managed slock chats."""
         manager = MagicMock()
         manager.is_managed_chat.return_value = True
-        assert is_slock_command(text, chat_id="chat_123", manager=manager) is True
+        assert is_slock_command(text, chat_id="chat_123", manager=manager)
 
     @pytest.mark.parametrize("text", [
         "/new-role Coder",
@@ -59,13 +59,14 @@ class TestIsSLockCommand:
     ])
     def test_not_captured_in_unmanaged_chat(self, text):
         """Team commands in unmanaged chats return NEEDS_ACTIVATION (not True)."""
+        from src.slock_engine.slash_commands import NEEDS_ACTIVATION
         manager = MagicMock()
         manager.is_managed_chat.return_value = False
         result = is_slock_command(text, chat_id="chat_456", manager=manager)
-        # Should not be True (not captured as active slock command)
-        assert result is not True
-        # It returns 'NEEDS_ACTIVATION' string for slock-related commands in unmanaged chats
-        assert result == "NEEDS_ACTIVATION"
+        # Should not be truthy (not captured as active slock command)
+        assert not result
+        # It returns NEEDS_ACTIVATION for slock-related commands in unmanaged chats
+        assert result == NEEDS_ACTIVATION
 
     @pytest.mark.parametrize("text", [
         "",
@@ -75,7 +76,7 @@ class TestIsSLockCommand:
         "/exit",
     ])
     def test_not_recognized(self, text):
-        assert is_slock_command(text) is False
+        assert not is_slock_command(text)
 
 
 class TestParseSlockCommand:
@@ -154,15 +155,15 @@ class TestParseSlockCommand:
         assert cmd.action == SlockCommandAction.TASK_STATUS
 
     def test_task_assign_with_role(self):
+        """task assign is deprecated — returns UNKNOWN with hint."""
         cmd = parse_slock_command("/task assign implement login coder")
-        assert cmd.action == SlockCommandAction.TASK_ASSIGN
-        assert cmd.args == "implement login"
-        assert cmd.target == "coder"
+        assert cmd.action == SlockCommandAction.UNKNOWN
+        assert "deprecated" in cmd.args.lower() or "移除" in cmd.args
 
     def test_task_assign_without_role(self):
+        """task assign is deprecated — returns UNKNOWN with hint."""
         cmd = parse_slock_command("/task assign something")
-        assert cmd.action == SlockCommandAction.TASK_ASSIGN
-        assert cmd.args == "something"
+        assert cmd.action == SlockCommandAction.UNKNOWN
 
     def test_team_list(self):
         cmd = parse_slock_command("/team list")
@@ -1871,7 +1872,7 @@ class TestEngineInitOrder:
         engine = SlockEngine(
             chat_id="test_chat_006",
             root_path=str(tmp_path),
-            engine_name="test_engine_6",
+            engine_name="test_engine_6", memory_base_path=str(tmp_path),
         )
         channel = SlockChannel(
             channel_id="test_chat_006",
@@ -1897,7 +1898,7 @@ class TestEngineInitOrder:
         engine = SlockEngine(
             chat_id="test_chat_007",
             root_path=str(tmp_path),
-            engine_name="test_engine_7",
+            engine_name="test_engine_7", memory_base_path=str(tmp_path),
         )
         channel = SlockChannel(
             channel_id="test_chat_007",
@@ -1925,7 +1926,7 @@ class TestClaimTaskDefensiveValidation:
         from src.slock_engine.engine import SlockEngine
         from src.slock_engine.models import SlockChannel
 
-        engine = SlockEngine(chat_id="t_claim_1", root_path=str(tmp_path), engine_name="claim_eng")
+        engine = SlockEngine(chat_id="t_claim_1", root_path=str(tmp_path), engine_name="claim_eng", memory_base_path=str(tmp_path))
         channel = SlockChannel(channel_id="t_claim_1", name="test", team_name="T", owner_id="o")
         engine.activate_channel(channel)
 
@@ -1936,7 +1937,7 @@ class TestClaimTaskDefensiveValidation:
         from src.slock_engine.engine import SlockEngine
         from src.slock_engine.models import SlockChannel
 
-        engine = SlockEngine(chat_id="t_claim_2", root_path=str(tmp_path), engine_name="claim_eng2")
+        engine = SlockEngine(chat_id="t_claim_2", root_path=str(tmp_path), engine_name="claim_eng2", memory_base_path=str(tmp_path))
         channel = SlockChannel(channel_id="t_claim_2", name="test", team_name="T", owner_id="o")
         engine.activate_channel(channel)
 
@@ -1948,7 +1949,7 @@ class TestClaimTaskDefensiveValidation:
         from src.slock_engine.engine import SlockEngine
         from src.slock_engine.models import SlockChannel
 
-        engine = SlockEngine(chat_id="t_claim_3", root_path=str(tmp_path), engine_name="claim_eng3")
+        engine = SlockEngine(chat_id="t_claim_3", root_path=str(tmp_path), engine_name="claim_eng3", memory_base_path=str(tmp_path))
         channel = SlockChannel(channel_id="t_claim_3", name="test", team_name="T", owner_id="o")
         engine.activate_channel(channel)
 
@@ -1961,23 +1962,23 @@ class TestPlanCommandParsing:
     """Regression tests for /plan command parsing (Task 18)."""
 
     def test_plan_list_bare(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/plan")
         assert cmd.action == SlockCommandAction.PLAN_LIST
 
     def test_plan_list_explicit(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/plan list")
         assert cmd.action == SlockCommandAction.PLAN_LIST
 
     def test_plan_detail_with_id(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/plan abc123def")
         assert cmd.action == SlockCommandAction.PLAN_DETAIL
         assert cmd.target == "abc123def"
 
     def test_plan_alias_p(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/p list")
         assert cmd.action == SlockCommandAction.PLAN_LIST
 
@@ -1989,34 +1990,34 @@ class TestPlanCommandParsing:
                 return True
 
         result = is_slock_command("/plan list", "chat_1", FakeManager())
-        assert result is True
+        assert result.is_command is True
 
     def test_plan_in_unmanaged_chat(self):
-        from src.slock_engine.slash_commands import is_slock_command
+        from src.slock_engine.slash_commands import NEEDS_ACTIVATION, is_slock_command
 
         class FakeManager:
             def is_managed_chat(self, chat_id):
                 return False
 
         result = is_slock_command("/plan list", "chat_1", FakeManager())
-        assert result == "NEEDS_ACTIVATION"
+        assert result == NEEDS_ACTIVATION
 
 
 class TestMemoryGroupParsing:
     """Regression tests for /memory group command parsing (Task 19)."""
 
     def test_memory_group(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/memory group")
         assert cmd.action == SlockCommandAction.MEMORY_GROUP
 
     def test_memory_list_still_works(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/memory list")
         assert cmd.action == SlockCommandAction.MEMORY_LIST
 
     def test_memory_agent_name_still_works(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/memory @Coder")
         assert cmd.action == SlockCommandAction.MEMORY
         assert cmd.target == "Coder"
@@ -2035,8 +2036,8 @@ class TestMarkDoneTaskNotification:
         """Build a TaskBoardManager with mocked dependencies."""
         import threading
         from unittest.mock import MagicMock
+        from dataclasses import dataclass
 
-        from src.slock_engine.models import SlockTask, TaskStatus
         from src.slock_engine.task_board_manager import TaskBoardManager
 
         lock = threading.RLock()
@@ -2055,17 +2056,37 @@ class TestMarkDoneTaskNotification:
 
         dirty_flag = [False]
 
+        # Mock context implementing SlockEngineContext protocol
+        @dataclass
+        class MockContext:
+            channel = None
+            chat_id = "test_chat_id"
+
+            @property
+            def dirty(self):
+                return dirty_flag[0]
+
+            def set_dirty(self, value):
+                dirty_flag[0] = value
+
+            def execute_agent(self, agent, content, callbacks):
+                return None
+
+            def resolve_agent_for_role(self, role, channel_id):
+                return None
+
+            def execute_task(self, task_id, agent_id, callbacks):
+                return None
+
+        context = MockContext()
+
         mgr = TaskBoardManager(
             lock=lock,
             tasks=tasks,
-            channel_getter=lambda: None,
-            chat_id_getter=lambda: "test_chat_id",
-            dirty_getter=lambda: dirty_flag[0],
-            dirty_setter=lambda v: dirty_flag.__setitem__(0, v),
+            context=context,
             router=router,
             memory=memory,
             registry_get=lambda _id: None,
-            execute_agent_fn=lambda *a, **kw: None,
             chain_manager=None,
             notifier=notifier,
         )

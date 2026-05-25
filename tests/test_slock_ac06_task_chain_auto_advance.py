@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import threading
 import uuid
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
-import pytest
-
-from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus
+from src.slock_engine.models import SlockTask, TaskStatus
 from src.slock_engine.task_board_manager import TaskBoardManager
 from src.slock_engine.task_chain_manager import TaskChainManager
 

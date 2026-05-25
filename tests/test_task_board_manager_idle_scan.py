@@ -11,13 +11,10 @@ Covers seven distinct code paths:
 """
 
 import threading
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from src.slock_engine.task_board_manager import TaskBoardManager
 from src.slock_engine.models import SlockTask, TaskStatus
-
+from src.slock_engine.task_board_manager import TaskBoardManager
 
 # ---------------------------------------------------------------------------
 # Helper factory
@@ -39,20 +36,34 @@ def _make_manager(
     router = MagicMock()
     router.task_claim.claim.return_value = True
 
+    _execute_fn = execute_fn or MagicMock()
+
+    # Mock context implementing SlockEngineContext protocol
+    class MockContext:
+        pass
+
+    context = MockContext()
+    context.channel = channel
+    context.chat_id = "chat-1"
+    context.dirty = False
+
+    def _set_dirty(value):
+        pass
+
+    context.set_dirty = _set_dirty
+    context.execute_agent = lambda agent, content, callbacks: _execute_fn(agent, content, callbacks)
+    context.resolve_agent_for_role = (lambda role, channel_id: resolve_fn(role, channel_id)) if resolve_fn else (lambda role, channel_id: None)
+    context.execute_task = lambda task_id, agent_id, callbacks: None
+
     mgr = TaskBoardManager(
         lock=lock,
         tasks=task_list,
-        channel_getter=lambda: channel,
-        chat_id_getter=lambda: "chat-1",
-        dirty_getter=lambda: False,
-        dirty_setter=lambda _: None,
+        context=context,
         router=router,
         memory=MagicMock(),
         registry_get=registry_get or MagicMock(return_value=None),
-        execute_agent_fn=execute_fn or MagicMock(),
         chain_manager=chain_manager,
         notifier=MagicMock(),
-        resolve_agent_for_role=resolve_fn,
     )
     return mgr
 
@@ -75,15 +86,16 @@ class TestIdleScanOnce:
     """Tests for TaskBoardManager._idle_scan_once."""
 
     def test_no_resolve_agent_for_role_returns_early(self):
-        """Path 1: When resolve_agent_for_role is None, _idle_scan_once returns immediately."""
+        """Path 1: When resolve_agent_for_role returns None, _idle_scan_once returns early."""
         task = _make_task(status=TaskStatus.TODO)
-        mgr = _make_manager(tasks=[task], resolve_fn=None)
+        execute_fn = MagicMock()
+        mgr = _make_manager(tasks=[task], resolve_fn=None, execute_fn=execute_fn)
 
         # Should not raise and should not attempt to process any tasks
         mgr._idle_scan_once()
 
-        # execute_agent_fn should never be called
-        mgr._execute_agent_fn.assert_not_called()
+        # execute_agent should never be called
+        execute_fn.assert_not_called()
 
     def test_no_todo_tasks_returns_early(self):
         """Path 2: When all tasks are DONE/IN_PROGRESS, nothing happens."""
@@ -122,8 +134,8 @@ class TestIdleScanOnce:
 
         mgr._idle_scan_once()
 
-        # Should resolve with "coder" as the default role
-        resolve_fn.assert_called_with("coder")
+        # Should resolve with "coder" as the default role and channel_id
+        resolve_fn.assert_called_with("coder", "test-chan")
 
     def test_agent_not_found_skips_task(self):
         """Path 4: resolve_agent_for_role returns None, task is skipped."""

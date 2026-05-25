@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch, PropertyMock
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.feishu.handlers.slock import SlockHandler
 from src.slock_engine.models import AgentIdentity, SlockMemory

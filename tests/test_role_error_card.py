@@ -8,8 +8,8 @@ Validates:
 
 from __future__ import annotations
 
-import sys
 import json
+import sys
 from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,6 @@ for _mod_name in _EXTERNAL_MODULES:
 # ---------------------------------------------------------------------------
 
 from src.slock_engine.card_templates import build_role_arg_error_card
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -315,23 +314,23 @@ class TestMissingNameAction:
     """AC-R04: /new-team and /new-role without name return MISSING_NAME action."""
 
     def test_new_team_missing_name(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/new-team")
         assert cmd.action == SlockCommandAction.NEW_TEAM_MISSING_NAME
 
     def test_new_role_missing_name(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/new-role")
         assert cmd.action == SlockCommandAction.NEW_ROLE_MISSING_NAME
 
     def test_new_team_with_name_still_works(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/new-team my-team")
         assert cmd.action == SlockCommandAction.NEW_TEAM
         assert cmd.args == "my-team"
 
     def test_new_role_with_name_still_works(self):
-        from src.slock_engine.slash_commands import parse_slock_command, SlockCommandAction
+        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
         cmd = parse_slock_command("/new-role reviewer")
         assert cmd.action == SlockCommandAction.NEW_ROLE
         assert cmd.args == "reviewer"

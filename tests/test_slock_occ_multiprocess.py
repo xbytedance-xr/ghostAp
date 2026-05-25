@@ -10,15 +10,10 @@ Verifies that:
 from __future__ import annotations
 
 import multiprocessing
-import os
 import time
-from pathlib import Path
-
-import pytest
 
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory
-
 
 # ---------------------------------------------------------------------------
 # Helpers for multi-process tests (must be at module level for pickling)

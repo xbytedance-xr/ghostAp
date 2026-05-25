@@ -10,12 +10,11 @@ Covers:
 from __future__ import annotations
 
 import json
-import re
 
 import pytest
 
 from src.slock_engine.card_templates.role import build_role_info_card
-from src.slock_engine.models import AgentIdentity, AgentStatus, SlockMemory, SlockTask, TaskStatus
+from src.slock_engine.models import AgentIdentity, AgentStatus
 
 
 def _make_agent(**kwargs) -> AgentIdentity:

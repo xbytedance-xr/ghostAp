@@ -244,8 +244,23 @@ class AgentRegistry:
             )
             return MoveOutcome(status=MoveResult.SUCCESS)
 
+    MAX_PERSIST_QUEUE_SIZE: int = 256
+
     def _persist(self, agent: AgentIdentity) -> None:
-        """Schedule agent identity write to background thread (caller must hold _lock)."""
+        """Schedule agent identity write to background thread (caller must hold _lock).
+
+        Backpressure: when the queue exceeds MAX_PERSIST_QUEUE_SIZE, falls back to
+        synchronous disk write in the caller's thread to prevent unbounded memory growth.
+        """
+        if len(self._persist_queue) >= self.MAX_PERSIST_QUEUE_SIZE:
+            # Backpressure: write synchronously to avoid unbounded queue growth
+            logger.warning(
+                "persist_queue at capacity (%d), falling back to synchronous write for agent %s",
+                self.MAX_PERSIST_QUEUE_SIZE, agent.agent_id,
+            )
+            self._write_agent_to_disk(agent)
+            return
+
         self._persist_queue.append(agent)
         if self._persist_thread is None or not self._persist_thread.is_alive():
             self._persist_thread = threading.Thread(

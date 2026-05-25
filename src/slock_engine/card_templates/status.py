@@ -13,18 +13,18 @@ from .common import (
     STATUS_ICON_MAP,
     STATUS_LABEL_ZH,
     TASK_CONTENT_COMPACT_LEN,
-    AgentIdentity,
-    AgentStatus,
-    SlockTask,
     build_callback_button,
     build_card_wrapper,
     build_collapsible_panel,
-    build_column,
-    build_column_set_row,
     build_mobile_card_row,
     build_responsive_layout,
     redact_sensitive,
     truncate_dynamic_label,
+)
+from ..models import (
+    AgentIdentity,
+    AgentStatus,
+    SlockTask,
 )
 
 

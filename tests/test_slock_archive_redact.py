@@ -5,10 +5,6 @@ to the message archive, preventing plaintext secrets in local logs.
 """
 
 import os
-import tempfile
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.slock_engine.memory_manager import MemoryManager
 from src.utils.redact import redact_sensitive

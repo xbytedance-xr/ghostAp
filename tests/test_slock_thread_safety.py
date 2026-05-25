@@ -6,9 +6,7 @@ Tests AC-FIX-01, AC-FIX-02, AC-FIX-04.
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.slock_engine.models import AgentStatus
 from src.slock_engine.task_router import TaskClaim
@@ -19,7 +17,6 @@ class TestTransitionAgentConcurrent:
 
     def _make_engine(self):
         """Create a minimal SlockEngine mock with real locking."""
-        from unittest.mock import MagicMock
         import threading
 
         engine = MagicMock()

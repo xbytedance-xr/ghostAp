@@ -16,10 +16,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 # ===========================================================================
 # AC-R01: Archive context on move
@@ -135,7 +131,6 @@ class TestForcePrefixBypass:
         return router
 
     def test_exclamation_bypass(self):
-        from src.slock_engine.task_router import TaskRouter
         router = self._make_router()
         # Long non-tech message is chitchat
         assert router._is_chitchat("这个方案你觉得怎么样呢我不太确定") is True
@@ -218,7 +213,7 @@ class TestStatusPanelSelectStatic:
     """Verify individual stop buttons are used for all non-IDLE agent counts."""
 
     def _make_agents(self, count, status):
-        from src.slock_engine.models import AgentIdentity, AgentStatus
+        from src.slock_engine.models import AgentIdentity
         agents = []
         for i in range(count):
             agent = AgentIdentity(
@@ -358,8 +353,8 @@ class TestParallelDiscussions:
 
     def test_4_concurrent_discussions_no_queue_delay(self):
         """All 4 discussions should start within 5s (no 2-worker bottleneck)."""
-        from concurrent.futures import ThreadPoolExecutor
         import threading
+        from concurrent.futures import ThreadPoolExecutor
 
         # Simulate the new discussion executor (max_workers=8)
         executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="test-discussion")

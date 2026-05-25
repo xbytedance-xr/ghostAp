@@ -1,6 +1,5 @@
 """Security sandbox tests for slock engine tool filtering (AC-R07, AC-R08, AC-R11)."""
 
-import os
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -197,7 +196,6 @@ class TestSecurityPolicyDegradedPropagation:
     def test_security_policy_degraded_not_swallowed_in_run_acp(self):
         """Verify _run_acp_session re-raises SecurityPolicyDegradedError."""
         from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.models import AgentStatus
 
         agent = _make_agent()
 

@@ -33,27 +33,27 @@ class TestE2EDispatcherToHandler:
     def test_slock_activate_routes_to_handler(self):
         """AC-01: /slock command activates slock mode via dispatcher routing."""
         text = "/slock"
-        assert is_slock_command(text) is True
+        assert is_slock_command(text)
 
     def test_slock_status_routes_to_handler(self):
         """AC-01: /slock status goes through slock command path."""
         text = "/slock status"
-        assert is_slock_command(text) is True
+        assert is_slock_command(text)
 
     def test_non_slock_text_passthrough_in_unmanaged_chat(self):
         """AC-02: Non-slock commands in unmanaged chats don't trigger slock."""
         manager = MagicMock()
         manager.is_managed_chat.return_value = False
-        assert is_slock_command("/role list", chat_id="chat_99", manager=manager) is False
-        assert is_slock_command("/task list", chat_id="chat_99", manager=manager) is False
-        assert is_slock_command("hello world", chat_id="chat_99", manager=manager) is False
+        assert not is_slock_command("/role list", chat_id="chat_99", manager=manager)
+        assert not is_slock_command("/task list", chat_id="chat_99", manager=manager)
+        assert not is_slock_command("hello world", chat_id="chat_99", manager=manager)
 
     def test_non_slock_commands_unaffected(self):
         """AC-02: Other mode commands are not captured by slock."""
-        assert is_slock_command("/deep analyze") is False
-        assert is_slock_command("/spec build") is False
-        assert is_slock_command("/exit") is False
-        assert is_slock_command("/coco") is False
+        assert not is_slock_command("/deep analyze")
+        assert not is_slock_command("/spec build")
+        assert not is_slock_command("/exit")
+        assert not is_slock_command("/coco")
 
 
 class TestE2EHandlerToEngine:
@@ -114,7 +114,10 @@ class TestE2EHandlerToEngine:
         handler.get_working_dir = MagicMock(return_value="/tmp/test")
         handler.get_engine_name = MagicMock(return_value="Slock-e2e")
 
-        handler.activate_slock("msg_1", "chat_e2e", "")
+        with patch("src.slock_engine.activation_guard.get_activation_guard") as mock_guard:
+            mock_guard.return_value.can_auto_activate.return_value = (True, "allowed")
+            with patch("src.thread.manager.get_current_sender_id", return_value="user-e2e"):
+                handler.activate_slock("msg_1", "chat_e2e", "")
 
         # Engine was created and channel was activated
         manager.get_or_create.assert_called_once()

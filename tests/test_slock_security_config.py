@@ -11,7 +11,6 @@ Verifies:
 from __future__ import annotations
 
 import re
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -135,6 +134,7 @@ class TestArbiterMaxTokensSetting:
     def test_min_constraint(self):
         """Value below 100 is rejected."""
         from pydantic import ValidationError
+
         from src.config.settings import Settings
         with pytest.raises(ValidationError):
             Settings(slock_arbiter_max_tokens=50)
@@ -142,6 +142,7 @@ class TestArbiterMaxTokensSetting:
     def test_max_constraint(self):
         """Value above 2000 is rejected."""
         from pydantic import ValidationError
+
         from src.config.settings import Settings
         with pytest.raises(ValidationError):
             Settings(slock_arbiter_max_tokens=3000)

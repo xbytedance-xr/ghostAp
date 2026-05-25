@@ -1,7 +1,7 @@
 """Tests for OCC version persistence and Merge-on-Write (AC15, AC16)."""
 import threading
 import time
-import pytest
+
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import SlockMemory
 
