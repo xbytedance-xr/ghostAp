@@ -539,23 +539,32 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     admin_user_ids: str = ""
 
-    @field_validator("admin_user_ids", mode="before")
+    # ------------------------------------------------------------------
+    # 授权白名单（安全加固 A2）
+    # 空 frozenset 表示不限制（允许所有）；非空时仅白名单内的 chat/user 可用。
+    # Declared as str for same reason as admin_user_ids.
+    # ------------------------------------------------------------------
+    allowed_chat_ids: str = ""
+    allowed_user_ids: str = ""
+
+    @field_validator("admin_user_ids", "allowed_chat_ids", "allowed_user_ids", mode="before")
     @classmethod
-    def _normalize_admin_user_ids_input(cls, v):
+    def _normalize_id_set_input(cls, v):
         """Normalize list/set/frozenset input to comma-separated string."""
         if isinstance(v, (list, tuple, set, frozenset)):
             return ",".join(v)
         return v if v is not None else ""
 
     @model_validator(mode="after")
-    def _coerce_admin_user_ids(self) -> "Settings":
-        """Convert comma-separated admin_user_ids string to frozenset for O(1) lookup."""
-        raw = self.admin_user_ids
-        if not raw or not isinstance(raw, str):
-            parsed = frozenset()
-        else:
-            parsed = frozenset(s.strip() for s in raw.split(",") if s.strip())
-        object.__setattr__(self, "admin_user_ids", parsed)
+    def _coerce_id_set_fields(self) -> "Settings":
+        """Convert comma-separated id-set fields to frozenset for O(1) lookup."""
+        for field_name in ("admin_user_ids", "allowed_chat_ids", "allowed_user_ids"):
+            raw = getattr(self, field_name)
+            if not raw or not isinstance(raw, str):
+                parsed = frozenset()
+            else:
+                parsed = frozenset(s.strip() for s in raw.split(",") if s.strip())
+            object.__setattr__(self, field_name, parsed)
         return self
 
     # ------------------------------------------------------------------

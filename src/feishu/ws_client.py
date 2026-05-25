@@ -1180,6 +1180,15 @@ class FeishuWSClient:
             ):
                 return
 
+            # 2d. Authorization whitelist check (security hardening A2).
+            # Empty set means "allow all"; non-empty set restricts to members only.
+            if self.settings.allowed_chat_ids and chat_id not in self.settings.allowed_chat_ids:
+                logger.debug("Chat %s not in allowed_chat_ids, dropping message", chat_id)
+                return
+            if self.settings.allowed_user_ids and _sender_id not in self.settings.allowed_user_ids:
+                logger.debug("User %s not in allowed_user_ids, dropping message", _sender_id)
+                return
+
             # 3. Handle Images (if any)
             is_image_only = False
             if parse_result.image_keys:
