@@ -140,6 +140,74 @@ class TestSyncClaudeCLISession:
         assert sess.message_count == 1
 
 
+# ── SyncClaudeCLISession: argument injection guard ───────────────────
+
+
+class TestClaudeCLIArgInjectionGuard:
+    """A5 security hardening: user text must never be parsed as CLI flags."""
+
+    def _get_build_args(self, text: str, resumed: bool = False) -> list[str]:
+        """Helper to invoke the inner _build_args closure via send_prompt scaffolding."""
+        from src.agent_session.claude_cli import ClaudeCLIConfig
+
+        sess = SyncClaudeCLISession(cwd="/tmp", config=ClaudeCLIConfig(bypass_permissions=True))
+        sess.session_id = "test-session"
+
+        # Access _build_args indirectly: replicate its logic since it's a closure.
+        # Instead, we patch Popen to capture the args it receives.
+        captured_args: list[list[str]] = []
+
+        def fake_popen(args, **kwargs):
+            captured_args.append(args)
+            mock_proc = MagicMock()
+            mock_proc.stdout = iter([])
+            mock_proc.stderr = MagicMock()
+            mock_proc.stderr.read.return_value = ""
+            mock_proc.returncode = 0
+            mock_proc.wait = MagicMock()
+            return mock_proc
+
+        with (
+            patch("subprocess.Popen", side_effect=fake_popen),
+            patch("src.utils.env.build_clean_env", return_value={}),
+        ):
+            sess.is_resumed = resumed
+            sess.send_prompt(text)
+
+        assert len(captured_args) == 1
+        return captured_args[0]
+
+    def test_double_dash_precedes_user_text(self):
+        """The POSIX '--' separator must appear immediately before user text."""
+        args = self._get_build_args("hello world")
+        # Find user text position
+        text_idx = args.index("hello world")
+        assert text_idx > 0
+        assert args[text_idx - 1] == "--"
+
+    def test_dash_prefixed_text_not_treated_as_flag(self):
+        """Text starting with '--help' must still be placed after '--'."""
+        args = self._get_build_args("--help")
+        text_idx = args.index("--help")
+        # The '--' separator must be right before it
+        assert args[text_idx - 1] == "--"
+        # '--help' should only appear once (as user text, not as a flag)
+        assert args.count("--help") == 1
+
+    def test_dash_v_text_not_treated_as_flag(self):
+        """Text '-v' must be placed after '--' separator."""
+        args = self._get_build_args("-v")
+        text_idx = args.index("-v")
+        assert args[text_idx - 1] == "--"
+
+    def test_double_dash_with_resume_mode(self):
+        """The '--' guard must work regardless of resume state."""
+        args = self._get_build_args("--malicious-flag", resumed=True)
+        text_idx = args.index("--malicious-flag")
+        assert args[text_idx - 1] == "--"
+        assert "--resume" in args
+
+
 # ── SyncTTADKCLISession ──────────────────────────────────────────────
 
 

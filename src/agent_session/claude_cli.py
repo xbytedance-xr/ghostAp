@@ -112,6 +112,7 @@ class SyncClaudeCLISession:
             else:
                 args += ["--session-id", self.session_id]
 
+            args.append("--")
             args.append(text)
             return args
 
