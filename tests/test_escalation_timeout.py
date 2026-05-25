@@ -43,23 +43,28 @@ def _make_manager(
 
     router = TaskRouter()
 
+    context = MagicMock()
+    context.channel = None
+    context.chat_id = "test_chat_id"
+    context.dirty = False
+    context.set_dirty = mocks["dirty_setter"]
+
     mgr = EscalationManager(
         lock=lock,
         escalations=escalations,
         retry_counts=retry_counts,
-        channel_getter=lambda: None,
-        chat_id_getter=lambda: "test_chat_id",
-        task_list_getter=lambda: [],
-        dirty_setter=mocks["dirty_setter"],
+        context=context,
         router=router,
         transition_agent=mocks["transition_agent"],
         flush_if_dirty=mocks["flush_if_dirty"],
-        execute_task_fn=mocks["execute_task_fn"],
-        rollback_task_fn=mocks["rollback_task_fn"],
-        force_complete_task_fn=mocks["force_complete_task_fn"],
         update_card_fn=update_card_fn,
         send_text_fn=send_text_fn,
         escalation_timeout_s=escalation_timeout_s,
+    )
+    mgr.set_task_callbacks(
+        execute_task_fn=mocks["execute_task_fn"],
+        rollback_task_fn=mocks["rollback_task_fn"],
+        force_complete_task_fn=mocks["force_complete_task_fn"],
     )
     return mgr, mocks
 
@@ -134,7 +139,7 @@ class TestTimeoutAutoAbort:
         mocks["dirty_setter"].assert_called_with(True)
 
     def test_timeout_auto_abort_resumes_agent(self):
-        """AC-3: Timeout calls force_complete_task via resume_after_escalation."""
+        """AC-3: Timeout triggers resume_after_escalation (abort branch sets dirty)."""
         mgr, mocks = _make_manager()
 
         esc = _make_escalation(task_id="task-xyz")
@@ -143,8 +148,8 @@ class TestTimeoutAutoAbort:
         mgr._timeout_auto_abort(esc.escalation_id)
         mgr._io_executor.shutdown(wait=True)
 
-        # resume_after_escalation with resolution="中止" calls force_complete_task_fn
-        mocks["force_complete_task_fn"].assert_called_once_with("task-xyz", reason="超时中止")
+        # Abort branch in resume_after_escalation calls set_dirty(True)
+        mocks["dirty_setter"].assert_called_with(True)
 
     def test_timeout_marks_resolved(self):
         """Timeout marks escalation as resolved with resolution='中止'."""
@@ -214,7 +219,7 @@ class TestTimeoutAutoAbort:
 
         # Text and resume still happen despite card failure
         send_text_fn.assert_called_once()
-        mocks["force_complete_task_fn"].assert_called_once()
+        mocks["dirty_setter"].assert_called_with(True)
 
     def test_timeout_no_card_message_id_skips_update(self):
         """When card_message_id is None, card update is skipped but text is sent."""
@@ -234,7 +239,7 @@ class TestTimeoutAutoAbort:
         send_text_fn.assert_called_once()  # still fires
 
     def test_timeout_send_text_failure_still_resumes_agent(self):
-        """send_text_fn exception doesn't block force_complete_task_fn or resume."""
+        """send_text_fn exception doesn't block resume_after_escalation."""
         update_card_fn = MagicMock(return_value=True)
         send_text_fn = MagicMock(side_effect=Exception("Network timeout"))
         mgr, mocks = _make_manager(
@@ -250,33 +255,27 @@ class TestTimeoutAutoAbort:
 
         # send_text_fn was called (and raised)
         send_text_fn.assert_called_once()
-        # force_complete_task_fn still called despite send_text_fn failure
-        mocks["force_complete_task_fn"].assert_called_once_with("task-send-fail", reason="超时中止")
+        # Abort branch sets dirty despite send_text_fn failure
+        mocks["dirty_setter"].assert_called_with(True)
 
-    def test_timeout_force_complete_failure_logs_error(self):
-        """force_complete_task_fn exception in resume triggers fallback and logs error."""
+    def test_timeout_abort_branch_sets_dirty_and_logs(self):
+        """Abort branch in resume_after_escalation sets dirty and logs info."""
         send_text_fn = MagicMock()
         mgr, mocks = _make_manager(send_text_fn=send_text_fn)
 
-        # Make force_complete_task_fn raise on every call
-        mocks["force_complete_task_fn"].side_effect = Exception("DB write failed")
-
-        esc = _make_escalation(task_id="task-force-fail")
+        esc = _make_escalation(task_id="task-abort-test")
         mgr._escalations.append(esc)
 
         with patch("src.slock_engine.escalation_manager.logger") as mock_logger:
-            # Should not raise — exception is caught internally
             mgr._timeout_auto_abort(esc.escalation_id)
             mgr._io_executor.shutdown(wait=True)
 
-            # force_complete_task_fn called twice:
-            # 1) resume_after_escalation abort branch (raises)
-            # 2) fallback in _do_timeout_io exception handler (raises again)
-            assert mocks["force_complete_task_fn"].call_count == 2
-            # Error is logged
-            mock_logger.error.assert_called()
-            error_calls = [str(c) for c in mock_logger.error.call_args_list]
-            assert any("resume" in c.lower() or "Failed" in c for c in error_calls)
+            # Abort branch sets dirty
+            mocks["dirty_setter"].assert_called_with(True)
+            # Info log about abort
+            mock_logger.info.assert_called()
+            info_calls = [str(c) for c in mock_logger.info.call_args_list]
+            assert any("Abort" in c or "abandoned" in c for c in info_calls)
 
 
 class TestBuildEscalationCardTimeout:
@@ -466,7 +465,7 @@ class TestTimeoutReasonPropagation:
     """Tests for reason kwarg passing through force_complete_task."""
 
     def test_abort_branch_passes_reason(self):
-        """resume_after_escalation abort branch passes reason='超时中止'."""
+        """resume_after_escalation abort branch sets dirty and logs abandon."""
         mgr, mocks = _make_manager()
 
         esc = _make_escalation(task_id="task-abort")
@@ -476,9 +475,8 @@ class TestTimeoutReasonPropagation:
 
         mgr.resume_after_escalation(esc)
 
-        mocks["force_complete_task_fn"].assert_called_once_with(
-            "task-abort", reason="超时中止",
-        )
+        # Abort branch sets dirty (task marked DONE/abandoned)
+        mocks["dirty_setter"].assert_called_with(True)
 
     def test_retry_limit_passes_reason(self):
         """Retry limit exceeded passes reason='重试次数超限'."""
@@ -496,15 +494,15 @@ class TestTimeoutReasonPropagation:
         mgr.resume_after_escalation(esc)
 
         mocks["force_complete_task_fn"].assert_called_once_with(
-            "task-retry", reason="重试次数超限",
+            "task-retry", reason="重试次数超限", actor_id="system:escalation",
         )
 
 
 class TestResumeExceptionAlert:
     """Tests for _do_timeout_io fallback when resume_after_escalation raises."""
 
-    def test_resume_failure_triggers_fallback_force_complete(self):
-        """When resume raises, fallback force_complete is called with error reason."""
+    def test_resume_failure_triggers_fallback_dirty_and_alert(self):
+        """When resume raises, fallback sets dirty and sends alert text."""
         send_text_fn = MagicMock()
         mgr, mocks = _make_manager(send_text_fn=send_text_fn)
 
@@ -516,10 +514,12 @@ class TestResumeExceptionAlert:
             mgr._timeout_auto_abort(esc.escalation_id)
             mgr._io_executor.shutdown(wait=True)
 
-        # Fallback force_complete with error reason
-        mocks["force_complete_task_fn"].assert_called_once_with(
-            "task-resume-fail", reason="系统错误:需人工介入",
-        )
+        # Fallback sets dirty
+        mocks["dirty_setter"].assert_called_with(True)
+        # Alert text is sent (second call after timeout notification)
+        assert send_text_fn.call_count == 2
+        alert_text = send_text_fn.call_args_list[1][0][1]
+        assert "系统告警" in alert_text or "🚨" in alert_text
 
     def test_resume_failure_sends_alert_text(self):
         """When resume raises, alert text is sent to chat."""

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
+from src.utils.async_helpers import safe_wait_for
+
 if TYPE_CHECKING:
     from .memory_manager import MemoryManager
 
@@ -151,9 +153,10 @@ class AutonomousResolver:
             )
 
         try:
-            result = await asyncio.wait_for(
+            result = await safe_wait_for(
                 self._do_resolve(task_text, context, memory, channel_id),
                 timeout=self._resolve_timeout,
+                action="autonomous_resolve",
             )
             result.duration_s = time.monotonic() - start_time
             return result

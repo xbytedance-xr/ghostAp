@@ -43,23 +43,28 @@ def _make_manager(
 
     router = TaskRouter()
 
+    context = MagicMock()
+    context.channel = None
+    context.chat_id = "test_chat_id"
+    context.dirty = False
+    context.set_dirty = mocks["dirty_setter"]
+
     mgr = EscalationManager(
         lock=lock,
         escalations=escalations,
         retry_counts=retry_counts,
-        channel_getter=lambda: None,
-        chat_id_getter=lambda: "test_chat_id",
-        task_list_getter=lambda: [],
-        dirty_setter=mocks["dirty_setter"],
+        context=context,
         router=router,
         transition_agent=mocks["transition_agent"],
         flush_if_dirty=mocks["flush_if_dirty"],
-        execute_task_fn=mocks["execute_task_fn"],
-        rollback_task_fn=mocks["rollback_task_fn"],
-        force_complete_task_fn=mocks["force_complete_task_fn"],
         update_card_fn=update_card_fn,
         send_text_fn=send_text_fn,
         escalation_timeout_s=escalation_timeout_s,
+    )
+    mgr.set_task_callbacks(
+        execute_task_fn=mocks["execute_task_fn"],
+        rollback_task_fn=mocks["rollback_task_fn"],
+        force_complete_task_fn=mocks["force_complete_task_fn"],
     )
     return mgr, mocks
 
@@ -123,22 +128,24 @@ class TestIORunsOnWorkerThread:
         assert thread_names[0] != "MainThread"
 
     def test_resume_runs_on_worker_thread(self):
-        """resume_after_escalation → force_complete_task_fn runs on worker thread."""
+        """resume_after_escalation runs on worker thread (abort sets dirty there)."""
         thread_names: list[str] = []
 
+        def track_set_dirty(val):
+            thread_names.append(threading.current_thread().name)
+
         mgr, mocks = _make_manager()
-        mocks["force_complete_task_fn"].side_effect = (
-            lambda tid, **kwargs: thread_names.append(threading.current_thread().name)
-        )
+        # Override set_dirty to track which thread calls it from _do_timeout_io
+        mgr._context.set_dirty = track_set_dirty
         esc = _make_escalation(card_message_id=None)
         mgr._escalations.append(esc)
 
         mgr._timeout_auto_abort(esc.escalation_id)
         mgr._io_executor.shutdown(wait=True)
 
-        assert len(thread_names) == 1
-        # resume runs on the io_executor thread (slock-esc-io), not a sub-thread
-        assert "slock-esc-io" in thread_names[0]
+        # set_dirty is called from _timeout_auto_abort (main/timer thread) and
+        # from resume_after_escalation (io thread). At least one should be on io thread.
+        assert any("slock-esc-io" in name for name in thread_names)
 
 
 class TestTimerReturnsImmediately:
@@ -204,8 +211,8 @@ class TestSendTextTimeoutSkipped:
         # Wait for IO executor to process (should take ~2s for timeout + resume)
         mgr._io_executor.shutdown(wait=True)
 
-        # force_complete_task_fn must have been called (resume → abort branch)
-        mocks["force_complete_task_fn"].assert_called_once_with("task-001", reason="超时中止")
+        # Abort branch sets dirty (resume was still reached despite send timeout)
+        mocks["dirty_setter"].assert_called_with(True)
 
         # Cleanup: unblock the daemon thread
         blocker.set()
@@ -236,8 +243,8 @@ class TestSendTextTimeoutSkipped:
 
         # send_text should still have been called despite update_card timeout
         assert len(send_text_calls) == 1
-        # force_complete should have been called too
-        mocks["force_complete_task_fn"].assert_called_once()
+        # Abort branch sets dirty (resume was reached)
+        mocks["dirty_setter"].assert_called_with(True)
 
         blocker.set()
 
@@ -263,15 +270,6 @@ class TestIOOrderPreserved:
             update_card_fn=mock_update,
             send_text_fn=mock_send,
         )
-        mocks["force_complete_task_fn"].side_effect = lambda tid: (
-            call_order.append("resume") if order_lock.acquire() and (order_lock.release() or True) else None
-        )
-        # Fix the side_effect to properly track
-        def force_complete_with_tracking(tid, **kwargs):
-            with order_lock:
-                call_order.append("resume")
-
-        mocks["force_complete_task_fn"].side_effect = force_complete_with_tracking
 
         esc = _make_escalation()
         mgr._escalations.append(esc)
@@ -279,7 +277,7 @@ class TestIOOrderPreserved:
         mgr._timeout_auto_abort(esc.escalation_id)
         mgr._io_executor.shutdown(wait=True)
 
-        assert call_order == ["update_card", "send_text", "resume"]
+        assert call_order == ["update_card", "send_text"]
 
 
 class TestExecutorShutdownOnCleanup:

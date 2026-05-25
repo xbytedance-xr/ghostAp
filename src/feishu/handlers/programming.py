@@ -404,6 +404,13 @@ class ProgrammingModeHandler(BaseHandler):
             self._enter_mode_on_manager(chat_id, project_id=project_id)
         self.add_reaction(message_id, EmojiReaction.on_coco_enter())
 
+        # If resume was requested but failed (session expired on backend),
+        # clear the stale snapshot so we don't retry on next entry.
+        if target_session_id and not session.is_resumed:
+            snapshot = None
+            if project:
+                self._clear_snapshot_on_project(project)
+
         if project and snapshot and snapshot.is_resumable:
             if not thread_id:
                 self._deactivate_other_project_modes(project)
