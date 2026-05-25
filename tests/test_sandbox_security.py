@@ -89,8 +89,8 @@ class TestRedactSensitiveInExecutor:
         # Verify sensitive data was actually redacted in output
         assert "sk-abcdefghijklmnop1234" not in result.stdout
         assert "mysecretvalue123" not in result.stderr
-        assert "***REDACTED***" in result.stdout
-        assert "***REDACTED***" in result.stderr
+        assert "<redacted>" in result.stdout
+        assert "<redacted>" in result.stderr
 
 
 # ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ from ...repo_lock import LockConflictError
 from ...utils.errors import get_error_detail
 from ...worktree_engine.models import WorktreeUnitStatus, truncate_goal
 from ..slash_command_parser import CommandMatch, SlashCommandParser
-from .base import BaseHandler
+from .engine_base import BaseEngineHandler
 
 if TYPE_CHECKING:
     from ...card.protocols import RendererProtocol
@@ -42,15 +42,45 @@ def _worktree_iteration_count(state) -> int:
     return value if isinstance(value, int) else 0
 
 
-class WorktreeHandler(BaseHandler):
-    """Parallel multi-tool worktree execution flow."""
+class WorktreeHandler(BaseEngineHandler):
+    """Parallel multi-tool worktree execution flow.
+
+    Inherits from :class:`BaseEngineHandler` to share common engine lifecycle
+    helpers (lock-conflict handling, project auto-creation, task submission).
+    """
 
     def __init__(self, ctx: "HandlerContext", renderer: "RendererProtocol | None" = None) -> None:
         super().__init__(ctx)
         if renderer is None:
             from ..renderers import get_renderer
             renderer = get_renderer("worktree", self)
-        self._renderer = renderer
+        self.renderer = renderer
+        # Keep underscore alias for backward compat with internal references
+        self._renderer = self.renderer
+
+    # ------------------------------------------------------------------
+    # BaseEngineHandler abstract method implementations
+    # ------------------------------------------------------------------
+
+    def _get_engine_manager(self):
+        """Return the WorktreeManager (lazily initialized)."""
+        return self._worktree_manager()
+
+    def _get_engine_name_prefix(self) -> str:
+        return "Worktree"
+
+    def _get_task_type(self) -> str:
+        return "worktree_engine"
+
+    def _show_status(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
+        """Worktree does not have a traditional status display — no-op."""
+        pass
+
+    def _create_callbacks(
+        self, message_id: str, chat_id: str, project: Optional["ProjectContext"], engine_name: str, root_path: str
+    ):
+        """Worktree does not use the standard callback pattern — return None."""
+        return None
 
     # ------------------------------------------------------------------
     # CardSession management (delegated to WorktreeRenderer)

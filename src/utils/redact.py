@@ -1,39 +1,62 @@
-"""Sensitive data redaction utility for sandbox output.
+"""Sensitive information redaction utility for user-facing outputs.
 
-Applies regex-based redaction patterns to strip tokens, keys, and secrets
-from command stdout/stderr before surfacing to users.
+Used by slock_engine and other modules to sanitize text before sending
+to Feishu group chats, cards, or text notifications.
 """
 
 from __future__ import annotations
 
 import re
-from typing import List
 
-# Default patterns matching common sensitive values in CLI output.
-_DEFAULT_PATTERNS: List[str] = [
-    r"(?i)authorization\s*:\s*[^\s]+",
-    r"(?i)bearer\s+[^\s]+",
-    r"sk-[A-Za-z0-9]{10,}",
-    r"AKIA[0-9A-Z]{16}",
-    r"(?i)api[_-]?key\s*[:=]\s*[^\s]+",
-    r"(?i)secret\s*[:=]\s*[^\s]+",
-    r"(?i)token\s*[:=]\s*[^\s]+",
-    r"(?i)password\s*[:=]\s*[^\s]+",
-]
+# Pattern: key=value assignments where key contains sensitive keywords
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|KEY|CREDENTIAL|API_KEY)[A-Z0-9_]*)"
+    r"\s*[=:]\s*[^\s\n,;]+"
+)
 
-_REPLACEMENT = "***REDACTED***"
+# Pattern: Bearer token in authorization headers
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
 
-_compiled_patterns = [re.compile(p) for p in _DEFAULT_PATTERNS]
+# Pattern: Authorization header value (captures full value including Bearer token)
+_AUTHORIZATION_RE = re.compile(
+    r"(?i)\b(Authorization)\s*[=:]\s*\S+(?:\s+\S+)?"
+)
+
+# Pattern: cookie key=value pairs
+_COOKIE_RE = re.compile(
+    r"(?i)\b(cookie|set-cookie)\s*[=:]\s*[^\n;]{4,}"
+)
+
+# Pattern: private key blocks (PEM format)
+_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"
+)
+
+# Pattern: AWS-style access keys (AKIA...)
+_AWS_KEY_RE = re.compile(r"\b(AKIA[0-9A-Z]{16})\b")
 
 
 def redact_sensitive(text: str) -> str:
-    """Replace sensitive patterns in *text* with a redaction placeholder.
+    """Redact sensitive information from text.
 
-    Returns the original string unchanged if it is empty or None-ish.
+    Replaces tokens, passwords, secrets, API keys, private keys, cookies,
+    and authorization headers with <redacted> placeholders.
+
+    Args:
+        text: Input text that may contain sensitive information.
+
+    Returns:
+        Text with sensitive values replaced by redaction markers.
     """
     if not text:
         return text
-    result = text
-    for pattern in _compiled_patterns:
-        result = pattern.sub(_REPLACEMENT, result)
+
+    # Order matters: longer patterns first to avoid partial matches
+    result = _PRIVATE_KEY_RE.sub("<redacted:private_key>", text)
+    result = _AUTHORIZATION_RE.sub(r"\1=<redacted>", result)
+    result = _BEARER_RE.sub("Bearer <redacted>", result)
+    result = _COOKIE_RE.sub(r"\1=<redacted>", result)
+    result = _AWS_KEY_RE.sub("<redacted:aws_key>", result)
+    result = _SECRET_ASSIGNMENT_RE.sub(r"\1=<redacted>", result)
+
     return result

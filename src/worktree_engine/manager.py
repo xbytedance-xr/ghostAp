@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
+from ..engine_base import BaseEngineManager
 from ..project.context import ProjectContext
 from .dispatcher import WorktreeDispatcher
 from .git_service import WorktreeGitService
@@ -27,8 +28,20 @@ from .tool_discovery import WorktreeToolDiscovery
 logger = logging.getLogger(__name__)
 
 
-class WorktreeManager:
+class WorktreeManager(BaseEngineManager):
+    """Worktree session manager.
+
+    Inherits from :class:`BaseEngineManager` to participate in the project-wide
+    lock-order hierarchy (``self._lock`` at ``LockLevel.ENGINE_MANAGER``).
+
+    Unlike Deep/Spec managers that maintain per-instance BaseEngine objects,
+    WorktreeManager manages state via a session store.  The inherited engine
+    registry (``_engines``, ``_chat_keys``) is left unused; the ``_lock`` is
+    the primary benefit of the base class relationship.
+    """
+
     def __init__(self, project_manager):
+        super().__init__()
         self._project_manager = project_manager
         self._git = WorktreeGitService()
         self._dispatcher = WorktreeDispatcher()
@@ -39,6 +52,21 @@ class WorktreeManager:
         self._selection = WorktreeSelectionController(
             state_getter=self.get_state,
             state_resetter=self.reset_state,
+        )
+
+    # ------------------------------------------------------------------
+    # BaseEngineManager abstract method (not used for worktree flow)
+    # ------------------------------------------------------------------
+
+    def _create_engine(self, chat_id, root_path, agent_type, engine_name, model_name):
+        """Not applicable to WorktreeManager — raises NotImplementedError.
+
+        WorktreeManager does not manage BaseEngine instances.  The session
+        store and project-level state serve as the equivalent lifecycle.
+        """
+        raise NotImplementedError(
+            "WorktreeManager does not create engine instances; "
+            "use get_state(project) for session management."
         )
 
     # ------------------------------------------------------------------
