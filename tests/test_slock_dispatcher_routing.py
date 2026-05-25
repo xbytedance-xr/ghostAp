@@ -14,6 +14,9 @@ from unittest.mock import ANY, MagicMock
 
 import pytest
 
+from src.mode import InteractionMode
+from src.slock_engine.slash_commands import NEEDS_ACTIVATION, is_slock_command
+
 
 def _sync_submit(fn, *args, **kwargs):
     """Helper that executes executor.submit synchronously for deterministic tests."""
@@ -25,7 +28,6 @@ def _sync_submit(fn, *args, **kwargs):
         future.set_exception(exc)
     return future
 
-from src.slock_engine.slash_commands import NEEDS_ACTIVATION, is_slock_command
 
 # ============================================================
 # AC2: Command Scoping
@@ -72,6 +74,124 @@ class TestCommandScopingUnmanagedChat:
         manager = self._make_manager(is_managed=True)
         result = is_slock_command(text, chat_id="managed_chat", manager=manager)
         assert result  # SlockCommandResult.__bool__ returns is_command
+
+
+class TestSlockDoesNotStealProgrammingMode:
+    """Slock passive routing must not preempt active programming sessions."""
+
+    def _make_programming_client(self, *, managed: bool, should_activate: bool = False):
+        from src.feishu.dispatcher import MessageDispatcher
+
+        client = MagicMock()
+        client.settings = MagicMock()
+        client.settings.slock_passive_mode = True
+        client._get_effective_mode.return_value = (InteractionMode.COCO, True)
+        client._is_deep_command.return_value = False
+        client._is_spec_command.return_value = False
+        client._is_slock_command.return_value = False
+        client._is_slock_managed_chat.return_value = managed
+        client._should_auto_activate_slock.return_value = should_activate
+        client._is_exit_command.return_value = False
+        client._is_interceptable_command_match.return_value = False
+        handler = MagicMock()
+        client._get_mode_handler.return_value = handler
+        return client, handler, MessageDispatcher(client)
+
+    def test_managed_slock_chat_in_programming_mode_routes_to_programming_handler(self):
+        from src.feishu.dispatcher import FeishuRequestContext
+
+        client, handler, dispatcher = self._make_programming_client(managed=True)
+
+        dispatcher.process_request(
+            FeishuRequestContext(
+                message_id="msg_prog_managed",
+                chat_id="project_group",
+                text="继续修复这个问题",
+            )
+        )
+
+        client._handle_slock_message.assert_not_called()
+        client._auto_activate_slock.assert_not_called()
+        handler.handle_message.assert_called_once_with(
+            "msg_prog_managed",
+            "project_group",
+            "继续修复这个问题",
+            None,
+        )
+
+    def test_task_like_text_in_programming_mode_does_not_auto_activate_slock(self):
+        from src.feishu.dispatcher import FeishuRequestContext
+
+        client, handler, dispatcher = self._make_programming_client(
+            managed=False,
+            should_activate=True,
+        )
+
+        dispatcher.process_request(
+            FeishuRequestContext(
+                message_id="msg_prog_task",
+                chat_id="project_group",
+                text="帮我实现单元测试",
+            )
+        )
+
+        client._auto_activate_slock.assert_not_called()
+        client._handle_slock_message.assert_not_called()
+        handler.handle_message.assert_called_once_with(
+            "msg_prog_task",
+            "project_group",
+            "帮我实现单元测试",
+            None,
+        )
+
+
+class TestSlockDoesNotStealProjectContext:
+    """Passive Slock auto-activation must not preempt project-scoped SMART routing."""
+
+    def test_task_like_project_context_uses_intent_recognition_not_auto_activation(self):
+        from src.agent.intent_recognizer import IntentResult, IntentType, TaskStep
+        from src.feishu.dispatcher import FeishuRequestContext, MessageDispatcher
+        from src.project import ProjectContext
+
+        client = MagicMock()
+        client.settings = MagicMock()
+        client.settings.slock_passive_mode = True
+        client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+        client._is_deep_command.return_value = False
+        client._is_spec_command.return_value = False
+        client._is_slock_command.return_value = False
+        client._is_slock_managed_chat.return_value = False
+        client._should_auto_activate_slock.return_value = True
+        client._is_exit_command.return_value = False
+        client._is_interceptable_command_match.return_value = False
+        client._is_worktree_awaiting_goal.return_value = False
+        client._intent_recognizer.recognize.return_value = IntentResult(
+            confidence=0.9,
+            tasks=[
+                TaskStep(
+                    intent=IntentType.ENTER_COCO,
+                    data={},
+                    description="Enter programming",
+                )
+            ],
+        )
+        dispatcher = MessageDispatcher(client)
+        dispatcher.execute_single_task = MagicMock()
+
+        project = ProjectContext("proj_1", "GhostAP", "/tmp")
+        dispatcher.process_request(
+            FeishuRequestContext(
+                message_id="msg_project_task",
+                chat_id="project_group",
+                text="帮我实现单元测试",
+                project=project,
+            )
+        )
+
+        client._auto_activate_slock.assert_not_called()
+        client._handle_slock_message.assert_not_called()
+        client._intent_recognizer.recognize.assert_called_once()
+        dispatcher.execute_single_task.assert_called_once()
 
 
 # ============================================================
@@ -563,7 +683,7 @@ class TestSettingsValidation:
         }):
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
-                s = Settings()
+                Settings()
                 # Should have emitted DeprecationWarning
                 dep_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
                 assert len(dep_warnings) >= 1
@@ -998,4 +1118,3 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
             client._reply_card.assert_called_once()
             client._submit_shell_command.assert_not_called()
             client._intent_recognizer.recognize.assert_not_called()
-

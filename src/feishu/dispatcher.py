@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any, Optional
 if TYPE_CHECKING:
     from ..agent.intent_recognizer import IntentResult, TaskStep
     from ..project import ProjectContext
-    from ..slock_engine.protocols import ActivationGuardProtocol
 
 
 from ..agent.intent_recognizer import IntentType
@@ -95,6 +94,11 @@ class MessageDispatcher:
 
         _pid = project.project_id if project else None
         current_mode, is_in_programming = self.client._get_effective_mode(chat_id, project_id=_pid)
+        is_topic_engine_context = (
+            getattr(self.client, "_is_topic_engine_context", lambda: False)() is True
+        )
+        slock_context_allowed = not is_in_programming and not is_topic_engine_context
+        slock_auto_activate_allowed = slock_context_allowed and project is None
         if command_match is None and (text or "").strip().startswith("/"):
             command_match = SlashCommandParser.parse(text)
 
@@ -117,11 +121,15 @@ class MessageDispatcher:
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
             self.client._handle_slock_command(message_id, chat_id, text, project)
             return
-        if _slock_result == NEEDS_ACTIVATION:
+        if _slock_result == NEEDS_ACTIVATION and slock_context_allowed:
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
             # In passive mode, auto-activate instead of asking user to run /slock
             _passive_mode = getattr(self.client.settings, "slock_passive_mode", True)
-            if _passive_mode and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type):
+            if (
+                _passive_mode
+                and slock_auto_activate_allowed
+                and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type)
+            ):
                 activated, _ = self.client._auto_activate_slock(chat_id, text, project)
                 if activated:
                     self.client._add_reaction(message_id, EmojiReaction.on_processing())
@@ -143,7 +151,7 @@ class MessageDispatcher:
             command_match is not None
             or self.client._is_interceptable_command_match(command_match)
         )
-        if _passive_mode:
+        if _passive_mode and slock_context_allowed:
             if _is_managed and not _is_global_command:
                 # Passive mode: managed chat alone is sufficient for routing
                 # BUT skip if this is a valid global command
@@ -153,7 +161,7 @@ class MessageDispatcher:
             # Auto-activate: use 3-way classification (task/chat/uncertain)
             # Skip auto-activate for explicit slash commands
             _is_command_intent = command_match is not None or (text or "").lstrip().startswith("/")
-            if not _is_command_intent:
+            if slock_auto_activate_allowed and not _is_command_intent:
                 from src.slock_engine.task_classifier import TaskClassifier
                 classification, _ = TaskClassifier.classify_with_uncertainty(text or "")
 
@@ -169,15 +177,14 @@ class MessageDispatcher:
                         AutonomousResolver,
                         ResolveStatus,
                     )
-                    from src.thread.manager import get_current_sender_id
                     from src.slock_engine.card_templates.queue_feedback import build_clarification_card
+                    from src.thread.manager import get_current_sender_id
 
                     # Try autonomous resolution first
                     resolver = AutonomousResolver()
                     try:
                         from src.slock_engine.engine import _get_shared_loop
                         loop = _get_shared_loop()
-                        import asyncio
                         resolve_result = loop.run_until_complete(
                             resolver.attempt_resolve(
                                 task_text=text or "",
@@ -253,7 +260,7 @@ class MessageDispatcher:
                             json.dumps(card, ensure_ascii=False),
                         )
                         return
-        else:
+        elif slock_context_allowed:
             # Legacy mode: require both active AND managed
             if self.client._is_slock_active(chat_id) and _is_managed:
                 self.client._add_reaction(message_id, EmojiReaction.on_processing())

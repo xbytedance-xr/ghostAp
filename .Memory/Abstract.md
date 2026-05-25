@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-05-25
+- **Slock 不抢项目群编程** — Slock passive 路由增加普通编程态、Deep/Spec/WT 话题态和 project 上下文门禁，项目群自由文本继续进入编程 handler → [详细记录](2026-05-25.md)
 ## 2026-05-23
 - **AI Agent 产品调研** — 产出 OpenClaw/Hermes/Codex/Claude/Gemini/Cline/OpenHands/Devin/Copilot/Cursor/Windsurf 等横向评估报告，结论用于 GhostAP 多渠道 Gateway、记忆技能、安全治理和异步 PR agent 方向参考 → [详细记录](2026-05-23.md)
 ## 2026-05-20

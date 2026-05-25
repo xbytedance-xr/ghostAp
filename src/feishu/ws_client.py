@@ -79,7 +79,7 @@ from .renderers.spec_renderer import SpecRenderer
 from .renderers.worktree_renderer import WorktreeRenderer
 from .slash_command_parser import CommandMatch, SlashCommandParser
 from .ws_card_action_handler import CardActionInspector, classify_card_action_error
-from .ws_event_router import MessageIngressGuard, classify_ws_error
+from .ws_event_router import MessageIngressGuard, WSErrorAction, classify_ws_error
 from .ws_health import WSHealthMonitor
 from .ws_lifecycle import ObservedLarkWSClient
 from .ws_resource_manager import EngineResourceGroup
@@ -1386,6 +1386,14 @@ class FeishuWSClient:
             self._mode_manager.get_mode(chat_id, project_id=project_id),
             self._mode_manager.is_programming_mode(chat_id, project_id=project_id),
         )
+
+    def _is_topic_engine_context(self) -> bool:
+        """Return True when the current Feishu topic is owned by Deep/Spec/WT."""
+        thread_id = get_current_thread_id()
+        if not thread_id or not self.settings.thread_programming_enabled:
+            return False
+        thread_ctx = self._thread_manager.get(thread_id)
+        return bool(thread_ctx and thread_ctx.mode in {"worktree", "deep", "spec"})
 
     def _get_mode_handler(self, mode):
         from ..mode import InteractionMode

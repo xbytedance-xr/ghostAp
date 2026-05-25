@@ -177,6 +177,41 @@ def test_worktree_topic_goal_routes_without_interaction_mode_cast(mock_ws_client
     )
 
 
+def test_worktree_topic_goal_is_not_stolen_by_slock_managed_chat(mock_ws_client: FeishuWSClient):
+    """WT topic text must stay in WT even if the chat is also registered by Slock."""
+    mock_ws_client.settings.thread_programming_enabled = True
+    mock_ws_client._thread_manager.register(
+        "thread-wt-slock",
+        "chat_456",
+        "proj_1",
+        mode="worktree",
+    )
+    mock_ws_client._slock_engine_manager.register_managed_chat("chat_456")
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._is_worktree_awaiting_goal = MagicMock(return_value=True)
+    mock_ws_client._handle_worktree_execute = MagicMock()
+    mock_ws_client._handle_slock_message = MagicMock()
+
+    set_current_thread_id("thread-wt-slock")
+    try:
+        mock_ws_client._message_dispatcher.process_with_intent(
+            "msg_goal_slock",
+            "chat_456",
+            "继续执行 WT 方案",
+            project,
+        )
+    finally:
+        set_current_thread_id(None)
+
+    mock_ws_client._handle_slock_message.assert_not_called()
+    mock_ws_client._handle_worktree_execute.assert_called_once_with(
+        "msg_goal_slock",
+        "chat_456",
+        "继续执行 WT 方案",
+        project,
+    )
+
+
 def test_dispatch_message_logic_worktree_topic_bypasses_project_chat_default(mock_ws_client: FeishuWSClient):
     """WT 话题里的普通消息应先交给 WT 引擎，不能掉到项目群默认 Coco 入口。"""
     project = ProjectContext("proj_1", "GhostAP", "/tmp")
@@ -202,6 +237,33 @@ def test_dispatch_message_logic_worktree_topic_bypasses_project_chat_default(moc
     )
     mock_ws_client._process_with_intent.assert_not_called()
     mock_ws_client._message_dispatcher._handle_enter_coco.assert_not_called()
+
+
+def test_project_chat_programming_mode_is_not_stolen_by_slock_managed_chat(mock_ws_client: FeishuWSClient):
+    """项目群已在普通编程态时，Slock managed 标记不能抢走自由文本。"""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._project_manager.find_by_bound_chat_id = MagicMock(return_value=project)
+    mock_ws_client._mode_manager.set_mode("chat_456", InteractionMode.COCO, project_id="proj_1")
+    mock_ws_client._slock_engine_manager.register_managed_chat("chat_456")
+    mock_ws_client._coco_handler = MagicMock()
+    mock_ws_client._handle_slock_message = MagicMock()
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_prog_slock",
+        "chat_456",
+        "继续修复项目群编程",
+        project,
+        None,
+        command_match=None,
+    )
+
+    mock_ws_client._handle_slock_message.assert_not_called()
+    mock_ws_client._coco_handler.handle_message.assert_called_once_with(
+        "msg_prog_slock",
+        "chat_456",
+        "继续修复项目群编程",
+        project,
+    )
 
 
 def test_worktree_topic_plain_text_keeps_wt_strategy_after_previous_goal(mock_ws_client: FeishuWSClient):
