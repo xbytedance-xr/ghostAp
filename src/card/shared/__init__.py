@@ -4,9 +4,9 @@ from typing import Optional
 
 from src.mode.manager import InteractionMode
 
-from .buttons_config import BUTTON_CONFIG
-from .themes import THEMES, ProjectTheme
-from .ui_text import UI_TEXT
+from ..buttons_config import BUTTON_CONFIG
+from ..themes import THEMES, ProjectTheme
+from ..ui_text import UI_TEXT
 
 
 def get_theme(color: str) -> ProjectTheme:

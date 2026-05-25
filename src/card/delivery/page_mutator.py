@@ -10,7 +10,7 @@ import uuid
 from src.card.delivery.binding import BindingStore, PageBinding
 from src.card.delivery.sequence import SequenceManager
 from src.card.delivery.types import MutationOutcome, SequenceConflictError, TransportError
-from src.card.render.payload_truncator import check_and_truncate_payload
+from src.card.shared.truncation import check_and_truncate_payload
 from src.card.types import RenderedCard
 
 logger = logging.getLogger(__name__)

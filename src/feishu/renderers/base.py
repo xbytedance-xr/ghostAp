@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from src.card.render.payload_truncator import check_and_truncate_payload as _check_and_truncate
+from src.card.shared.truncation import check_and_truncate_payload as _check_and_truncate
 from src.card.render.throttle import StreamThrottle
 from src.card.thresholds import THRESHOLDS
 
