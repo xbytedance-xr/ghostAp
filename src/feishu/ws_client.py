@@ -738,14 +738,14 @@ class FeishuWSClient:
         - Chat is already managed by slock (short-circuit), or
         - Chat is an unmanaged group AND text is classified as a task
         """
-        if chat_type != "group":
-            return False
-        # Short-circuit: already managed chats don't need classification
-        if self._is_slock_managed_chat(chat_id):
-            return True
-        from src.slock_engine.task_classifier import TaskClassifier
+        from .slock_dispatch import should_auto_activate
 
-        return TaskClassifier.is_task(text)
+        return should_auto_activate(
+            chat_id,
+            text,
+            chat_type=chat_type,
+            is_managed=self._is_slock_managed_chat(chat_id),
+        )
 
     def _auto_activate_slock(
         self, chat_id: str, text: str, project: "Optional[ProjectContext]" = None
@@ -768,63 +768,18 @@ class FeishuWSClient:
 
         Guarded by ActivationGuard for permission and rate-limit checks.
         """
-        from src.slock_engine.activation_guard import (
-            ACTIVATION_ALLOWED,
-            get_activation_guard,
+        from .slock_dispatch import try_passive_activation
+
+        return try_passive_activation(
+            chat_id,
+            text,
+            project=project,
+            settings=self.settings,
+            is_managed_fn=lambda: self._is_slock_managed_chat(chat_id),
+            get_chat_lock_fn=lambda: self._get_chat_lock(chat_id),
+            slock_handler=self._slock_handler,
+            card_sender=self._system_handler,
         )
-
-        # Permission and rate-limit gate
-        guard = get_activation_guard()
-        from src.thread.manager import get_current_sender_id
-        sender_id = get_current_sender_id() or ""
-        allowed, reason = guard.can_auto_activate(sender_id, chat_id, self.settings)
-        if not allowed:
-            logger.debug(
-                "Auto-activate blocked by guard for user=%s chat=%s: reason=%s",
-                sender_id, chat_id, reason,
-            )
-            return False, reason
-
-        chat_lock = self._get_chat_lock(chat_id)
-        with chat_lock:
-            # Double-check after acquiring lock
-            if self._is_slock_managed_chat(chat_id):
-                return True, ACTIVATION_ALLOWED
-            try:
-                # Use a synthetic message_id since passive activation has no
-                # user-initiated command message to reply to.
-                # skip_guard_check=True: guard was already checked above to avoid
-                # double consumption of rate-limit budget.
-                synthetic_msg_id = f"passive-activate-{chat_id}"
-                success = self._slock_handler.activate_slock(
-                    message_id=synthetic_msg_id,
-                    chat_id=chat_id,
-                    requirement=text,
-                    project=project,
-                    skip_guard_check=True,
-                )
-                return success, ACTIVATION_ALLOWED if success else "error"
-            except Exception:
-                logger.warning(
-                    "Failed to auto-activate slock for chat %s", chat_id, exc_info=True
-                )
-                # Send user-friendly card notification
-                try:
-                    from src.slock_engine.card_templates.common import build_error_state_card
-                    card = build_error_state_card(
-                        title="任务暂时无法自动处理",
-                        error_msg="你的消息暂时无法被自动分配，正在通过其他方式处理。请稍后重试，或直接描述你的需求让系统尝试其他方式处理。",
-                    )
-                    self._system_handler.send_card_to_chat(
-                        chat_id,
-                        json.dumps(card, ensure_ascii=False),
-                    )
-                except Exception as card_err:
-                    logger.warning(
-                        "Failed to send activation failure card to chat %s: %s",
-                        chat_id, card_err,
-                    )
-                return False, "error"
 
     @staticmethod
     def _is_interceptable_command_match(command_match: CommandMatch | None) -> bool:
