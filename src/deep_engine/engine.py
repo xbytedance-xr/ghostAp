@@ -201,11 +201,11 @@ class DeepEngine(BaseEngine):
         try:
             with trace_ctx:
                 # Create session
-                from ..utils.path import normalize_ttadk_cwd
+                from ..agent_session.backend_resolver import resolve_cwd
 
                 self._session = create_engine_session(
                     agent_type=self._agent_type,
-                    cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
+                    cwd=resolve_cwd(self._agent_type, self.root_path),
                     on_rate_limit=on_rate_limit,
                     model_name=self._model_name,
                 )
@@ -214,7 +214,8 @@ class DeepEngine(BaseEngine):
                 prompt = self._build_deep_prompt(requirement_text)
 
                 on_event = self._make_on_event(callbacks)
-                if self._agent_type.startswith("ttadk_"):
+                from ..agent_session.backend_resolver import is_ttadk_type
+                if is_ttadk_type(self._agent_type):
                     timeout = self.settings.coco_execution_timeout
                 else:
                     timeout = (
@@ -381,11 +382,11 @@ class DeepEngine(BaseEngine):
             # Close old session before opening new one (prevent resource leak)
             self._close_session_safely()
 
-            from ..utils.path import normalize_ttadk_cwd
+            from ..agent_session.backend_resolver import resolve_cwd
 
             self._session = create_engine_session(
                 agent_type=self._agent_type,
-                cwd=normalize_ttadk_cwd(self.root_path) or self.root_path,
+                cwd=resolve_cwd(self._agent_type, self.root_path),
                 on_rate_limit=getattr(self, "_on_rate_limit", None),
                 model_name=self._model_name,
             )
@@ -395,7 +396,8 @@ class DeepEngine(BaseEngine):
 完成后输出总结报告。"""
 
             on_event = self._make_on_event(callbacks)
-            if self._agent_type.startswith("ttadk_"):
+            from ..agent_session.backend_resolver import is_ttadk_type as _is_ttadk
+            if _is_ttadk(self._agent_type):
                 timeout = self.settings.coco_execution_timeout
             else:
                 timeout = (

@@ -490,7 +490,8 @@ class ACPSessionManager:
             self._sessions[key] = session
         # 会话成功启动后触发 Telemetry 事件（best-effort）。
         try:
-            backend_kind = "cli" if effective_agent_type == "claude" or effective_agent_type.startswith("ttadk_") else "acp"
+            from ..agent_session.backend_resolver import is_cli_backend
+            backend_kind = "cli" if is_cli_backend(effective_agent_type) else "acp"
             self._session_telemetry.on_session_start(
                 manager_agent_type=self._agent_type,
                 session_key=key,
@@ -555,7 +556,8 @@ class ACPSessionManager:
                 existing = None
             elif model_name:
                 # TTADK: model_name 可能是"意图/友好名"，未必会透传 -m；仅当能解析出 validated 的真实模型名时才做一致性重启。
-                if agent_type_override.lower().startswith("ttadk_"):
+                from ..agent_session.backend_resolver import is_ttadk_type
+                if is_ttadk_type(agent_type_override):
                     # 若该 session 已因 TTADK 启动失败降级（例如降级到 coco ACP），则不要再因 model mismatch 触发重启，
                     # 否则在 TTADK 不可用时会产生"每次 ensure 都重启→再失败→再降级"的抖动。
                     target_model: Optional[str] = None

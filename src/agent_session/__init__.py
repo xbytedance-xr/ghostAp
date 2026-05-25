@@ -43,6 +43,7 @@ from .ttadk_cli import (
     _is_ttadk_preamble_line,
     _JSONTextExtractor,
 )
+from .backend_resolver import is_cli_backend, is_ttadk_type, resolve_backend_kind, resolve_cwd
 from .wrappers import ModelFailureAwareSession, RateLimitAwareSession
 
 __all__ = [
@@ -54,4 +55,5 @@ __all__ = [
     "_JSONTextExtractor", "_is_ttadk_preamble_line", "_build_ttadk_passthrough_prompt",
     "_detect_rate_limit", "_extract_model_from_agent_args", "_replace_model_in_agent_args",
     "_remove_model_in_agent_args", "_apply_compaction_once", "_build_generic_error_blob",
+    "resolve_backend_kind", "is_cli_backend", "is_ttadk_type", "resolve_cwd",
 ]

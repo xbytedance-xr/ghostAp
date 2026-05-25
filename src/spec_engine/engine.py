@@ -302,8 +302,9 @@ class SpecEngine(BaseEngine):
 
     @staticmethod
     def _infer_engine_name(agent_type: Optional[str]) -> str:
+        from ..agent_session.backend_resolver import is_ttadk_type
         normalized = str(agent_type or "").strip().lower()
-        if normalized.startswith("ttadk_"):
+        if is_ttadk_type(normalized):
             return "TTADK"
         if normalized == "claude":
             return "Claude"
