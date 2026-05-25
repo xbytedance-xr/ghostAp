@@ -3,6 +3,12 @@ import time
 
 from .errors import GhostAPError
 
+__all__ = [
+    "RateLimitExceededException",
+    "TokenBucketLimiter",
+    "RateLimiter",
+]
+
 
 class RateLimitExceededException(GhostAPError):
     """Raised when rate limit is exceeded."""
@@ -11,10 +17,14 @@ class RateLimitExceededException(GhostAPError):
         super().__init__(message, action="rate_limit")
 
 
-class RateLimiter:
-    """Token bucket rate limiter."""
+class TokenBucketLimiter:
+    """Token bucket rate limiter.
 
-    def __init__(self, capacity: int, fill_rate: float):
+    Generic, thread-safe token bucket that refills at a constant rate.
+    Use this as the canonical rate-limiting primitive across the codebase.
+    """
+
+    def __init__(self, capacity: int | float, fill_rate: float):
         """
         :param capacity: Max tokens in the bucket.
         :param fill_rate: Tokens added per second.
@@ -44,7 +54,7 @@ class RateLimiter:
                 return False
             time.sleep(0.01)  # brief sleep to avoid busy waiting
 
-    def _try_acquire(self, tokens: int) -> bool:
+    def _try_acquire(self, tokens: int = 1) -> bool:
         with self._lock:
             now = time.time()
             # Add tokens based on elapsed time
@@ -56,3 +66,7 @@ class RateLimiter:
                 self._tokens -= tokens
                 return True
             return False
+
+
+# Backward-compatible alias — existing code imports RateLimiter.
+RateLimiter = TokenBucketLimiter
