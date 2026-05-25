@@ -902,6 +902,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if target_project:
             target_project.acp_tool_name = tool
             target_project.acp_model_name = model
+            if tool in {"coco", "claude", "aiden", "codex", "gemini"}:
+                setattr(target_project, f"{tool}_session_snapshot", None)
         if handler and hasattr(handler, "current_model"):
             handler.current_model = model
 

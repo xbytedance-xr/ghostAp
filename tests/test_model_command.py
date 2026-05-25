@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.slash_command_parser import SlashCommandParser
+from src.project.context import SessionSnapshot
 from src.ttadk.models import ACPModelOption
 
 
@@ -316,6 +318,23 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         ready_card = json.loads(self.handler.update_card.call_args[0][1])
         self.assertIn("编程模式已就绪", ready_card["header"]["title"]["content"])
         self.assertIn("使用默认模型", json.dumps(ready_card, ensure_ascii=False))
+
+    def test_default_model_selection_clears_stale_tool_snapshot(self):
+        project = SimpleNamespace(
+            project_id="ghostap",
+            acp_tool_name=None,
+            acp_model_name=None,
+            coco_session_snapshot=SessionSnapshot(
+                session_id="stale-session",
+                query_count=3,
+                last_query="pwd",
+                is_resumable=True,
+            ),
+        )
+
+        self.handler.handle_select_acp_model("msg1", "chat1", "coco", None, project)
+
+        self.assertIsNone(project.coco_session_snapshot)
 
     def test_model_selection_patches_model_card_to_ready_state(self):
         project = MagicMock()

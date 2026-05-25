@@ -30,6 +30,7 @@ from src.feishu.handlers.system import SystemHandler
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.mode.manager import InteractionMode
+from src.project.context import SessionSnapshot
 from src.ttadk.models import TTADKModel, TTADKTool
 
 # ======================================================================
@@ -1249,6 +1250,33 @@ class TestProgrammingModeEnterExit:
         ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id="test_id")
         project.set_programming_mode.assert_called_once()
         h.record_mode_transition.assert_called_once()
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_enter_mode_with_selected_model_does_not_resume_stale_snapshot(self, mock_tid):
+        h, ctx = self._make_coco()
+        project = MagicMock()
+        project.coco_session_snapshot = SessionSnapshot(
+            session_id="stale-session",
+            query_count=3,
+            last_query="pwd",
+            is_resumable=True,
+        )
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+        project.acp_tool_name = "coco"
+        project.acp_model_name = "fresh-model"
+        fresh_session = MagicMock()
+        fresh_session.session_id = "fresh-session"
+        fresh_session.is_resumed = False
+        ctx.coco_manager.ensure_session.return_value = fresh_session
+
+        h.enter_mode("m1", "c1", project=project, silent=True)
+
+        ctx.coco_manager.ensure_session.assert_called_once()
+        assert ctx.coco_manager.ensure_session.call_args.kwargs["session_id"] is None
+        assert ctx.coco_manager.ensure_session.call_args.kwargs["model_name"] == "fresh-model"
+        project.set_programming_mode.assert_called_once_with("coco", True, "fresh-session", 0)
 
     def test_exit_mode_with_session(self):
         h, ctx = self._make_coco()

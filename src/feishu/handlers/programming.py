@@ -244,17 +244,20 @@ class ProgrammingModeHandler(BaseHandler):
                     self.reply_text(message_id, UI_TEXT["mode_invalid_project_path"].format(msg=path_msg))
                 return
 
-        target_session_id = None
-        snapshot = self._get_snapshot(project) if project else None
-        if snapshot and snapshot.is_resumable and not thread_id:
-            target_session_id = snapshot.session_id
-
         startup_timeout = getattr(self.settings, "acp_startup_timeout", 20)
         agent_type_override = None
         model_name = None
+        target_session_id = None
+        snapshot = self._get_snapshot(project) if project else None
+
         try:
             agent_type_override = self._get_agent_type_override(project)
             model_name = self._get_model_name_override(project)
+            if snapshot and snapshot.is_resumable and not thread_id:
+                if model_name:
+                    snapshot = None
+                else:
+                    target_session_id = snapshot.session_id
             session = self._get_session_manager().ensure_session(
                 chat_id,
                 cwd=cwd,
