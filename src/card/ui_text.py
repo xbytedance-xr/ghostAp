@@ -83,6 +83,8 @@ UI_TEXT = {
     "system_setadmin_denied": "⚠️ Bot 管理员已初始化，只有现有管理员可以修改。",
     "system_setadmin_missing_sender": "无法识别发送者身份，不能设置管理员。",
     "system_setadmin_invalid_target": "管理员 ID 无效。用法：`/setadmin` 或由现有管理员发送 `/setadmin <open_id>`。",
+    "system_setadmin_requires_p2p": "⚠️ 首次管理员初始化必须在私聊中进行，请通过私聊发送 `/setadmin`。",
+    "system_setadmin_rate_limited": "⚠️ 操作过于频繁，请 60 秒后再试。",
     "system_current_project": "当前项目: **{name}**\n\n{help}{project_help}",
     "system_help_default": "{help}{project_help}",
     "system_mode_smart": "💭 智能模式",

@@ -3,10 +3,20 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.admin_bootstrap import AdminBootstrapService
 from src.feishu.handlers.system import SystemHandler
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.thread import set_current_sender_id
+
+
+@pytest.fixture(autouse=True)
+def _clear_rate_limit_state():
+    """Clear class-level rate limit state between tests."""
+    AdminBootstrapService._last_attempt.clear()
+    yield
+    AdminBootstrapService._last_attempt.clear()
 
 
 def test_setadmin_bootstraps_sender_as_only_admin(tmp_path):
@@ -149,6 +159,6 @@ def test_system_handler_routes_setadmin_with_sender():
     finally:
         set_current_sender_id(None)
 
-    service.set_admin.assert_called_once_with("ou_first", "")
+    service.set_admin.assert_called_once_with("ou_first", "", chat_type="group")
     handler.reply_text.assert_called_once()
     handler.reply_error.assert_not_called()

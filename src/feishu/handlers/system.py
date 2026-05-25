@@ -525,11 +525,12 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
 
     def _handle_setadmin_command(self, message_id: str, chat_id: str, args: str = "") -> None:
         from ...admin_bootstrap import AdminBootstrapService
-        from ...thread import get_current_sender_id
+        from ...thread import get_current_is_p2p, get_current_sender_id
 
         del chat_id
         sender_id = get_current_sender_id() or ""
-        result = AdminBootstrapService().set_admin(sender_id, args)
+        chat_type = "p2p" if get_current_is_p2p() else "group"
+        result = AdminBootstrapService().set_admin(sender_id, args, chat_type=chat_type)
         if result.success:
             if result.code == "bootstrap":
                 self.reply_text(message_id, UI_TEXT["system_setadmin_bootstrap_success"])
@@ -544,6 +545,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_setadmin_missing_sender"])
         elif result.code == "invalid_target":
             self.reply_error(message_id, UI_TEXT["system_setadmin_invalid_target"])
+        elif result.code == "bootstrap_requires_p2p":
+            self.reply_error(message_id, UI_TEXT["system_setadmin_requires_p2p"])
+        elif result.code == "rate_limited":
+            self.reply_error(message_id, UI_TEXT["system_setadmin_rate_limited"])
         else:
             self.reply_text(message_id, UI_TEXT["system_setadmin_denied"])
 
