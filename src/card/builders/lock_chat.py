@@ -15,6 +15,7 @@ from .lock_common import (
     _build_p2p_multi_url,
     _compute_command_sig,
     format_undo_window,
+    sign_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ def build_chat_lock_card(
 
 def build_lock_success_card(
     action: str, message: str = "", *, variant: str = "reply", locker_name: str = "", app_id: str = "",
-    lock_undo_window_seconds: int = 300,
+    lock_undo_window_seconds: int = 300, chat_id: str = "",
 ) -> str | tuple[str, list[dict]]:
     """Build a response card after a successful /lock or /unlock command.
 
@@ -191,6 +192,8 @@ def build_lock_success_card(
         _undo_display = format_undo_window(lock_undo_window_seconds)
         if _undo_display:
             md = UI_TEXT["lock_success_lock_reply"].format(lock_undo_window_display=_undo_display)
+            # Use v2 signing for /unlock when chat_id is available
+            _unlock_sig = sign_command("/unlock", chat_id) if chat_id else _compute_command_sig("/unlock")
             undo_buttons: list[dict] = [{
                 "tag": "button",
                 "text": {"tag": "plain_text", "content": UI_TEXT["lock_success_lock_undo_btn"]},
@@ -198,7 +201,7 @@ def build_lock_success_card(
                 "value": {
                     "action": "retry_command",
                     "_t": "/unlock",
-                    "_s": _compute_command_sig("/unlock"),
+                    "_s": _unlock_sig,
                     "_ul": True,
                     "_ue": int(_t_wall.time()) + lock_undo_window_seconds,
                 },

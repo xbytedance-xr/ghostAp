@@ -17,6 +17,7 @@ from .lock_common import (
     _build_p2p_multi_url,
     _compute_command_sig,
     format_elapsed_ago,
+    sign_command,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ def build_repo_lock_card(
     is_same_sender: bool = False,
     retry_count: int = 0,
     idle_timeout_seconds: Optional[int] = None,
+    chat_id: str = "",
 ) -> tuple[str, list[dict]]:
     """Build a Markdown prompt + action buttons for a repo lock conflict.
 
@@ -128,6 +130,8 @@ def build_repo_lock_card(
     if command_text and len(command_text) <= MAX_COMMAND_TEXT_LENGTH:
         _next_count = retry_count + 1
         _retry_label = UI_TEXT["repo_lock_btn_retry"]
+        # Use v2 signing (nonce+exp+chat_id) when chat_id is available
+        _sig = sign_command(command_text, chat_id) if chat_id else _compute_command_sig(command_text)
         buttons.append({
             "tag": "button",
             "text": {"tag": "plain_text", "content": _retry_label},
@@ -135,7 +139,7 @@ def build_repo_lock_card(
             "value": {
                 "action": "retry_command",
                 "_t": command_text,
-                "_s": _compute_command_sig(command_text),
+                "_s": _sig,
                 "_rc": _next_count,
             },
         })

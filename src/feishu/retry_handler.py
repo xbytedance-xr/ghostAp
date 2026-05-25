@@ -96,8 +96,8 @@ class RetryCommandHandler:
 
         sig = self._compat_get(val, "_s", "command_sig")
 
-        # 1. Signature verification
-        if not self._verify_signature(mid, cmd, sig):
+        # 1. Signature verification (pass chat_id for v2 sig binding)
+        if not self._verify_signature(mid, cmd, sig, cid):
             return
 
         # 1b. Undo-lock expiry check
@@ -130,7 +130,7 @@ class RetryCommandHandler:
     # Step methods (each independently testable)
     # ------------------------------------------------------------------
 
-    def _verify_signature(self, mid: str, cmd: str, sig: str) -> bool:
+    def _verify_signature(self, mid: str, cmd: str, sig: str, chat_id: str = "") -> bool:
         """Return True when signature is valid; reply with expiry message and
         return False otherwise.  Commands in SIGNATURE_EXEMPT_COMMANDS bypass
         verification entirely."""
@@ -141,7 +141,7 @@ class RetryCommandHandler:
             self._dispatch.reply_text(mid, UI_TEXT["retry_command_sig_mismatch"])
             return False
         from ..card.builders.lock import verify_command_sig
-        result = verify_command_sig(cmd, sig)
+        result = verify_command_sig(cmd, sig, chat_id=chat_id)
         if result:
             return True
         from ..card.ui_text import UI_TEXT

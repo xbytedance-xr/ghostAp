@@ -13,6 +13,7 @@ from src.utils.signing import (  # noqa: F401 — re-export for backward compati
     _compute_command_sig,
     _get_signing_key,
     _verify_legacy_sha256_fallback,
+    sign_command,
     verify_command_sig,
 )
 
@@ -26,6 +27,7 @@ __all__ = [
     "_compute_command_sig",
     "_get_signing_key",
     "_verify_legacy_sha256_fallback",
+    "sign_command",
     "verify_command_sig",
     "format_elapsed_ago",
     "format_friendly_duration",

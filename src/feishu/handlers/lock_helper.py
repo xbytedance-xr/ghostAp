@@ -199,6 +199,7 @@ class LockHelper:
                 is_same_sender=lctx.is_same_sender,
                 retry_count=retry_count,
                 idle_timeout_seconds=getattr(self._h.settings, "repo_lock_idle_timeout", None),
+                chat_id=chat_id,
             )
             msg_type, card_json = ProjectBuilder.build_project_response_card(
                 project=None,

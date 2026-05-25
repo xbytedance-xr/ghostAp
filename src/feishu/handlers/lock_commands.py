@@ -81,7 +81,7 @@ class LockCommandsMixin:
                         project=None, title=UI_TEXT["lock_card_title_hint"], content=_md, show_buttons=False)
                     self.reply_card(message_id, _card)
                 else:
-                    _reply = build_lock_success_card("lock", message=idempotent_msg, lock_undo_window_seconds=_lock_undo_window)
+                    _reply = build_lock_success_card("lock", message=idempotent_msg, lock_undo_window_seconds=_lock_undo_window, chat_id=chat_id)
                     if isinstance(_reply, tuple):
                         _md, _btns = _reply
                         from ...card.builders.project import ProjectBuilder as _PB2
