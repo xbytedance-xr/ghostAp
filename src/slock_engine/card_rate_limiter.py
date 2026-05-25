@@ -1,16 +1,20 @@
 """Card update rate limiter for Slock Engine.
 
-Implements a per-message_id token bucket with 'merge latest' strategy
+Implements a per-message_id throttle with 'merge latest' strategy
 to prevent exceeding Feishu's 1 request/second/card rate limit.
+
+Uses TokenBucketLimiter from src.utils.rate_limit as the underlying
+rate-limiting primitive (capacity=1, fill_rate=1/min_interval).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+
+from ..utils.rate_limit import TokenBucketLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,7 @@ class CardRateLimiter:
     - If a new update arrives while one is pending, the old payload is discarded
       and replaced with the new one (merge latest).
     - Thread-safe via a single lock.
+    - Uses TokenBucketLimiter (capacity=1, fill_rate=1/min_interval) per message_id.
     """
 
     def __init__(
@@ -43,11 +48,19 @@ class CardRateLimiter:
         self._send_fn = send_fn
         self._min_interval = min_interval
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        # message_id -> last send timestamp (monotonic)
-        self._last_sent: dict[str, float] = {}
+        # message_id -> TokenBucketLimiter (capacity=1 token, refills at 1/min_interval)
+        self._buckets: dict[str, TokenBucketLimiter] = {}
         # message_id -> pending update (waiting for interval to elapse)
         self._pending: dict[str, _PendingUpdate] = {}
         self._closed = False
+
+    def _get_bucket(self, message_id: str) -> TokenBucketLimiter:
+        """Get or create the token bucket for a message_id."""
+        bucket = self._buckets.get(message_id)
+        if bucket is None:
+            bucket = TokenBucketLimiter(capacity=1, fill_rate=1.0 / self._min_interval)
+            self._buckets[message_id] = bucket
+        return bucket
 
     def update(self, message_id: str, payload: dict) -> None:
         """Submit a card update. May send immediately or queue for later."""
@@ -55,13 +68,10 @@ class CardRateLimiter:
             return
 
         with self._lock:
-            now = time.monotonic()
-            last = self._last_sent.get(message_id, 0.0)
-            elapsed = now - last
+            bucket = self._get_bucket(message_id)
 
-            if elapsed >= self._min_interval:
-                # Safe to send immediately
-                self._last_sent[message_id] = now
+            if bucket.acquire():
+                # Token available — send immediately
                 self._send_now(message_id, payload)
             else:
                 # Must wait — replace any existing pending payload (merge latest)
@@ -75,8 +85,9 @@ class CardRateLimiter:
                     pending = _PendingUpdate(payload=payload)
                     self._pending[message_id] = pending
 
-                # Schedule send after remaining interval
-                delay = self._min_interval - elapsed
+                # Schedule send after min_interval
+                # The bucket will have refilled by then.
+                delay = self._min_interval
                 timer = threading.Timer(delay, self._flush_one, args=(message_id,))
                 timer.daemon = True
                 pending.timer = timer
@@ -98,7 +109,9 @@ class CardRateLimiter:
             pending = self._pending.pop(message_id, None)
             if pending is None:
                 return
-            self._last_sent[message_id] = time.monotonic()
+            bucket = self._get_bucket(message_id)
+            # Force-acquire to mark the bucket as just-used
+            bucket.acquire()
             payload = pending.payload
 
         # Send outside lock to avoid holding lock during I/O
@@ -121,3 +134,4 @@ class CardRateLimiter:
         """Number of message_ids with pending updates (for monitoring)."""
         with self._lock:
             return len(self._pending)
+
