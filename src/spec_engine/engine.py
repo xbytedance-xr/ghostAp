@@ -6,6 +6,7 @@ as input for the next cycle. Terminates when all criteria are satisfied
 and all review perspectives pass.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -396,10 +397,8 @@ class SpecEngine(BaseEngine):
 
     def _build_review_exception_diagnostics(self, e: Exception, *, cycle: int) -> dict:
         session_id = ""
-        try:
+        with contextlib.suppress(Exception):  # intentional: defensive attribute access
             session_id = str(getattr(self._session, "session_id", "") or "")
-        except Exception:
-            session_id = ""
         return build_review_exception_diagnostics(
             e,
             cycle=cycle,
@@ -446,7 +445,7 @@ class SpecEngine(BaseEngine):
                     try:
                         self._save_failed_task(error_msg, self._last_cycle_num, self._last_phase, callbacks)
                     except Exception as save_err:
-                        logger.warning("[Spec] 异常任务保存失败: %s", save_err)
+                        logger.warning("[Spec] 异常任务保存失败: %s", save_err, exc_info=True)
             return
 
         # Normal termination path — route by reason
@@ -579,6 +578,7 @@ class SpecEngine(BaseEngine):
             return self._project
 
         except Exception as e:
+            logger.exception("Unexpected error in Spec execution")
             self._finalize_execution(max_cycles=max_cycles, callbacks=callbacks, error=e, is_timeout=False, label="Spec执行")
             return self._project
 
@@ -642,9 +642,9 @@ class SpecEngine(BaseEngine):
                         try:
                             callbacks.on_phase_event(cycle_num, phase, event)
                         except Exception as cb_exc:
-                            logger.debug("[Spec] on_phase_event callback failed: %s", get_error_detail(cb_exc))
+                            logger.warning("[Spec] on_phase_event callback failed: %s", get_error_detail(cb_exc), exc_info=True)
                 except Exception as exc:
-                    logger.debug("[Spec] on_event handler error: %s", get_error_detail(exc))
+                    logger.warning("[Spec] on_event handler error: %s", get_error_detail(exc), exc_info=True)
 
             self._send_prompt_with_retry(
                 prompt,
@@ -683,17 +683,15 @@ class SpecEngine(BaseEngine):
                 ):
                     last_error = "Internal error"
             except Exception:
-                logger.debug("override hint processing failed", exc_info=True)
+                logger.warning("override hint processing failed", exc_info=True)
 
             # 停止态下（例如服务关闭触发 cancel），phase 异常通常是 session cancel 或进程退出导致，
             # 不应继续触发模型切换或失败任务持久化。
             if self._run_state == EngineRunState.STOPPING:
                 reason = last_error or type(e).__name__
-                try:
+                with contextlib.suppress(Exception):  # intentional: defensive string truncation
                     if len(reason) > 200:
                         reason = reason[:200] + "…(truncated)"
-                except Exception:
-                    reason = last_error or type(e).__name__
                 logger.info("[Spec] Phase %s 中断（引擎停止中）: %s", phase.value, reason)
                 return ""
 
@@ -705,12 +703,10 @@ class SpecEngine(BaseEngine):
                 return self._run_phase(cycle_num, phase, prompt, callbacks, timeout, _depth=_depth + 1)
 
             task_id = self._save_failed_task(last_error, cycle_num, phase, callbacks)
-            try:
-                err_preview = last_error or ""
+            err_preview = last_error or ""
+            with contextlib.suppress(Exception):  # intentional: defensive string truncation
                 if len(err_preview) > 500:
                     err_preview = err_preview[:500] + "…(truncated)"
-            except Exception:
-                err_preview = last_error or ""
             logger.error("[Spec] Phase %s 失败 (task_id=%s): %s", phase.value, task_id, err_preview)
             raise RuntimeError(f"Phase {phase.value} 失败，任务已保存(task_id={task_id}): {last_error}") from e
 
@@ -1136,6 +1132,7 @@ class SpecEngine(BaseEngine):
             cycle_num,
             type(exc).__name__,
             (err_detail or "")[:500],
+            exc_info=True,
         )
 
         _append_history_event(
@@ -1325,15 +1322,14 @@ class SpecEngine(BaseEngine):
     # Long-range: work items, discovery, spec generation
     # ------------------------------------------------------------------
     def _resolve_max_cycles(self, requested: int) -> int:
-        try:
+        with contextlib.suppress(Exception):  # intentional: defensive int coercion
             requested = int(requested)
-        except Exception:
+        if not isinstance(requested, int):
             requested = 10
 
-        try:
+        limit = 5000
+        with contextlib.suppress(Exception):  # intentional: defensive int coercion
             limit = int(getattr(self.settings, "spec_max_cycles_limit", 5000))
-        except Exception:
-            limit = 5000
         if limit <= 0:
             limit = 5000
         if requested <= 0:
@@ -1435,7 +1431,7 @@ class SpecEngine(BaseEngine):
                     cwd=self.root_path,
                 )
             except Exception as e:
-                logger.debug("[Spec] collect_review_artifacts failed, falling back to legacy: %s", repr(e))
+                logger.warning("[Spec] collect_review_artifacts failed, falling back to legacy: %s", repr(e), exc_info=True)
 
         # Reset cancel_event for this review cycle; set immediately if engine is stopping.
         self._reset_cancel_event()
@@ -1577,7 +1573,7 @@ class SpecEngine(BaseEngine):
                     self._review_orchestrator.restore_circuit(circuit)
                     break
         except Exception as e:
-            logger.debug("[Spec] resume circuit restore skipped: %s", get_error_detail(e))
+            logger.warning("[Spec] resume circuit restore skipped: %s", get_error_detail(e), exc_info=True)
 
         callbacks = self._wrap_callbacks(callbacks or SpecEngineCallbacks())
         with self._lock:
@@ -1616,6 +1612,7 @@ class SpecEngine(BaseEngine):
             self._finalize_execution(max_cycles=max_cycles, callbacks=callbacks, error=e, is_timeout=True, label="Spec恢复")
 
         except Exception as e:
+            logger.exception("Unexpected error in Spec resume")
             self._finalize_execution(max_cycles=max_cycles, callbacks=callbacks, error=e, is_timeout=False, label="Spec恢复")
 
         finally:

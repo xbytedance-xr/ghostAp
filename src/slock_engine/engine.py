@@ -6,6 +6,7 @@ TaskRouter, and Mouthpiece for orchestrating virtual agent teams.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import threading
@@ -439,12 +440,12 @@ class SlockEngine(BaseEngine):
                         self._memory.store_summary(result.text)
                 except Exception as exc:
                     from src.utils.errors import redact_sensitive
-                    logger.warning("Memory summarization LLM call failed: %s", redact_sensitive(str(exc)))
+                    logger.warning("Memory summarization LLM call failed: %s", redact_sensitive(str(exc)), exc_info=True)
                 finally:
                     close_session_safely(session)
             except Exception as exc:
                 from src.utils.errors import redact_sensitive
-                logger.warning("Memory summarization setup failed: %s", redact_sensitive(str(exc)))
+                logger.warning("Memory summarization setup failed: %s", redact_sensitive(str(exc)), exc_info=True)
 
         try:
             # Use discussion executor for background summarization tasks
@@ -661,10 +662,8 @@ class SlockEngine(BaseEngine):
         # Non-blocking backoff: skip tasks not yet eligible for retry
         if task.next_retry_at > 0 and _time.time() < task.next_retry_at:
             # Put it back and let the loop continue to other tasks
-            try:
+            with contextlib.suppress(Exception):  # intentional: best-effort re-enqueue
                 self._task_queue.enqueue(task)
-            except Exception:
-                pass
             return
 
         # 锁内快照：避免与 activate_channel/deactivate_channel 的并发修改
@@ -703,10 +702,8 @@ class SlockEngine(BaseEngine):
             task.retry_count += 1
             task.next_retry_at = _time.time() + min(2 ** task.retry_count, 30)
             logger.debug("Dispatch: no agents registered, re-enqueueing task %s (retry=%d, next_at=+%ds)", task.task_id, task.retry_count, min(2 ** task.retry_count, 30))
-            try:
+            with contextlib.suppress(Exception):  # intentional: best-effort re-enqueue
                 self._task_queue.enqueue(task)
-            except Exception:
-                pass
             return
 
         # Find idle agent via router
@@ -732,7 +729,7 @@ class SlockEngine(BaseEngine):
                     try:
                         final_callback(task_id, result, card_message_id)
                     except Exception as e:
-                        logger.error("Failed to deliver final result for task %s: %s", task_id, e)
+                        logger.error("Failed to deliver final result for task %s: %s", task_id, e, exc_info=True)
                 # Notify queue that agent is idle
                 self._task_queue.notify_idle()
 
@@ -761,8 +758,8 @@ class SlockEngine(BaseEngine):
             task.next_retry_at = _time.time() + min(2 ** task.retry_count, 30)
             try:
                 self._task_queue.enqueue(task)
-            except Exception:
-                logger.error("Failed to re-enqueue task %s", task.task_id)
+            except Exception as e:
+                logger.error("Failed to re-enqueue task %s: %s", task.task_id, e, exc_info=True)
         else:
             # NO_MATCH — likely chitchat that slipped through, just drop
             logger.debug("Dispatch: NO_MATCH for task %s, dropping", task.task_id)
@@ -775,7 +772,7 @@ class SlockEngine(BaseEngine):
         try:
             executor.submit(self._execute_agent, agent, message, callbacks)
         except Exception as exc:
-            logger.error("Failed to submit to executor: %s", exc)
+            logger.error("Failed to submit to executor: %s", exc, exc_info=True)
 
     def _send_timeout_card(self, task: "QueuedTask", waited_seconds: float) -> None:
         """Send a timeout notification card for a task that waited too long."""
@@ -789,8 +786,8 @@ class SlockEngine(BaseEngine):
             )
             if self._card_send_fn:
                 self._card_send_fn(card)
-        except Exception:
-            logger.debug("Failed to send timeout card for task %s", task.task_id)
+        except Exception as e:
+            logger.warning("Failed to send timeout card for task %s: %s", task.task_id, e, exc_info=True)
 
     def _send_bootstrap_recovery_card(self, attempt: int, max_retries: int) -> None:
         """Send a status card informing users that bootstrap is being retried."""
@@ -803,8 +800,8 @@ class SlockEngine(BaseEngine):
             )
             if self._card_send_fn:
                 self._card_send_fn(card)
-        except Exception:
-            logger.debug("Failed to send bootstrap recovery card (attempt %d)", attempt)
+        except Exception as e:
+            logger.warning("Failed to send bootstrap recovery card (attempt %d): %s", attempt, e, exc_info=True)
 
     def _send_bootstrap_failed_card(self, task: "QueuedTask") -> None:
         """Send a notification card when a task is unschedulable due to bootstrap failure."""
@@ -817,8 +814,8 @@ class SlockEngine(BaseEngine):
             )
             if self._card_send_fn:
                 self._card_send_fn(card)
-        except Exception:
-            logger.debug("Failed to send bootstrap-failed card for task %s", task.task_id)
+        except Exception as e:
+            logger.warning("Failed to send bootstrap-failed card for task %s: %s", task.task_id, e, exc_info=True)
 
     def stop_dispatch_loop(self) -> None:
         """Stop the dispatch loop gracefully."""
@@ -871,6 +868,7 @@ class SlockEngine(BaseEngine):
             total_rate = sum(p.success_rate for p in profiles)
             return total_rate / len(profiles)
         except Exception:
+            logger.warning("Failed to compute skill score for agent %s", agent_id, exc_info=True)
             return 50.0
 
     def _dispatch_collaboration_task(self, task: SlockTask, agent: AgentIdentity) -> None:
@@ -928,7 +926,7 @@ class SlockEngine(BaseEngine):
                 self._collaboration_orchestrator.restore_plans(plans, channel_id)
                 logger.info("Restored %d plans from disk", len(plans))
         except Exception:
-            logger.warning("Failed to restore collaboration plans")
+            logger.warning("Failed to restore collaboration plans", exc_info=True)
 
     # ------------------------------------------------------------------
     # Public API: exposed for DiscussionManager (avoids private access)
@@ -1217,7 +1215,7 @@ class SlockEngine(BaseEngine):
         except Exception as exc:
             from src.utils.errors import redact_sensitive
             diag = f"L1 memory read FAILED after move — persona consistency at risk | agent={agent_id} error={redact_sensitive(str(exc))}"
-            logger.error(diag)
+            logger.error(diag, exc_info=True)
             return diag
 
     # ------------------------------------------------------------------
@@ -1486,6 +1484,7 @@ class SlockEngine(BaseEngine):
             try:
                 result = self._run_acp_session(agent, prompt)
             except Exception as exc:
+                logger.exception("Unexpected error in ACP session for agent %s", agent.name)
                 self.set_agent_status(agent_id, AgentStatus.IDLE)
                 self.escalate(
                     agent,
@@ -1555,7 +1554,7 @@ class SlockEngine(BaseEngine):
                             self._autonomous_resolver.record_question_asked(task_id)
                             result = result + "\n\n---\n" + question
                     except Exception as e:
-                        logger.debug("Autonomous resolution failed, continuing with original result: %s", e)
+                        logger.warning("Autonomous resolution failed, continuing with original result: %s", e, exc_info=True)
 
             # RUNNING → CHECKING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.CHECKING):
@@ -1640,11 +1639,9 @@ class SlockEngine(BaseEngine):
             # Clean up autonomous resolver state for this task
             if self._autonomous_resolver:
                 task_id = f"message:{channel_id}:{agent_id}"
-                try:
+                with contextlib.suppress(Exception):  # intentional: cleanup path
                     self._autonomous_resolver.cleanup_task(task_id)
                     self._autonomous_resolver.cleanup_stale()
-                except Exception:
-                    pass
 
     def _record_observer_learning(
         self,
@@ -1737,7 +1734,7 @@ class SlockEngine(BaseEngine):
                 card = build_discussion_card_from_thread(thread)
                 discussion_card_msg_id = callbacks.on_card_send(card)
             except Exception as card_exc:
-                logger.debug("Failed to send discussion start card: %s", card_exc)
+                logger.warning("Failed to send discussion start card: %s", card_exc, exc_info=True)
 
         # Define the discussion runner to be submitted to the executor
         def _run_discussion():
@@ -1769,7 +1766,7 @@ class SlockEngine(BaseEngine):
                             card = build_discussion_card_from_thread(updated_thread)
                             callbacks.on_card_update(discussion_card_msg_id, card)
                         except Exception as upd_exc:
-                            logger.debug("Failed to update discussion card: %s", upd_exc)
+                            logger.warning("Failed to update discussion card: %s", upd_exc, exc_info=True)
 
                 completed_thread = dm.run_discussion(
                     thread, result, on_round_complete=on_round_complete
@@ -1795,7 +1792,7 @@ class SlockEngine(BaseEngine):
                         summary_card = build_discussion_summary_card_from_thread(completed_thread)
                         callbacks.on_card_send(summary_card)
                     except Exception as card_exc:
-                        logger.debug("Failed to send discussion summary card: %s", card_exc)
+                        logger.warning("Failed to send discussion summary card: %s", card_exc, exc_info=True)
 
                 if callbacks and callbacks.on_agent_done:
                     callbacks.on_agent_done(
@@ -1815,7 +1812,7 @@ class SlockEngine(BaseEngine):
             self._discussion_executor.submit(_run_discussion)
         except Exception as exc:
             from src.utils.errors import redact_sensitive
-            logger.warning("Failed to submit discussion to executor: %s", redact_sensitive(str(exc)))
+            logger.warning("Failed to submit discussion to executor: %s", redact_sensitive(str(exc)), exc_info=True)
             self.set_agent_status(agent.agent_id, AgentStatus.IDLE)
             self._remove_discussion(channel_id, thread.thread_id)
 
@@ -1985,7 +1982,7 @@ class SlockEngine(BaseEngine):
         except Exception as e:
             from src.utils.errors import redact_sensitive
             execution_errors[agent.agent_id] = redact_sensitive(str(e))
-            logger.error("ACP session error for agent %s: %s", agent.name, redact_sensitive(str(e)))
+            logger.error("ACP session error for agent %s: %s", agent.name, redact_sensitive(str(e)), exc_info=True)
             return None
 
     def _get_agent_execution_errors(self) -> dict[str, str]:
@@ -2033,7 +2030,7 @@ class SlockEngine(BaseEngine):
                     status_card = self.get_status_card(team_name=team_name)
                     cb(msg_id, status_card)
                 except Exception as exc:
-                    logger.debug("Status refresh callback error: %s", str(exc))
+                    logger.warning("Status refresh callback error: %s", exc, exc_info=True)
 
         self._status_refresh_timer = threading.Timer(delay, _do_refresh)
         self._status_refresh_timer.daemon = True
@@ -2222,7 +2219,7 @@ class SlockEngine(BaseEngine):
                     results[task_id] = future.result()
                 except Exception as e:
                     from src.utils.errors import redact_sensitive
-                    logger.error("Parallel task %s failed: %s", task_id, redact_sensitive(repr(e)))
+                    logger.error("Parallel task %s failed: %s", task_id, redact_sensitive(repr(e)), exc_info=True)
                     results[task_id] = None
                     if callbacks and callbacks.on_error:
                         callbacks.on_error(f"Task {task_id} failed: {redact_sensitive(str(e))}")
@@ -2327,15 +2324,11 @@ class SlockEngine(BaseEngine):
             agent_sessions = list(self._agent_sessions.values())
             self._agent_sessions.clear()
         if session:
-            try:
+            with contextlib.suppress(Exception):  # intentional: cleanup path
                 session.cancel()
-            except Exception:
-                pass
         for agent_session in agent_sessions:
-            try:
+            with contextlib.suppress(Exception):  # intentional: cleanup path
                 agent_session.cancel()
-            except Exception:
-                pass
 
     def resume(self, callbacks: Optional[SlockEngineCallbacks] = None) -> None:
         """Resume the engine from paused state."""
@@ -2368,10 +2361,8 @@ class SlockEngine(BaseEngine):
             agent_sessions = list(self._agent_sessions.values())
             self._agent_sessions.clear()
         for agent_session in agent_sessions:
-            try:
+            with contextlib.suppress(Exception):  # intentional: cleanup path
                 agent_session.cancel()
-            except Exception:
-                pass
         super().cleanup()
 
     def deactivate(self) -> None:
@@ -2392,15 +2383,11 @@ class SlockEngine(BaseEngine):
 
         # Cancel any running session using the snapshot
         if session:
-            try:
+            with contextlib.suppress(Exception):  # intentional: cleanup path
                 session.cancel()
-            except Exception:
-                pass
         for agent_session in agent_sessions:
-            try:
+            with contextlib.suppress(Exception):  # intentional: cleanup path
                 agent_session.cancel()
-            except Exception:
-                pass
 
         # Cancel escalation timeout timers
         self._escalation_mgr.shutdown_timers()
@@ -2444,10 +2431,8 @@ class SlockEngine(BaseEngine):
         self.cancel_agent(agent_id)
 
         if agent_session:
-            try:
+            with contextlib.suppress(Exception):  # intentional: cleanup path
                 agent_session.cancel()
-            except Exception:
-                pass
 
         logger.info("Stopped agent %s in chat %s", agent_id, self.chat_id)
         return True
