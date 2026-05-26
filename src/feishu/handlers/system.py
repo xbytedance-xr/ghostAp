@@ -128,6 +128,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/new-chat": lambda m, c, t, p: self._handle_new_chat_project_args(m, c, ""),
             "/ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
             "/enter_ttadk": lambda m, c, t, p: self.handle_ttadk_command(m, c, p),
+            "/tui2acp": lambda m, c, t, p: self.handle_tui2acp_command(m, c, p),
+            "/enter_tui2acp": lambda m, c, t, p: self.handle_tui2acp_command(m, c, p),
+            "/exit_tui2acp": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_tui2acp": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/tui2acp_info": lambda m, c, t, p: self.get_handler("tui2acp").show_info(m, c, p),
             "/acp": lambda m, c, t, p: self.handle_acp_command(m, c, p),
             # Worktree: canonical command is /worktree (aliases like /wt are normalized by SlashCommandParser)
             "/worktree": lambda m, c, t, p: self.get_handler("worktree").handle_worktree_command(m, c, p),
@@ -400,6 +405,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/exit_gemini",
             "/end_ttadk",
             "/exit_ttadk",
+            "/tui2acp",
+            "/enter_tui2acp",
+            "/exit_tui2acp",
+            "/end_tui2acp",
+            "/tui2acp_info",
             "/coco_status",
             "/coco_info",
             "/claude_info",
@@ -590,6 +600,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             InteractionMode.CODEX,
             InteractionMode.GEMINI,
             InteractionMode.TTADK,
+            InteractionMode.TUI2ACP,
         }
         thread_id = get_current_thread_id()
         if thread_id:
@@ -1066,8 +1077,83 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self.get_handler("gemini").exit_mode(message_id, chat_id, project)
         elif current_mode == InteractionMode.TTADK:
             self.get_handler("ttadk").exit_mode(message_id, chat_id, project)
+        elif current_mode == InteractionMode.TUI2ACP:
+            self.get_handler("tui2acp").exit_mode(message_id, chat_id, project)
         else:
             self.reply_text(message_id, UI_TEXT["system_already_in_mode"])
+
+    # ------------------------------------------------------------------
+    # Tui2ACP adapter selection
+    # ------------------------------------------------------------------
+
+    _TUI2ACP_ADAPTERS = [
+        {"name": "claude", "emoji": "🔮", "description": "Claude Code"},
+        {"name": "codex", "emoji": "⚡", "description": "OpenAI Codex CLI"},
+        {"name": "aider", "emoji": "🛠️", "description": "Aider"},
+        {"name": "gemini", "emoji": "✨", "description": "Gemini CLI"},
+        {"name": "cursor", "emoji": "🖱️", "description": "Cursor Agent"},
+        {"name": "opencode", "emoji": "📝", "description": "OpenCode"},
+        {"name": "tmates", "emoji": "🤝", "description": "TMates"},
+        {"name": "aichat", "emoji": "💬", "description": "AIChat"},
+        {"name": "open-interpreter", "emoji": "🐍", "description": "Open Interpreter"},
+        {"name": "sgpt", "emoji": "🗨️", "description": "SGPT"},
+        {"name": "pi-coding-agent", "emoji": "🥧", "description": "Pi Coding Agent"},
+    ]
+
+    def handle_tui2acp_command(
+        self,
+        message_id: str,
+        chat_id: str,
+        project: Optional["ProjectContext"] = None,
+        from_card: bool = False,
+    ):
+        """Show tui2acp adapter selection card."""
+        import shutil
+
+        if not shutil.which("tui2acp"):
+            self.reply_text(
+                message_id,
+                "❌ tui2acp 未安装。请先运行 `npm install -g tui2acp` 安装。",
+            )
+            return
+
+        current_adapter = None
+        if project:
+            current_adapter = getattr(project, "tui2acp_adapter_name", None)
+
+        _, card_content = CardBuilder.build_tui2acp_adapter_select_card(
+            self._TUI2ACP_ADAPTERS,
+            project_id=project.project_id if project else None,
+            current_adapter=current_adapter,
+        )
+        if from_card:
+            self.update_card(message_id, card_content)
+        else:
+            self.reply_card(message_id, card_content)
+
+    def handle_select_tui2acp_adapter(
+        self,
+        message_id: str,
+        chat_id: str,
+        adapter_name: str,
+        project_id: Optional[str] = None,
+    ):
+        """Handle card callback when user picks a tui2acp adapter."""
+        adapter = (adapter_name or "").strip().lower()
+        if not adapter:
+            self.reply_text(message_id, "❌ 请选择一个 adapter")
+            return
+
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+
+        if project:
+            project.tui2acp_adapter_name = adapter
+            project.acp_tool_name = "tui2acp"
+
+        handler = self.get_handler("tui2acp")
+        if handler:
+            handler.current_adapter = adapter
+            handler.enter_mode(message_id, chat_id, project=project)
 
     # ------------------------------------------------------------------
     # Shell command submission

@@ -885,6 +885,10 @@ def resolve_agent_spec(
         )
         return "python3", args
 
+    if agent_type.startswith("tui2acp_"):
+        adapter_name = agent_type[len("tui2acp_"):]
+        return "tui2acp", ["--adapter", adapter_name, "--unsafe"]
+
     # Delegate to ToolRegistry for registered tools, or fallback.
     # NOTE: this also triggers a best-effort async preheat so that common
     # tools (coco/aiden) are probed in the background instead of blocking

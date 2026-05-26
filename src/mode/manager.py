@@ -5,7 +5,7 @@ from typing import Optional
 
 
 class InteractionMode(Enum):
-    """交互模式枚举（SMART/COCO/CLAUDE/SHELL/TTADK/AIDEN/CODEX/GEMINI）。"""
+    """交互模式枚举（SMART/COCO/CLAUDE/SHELL/TTADK/AIDEN/CODEX/GEMINI/TUI2ACP）。"""
 
     SMART = "smart"
     COCO = "coco"
@@ -15,6 +15,7 @@ class InteractionMode(Enum):
     GEMINI = "gemini"
     SHELL = "shell"
     TTADK = "ttadk"
+    TUI2ACP = "tui2acp"
 
 
 @dataclass
@@ -49,6 +50,7 @@ class ModeManager:
             InteractionMode.CODEX,
             InteractionMode.GEMINI,
             InteractionMode.TTADK,
+            InteractionMode.TUI2ACP,
         )
 
     @staticmethod
@@ -200,6 +202,10 @@ class ModeManager:
         """进入 Gemini 编程模式。"""
         return self.enter_programming_mode(chat_id, InteractionMode.GEMINI, auto=auto, project_id=project_id)
 
+    def enter_tui2acp_mode(self, chat_id: str, auto: bool = False, project_id: Optional[str] = None) -> InteractionMode:
+        """进入 Tui2ACP 编程模式。"""
+        return self.enter_programming_mode(chat_id, InteractionMode.TUI2ACP, auto=auto, project_id=project_id)
+
     def enter_shell_mode(self, chat_id: str, project_id: Optional[str] = None) -> InteractionMode:
         """进入 Shell 模式。"""
         return self.set_mode(chat_id, InteractionMode.SHELL, auto_entered=False, project_id=project_id)
@@ -232,6 +238,10 @@ class ModeManager:
         """判断当前是否为 Gemini 模式。"""
         return self.get_mode(chat_id, project_id) == InteractionMode.GEMINI
 
+    def is_tui2acp_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
+        """判断当前是否为 Tui2ACP 模式。"""
+        return self.get_mode(chat_id, project_id) == InteractionMode.TUI2ACP
+
     def is_smart_mode(self, chat_id: str, project_id: Optional[str] = None) -> bool:
         """判断当前是否为 SMART 模式。"""
         return self.get_mode(chat_id, project_id) == InteractionMode.SMART
@@ -257,4 +267,5 @@ class ModeManager:
             InteractionMode.GEMINI: "✨ Gemini 编程模式",
             InteractionMode.SHELL: "💻 Shell 模式",
             InteractionMode.TTADK: "🎮 TTADK 编程模式",
+            InteractionMode.TUI2ACP: "🌉 Tui2ACP 编程模式",
         }.get(mode, "未知模式")

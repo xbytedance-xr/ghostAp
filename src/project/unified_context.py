@@ -53,6 +53,7 @@ class ContextSourceMode(Enum):
     SHELL = "shell"
     DEEP_ENGINE = "deep_engine"
     TTADK = "ttadk"
+    TUI2ACP = "tui2acp"
 
 
 # ---------------------------------------------------------------------------

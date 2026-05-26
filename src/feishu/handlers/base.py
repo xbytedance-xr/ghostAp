@@ -611,6 +611,7 @@ class BaseHandler:
             InteractionMode.CODEX: ContextSourceMode.CODEX,
             InteractionMode.GEMINI: ContextSourceMode.GEMINI,
             InteractionMode.TTADK: ContextSourceMode.TTADK,
+            InteractionMode.TUI2ACP: ContextSourceMode.TUI2ACP,
         }
         return mapping.get(mode, ContextSourceMode.SMART)
 

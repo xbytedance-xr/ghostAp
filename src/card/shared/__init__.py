@@ -80,6 +80,10 @@ def build_mode_buttons(
         buttons.append(_create_mode_button("switch_ttadk_tool", "show_ttadk_menu", project_id, thread_root_id, button_size=button_size))
         buttons.append(_create_mode_button("exit_ttadk", "exit_ttadk", project_id, thread_root_id, button_size=button_size))
         buttons.append(_create_mode_button("switch_project", "switch_project", button_size=button_size))
+    elif mode == InteractionMode.TUI2ACP:
+        buttons.append(_create_mode_button("switch_tui2acp_adapter", "show_tui2acp_menu", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("exit_tui2acp", "exit_tui2acp", project_id, thread_root_id, button_size=button_size))
+        buttons.append(_create_mode_button("switch_project", "switch_project", button_size=button_size))
     else:
         buttons.append(_create_mode_button("enter_coco", "enter_coco", project_id, thread_root_id, button_size=button_size))
         buttons.append(_create_mode_button("enter_claude", "enter_claude", project_id, thread_root_id, button_size=button_size))
@@ -155,11 +159,13 @@ def resolve_title_and_template(
         mode_icon, header_template = "✨", "turquoise"
     elif mode == InteractionMode.TTADK:
         mode_icon, header_template = "🎮", "orange"
+    elif mode == InteractionMode.TUI2ACP:
+        mode_icon, header_template = "🌉", "purple"
     else:
         mode_icon, header_template = "🧠", "turquoise"
 
     # If a theme_color is provided (from project), use it for the template
-    if theme_color and mode not in [InteractionMode.CLAUDE, InteractionMode.COCO, InteractionMode.GEMINI, InteractionMode.TTADK]:
+    if theme_color and mode not in [InteractionMode.CLAUDE, InteractionMode.COCO, InteractionMode.GEMINI, InteractionMode.TTADK, InteractionMode.TUI2ACP]:
         header_template = get_theme(theme_color).header_template
 
     ttadk_suffix = _build_ttadk_title_suffix(ttadk_tool_name, ttadk_model_name) if mode == InteractionMode.TTADK else ""
@@ -173,6 +179,8 @@ def resolve_title_and_template(
             title = f"✨ {project_name} · Gemini"
         elif mode == InteractionMode.TTADK:
             title = f"🎮 {project_name} · TTADK{ttadk_suffix}"
+        elif mode == InteractionMode.TUI2ACP:
+            title = f"🌉 {project_name} · Tui2ACP"
         else:
             title = f"🧠 {project_name}"
     else:
@@ -184,6 +192,8 @@ def resolve_title_and_template(
             mode_name = UI_TEXT["mode_name_gemini"]
         elif mode == InteractionMode.TTADK:
             mode_name = f"TTADK{ttadk_suffix}"
+        elif mode == InteractionMode.TUI2ACP:
+            mode_name = "Tui2ACP"
         else:
             mode_name = UI_TEXT["mode_name_smart"]
         title = f"{mode_icon} {mode_name}"

@@ -74,6 +74,7 @@ class ProgrammingModeHandler(BaseHandler):
         (InteractionMode.CODEX, "is_codex_mode", "codex"),
         (InteractionMode.GEMINI, "is_gemini_mode", "gemini"),
         (InteractionMode.TTADK, "is_ttadk_mode", "ttadk"),
+        (InteractionMode.TUI2ACP, "is_tui2acp_mode", "tui2acp"),
     )
 
     def __init__(self, ctx):
@@ -171,6 +172,8 @@ class ProgrammingModeHandler(BaseHandler):
             project.set_gemini_mode(False)
         if current != InteractionMode.TTADK:
             project.set_ttadk_mode(False)
+        if current != InteractionMode.TUI2ACP:
+            project.set_tui2acp_mode(False)
 
     def _iter_other_programming_mode_entries(self):
         current = self._get_interaction_mode()
@@ -1278,3 +1281,28 @@ class TTADKModeHandler(ProgrammingModeHandler):
     @current_tool.setter
     def current_tool(self, value: Optional[str]):
         self._current_tool = value
+
+
+class Tui2acpModeHandler(ProgrammingModeHandler):
+    mode_name = "Tui2ACP"
+    mode_emoji = "🌉"
+    interaction_mode = InteractionMode.TUI2ACP
+    mode_key = "tui2acp"
+    context_source = ContextSourceMode.TUI2ACP
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="🌉", name="Tui2ACP")
+
+    def __init__(self, ctx):
+        super().__init__(ctx)
+        self._current_adapter: Optional[str] = None
+
+    def _get_agent_type_override(self, project: Optional["ProjectContext"] = None) -> Optional[str]:
+        adapter = (getattr(project, "tui2acp_adapter_name", None) if project else None) or self._current_adapter
+        return f"tui2acp_{adapter}" if adapter else "tui2acp_claude"
+
+    @property
+    def current_adapter(self) -> Optional[str]:
+        return self._current_adapter
+
+    @current_adapter.setter
+    def current_adapter(self, value: Optional[str]):
+        self._current_adapter = value

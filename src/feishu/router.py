@@ -79,6 +79,18 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_card_exit_ttadk": ("ttadk", "handle_card_exit"),
     "_handle_card_resume_ttadk": ("ttadk", "handle_card_resume"),
     "_handle_card_new_ttadk": ("ttadk", "handle_card_new"),
+    # --- Tui2ACP mode ---
+    "_enter_tui2acp_mode": ("tui2acp", "enter_mode"),
+    "_exit_tui2acp_mode": ("tui2acp", "exit_mode"),
+    "_handle_tui2acp_message": ("tui2acp", "handle_message"),
+    "_handle_tui2acp_response": ("tui2acp", "handle_response"),
+    "_show_tui2acp_info": ("tui2acp", "show_info"),
+    "_handle_card_enter_tui2acp": ("tui2acp", "handle_card_enter"),
+    "_handle_card_exit_tui2acp": ("tui2acp", "handle_card_exit"),
+    "_handle_card_resume_tui2acp": ("tui2acp", "handle_card_resume"),
+    "_handle_card_new_tui2acp": ("tui2acp", "handle_card_new"),
+    "_handle_tui2acp_command": ("system", "handle_tui2acp_command"),
+    "_handle_select_tui2acp_adapter": ("system", "handle_select_tui2acp_adapter"),
     "_handle_ttadk_command": ("system", "handle_ttadk_command"),
     "_handle_worktree_command": ("worktree", "handle_worktree_command"),
     "_handle_worktree_execute": ("worktree", "handle_worktree_execute"),
@@ -181,6 +193,7 @@ def _handler_classes() -> dict[str, type]:
         CodexModeHandler,
         GeminiModeHandler,
         TTADKModeHandler,
+        Tui2acpModeHandler,
     )
     from .handlers.project import ProjectHandler
     from .handlers.slock import SlockHandler
@@ -195,6 +208,7 @@ def _handler_classes() -> dict[str, type]:
         "codex": CodexModeHandler,
         "gemini": GeminiModeHandler,
         "ttadk": TTADKModeHandler,
+        "tui2acp": Tui2acpModeHandler,
         "system": SystemHandler,
         "worktree": WorktreeHandler,
         "deep": DeepHandler,

@@ -70,6 +70,7 @@ from .handlers import (
     SpecHandler,
     SystemHandler,
     TTADKModeHandler,
+    Tui2acpModeHandler,
 )
 from .handlers.worktree import WorktreeHandler
 from .image_handler import FeishuImageHandler
@@ -154,6 +155,13 @@ class FeishuWSClient:
         )
         self._ttadk_manager = ACPSessionManager(
             "ttadk",
+            session_timeout=self.settings.coco_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
+        self._tui2acp_manager = ACPSessionManager(
+            "tui2acp",
             session_timeout=self.settings.coco_session_timeout,
             keepalive_interval=self.settings.acp_keepalive_interval,
             idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
@@ -244,6 +252,7 @@ class FeishuWSClient:
             codex_manager=self._codex_manager,
             gemini_manager=self._gemini_manager,
             ttadk_manager=self._ttadk_manager,
+            tui2acp_manager=self._tui2acp_manager,
             intent_recognizer=self._intent_recognizer,
             scheduler=self._scheduler,
             project_manager=self._project_manager,
@@ -275,6 +284,7 @@ class FeishuWSClient:
         codex_handler = CodexModeHandler(self._handler_ctx)
         gemini_handler = GeminiModeHandler(self._handler_ctx)
         ttadk_handler = TTADKModeHandler(self._handler_ctx)
+        tui2acp_handler = Tui2acpModeHandler(self._handler_ctx)
         deep_handler = DeepHandler(self._handler_ctx)
         deep_handler.renderer = DeepRenderer(deep_handler)
         spec_handler = SpecHandler(self._handler_ctx)
@@ -296,6 +306,7 @@ class FeishuWSClient:
         self._codex_handler = codex_handler
         self._gemini_handler = gemini_handler
         self._ttadk_handler = ttadk_handler
+        self._tui2acp_handler = tui2acp_handler
         self._deep_handler = deep_handler
         self._spec_handler = spec_handler
         self._project_handler = project_handler
@@ -311,6 +322,7 @@ class FeishuWSClient:
             "codex": self._codex_manager,
             "gemini": self._gemini_manager,
             "ttadk": self._ttadk_manager,
+            "tui2acp": self._tui2acp_manager,
         })
         self._handler_ctx.handlers.update({
             "coco": coco_handler,
@@ -319,6 +331,7 @@ class FeishuWSClient:
             "codex": codex_handler,
             "gemini": gemini_handler,
             "ttadk": ttadk_handler,
+            "tui2acp": tui2acp_handler,
             "deep": deep_handler,
             "spec": spec_handler,
             "project": project_handler,
@@ -814,6 +827,7 @@ class FeishuWSClient:
             InteractionMode.CODEX: ContextSourceMode.CODEX,
             InteractionMode.GEMINI: ContextSourceMode.GEMINI,
             InteractionMode.TTADK: ContextSourceMode.TTADK,
+            InteractionMode.TUI2ACP: ContextSourceMode.TUI2ACP,
         }
         return mapping.get(mode, ContextSourceMode.SMART)
 
@@ -1368,6 +1382,7 @@ class FeishuWSClient:
             InteractionMode.CODEX: self._codex_handler,
             InteractionMode.GEMINI: self._gemini_handler,
             InteractionMode.TTADK: self._ttadk_handler,
+            InteractionMode.TUI2ACP: self._tui2acp_handler,
         }
         return _map.get(mode)
 
@@ -1403,6 +1418,7 @@ class FeishuWSClient:
             InteractionMode.CODEX,
             InteractionMode.GEMINI,
             InteractionMode.TTADK,
+            InteractionMode.TUI2ACP,
         }:
             if project is None:
                 project = self._project_manager.get_active_project(chat_id)
