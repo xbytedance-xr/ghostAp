@@ -65,10 +65,8 @@ class Settings(BaseSettings):
 
     sandbox_timeout: int = 30
     sandbox_max_output_length: int = 4000
-    sandbox_command_blacklist: str = (
-        "rm -rf /,rm -rf /*,mkfs,dd if=,shutdown,reboot,halt,poweroff,init 0,init 6,:(){ :|:& };:"
-    )
-    sandbox_use_whitelist: bool = True
+    sandbox_command_blacklist: str = ""
+    sandbox_use_whitelist: bool = False
     sandbox_command_whitelist: str = ""
 
     # 允许 set_working_dir 切换到的根目录列表

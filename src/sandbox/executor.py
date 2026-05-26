@@ -153,10 +153,6 @@ class BlacklistCheckStrategy(SecurityCheckStrategy):
     """黑名单检查策略"""
 
     def check(self, command: str, settings) -> tuple[bool, Optional[str]]:
-        # 仅在非白名单模式下强制检查黑名单
-        if settings.sandbox_use_whitelist:
-            return True, None
-
         for blacklisted in settings.command_blacklist:
             if blacklisted in command:
                 return False, f"命令包含黑名单内容: {blacklisted}"
@@ -195,7 +191,6 @@ class SandboxExecutor:
         # 如果未提供策略，则使用默认策略链
         if security_strategies is None:
             self.security_strategies = [
-                DangerousPatternCheckStrategy(),
                 WhitelistCheckStrategy(),
                 BlacklistCheckStrategy(),
             ]

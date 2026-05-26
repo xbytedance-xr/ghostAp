@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-05-26
+- **Shell 空黑名单** — Shell 安全策略默认改为空黑名单，移除默认硬拦截，显式配置黑名单才拒绝命令 → [详细记录](2026-05-26.md)
 ## 2026-05-25
 - **Coco 旧快照阻断** — `/coco` 模型选择清理旧会话快照，显式选模型不再自动 resume 陈旧 ACP session，避免 Coco prompt 触发 Internal error → [详细记录](2026-05-25.md)
 - **Slock 不抢项目群编程** — Slock passive 路由增加普通编程态、Deep/Spec/WT 话题态和 project 上下文门禁，项目群自由文本继续进入编程 handler → [详细记录](2026-05-25.md)

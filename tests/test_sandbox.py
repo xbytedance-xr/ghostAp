@@ -12,8 +12,8 @@ from src.sandbox.executor import ExecutionResult, SandboxExecutor, SubprocessExe
 
 class TestSandboxExecutor:
     def setup_method(self):
-        # Disable whitelist for general execution tests (whitelist tested separately)
-        settings = Settings(sandbox_use_whitelist=False)
+        # Destructive-command tests opt into a blacklist; the production default is empty.
+        settings = Settings(sandbox_command_blacklist="rm -rf /,mkfs,dd if=,shutdown,reboot")
         self.executor = SandboxExecutor(settings=settings)
 
     def test_safe_command_ls(self):
@@ -83,10 +83,9 @@ class TestSandboxExecutor:
         assert "测试错误" in message
 
     def test_command_with_pipe(self):
-        # Pipe character is now blocked by DangerousPatternCheckStrategy (shell control char)
         result = self.executor.execute("echo 'hello' | grep 'hello'")
-        assert result.success is False
-        assert "shell 控制字符" in result.error_message
+        assert result.success is True
+        assert "hello" in result.stdout
 
     def test_command_whoami(self):
         result = self.executor.execute("whoami")
@@ -128,7 +127,33 @@ class TestSandboxExecutor:
 
 class TestSandboxExecutorBlacklist:
     def setup_method(self):
-        self.executor = SandboxExecutor()
+        self.executor = SandboxExecutor(
+            settings=Settings(sandbox_command_blacklist=":(){ :|:& };:,init 0,init 6,chmod 777 /")
+        )
+
+    def test_default_settings_use_empty_blacklist_mode(self):
+        settings = Settings()
+
+        assert settings.sandbox_use_whitelist is False
+        assert settings.command_blacklist == []
+
+    def test_default_executor_allows_compound_shell_commands(self):
+        executor = SandboxExecutor(settings=Settings())
+
+        is_safe, reason = executor.is_command_safe("echo hello && whoami")
+
+        assert is_safe is True
+        assert reason is None
+
+    def test_configured_blacklist_rejects_matching_command_text(self):
+        settings = Settings(sandbox_command_blacklist="shutdown,rm -rf /")
+        executor = SandboxExecutor(settings=settings)
+
+        is_safe, reason = executor.is_command_safe("echo before && shutdown now")
+
+        assert is_safe is False
+        assert "黑名单" in reason
+        assert "shutdown" in reason
 
     def test_fork_bomb_pattern(self):
         is_safe, _ = self.executor.is_command_safe(":(){ :|:& };:")
@@ -226,7 +251,8 @@ class TestSandboxExecutorWhitelist:
         """测试白名单模式禁用时使用黑名单"""
         settings = Settings(
             sandbox_use_whitelist=False,
-            sandbox_command_whitelist="ls,echo"
+            sandbox_command_whitelist="ls,echo",
+            sandbox_command_blacklist="rm -rf /",
         )
         executor = SandboxExecutor(settings=settings)
 
@@ -238,18 +264,19 @@ class TestSandboxExecutorWhitelist:
         is_safe, reason = executor.is_command_safe("rm -rf /")
         assert is_safe is False
 
-    def test_whitelist_still_checks_dangerous_patterns(self):
-        """测试白名单模式下仍会检查危险模式（额外安全层）"""
+    def test_whitelist_still_checks_configured_blacklist(self):
+        """测试白名单模式下仍会检查显式配置的黑名单"""
         settings = Settings(
             sandbox_use_whitelist=True,
-            sandbox_command_whitelist="rm"  # 即使 rm 在白名单中
+            sandbox_command_whitelist="rm",
+            sandbox_command_blacklist="rm -rf /",
         )
         executor = SandboxExecutor(settings=settings)
 
-        # 危险的 rm 命令仍应被拒绝
+        # 显式黑名单仍应拒绝命令
         is_safe, reason = executor.is_command_safe("rm -rf /")
         assert is_safe is False
-        assert "危险操作模式" in reason
+        assert "黑名单" in reason
 
     def test_whitelist_rejects_compound_commands(self):
         """测试白名单模式下拒绝复合命令（如 ls; date）"""
