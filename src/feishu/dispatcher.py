@@ -163,7 +163,17 @@ class MessageDispatcher:
             _is_command_intent = command_match is not None or (text or "").lstrip().startswith("/")
             if slock_auto_activate_allowed and not _is_command_intent:
                 from src.slock_engine.task_classifier import TaskClassifier
-                classification, _ = TaskClassifier.classify_with_uncertainty(text or "")
+                # In managed chats, bias toward task classification to reduce
+                # false chitchat filtering and silent message drops.
+                _is_already_managed = _is_managed
+                classification, _ = TaskClassifier.classify_with_uncertainty(
+                    text or "", managed_chat=_is_already_managed,
+                )
+
+                # In managed chats, treat uncertain as task — don't make users
+                # confirm via clarification card (reduces friction).
+                if _is_already_managed and classification == "uncertain":
+                    classification = "task"
 
                 if classification == "chat":
                     # Definitely chitchat — ignore

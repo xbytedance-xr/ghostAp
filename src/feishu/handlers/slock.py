@@ -638,8 +638,22 @@ class SlockHandler(BaseEngineHandler):
                     channel_id=chat_id,
                     task_id=f"message:{message_id}",
                 )
+                # Append confirmation buttons for result feedback
+                try:
+                    from ...slock_engine.card_templates.queue_feedback import build_result_confirmation_buttons
+                    confirm_elements = build_result_confirmation_buttons(
+                        channel_id=chat_id,
+                        message_id=message_id,
+                        task_id=f"message:{message_id}",
+                    )
+                    if isinstance(card_data, dict):
+                        body = card_data.get("body", card_data.get("card", {}).get("body", {}))
+                        elements = body.get("elements", [])
+                        elements.extend(confirm_elements)
+                except Exception:
+                    pass  # Non-critical: don't break result delivery for button rendering
                 return json.dumps(card_data, ensure_ascii=False)
-            from ...slock_engine.card_templates.common import build_card_wrapper
+            from ...slock_engine.card_templates.common import build_card_wrapper  # noqa: F811
             return json.dumps(build_card_wrapper(
                 header_title="💬 Agent 回复",
                 header_template="blue",
@@ -659,9 +673,15 @@ class SlockHandler(BaseEngineHandler):
         def _empty_card() -> str:
             from ...slock_engine.card_templates.common import build_card_wrapper
             return json.dumps(build_card_wrapper(
-                header_title="⚠️ 角色忙碌",
+                header_title="⚠️ 执行无结果",
                 header_template="orange",
-                elements=[{"tag": "markdown", "content": "所有角色正在忙碌中，请稍后再试。"}],
+                elements=[{"tag": "markdown", "content": (
+                    "Agent 执行完成但未产出结果。可能原因：\n"
+                    "- 所有角色正在忙碌\n"
+                    "- 执行超时被自动中止\n"
+                    "- 任务内容不明确\n\n"
+                    "请稍后重试或补充更多描述。"
+                )}],
                 mobile_optimize=True,
             ), ensure_ascii=False)
 
@@ -674,13 +694,12 @@ class SlockHandler(BaseEngineHandler):
                 mobile_optimize=True,
             ), ensure_ascii=False)
 
-        from ...slock_engine.card_templates.common import build_card_wrapper
-        placeholder_card = json.dumps(build_card_wrapper(
-            header_title="⏳ 正在处理...",
-            header_template="indigo",
-            elements=[{"tag": "markdown", "content": "Agent 正在思考中，请稍候..."}],
-            mobile_optimize=True,
-        ), ensure_ascii=False)
+        from ...slock_engine.card_templates.queue_feedback import build_task_ack_card
+        ack_card = build_task_ack_card(
+            message_preview=text or "",
+            status="received",
+        )
+        placeholder_card = json.dumps(ack_card, ensure_ascii=False)
 
         self._execute_async(
             engine=engine,

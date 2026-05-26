@@ -696,6 +696,18 @@ class Settings(BaseSettings):
         default=10, ge=1, le=60,
         description="默认角色 bootstrap 同步等待超时（秒），超时后队列仍继续消费",
     )
+    slock_patrol_interval: int = Field(
+        default=30, ge=5, le=300,
+        description="Proactive patrol loop 巡检间隔（秒），检查 SLA 超时和空闲 Agent 认领",
+    )
+    slock_task_default_sla: int = Field(
+        default=300, ge=30, le=3600,
+        description="任务默认 SLA 超时（秒），超时后巡检器发送提醒并尝试重新分配",
+    )
+    slock_session_affinity_window: int = Field(
+        default=120, ge=10, le=600,
+        description="会话粘性窗口（秒），同一用户连续消息优先路由给同一 Agent",
+    )
 
     @field_validator("slock_team_name_suffix", mode="before")
     @classmethod

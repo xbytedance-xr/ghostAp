@@ -78,8 +78,13 @@ class TaskClassifier:
     """
 
     @staticmethod
-    def classify(text: str) -> tuple[bool, float]:
+    def classify(text: str, *, managed_chat: bool = False) -> tuple[bool, float]:
         """Classify message as chitchat or task with confidence score.
+
+        Args:
+            text: The message text to classify.
+            managed_chat: If True, bias classification toward task (for active
+                Slock groups where most messages are intended as tasks).
 
         Returns:
             (is_chitchat, confidence) where confidence is 0.0-1.0.
@@ -93,8 +98,13 @@ class TaskClassifier:
         # Rule 2: Explicit blacklist patterns — high confidence
         for pattern in _CHITCHAT_PATTERNS:
             if pattern.match(stripped):
+                # In managed chats, only very short explicit greetings are chitchat
+                if managed_chat and len(stripped) > 4:
+                    return (False, 0.6)
                 return (True, 0.95)
         if _EN_CHITCHAT_PHRASES.match(stripped):
+            if managed_chat and len(stripped) > 10:
+                return (False, 0.6)
             return (True, 0.95)
 
         # Rule 3 & 4: CJK-aware classification
@@ -102,11 +112,17 @@ class TaskClassifier:
         if has_cjk:
             # Rule 3: CJK chitchat keywords with short length
             if len(stripped) <= 6 and _CJK_CHITCHAT_KEYWORDS.match(stripped):
+                # In managed chats, only exact-match short keywords are chitchat
+                if managed_chat and len(stripped) > 3:
+                    return (False, 0.6)
                 return (True, 0.9)
             # Rule 4: CJK content with length >= 2 is likely a valid task
             if len(stripped) >= 2:
                 # Longer CJK messages are more likely tasks
                 conf = min(0.6 + len(stripped) * 0.02, 0.95)
+                # Managed chat boost: raise confidence toward task
+                if managed_chat:
+                    conf = min(conf + 0.15, 0.95)
                 return (False, conf)
 
         # Rule 5: Pure punctuation/emoji
@@ -122,25 +138,30 @@ class TaskClassifier:
 
         # Rule 7: Very short non-CJK messages — lower confidence
         if len(stripped) <= 3:
+            # In managed chats, short messages are more likely commands/tasks
+            if managed_chat:
+                return (False, 0.6)
             return (True, 0.6)
 
         # Longer messages default to task with moderate confidence
         conf = min(0.6 + len(stripped) * 0.01, 0.9)
+        if managed_chat:
+            conf = min(conf + 0.1, 0.95)
         return (False, conf)
 
     @staticmethod
-    def is_chitchat(text: str) -> bool:
+    def is_chitchat(text: str, *, managed_chat: bool = False) -> bool:
         """Return True if the message is casual chitchat that should NOT be routed.
 
         For confidence-aware classification, use classify() instead.
         """
-        is_chat, _ = TaskClassifier.classify(text)
+        is_chat, _ = TaskClassifier.classify(text, managed_chat=managed_chat)
         return is_chat
 
     @staticmethod
-    def is_task(text: str) -> bool:
+    def is_task(text: str, *, managed_chat: bool = False) -> bool:
         """Convenience inverse of is_chitchat."""
-        return not TaskClassifier.is_chitchat(text)
+        return not TaskClassifier.is_chitchat(text, managed_chat=managed_chat)
 
     @staticmethod
     def classify_with_uncertainty(
@@ -148,6 +169,7 @@ class TaskClassifier:
         *,
         task_threshold: float = 0.7,
         chat_threshold: float = 0.7,
+        managed_chat: bool = False,
     ) -> tuple[str, float]:
         """Classify message with explicit uncertainty state.
 
@@ -155,6 +177,7 @@ class TaskClassifier:
             text: The message text to classify.
             task_threshold: Minimum confidence to classify as "task".
             chat_threshold: Minimum confidence to classify as "chat".
+            managed_chat: If True, bias toward task classification.
 
         Returns:
             Tuple of (classification, confidence) where classification is one of:
@@ -162,7 +185,7 @@ class TaskClassifier:
             - "chat": High confidence the message is chitchat
             - "uncertain": Low confidence, needs clarification
         """
-        is_chitchat, confidence = TaskClassifier.classify(text)
+        is_chitchat, confidence = TaskClassifier.classify(text, managed_chat=managed_chat)
 
         if is_chitchat:
             if confidence >= chat_threshold:

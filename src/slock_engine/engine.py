@@ -312,7 +312,12 @@ class SlockEngine(BaseEngine):
         shell_patterns.extend(getattr(self._settings, "slock_dangerous_shell_patterns", []) or [])
         self._dangerous_shell_patterns = re.compile(r"|".join(shell_patterns), re.IGNORECASE)
         claims_path = os.path.join(storage_base_path, "claims", f"{chat_id}.json")
-        self._router = TaskRouter(persist_path=claims_path, memory_backend=self._memory, engine_status_getter=self.get_agent_status)
+        self._router = TaskRouter(
+            persist_path=claims_path,
+            memory_backend=self._memory,
+            engine_status_getter=self.get_agent_status,
+            session_affinity_window=float(getattr(get_settings(), "slock_session_affinity_window", 120)),
+        )
         self._observer_queue = ObserverLearningQueue(memory=self._memory, router=self._router)
         self._mouthpiece = Mouthpiece()
         self._task_queue = TaskQueue(max_size=get_settings().slock_max_queue_size)
@@ -323,6 +328,11 @@ class SlockEngine(BaseEngine):
         self._bootstrap_ready.set()  # Default: ready. Call prepare_bootstrap() to clear.
         self._dispatch_thread: Optional[threading.Thread] = None
         self._dispatch_stop = threading.Event()
+
+        # Proactive Patrol loop: periodic check for SLA violations, idle agent auto-claim
+        self._patrol_thread: Optional[threading.Thread] = None
+        self._patrol_stop = threading.Event()
+        self._patrol_interval = getattr(get_settings(), "slock_patrol_interval", 30)
 
         # Thread pool for parallel agent execution
         self._executor: Optional[BoundedExecutor] = None
@@ -842,6 +852,115 @@ class SlockEngine(BaseEngine):
         self._task_queue.notify_idle()  # Wake the loop so it can check the stop flag
         if self._dispatch_thread and self._dispatch_thread.is_alive():
             self._dispatch_thread.join(timeout=5.0)
+
+    # ------------------------------------------------------------------
+    # Proactive Patrol loop — periodic SLA check + idle agent auto-claim
+    # ------------------------------------------------------------------
+
+    def start_patrol_loop(self) -> None:
+        """Start the background patrol loop (idempotent)."""
+        if self._patrol_thread and self._patrol_thread.is_alive():
+            return
+        self._patrol_stop.clear()
+        self._patrol_thread = threading.Thread(
+            target=self._patrol_loop,
+            name=f"slock-patrol-{self.chat_id[:8]}",
+            daemon=True,
+        )
+        self._patrol_thread.start()
+        logger.info("Patrol loop started for chat=%s (interval=%ds)", self.chat_id, self._patrol_interval)
+
+    def stop_patrol_loop(self) -> None:
+        """Stop the patrol loop gracefully."""
+        self._patrol_stop.set()
+        if self._patrol_thread and self._patrol_thread.is_alive():
+            self._patrol_thread.join(timeout=5.0)
+
+    def _patrol_loop(self) -> None:
+        """Background loop: runs every _patrol_interval seconds.
+
+        Responsibilities:
+        1. Check tasks that exceeded their SLA deadline → send reminder/escalate
+        2. Check idle agents → trigger TaskQueue notify_idle to wake dispatch loop
+        3. Purge stale session affinity entries from the router
+        """
+        while not self._patrol_stop.is_set():
+            self._patrol_stop.wait(timeout=self._patrol_interval)
+            if self._patrol_stop.is_set():
+                break
+
+            try:
+                self._patrol_check_sla()
+                self._patrol_idle_agents()
+                self._patrol_purge_stale()
+            except Exception as exc:
+                logger.warning("Patrol loop error: %s", exc, exc_info=True)
+
+        logger.info("Patrol loop stopped for chat=%s", self.chat_id)
+
+    def _patrol_check_sla(self) -> None:
+        """Check tasks exceeding their SLA deadline and send notifications."""
+        now = time.time()
+        with self._lock:
+            tasks_snapshot = list(self._tasks)
+
+        for task in tasks_snapshot:
+            if task.status != TaskStatus.IN_PROGRESS:
+                continue
+            # Set deadline on claim if not already set
+            if task.deadline_at is None and task.claimed_at:
+                task.deadline_at = task.claimed_at + task.sla_seconds
+            if task.deadline_at is None:
+                continue
+            if now > task.deadline_at:
+                # SLA violated — send escalation notification
+                overdue_s = now - task.deadline_at
+                logger.warning(
+                    "Patrol: task %s overdue by %.0fs (claimed_by=%s)",
+                    task.task_id, overdue_s, task.claimed_by,
+                )
+                self._patrol_escalate_overdue(task, overdue_s)
+                # Extend deadline to avoid repeated escalation every interval
+                task.deadline_at = now + task.sla_seconds
+
+    def _patrol_escalate_overdue(self, task: "SlockTask", overdue_seconds: float) -> None:
+        """Send a notification card for an overdue task."""
+        try:
+            from .card_templates.common import build_card_wrapper
+            agent = self._registry.get(task.claimed_by) if task.claimed_by else None
+            agent_name = agent.name if agent else "未知 Agent"
+            content = (
+                f"⏰ 任务超时 **{overdue_seconds:.0f}s**\n\n"
+                f"> {task.content[:100]}\n\n"
+                f"负责人: **{agent_name}** · 如长时间无进展将自动重新分配"
+            )
+            card = build_card_wrapper(
+                header_title="⏰ 任务 SLA 超时",
+                header_template="orange",
+                elements=[{"tag": "markdown", "content": content}],
+            )
+            if self._card_send_fn:
+                self._card_send_fn(card)
+        except Exception as exc:
+            logger.warning("Failed to send SLA escalation card: %s", exc, exc_info=True)
+
+    def _patrol_idle_agents(self) -> None:
+        """If there are idle agents and queued tasks, trigger dispatch."""
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        agents = self._registry.list_agents(channel_id=channel_id)
+        has_idle = any(
+            self.get_agent_status(a.agent_id) == AgentStatus.IDLE
+            for a in agents
+        )
+        if has_idle and self._task_queue.size() > 0:
+            self._task_queue.notify_idle()
+
+    def _patrol_purge_stale(self) -> None:
+        """Purge stale session affinity entries from the router."""
+        try:
+            self._router.purge_stale_affinity()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Collaboration helpers
@@ -1390,6 +1509,9 @@ class SlockEngine(BaseEngine):
 
         # Start dispatch loop for event-driven task consumption
         self.start_dispatch_loop()
+
+        # Start proactive patrol loop for SLA checks and idle agent auto-claim
+        self.start_patrol_loop()
 
         marker_data = {
             "channel_id": channel.channel_id,

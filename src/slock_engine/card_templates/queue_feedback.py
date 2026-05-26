@@ -446,3 +446,97 @@ def build_result_card(
         header_template="green",
         elements=elements,
     )
+
+
+# ---------------------------------------------------------------------------
+# Proactive Slock: Immediate ACK cards
+# ---------------------------------------------------------------------------
+
+
+def build_task_ack_card(
+    *,
+    message_preview: str = "",
+    status: str = "received",
+    agent_name: str = "",
+    agent_emoji: str = "",
+) -> dict:
+    """Immediate acknowledgment card sent when a task message is received.
+
+    Designed to be PATCHED as the task progresses through states:
+      received → assigned → running → done/error
+
+    Args:
+        message_preview: Truncated task text.
+        status: One of "received", "assigned", "running", "done", "error".
+        agent_name: Name of the assigned agent (for assigned/running states).
+        agent_emoji: Emoji of the assigned agent.
+    """
+    preview = _sanitize_preview(message_preview)
+
+    if status == "received":
+        content = f"✅ **收到任务**，正在分配给合适的 Agent...\n\n> {preview}"
+        header_title = "✅ 已收到"
+        header_template = "blue"
+    elif status == "assigned":
+        agent_display = f"{agent_emoji} {agent_name}" if agent_emoji else agent_name
+        content = f"🔄 **{agent_display}** 已认领，正在处理...\n\n> {preview}"
+        header_title = f"🔄 {agent_name} 处理中"
+        header_template = "wathet"
+    elif status == "running":
+        agent_display = f"{agent_emoji} {agent_name}" if agent_emoji else agent_name
+        content = f"⚡ **{agent_display}** 正在执行...\n\n> {preview}"
+        header_title = f"⚡ {agent_name} 执行中"
+        header_template = "wathet"
+    elif status == "error":
+        content = f"⚠️ 任务执行遇到问题，正在尝试恢复...\n\n> {preview}"
+        header_title = "⚠️ 执行异常"
+        header_template = "red"
+    else:
+        content = f"✅ 任务已完成\n\n> {preview}"
+        header_title = "✅ 已完成"
+        header_template = "green"
+
+    elements = [{"tag": "markdown", "content": content}]
+    return build_card_wrapper(
+        header_title=header_title,
+        header_template=header_template,
+        elements=elements,
+    )
+
+
+def build_result_confirmation_buttons(
+    *,
+    channel_id: str = "",
+    message_id: str = "",
+    task_id: str = "",
+) -> list[dict]:
+    """Build confirmation button elements to append to a result card.
+
+    Returns a list of Feishu card elements (column_set layout with buttons).
+    """
+    buttons = [
+        build_callback_button(
+            "✅ 已解决",
+            "slock_result_confirm",
+            channel_id=channel_id,
+            button_type="primary",
+            extra_value={
+                "message_id": message_id,
+                "task_id": task_id,
+                "action": "resolved",
+            },
+        ),
+        build_callback_button(
+            "❌ 需要调整",
+            "slock_result_reject",
+            channel_id=channel_id,
+            button_type="danger",
+            extra_value={
+                "message_id": message_id,
+                "task_id": task_id,
+                "action": "rejected",
+            },
+        ),
+    ]
+    return build_responsive_layout(buttons)
+

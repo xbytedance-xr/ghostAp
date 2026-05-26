@@ -317,6 +317,10 @@ class SlockTask:
     progress_pct: int = 0  # 0-100 progress percentage
     discussion_ids: list[str] = field(default_factory=list)  # linked DiscussionThread IDs
     timeline: list[TaskTimelineEvent] = field(default_factory=list)
+    # Proactive Slock: SLA tracking for patrol-based follow-up
+    sla_seconds: float = 300.0  # Default 5 min SLA
+    deadline_at: Optional[float] = None  # Unix timestamp; auto-set on claim if None
+    sender_id: str = ""  # Original message sender (for result delivery tracking)
 
     def to_dict(self) -> dict:
         return {
@@ -336,6 +340,9 @@ class SlockTask:
             "collaborators": self.collaborators,
             "progress_pct": self.progress_pct,
             "discussion_ids": self.discussion_ids,
+            "sla_seconds": self.sla_seconds,
+            "deadline_at": self.deadline_at,
+            "sender_id": self.sender_id,
             "timeline": [
                 {"event_type": e.event_type, "agent_id": e.agent_id, "timestamp": e.timestamp, "detail": e.detail}
                 for e in self.timeline
@@ -361,6 +368,9 @@ class SlockTask:
             collaborators=data.get("collaborators", []),
             progress_pct=data.get("progress_pct", 0),
             discussion_ids=data.get("discussion_ids", []),
+            sla_seconds=data.get("sla_seconds", 300.0),
+            deadline_at=data.get("deadline_at"),
+            sender_id=data.get("sender_id", ""),
             timeline=[
                 TaskTimelineEvent(
                     event_type=e.get("event_type", ""),

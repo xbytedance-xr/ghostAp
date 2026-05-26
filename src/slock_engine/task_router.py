@@ -255,6 +255,7 @@ class TaskRouter:
         persist_path: Optional[str] = None,
         memory_backend: Optional["MemoryManager"] = None,
         engine_status_getter: Optional[object] = None,
+        session_affinity_window: float = 120.0,
     ):
         self._task_claim = TaskClaim(default_ttl=task_claim_ttl, persist_path=persist_path)
         # Lock hierarchy: engine._lock → router._lock (never acquire engine._lock while holding router._lock)
@@ -268,6 +269,11 @@ class TaskRouter:
         self._engine_status_getter = engine_status_getter
         # Fallback status dict for standalone/test usage (when no engine_status_getter)
         self._fallback_statuses: dict[str, AgentStatus] = {}
+        # Session affinity: sender_id → (agent_id, last_routed_at)
+        # Consecutive messages from the same user within the affinity window
+        # are preferentially routed to the same agent for multi-turn continuity.
+        self._session_affinity: dict[str, tuple[str, float]] = {}
+        self._session_affinity_window = session_affinity_window
 
     @property
     def task_claim(self) -> TaskClaim:
@@ -424,8 +430,15 @@ class TaskRouter:
         self,
         text: str,
         available_agents: list[AgentIdentity],
+        *,
+        sender_id: str = "",
     ) -> RoutingResult:
         """Route with fallback: if no IDLE agent, degrade to busy agents or queue.
+
+        Args:
+            text: The message text to route.
+            available_agents: All agents in the channel.
+            sender_id: Optional sender identifier for session affinity routing.
 
         Returns a RoutingResult with status indicating whether assignment succeeded,
         or whether the caller should wait (QUEUE_WAIT) or give up (NO_MATCH).
@@ -446,9 +459,19 @@ class TaskRouter:
         if idle_agents:
             mentioned = self._extract_mention(text, idle_agents)
             if mentioned:
+                self._record_affinity(sender_id, mentioned.agent_id)
                 return RoutingResult(status=RoutingStatus.ASSIGNED, agent=mentioned)
+
+            # Session affinity: prefer the agent that last served this sender
+            if sender_id:
+                affinity_agent = self._get_affinity_agent(sender_id, idle_agents)
+                if affinity_agent:
+                    self._record_affinity(sender_id, affinity_agent.agent_id)
+                    return RoutingResult(status=RoutingStatus.ASSIGNED, agent=affinity_agent)
+
             assigned = self._score_and_assign(text, idle_agents)
             if assigned:
+                self._record_affinity(sender_id, assigned.agent_id)
                 return RoutingResult(status=RoutingStatus.ASSIGNED, agent=assigned)
 
         # Fallback: check for RUNNING agents → queue wait signal
@@ -495,6 +518,51 @@ class TaskRouter:
         if mentioned is None:
             return ordered
         return [mentioned] + [agent for agent in ordered if agent.agent_id != mentioned.agent_id]
+
+    # ------------------------------------------------------------------
+    # Session Affinity: multi-turn continuity
+    # ------------------------------------------------------------------
+
+    def _record_affinity(self, sender_id: str, agent_id: str) -> None:
+        """Record that sender was routed to agent (for affinity window)."""
+        if not sender_id:
+            return
+        self._session_affinity[sender_id] = (agent_id, time.time())
+
+    def _get_affinity_agent(
+        self, sender_id: str, idle_agents: list[AgentIdentity]
+    ) -> Optional[AgentIdentity]:
+        """Return the affinity agent if still IDLE and within the time window."""
+        if not sender_id:
+            return None
+        entry = self._session_affinity.get(sender_id)
+        if entry is None:
+            return None
+        agent_id, last_ts = entry
+        if time.time() - last_ts > self._session_affinity_window:
+            # Expired — remove stale entry
+            del self._session_affinity[sender_id]
+            return None
+        # Check if agent is still idle
+        for agent in idle_agents:
+            if agent.agent_id == agent_id:
+                logger.debug(
+                    "Session affinity hit: sender=%s → agent=%s (%.1fs ago)",
+                    sender_id, agent_id, time.time() - last_ts,
+                )
+                return agent
+        return None
+
+    def purge_stale_affinity(self) -> int:
+        """Remove expired affinity entries. Returns count removed."""
+        now = time.time()
+        stale = [
+            sid for sid, (_, ts) in self._session_affinity.items()
+            if now - ts > self._session_affinity_window
+        ]
+        for sid in stale:
+            del self._session_affinity[sid]
+        return len(stale)
 
     def _extract_mention(self, text: str, agents: list[AgentIdentity]) -> Optional[AgentIdentity]:
         """Extract @mention and match to an agent."""
