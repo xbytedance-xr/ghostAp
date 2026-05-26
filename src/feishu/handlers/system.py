@@ -1107,15 +1107,31 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         project: Optional["ProjectContext"] = None,
         from_card: bool = False,
     ):
-        """Show tui2acp adapter selection card."""
+        """Show tui2acp adapter selection card. Auto-installs if missing."""
         import shutil
+        import subprocess
 
         if not shutil.which("tui2acp"):
-            self.reply_text(
-                message_id,
-                "❌ tui2acp 未安装。请先运行 `npm install -g tui2acp` 安装。",
-            )
-            return
+            if not shutil.which("npm"):
+                self.reply_text(
+                    message_id,
+                    "❌ tui2acp 未安装且未找到 npm，无法自动安装。请手动安装 Node.js 和 npm 后重试。",
+                )
+                return
+            self.reply_text(message_id, "⏳ tui2acp 未安装，正在自动安装...")
+            try:
+                subprocess.run(
+                    ["npm", "install", "-g", "tui2acp"],
+                    capture_output=True, text=True, timeout=120,
+                )
+            except Exception:
+                pass
+            if not shutil.which("tui2acp"):
+                self.reply_text(
+                    message_id,
+                    "❌ tui2acp 自动安装失败。请手动运行 `npm install -g tui2acp`。",
+                )
+                return
 
         current_adapter = None
         if project:

@@ -16,6 +16,8 @@ LAUNCHCTL_LABEL="${GHOSTAP_LAUNCHCTL_LABEL:-com.ghostap.local}"
 RESTART_LAUNCHCTL_LABEL="${GHOSTAP_RESTART_LAUNCHCTL_LABEL:-${LAUNCHCTL_LABEL}.restart}"
 CODEX_ACP_NPM_PACKAGE="${GHOSTAP_CODEX_ACP_NPM_PACKAGE:-@zed-industries/codex-acp@0.14.0}"
 PREPARE_CODEX_ACP="${GHOSTAP_PREPARE_CODEX_ACP:-1}"
+TUI2ACP_NPM_PACKAGE="${GHOSTAP_TUI2ACP_NPM_PACKAGE:-tui2acp}"
+PREPARE_TUI2ACP="${GHOSTAP_PREPARE_TUI2ACP:-1}"
 
 cd "$PROJECT_DIR"
 
@@ -99,6 +101,31 @@ prepare_codex_acp_dependency() {
     fi
 }
 
+prepare_tui2acp_dependency() {
+    if [ "$PREPARE_TUI2ACP" = "0" ]; then
+        log_restart "tui2acp preheat skipped"
+        return
+    fi
+    if command -v tui2acp >/dev/null 2>&1; then
+        log_restart "tui2acp already available"
+        return
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        echo "⚠️  未找到 npm，tui2acp 无法自动安装"
+        log_restart "tui2acp missing npm"
+        return
+    fi
+
+    echo "准备 tui2acp 依赖..."
+    if npm install -g "$TUI2ACP_NPM_PACKAGE" >/dev/null 2>&1; then
+        log_restart "tui2acp installed package=$TUI2ACP_NPM_PACKAGE"
+        echo "✅ tui2acp 已安装"
+    else
+        echo "⚠️  tui2acp 安装失败，后续 /tui2acp 可能无法使用"
+        log_restart "tui2acp install failed package=$TUI2ACP_NPM_PACKAGE"
+    fi
+}
+
 stop_service() {
     echo "正在停止 GhostAP 服务..."
     log_restart "stop begin"
@@ -153,6 +180,7 @@ start_service() {
         start_log_mode="append"
     fi
     prepare_codex_acp_dependency
+    prepare_tui2acp_dependency
     log_restart "start begin cmd=$(service_command_label)"
     start_service_process "$start_log_mode"
     PID="$STARTED_PID"
