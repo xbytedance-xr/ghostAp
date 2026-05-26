@@ -12,7 +12,9 @@ from .common import (
     STATUS_BG_STYLE_MAP,
     STATUS_ICON_MAP,
     STATUS_LABEL_ZH,
+    STATUS_TEXT_COLOR_MAP,
     TASK_CONTENT_COMPACT_LEN,
+    TASK_CONTENT_PREVIEW_LEN,
     build_callback_button,
     build_card_wrapper,
     build_collapsible_panel,
@@ -26,6 +28,14 @@ from ..models import (
     AgentStatus,
     SlockTask,
 )
+
+
+def _format_task_preview(content: str) -> str:
+    """Show short tasks in full, aggressively compact long tasks for mobile."""
+    safe_content = redact_sensitive(content)
+    if len(safe_content) <= TASK_CONTENT_PREVIEW_LEN:
+        return safe_content
+    return safe_content[:TASK_CONTENT_COMPACT_LEN] + "…"
 
 
 def _build_agent_detail_elements(
@@ -48,7 +58,7 @@ def _build_agent_detail_elements(
         if agent.model_name:
             info_parts.append(f"模型: `{agent.model_name}`")
         if current_task:
-            info_parts.append(f"当前任务: {redact_sensitive(current_task.content)[:50]}")
+            info_parts.append(f"当前任务: {_format_task_preview(current_task.content)}")
         if agent_skills:
             skills_text = ", ".join(
                 f"{s.get('tag', '?')}({int(s.get('success_rate', 0))}%)"
@@ -130,13 +140,13 @@ def build_status_panel_card(
         for agent, status in agents:
             status_icon = STATUS_ICON_MAP.get(status, "⚪")
             status_label = STATUS_LABEL_ZH.get(status.value, status.value)
+            status_color = STATUS_TEXT_COLOR_MAP.get(status, "grey")
             current_task = current_tasks.get(agent.agent_id)
 
             # Task preview (truncated to 20 chars)
             task_text = ""
             if current_task:
-                content = redact_sensitive(current_task.content)
-                task_text = content[:TASK_CONTENT_COMPACT_LEN] + ("…" if len(content) > TASK_CONTENT_COMPACT_LEN else "")
+                task_text = _format_task_preview(current_task.content)
 
             # Skill tags (top 3)
             agent_skills = skill_profiles.get(agent.agent_id, [])
@@ -146,7 +156,11 @@ def build_status_panel_card(
                 skill_tags = " ".join(f"`{s.get('tag', '?')}`" for s in top_skills)
 
             # Title row: emoji + name + status
-            title_els = [{"tag": "markdown", "content": f"{agent.emoji} **{agent.name}**　{status_icon} {status_label}"}]
+            title_content = f"{agent.emoji} **{agent.name}**　{status_icon} <font color='{status_color}'>{status_label}</font>"
+            title_els = [{
+                "tag": "markdown",
+                "content": title_content,
+            }]
 
             # Content row: task + skills
             content_parts: list[str] = []
@@ -155,6 +169,12 @@ def build_status_panel_card(
             if skill_tags:
                 content_parts.append(skill_tags)
             content_els = [{"tag": "markdown", "content": " ".join(content_parts)}] if content_parts else None
+
+            # Keep direct markdown rows for mobile/snapshot consumers while the
+            # styled column_set below carries the visual row background.
+            elements.append({"tag": "markdown", "content": title_content, "text_size": "notation"})
+            if content_parts:
+                elements.append({"tag": "markdown", "content": " ".join(content_parts), "text_size": "notation"})
 
             elements.append(build_mobile_card_row(
                 title_elements=title_els,

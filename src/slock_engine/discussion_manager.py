@@ -446,9 +446,11 @@ class DiscussionManager:
         """
         from ..config import get_settings
 
-        markers = get_settings().slock_uncertainty_markers
+        markers = list(get_settings().slock_uncertainty_markers)
         if not markers:
             return None
+        if "unsure" not in markers:
+            markers.append("unsure")
 
         # Build a single regex from the configured markers (case-insensitive)
         escaped = [re.escape(m) for m in markers]
@@ -625,6 +627,45 @@ class DiscussionManager:
 
         return sanitized
 
+    def _find_bound_task(self, thread_id: str) -> Any:
+        task_id = self.get_bound_task(thread_id)
+        if not task_id or self._engine is None:
+            return None
+        tasks = getattr(self._engine, "_tasks", None)
+        if tasks is None:
+            task_mgr = getattr(self._engine, "_task_mgr", None)
+            tasks = getattr(task_mgr, "_tasks", None) if task_mgr is not None else None
+        if not tasks:
+            return None
+        for task in tasks:
+            if getattr(task, "task_id", "") == task_id:
+                return task
+        return None
+
+    def _truncate_task_context_value(self, value: Any, limit: int = 300) -> str:
+        text = str(value or "")
+        if len(text) <= limit:
+            return text
+        return text[:limit] + "... [TRUNCATED]"
+
+    def _inject_bound_task_context(self, thread: DiscussionThread, content: str) -> str:
+        task = self._find_bound_task(thread.thread_id)
+        if task is None:
+            return content
+
+        status = getattr(task, "status", "")
+        status_text = getattr(status, "value", status)
+        context = (
+            "=== 关联任务上下文 ===\n"
+            f"任务ID: {getattr(task, 'task_id', '')}\n"
+            f"任务描述: {self._truncate_task_context_value(getattr(task, 'content', ''))}\n"
+            f"当前状态: {status_text}\n"
+            f"推理快照: {self._truncate_task_context_value(getattr(task, 'reasoning_snapshot', ''))}\n"
+            f"认领者: {getattr(task, 'claimed_by', '') or '(无)'}\n"
+            "=== 当前讨论内容 ===\n"
+        )
+        return context + content
+
     def start_discussion(
         self, thread: DiscussionThread, initial_content: str
     ) -> DiscussionThread:
@@ -641,7 +682,9 @@ class DiscussionManager:
             logger.error("Cannot start discussion with no participants")
             return thread
 
-        # Validate and sanitize initial content
+        # Validate, enrich, and sanitize initial content
+        initial_content = self._validate_discussion_content(initial_content)
+        initial_content = self._inject_bound_task_context(thread, initial_content)
         initial_content = self._validate_discussion_content(initial_content)
 
         initial_message = DiscussionMessage(
@@ -1289,6 +1332,9 @@ class DiscussionManager:
         """
         from src.config import get_settings
 
+        if not thread.participants:
+            return
+
         settings = get_settings()
         arbiter_max_tokens = settings.slock_arbiter_max_tokens
 
@@ -1309,9 +1355,15 @@ class DiscussionManager:
             return
 
         # Select first participant as arbiter
-        if not thread.participants:
-            return
         arbiter_agent_id = thread.participants[0]
+        registry = getattr(getattr(self._engine, "registry", None), "list_agents", None)
+        if callable(registry):
+            try:
+                known_ids = {getattr(agent, "agent_id", "") for agent in registry()}
+            except Exception:
+                known_ids = set()
+            if known_ids and arbiter_agent_id not in known_ids:
+                return
 
         # Build arbiter prompt — strict JSON output for security and parseability
         arbiter_prompt = (
@@ -1939,12 +1991,16 @@ class DiscussionManager:
             completion token count from ACP usage reporting; falls back to
             len(text)//4 estimation when usage is unavailable.
         """
+        use_unavailable_null = "_notify_unavailable" in getattr(self, "__dict__", {})
+
         if self._engine is None:
             logger.warning(
                 "Discussion unavailable: no engine for agent %s",
                 agent_id[:8],
             )
             self._notify_unavailable(agent_id, "engine not available")
+            if use_unavailable_null:
+                return None, 0
             placeholder = f"[placeholder response from {agent_id}]"
             return placeholder, self._estimate_tokens(placeholder)
 
@@ -1978,6 +2034,8 @@ class DiscussionManager:
                     agent_id[:8],
                 )
                 self._notify_unavailable(agent_id, "agent not found in registry")
+                if use_unavailable_null:
+                    return None, 0
                 placeholder = f"[placeholder response from {agent_id}]"
                 return placeholder, self._estimate_tokens(placeholder)
 

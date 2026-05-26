@@ -9,6 +9,8 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
+import shlex
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -24,16 +26,20 @@ from .bounded_executor import BoundedExecutor, QueueFullError
 from .card_templates import build_card_wrapper, build_status_panel_card
 from .collaboration_orchestrator import CollaborationOrchestrator
 from .escalation_manager import EscalationManager
+from .exceptions import SecurityPolicyDegradedError
 from .memory_manager import MemoryManager, default_slock_storage_base
 from .models import (
     AgentIdentity,
     AgentStatus,
+    ABORT_OPTIONS,
     DiscussionStatus,
     EscalationLevel,
     EscalationRequest,
+    SKIP_OPTIONS,
     SlockChannel,
     SlockTask,
     TaskStatus,
+    TeamSnapshot,
 )
 from .mouthpiece import Mouthpiece
 from .observer_queue import ObserverLearningQueue, TaskStatusNotifier
@@ -231,6 +237,14 @@ class SlockEngine(BaseEngine):
         3. BoundedExecutor._lock (leaf lock, never held while acquiring above)
     """
 
+    _BUILTIN_DANGEROUS_PATTERNS: tuple[str, ...] = (
+        r"\brm\s+-[^\n]*[rf][^\n]*/",
+        r"\b(?:curl|wget)\b",
+        r"\b(?:nc|ncat)\b",
+        r"(?:^|[\s'\"])/(?:etc|root|proc|sys|dev)(?:/|\b)",
+        r"(?:^|[\s'\"])(?:\.\./)+(?:etc|root|proc|sys|dev)(?:/|\b)",
+    )
+
     # ------------------------------------------------------------------
     # SlockEngineContext protocol implementation
     # ------------------------------------------------------------------
@@ -292,6 +306,11 @@ class SlockEngine(BaseEngine):
         storage_base_path = memory_base_path or default_slock_storage_base()
         self._registry = AgentRegistry(base_path=storage_base_path)
         self._memory = MemoryManager(base_path=storage_base_path)
+        self._channel_trust_rules: dict[str, dict[str, str]] = {}
+        self._settings = get_settings()
+        shell_patterns = list(self._BUILTIN_DANGEROUS_PATTERNS)
+        shell_patterns.extend(getattr(self._settings, "slock_dangerous_shell_patterns", []) or [])
+        self._dangerous_shell_patterns = re.compile(r"|".join(shell_patterns), re.IGNORECASE)
         claims_path = os.path.join(storage_base_path, "claims", f"{chat_id}.json")
         self._router = TaskRouter(persist_path=claims_path, memory_backend=self._memory, engine_status_getter=self.get_agent_status)
         self._observer_queue = ObserverLearningQueue(memory=self._memory, router=self._router)
@@ -1038,6 +1057,89 @@ class SlockEngine(BaseEngine):
             discussion_timeout=settings.slock_discussion_timeout,
         )
 
+    def _enforce_discussion_budget(self, thread, callbacks: Optional[SlockEngineCallbacks]) -> bool:
+        """Delegate discussion budget enforcement through DiscussionManager."""
+        discussion_manager = getattr(self, "_discussion_manager", None)
+        if discussion_manager is None:
+            return True
+        on_card_send = getattr(callbacks, "on_card_send", None) if callbacks else None
+        settings = getattr(self, "_settings", None) or get_settings()
+        return discussion_manager.check_budget_with_breaker(
+            thread,
+            settings,
+            on_card_send=on_card_send,
+        )
+
+    def _trust_rules_path(self) -> str:
+        return os.path.join(self._memory.base_path, "global", "TRUST_RULES.json")
+
+    def _load_trust_rules(self) -> dict[str, dict[str, str]]:
+        import json
+
+        path = self._trust_rules_path()
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Failed to load Slock trust rules from %s", path, exc_info=True)
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        rules: dict[str, dict[str, str]] = {}
+        for channel_id, channel_rules in data.items():
+            if isinstance(channel_rules, dict):
+                rules[str(channel_id)] = {
+                    str(pair): str(value)
+                    for pair, value in channel_rules.items()
+                }
+        return rules
+
+    def _persist_trust_rules(self) -> None:
+        import json
+
+        path = self._trust_rules_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(self._channel_trust_rules, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, path)
+
+    def _save_trust_rule(self, channel_id: str, role_pair: str, value: str) -> None:
+        """Persist a channel-scoped trust rule for a role pair."""
+        if not hasattr(self, "_channel_trust_rules"):
+            self._channel_trust_rules = {}
+        self._channel_trust_rules.setdefault(channel_id, {})[role_pair] = value
+        self._persist_trust_rules()
+
+    def _check_trust_bypass(self, channel_id: str, role_pair: str) -> bool:
+        """Return True when a channel role-pair trust rule is currently valid."""
+        if not hasattr(self, "_channel_trust_rules"):
+            self._channel_trust_rules = {}
+        if channel_id not in self._channel_trust_rules:
+            loaded = self._load_trust_rules()
+            if loaded:
+                self._channel_trust_rules.update(loaded)
+
+        value = self._channel_trust_rules.get(channel_id, {}).get(role_pair, "")
+        if value == "permanent":
+            return True
+        if not value:
+            return False
+        try:
+            expires_at = float(value)
+        except (TypeError, ValueError):
+            return False
+        if time.time() < expires_at:
+            return True
+
+        channel_rules = self._channel_trust_rules.get(channel_id, {})
+        channel_rules.pop(role_pair, None)
+        with contextlib.suppress(Exception):
+            self._persist_trust_rules()
+        return False
+
     def _add_discussion(self, channel_id: str, thread) -> bool:
         """Add a discussion thread to the channel. Returns False if at capacity."""
         max_parallel = get_settings().slock_max_parallel_discussions
@@ -1417,6 +1519,7 @@ class SlockEngine(BaseEngine):
         """
         agent_id = agent.agent_id
         channel_id = self._channel.channel_id if self._channel else self.chat_id
+        progress_tracker = getattr(self, "_progress_tracker", None)
 
         # Set up cancellation event and watchdog timer
         cancel_event = self._get_cancel_event(agent_id)
@@ -1458,10 +1561,11 @@ class SlockEngine(BaseEngine):
                 return None
             if callbacks and callbacks.on_agent_thinking:
                 callbacks.on_agent_thinking(agent)
-            self._progress_tracker.update(
-                agent_id, entity_type="agent", progress_pct=20,
-                status="thinking", detail=f"{agent.name} 构思中",
-            )
+            if progress_tracker:
+                progress_tracker.update(
+                    agent_id, entity_type="agent", progress_pct=20,
+                    status="thinking", detail=f"{agent.name} 构思中",
+                )
 
             # Build prompt with memory context and system prompt
             prompt = self._build_agent_prompt(agent, message, memory)
@@ -1475,10 +1579,11 @@ class SlockEngine(BaseEngine):
                 return None
             if callbacks and callbacks.on_agent_running:
                 callbacks.on_agent_running(agent, message)
-            self._progress_tracker.update(
-                agent_id, entity_type="agent", progress_pct=50,
-                status="running", detail=f"{agent.name} 执行中",
-            )
+            if progress_tracker:
+                progress_tracker.update(
+                    agent_id, entity_type="agent", progress_pct=50,
+                    status="running", detail=f"{agent.name} 执行中",
+                )
 
             # Execute via ACP session
             try:
@@ -1514,13 +1619,14 @@ class SlockEngine(BaseEngine):
 
             # Autonomous resolution: if agent output shows uncertainty, attempt
             # autonomous resolution before delivering to user (AC-5)
-            if result and self._autonomous_resolver and self._autonomous_resolver.has_ambiguity_markers(result):
+            autonomous_resolver = getattr(self, "_autonomous_resolver", None)
+            if result and autonomous_resolver and autonomous_resolver.has_ambiguity_markers(result):
                 task_id = f"message:{channel_id}:{agent_id}"
-                if self._autonomous_resolver.can_ask_question(task_id):
+                if autonomous_resolver.can_ask_question(task_id):
                     try:
                         _loop = _get_shared_loop()
                         _future = _asyncio.run_coroutine_threadsafe(
-                            self._autonomous_resolver.attempt_resolve(
+                            autonomous_resolver.attempt_resolve(
                                 task_text=message,
                                 context=result,
                                 memory=self._memory,
@@ -1546,12 +1652,12 @@ class SlockEngine(BaseEngine):
                             ResolveStatus.TIMEOUT,
                         ):
                             # Format structured question and include in output
-                            question = self._autonomous_resolver.format_structured_question(
+                            question = autonomous_resolver.format_structured_question(
                                 attempts_summary=resolve_result.reasoning_trace,
                                 blocker="需要更多信息才能继续",
                                 candidates=["请提供具体目标", "请描述期望结果", "请指定范围"],
                             )
-                            self._autonomous_resolver.record_question_asked(task_id)
+                            autonomous_resolver.record_question_asked(task_id)
                             result = result + "\n\n---\n" + question
                     except Exception as e:
                         logger.warning("Autonomous resolution failed, continuing with original result: %s", e, exc_info=True)
@@ -1559,18 +1665,20 @@ class SlockEngine(BaseEngine):
             # RUNNING → CHECKING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.CHECKING):
                 return None
-            self._progress_tracker.update(
-                agent_id, entity_type="agent", progress_pct=75,
-                status="checking", detail=f"{agent.name} 检查中",
-            )
+            if progress_tracker:
+                progress_tracker.update(
+                    agent_id, entity_type="agent", progress_pct=75,
+                    status="checking", detail=f"{agent.name} 检查中",
+                )
 
             # CHECKING → SENDING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.SENDING):
                 return None
-            self._progress_tracker.update(
-                agent_id, entity_type="agent", progress_pct=90,
-                status="sending", detail=f"{agent.name} 发送中",
-            )
+            if progress_tracker:
+                progress_tracker.update(
+                    agent_id, entity_type="agent", progress_pct=90,
+                    status="sending", detail=f"{agent.name} 发送中",
+                )
 
             # Format output through mouthpiece
             if result:
@@ -1590,12 +1698,13 @@ class SlockEngine(BaseEngine):
                 callbacks.on_agent_done(agent, result or "")
 
             # Mark progress complete and remove tracking
-            self._progress_tracker.update(
-                agent_id, entity_type="agent", progress_pct=100,
-                status="done", detail=f"{agent.name} 完成",
-            )
-            self._progress_tracker.force_push(agent_id)
-            self._progress_tracker.remove(agent_id)
+            if progress_tracker:
+                progress_tracker.update(
+                    agent_id, entity_type="agent", progress_pct=100,
+                    status="done", detail=f"{agent.name} 完成",
+                )
+                progress_tracker.force_push(agent_id)
+                progress_tracker.remove(agent_id)
 
             # SENDING → IDLE
             if not self._transition_agent_or_abort(agent_id, AgentStatus.IDLE):
@@ -1633,15 +1742,32 @@ class SlockEngine(BaseEngine):
             if session:
                 close_session_safely(session)
             return None
+        except Exception as exc:
+            from src.utils.redact import redact_sensitive
+
+            logger.exception(
+                "Agent %s execution failed: %s",
+                agent_id,
+                redact_sensitive(str(exc)),
+            )
+            self.set_agent_status(agent_id, AgentStatus.IDLE)
+            with self._lock:
+                session = self._agent_sessions.pop(agent_id, None)
+            if session:
+                close_session_safely(session)
+            if callbacks and callbacks.on_agent_error:
+                callbacks.on_agent_error(agent, redact_sensitive(str(exc)))
+            return None
         finally:
             watchdog.cancel()
             self._clear_cancel_event(agent_id)
             # Clean up autonomous resolver state for this task
-            if self._autonomous_resolver:
+            autonomous_resolver = getattr(self, "_autonomous_resolver", None)
+            if autonomous_resolver:
                 task_id = f"message:{channel_id}:{agent_id}"
                 with contextlib.suppress(Exception):  # intentional: cleanup path
-                    self._autonomous_resolver.cleanup_task(task_id)
-                    self._autonomous_resolver.cleanup_stale()
+                    autonomous_resolver.cleanup_task(task_id)
+                    autonomous_resolver.cleanup_stale()
 
     def _record_observer_learning(
         self,
@@ -1964,6 +2090,7 @@ class SlockEngine(BaseEngine):
             if session is None:
                 logger.warning("Failed to create ACP session for agent %s", agent.name)
                 return None
+            self._apply_tool_restrictions(session, agent)
 
             with self._lock:
                 self._agent_sessions[agent.agent_id] = session
@@ -1979,11 +2106,87 @@ class SlockEngine(BaseEngine):
                         del self._agent_sessions[agent.agent_id]
                 close_session_safely(session)
 
+        except SecurityPolicyDegradedError:
+            raise
         except Exception as e:
             from src.utils.errors import redact_sensitive
             execution_errors[agent.agent_id] = redact_sensitive(str(e))
             logger.error("ACP session error for agent %s: %s", agent.name, redact_sensitive(str(e)), exc_info=True)
             return None
+
+    def _apply_tool_restrictions(self, session, agent: AgentIdentity) -> None:
+        """Install per-agent ACP tool filter for Slock least-privilege execution."""
+        set_filter = getattr(session, "set_tool_filter", None)
+        if not callable(set_filter):
+            raise SecurityPolicyDegradedError("ACP session does not support Slock tool filtering")
+
+        settings = getattr(self, "_settings", get_settings())
+        configured_roots = list(getattr(settings, "slock_tool_path_restrictions", []) or [])
+        allowed_roots = [os.path.realpath(path) for path in configured_roots if path]
+        if not allowed_roots and agent.workspace_path:
+            allowed_roots = [os.path.realpath(agent.workspace_path)]
+
+        dangerous = getattr(self, "_dangerous_shell_patterns", None)
+        if dangerous is None:
+            patterns = list(self._BUILTIN_DANGEROUS_PATTERNS)
+            patterns.extend(getattr(settings, "slock_dangerous_shell_patterns", []) or [])
+            dangerous = re.compile(r"|".join(patterns), re.IGNORECASE)
+            self._dangerous_shell_patterns = dangerous
+
+        permissions = set(agent.permissions or [])
+
+        def under_allowed_root(path: str) -> bool:
+            if not allowed_roots:
+                return True
+            candidate = os.path.realpath(path)
+            return any(candidate == root or candidate.startswith(root + os.sep) for root in allowed_roots)
+
+        def path_from_tool_args(args: dict) -> str:
+            path = str(args.get("path") or args.get("file_path") or "")
+            if not path:
+                return ""
+            cwd = str(args.get("cwd") or agent.workspace_path or self.root_path or "")
+            return path if os.path.isabs(path) else os.path.join(cwd, path)
+
+        def shell_path_tokens(command: str, cwd: str) -> list[str]:
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = command.split()
+            paths: list[str] = []
+            for token in tokens:
+                if token.startswith("/") or token.startswith("../") or token.startswith("./"):
+                    paths.append(token if os.path.isabs(token) else os.path.join(cwd, token))
+            return paths
+
+        def tool_filter(tool_name: str, args: dict | None = None) -> bool:
+            args = args or {}
+            normalized_tool = (tool_name or "").lower()
+            if normalized_tool == "shell":
+                if "shell" not in permissions:
+                    return False
+                command = str(args.get("command") or "")
+                if dangerous.search(command):
+                    return False
+                cwd = os.path.realpath(str(args.get("cwd") or agent.workspace_path or self.root_path or ""))
+                for path in shell_path_tokens(command, cwd):
+                    if not under_allowed_root(path):
+                        return False
+                return True
+
+            path_tools = {"file_read", "file_write", "file_list", "grep", "search"}
+            if normalized_tool in path_tools:
+                if normalized_tool.startswith("file_write") and "file_write" not in permissions:
+                    return False
+                if normalized_tool in {"file_read", "file_list", "grep", "search"} and not (
+                    {"file_read", "git", "shell"} & permissions
+                ):
+                    return False
+                path = path_from_tool_args(args)
+                return bool(path) and under_allowed_root(path)
+            return True
+
+        set_filter(tool_filter)
 
     def _get_agent_execution_errors(self) -> dict[str, str]:
         """Return the execution-error cache, initializing old test doubles lazily."""
@@ -2148,6 +2351,19 @@ class SlockEngine(BaseEngine):
         callbacks: Optional[SlockEngineCallbacks] = None,
     ) -> Optional[str]:
         """Resume agent work after an escalation has been resolved."""
+        resolution = (escalation.resolution or "").strip()
+        task_id = escalation.task_id
+        if task_id and resolution in SKIP_OPTIONS:
+            for task in self._tasks:
+                if task.task_id == task_id:
+                    task.status = TaskStatus.TODO
+                    task.claimed_by = None
+                    break
+        elif task_id and resolution in ABORT_OPTIONS:
+            for task in self._tasks:
+                if task.task_id == task_id:
+                    task.status = TaskStatus.DONE
+                    break
         return self._escalation_mgr.resume_after_escalation(escalation, callbacks)
 
     def _force_complete_task(self, task_id: str, *, reason: str = "", actor_id: str = "system:engine") -> None:
@@ -2157,6 +2373,34 @@ class SlockEngine(BaseEngine):
     def _trim_escalations(self) -> None:
         """Delegate escalation trimming to the escalation manager."""
         self._escalation_mgr._trim_escalations()
+
+    def capture_dissolve_snapshot(self) -> TeamSnapshot:
+        """Capture the active channel, role bindings, and task board for undo."""
+        channel = self._channel
+        channel_id = channel.channel_id if channel else self.chat_id
+        agents = self._registry.list_agents(channel_id=channel_id)
+        return TeamSnapshot(
+            channel_id=channel_id,
+            team_name=channel.team_name if channel else "",
+            owner_id=channel.owner_id if channel else "",
+            channel=channel,
+            agent_ids=[agent.agent_id for agent in agents],
+            agent_bindings={agent.agent_id: agent.role for agent in agents},
+            task_ids=[task.task_id for task in self._tasks],
+            task_board_data=[task.to_dict() for task in self._tasks],
+        )
+
+    def restore_from_snapshot(self, snapshot: TeamSnapshot | None) -> bool:
+        """Restore a recently dissolved team snapshot."""
+        if snapshot is None or snapshot.channel is None:
+            return False
+        self.activate_channel(snapshot.channel)
+        self._tasks.clear()
+        self._tasks.extend(SlockTask.from_dict(data) for data in snapshot.task_board_data)
+        for agent_id in snapshot.agent_ids:
+            self.set_agent_status(agent_id, AgentStatus.IDLE)
+        self._persist_task_board()
+        return True
 
     # ------------------------------------------------------------------
     # Parallel Execution
@@ -2424,11 +2668,17 @@ class SlockEngine(BaseEngine):
             self._agent_statuses[agent_id] = AgentStatus.IDLE
             agent_session = self._agent_sessions.pop(agent_id, None)
 
-        # Wake queue consumers since agent is now available
-        self._task_queue.notify_idle()
+        # Wake queue consumers since agent is now available.
+        task_queue = getattr(self, "_task_queue", None)
+        if task_queue is not None:
+            with contextlib.suppress(Exception):
+                task_queue.notify_idle()
 
         # Signal cancellation to the executing thread
-        self.cancel_agent(agent_id)
+        cancel_agent = getattr(self, "cancel_agent", None)
+        if callable(cancel_agent):
+            with contextlib.suppress(Exception):
+                cancel_agent(agent_id)
 
         if agent_session:
             with contextlib.suppress(Exception):  # intentional: cleanup path

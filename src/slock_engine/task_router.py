@@ -55,11 +55,17 @@ class TaskClaim:
     and loaded on construction, surviving process restarts.
     """
 
-    def __init__(self, default_ttl: float = 3600.0, persist_path: Optional[str] = None):
+    def __init__(
+        self,
+        default_ttl: float = 3600.0,
+        persist_path: Optional[str] = None,
+        memory_manager: Optional["MemoryManager"] = None,
+    ):
         self._claims: dict[str, tuple[str, float]] = {}  # task_id -> (agent_id, claimed_at)
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._default_ttl = default_ttl
         self._persist_path = persist_path
+        self._memory_manager = memory_manager
         if persist_path:
             self._load_from_disk()
 
@@ -118,11 +124,19 @@ class TaskClaim:
         """Check if a task is currently claimed (not expired)."""
         return self.get_holder(task_id) is not None
 
-    def force_assign(self, task_id: str, agent_id: str) -> None:
+    def force_assign(self, task_id: str, agent_id: str, operator_id: str = "") -> None:
         """Admin override: forcefully assign task regardless of current holder."""
         with self._lock:
+            prev_agent_id = self._claims.get(task_id, ("", 0.0))[0]
             self._claims[task_id] = (agent_id, time.time())
             self._persist()
+        if operator_id and self._memory_manager and hasattr(self._memory_manager, "append_audit_log"):
+            self._memory_manager.append_audit_log(
+                operator_id=operator_id,
+                action="force_assign",
+                target=task_id,
+                detail=f"prev={prev_agent_id or 'none'} new={agent_id}",
+            )
 
     def purge_expired(self) -> int:
         """Remove all expired claims. Returns the number purged."""
@@ -161,6 +175,20 @@ class TaskClaim:
                 1 for _, (aid, claimed_at) in self._claims.items()
                 if aid == agent_id and now - claimed_at < self._default_ttl
             )
+
+    def get_claims_snapshot(self) -> dict[str, tuple[str, float]]:
+        """Return a point-in-time copy of active claims for lock-free iteration."""
+        now = time.time()
+        with self._lock:
+            expired_keys = [
+                tid for tid, (_, claimed_at) in self._claims.items()
+                if now - claimed_at >= self._default_ttl
+            ]
+            for tid in expired_keys:
+                del self._claims[tid]
+            if expired_keys:
+                self._persist()
+            return dict(self._claims)
 
     def _persist(self) -> None:
         """Write claims to disk (must be called under self._lock)."""
@@ -329,6 +357,8 @@ class TaskRouter:
         self,
         text: str,
         available_agents: list[AgentIdentity],
+        *,
+        skip_chitchat: bool = False,
     ) -> Optional[AgentIdentity]:
         """Route a message to the most appropriate agent.
 
@@ -343,8 +373,13 @@ class TaskRouter:
         if not available_agents:
             return None
 
+        # Priority 1: @mention routing. Mentions and explicit force-prefixes are
+        # intentional routing signals and should bypass casual-chat filtering.
+        mentioned = self._extract_mention(text, available_agents)
+        force_route = bool((text or "").strip().startswith("!"))
+
         # Task 18: CHITCHAT filter — prevent casual messages from reaching agents
-        if self._is_chitchat(text):
+        if not skip_chitchat and not mentioned and not force_route and self._is_chitchat(text):
             logger.debug("Message filtered as CHITCHAT, not routing to agents: %s", text[:50])
             return None
 
@@ -357,12 +392,33 @@ class TaskRouter:
             return None
 
         # Priority 1: @mention routing
-        mentioned = self._extract_mention(text, idle_agents)
+        mentioned = mentioned or self._extract_mention(text, idle_agents)
         if mentioned:
             return mentioned
 
         # Priority 2: Skill-based scoring for normal messages
         return self._score_and_assign(text, idle_agents)
+
+    def update_skill_profile_for_task(
+        self,
+        agent_id: str,
+        text: str,
+        memory_backend: "MemoryManager",
+        *,
+        quality_score: float = 100.0,
+    ):
+        """Update an agent skill profile for a completed task, excluding chitchat."""
+        if self._is_chitchat(text):
+            logger.debug("Skipping skill profile update for CHITCHAT: %s", text[:50])
+            return None
+        skill_tags = self.extract_skill_keywords(text)
+        profiles = memory_backend.record_skill_feedback(
+            agent_id,
+            skill_tags,
+            quality_score=quality_score,
+        )
+        self.set_skill_profiles(agent_id, profiles)
+        return profiles
 
     def route_message_with_fallback(
         self,

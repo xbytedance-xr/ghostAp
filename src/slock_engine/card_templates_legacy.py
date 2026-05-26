@@ -815,17 +815,19 @@ def build_discussion_card(
         if len(raw_content) > _CONTENT_THRESHOLD:
             # Long message: wrap in collapsible panel for mobile-friendly display
             md_element = {"tag": "markdown", "content": f"💬 **{sender}** (R{round_num}):\n{raw_content}"}
-            # Header shows truncated preview (first 80 chars)
-            preview = raw_content[:80] + "…" if len(raw_content) > 80 else raw_content
+            # Header shows truncated preview (first 120 chars)
+            preview = raw_content[:_CONTENT_THRESHOLD] + "…" if len(raw_content) > _CONTENT_THRESHOLD else raw_content
             elements.append(
                 _make_collapsible(f"💬 {sender} (R{round_num}): {preview}", [md_element])
             )
         else:
-            # Short message: use markdown element (note tag removed for Schema V2 compatibility)
+            # Short message: use note for compact mobile display.
             elements.append({
-                "tag": "markdown",
-                "content": f"💬 **{sender}** (R{round_num}):\n{raw_content}",
-                "text_align": "left",
+                "tag": "note",
+                "icon": {"tag": "standard_icon", "token": "chat_outlined"},
+                "elements": [
+                    {"tag": "markdown", "content": f"**{sender}** (R{round_num}): {raw_content}"},
+                ],
             })
 
     # Action buttons: expand / inject hint / stop discussion (3 buttons for mobile horizontal layout)
@@ -902,9 +904,18 @@ def build_discussion_expand_card(
         content = msg.get("content", "")
         round_num = msg.get("round_num", "?")
         elements.append({
-            "tag": "markdown",
-            "content": f"💬 **{sender}** (R{round_num}):\n{content}",
-            "text_align": "left",
+            "tag": "note",
+            "elements": [
+                {
+                    "tag": "standard_icon",
+                    "token": "chat_outlined",
+                    "color": "grey",
+                },
+                {
+                    "tag": "plain_text",
+                    "content": f"{sender} (R{round_num}): {content}",
+                },
+            ],
         })
 
     # "Load more" button only if there are more messages
@@ -1708,6 +1719,10 @@ def build_memory_manage_card(
 def build_conclusion_notification_card(
     conclusion_preview: str,
     participants: list[str],
+    affected_agents: list[str] | None = None,
+    skipped_agents: list[str] | None = None,
+    detection_timed_out: bool = False,
+    channel_id: str = "",
 ) -> dict:
     """Build a lightweight notification card after discussion conclusion is persisted.
 
@@ -1718,25 +1733,63 @@ def build_conclusion_notification_card(
         preview += "..."
 
     participants_text = "、".join(participants) if participants else "(无)"
+    affected_text = "、".join(affected_agents or participants) if (affected_agents or participants) else "(无)"
+    skipped = [agent for agent in (skipped_agents or []) if agent]
+    has_conflict = bool(skipped)
+    header_title = "💬 讨论结论已持久化"
+    header_template = "green"
+    if has_conflict:
+        header_title = "💬 讨论结论已持久化（存在冲突）"
+        header_template = "orange"
 
     elements: list[dict] = [
         {
             "tag": "markdown",
             "content": (
                 f"**📝 结论摘要:**\n{preview}\n\n"
-                f"**👥 参与者:** {participants_text}"
+                f"**👥 参与者:** {participants_text}\n\n"
+                f"**✅ 已同步:** {affected_text}"
             ),
         },
         {"tag": "hr"},
         {
             "tag": "markdown",
-            "content": "✅ 讨论结论已同步至参与 Agent 的 L1 记忆",
+            "content": "✅ 讨论结论已同步至参与 Agent 的 L1 记忆" if not has_conflict else "⚠️ 部分同步完成，部分 Agent 存在知识冲突",
         },
     ]
 
+    if has_conflict:
+        elements.append({
+            "tag": "markdown",
+            "content": f"⚠️ **知识冲突:** {'、'.join(skipped)}",
+        })
+        elements.extend(build_responsive_layout([
+            _build_callback_button(
+                "查看冲突",
+                "slock_conclusion_conflict_view",
+                channel_id=channel_id,
+                button_type="primary",
+                extra_value={"action": "view_conflict", "agents": skipped},
+            ),
+            _build_callback_button(
+                "强制覆盖",
+                "slock_conclusion_force_override",
+                channel_id=channel_id,
+                button_type="danger",
+                extra_value={"action": "force_override", "agents": skipped},
+            ),
+        ]))
+
+    if detection_timed_out:
+        elements.append({
+            "tag": "markdown",
+            "content": "⏱️ 语义冲突检测超时，已跳过 LLM 校验。",
+            "text_size": "notation",
+        })
+
     return _build_card_wrapper(
-        header_title="💬 讨论结论已持久化",
-        header_template="green",
+        header_title=header_title,
+        header_template=header_template,
         elements=elements,
         mobile_optimize=False,
     )

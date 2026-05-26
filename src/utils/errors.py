@@ -66,17 +66,17 @@ _FUTURES_UNFINISHED_RE = re.compile(r"\d+\s*\(of\s*\d+\)\s*futures?\s*unfinished
 # ---------------------------------------------------------------------------
 
 _SAFE_MESSAGES: dict[str, str] = {
-    "TimeoutError": "执行超时，请稍后重试",
-    "asyncio.TimeoutError": "执行超时，请稍后重试",
-    "ConnectionError": "服务暂时不可用，请稍后重试",
-    "ConnectionRefusedError": "服务暂时不可用，请稍后重试",
-    "ConnectionResetError": "连接被重置，请稍后重试",
+    "TimeoutError": "执行超时",
+    "asyncio.TimeoutError": "执行超时",
+    "ConnectionError": "连接失败",
+    "ConnectionRefusedError": "连接失败",
+    "ConnectionResetError": "连接失败",
     "OSError": "系统资源暂时不可用",
     "MemoryError": "系统资源不足，请稍后重试",
-    "PermissionError": "权限不足，请联系管理员",
+    "PermissionError": "权限不足",
     "FileNotFoundError": "所需资源未找到",
     "RuntimeError": "执行过程中出现异常，请重试",
-    "ValueError": "参数异常，请检查输入后重试",
+    "ValueError": "内部错误，请联系管理员",
     "KeyError": "执行过程中出现异常，请重试",
     "TypeError": "执行过程中出现异常，请重试",
     "QueueFullError": "当前任务队列已满，请稍后重试",
@@ -95,6 +95,7 @@ _SENSITIVE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\w+Error\(", re.IGNORECASE),  # Exception constructors
     re.compile(r"\w+Exception\(", re.IGNORECASE),  # Exception constructors
     re.compile(r"0x[0-9a-fA-F]+"),  # Memory addresses
+    re.compile(r"(password|secret|token|key|credential)s?\s*[=:]\s*[^\s,;]+", re.IGNORECASE),  # Credential values
     re.compile(r"(password|secret|token|key|credential)s?\s*[=:]", re.IGNORECASE),  # Credentials
 )
 

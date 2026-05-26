@@ -115,7 +115,7 @@ class EscalationManager:
         lock: threading.RLock,
         escalations: list[EscalationRequest],
         retry_counts: dict[str, int],
-        context: SlockEngineContext,
+        context: SlockEngineContext | None = None,
         router: TaskRouter,
         transition_agent: Callable[[str, AgentStatus], None],
         flush_if_dirty: Callable[[list[SlockTask]], None],
@@ -123,10 +123,48 @@ class EscalationManager:
         update_card_fn: Optional[Callable[[str, str], bool]] = None,
         send_text_fn: Optional[Callable[[str, str], None]] = None,
         escalation_timeout_s: int = 30 * 60,
+        channel_getter: Optional[Callable[[], object]] = None,
+        chat_id_getter: Optional[Callable[[], str]] = None,
+        task_list_getter: Optional[Callable[[], list[SlockTask]]] = None,
+        dirty_setter: Optional[Callable[[bool], None]] = None,
+        execute_task_fn: Optional[Callable[..., Optional[str]]] = None,
+        rollback_task_fn: Optional[Callable[[str, str], None]] = None,
+        force_complete_task_fn: Optional[Callable[..., None]] = None,
     ) -> None:
         self._lock = lock
         self._escalations = escalations
         self._escalation_retry_counts = retry_counts
+        if context is None:
+            class _LegacyContext:
+                @property
+                def channel(self):
+                    return channel_getter() if channel_getter else None
+
+                @property
+                def chat_id(self) -> str:
+                    return chat_id_getter() if chat_id_getter else ""
+
+                @property
+                def dirty(self) -> bool:
+                    return False
+
+                def set_dirty(self, value: bool) -> None:
+                    if dirty_setter:
+                        dirty_setter(value)
+
+                def execute_agent(self, agent, content: str, callbacks):
+                    return None
+
+                def resolve_agent_for_role(self, role: str, channel_id: str):
+                    return None
+
+                def execute_task(self, task_id: str, agent_id: str, callbacks):
+                    if execute_task_fn:
+                        return execute_task_fn(task_id, agent_id, callbacks)
+                    return None
+
+            context = _LegacyContext()
+
         self._context = context
         self._router = router
         self._transition_agent = transition_agent
@@ -135,6 +173,14 @@ class EscalationManager:
         self._update_card_fn = update_card_fn
         self._send_text_fn = send_text_fn
         self._escalation_timeout_s = escalation_timeout_s
+        self._execute_task_fn = execute_task_fn or context.execute_task
+        self._uses_legacy_execute_task_fn = execute_task_fn is not None
+        self._rollback_task_fn = rollback_task_fn
+        self._force_complete_task_fn = (
+            force_complete_task_fn
+            or getattr(context, "_force_complete_task", None)
+            or (lambda *args, **kwargs: None)
+        )
         self._timeout_timers: dict[str, _threading.Timer] = {}
         self._half_timers: dict[str, _threading.Timer] = {}
         self._io_executor = _BoundedIOExecutor()
@@ -280,6 +326,7 @@ class EscalationManager:
         agent_id = escalation.agent_id
 
         if resolution in RETRY_OPTIONS:
+            execute_task = self._execute_task_fn if self._uses_legacy_execute_task_fn else self._context.execute_task
             retry_key = f"esc_retry:{escalation.escalation_id}"
             with self._lock:
                 count = self._escalation_retry_counts.get(retry_key, 0)
@@ -300,7 +347,7 @@ class EscalationManager:
                 if self._get_executor_fn:
                     try:
                         executor = self._get_executor_fn()
-                        executor.submit(self._context.execute_task, task_id, agent_id, callbacks)
+                        executor.submit(execute_task, task_id, agent_id, callbacks)
                         logger.info(
                             "Escalation Retry: task %s submitted async for agent %s",
                             task_id, agent_id,
@@ -311,9 +358,9 @@ class EscalationManager:
                             "Escalation Retry async submit failed (%s), falling back to sync",
                             repr(e),
                         )
-                        return self._context.execute_task(task_id, agent_id, callbacks)
+                        return execute_task(task_id, agent_id, callbacks)
                 else:
-                    return self._context.execute_task(task_id, agent_id, callbacks)
+                    return execute_task(task_id, agent_id, callbacks)
             else:
                 logger.info("Escalation retry with no task_id, nothing to re-execute")
                 return None

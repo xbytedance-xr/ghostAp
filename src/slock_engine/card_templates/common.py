@@ -37,8 +37,10 @@ __all__ = [
     "TASK_STATUS_LABEL_ZH",
     "STATUS_ICON_MAP",
     "STATUS_BG_STYLE_MAP",
+    "STATUS_TEXT_COLOR_MAP",
     "TASK_STATUS_ICONS",
     "TASK_STATUS_BG_COLOR_MAP",
+    "AGENT_STATUS_BG_COLOR_MAP",
     "COUNCIL_STATUS_LABEL_ZH",
     "TASK_CONTENT_COMPACT_LEN",
     "TASK_CONTENT_PREVIEW_LEN",
@@ -103,6 +105,18 @@ STATUS_BG_STYLE_MAP: dict[AgentStatus, str] = {
     AgentStatus.PENDING_DISCUSSION: "grey",
 }
 
+STATUS_TEXT_COLOR_MAP: dict[AgentStatus, str] = {
+    AgentStatus.IDLE: "green",
+    AgentStatus.WAKING: "yellow",
+    AgentStatus.THINKING: "yellow",
+    AgentStatus.RUNNING: "blue",
+    AgentStatus.CHECKING: "blue",
+    AgentStatus.SENDING: "grey",
+    AgentStatus.MOVING: "orange",
+    AgentStatus.DISCUSSING: "purple",
+    AgentStatus.PENDING_DISCUSSION: "yellow",
+}
+
 # Legal Feishu column_set background_style values
 _VALID_BACKGROUND_STYLES = frozenset({"default", "grey", "card_primary"})
 
@@ -150,7 +164,7 @@ COUNCIL_STATUS_LABEL_ZH: dict[CouncilStatus, str] = {
 
 # -- Task content truncation constants (CJK-aware) --
 # Compact: status card inline agent row
-TASK_CONTENT_COMPACT_LEN = 24
+TASK_CONTENT_COMPACT_LEN = 25
 # Preview: general card previews (task board, progress cards)
 TASK_CONTENT_PREVIEW_LEN = 40
 # Detail: expanded/detail views (role info card current task)
@@ -296,8 +310,8 @@ def build_collapsible_panel(
         "expanded": expanded,
         "header": {
             "title": {
-                "tag": "markdown",
-                "content": title,
+                "tag": "plain_text",
+                "content": title.replace("**", ""),
             },
         },
         "vertical_spacing": vertical_spacing,

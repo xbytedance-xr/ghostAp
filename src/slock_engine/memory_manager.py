@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import re
 import threading
 import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from .models import SkillProfile, SlockChannel, SlockMemory, SlockTask
@@ -24,6 +27,55 @@ def default_slock_storage_base() -> str:
     return os.path.expanduser("~/.ghostap/slock")
 
 
+class _AuditLogWriter:
+    """Async writer for global/AUDIT_LOG.md.
+
+    append_audit_log must be cheap on the caller thread; this writer keeps the
+    markdown table append on a single background consumer and drains on shutdown.
+    """
+
+    _HEADER = "| Timestamp | Operator | Action | Target | Detail |\n|---|---|---|---|---|\n"
+
+    def __init__(self, base_path: str):
+        self._base_path = base_path
+        self._queue: queue.Queue[str | None] = queue.Queue(maxsize=1000)
+        self._shutdown_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="slock-audit-log-writer")
+        self._thread.start()
+
+    def enqueue(self, row: str) -> None:
+        self._queue.put(row, timeout=5)
+
+    def shutdown(self) -> None:
+        if self._shutdown_event.is_set():
+            return
+        self._shutdown_event.set()
+        self._queue.put(None, timeout=5)
+        self._thread.join(timeout=10)
+
+    def _audit_path(self) -> str:
+        return os.path.join(self._base_path, "global", "AUDIT_LOG.md")
+
+    def _run(self) -> None:
+        while True:
+            row = self._queue.get()
+            try:
+                if row is None:
+                    return
+                self._append_row(row)
+            finally:
+                self._queue.task_done()
+
+    def _append_row(self, row: str) -> None:
+        path = self._audit_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        needs_header = not os.path.exists(path) or os.path.getsize(path) == 0
+        with open(path, "a", encoding="utf-8") as f:
+            if needs_header:
+                f.write(self._HEADER)
+            f.write(row)
+
+
 class MemoryManager:
     """Manages the three-layer memory system for slock agents.
 
@@ -33,12 +85,17 @@ class MemoryManager:
 
     def __init__(self, base_path: str = ""):
         self._base_path = os.path.realpath(base_path or default_slock_storage_base())
-        self._lock = threading.Lock()  # legacy: kept for backward compat, used by global/template ops
-        self._agent_locks: dict[str, threading.Lock] = {}
-        self._channel_locks: dict[str, threading.Lock] = {}
-        self._global_lock = threading.Lock()
+        self._lock = threading.RLock()  # legacy: kept for backward compat, used by global/template ops
+        self._agent_locks: dict[str, threading.RLock] = {}
+        self._channel_locks: dict[str, threading.RLock] = {}
+        self._global_lock = threading.RLock()
         self._locks_lock = threading.Lock()  # meta-lock for creating per-agent/channel locks
         self._llm_callback: Optional[Callable[[str], Optional[str]]] = None
+        self._write_counts: dict[str, int] = {}
+        self._byte_counters: dict[str, int] = {}
+        self._file_lock_counts: dict[str, int] = {}
+        self._audit_writer = _AuditLogWriter(self._base_path)
+        self._restore_write_counts()
 
     @staticmethod
     def _sanitize_path_component(component: str) -> str:
@@ -84,23 +141,101 @@ class MemoryManager:
         """
         self._llm_callback = callback
 
-    def _get_agent_lock(self, agent_id: str) -> threading.Lock:
+    def _get_agent_lock(self, agent_id: str) -> threading.RLock:
         """Get or create a per-agent lock."""
         if agent_id in self._agent_locks:
             return self._agent_locks[agent_id]
         with self._locks_lock:
             if agent_id not in self._agent_locks:
-                self._agent_locks[agent_id] = threading.Lock()
+                self._agent_locks[agent_id] = threading.RLock()
             return self._agent_locks[agent_id]
 
-    def _get_channel_lock(self, channel_id: str) -> threading.Lock:
+    def _get_channel_lock(self, channel_id: str) -> threading.RLock:
         """Get or create a per-channel lock."""
         if channel_id in self._channel_locks:
             return self._channel_locks[channel_id]
         with self._locks_lock:
             if channel_id not in self._channel_locks:
-                self._channel_locks[channel_id] = threading.Lock()
+                self._channel_locks[channel_id] = threading.RLock()
             return self._channel_locks[channel_id]
+
+    def shutdown(self) -> None:
+        """Flush background writers. Safe to call more than once."""
+        self._audit_writer.shutdown()
+
+    def append_audit_log(self, *, operator_id: str, action: str, target: str, detail: str) -> None:
+        """Append one audit row asynchronously to global/AUDIT_LOG.md."""
+        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        def cell(value: str) -> str:
+            return str(value).replace("|", "\\|").replace("\n", " ").strip()
+
+        self._audit_writer.enqueue(
+            f"| {cell(timestamp)} | {cell(operator_id)} | {cell(action)} | "
+            f"{cell(target)} | {cell(detail)} |\n"
+        )
+
+    def _version_path(self, agent_id: str) -> str:
+        safe_id = self._sanitize_path_component(agent_id)
+        return self._safe_path("agents", safe_id, ".version")
+
+    def _read_version_file(self, agent_id: str) -> int:
+        path = self._version_path(agent_id)
+        try:
+            if not os.path.exists(path):
+                return 0
+            with open(path, "r", encoding="utf-8") as f:
+                return max(0, int((f.read() or "0").strip()))
+        except (OSError, ValueError):
+            return 0
+
+    def _read_embedded_version(self, agent_id: str) -> int:
+        path = self._agent_memory_path(agent_id)
+        try:
+            if not os.path.exists(path):
+                return 0
+            with open(path, "r", encoding="utf-8") as f:
+                return SlockMemory.from_markdown(f.read())._version
+        except OSError:
+            return 0
+
+    def _refresh_write_count(self, agent_id: str) -> int:
+        """Refresh in-memory OCC counter from disk using max(.version, embedded)."""
+        version = max(self._read_version_file(agent_id), self._read_embedded_version(agent_id))
+        self._write_counts[agent_id] = version
+        return version
+
+    def _restore_write_counts(self) -> None:
+        agents_dir = self._safe_path("agents")
+        if not os.path.isdir(agents_dir):
+            return
+        for agent_id in os.listdir(agents_dir):
+            if os.path.isdir(os.path.join(agents_dir, agent_id)):
+                self._refresh_write_count(agent_id)
+
+    @contextmanager
+    def _agent_file_lock(self, agent_id: str):
+        """Cross-process advisory lock for one agent memory file."""
+        import fcntl
+
+        if self._file_lock_counts.get(agent_id, 0) > 0:
+            self._file_lock_counts[agent_id] += 1
+            try:
+                yield
+            finally:
+                self._file_lock_counts[agent_id] -= 1
+            return
+
+        lock_path = self._safe_path("agents", self._sanitize_path_component(agent_id), ".lock")
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            self._file_lock_counts[agent_id] = 1
+            try:
+                yield
+            finally:
+                self._file_lock_counts[agent_id] = 0
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     # ------------------------------------------------------------------
     # L1: Agent Private Memory
@@ -162,16 +297,82 @@ class MemoryManager:
         """Write L1 agent private memory."""
         with self._get_agent_lock(agent_id):
             self._write_agent_memory_unlocked(agent_id, memory)
-        self._enforce_l1_capacity(agent_id)
+            self._enforce_l1_capacity(agent_id)
+
+    def _write_agent_memory_async(self, agent_id: str, memory: SlockMemory) -> None:
+        """Write L1 memory on a daemon thread using the same OCC merge path."""
+        expected_version = self._write_counts.get(agent_id, 0)
+
+        def _do_write() -> None:
+            try:
+                memory._version = expected_version
+                self.write_agent_memory(agent_id, memory)
+            except Exception as exc:
+                logger.warning("Async memory write failed for %s: %s", agent_id, exc)
+
+        thread = threading.Thread(
+            target=_do_write,
+            name=f"slock-memory-write-{agent_id[:12]}",
+            daemon=True,
+        )
+        thread.start()
 
     def _write_agent_memory_unlocked(self, agent_id: str, memory: SlockMemory) -> None:
-        path = self._agent_memory_path(agent_id)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        content = memory.to_markdown()
-        tmp_path = path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_path, path)
+        with self._agent_file_lock(agent_id):
+            current_version = self._refresh_write_count(agent_id)
+            current = self._read_agent_memory_unlocked(agent_id)
+            if memory._version and memory._version < current_version:
+                memory = self._merge_agent_memory(current, memory)
+            next_version = current_version + 1
+            memory._version = next_version
+            path = self._agent_memory_path(agent_id)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            content = memory.to_markdown()
+            tmp_path = path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            os.replace(tmp_path, path)
+            version_path = self._version_path(agent_id)
+            with open(version_path + ".tmp", "w", encoding="utf-8") as f:
+                f.write(str(next_version))
+            os.replace(version_path + ".tmp", version_path)
+            self._write_counts[agent_id] = next_version
+            self._byte_counters[agent_id] = len(content.encode("utf-8"))
+
+    def _merge_agent_memory(self, current: SlockMemory, incoming: SlockMemory) -> SlockMemory:
+        """Merge stale incoming writes with current disk state."""
+
+        def merge_lines(existing: str, new: str) -> str:
+            result = list(existing.splitlines()) if existing else []
+            seen = set(result)
+            for line in (new or "").splitlines():
+                if line not in seen:
+                    result.append(line)
+                    seen.add(line)
+            return "\n".join(result)
+
+        role = incoming.role or current.role
+        key_knowledge = merge_lines(current.key_knowledge, incoming.key_knowledge)
+        if incoming.active_context and incoming.active_context != current.active_context:
+            if incoming.active_context.startswith(current.active_context):
+                delta = incoming.active_context[len(current.active_context):].strip()
+            elif current.active_context.startswith(incoming.active_context):
+                delta = ""
+            else:
+                delta = incoming.active_context
+            active_context = current.active_context
+            if delta:
+                active_context = f"{current.active_context}\n\n## Recent Updates\n{delta}".strip()
+        else:
+            active_context = current.active_context or incoming.active_context
+        archived_context = merge_lines(current.archived_context, incoming.archived_context)
+        return SlockMemory(
+            role=role,
+            key_knowledge=key_knowledge,
+            active_context=active_context,
+            archived_context=archived_context,
+            _version=current._version,
+        )
 
     def update_agent_context(self, agent_id: str, context_update: str) -> None:
         """Append to the active context section of L1 memory."""
@@ -182,7 +383,7 @@ class MemoryManager:
             else:
                 memory.active_context = context_update
             self._write_agent_memory_unlocked(agent_id, memory)
-        self._enforce_l1_capacity(agent_id)
+            self._enforce_l1_capacity(agent_id)
 
     def redact_active_context_for_move(
         self, agent_id: str, source_channel_id: str, target_channel_id: str
@@ -418,8 +619,8 @@ class MemoryManager:
     def _enforce_l1_capacity(self, agent_id: str) -> None:
         """Enforce L1 memory capacity for an agent.
 
-        Must be called OUTSIDE the agent lock because summarize_context
-        acquires its own lock internally.
+        Must be called while the per-agent RLock is held by write paths; this
+        method may re-enter that lock while calibrating and truncating.
 
         Strategy:
         1. Check if the serialized memory exceeds slock_l1_max_size.
@@ -428,12 +629,23 @@ class MemoryManager:
            fall back to FIFO truncation of active_context.
         """
         max_size = self._get_l1_max_size()
+        target_size = int(max_size * 0.7)
+        path = self._agent_memory_path(agent_id)
+
+        try:
+            file_size = os.path.getsize(path)
+        except OSError:
+            return
+        if file_size < max_size:
+            return
+        self._byte_counters[agent_id] = file_size
 
         # Phase 1: check size
         with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
             content_size = len(memory.to_markdown().encode("utf-8"))
         if content_size <= max_size:
+            self._byte_counters[agent_id] = content_size
             return
 
         logger.info(
@@ -441,7 +653,7 @@ class MemoryManager:
             agent_id, content_size, max_size,
         )
 
-        # Phase 2: attempt summarization (acquires its own lock)
+        # Phase 2: attempt summarization (re-enters the same RLock)
         try:
             self.summarize_context(agent_id, threshold=0)
         except Exception as exc:  # noqa: BLE001
@@ -450,39 +662,81 @@ class MemoryManager:
                 agent_id, exc,
             )
 
-        # Phase 3: re-check and FIFO truncate if still over
+        # Phase 3: re-check and FIFO truncate if still over target
         with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
             content_size = len(memory.to_markdown().encode("utf-8"))
-            if content_size <= max_size:
+            if content_size <= target_size:
+                self._byte_counters[agent_id] = content_size
                 return
 
-            # FIFO truncation on active_context ONLY — key_knowledge is protected.
-            # Calculate overhead = role + key_knowledge + markdown headers
-            key_knowledge_size = len(memory.key_knowledge.encode("utf-8"))
-            role_size = len(memory.role.encode("utf-8"))
-            # Overhead includes everything except active_context content
-            overhead = content_size - len(memory.active_context.encode("utf-8"))
-
-            # If role + key_knowledge alone already exceeds max_size,
-            # only clear active_context — never truncate key_knowledge
-            if overhead >= max_size:
-                memory.active_context = ""
+            role, key_knowledge = self._preserve_critical_sections(memory)
+            preserved = SlockMemory(role=role, key_knowledge=key_knowledge)
+            preserved_overhead = len(preserved.to_markdown().encode("utf-8"))
+            if preserved_overhead >= target_size:
+                memory = preserved
             else:
-                available_for_context = max_size - overhead
-                ctx_bytes = memory.active_context.encode("utf-8")
-                if len(ctx_bytes) > available_for_context:
-                    # Keep the tail portion that fits within the budget
-                    truncated_bytes = ctx_bytes[-available_for_context:]
-                    # Decode safely; skip leading partial character
-                    memory.active_context = truncated_bytes.decode("utf-8", errors="ignore")
-
+                budget = max(0, target_size - preserved_overhead - 128)
+                memory.role = role
+                memory.key_knowledge = key_knowledge
+                memory.archived_context = ""
+                memory.active_context = self._tail_text_bytes(memory.active_context, budget)
             self._write_agent_memory_unlocked(agent_id, memory)
+            self._byte_counters[agent_id] = len(memory.to_markdown().encode("utf-8"))
 
         logger.info(
             "L1 FIFO truncation applied | agent=%s new_context_len=%d",
             agent_id, len(memory.active_context),
         )
+
+    def _tail_text_bytes(self, text: str, max_bytes: int) -> str:
+        if max_bytes <= 0 or not text:
+            return ""
+        data = text.encode("utf-8")
+        if len(data) <= max_bytes:
+            return text
+        return data[-max_bytes:].decode("utf-8", errors="ignore").lstrip()
+
+    def _parse_memory_sections(self, markdown: str) -> dict[str, str]:
+        """Parse SlockMemory markdown sections with tolerant header matching."""
+        sections = {
+            "role": "",
+            "key_knowledge": "",
+            "active_context": "",
+            "archived_context": "",
+        }
+        aliases = {
+            "role": "role",
+            "key knowledge": "key_knowledge",
+            "active context": "active_context",
+            "archived context": "archived_context",
+        }
+        current = ""
+        lines: list[str] = []
+        for line in (markdown or "").splitlines():
+            if line.startswith("#"):
+                normalized = " ".join(line.lstrip("#").strip().lower().split())
+                if normalized in aliases:
+                    if current:
+                        sections[current] = "\n".join(lines).strip()
+                    current = aliases[normalized]
+                    lines = []
+                    continue
+                if current:
+                    sections[current] = "\n".join(lines).strip()
+                current = ""
+                lines = []
+                continue
+            if current:
+                lines.append(line)
+        if current:
+            sections[current] = "\n".join(lines).strip()
+        return sections
+
+    def _preserve_critical_sections(self, memory: SlockMemory) -> tuple[str, str]:
+        """Preserve role and the most recent key knowledge facts."""
+        kk_lines = [line for line in (memory.key_knowledge or "").splitlines() if line.strip()]
+        return memory.role.strip(), "\n".join(kk_lines[-3:]).strip()
 
     def _enforce_text_capacity(self, content: str, max_size: int, layer_label: str) -> str:
         """Enforce capacity on plain-text memory content (L2/L3).
@@ -899,6 +1153,7 @@ class MemoryManager:
 
             original_len = len(memory.active_context)
             text_to_summarize = memory.active_context
+            original_version = memory._version
 
             # Create backup: copy MEMORY.md to MEMORY.md.bak (atomic)
             memory_path = self._agent_memory_path(agent_id)
@@ -912,6 +1167,14 @@ class MemoryManager:
         # Phase 3: write back under lock
         with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
+            if memory._version > original_version and memory.active_context != text_to_summarize:
+                delta = ""
+                if memory.active_context.startswith(text_to_summarize):
+                    delta = memory.active_context[len(text_to_summarize):].strip()
+                elif text_to_summarize not in memory.active_context:
+                    delta = memory.active_context.strip()
+                if delta:
+                    compressed = f"{compressed}\n\n## Recent Updates\n{delta}"
             memory.active_context = compressed
             self._write_agent_memory_unlocked(agent_id, memory)
 
@@ -920,6 +1183,17 @@ class MemoryManager:
             agent_id, original_len, len(compressed), threshold,
         )
         return True
+
+    def _summarize_with_preservation(self, memory: SlockMemory, max_output_chars: int) -> SlockMemory:
+        """Return a summarized copy preserving critical role/knowledge fields."""
+        role, key_knowledge = self._preserve_critical_sections(memory)
+        return SlockMemory(
+            role=role,
+            key_knowledge=key_knowledge,
+            active_context=self._summarize_text(memory.active_context, max_output_chars=max_output_chars),
+            archived_context="",
+            _version=memory._version,
+        )
 
     def _summarize_text(self, text: str, *, max_output_chars: int = 1500) -> str:
         """Compress text using LLM summarization.
@@ -991,7 +1265,25 @@ class MemoryManager:
                 f"{remaining_text}"
             )
             try:
-                response = self._llm_callback(prompt)
+                response_box: list[object] = []
+                error_box: list[BaseException] = []
+
+                def run_callback() -> None:
+                    try:
+                        response_box.append(self._llm_callback(prompt))
+                    except BaseException as exc:  # noqa: BLE001
+                        error_box.append(exc)
+
+                worker = threading.Thread(target=run_callback, daemon=True)
+                worker.start()
+                worker.join(timeout=1.0)
+                if worker.is_alive():
+                    logger.warning("LLM summarization timed out; falling back to truncation")
+                    response = None
+                elif error_box:
+                    raise error_box[0]
+                else:
+                    response = response_box[0] if response_box else None
                 if response and isinstance(response, str) and len(response) <= max_output_chars:
                     logger.info(
                         "LLM summarization succeeded | original_len=%d summary_len=%d",
@@ -1035,6 +1327,69 @@ class MemoryManager:
             preserved = f"{rationale_text}\n\n{tail}" if tail else rationale_text
 
         return f"{timestamp_marker}\n\n{preserved}"
+
+    def get_agent_memory_summary(self, agent_ids: list[str], registry=None) -> list[dict]:
+        """Return compact memory summaries for UI/status surfaces."""
+        summaries: list[dict] = []
+        for agent_id in agent_ids:
+            try:
+                summaries.append(self._get_single_agent_summary(agent_id, registry=registry))
+            except Exception as exc:  # noqa: BLE001
+                summaries.append({
+                    "agent_id": agent_id,
+                    "agent_name": agent_id,
+                    "role_preview": "",
+                    "key_knowledge_len": 0,
+                    "active_context_len": 0,
+                    "archived_context_len": 0,
+                    "last_updated": "",
+                    "version": 0,
+                    "error": str(exc),
+                })
+        return summaries
+
+    def _get_single_agent_summary(self, agent_id: str, registry=None) -> dict:
+        memory = self.read_agent_memory(agent_id)
+        path = self._agent_memory_path(agent_id)
+        last_updated = ""
+        if os.path.exists(path):
+            last_updated = datetime.fromtimestamp(os.path.getmtime(path), timezone.utc).isoformat(timespec="seconds")
+        role_preview = memory.role
+        if len(role_preview) > 100:
+            role_preview = role_preview[:100] + "..."
+        return {
+            "agent_id": agent_id,
+            "agent_name": self._lookup_agent_name(agent_id, registry=registry),
+            "role_preview": role_preview,
+            "key_knowledge_len": len(memory.key_knowledge),
+            "active_context_len": len(memory.active_context),
+            "archived_context_len": len(memory.archived_context),
+            "last_updated": last_updated,
+            "version": memory._version,
+        }
+
+    def _lookup_agent_name(self, agent_id: str, registry=None) -> str:
+        if registry is not None:
+            try:
+                agent = registry.get(agent_id)
+                name = getattr(agent, "name", "") if agent is not None else ""
+                if name:
+                    return name
+            except Exception:
+                pass
+        import json
+
+        identity_path = self._safe_path("agents", self._sanitize_path_component(agent_id), "identity.json")
+        try:
+            if os.path.exists(identity_path):
+                with open(identity_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                name = data.get("name", "") if isinstance(data, dict) else ""
+                if name:
+                    return name
+        except (OSError, ValueError, TypeError):
+            pass
+        return agent_id
 
     # ------------------------------------------------------------------
     # Memory Enhancement: Conversation Replay
@@ -1227,6 +1582,11 @@ class MemoryManager:
 
         timestamp = _time.strftime("%Y-%m-%d %H:%M")
         for agent_id in agent_ids:
+            decision_entry = (
+                f"[{timestamp}] [DECISION]"
+                f"{' (' + trigger_reason + ')' if trigger_reason else ''}: "
+                f"{conclusion[:500]}"
+            )
             context_parts = [
                 f"[{timestamp}] Discussion conclusion"
                 f"{' (' + trigger_reason + ')' if trigger_reason else ''}: "
@@ -1236,6 +1596,12 @@ class MemoryManager:
                 context_parts.append(f"[RATIONALE] {rationale}")
             context_entry = "\n".join(context_parts)
             try:
+                memory = self.read_agent_memory(agent_id)
+                if memory.key_knowledge:
+                    memory.key_knowledge += f"\n{decision_entry}"
+                else:
+                    memory.key_knowledge = decision_entry
+                self.write_agent_memory(agent_id, memory)
                 self.update_agent_context(agent_id, context_entry)
                 logger.debug(
                     "Discussion conclusion synced to L1 | agent=%s entry_len=%d",

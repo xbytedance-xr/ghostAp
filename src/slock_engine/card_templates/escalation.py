@@ -186,10 +186,11 @@ def build_resolved_escalation_card(
         context_display = redact_sensitive(escalation.context[:500])
         if len(escalation.context) > 500:
             context_display += "\n..."
+        quote_context = "\n".join(f"> {line}" for line in context_display.splitlines())
         elements.append({"tag": "hr"})
         elements.append({
             "tag": "markdown",
-            "content": f"**\u4e0a\u4e0b\u6587:**\n```\n{context_display}\n```",
+            "content": f"**\u4e0a\u4e0b\u6587:**\n{quote_context}",
         })
 
     # Task reference

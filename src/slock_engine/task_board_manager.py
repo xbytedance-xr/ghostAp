@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..config import get_settings
@@ -25,6 +26,44 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _LegacyTaskBoardContext:
+    """Adapter for older tests/callers that passed state getter callbacks."""
+
+    channel_getter: Callable[[], object | None]
+    chat_id_getter: Callable[[], str]
+    dirty_getter: Callable[[], bool]
+    dirty_setter: Callable[[bool], object]
+    execute_agent_fn: Callable[..., object] | None = None
+
+    @property
+    def channel(self):
+        return self.channel_getter()
+
+    @property
+    def chat_id(self) -> str:
+        return self.chat_id_getter()
+
+    @property
+    def dirty(self) -> bool:
+        return bool(self.dirty_getter())
+
+    def set_dirty(self, value: bool) -> None:
+        self.dirty_setter(value)
+
+    def execute_agent(self, agent: AgentIdentity, content: str, callbacks) -> Optional[str]:
+        if self.execute_agent_fn is None:
+            return None
+        result = self.execute_agent_fn(agent, content, callbacks)
+        return result if isinstance(result, str) or result is None else str(result)
+
+    def resolve_agent_for_role(self, role: str, channel_id: str) -> Optional[AgentIdentity]:
+        return None
+
+    def execute_task(self, task_id: str, agent_id: str, callbacks) -> Optional[str]:
+        return None
+
+
 class TaskBoardManager:
     """Manages the task board for a SlockEngine instance.
 
@@ -38,7 +77,12 @@ class TaskBoardManager:
         *,
         lock: threading.RLock,
         tasks: list[SlockTask],
-        context: SlockEngineContext,
+        context: SlockEngineContext | None = None,
+        channel_getter: Callable[[], object | None] | None = None,
+        chat_id_getter: Callable[[], str] | None = None,
+        dirty_getter: Callable[[], bool] | None = None,
+        dirty_setter: Callable[[bool], object] | None = None,
+        execute_agent_fn: Callable[..., object] | None = None,
         router: TaskRouter,
         memory: MemoryManager,
         registry_get: Callable[[str], Optional[AgentIdentity]],
@@ -48,6 +92,19 @@ class TaskBoardManager:
     ) -> None:
         self._lock = lock
         self._tasks = tasks
+        if context is None:
+            if channel_getter is None or chat_id_getter is None or dirty_getter is None or dirty_setter is None:
+                raise TypeError(
+                    "TaskBoardManager requires either context= or legacy "
+                    "channel_getter/chat_id_getter/dirty_getter/dirty_setter callbacks"
+                )
+            context = _LegacyTaskBoardContext(
+                channel_getter=channel_getter,
+                chat_id_getter=chat_id_getter,
+                dirty_getter=dirty_getter,
+                dirty_setter=dirty_setter,
+                execute_agent_fn=execute_agent_fn,
+            )
         self._context = context
         self._router = router
         self._memory = memory

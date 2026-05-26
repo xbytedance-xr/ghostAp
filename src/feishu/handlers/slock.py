@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _get_nli_loop():
+    """Return the shared loop used for async NLI classification."""
+    from src.slock_engine.engine import _get_shared_loop
+
+    return _get_shared_loop()
+
+
 class SlockHandler(BaseEngineHandler):
     """Manages the full lifecycle of Slock Engine (multi-Agent mouthpiece) tasks."""
 
@@ -162,6 +169,7 @@ class SlockHandler(BaseEngineHandler):
             SlockCommandAction.ROLE_INFO: lambda: self.show_role_info(message_id, chat_id, cmd.target, project),
             SlockCommandAction.TASK_LIST: lambda: self.list_tasks(message_id, chat_id, project),
             SlockCommandAction.TASK_STATUS: lambda: self.show_task_status(message_id, chat_id, project),
+            SlockCommandAction.TASK_ASSIGN: lambda: self.assign_task(message_id, chat_id, cmd.args, cmd.target, project),
             SlockCommandAction.DISCUSSION: lambda: self._trigger_nli_discussion(message_id, chat_id, cmd.args, {}, project),
             SlockCommandAction.STOP_DISCUSSION: lambda: self.stop_discussion(message_id, chat_id, project),
             SlockCommandAction.DISCUSSION_HISTORY: lambda: self.show_discussion_history(message_id, chat_id, cmd.target, project),
@@ -314,12 +322,11 @@ class SlockHandler(BaseEngineHandler):
         from src.slock_engine.task_classifier import TaskClassifier
 
         is_chitchat, confidence = TaskClassifier.classify(text or "")
-        if is_chitchat and confidence >= 0.9:
-            # High-confidence chitchat — skip NLI and smart routing entirely
-            logger.debug("Skipping NLI: high-confidence chitchat (conf=%.2f)", confidence)
-            return
 
         intent_result = None
+        coro = None
+        future = None
+        scheduled = False
         try:
             # First try synchronous fast path (no LLM, no async)
             fast_result = self._intent_router.fast_classify(text or "")
@@ -327,12 +334,20 @@ class SlockHandler(BaseEngineHandler):
                 intent_result = fast_result
             elif not is_chitchat or confidence < 0.7:
                 # Ambiguous or likely-task — invoke LLM NLI for better classification
-                from src.slock_engine.engine import _get_shared_loop
-                nli_loop = _get_shared_loop()
+                nli_loop = _get_nli_loop()
                 coro = self._classify_with_timeout(text or "")
                 future = asyncio.run_coroutine_threadsafe(coro, nli_loop)
+                from concurrent.futures import Future
+                scheduled = isinstance(future, Future)
                 intent_result = future.result(timeout=self.ctx.settings.slock_nli_timeout + 0.2)
+                if coro is not None and not scheduled:
+                    coro.close()
+                    coro = None
         except Exception as nli_exc:
+            if coro is not None and not scheduled:
+                coro.close()
+            if future is not None and scheduled:
+                future.cancel()
             logger.debug("NLI classification skipped (timeout/error): %s", nli_exc)
             # Fall through to smart routing on any NLI failure
 
@@ -343,6 +358,10 @@ class SlockHandler(BaseEngineHandler):
                 return
             # Engine already active — dispatch activate as status
             self._dispatch_nli_intent(message_id, chat_id, text, project, intent_result)
+            return
+
+        if intent_result and intent_result.action == SlockCommandAction.CHITCHAT:
+            logger.debug("Skipping smart routing: high-confidence chitchat")
             return
 
         # If engine not activated and no activate intent → send hint (FS-03)
@@ -515,6 +534,20 @@ class SlockHandler(BaseEngineHandler):
 
                 # Return immediately — dispatch loop will consume when agent is idle
                 return "queued"
+
+            # Compatibility: older/mocked routers may not implement the fallback
+            # result object. Fall back to the direct route_message contract.
+            if routing_result.status not in (
+                RoutingStatus.ASSIGNED,
+                RoutingStatus.QUEUE_WAIT,
+                RoutingStatus.NO_MATCH,
+            ):
+                direct_agent = engine.router.route_message(text, agents)
+                if direct_agent:
+                    agent_used = direct_agent
+                    if callbacks and callbacks.on_message_routed:
+                        callbacks.on_message_routed(text, agent_used)
+                    return engine._execute_agent(agent_used, text, callbacks)
 
             # NO_MATCH — no agents at all
             return None
@@ -3644,6 +3677,14 @@ class SlockHandler(BaseEngineHandler):
             engine = manager.get_activated_engine(open_chat_id)
             rejection = self._require_slock_permission(engine, action_type, allow_assignee=True, task_id=task_id)
             if rejection:
+                if isinstance(rejection, dict):
+                    content = rejection.get("toast", {}).get("content", "权限不足")
+                    self.send_text_to_chat(open_chat_id, content)
+                    return rejection
+                if not self._has_slock_permission(engine):
+                    self.send_text_to_chat(open_chat_id, "⚠️ 权限不足，仅管理员或团队创建者可执行此操作。")
+                    return rejection
+            if not self._has_slock_permission(engine) and isinstance(rejection, dict):
                 return rejection
             if task_id and engine:
                 engine._force_complete_task(task_id)
@@ -3679,6 +3720,14 @@ class SlockHandler(BaseEngineHandler):
             agent_id = str(value.get("agent_id") or "")
             rejection = self._require_slock_permission(engine, action_type)
             if rejection:
+                if isinstance(rejection, dict):
+                    content = rejection.get("toast", {}).get("content", "权限不足")
+                    self.send_text_to_chat(open_chat_id, content)
+                    return rejection
+                if not self._has_slock_permission(engine):
+                    self.send_text_to_chat(open_chat_id, "⚠️ 权限不足，仅管理员或团队创建者可执行此操作。")
+                    return rejection
+            if not self._has_slock_permission(engine) and isinstance(rejection, dict):
                 return rejection
             if engine and agent_id:
                 channel_id = engine.channel.channel_id if engine.channel else ""
@@ -3729,6 +3778,29 @@ class SlockHandler(BaseEngineHandler):
                     )
                     return
             self.send_text_to_chat(open_chat_id, "⚠️ 角色切换失败，请重试。")
+            return
+
+        if action_type == "slock_confirm_discussion":
+            thread_id = str(value.get("thread_id") or "")
+            trust_type = str(value.get("trust_type") or "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if not engine:
+                self.send_text_to_chat(open_chat_id, "⚠️ 未找到活跃 Slock 引擎。")
+                return
+            engine.confirm_discussion(thread_id, trust_type=trust_type)
+            self.send_text_to_chat(open_chat_id, "✅ 讨论已启动。")
+            return
+
+        if action_type == "slock_cancel_discussion":
+            thread_id = str(value.get("thread_id") or "")
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if not engine:
+                self.send_text_to_chat(open_chat_id, "⚠️ 未找到活跃 Slock 引擎。")
+                return
+            engine.cancel_discussion(thread_id)
+            self.send_text_to_chat(open_chat_id, "✅ 已取消讨论。")
             return
 
         # --- Tasks 26-28: Dissolve confirmation & undo ---

@@ -25,7 +25,6 @@ from acp.schema import (
     AllowedOutcome,
     CreateTerminalResponse,
     DeniedOutcome,
-    KillTerminalCommandResponse,
     ReadTextFileResponse,
     ReleaseTerminalResponse,
     RequestPermissionResponse,
@@ -37,6 +36,11 @@ from acp.schema import (
     WaitForTerminalExitResponse,
     WriteTextFileResponse,
 )
+
+try:
+    from acp.schema import KillTerminalCommandResponse
+except ImportError:
+    from acp.schema import KillTerminalResponse as KillTerminalCommandResponse
 
 from ..sandbox.executor import SandboxExecutor
 from ..utils.errors import get_error_detail

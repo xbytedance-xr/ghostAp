@@ -326,8 +326,11 @@ class IntentRouter:
         if re.search(r"^(开始干活|开工|开始工作|启动|start\s*working|let.?s\s*go)$", normalized):
             return IntentResult(action=SlockCommandAction.ACTIVATE, confidence=0.85, params={})
 
-        # CHITCHAT 过滤统一委托给 TaskClassifier.is_chitchat()（单一职责）。
-        # IntentRouter 仅负责命令意图分类，不处理闲聊。
+        from .task_classifier import TaskClassifier
+
+        if text.strip() and TaskClassifier.is_chitchat(text):
+            return IntentResult(action=SlockCommandAction.CHITCHAT, confidence=0.90, params={})
+
         return None
 
     # ------------------------------------------------------------------

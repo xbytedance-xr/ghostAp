@@ -612,7 +612,9 @@ class Settings(BaseSettings):
     slock_discussion_token_budget: int = Field(default=50000, ge=1000, description="单次讨论链的 token 预算上限")
     slock_max_parallel_discussions: int = Field(default=3, ge=1, le=10, description="同一 channel 内最大并行讨论数，超出时排队")
     slock_discussion_timeout: int = Field(default=300, ge=30, description="讨论 watchdog 超时秒数，超时自动终止讨论")
-    slock_arbiter_max_tokens: int = Field(default=2000, ge=100, description="讨论最终仲裁者（final arbiter）的最大输出 token 数")
+    slock_arbiter_max_tokens: int = Field(default=500, ge=100, le=2000, description="讨论最终仲裁者（final arbiter）的最大输出 token 数")
+    slock_tool_path_restrictions: list[str] = Field(default_factory=list, description="Slock ACP 工具允许访问的根路径列表")
+    slock_dangerous_shell_patterns: list[str] = Field(default_factory=list, description="追加的 Slock shell 危险命令正则")
 
     # Slock Memory Capacity & Task Chain -------------------------------------------
     slock_l1_max_size: int = Field(default=51200, ge=1024, description="L1 agent 私有记忆最大字节数（默认 50KB），超出触发摘要压缩")

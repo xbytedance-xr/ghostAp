@@ -7,6 +7,7 @@ automatic task creation when a predecessor task completes.
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -257,6 +258,31 @@ class TaskChainManager:
             if template.name == name:
                 return template
         return None
+
+    def on_task_done(self, completed_task):
+        """Create a downstream review task when a completed task declares a next agent."""
+        next_agent_id = getattr(completed_task, "chain_next_agent_id", "")
+        if not next_agent_id:
+            return None
+
+        from .models import SlockTask, TaskStatus
+
+        downstream = SlockTask(
+            task_id=str(uuid.uuid4()),
+            content=f"Review: {completed_task.content}",
+            status=TaskStatus.TODO,
+            claimed_by=next_agent_id,
+            created_in=getattr(completed_task, "created_in", ""),
+            chain_next_agent_id="",
+            parent_task_id=getattr(completed_task, "task_id", None),
+        )
+        logger.info(
+            "Chain triggered: source_task=%s target_agent=%s downstream_task=%s",
+            getattr(completed_task, "task_id", ""),
+            next_agent_id,
+            downstream.task_id,
+        )
+        return downstream
 
     def list_templates(self) -> list[dict]:
         """Return serialized info about all configured templates for card rendering.

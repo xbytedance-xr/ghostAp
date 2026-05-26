@@ -41,6 +41,7 @@ def build_command_hub_card(*, channel_id: str = "") -> dict:
             "tag": "button",
             "text": {"tag": "plain_text", "content": label},
             "type": style,
+            "size": "medium",
             "value": value,
             "behaviors": [{"type": "callback", "value": value}],
         }
@@ -158,7 +159,7 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
         header_title="\U0001f4cb Slock 命令面板",
         header_template="blue",
         elements=elements,
-        mobile_optimize=True,
+        mobile_optimize=False,
     )
 
 

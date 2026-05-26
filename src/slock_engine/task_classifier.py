@@ -25,7 +25,7 @@ _CHITCHAT_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"^(哈哈|嘿嘿|呵呵|lol|haha|😂|👍|🙏|666|nb|yes|no|k|y|n|nice|cool|got\s*it|roger|ack)[!！。.~]*$",
+        r"^(哈{2,}|嘿嘿|呵呵|lol|haha|😂|👍|🙏|666|nb|yes|no|k|y|n|nice|cool|got\s*it|roger|ack)[!！。.~]*$",
         re.IGNORECASE,
     ),
 )
@@ -44,7 +44,12 @@ _PURE_PUNCT_EMOJI: Final[re.Pattern[str]] = re.compile(
 _CJK_CHITCHAT_KEYWORDS: Final[re.Pattern[str]] = re.compile(
     r"^(你好啊|谢谢啦|好的呢|收到啦|了解了|明白了|知道啦|没事|没问题|"
     r"可以的|行的|好吧|好哒|嗯嗯|对对|是的|好滴|ok啦|谢啦|"
-    r"早啊|晚安啊|你好呀|好嘞)[!！。.~]*$",
+    r"早啊|晚安啊|你好呀|好嘞|今天天气不错|下班了|吃什么|周末去哪|周末快乐)[!！。.~?？]*$",
+    re.IGNORECASE,
+)
+
+_EN_CHITCHAT_PHRASES: Final[re.Pattern[str]] = re.compile(
+    r"^(good\s+morning|good\s+night|good\s+evening|how\s+are\s+you)[!！。.~?？]*$",
     re.IGNORECASE,
 )
 
@@ -89,6 +94,8 @@ class TaskClassifier:
         for pattern in _CHITCHAT_PATTERNS:
             if pattern.match(stripped):
                 return (True, 0.95)
+        if _EN_CHITCHAT_PHRASES.match(stripped):
+            return (True, 0.95)
 
         # Rule 3 & 4: CJK-aware classification
         has_cjk = bool(_CJK_PATTERN.search(stripped))

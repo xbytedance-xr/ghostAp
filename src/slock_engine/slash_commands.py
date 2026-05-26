@@ -379,8 +379,12 @@ def _parse_task_subcommand(args: str) -> SlockCommand:
     elif subcmd == "status":
         return SlockCommand(action=SlockCommandAction.TASK_STATUS)
     elif subcmd == "assign":
-        # Deprecated: tasks are now auto-routed; return UNKNOWN with hint
-        return SlockCommand(action=SlockCommandAction.UNKNOWN, args="[deprecated] /task assign 已移除，任务会自动分配给最合适的角色")
+        content, role = _parse_assign_args(sub_args)
+        return SlockCommand(
+            action=SlockCommandAction.TASK_ASSIGN,
+            args=content,
+            target=role,
+        )
     else:
         return SlockCommand(action=SlockCommandAction.TASK_LIST)
 

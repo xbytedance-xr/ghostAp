@@ -13,10 +13,19 @@ def get_theme(color: str) -> ProjectTheme:
     return THEMES.get(color, THEMES["green"])
 
 
-def apply_compact_style(button: dict, *, button_size: str = "medium") -> dict:
+def apply_compact_style(
+    button: dict,
+    *,
+    button_size: str = "medium",
+    button_count: int | None = None,
+    skip_compact: bool = False,
+) -> dict:
     """Apply compact button styling (small size) for mobile friendliness."""
     if isinstance(button, dict) and button.get("tag") == "button":
-        button.setdefault("size", button_size or "medium")
+        resolved_size = button_size or "medium"
+        if not skip_compact and button_count is not None and button_count > 2:
+            resolved_size = "small"
+        button.setdefault("size", resolved_size)
     return button
 
 
@@ -85,6 +94,7 @@ def build_responsive_layout(
     *,
     layout: str = "responsive",
     mobile_force_vertical: bool = True,
+    force_vertical: bool = False,
 ) -> list[dict]:
     """Build responsive button layout based on config setting.
 
@@ -104,6 +114,9 @@ def build_responsive_layout(
     """
     if not buttons:
         return []
+
+    if force_vertical:
+        return _build_button_vertical(buttons)
 
     effective_layout = (layout or "responsive").strip().lower()
 
@@ -208,7 +221,7 @@ def _build_button_grid(buttons: list[dict], columns: int = 2) -> list[dict]:
     if columns <= 0:
         columns = 2
 
-    styled = [apply_compact_style(b) for b in buttons]
+    styled = [apply_compact_style(b, button_count=len(buttons)) for b in buttons]
     rows: list[dict] = []
 
     for i in range(0, len(styled), columns):
@@ -331,13 +344,14 @@ def _build_button_vertical(buttons: list[dict]) -> list[dict]:
     if not buttons:
         return []
 
-    styled = [apply_compact_style(b) for b in buttons]
+    styled = [apply_compact_style(b, button_count=len(buttons)) for b in buttons]
     rows = []
     for btn in styled:
         rows.append(
             {
                 "tag": "column_set",
                 "flex_mode": "none",
+                "vertical_spacing": "8px",
                 "columns": [{"tag": "column", "width": "weighted", "weight": 1, "elements": [btn]}],
             }
         )
@@ -349,7 +363,7 @@ def _build_button_flow(buttons: list[dict]) -> list[dict]:
     if not buttons:
         return []
 
-    styled = [apply_compact_style(b) for b in buttons]
+    styled = [apply_compact_style(b, button_count=len(buttons)) for b in buttons]
 
     return [
         {

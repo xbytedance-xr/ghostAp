@@ -89,7 +89,7 @@ def build_discussion_live_card(
             "text_size": "notation",
         })
 
-    _MSG_THRESHOLD = 100
+    _MSG_THRESHOLD = 120
 
     for msg in display_messages:
         sender = msg.get("sender", "Agent")
@@ -98,7 +98,7 @@ def build_discussion_live_card(
 
         if len(raw_content) > _MSG_THRESHOLD:
             # Long message: collapsible
-            preview = raw_content[:60] + "…"
+            preview = raw_content[:_MSG_THRESHOLD] + "…"
             full_el = {"tag": "markdown", "content": f"💬 **{sender}** (R{round_num}):\n{raw_content}"}
             elements.append(
                 build_collapsible_panel(
@@ -109,8 +109,11 @@ def build_discussion_live_card(
             )
         else:
             elements.append({
-                "tag": "markdown",
-                "content": f"💬 **{sender}** (R{round_num}):\n{raw_content}",
+                "tag": "note",
+                "icon": {"tag": "standard_icon", "token": "chat_outlined"},
+                "elements": [
+                    {"tag": "markdown", "content": f"**{sender}** (R{round_num}): {raw_content}"},
+                ],
             })
 
     # Action buttons

@@ -35,6 +35,9 @@ _PRIVATE_KEY_RE = re.compile(
 # Pattern: AWS-style access keys (AKIA...)
 _AWS_KEY_RE = re.compile(r"\b(AKIA[0-9A-Z]{16})\b")
 
+# Pattern: OpenAI-style API keys (sk-...)
+_OPENAI_API_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b")
+
 
 def redact_sensitive(text: str) -> str:
     """Redact sensitive information from text.
@@ -57,6 +60,7 @@ def redact_sensitive(text: str) -> str:
     result = _BEARER_RE.sub("Bearer <redacted>", result)
     result = _COOKIE_RE.sub(r"\1=<redacted>", result)
     result = _AWS_KEY_RE.sub("<redacted:aws_key>", result)
+    result = _OPENAI_API_KEY_RE.sub("<redacted:api_key>", result)
     result = _SECRET_ASSIGNMENT_RE.sub(r"\1=<redacted>", result)
 
     return result

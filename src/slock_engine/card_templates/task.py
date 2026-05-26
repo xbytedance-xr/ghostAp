@@ -86,9 +86,9 @@ def build_task_board_card(
                 weight=1,
             )
         )
-    # 2x2 grid for mobile compatibility
-    elements.append(build_column_set_row(summary_columns[:2], flex_mode="bisect"))
-    elements.append(build_column_set_row(summary_columns[2:], flex_mode="bisect"))
+    # Vertical rows avoid narrow-screen truncation and legacy bisect layouts.
+    for summary_column in summary_columns:
+        elements.append(build_column_set_row([summary_column], flex_mode="none"))
 
     if summary_mode:
         # In summary mode, just show counts and a link button
