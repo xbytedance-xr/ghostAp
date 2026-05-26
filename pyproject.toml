@@ -1,6 +1,6 @@
 [project]
 name = "ghostap"
-version = "0.2.0"
+version = "0.2.1"
 description = "飞书机器人Shell沙箱服务 - 通过飞书机器人安全执行本地shell命令"
 requires-python = ">=3.11"
 dependencies = [
