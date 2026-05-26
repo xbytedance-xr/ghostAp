@@ -351,7 +351,6 @@ def _build_button_vertical(buttons: list[dict]) -> list[dict]:
             {
                 "tag": "column_set",
                 "flex_mode": "none",
-                "vertical_spacing": "8px",
                 "columns": [{"tag": "column", "width": "weighted", "weight": 1, "elements": [btn]}],
             }
         )
