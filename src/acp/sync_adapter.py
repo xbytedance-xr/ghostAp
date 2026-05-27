@@ -1607,6 +1607,18 @@ class SyncACPSession:
             logger.warning("[ACP] set_model failed: %s", get_error_detail(e), exc_info=True)
             return False
 
+    def set_tool_filter(self, filter_fn: "Callable[[str, dict | None], bool]") -> None:
+        """Install a per-session tool filter for least-privilege execution.
+
+        The filter_fn receives (tool_name, args) and returns True to allow.
+        This is stored locally and checked by the engine before tool execution.
+        """
+        self._tool_filter = filter_fn
+
+    def get_tool_filter(self) -> "Optional[Callable[[str, dict | None], bool]]":
+        """Return the currently installed tool filter, or None."""
+        return getattr(self, "_tool_filter", None)
+
     def cancel(self, wait: bool = False, timeout: float = 2.0) -> None:
         """Cancel current prompt.
 

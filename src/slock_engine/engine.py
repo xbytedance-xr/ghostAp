@@ -375,6 +375,11 @@ class SlockEngine(BaseEngine):
         self._status_card_msg_ids: dict[str, str] = {}
         self._status_refresh_timer: Optional[threading.Timer] = None
 
+        # Proactive follow-up: track delivered results awaiting user feedback
+        # Maps task_id → (delivery_time, agent_id, result_preview)
+        self._pending_followups: dict[str, tuple[float, str, str]] = {}
+        self._followup_lock = threading.Lock()  # leaf lock
+
         # Collaboration subsystem prerequisites (must precede TaskBoardManager)
         self._chain_manager = TaskChainManager()
         self._task_notifier = TaskStatusNotifier()
@@ -797,7 +802,7 @@ class SlockEngine(BaseEngine):
         self, agent: "AgentIdentity", message: str, callbacks: "Optional[SlockEngineCallbacks]"
     ) -> None:
         """Submit agent execution to the bounded thread pool."""
-        executor = self._get_or_create_executor()
+        executor = self._get_executor()
         try:
             executor.submit(self._execute_agent, agent, message, callbacks)
         except Exception as exc:
@@ -893,6 +898,7 @@ class SlockEngine(BaseEngine):
                 self._patrol_check_sla()
                 self._patrol_idle_agents()
                 self._patrol_purge_stale()
+                self._patrol_proactive_followup()
             except Exception as exc:
                 logger.warning("Patrol loop error: %s", exc, exc_info=True)
 
@@ -961,6 +967,59 @@ class SlockEngine(BaseEngine):
             self._router.purge_stale_affinity()
         except Exception:
             pass
+
+    def _patrol_proactive_followup(self) -> None:
+        """Check delivered results that haven't received user feedback — send proactive follow-up."""
+        settings = get_settings()
+        if not getattr(settings, "slock_proactive_followup_enabled", True):
+            return
+
+        delay = getattr(settings, "slock_proactive_followup_delay", 60)
+        now = time.time()
+
+        with self._followup_lock:
+            expired = [
+                (task_id, agent_id, preview)
+                for task_id, (delivery_time, agent_id, preview) in self._pending_followups.items()
+                if now - delivery_time > delay
+            ]
+            for task_id, _, _ in expired:
+                del self._pending_followups[task_id]
+
+        for task_id, agent_id, preview in expired:
+            self._send_followup_card(task_id, agent_id, preview)
+
+    def register_pending_followup(self, task_id: str, agent_id: str, result_preview: str) -> None:
+        """Register a delivered result for proactive follow-up tracking."""
+        with self._followup_lock:
+            self._pending_followups[task_id] = (time.time(), agent_id, result_preview[:200])
+
+    def cancel_pending_followup(self, task_id: str) -> None:
+        """Cancel follow-up when user acknowledges or interacts with the result."""
+        with self._followup_lock:
+            self._pending_followups.pop(task_id, None)
+
+    def _send_followup_card(self, task_id: str, agent_id: str, preview: str) -> None:
+        """Send a proactive follow-up card asking if the result was helpful."""
+        try:
+            from .card_templates.common import build_card_wrapper
+
+            agent = self._registry.get(agent_id)
+            agent_name = agent.name if agent else "Agent"
+            content = (
+                f"💬 **{agent_name}** 已完成任务并交付结果：\n\n"
+                f"> {preview}\n\n"
+                f"如需调整或有后续需求，请直接回复或 @{agent_name}。"
+            )
+            card = build_card_wrapper(
+                header_title="💬 需要进一步帮助吗？",
+                header_template="blue",
+                elements=[{"tag": "markdown", "content": content}],
+            )
+            if self._card_send_fn:
+                self._card_send_fn(card)
+        except Exception as exc:
+            logger.debug("Failed to send follow-up card for task %s: %s", task_id, exc, exc_info=True)
 
     # ------------------------------------------------------------------
     # Collaboration helpers

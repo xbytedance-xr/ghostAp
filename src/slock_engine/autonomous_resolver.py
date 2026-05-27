@@ -105,6 +105,9 @@ class AutonomousResolver:
         # task_id -> question state
         self._task_states: dict[str, _TaskQuestionState] = {}
         self._created_at: dict[str, float] = {}  # task_id → creation timestamp for TTL
+        # Resolution learning: cache of successful resolutions keyed by normalized task pattern
+        self._resolution_cache: dict[str, ResolveResult] = {}
+        self._cache_max_size: int = 200
 
     def has_ambiguity_markers(self, text: str) -> bool:
         """Check if text contains markers indicating uncertainty/ambiguity."""
@@ -149,6 +152,17 @@ class AutonomousResolver:
                 status=ResolveStatus.SKIPPED,
                 resolved_text=task_text,
                 reasoning_trace="Question limit reached; proceeding with best-effort assumptions.",
+                duration_s=time.monotonic() - start_time,
+            )
+
+        # Check resolution cache for a previously learned pattern
+        cached = self.lookup_cached_resolution(task_text)
+        if cached is not None:
+            return ResolveResult(
+                status=ResolveStatus.RESOLVED,
+                resolved_text=cached.resolved_text,
+                assumptions=cached.assumptions,
+                reasoning_trace="Resolved from learned cache (no LLM call needed).",
                 duration_s=time.monotonic() - start_time,
             )
 
@@ -308,6 +322,55 @@ class AutonomousResolver:
         state = self._task_states[task_id]
         state.question_count += 1
         state.last_question_time = time.time()
+
+    def learn_resolution(self, task_text: str, result: ResolveResult) -> None:
+        """Persist a successful resolution for future reuse.
+
+        Called after user confirms the resolved output was acceptable. Caches the
+        resolution keyed by a normalized version of the task text, so similar future
+        tasks can skip the LLM call.
+        """
+        from ..config import get_settings as _get_settings
+        if not getattr(_get_settings(), "slock_resolution_learning_enabled", True):
+            return
+        if result.status != ResolveStatus.RESOLVED or not result.resolved_text:
+            return
+        key = self._normalize_task_key(task_text)
+        if not key:
+            return
+        # LRU eviction: remove oldest entry if at capacity
+        if len(self._resolution_cache) >= self._cache_max_size:
+            oldest_key = next(iter(self._resolution_cache))
+            del self._resolution_cache[oldest_key]
+        self._resolution_cache[key] = result
+        logger.debug("autonomous_resolver: learned resolution for key=%s", key[:50])
+
+    def lookup_cached_resolution(self, task_text: str) -> Optional[ResolveResult]:
+        """Check if a similar task was previously resolved — return cached result or None."""
+        from ..config import get_settings as _get_settings
+        if not getattr(_get_settings(), "slock_resolution_learning_enabled", True):
+            return None
+        key = self._normalize_task_key(task_text)
+        if not key:
+            return None
+        cached = self._resolution_cache.get(key)
+        if cached:
+            logger.info("autonomous_resolver: cache hit for key=%s", key[:50])
+        return cached
+
+    @staticmethod
+    def _normalize_task_key(text: str) -> str:
+        """Normalize task text into a cache-friendly key.
+
+        Strips whitespace, lowercases, removes punctuation for fuzzy matching.
+        """
+        import re
+        normalized = " ".join(text.lower().split())
+        # Remove non-alphanumeric, non-CJK-letter characters
+        normalized = re.sub(r"[^\w\s]", "", normalized)
+        # Collapse whitespace
+        normalized = " ".join(normalized.split())
+        return normalized[:200]
 
     def format_structured_question(
         self,

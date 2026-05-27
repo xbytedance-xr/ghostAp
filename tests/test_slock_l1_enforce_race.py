@@ -429,7 +429,8 @@ class TestLLMTimeoutFallback:
     """Verify that LLM timeout triggers fallback to truncation."""
 
     def test_slow_llm_triggers_truncation_fallback(self, mm):
-        """When LLM takes longer than 10s, fallback truncation is used."""
+        """When LLM takes longer than timeout, fallback truncation is used."""
+        from unittest.mock import MagicMock
 
         call_log = []
 
@@ -441,9 +442,13 @@ class TestLLMTimeoutFallback:
 
         mm.set_llm_callback(slow_llm)
 
-        # Test _summarize_text directly with a long text
-        text = "A" * 3000
-        result = mm._summarize_text(text, max_output_chars=1500)
+        # Patch settings to use a short timeout (1s) so we don't wait 30s
+        mock_settings = MagicMock()
+        mock_settings.slock_memory_summarize_timeout = 1.0
+        with patch("src.config.get_settings", return_value=mock_settings):
+            # Test _summarize_text directly with a long text
+            text = "A" * 3000
+            result = mm._summarize_text(text, max_output_chars=1500)
 
         # LLM was called but timed out; fallback truncation should be used
         assert len(call_log) > 0, "LLM callback was never called"

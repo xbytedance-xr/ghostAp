@@ -120,9 +120,9 @@ class TestTimeoutDetection:
             engine.list_agents = MagicMock(return_value=[mock_result.agent])
 
             # Mock executor
-            engine._get_or_create_executor = MagicMock()
+            engine._get_executor = MagicMock()
             mock_executor = MagicMock()
-            engine._get_or_create_executor.return_value = mock_executor
+            engine._get_executor.return_value = mock_executor
 
             task = QueuedTask(
                 task_id="t2",
@@ -380,7 +380,7 @@ class TestExecuteQueueWaitConsistency:
             engine._task_queue = TaskQueue(max_size=8)
             engine._send_timeout_card = MagicMock()
             engine._router = MagicMock()
-            engine._get_or_create_executor = MagicMock()
+            engine._get_executor = MagicMock()
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
 
@@ -406,7 +406,7 @@ class TestExecuteQueueWaitConsistency:
                     engine._dispatch_single_task(task)
 
             # Executor should NOT have been invoked
-            engine._get_or_create_executor.assert_not_called()
+            engine._get_executor.assert_not_called()
 
 
 # ============================================================
@@ -530,7 +530,7 @@ class TestBootstrapRaceConditions:
             engine._bootstrap_ready.set()
             engine._send_timeout_card = MagicMock()
             engine._router = MagicMock()
-            engine._get_or_create_executor = MagicMock()
+            engine._get_executor = MagicMock()
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
 
@@ -543,7 +543,7 @@ class TestBootstrapRaceConditions:
             engine.list_agents = MagicMock(return_value=[mock_agent])
 
             mock_executor = MagicMock()
-            engine._get_or_create_executor.return_value = mock_executor
+            engine._get_executor.return_value = mock_executor
 
             # Prepare bootstrap (blocks dispatch)
             engine.prepare_bootstrap()

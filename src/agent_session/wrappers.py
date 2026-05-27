@@ -250,6 +250,15 @@ class ModelFailureAwareSession:
         n = len(self._compaction_loop_events)
         return (n >= max_count, n)
 
+    def __getattr__(self, name: str):
+        """Proxy unknown attributes to inner session.
+
+        Needed so that callers (e.g. SlockEngine._apply_tool_restrictions) can
+        access set_tool_filter / get_tool_filter / describe_agent etc. through
+        the wrapper chain without explicit delegation for every method.
+        """
+        return getattr(self._inner, name)
+
     # --- Explicit SyncSession protocol delegation ---
 
     @property

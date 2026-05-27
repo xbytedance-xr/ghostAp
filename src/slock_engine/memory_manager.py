@@ -1276,7 +1276,9 @@ class MemoryManager:
 
                 worker = threading.Thread(target=run_callback, daemon=True)
                 worker.start()
-                worker.join(timeout=1.0)
+                from ..config import get_settings as _get_settings
+                summarize_timeout = getattr(_get_settings(), "slock_memory_summarize_timeout", 30.0)
+                worker.join(timeout=summarize_timeout)
                 if worker.is_alive():
                     logger.warning("LLM summarization timed out; falling back to truncation")
                     response = None

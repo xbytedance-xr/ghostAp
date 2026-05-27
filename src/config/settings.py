@@ -615,6 +615,10 @@ class Settings(BaseSettings):
     slock_arbiter_max_tokens: int = Field(default=500, ge=100, le=2000, description="讨论最终仲裁者（final arbiter）的最大输出 token 数")
     slock_tool_path_restrictions: list[str] = Field(default_factory=list, description="Slock ACP 工具允许访问的根路径列表")
     slock_dangerous_shell_patterns: list[str] = Field(default_factory=list, description="追加的 Slock shell 危险命令正则")
+    slock_memory_summarize_timeout: float = Field(default=30.0, ge=1.0, le=120.0, description="LLM 记忆摘要压缩超时（秒），过短会导致摘要失败退化为截断")
+    slock_proactive_followup_enabled: bool = Field(default=True, description="是否允许 Agent 在交付结果后主动跟进")
+    slock_proactive_followup_delay: int = Field(default=60, ge=10, le=600, description="结果交付后等待用户反馈的秒数，超时则主动跟进")
+    slock_resolution_learning_enabled: bool = Field(default=True, description="是否将自主决策假设持久化以复用（减少重复 LLM 调用）")
 
     # Slock Memory Capacity & Task Chain -------------------------------------------
     slock_l1_max_size: int = Field(default=51200, ge=1024, description="L1 agent 私有记忆最大字节数（默认 50KB），超出触发摘要压缩")
