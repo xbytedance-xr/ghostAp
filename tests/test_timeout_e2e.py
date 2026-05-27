@@ -311,6 +311,7 @@ class TestInternalDiagnosticsGuard:
         client._root_dir = "/nonexistent"
         client._ops_log = []
         client._record = lambda *a: None
+        client._tool_filter = None
 
         import asyncio
         loop = asyncio.new_event_loop()

@@ -4,15 +4,20 @@ Covers:
 - MemoryManager._sanitize_path_component: regex-based sanitization and post-checks
 - MemoryManager._safe_path: traversal detection via realpath resolution
 - AgentIdentity.__post_init__: agent_id sanitization on construction
+- normalize_ttadk_cwd: TTADK current-working-directory normalization
 """
 
+import logging
 import os
 import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import AgentIdentity
+from src.utils.path_security import is_path_blacklisted
 
 # ---------------------------------------------------------------------------
 # MemoryManager._sanitize_path_component tests
@@ -119,7 +124,7 @@ class TestSafePath:
 
     def setup_method(self):
         """Create a temporary base directory for each test."""
-        self._tmpdir = tempfile.mkdtemp()
+        self._tmpdir = os.path.realpath(tempfile.mkdtemp())
         self.manager = MemoryManager(base_path=self._tmpdir)
 
     def test_normal_path_resolves_inside_base(self):
@@ -175,19 +180,17 @@ class TestAgentIdentitySanitization:
         assert identity.agent_id == "my_agent-01"
 
     def test_dots_replaced_in_agent_id(self):
-        """Dots are not allowed and get replaced."""
+        """Single dots are now allowed (e.g. model versions like v3.5)."""
         identity = AgentIdentity(agent_id="agent.name")
-        assert "." not in identity.agent_id
-        assert identity.agent_id == "agent_name"
+        # Dots are allowed in the current implementation
+        assert identity.agent_id == "agent.name"
 
     def test_double_dots_sanitized(self):
         """'..' input is sanitized (regex replaces, then secondary check)."""
         identity = AgentIdentity(agent_id="..")
-        # Regex: '..' -> '_' (single replacement)
-        # Then: '..' not in '_' and '_' doesn't start with '.' -> no further change
+        # Regex keeps dots, but __post_init__ strips leading dots and replaces '..'
         assert ".." not in identity.agent_id
         assert not identity.agent_id.startswith(".")
-        assert identity.agent_id == "_"
 
     def test_traversal_attempt_sanitized(self):
         """'../etc' is fully sanitized."""
@@ -215,18 +218,95 @@ class TestAgentIdentitySanitization:
         assert ".." not in identity.agent_id
         assert "/" not in identity.agent_id
         assert not identity.agent_id.startswith(".")
-        assert identity.agent_id == "_etc_passwd"
 
     def test_hidden_file_prefix_sanitized(self):
         """.hidden prefix is sanitized."""
         identity = AgentIdentity(agent_id=".hidden-agent")
         assert not identity.agent_id.startswith(".")
-        # Regex replaces '.' -> '_', result is '_hidden-agent'
-        # Secondary check: doesn't start with '.', no '..' -> fine
-        assert identity.agent_id == "_hidden-agent"
+        # lstrip('.') removes leading dot, result is 'hidden-agent'
+        assert identity.agent_id == "hidden-agent"
 
     def test_uuid_style_id_unchanged(self):
         """UUID-style IDs (with hyphens) pass through fine."""
         test_id = "550e8400-e29b-41d4-a716-446655440000"
         identity = AgentIdentity(agent_id=test_id)
         assert identity.agent_id == test_id
+
+
+# ---------------------------------------------------------------------------
+# Fail-Closed path blacklist tests (merged from test_slock_fail_closed_path.py)
+# ---------------------------------------------------------------------------
+
+
+class TestFailClosedPathBlacklist:
+    """Test suite for Fail-Closed path blacklisting."""
+
+    def test_exception_returns_true(self, caplog: pytest.LogCaptureFixture) -> None:
+        """When os.path.abspath raises, is_path_blacklisted should return True (Fail-Closed)."""
+        caplog.set_level(logging.ERROR)
+
+        # Patch os.path.abspath to raise an exception (called for all paths)
+        with patch("src.utils.path_security.get_acp_blacklist", return_value=([], ["/tmp/blacklisted"], [])):
+            with patch("os.path.abspath", side_effect=OSError("Filesystem error")):
+                result = is_path_blacklisted("/some/path")
+
+        # Should return True (deny) on exception, not False (allow)
+        assert result is True, "Fail-Closed: exception should deny access"
+
+        # Verify error was logged
+        error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(error_records) > 0, "Exception should be logged at ERROR level"
+        assert "fail-closed" in caplog.text.lower() or "fail_closed" in caplog.text.lower()
+
+    def test_normal_operation_still_works(self) -> None:
+        """Normal path checking should still work when no exceptions occur."""
+        with patch("src.utils.path_security.get_acp_blacklist", return_value=([], ["/tmp/blacklisted"], [])):
+            # Path not in blacklist
+            assert is_path_blacklisted("/tmp/safe/file.txt") is False
+            # Path in blacklisted directory
+            assert is_path_blacklisted("/tmp/blacklisted/secret.txt") is True
+
+    def test_empty_blacklist_returns_false(self) -> None:
+        """Empty blacklist should return False (nothing is blacklisted)."""
+        with patch("src.utils.path_security.get_acp_blacklist", return_value=([], [], [])):
+            assert is_path_blacklisted("/any/path") is False
+
+    def test_empty_path_returns_false(self) -> None:
+        """Empty path should return False (no path to check)."""
+        assert is_path_blacklisted("") is False
+
+
+# ---------------------------------------------------------------------------
+# TTADK cwd normalization tests (merged from test_ttadk_cwd_normalize.py)
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeTtadkCwd:
+    """Tests for normalize_ttadk_cwd utility."""
+
+    def test_normalize_ttadk_cwd_none_and_empty(self):
+        from src.utils.path import normalize_ttadk_cwd
+
+        assert normalize_ttadk_cwd(None) is None
+        assert normalize_ttadk_cwd("") is None
+        assert normalize_ttadk_cwd("   ") is None
+
+    def test_normalize_ttadk_cwd_dot_is_absolute(self, tmp_path: Path, monkeypatch):
+        from src.utils.path import normalize_ttadk_cwd
+
+        # ensure '.' resolves to an absolute path (under current process cwd)
+        monkeypatch.chdir(tmp_path)
+        out = normalize_ttadk_cwd(".")
+        assert out is not None
+        assert Path(out).is_absolute()
+        assert Path(out) == tmp_path.resolve()
+
+    def test_normalize_ttadk_cwd_relative_is_absolute(self, tmp_path: Path, monkeypatch):
+        from src.utils.path import normalize_ttadk_cwd
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "p").mkdir(parents=True, exist_ok=True)
+        out = normalize_ttadk_cwd("p")
+        assert out is not None
+        assert Path(out).is_absolute()
+        assert Path(out) == (tmp_path / "p").resolve()

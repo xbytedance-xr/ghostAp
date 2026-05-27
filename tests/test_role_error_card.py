@@ -84,7 +84,7 @@ def _make_handler():
     handler.show_role_info = SlockHandler.show_role_info.__get__(handler, SlockHandler)
     handler.move_role = SlockHandler.move_role.__get__(handler, SlockHandler)
     handler.handle_card_action = SlockHandler.handle_card_action.__get__(handler, SlockHandler)
-    handler._reply_role_arg_hint = SlockHandler._reply_role_arg_hint.__get__(handler, SlockHandler)
+    handler._dispatch_cmd_panel_action = SlockHandler._dispatch_cmd_panel_action.__get__(handler, SlockHandler)
     handler.handle_slock_command = MagicMock()
 
     # Mock engine manager with registry
@@ -163,39 +163,31 @@ class TestBuildRoleArgErrorCard:
 
 
 class TestRemoveRoleErrorCard:
-    def test_reply_card_called_with_suggestions(self):
+    def test_reply_text_called_with_usage(self):
         handler = _make_handler()
         handler.remove_role("msg1", "chat1", "", None)
-        handler.reply_card.assert_called_once()
-        card_json = handler.reply_card.call_args[0][1]
-        card = json.loads(card_json)
-        buttons = _collect_buttons(card)
-        # remove_role now uses build_error_suggestion_card with static ["/role list"]
-        assert len(buttons) == 1
-        assert buttons[0]["value"]["fix_command"] == "/role list"
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "/role remove" in text
 
-    def test_card_with_no_suggestions_when_no_engine(self):
+    def test_reply_text_when_no_engine(self):
         handler = _make_handler()
         handler._get_engine_manager.return_value.get_activated_engine.return_value = None
         handler.remove_role("msg1", "chat1", "", None)
-        handler.reply_card.assert_called_once()
-        card = json.loads(handler.reply_card.call_args[0][1])
-        buttons = _collect_buttons(card)
-        # Static suggestions are always shown regardless of engine state
-        assert len(buttons) == 1
-        assert buttons[0]["value"]["fix_command"] == "/role list"
+        # Empty name check happens before engine check
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "/role remove" in text
 
-    def test_card_with_no_suggestions_when_no_agents(self):
+    def test_reply_text_when_no_agents(self):
         handler = _make_handler()
         engine = handler._get_engine_manager.return_value.get_activated_engine.return_value
         engine.registry.list_agents.return_value = []
         handler.remove_role("msg1", "chat1", "", None)
-        handler.reply_card.assert_called_once()
-        card = json.loads(handler.reply_card.call_args[0][1])
-        buttons = _collect_buttons(card)
-        # Static suggestions are always shown regardless of agent list
-        assert len(buttons) == 1
-        assert buttons[0]["value"]["fix_command"] == "/role list"
+        # Empty name check happens before agent list check
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "/role remove" in text
 
 
 # ===========================================================================
@@ -204,23 +196,22 @@ class TestRemoveRoleErrorCard:
 
 
 class TestShowRoleInfoErrorCard:
-    def test_reply_card_called_with_suggestions(self):
+    def test_reply_card_called_with_static_hints(self):
         handler = _make_handler()
         handler.show_role_info("msg1", "chat1", "", None)
         handler.reply_card.assert_called_once()
         card_json = handler.reply_card.call_args[0][1]
         card = json.loads(card_json)
-        buttons = _collect_buttons(card)
-        assert any("/role info Alice" in btn["value"]["fix_command"] for btn in buttons)
+        # build_usage_hint_card uses static examples like "/role info coder"
+        card_str = json.dumps(card)
+        assert "/role info" in card_str
 
     def test_card_with_no_suggestions_when_no_engine(self):
         handler = _make_handler()
         handler._get_engine_manager.return_value.get_activated_engine.return_value = None
         handler.show_role_info("msg1", "chat1", "", None)
+        # Empty name check happens before engine check, so card is still shown
         handler.reply_card.assert_called_once()
-        card = json.loads(handler.reply_card.call_args[0][1])
-        buttons = _collect_buttons(card)
-        assert buttons == []
 
 
 # ===========================================================================
@@ -229,39 +220,29 @@ class TestShowRoleInfoErrorCard:
 
 
 class TestMoveRoleErrorCard:
-    def test_reply_card_called_with_suggestions(self):
+    def test_reply_text_called_with_usage(self):
         handler = _make_handler()
         handler.move_role("msg1", "chat1", "", "", None)
-        handler.reply_card.assert_called_once()
-        card_json = handler.reply_card.call_args[0][1]
-        card = json.loads(card_json)
-        buttons = _collect_buttons(card)
-        # move_role with empty name uses build_error_suggestion_card with
-        # ["/role list", "/role move <角色名> <目标团队名>"]
-        assert len(buttons) == 2
-        assert buttons[0]["value"]["fix_command"] == "/role list"
-        assert buttons[1]["value"]["fix_command"] == "/role move <角色名> <目标团队名>"
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "/role move" in text
 
-    def test_card_with_no_suggestions_when_no_engine(self):
+    def test_reply_text_when_no_engine(self):
         handler = _make_handler()
         handler._get_engine_manager.return_value.get_activated_engine.return_value = None
         handler.move_role("msg1", "chat1", "", "", None)
-        handler.reply_card.assert_called_once()
-        card = json.loads(handler.reply_card.call_args[0][1])
-        buttons = _collect_buttons(card)
-        # Static suggestions are always shown regardless of engine state
-        assert len(buttons) == 2
-        assert buttons[0]["value"]["fix_command"] == "/role list"
+        # Empty name check happens before engine check
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "/role move" in text
 
-    def test_card_when_name_provided_but_no_team(self):
-        """If name is provided but target_team is missing, shows card with suggestion buttons."""
+    def test_reply_text_when_name_provided_but_no_team(self):
+        """If name is provided but target_team is missing, shows usage text."""
         handler = _make_handler()
         handler.move_role("msg1", "chat1", "Alice", "", None)
-        handler.reply_card.assert_called_once()
-        card = json.loads(handler.reply_card.call_args[0][1])
-        buttons = _collect_buttons(card)
-        # Should suggest "/role move Alice <目标团队名>" or similar
-        assert len(buttons) >= 1
+        handler.reply_text.assert_called_once()
+        text = handler.reply_text.call_args[0][1]
+        assert "/role move" in text
 
 
 # ===========================================================================
@@ -288,13 +269,15 @@ class TestSlockCmdFixCallback:
             "msg1", "chat1", "/task list", None
         )
 
-    def test_rejects_non_whitelisted_command(self):
+    def test_routes_any_nonempty_command(self):
+        """slock_cmd_fix routes any non-empty fix_command to handle_slock_command."""
         handler = _make_handler()
         handler.handle_card_action(
             "msg1", "chat1", "slock_cmd_fix", {"fix_command": "/evil inject"}
         )
-        handler.handle_slock_command.assert_not_called()
-        handler.send_text_to_chat.assert_called_once()
+        handler.handle_slock_command.assert_called_once_with(
+            "msg1", "chat1", "/evil inject", None
+        )
 
     def test_rejects_empty_fix_command(self):
         handler = _make_handler()

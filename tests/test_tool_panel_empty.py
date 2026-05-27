@@ -88,3 +88,43 @@ class TestNonEmptyBoth:
         assert "myhost" in detail
         # Two code blocks: command + result
         assert detail.count("```") == 4
+
+
+# ---------------------------------------------------------------------------
+# Tool collapse v2: expand/collapse based on status and is_latest_active
+# ---------------------------------------------------------------------------
+
+from src.card.state.models import ContentBlock
+
+
+def _tool_block(name, status, *, latest=False):
+    return ContentBlock(
+        kind="tool_call",
+        block_id=f"{name}-{status}",
+        tool_name=name,
+        status=status,
+        tool_input='{"path": "src/app.py"}',
+        tool_output="ok",
+        tool_summary="ok",
+        is_latest_active=latest,
+    )
+
+
+def test_latest_active_tool_is_expanded():
+    panel = render_tool_panel(_tool_block("Edit", "active", latest=True))
+
+    assert panel["expanded"] is True
+
+
+def test_completed_tool_is_collapsed_even_if_stale_latest_flag_remains():
+    panel = render_tool_panel(_tool_block("Read", "completed", latest=True))
+
+    assert panel["expanded"] is False
+    assert "✅" in panel["header"]["title"]["content"]
+
+
+def test_failed_tool_is_collapsed_with_red_marker():
+    panel = render_tool_panel(_tool_block("Bash", "failed", latest=True))
+
+    assert panel["expanded"] is False
+    assert "❌" in panel["header"]["title"]["content"]

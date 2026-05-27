@@ -37,9 +37,9 @@ class SlockCardChannel:
         self._delivery = delivery
         self._chat_id = chat_id
         self._sessions: dict[str, StaticCardSession] = {}
-        self._sessions_lock = threading.Lock()  # 保护 _sessions 并发读写
+        self._sessions_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._periodic_updates: dict[str, threading.Timer] = {}  # msg_id -> timer
-        self._periodic_lock = threading.Lock()
+        self._periodic_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def send_card(
         self, card: dict | str, *, reply_to: str | None = None

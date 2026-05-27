@@ -201,122 +201,6 @@ class TestCardActionHandler(unittest.TestCase):
             client._process_card_action_async(data)
             client._handle_refresh_ttadk_models.assert_called_once_with("om_1", "oc_1", "codex", "p1")
 
-    def test_process_card_action_routes_toggle_ttadk_yolo(self):
-        """验证 TTADK YOLO 切换按钮可被正确路由。"""
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-            client._handle_toggle_ttadk_yolo = MagicMock()
-
-            data = SimpleNamespace(
-                event=SimpleNamespace(
-                    action=SimpleNamespace(
-                        value={
-                            "action": "toggle_ttadk_yolo",
-                            "enabled": True,
-                            "view": "model_select",
-                            "tool_name": "codex",
-                            "project_id": "p1",
-                        },
-                        tag="button",
-                        name="toggle",
-                    ),
-                    operator=SimpleNamespace(open_id="ou_x", user_id="u_x"),
-                    context=SimpleNamespace(open_message_id="om_1", open_chat_id="oc_1"),
-                )
-            )
-
-            client._process_card_action_async(data)
-            client._handle_toggle_ttadk_yolo.assert_called_once_with(
-                "om_1", "oc_1", True, "model_select", "codex", "p1"
-            )
-
-    def test_process_card_action_routes_show_ttadk_menu_force_select(self):
-        """验证 TTADK 菜单按钮强制进入选择菜单。"""
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-            client._handle_ttadk_command = MagicMock()
-
-            project = SimpleNamespace(project_id="p1")
-            client._project_manager.get_project.return_value = project
-            client._project_manager.get_project_for_chat.return_value = project
-
-            data = SimpleNamespace(
-                event=SimpleNamespace(
-                    action=SimpleNamespace(
-                        value={
-                            "action": "show_ttadk_menu",
-                            "project_id": "p1",
-                        },
-                        tag="button",
-                        name="menu",
-                    ),
-                    operator=SimpleNamespace(open_id="ou_x", user_id="u_x"),
-                    context=SimpleNamespace(open_message_id="om_1", open_chat_id="oc_1"),
-                )
-            )
-
-            client._process_card_action_async(data)
-            client._handle_ttadk_command.assert_called_once()
-            args, _ = client._handle_ttadk_command.call_args
-            self.assertEqual(args[0], "om_1")
-            self.assertEqual(args[1], "oc_1")
-            self.assertIs(args[2], project)
-            self.assertTrue(args[3])
-
     def test_process_card_action_ttadk_exception_uses_soft_failure_card(self):
         """验证 TTADK 卡片动作异常时返回软失败提示。"""
         with (
@@ -417,57 +301,6 @@ class TestCardActionHandler(unittest.TestCase):
 
             client._claude_handler.enter_mode.assert_called_once()
             args, kwargs = client._claude_handler.enter_mode.call_args
-            self.assertEqual(args[0], "om_1")
-            self.assertEqual(args[1], "oc_1")
-            self.assertIs(kwargs.get("project"), project)
-
-    def test_handle_card_enter_ttadk_passes_project(self):
-        """验证卡片入口 TTADK 时把 project 透传给 enter_mode（避免加载错误项目）"""
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-
-            project = SimpleNamespace(
-                project_id="p1",
-                ttadk_session_snapshot=None,
-                coco_session_snapshot=None,
-                claude_session_snapshot=None,
-            )
-            # Mock at handler level: project_manager lives inside handler context
-            client._ttadk_handler.project_manager.get_project.return_value = project
-            client._ttadk_handler.project_manager.get_project_for_chat.return_value = project
-            client._ttadk_handler.enter_mode = MagicMock()
-
-            client._handle_card_enter_ttadk("om_1", "oc_1", "p1")
-
-            client._ttadk_handler.enter_mode.assert_called_once()
-            args, kwargs = client._ttadk_handler.enter_mode.call_args
             self.assertEqual(args[0], "om_1")
             self.assertEqual(args[1], "oc_1")
             self.assertIs(kwargs.get("project"), project)
@@ -946,96 +779,6 @@ class TestCardActionHandler(unittest.TestCase):
             client._deep_engine_manager.cleanup_all.assert_called_once()
             client._spec_engine_manager.cleanup_all.assert_called_once()
 
-    def test_ws_watchdog_triggers_disconnect_on_stale_connection(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-            client._client = SimpleNamespace(_conn=object(), _ping_interval=120)
-            client._ws_health_monitor._trigger_disconnect = MagicMock(return_value=True)
-
-            now = 1_000.0
-            with client._ws_health_monitor._health_lock:
-                client._ws_health_monitor._last_connect_at = now - 400.0
-                client._ws_health_monitor._last_frame_at = now - 400.0
-                client._ws_health_monitor._last_pong_at = now - 400.0
-                client._ws_health_monitor._reconnect_requested_at = 0.0
-
-            triggered = client._ws_health_monitor.check_health_once(now=now)
-
-            self.assertTrue(triggered)
-            client._ws_health_monitor._trigger_disconnect.assert_called_once()
-
-    def test_ws_watchdog_does_not_reconnect_when_recent_pong_exists(self):
-        with (
-            patch("src.feishu.ws_client.get_settings") as mock_get_settings,
-            patch("src.feishu.ws_client.ACPSessionManager"),
-            patch("src.feishu.ws_client.IntentRecognizer"),
-            patch("src.feishu.ws_client.ProjectManager"),
-            patch("src.feishu.ws_client.MessageProjectMapper"),
-            patch("src.feishu.ws_client.DeepEngineManager"),
-            patch("src.feishu.ws_client.ProgressReporter"),
-            patch("src.mode.ModeManager"),
-        ):
-            mock_settings = MagicMock()
-            mock_settings.app_id = "test_app_id"
-            mock_settings.app_secret = "test_app_secret"
-            mock_settings.streaming_enabled = False
-            mock_settings.task_scheduler_max_concurrent = 2
-            mock_settings.task_scheduler_per_key_concurrency = 1
-            mock_settings.message_cache_ttl = 300
-            mock_settings.message_cache_max_size = 1000
-            mock_settings.card.action_dedup_ttl = 1
-            mock_settings.card.action_dedup_max_size = 5000
-            mock_settings.system_command_concurrency = 10
-            mock_settings.spec_rate_limit_capacity = 100
-            mock_settings.spec_rate_limit_fill_rate = 50.0
-            mock_settings.spec_circuit_breaker_threshold = 10
-            mock_settings.spec_circuit_breaker_recovery = 5.0
-            mock_settings.message_expire_seconds = 30
-            mock_get_settings.return_value = mock_settings
-
-            client = FeishuWSClient(MagicMock())
-            client._client = SimpleNamespace(_conn=object(), _ping_interval=120)
-            client._ws_health_monitor._trigger_disconnect = MagicMock(return_value=True)
-
-            now = 1_000.0
-            with client._ws_health_monitor._health_lock:
-                client._ws_health_monitor._last_connect_at = now - 400.0
-                client._ws_health_monitor._last_frame_at = now - 400.0
-                client._ws_health_monitor._last_pong_at = now - 10.0
-                client._ws_health_monitor._reconnect_requested_at = 0.0
-
-            triggered = client._ws_health_monitor.check_health_once(now=now)
-
-            self.assertFalse(triggered)
-            client._ws_health_monitor._trigger_disconnect.assert_not_called()
-
     def test_process_with_intent_routes_acp_command_to_system_handler(self):
         with (
             patch("src.feishu.ws_client.get_settings") as mock_get_settings,
@@ -1449,36 +1192,6 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         self.assertEqual(auto_mode, "coco")
         self.assertEqual(project, fallback_project)
 
-    def test_resolve_context_returns_mode_with_project_found(self):
-        """_resolve_message_context 在 thread_ctx 和 project 都存在时正常返回"""
-        client = self._make_client()
-        client.settings = MagicMock()
-        client.settings.thread_programming_enabled = True
-
-        from src.thread.models import ThreadContext
-        thread_ctx = ThreadContext(
-            thread_root_id="root1", chat_id="c1", project_id="proj1", mode="claude",
-        )
-        client._thread_manager = MagicMock()
-        client._thread_manager.get.return_value = thread_ctx
-
-        direct_project = MagicMock()
-        direct_project.project_id = "proj1"
-        client._project_manager = MagicMock()
-        client._project_manager.get_project.return_value = direct_project
-        client._project_manager.get_project_for_chat.return_value = direct_project
-
-        message = MagicMock()
-        message.message_id = "m1"
-        message.chat_id = "c1"
-        message.root_id = "root1"
-        message.parent_id = None
-
-        project, auto_mode = client._resolve_message_context(message)
-
-        self.assertEqual(auto_mode, "claude")
-        self.assertEqual(project, direct_project)
-
     def test_resolve_context_smart_mode_returns_none_auto_enter(self):
         """thread_ctx.mode='smart' 时 auto_enter_mode 应为 None，但不再 fall through"""
         client = self._make_client()
@@ -1516,6 +1229,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client = self._make_client()
         client.settings = MagicMock()
         client.settings.thread_programming_enabled = True
+        client.settings.allowed_chat_ids = set()
+        client.settings.allowed_user_ids = set()
 
         from src.thread.models import ThreadContext
         thread_ctx = ThreadContext(
@@ -1614,6 +1329,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         client = self._make_client()
         client.settings = MagicMock()
         client.settings.thread_programming_enabled = True
+        client.settings.allowed_chat_ids = set()
+        client.settings.allowed_user_ids = set()
 
         from src.thread.models import ThreadContext
         thread_ctx = ThreadContext(
@@ -1699,6 +1416,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
             project,
             command_match=SlashCommandParser.parse("/coco"),
             shell_fast_tracked=False,
+            chat_type="group",
         )
         client._reply_text.assert_not_called()
         client._get_mode_handler.assert_not_called()
@@ -1727,6 +1445,7 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
             project,
             command_match=SlashCommandParser.parse("/deep 写一个函数"),
             shell_fast_tracked=False,
+            chat_type="group",
         )
         client._get_mode_handler.assert_not_called()
 

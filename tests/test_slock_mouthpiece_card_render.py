@@ -14,6 +14,7 @@ import json
 
 import pytest
 
+from src.card.render.payload_truncator import count_markdown_table_blocks
 from src.slock_engine.models import AGENT_ROLE_COLORS, AgentIdentity
 from src.slock_engine.mouthpiece import Mouthpiece
 
@@ -37,41 +38,17 @@ class TestMouthpieceCardSchemaCompliance:
         return Mouthpiece()
 
     @pytest.mark.parametrize("role", list(AGENT_ROLE_COLORS.keys()))
-    def test_card_has_schema_2_0(self, mouthpiece, role):
-        """Every role produces a card with schema 2.0."""
-        agent = _make_agent(role)
+    def test_card_schema_and_structure(self, mouthpiece, role):
+        """Every role produces a valid card with schema 2.0, colored header, and body.elements."""
+        agent = _make_agent(role, name="MyAgent", emoji="🎯")
         card = mouthpiece.format_card(agent, "Test content")
         assert card["schema"] == "2.0"
-
-    @pytest.mark.parametrize("role", list(AGENT_ROLE_COLORS.keys()))
-    def test_card_has_colored_header(self, mouthpiece, role):
-        """Every role produces a card with a colored header template."""
-        agent = _make_agent(role)
-        card = mouthpiece.format_card(agent, "Test content")
         expected_color = AGENT_ROLE_COLORS[role]
         assert card["header"]["template"] == expected_color
-
-    @pytest.mark.parametrize("role", list(AGENT_ROLE_COLORS.keys()))
-    def test_card_header_contains_emoji_and_name(self, mouthpiece, role):
-        """Header title contains agent emoji and name."""
-        agent = _make_agent(role, name="MyAgent", emoji="🎯")
-        card = mouthpiece.format_card(agent, "Content")
         title = card["header"]["title"]["content"]
         assert "🎯" in title
         assert "MyAgent" in title
-
-    @pytest.mark.parametrize("role", list(AGENT_ROLE_COLORS.keys()))
-    def test_card_no_legacy_actions_field(self, mouthpiece, role):
-        """Card must NOT have top-level 'actions' field (legacy format)."""
-        agent = _make_agent(role)
-        card = mouthpiece.format_card(agent, "Content")
-        assert "actions" not in card, "Legacy 'actions' field found at top level"
-
-    @pytest.mark.parametrize("role", list(AGENT_ROLE_COLORS.keys()))
-    def test_card_uses_body_elements(self, mouthpiece, role):
-        """Card uses body.elements structure (not legacy elements at top level)."""
-        agent = _make_agent(role)
-        card = mouthpiece.format_card(agent, "Content")
+        assert "actions" not in card
         assert "body" in card
         assert "elements" in card["body"]
 
@@ -84,75 +61,75 @@ class TestMouthpieceCardSchemaCompliance:
         all_content = " ".join(e.get("content", "") for e in markdown_elements)
         assert "Hello world response" in all_content
 
-    def test_card_footer_with_model_info(self, mouthpiece):
-        """Footer contains model info when provided."""
+    def test_card_footer_with_model_and_duration(self, mouthpiece):
+        """Footer contains model info and duration when provided."""
         agent = _make_agent("coder")
-        card = mouthpiece.format_card(agent, "Content", model_info="claude-sonnet-4")
+        card = mouthpiece.format_card(agent, "Content", model_info="claude-sonnet-4", duration_s=5.2)
         elements = card["body"]["elements"]
         footer_elements = [e for e in elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
         assert len(footer_elements) >= 1
         assert "claude-sonnet-4" in footer_elements[0]["content"]
-
-    def test_card_footer_with_duration(self, mouthpiece):
-        """Footer contains duration when provided."""
-        agent = _make_agent("coder")
-        card = mouthpiece.format_card(agent, "Content", duration_s=5.2)
-        elements = card["body"]["elements"]
-        footer_elements = [e for e in elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
-        assert len(footer_elements) >= 1
         assert "5.2s" in footer_elements[0]["content"]
-
-    def test_card_footer_with_duration_minutes(self, mouthpiece):
-        """Footer shows minutes format for long durations."""
-        agent = _make_agent("coder")
-        card = mouthpiece.format_card(agent, "Content", duration_s=125.0)
-        elements = card["body"]["elements"]
-        footer_elements = [e for e in elements if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
-        assert "2m" in footer_elements[0]["content"]
-
-    def test_card_is_valid_json_serializable(self, mouthpiece):
-        """Card dict can be serialized to JSON without errors."""
-        agent = _make_agent("architect", emoji="📐")
-        card = mouthpiece.format_card(agent, "Architecture review complete")
-        json_str = json.dumps(card, ensure_ascii=False)
-        assert isinstance(json_str, str)
-        parsed = json.loads(json_str)
-        assert parsed["schema"] == "2.0"
 
 
 class TestMouthpieceColorCoverage:
     """Verify all agent_type roles have distinct colors."""
 
-    def test_all_roles_have_colors(self):
-        """Every defined role in AGENT_ROLE_COLORS maps to a non-empty string."""
+    def test_all_roles_have_colors_and_unknown_fallback(self):
+        """Every defined role in AGENT_ROLE_COLORS maps to a non-empty string; unknown gets grey."""
         expected_roles = {"coder", "writer", "reviewer", "tester", "planner", "architect", "custom"}
         for role in expected_roles:
             assert role in AGENT_ROLE_COLORS, f"Missing color for role: {role}"
             assert AGENT_ROLE_COLORS[role], f"Empty color for role: {role}"
-
-    def test_custom_role_has_fallback_color(self):
-        """The 'custom' role has a fallback color (grey)."""
         assert AGENT_ROLE_COLORS["custom"] == "grey"
-
-    def test_unknown_role_gets_grey_via_card_color_property(self):
-        """AgentIdentity.card_color returns 'grey' for unknown roles."""
         agent = AgentIdentity(name="Unknown", role="totally_unknown_role")
         assert agent.card_color == "grey"
 
 
-class TestMouthpieceTextFormat:
-    """Verify plain-text mouthpiece format."""
+class TestMouthpieceFormatting:
+    """Unit tests for slock_engine/mouthpiece.py — message formatting."""
 
-    def test_format_text_includes_emoji_and_name(self):
-        mouthpiece = Mouthpiece()
-        agent = _make_agent("coder", name="Dev-1", emoji="🔧")
-        result = mouthpiece.format_text(agent, "Hello")
-        assert result == "[🔧 Dev-1] Hello"
+    def _make_agent(self, **kwargs) -> AgentIdentity:
+        defaults = {"agent_id": "a1", "name": "Coder", "emoji": "🔧", "role": "coder", "agent_type": "coco"}
+        defaults.update(kwargs)
+        return AgentIdentity(**defaults)
 
-    def test_format_thinking(self):
-        mouthpiece = Mouthpiece()
-        agent = _make_agent("reviewer", name="Rev-1", emoji="🔍")
-        result = mouthpiece.format_thinking(agent)
-        assert "🔍" in result
-        assert "Rev-1" in result
-        assert "thinking" in result
+    def test_format_text(self):
+        mp = Mouthpiece()
+        agent = self._make_agent(name="Alice", emoji="🤖")
+        result = mp.format_text(agent, "Hello team!")
+        assert result == "[🤖 Alice] Hello team!"
+
+    def test_format_card_returns_valid_structure(self):
+        mp = Mouthpiece()
+        agent = self._make_agent()
+        card = mp.format_card(agent, "Some content", model_info="gpt-4")
+        assert card["schema"] == "2.0"
+        assert card["header"]["title"]["content"] == "🔧 Coder"
+        assert card["header"]["template"] == "blue"
+        body = card["body"]["elements"]
+        assert any(e["tag"] == "markdown" and "Some content" in e["content"] for e in body)
+
+    def test_format_card_neutralizes_markdown_tables_over_feishu_limit(self):
+        """Agent output cards must not get stuck on Feishu table-count limits."""
+        mp = Mouthpiece()
+        agent = self._make_agent()
+        table = "| A | B |\n|---|---|\n| 1 | 2 |"
+
+        card = mp.format_card(agent, "\n\n".join([table] * 6), model_info="gpt-4")
+
+        body = card["body"]["elements"]
+        main_markdown = next(e for e in body if e.get("tag") == "markdown" and "A | B" in e.get("content", ""))
+        assert count_markdown_table_blocks(main_markdown["content"]) == 0
+        assert main_markdown["content"].count("```text") == 6
+        assert any("表格数量超过飞书卡片限制" in e.get("content", "") for e in body)
+
+    def test_format_escalation(self):
+        mp = Mouthpiece()
+        agent = self._make_agent(name="Helper", emoji="⚠️")
+        card = mp.format_escalation(agent, "Need human review")
+        assert card["schema"] == "2.0"
+        body = card["body"]["elements"]
+        md_elements = [e for e in body if e["tag"] == "markdown"]
+        assert any("Escalation Request" in e["content"] for e in md_elements)
+        assert any("Need human review" in e["content"] for e in md_elements)

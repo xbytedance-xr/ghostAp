@@ -1,11 +1,14 @@
 from unittest.mock import MagicMock, patch
 
+import unittest
+
 import pytest
 
 from src.acp import ACPEvent, ACPEventType, ToolCallInfo
 from src.card.engine_snapshot import EngineSnapshot
 from src.deep_engine.models import DeepProject, DeepProjectStatus
 from src.feishu.renderers.deep_renderer import DeepRenderer
+from src.feishu.handlers.deep import DeepHandler
 from src.project import ProjectContext
 
 
@@ -227,3 +230,42 @@ class TestDeepRenderer:
             calls = [c.args[0] for c in mock_session.dispatch.call_args_list]
             types = [c.type.value for c in calls]
             assert "progress_updated" in types
+
+
+# ---------------------------------------------------------------------------
+# Tests merged from test_deep_renderer_refactor.py
+# ---------------------------------------------------------------------------
+
+
+class TestDeepRendererRefactor(unittest.TestCase):
+    def setUp(self):
+        self.mock_handler = MagicMock(spec=DeepHandler)
+        self.mock_handler.ctx = MagicMock()
+        self.mock_handler.settings = MagicMock()
+        self.mock_handler.settings.card.deep_compact_default = False
+        self.renderer = DeepRenderer(self.mock_handler)
+
+    def test_inheritance(self):
+        """Verify DeepRenderer inherits from BaseRenderer"""
+        self.assertTrue(hasattr(self.renderer, "_render_collapsible_section"))
+
+    def test_ui_state_defaults(self):
+        """Verify DeepRenderer specific UI defaults"""
+        state = self.renderer.get_default_ui_state()
+        self.assertIn("expand_ac", state)
+        self.assertFalse(state["expand_ac"])
+
+    def test_text_collapsing(self):
+        """Verify text collapsing works for Markdown content (typical for Deep mode)"""
+        # Long text with multiple paragraphs/lines — must exceed COLLAPSE_LINE_THRESHOLD (30)
+        long_content = "\n".join([f"Step {i}: Thinking process..." for i in range(40)])
+
+        # Should be collapsed by default
+        collapsed = self.renderer._render_collapsible_section(long_content, total_items=40, expanded=False)
+        self.assertIn("📄 内容较长", collapsed)
+        self.assertIn("Step 0", collapsed)
+        self.assertNotIn("Step 39", collapsed)
+
+        # Should be full when expanded
+        expanded_content = self.renderer._render_collapsible_section(long_content, total_items=40, expanded=True)
+        self.assertEqual(expanded_content, long_content)

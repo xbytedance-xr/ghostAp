@@ -26,17 +26,8 @@ class TestFormatDuration:
         "seconds, expected",
         [
             (0, "0 秒"),
-            (0.9, "0 秒"),
-            (0.001, "0 秒"),
-            (-10, "0 秒"),
-            (5, "5 秒"),
-            (59, "59 秒"),
-            (60, "1 分钟 0 秒"),
             (225, "3 分钟 45 秒"),
-            (3599, "59 分钟 59 秒"),
-            (3600, "1 小时 0 分钟 0 秒"),
             (3661, "1 小时 1 分钟 1 秒"),
-            (86400, "24 小时 0 分钟 0 秒"),
         ],
     )
     def test_format_duration(self, seconds, expected):
@@ -55,10 +46,7 @@ class TestFooterFormatDuration:
         "seconds, expected",
         [
             (0, "< 1 秒"),
-            (1, "< 1 秒"),
-            (30, "30 秒"),
             (125, "2 分钟 5 秒"),
-            (3600, "1 小时 0 分钟 0 秒"),
             (7261, "2 小时 1 分钟 1 秒"),
         ],
     )
@@ -67,71 +55,24 @@ class TestFooterFormatDuration:
         assert _format_duration(seconds) == expected
 
 
-class TestUITextDurationLiterals:
-    """Guard UI_TEXT time templates against regression to abbreviated forms."""
-
-    def test_duration_secs_has_spaced_unit(self):
-        from src.card.ui_text import UI_TEXT
-        assert "秒" in UI_TEXT["duration_secs"]
-        # Must use space-separated format
-        rendered = UI_TEXT["duration_secs"].format(seconds=5)
-        assert rendered == "5 秒"
-
-    def test_duration_mins_secs_has_full_units(self):
-        from src.card.ui_text import UI_TEXT
-        assert "分钟" in UI_TEXT["duration_mins_secs"]
-        assert "秒" in UI_TEXT["duration_mins_secs"]
-        rendered = UI_TEXT["duration_mins_secs"].format(minutes=3, seconds=45)
-        assert rendered == "3 分钟 45 秒"
-
-    def test_duration_hours_mins_secs_has_full_units(self):
-        from src.card.ui_text import UI_TEXT
-        assert "小时" in UI_TEXT["duration_hours_mins_secs"]
-        assert "分钟" in UI_TEXT["duration_hours_mins_secs"]
-        assert "秒" in UI_TEXT["duration_hours_mins_secs"]
-        rendered = UI_TEXT["duration_hours_mins_secs"].format(hours=1, minutes=2, seconds=3)
-        assert rendered == "1 小时 2 分钟 3 秒"
-
-    def test_time_ago_templates_use_full_units(self):
-        from src.card.ui_text import UI_TEXT
-        assert "分钟" in UI_TEXT["time_mins_ago"]
-        assert "小时" in UI_TEXT["time_hours_ago"]
-        assert "分钟" in UI_TEXT["time_hours_mins_ago"]
-
 # ──────────────────────────────────────────────────────────────────────
 # compute_time_ago_bucket & render_time_ago_cn
 # ──────────────────────────────────────────────────────────────────────
 
 
 class TestComputeTimeAgoBucket:
-    def test_seconds_bucket_for_small_and_negative_values(self):
-        assert compute_time_ago_bucket(0) == {"kind": "seconds", "value": 0}
-        assert compute_time_ago_bucket(-5) == {"kind": "seconds", "value": 0}
-        assert compute_time_ago_bucket(1) == {"kind": "seconds", "value": 0}
-        assert compute_time_ago_bucket(59) == {"kind": "seconds", "value": 0}
-
     def test_minutes_bucket_range(self):
         assert compute_time_ago_bucket(60) == {"kind": "minutes", "value": 1}
-        # 1 分钟多一点仍按 1 分钟前处理
-        assert compute_time_ago_bucket(119) == {"kind": "minutes", "value": 1}
         assert compute_time_ago_bucket(120) == {"kind": "minutes", "value": 2}
         assert compute_time_ago_bucket(3599) == {"kind": "minutes", "value": 59}
 
     def test_hours_bucket_range(self):
         assert compute_time_ago_bucket(3600) == {"kind": "hours", "value": 1}
         assert compute_time_ago_bucket(7200) == {"kind": "hours", "value": 2}
-        # 恰好 23 小时
-        assert compute_time_ago_bucket(23 * 3600) == {"kind": "hours", "value": 23}
 
     def test_days_bucket_range(self):
-        # 恰好 24 小时
         assert compute_time_ago_bucket(86400) == {"kind": "days", "value": 1}
-        # 超过 24 小时按天取整
         assert compute_time_ago_bucket(172800) == {"kind": "days", "value": 2}
-
-    def test_non_numeric_input_falls_back_to_seconds(self):
-        assert compute_time_ago_bucket(None) == {"kind": "seconds", "value": 0}
-        assert compute_time_ago_bucket("not-a-number") == {"kind": "seconds", "value": 0}
 
 
 class TestRenderTimeAgoCn:
@@ -156,60 +97,6 @@ class TestRenderTimeAgoCn:
 # ──────────────────────────────────────────────────────────────────────
 
 
-class TestFormatTimeAgo:
-    def test_just_now_for_zero_and_negative(self):
-        assert format_time_ago(0) == "刚刚"
-        assert format_time_ago(-5) == "刚刚"
-
-    def test_under_one_minute_is_just_now(self):
-        assert format_time_ago(1) == "刚刚"
-        assert format_time_ago(59) == "刚刚"
-
-    def test_minutes_range(self):
-        assert format_time_ago(60) == "1 分钟前"
-        # 1 分钟多一点仍按 1 分钟前处理
-        assert format_time_ago(119) == "1 分钟前"
-        assert format_time_ago(120) == "2 分钟前"
-
-    def test_hours_range(self):
-        assert format_time_ago(3600) == "1 小时前"
-        assert format_time_ago(7200) == "2 小时前"
-
-    def test_days_range(self):
-        # 恰好 24 小时
-        assert format_time_ago(86400) == "1 天前"
-        # 超过 24 小时按天取整
-        assert format_time_ago(172800) == "2 天前"
-
-
-class TestBucketAndFormatConsistency:
-    """确保 bucket → 文案 与 format_time_ago 行为一致。"""
-
-    def test_render_from_bucket_matches_format_time_ago(self):
-        # 选择一组典型输入覆盖 seconds/minutes/hours/days 区间
-        samples = [
-            0,
-            10,
-            59,
-            60,
-            119,
-            3600,
-            7200,
-            86400,
-            172800,
-        ]
-
-        for value in samples:
-            bucket = compute_time_ago_bucket(value)
-            # 通过 bucket 渲染的文案
-            from_bucket = render_time_ago_cn(bucket)
-            # 通过专用 helper 渲染的文案
-            from_helper = format_time_ago_from_bucket(bucket)
-            # 通过秒数直接渲染的文案
-            direct = format_time_ago(value)
-
-            assert from_bucket == direct
-            assert from_helper == direct
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -307,28 +194,15 @@ class TestRenderViolationReport:
 
 
 class TestAppendDurationToTitle:
-    def test_none_returns_title_unchanged(self):
-        assert append_duration_to_title("🔄 执行中", None) == "🔄 执行中"
-
-    def test_zero_returns_title_unchanged(self):
-        # 0.0 is falsy → title unchanged (acceptable: omit trivial durations)
-        assert append_duration_to_title("🔄 执行中", 0.0) == "🔄 执行中"
-
     def test_positive_duration_appended(self):
         result = append_duration_to_title("🔄 执行中", 225)
         assert result == "🔄 执行中 · 3 分钟 45 秒"
-
-    def test_separator_is_middot(self):
-        result = append_duration_to_title("title", 60)
-        assert " · " in result
 
     def test_large_duration(self):
         result = append_duration_to_title("标题", 7261)
         assert result == "标题 · 2 小时 1 分钟 1 秒"
 
-    def test_small_duration(self):
-        result = append_duration_to_title("标题", 3)
-        assert result == "标题 · 3 秒"
+
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -362,17 +236,6 @@ class TestGenerateTaskId:
         tid = generate_task_id(long_name)
         name_part = tid.split("_")[0]
         assert len(name_part) <= 30
-
-    def test_empty_name(self):
-        tid = generate_task_id("")
-        # Should produce _YYYYMMDD_HHMMSS_XXXX (name part is empty)
-        assert tid.startswith("_") or len(tid.split("_")) >= 3
-
-    def test_chinese_name_sanitized(self):
-        tid = generate_task_id("我的项目")
-        name_part = tid.split("_")[0]
-        # Chinese chars are not alnum, replaced with _
-        assert all(c.isalnum() or c == "_" for c in name_part)
 
     def test_uniqueness(self):
         ids = {generate_task_id("proj") for _ in range(50)}

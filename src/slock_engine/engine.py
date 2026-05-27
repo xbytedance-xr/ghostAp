@@ -53,7 +53,7 @@ from .task_router import TaskRouter
 logger = logging.getLogger(__name__)
 
 _SHARED_LOOP: _asyncio.AbstractEventLoop | None = None
-_SHARED_LOOP_LOCK = threading.Lock()
+_SHARED_LOOP_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def _get_shared_loop() -> _asyncio.AbstractEventLoop:
@@ -373,7 +373,7 @@ class SlockEngine(BaseEngine):
         # Proactive follow-up: track delivered results awaiting user feedback
         # Maps task_id → (delivery_time, agent_id, result_preview)
         self._pending_followups: dict[str, tuple[float, str, str]] = {}
-        self._followup_lock = threading.Lock()  # leaf lock
+        self._followup_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Collaboration subsystem prerequisites (must precede TaskBoardManager)
         self._chain_manager = TaskChainManager()

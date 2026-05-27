@@ -69,27 +69,27 @@ class TestFutureResultTimeout:
     """AC-5: future.result raises TimeoutError after configured seconds."""
 
     def test_timeout_raised_for_slow_call(self):
-        """A function that sleeps 15s triggers TimeoutError at 2s."""
+        """A function that sleeps 5s triggers TimeoutError at 0.5s."""
         mgr, _ = _make_manager()
-        mgr._IO_CALL_TIMEOUT_S = 2  # Override for fast testing
+        mgr._IO_CALL_TIMEOUT_S = 0.5  # Override for fast testing
 
         def slow_fn():
-            time.sleep(15)
+            time.sleep(5)
 
         start = time.perf_counter()
         with pytest.raises(TimeoutError):
             mgr._call_with_timeout(slow_fn, label="slow_test")
         elapsed = time.perf_counter() - start
 
-        # Should timeout around 2s (not 15s)
-        assert 1.5 < elapsed < 3.5, f"Timeout took {elapsed:.2f}s, expected ~2s"
+        # Should timeout around 0.5s (not 5s)
+        assert 0.3 < elapsed < 1.5, f"Timeout took {elapsed:.2f}s, expected ~0.5s"
 
         mgr.shutdown_timers()
 
     def test_normal_call_succeeds(self):
         """A fast function completes normally without timeout."""
         mgr, _ = _make_manager()
-        mgr._IO_CALL_TIMEOUT_S = 5
+        mgr._IO_CALL_TIMEOUT_S = 2
 
         results = []
 
@@ -104,7 +104,7 @@ class TestFutureResultTimeout:
     def test_exception_propagated(self):
         """Exceptions from fn are raised to the caller."""
         mgr, _ = _make_manager()
-        mgr._IO_CALL_TIMEOUT_S = 5
+        mgr._IO_CALL_TIMEOUT_S = 2
 
         def failing_fn():
             raise ValueError("something went wrong")
@@ -121,10 +121,10 @@ class TestWorkerAvailableAfterTimeout:
     def test_new_task_runs_after_timeout(self):
         """After a timeout, the next call still succeeds (pool has 4 workers)."""
         mgr, _ = _make_manager()
-        mgr._IO_CALL_TIMEOUT_S = 1  # Short timeout
+        mgr._IO_CALL_TIMEOUT_S = 0.3  # Short timeout
 
         def slow_fn():
-            time.sleep(10)
+            time.sleep(5)
 
         # First call times out
         with pytest.raises(TimeoutError):
@@ -144,10 +144,10 @@ class TestWorkerAvailableAfterTimeout:
     def test_multiple_timeouts_dont_exhaust_pool(self):
         """3 consecutive timeouts don't prevent a 4th call from succeeding."""
         mgr, _ = _make_manager()
-        mgr._IO_CALL_TIMEOUT_S = 1
+        mgr._IO_CALL_TIMEOUT_S = 0.3
 
         def slow_fn():
-            time.sleep(10)
+            time.sleep(5)
 
         # Timeout 3 times (consumes 3 of 4 workers)
         for _ in range(3):

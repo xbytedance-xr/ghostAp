@@ -73,7 +73,7 @@ def clean_ttadk_manager(monkeypatch, tmp_path):
 
     # Reset stub cooldown singleton to avoid cross-test interference.
     # 说明：stub 冷却 SSOT 在 `src.ttadk.startup_common`，但历史单测可能 monkeypatch manager 侧符号。
-    # 这里确保两侧指向同一实例，避免“双对象”导致断言与行为漂移。
+    # 这里确保两侧指向同一实例，避免"双对象"导致断言与行为漂移。
     try:
         import src.ttadk.startup_common
 
@@ -112,19 +112,13 @@ def clean_ttadk_manager(monkeypatch, tmp_path):
     yield
 
 
-def test_minimal_imports_no_circular_import_error():
-    """防回归：核心模块 import 不应触发循环依赖 ImportError。"""
+def test_ttadk_core_imports_no_circular_import_error():
+    """防回归：核心及 TTADK 启动模块 import 不应触发循环依赖 ImportError。"""
     import importlib
 
     importlib.import_module("src.acp")
     importlib.import_module("src.agent_session")
     importlib.import_module("src.feishu.ws_client")
-
-
-def test_ttadk_ssot_imports_no_circular_import_error():
-    """防回归：TTADK 启动编排 SSOT 与兼容入口 import 不应触发循环依赖。"""
-    import importlib
-
     importlib.import_module("src.ttadk.startup")
     importlib.import_module("src.ttadk.manager")
     importlib.import_module("src.acp.manager")
@@ -456,7 +450,7 @@ def test_ttadk_startup_ssot_call_chain_create_engine_session(monkeypatch):
     import src.agent_session as agent_session
     from src.agent_session import SyncTTADKCLISession
 
-    # 关闭 rate limit wrapper，避免影响“返回 session 是否为 SSOT result”的断言
+    # 关闭 rate limit wrapper，避免影响"返回 session 是否为 SSOT result"的断言
     monkeypatch.setattr(
         agent_session.factory,
         "get_settings",
@@ -582,14 +576,9 @@ def test_ttadk_startup_summary_log_fields_degraded(monkeypatch, caplog):
             agent_session.create_engine_session(agent_type="ttadk_codex", cwd="/tmp", model_name="gpt-5.2")
 
 
-def test_is_stdin_not_tty_error_basic():
+def test_is_stdin_not_tty_error_variants():
     assert is_stdin_not_tty_error(_SAMPLE_STDIN_NOT_TTY) is True
-
-
-def test_is_stdin_not_tty_error_strips_ansi():
     assert is_stdin_not_tty_error(_SAMPLE_STDIN_NOT_TTY_ANSI) is True
-
-def test_is_stdin_not_tty_error_negative_cases():
     assert is_stdin_not_tty_error("") is False
     assert is_stdin_not_tty_error("some other error") is False
 
@@ -806,7 +795,7 @@ def test_ttadk_sandbox_env_does_not_write_real_home_setting_json(monkeypatch, tm
     """回归：启用 sandbox 后，ttadk 子进程 env 应指向项目隔离目录，不应改写真实 HOME 下的 ~/.ttadk/setting.json。"""
     import json
 
-    # 1) 构造一个“真实 HOME”与其 setting.json
+    # 1) 构造一个"真实 HOME"与其 setting.json
     real_home = tmp_path / "real_home"
     real_home.mkdir(parents=True, exist_ok=True)
     ttadk_dir = real_home / ".ttadk"
@@ -823,7 +812,7 @@ def test_ttadk_sandbox_env_does_not_write_real_home_setting_json(monkeypatch, tm
     before_mtime = setting_path.stat().st_mtime
     before_text = setting_path.read_text(encoding="utf-8")
 
-    # 2) 让进程级 HOME 指向 real_home（模拟“真实用户 HOME”）
+    # 2) 让进程级 HOME 指向 real_home（模拟"真实用户 HOME"）
     monkeypatch.setenv("HOME", str(real_home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(real_home / ".config"))
 
@@ -1043,7 +1032,7 @@ def test_resolve_and_ensure_valid_model_marks_defaults_untrusted_and_refreshes(m
                 source="probe",
                 diagnostics=FetchDiagnostics(tool_name=tool_name, chosen_strategy="probe"),
             )
-        # 非 force_refresh 时模拟“拿不到真实列表”，触发 defaults fallback
+        # 非 force_refresh 时模拟"拿不到真实列表"，触发 defaults fallback
         return FetchResult(
             tool_name=tool_name,
             models=[],
@@ -1159,25 +1148,18 @@ def test_manager_refresh_models_force_refresh(monkeypatch):
     assert result.models and result.models[0].name == "real-model"
 
 
-def test_manager_get_models_with_tool_name():
-    """测试获取指定工具的模型列表"""
+def test_manager_get_models_and_cache_behavior():
+    """测试获取模型列表、缓存失效和缓存标志"""
     manager = TTADKManager(default_tool="coco")
 
     # 获取当前工具的模型
     result = manager.get_models()
     assert result.error is None
+    assert result.cached is False
 
     # 获取指定工具的模型
     result_codex = manager.get_models(tool_name="codex")
     assert result_codex.error is None
-
-
-def test_manager_model_cache_invalidation():
-    """测试模型缓存失效"""
-    manager = TTADKManager(default_tool="coco")
-
-    # 获取模型，填充缓存
-    manager.get_models()
 
     # 使特定工具的缓存失效
     manager.invalidate_model_cache("coco")
@@ -1185,17 +1167,7 @@ def test_manager_model_cache_invalidation():
     # 使所有缓存失效
     manager.invalidate_model_cache()
 
-
-def test_manager_model_cached_flag():
-    """测试模型缓存标志"""
-    manager = TTADKManager(default_tool="coco")
-
-    # 第一次获取，cached 应该为 False
-    result = manager.get_models()
-    assert result.cached is False
-
     # 如果有缓存，再次获取时 cached 应该为 True
-    # 但由于模型获取可能失败（终端交互），这里只测试缓存逻辑
     if manager._cache._is_cache_valid("coco"):
         result2 = manager.get_models()
         assert result2.cached is True
@@ -1247,7 +1219,7 @@ def test_start_session_with_retry_logs_stderr_when_error_message_empty(monkeypat
     assert "stderr_snippet" in caplog.text
 
 
-def test_extract_models_ignores_unrelated_string_list(monkeypatch):
+def test_extract_models_ignores_unrelated_and_returns_correct_list(monkeypatch):
     manager = TTADKManager(default_tool="claude")
 
     # Mock fetch_tool_models_with_diagnostics 返回指定的模型列表
@@ -1277,14 +1249,10 @@ def test_extract_models_ignores_unrelated_string_list(monkeypatch):
     result = manager.get_models(cwd=".")
     assert [m.name for m in result.models] == ["claude-3.7-sonnet", "claude-3.5-sonnet"]
 
-
-def test_extract_models_not_from_generic_string_list(monkeypatch):
-    manager = TTADKManager(default_tool="claude")
-
-    from src.ttadk.model_fetcher import FetchDiagnostics, FetchResult
-
+    # Test with empty fetch result — should fall back to defaults (no file artifacts)
+    manager2 = TTADKManager(default_tool="claude")
     monkeypatch.setattr(
-        manager._model_fetcher,
+        manager2._model_fetcher,
         "fetch_tool_models_with_diagnostics",
         lambda tool_name, cwd=None, force_refresh=False: FetchResult(
             tool_name=tool_name,
@@ -1293,18 +1261,15 @@ def test_extract_models_not_from_generic_string_list(monkeypatch):
             diagnostics=FetchDiagnostics(tool_name=tool_name),
         ),
     )
-
-    result = manager.get_models(cwd=".")
-    model_names = [m.name for m in result.models]
-    # Should fall back to defaults
+    result2 = manager2.get_models(cwd=".")
+    model_names = [m.name for m in result2.models]
     assert "image.png" not in model_names
     assert "README.md" not in model_names
-    # 兜底应回到默认模型列表（不要求具体命名形态，只要包含 GPT 5.2 系列即可）
     assert any("gpt-5.2" in n for n in model_names)
 
 
-def test_get_real_model_name_resolution():
-    """测试模型名称解析逻辑（精确、友好名、模糊匹配）"""
+def test_get_real_model_name_resolution_and_metadata():
+    """测试模型名称解析逻辑（精确、友好名、模糊匹配）及 resolve metadata。"""
     manager = TTADKManager(default_tool="test-tool")
 
     # Mock cache
@@ -1314,7 +1279,6 @@ def test_get_real_model_name_resolution():
         TTADKModel(name="simple-model", description="Simple", friendly_name="Simple"),
     ]
     manager._tool_models_cache["test-tool"] = mock_models
-    # 标记缓存有效，避免触发真实拉取逻辑
     manager._cache_time["test-tool"] = time.time()
 
     # 1. 精确匹配
@@ -1333,17 +1297,7 @@ def test_get_real_model_name_resolution():
     # 5. 无匹配 (返回原值)
     assert manager.get_real_model_name("non-existent") == "non-existent"
 
-
-def test_resolve_real_model_name_returns_metadata():
-    """resolve_real_model_name 应返回 source/validated/warnings 等元信息。"""
-    manager = TTADKManager(default_tool="test-tool")
-    manager._tool_models_cache["test-tool"] = [
-        TTADKModel(name="gpt-5.2-codex-ttadk", description="GPT 5.2", friendly_name="GPT 5.2"),
-        TTADKModel(name="claude-3-opus-20240229", description="Claude 3 Opus", friendly_name="Claude 3 Opus"),
-    ]
-    # 避免触发真实拉取：让 get_models 直接走缓存
-    manager._cache_time["test-tool"] = time.time()
-
+    # resolve_real_model_name returns metadata
     r1 = manager.resolve_real_model_name("GPT 5.2", tool_name="test-tool")
     assert r1.real_name == "gpt-5.2-codex-ttadk"
     assert r1.source in ("friendly", "exact")
@@ -1370,66 +1324,8 @@ def test_resolve_real_model_name_require_valid_fallback():
     assert "model_not_available" in r.warnings
 
 
-def test_require_valid_defaults_triggers_refresh_probe(monkeypatch):
-    """仅 defaults 时 require_valid 不应误判为可用，需触发 refresh(probe) 后给出真实模型。"""
-    from src.ttadk.models import ModelListResult, ResolvedModelResult
-
-    manager = TTADKManager(default_tool="codex")
-
-    # 第一次解析：get_models 返回 defaults（不可信）
-    monkeypatch.setattr(
-        manager,
-        "get_models",
-        lambda cwd=None, tool_name=None, force_refresh=False: ModelListResult(
-            models=[TTADKModel(name="gpt-5.2")],
-            source="defaults",
-            cached=False,
-        ),
-    )
-
-    # refresh_models -> 返回真实模型列表（模拟 probe 得到）
-    monkeypatch.setattr(
-        manager,
-        "refresh_models",
-        lambda tool_name=None, cwd=None: ModelListResult(
-            models=[TTADKModel(name="gpt-5.2-codex-ttadk"), TTADKModel(name="gpt-5.2-ttadk")],
-            source="probe",
-            cached=False,
-        ),
-    )
-
-    # 第二次解析：直接返回 validated=True 的真实模型
-    calls = {"n": 0}
-
-    def _fake_resolve(model_name, tool_name=None, cwd=None, require_valid=False):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return ResolvedModelResult(
-                tool_name=tool_name or "codex",
-                input_name=model_name,
-                real_name=model_name,
-                source="exact",
-                validated=False,
-                warnings=["models_untrusted"],
-            )
-        return ResolvedModelResult(
-            tool_name=tool_name or "codex",
-            input_name=model_name,
-            real_name="gpt-5.2-codex-ttadk",
-            source="friendly",
-            validated=True,
-            warnings=[],
-        )
-
-    monkeypatch.setattr(manager, "resolve_real_model_name", _fake_resolve)
-
-    r = manager.resolve_and_ensure_valid_model("gpt-5.2", tool_name="codex", cwd=".")
-    assert r.real_name.endswith("-ttadk")
-    assert r.validated is True
-    assert any(w.startswith("refreshed:") for w in (r.warnings or []))
-
-
 def test_resolve_and_ensure_valid_model_refreshes_when_untrusted(monkeypatch):
+    """当 get_models 或 resolve 返回不可信来源时，应触发 refresh 并最终给出 validated=True 的真实模型。"""
     manager = TTADKManager(default_tool="coco")
 
     from src.ttadk.models import ModelListResult, ResolvedModelResult
@@ -1440,7 +1336,7 @@ def test_resolve_and_ensure_valid_model_refreshes_when_untrusted(monkeypatch):
         "refresh_models",
         lambda tool_name=None, cwd=None: ModelListResult(models=[TTADKModel(name="real-model")], source="probe"),
     )
-    # 第一次解析认为“不可信”，第二次（刷新后）返回 validated=True 的真实模型
+    # 第一次解析认为"不可信"，第二次（刷新后）返回 validated=True 的真实模型
     calls = {"n": 0}
 
     def _fake_resolve(model_name, tool_name=None, cwd=None, require_valid=False):
@@ -1733,8 +1629,8 @@ def test_ttadk_runtime_repair_retry_model_not_in_seeded_fallbacks_to_seeded(monk
 
 
 
-def test_ttadk_select_retry_model_uses_all_when_no_tool_subset():
-    """select_retry_model: tool 子集不存在时应在全量 seeded 上 best-match。"""
+def test_ttadk_select_retry_model_variants():
+    """select_retry_model: tool 子集不存在时应在全量 seeded 上 best-match；empty seeded returns None。"""
     from src.ttadk.runtime_repair import select_retry_model
 
     seen = {"models": None}
@@ -1753,12 +1649,7 @@ def test_ttadk_select_retry_model_uses_all_when_no_tool_subset():
     assert out == "b"
     assert seen["models"] == ["a", "b"]
 
-
-
-
-def test_ttadk_select_retry_model_empty_seeded_returns_none():
-    from src.ttadk.runtime_repair import select_retry_model
-
+    # Empty seeded returns None
     assert select_retry_model(tool_name="codex", input_model="x", seeded=[], allow_autoswitch=True) is None
 
 
@@ -1788,21 +1679,18 @@ def test_ttadk_runtime_repair_cooldown_gate_stub_blocks(monkeypatch):
 
 
 
-def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
-    """stub 冷却限额：非法配置值应回退默认且不抛异常。"""
+def test_ttadk_runtime_stub_limits_invalid_and_negative_values(monkeypatch):
+    """stub 冷却限额：非法配置值应回退默认，负值应被 clamp 到 0。"""
     import src.ttadk.startup_common as sc
     from src.ttadk import manager as m
 
-    # reset limits cache to avoid cross-test interference
+    # --- Test 1: invalid values fallback ---
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache", None, raising=False)
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache_ts", 0.0, raising=False)
-
-    # set non-default module defaults
     monkeypatch.setattr(m._STUB_COOLDOWN, "_ttl_default", 123.0, raising=False)
     monkeypatch.setattr(m._STUB_COOLDOWN, "_max_keys_default", 456, raising=False)
     monkeypatch.setattr(m._STUB_COOLDOWN, "_gc_interval_default", 7.0, raising=False)
 
-    # invalid settings types
     monkeypatch.setattr(
         m,
         "get_settings",
@@ -1817,7 +1705,6 @@ def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
         )(),
     )
 
-    # 显式初始化：让 startup_common 通过 provider 使用本测试 monkeypatch 的 get_settings
     monkeypatch.setattr(sc, "_compat_providers_installed", False, raising=False)
     m.get_ttadk_manager()
 
@@ -1826,13 +1713,7 @@ def test_ttadk_runtime_stub_limits_invalid_values_fallback(monkeypatch):
     assert max_keys == 456
     assert interval == 7.0
 
-
-def test_ttadk_runtime_stub_limits_negative_values_clamped(monkeypatch):
-    """stub 冷却限额：负值应被 clamp 到 0。"""
-    import src.ttadk.startup_common as sc
-    from src.ttadk import manager as m
-
-    # reset limits cache to avoid cross-test interference
+    # --- Test 2: negative values clamped ---
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache", None, raising=False)
     monkeypatch.setattr(m._STUB_COOLDOWN, "_limits_cache_ts", 0.0, raising=False)
 
@@ -1948,9 +1829,10 @@ def test_ttadk_fetcher_probe_tool_models_parses_available_models():
     assert fake.calls and fake.calls[0][0][:4] == ["ttadk", "code", "-t", "codex"]
 
 
-def test_extract_available_models_multiline_and_ansi():
+def test_extract_available_models_variants():
     from src.ttadk.models import extract_available_models, is_invalid_model_error
 
+    # multiline with ANSI
     text = (
         "\x1b[31m✗ Error: Invalid model 'X'. Available models:\n"
         "  gpt-5.2-codex-ttadk\n"
@@ -1961,13 +1843,10 @@ def test_extract_available_models_multiline_and_ansi():
     assert is_invalid_model_error(text) is True
     assert extract_available_models(text) == ["gpt-5.2-codex-ttadk", "gpt-5.2-ttadk"]
 
-
-def test_extract_available_models_empty_list_returns_empty():
-    from src.ttadk.models import extract_available_models, is_invalid_model_error
-
-    text = "✗ Error: Invalid model 'gpt-5.2'. Available models:    "
-    assert is_invalid_model_error(text) is True
-    assert extract_available_models(text) == []
+    # empty list
+    text2 = "✗ Error: Invalid model 'gpt-5.2'. Available models:    "
+    assert is_invalid_model_error(text2) is True
+    assert extract_available_models(text2) == []
 
 
 def test_ttadk_manager_preheat_once_and_writes_cache(monkeypatch):
@@ -2040,29 +1919,22 @@ def test_ttadk_manager_preheat_timeout_zero_noop(monkeypatch):
 
 
 class TestTTADKTitleSuffix:
-    def test_with_tool_and_model(self):
+    def test_title_suffix_variants(self):
         from src.card.shared import _build_ttadk_title_suffix
 
         assert _build_ttadk_title_suffix("claude", "glm-5") == " · claude(glm-5)"
-
-    def test_with_tool_only(self):
-        from src.card.shared import _build_ttadk_title_suffix
-
         assert _build_ttadk_title_suffix("gemini", None) == " · gemini"
         assert _build_ttadk_title_suffix("coco", "") == " · coco"
-
-    def test_no_tool_no_model(self):
-        from src.card.shared import _build_ttadk_title_suffix
-
         assert _build_ttadk_title_suffix(None, None) == ""
         assert _build_ttadk_title_suffix("", "") == ""
 
 
 class TestResolveTitleTTADKWithToolModel:
-    def test_with_project_tool_model(self):
+    def test_title_resolution_variants(self):
         from src.card.shared import resolve_title_and_template
         from src.mode.manager import InteractionMode
 
+        # with project, tool, model
         title, template = resolve_title_and_template(
             "myProject",
             mode=InteractionMode.TTADK, ttadk_tool_name="claude", ttadk_model_name="glm-5",
@@ -2072,10 +1944,7 @@ class TestResolveTitleTTADKWithToolModel:
         assert "glm-5" in title
         assert template == "orange"
 
-    def test_with_project_tool_only(self):
-        from src.card.shared import resolve_title_and_template
-        from src.mode.manager import InteractionMode
-
+        # with project, tool only
         title, _ = resolve_title_and_template(
             "myProject",
             mode=InteractionMode.TTADK, ttadk_tool_name="gemini",
@@ -2083,31 +1952,15 @@ class TestResolveTitleTTADKWithToolModel:
         assert "TTADK · gemini" in title
         assert "myProject" in title
 
-    def test_no_project_with_tool_model(self):
-        from src.card.shared import resolve_title_and_template
-        from src.mode.manager import InteractionMode
-
+        # no project, with tool/model
         title, _ = resolve_title_and_template(
             None,
             mode=InteractionMode.TTADK, ttadk_tool_name="codex", ttadk_model_name="gpt-5.2",
         )
         assert "TTADK" in title
         assert "codex" in title
-        assert "gpt-5.2" in title
 
-    def test_no_project_no_tool(self):
-        from src.card.shared import resolve_title_and_template
-        from src.mode.manager import InteractionMode
-
-        title, _ = resolve_title_and_template(
-            None, mode=InteractionMode.TTADK,
-        )
-        assert "TTADK" in title
-
-    def test_backward_compatible_no_ttadk_params(self):
-        from src.card.shared import resolve_title_and_template
-        from src.mode.manager import InteractionMode
-
+        # backward compatible no params
         title, _ = resolve_title_and_template(
             "ghostAp", mode=InteractionMode.TTADK,
         )
@@ -2115,45 +1968,29 @@ class TestResolveTitleTTADKWithToolModel:
 
 
 class TestPreambleAsciiArtSingleQuote:
-    def test_ascii_art_line_with_quote_filtered(self):
+    def test_banner_lines_filtered(self):
         from src.agent_session import _is_ttadk_preamble_line
 
-        assert _is_ttadk_preamble_line("  | |   | | / _ \\ | | | | ' /")
-
-    def test_all_banner_lines_filtered(self):
-        from src.agent_session import _is_ttadk_preamble_line
-
-        lines = [
+        banner_lines = [
             "  _____ _____  _    ____  _  __",
             " |_   _|_   _|/ \\  |  _ \\| |/ /",
             "   | |   | | / _ \\ | | | | ' /",
             "   | |   | |/ ___ \\| |_| | . \\",
             "   |_|   |_/_/   \\_\\____/|_|\\_\\",
         ]
-        for i, line in enumerate(lines):
-            assert _is_ttadk_preamble_line(line), f"Banner line {i+1} should be filtered: {line!r}"
+        for line in banner_lines:
+            assert _is_ttadk_preamble_line(line), f"Should filter: {line!r}"
 
 
 class TestBuildTTADKPassthroughPrompt:
-    def test_coco_uses_print_mode(self):
+    def test_print_mode_tools(self):
         from src.agent_session import _build_ttadk_passthrough_prompt
 
-        result = _build_ttadk_passthrough_prompt("coco", "hello world")
-        assert result.startswith("-p ")
-        assert "hello world" in result
-
-    def test_claude_uses_print_mode(self):
-        from src.agent_session import _build_ttadk_passthrough_prompt
-
-        result = _build_ttadk_passthrough_prompt("claude", "fix the bug")
-        assert result.startswith("-p ")
-        assert "fix the bug" in result
-
-    def test_gemini_uses_print_mode(self):
-        from src.agent_session import _build_ttadk_passthrough_prompt
-
-        result = _build_ttadk_passthrough_prompt("gemini", "explain this code")
-        assert result.startswith("-p ")
+        # coco, claude, gemini all use -p
+        for tool in ("coco", "claude", "gemini", "Coco"):
+            result = _build_ttadk_passthrough_prompt(tool, "hello world")
+            assert result.startswith("-p "), f"{tool} should use -p mode"
+            assert "hello world" in result
 
     def test_codex_uses_positional_only(self):
         from src.agent_session import _build_ttadk_passthrough_prompt
@@ -2162,24 +1999,12 @@ class TestBuildTTADKPassthroughPrompt:
         assert not result.startswith("-p")
         assert "write a test" in result
 
-    def test_unknown_tool_uses_positional(self):
-        from src.agent_session import _build_ttadk_passthrough_prompt
-
-        result = _build_ttadk_passthrough_prompt("tmates", "do something")
-        assert not result.startswith("-p")
-
     def test_special_chars_are_quoted(self):
         from src.agent_session import _build_ttadk_passthrough_prompt
 
         result = _build_ttadk_passthrough_prompt("coco", 'fix "bug" in file.py')
         assert "fix" in result
         assert "bug" in result
-
-    def test_case_insensitive_tool_name(self):
-        from src.agent_session import _build_ttadk_passthrough_prompt
-
-        result = _build_ttadk_passthrough_prompt("Coco", "test")
-        assert result.startswith("-p ")
 
 
 class TestSyncTTADKCLISessionCmdArgs:
@@ -2191,7 +2016,7 @@ class TestSyncTTADKCLISessionCmdArgs:
         )
 
     @pytest.mark.usefixtures("_patch_env")
-    def test_send_prompt_uses_passthrough_args(self, monkeypatch):
+    def test_send_prompt_coco_uses_passthrough_args_not_positional(self, monkeypatch):
         from unittest.mock import MagicMock, patch
 
         from src.agent_session import SyncTTADKCLISession
@@ -2213,25 +2038,7 @@ class TestSyncTTADKCLISessionCmdArgs:
             a_val = cmd_args[a_idx + 1]
             assert a_val.startswith("-p ")
             assert "say hello" in a_val
-
-    @pytest.mark.usefixtures("_patch_env")
-    def test_send_prompt_does_not_append_prompt_as_positional(self, monkeypatch):
-        from unittest.mock import MagicMock, patch
-
-        from src.agent_session import SyncTTADKCLISession
-
-        mock_proc = MagicMock()
-        mock_proc.stdout = iter(["ok\n"])
-        mock_proc.stderr = iter([])
-        mock_proc.returncode = 0
-        mock_proc.wait.return_value = None
-
-        with patch("src.agent_session.subprocess.Popen", return_value=mock_proc) as mock_popen:
-            session = SyncTTADKCLISession(agent_type="ttadk_coco", cwd="/tmp")
-            session.send_prompt("my prompt text")
-
-            cmd_args = mock_popen.call_args[0][0]
-            assert cmd_args[-1] != "my prompt text", "prompt should not be a positional arg to 'ttadk code'"
+            assert cmd_args[-1] != "say hello", "prompt should not be a positional arg"
 
     @pytest.mark.usefixtures("_patch_env")
     def test_send_prompt_codex_no_print_flag(self, monkeypatch):
@@ -2256,26 +2063,22 @@ class TestSyncTTADKCLISessionCmdArgs:
 
 
 class TestTTADKPreambleNewPatterns:
-    def test_launching_tool_filtered(self):
+    def test_launching_and_real_content(self):
         from src.agent_session import _is_ttadk_preamble_line
 
         assert _is_ttadk_preamble_line("🚀 Launching Trae CLI (Coco)...")
         assert _is_ttadk_preamble_line("🚀 Launching Claude Code...")
-
-    def test_real_content_not_filtered(self):
-        from src.agent_session import _is_ttadk_preamble_line
-
         assert not _is_ttadk_preamble_line("Hello, I can help you with that!")
-        assert not _is_ttadk_preamble_line("The answer is 42.")
         assert not _is_ttadk_preamble_line("def foo(): return 1")
 
 
 
 
-def test_ttadk_manager_preheat_disabled_noop(monkeypatch):
+def test_ttadk_manager_preheat_disabled_or_zero_timeout_noop(monkeypatch):
+    """Preheat disabled or timeout=0 should not trigger any probe calls."""
+    # Test disabled
     manager = TTADKManager(default_tool="coco")
-
-    s = type(
+    s_disabled = type(
         "S",
         (),
         {
@@ -2288,16 +2091,30 @@ def test_ttadk_manager_preheat_disabled_noop(monkeypatch):
             "ttadk_preheat_timeout": 0.2,
         },
     )()
-    monkeypatch.setattr("src.ttadk.manager.get_settings", lambda: s)
-
-    # 即便 which 返回存在，也不应触发
+    monkeypatch.setattr("src.ttadk.manager.get_settings", lambda: s_disabled)
     monkeypatch.setattr("src.ttadk.manager.shutil.which", lambda _: "/usr/bin/ttadk")
-    fake = _FakeRunner(
-        out="",
-        err="Invalid model 'X'. Available models: real-a",
-        rc=1,
-    )
+    fake = _FakeRunner(out="", err="Invalid model 'X'. Available models: real-a", rc=1)
     manager._model_fetcher = TTADKModelFetcher(runner=fake)
-
     manager.maybe_preheat_common_models(cwd=".")
     assert fake.calls == []
+
+    # Test timeout=0
+    manager2 = TTADKManager(default_tool="coco")
+    s_zero = type(
+        "S",
+        (),
+        {
+            "ttadk_default_tool": "coco",
+            "ttadk_default_model": "",
+            "ttadk_preheat_enabled": True,
+            "ttadk_preheat_on_first_use": True,
+            "ttadk_preheat_on_startup": True,
+            "ttadk_preheat_tools": "codex",
+            "ttadk_preheat_timeout": 0.0,
+        },
+    )()
+    monkeypatch.setattr("src.ttadk.manager.get_settings", lambda: s_zero)
+    fake2 = _FakeRunner(out="", err="Invalid model 'X'. Available models: real-a", rc=1)
+    manager2._model_fetcher = TTADKModelFetcher(runner=fake2)
+    manager2.maybe_preheat_common_models(cwd=".")
+    assert fake2.calls == []

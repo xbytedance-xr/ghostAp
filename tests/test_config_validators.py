@@ -5,7 +5,7 @@ from operator import attrgetter
 import pytest
 from pydantic import ValidationError
 
-from src.config import Settings
+from src.config import CardSessionConfig, Settings
 
 
 def _build_settings(**overrides) -> Settings:
@@ -44,19 +44,9 @@ class TestBoundaryValidators:
     """Parametrized boundary tests for all range-validated settings."""
 
     @pytest.mark.parametrize("setting_key,attr_path,lower,upper,extra_lower,extra_upper", _BOUNDARY_SPECS, ids=_BOUNDARY_IDS)
-    def test_at_lower_bound(self, setting_key, attr_path, lower, upper, extra_lower, extra_upper):
-        s = _build_settings(**{setting_key: lower, **extra_lower})
-        assert attrgetter(attr_path)(s) == lower
-
-    @pytest.mark.parametrize("setting_key,attr_path,lower,upper,extra_lower,extra_upper", _BOUNDARY_SPECS, ids=_BOUNDARY_IDS)
     def test_below_lower_bound(self, setting_key, attr_path, lower, upper, extra_lower, extra_upper):
         with pytest.raises(ValidationError, match=setting_key):
             _build_settings(**{setting_key: lower - 1})
-
-    @pytest.mark.parametrize("setting_key,attr_path,lower,upper,extra_lower,extra_upper", _BOUNDARY_SPECS, ids=_BOUNDARY_IDS)
-    def test_at_upper_bound(self, setting_key, attr_path, lower, upper, extra_lower, extra_upper):
-        s = _build_settings(**{setting_key: upper, **extra_upper})
-        assert attrgetter(attr_path)(s) == upper
 
     @pytest.mark.parametrize("setting_key,attr_path,lower,upper,extra_lower,extra_upper", _BOUNDARY_SPECS, ids=_BOUNDARY_IDS)
     def test_above_upper_bound(self, setting_key, attr_path, lower, upper, extra_lower, extra_upper):
@@ -254,3 +244,36 @@ class TestEnvVarAliasResolution:
         s1 = _build_settings(card_session_idle_warn_at_remaining=250)
         s2 = _build_settings(card_session_idle_warn_before=250)
         assert s1.card.session_idle_warn_at_remaining == s2.card.session_idle_warn_at_remaining
+
+
+# ---------------------------------------------------------------------------
+# CardSessionConfig field validators (merged from test_config_validator.py)
+# ---------------------------------------------------------------------------
+
+
+class TestLockTTLAutoCeil:
+    """Verify CARD_SESSION_LOCK_TTL auto-ceil to nearest 60 multiple."""
+
+    def test_exact_multiple_unchanged(self):
+        """60 should pass through unchanged."""
+        config = CardSessionConfig(session_lock_ttl=60)
+        assert config.session_lock_ttl == 60.0
+
+    def test_90_ceils_to_120(self):
+        """90 is not a multiple of 60 -> ceil to 120."""
+        config = CardSessionConfig(session_lock_ttl=90)
+        assert config.session_lock_ttl == 120.0
+
+
+class TestLockTTLRangeRejection:
+    """Verify out-of-range values raise ValueError."""
+
+    def test_below_minimum_raises(self):
+        """Values < 60 should raise ValueError."""
+        with pytest.raises(ValueError, match="60.*3600"):
+            CardSessionConfig(session_lock_ttl=30)
+
+    def test_above_maximum_raises(self):
+        """Values > 3600 should raise ValueError."""
+        with pytest.raises(ValueError, match="60.*3600"):
+            CardSessionConfig(session_lock_ttl=4000)

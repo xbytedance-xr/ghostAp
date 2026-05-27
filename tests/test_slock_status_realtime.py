@@ -233,11 +233,12 @@ class TestStatusRefreshCallbackReceivesCard:
 
         engine.register_status_refresh_callback(capture_callback)
 
-        # Trigger a status refresh via _set_dirty
+        # Trigger a status refresh with short debounce delay
         engine._set_dirty(True)
+        engine._schedule_status_refresh(delay=0.05)
 
-        # Wait for the debounced timer to fire (default 3s delay + buffer)
-        time.sleep(4.0)
+        # Wait for the debounced timer to fire
+        time.sleep(0.2)
 
         assert len(received_calls) >= 1
         msg_id, card = received_calls[-1]
@@ -261,8 +262,8 @@ class TestStatusRefreshCallbackReceivesCard:
 
         engine._set_dirty(True)
 
-        # Give enough time for potential timer to fire
-        time.sleep(4.0)
+        # Give enough time for potential timer to fire (no timer created since no msg_ids)
+        time.sleep(0.2)
 
         assert len(received_calls) == 0
 
@@ -287,8 +288,9 @@ class TestStatusRefreshCallbackReceivesCard:
         engine.transition_agent("a1", AgentStatus.THINKING)
         engine.transition_agent("a1", AgentStatus.RUNNING)
         engine._set_dirty(True)
+        engine._schedule_status_refresh(delay=0.05)
 
-        time.sleep(4.0)
+        time.sleep(0.2)
 
         assert len(received_calls) >= 1
         _, card = received_calls[-1]
@@ -316,8 +318,9 @@ class TestStatusChangeUpdatesExistingCard:
 
         # Trigger refresh
         engine._set_dirty(True)
+        engine._schedule_status_refresh(delay=0.05)
 
-        time.sleep(4.0)
+        time.sleep(0.2)
 
         assert len(received_calls) >= 1
         assert received_calls[-1][0] == "msg_panel_001"
@@ -338,8 +341,9 @@ class TestStatusChangeUpdatesExistingCard:
         engine.register_status_refresh_callback(capture_callback)
 
         engine._set_dirty(True)
+        engine._schedule_status_refresh(delay=0.05)
 
-        time.sleep(4.0)
+        time.sleep(0.2)
 
         # No callback because the active channel is "ch_test" which has no msg_id
         assert len(received_calls) == 0
@@ -364,9 +368,11 @@ class TestStatusChangeUpdatesExistingCard:
         engine._set_dirty(True)
         engine.transition_agent(agent.agent_id, AgentStatus.RUNNING)
         engine._set_dirty(True)
+        # Override debounce delay to speed up test
+        engine._schedule_status_refresh(delay=0.05)
 
         # Wait for debounce to resolve
-        time.sleep(4.0)
+        time.sleep(0.2)
 
         # Debounce means fewer calls than _set_dirty invocations
         # Timer is cancelled+rescheduled each time, so should coalesce to 1

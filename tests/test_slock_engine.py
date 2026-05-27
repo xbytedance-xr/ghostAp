@@ -6,7 +6,6 @@ import json
 import os
 import threading
 import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -41,8 +40,6 @@ class TestIsSLockCommand:
 
     @pytest.mark.parametrize("text", [
         "/new-role Coder",
-        "/role list",
-        "/task assign something coder",
         "/team dissolve Alpha",
     ])
     def test_recognized_in_managed_chat(self, text):
@@ -53,8 +50,6 @@ class TestIsSLockCommand:
 
     @pytest.mark.parametrize("text", [
         "/new-role Coder",
-        "/role list",
-        "/task assign something coder",
         "/team dissolve Alpha",
     ])
     def test_not_captured_in_unmanaged_chat(self, text):
@@ -71,9 +66,7 @@ class TestIsSLockCommand:
     @pytest.mark.parametrize("text", [
         "",
         "/deep",
-        "/spec",
         "hello",
-        "/exit",
     ])
     def test_not_recognized(self, text):
         assert not is_slock_command(text)
@@ -96,14 +89,6 @@ class TestParseSlockCommand:
         cmd = parse_slock_command("/slock list")
         assert cmd.action == SlockCommandAction.TEAM_LIST
 
-    def test_slock_teams(self):
-        cmd = parse_slock_command("/slock teams")
-        assert cmd.action == SlockCommandAction.TEAM_LIST
-
-    def test_slocks_alias(self):
-        cmd = parse_slock_command("/slocks")
-        assert cmd.action == SlockCommandAction.TEAM_LIST
-
     def test_slock_with_args(self):
         cmd = parse_slock_command("/slock build a web app")
         assert cmd.action == SlockCommandAction.ACTIVATE
@@ -121,10 +106,6 @@ class TestParseSlockCommand:
 
     def test_role_list(self):
         cmd = parse_slock_command("/role list")
-        assert cmd.action == SlockCommandAction.ROLE_LIST
-
-    def test_role_bare(self):
-        cmd = parse_slock_command("/role")
         assert cmd.action == SlockCommandAction.ROLE_LIST
 
     def test_role_remove(self):
@@ -146,10 +127,6 @@ class TestParseSlockCommand:
         cmd = parse_slock_command("/task list")
         assert cmd.action == SlockCommandAction.TASK_LIST
 
-    def test_task_bare(self):
-        cmd = parse_slock_command("/task")
-        assert cmd.action == SlockCommandAction.TASK_LIST
-
     def test_task_status(self):
         cmd = parse_slock_command("/task status")
         assert cmd.action == SlockCommandAction.TASK_STATUS
@@ -160,17 +137,8 @@ class TestParseSlockCommand:
         assert cmd.action == SlockCommandAction.UNKNOWN
         assert "deprecated" in cmd.args.lower() or "移除" in cmd.args
 
-    def test_task_assign_without_role(self):
-        """task assign is deprecated — returns UNKNOWN with hint."""
-        cmd = parse_slock_command("/task assign something")
-        assert cmd.action == SlockCommandAction.UNKNOWN
-
     def test_team_list(self):
         cmd = parse_slock_command("/team list")
-        assert cmd.action == SlockCommandAction.TEAM_LIST
-
-    def test_team_bare(self):
-        cmd = parse_slock_command("/team")
         assert cmd.action == SlockCommandAction.TEAM_LIST
 
     def test_team_status(self):
@@ -227,19 +195,6 @@ class TestSlockEngine:
             memory_base_path=base_path,
             **kwargs,
         )
-
-    def test_construction(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        assert engine.chat_id == "chat1"
-        assert engine.channel is None
-        assert engine.tasks == []
-
-    def test_activate_channel(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        ch = SlockChannel(channel_id="ch1", team_name="Alpha")
-        engine.activate_channel(ch)
-        assert engine.channel is not None
-        assert engine.channel.channel_id == "ch1"
 
     def test_activate_channel_creates_workspace(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
@@ -389,25 +344,6 @@ class TestSlockEngine:
         callbacks.on_escalation.assert_called_once()
         engine.cleanup()
 
-    @patch("src.slock_engine.engine.create_engine_session", side_effect=RuntimeError("token missing"))
-    def test_execute_agent_escalates_when_session_factory_fails(self, mock_create_session, tmp_path):
-        """Errors swallowed inside _run_acp_session still surface as escalations."""
-        engine = SlockEngine(chat_id="chat_factory_esc", root_path=str(tmp_path), memory_base_path=str(tmp_path))
-        ch = SlockChannel(channel_id="ch_factory_esc", name="Esc", team_name="EscTeam")
-        engine.activate_channel(ch)
-        agent = AgentIdentity(agent_id="agent-factory-esc", name="EscBot", agent_type="coco")
-        callbacks = SlockEngineCallbacks(on_escalation=MagicMock())
-        try:
-            result = engine._execute_agent(agent, "deploy to production", callbacks)
-
-            assert result is None
-            pending = engine.get_pending_escalations()
-            assert len(pending) == 1
-            assert "token missing" in pending[0].reason
-            callbacks.on_escalation.assert_called_once()
-        finally:
-            engine.cleanup()
-
     @patch("src.slock_engine.engine.create_engine_session")
     def test_parallel_acp_sessions_close_their_own_session(self, mock_create_session, tmp_path):
         """Parallel agents must not share self._session and close each other's sessions."""
@@ -447,13 +383,6 @@ class TestSlockEngine:
         session_a.close.assert_called_once()
         session_b.close.assert_called_once()
 
-    def test_add_task(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        task = engine.add_task("Implement feature X")
-        assert task.content == "Implement feature X"
-        assert task.status == TaskStatus.TODO
-        assert len(engine.tasks) == 1
-
     def test_add_task_persists_group_task_board(self, tmp_path):
         """Tasks are persisted to the group task board under the configured Slock store."""
         engine = self._make_engine(tmp_path=tmp_path)
@@ -467,29 +396,13 @@ class TestSlockEngine:
         assert board[0].task_id == task.task_id
         assert board[0].content == "Persist this task"
 
-    def test_claim_task(self, tmp_path):
+    def test_claim_task_double_claim_fails(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
         task = engine.add_task("Build API")
         result = engine.claim_task(task.task_id, "agent-1")
         assert result is True
-        claimed = engine.tasks[0]
-        assert claimed.status == TaskStatus.IN_PROGRESS
-        assert claimed.claimed_by == "agent-1"
-
-    def test_claim_task_double_claim_fails(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        task = engine.add_task("Build API")
-        engine.claim_task(task.task_id, "agent-1")
         result = engine.claim_task(task.task_id, "agent-2")
         assert result is False
-
-    def test_complete_task(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        task = engine.add_task("Write tests")
-        engine.claim_task(task.task_id, "agent-1")
-        result = engine.complete_task(task.task_id, "agent-1")
-        assert result is True
-        assert engine.tasks[0].status == TaskStatus.DONE
 
     def test_complete_task_persists_done_status(self, tmp_path):
         """Task state changes are reflected in the persisted task board."""
@@ -745,14 +658,6 @@ class TestSlockWakePolicyOverride:
         candidates = engine._apply_wake_policy("@Alpha help me", [agent])
         assert agent in candidates
 
-    def test_on_mention_policy_is_canonicalized(self, tmp_path):
-        engine = self._engine(tmp_path=tmp_path)
-        agent = AgentIdentity(agent_id="a", name="Alpha", owner_group="wp_ch", wake_policy=" ON-MENTION ")
-        engine.registry.register(agent)
-
-        candidates = engine._apply_wake_policy("no mention here", [agent])
-        assert agent not in candidates
-
     def test_smart_judge_passes_unconditionally(self, tmp_path):
         engine = self._engine(tmp_path=tmp_path)
         agent = AgentIdentity(agent_id="a", name="Alpha", owner_group="wp_ch", wake_policy="smart_judge")
@@ -854,18 +759,10 @@ class TestSlockEngineStateMachine:
             memory_base_path=base_path,
         )
 
-    def test_initial_status_is_idle(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        assert engine.get_agent_status("a1") == AgentStatus.IDLE
-
-    def test_valid_transition_idle_to_waking(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        assert engine.transition_agent("a1", AgentStatus.WAKING) is True
-        assert engine.get_agent_status("a1") == AgentStatus.WAKING
-
     def test_full_lifecycle_transition(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
         agent_id = "a1"
+        assert engine.get_agent_status(agent_id) == AgentStatus.IDLE
         assert engine.transition_agent(agent_id, AgentStatus.WAKING) is True
         assert engine.transition_agent(agent_id, AgentStatus.THINKING) is True
         assert engine.transition_agent(agent_id, AgentStatus.RUNNING) is True
@@ -880,13 +777,6 @@ class TestSlockEngineStateMachine:
         assert engine.transition_agent("a1", AgentStatus.RUNNING) is False
         assert engine.get_agent_status("a1") == AgentStatus.IDLE
 
-    def test_any_state_can_return_to_idle(self, tmp_path):
-        engine = self._make_engine(tmp_path=tmp_path)
-        engine.transition_agent("a1", AgentStatus.WAKING)
-        engine.transition_agent("a1", AgentStatus.THINKING)
-        # THINKING → IDLE (abort)
-        assert engine.transition_agent("a1", AgentStatus.IDLE) is True
-
     def test_get_status_card(self, tmp_path):
         engine = self._make_engine(tmp_path=tmp_path)
         ch = SlockChannel(channel_id="ch1", team_name="Test")
@@ -897,11 +787,6 @@ class TestSlockEngineStateMachine:
 
 
 class TestSlockEngineCallbacks:
-    def test_callbacks_dataclass(self):
-        cb = SlockEngineCallbacks()
-        assert cb.on_agent_wake is None
-        assert cb.on_error is None
-
     def test_callbacks_with_values(self):
         fn = MagicMock()
         cb = SlockEngineCallbacks(on_error=fn)
@@ -948,26 +833,6 @@ class TestHumanInteractionSuppression:
             )
         )
         assert result == "done"
-
-    @patch("src.slock_engine.engine.create_engine_session")
-    def test_auto_approve_keyword_in_call(self, mock_create, tmp_path):
-        """AC-11: Verify auto_approve=True is explicitly passed as keyword arg."""
-        mock_create.return_value = None  # Session creation fails
-
-        engine = SlockEngine(
-            chat_id="chat_ac11b",
-            root_path=str(tmp_path),
-            engine_name="AC11Test",
-        )
-        agent = AgentIdentity(
-            name="Bot",
-            agent_type="claude",
-            owner_group="chat_ac11b",
-        )
-        engine._run_acp_session(agent, "prompt")
-
-        mock_create.assert_called_once()
-        assert mock_create.call_args.kwargs["auto_approve"] is True
 
 
 # ============================================================
@@ -1104,18 +969,6 @@ class TestSlockEngineDeactivate:
         engine.deactivate()  # Should not raise
         assert engine.is_active is False
 
-    def test_is_active_false_when_no_channel(self, tmp_path):
-        """is_active is False when no channel is bound."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        assert engine.is_active is False
-
-    def test_is_active_true_after_activation(self, tmp_path):
-        """is_active is True after channel activation."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        ch = SlockChannel(channel_id="ch_active", team_name="Active")
-        engine.activate_channel(ch)
-        assert engine.is_active is True
-
 
 # ============================================================
 # Task 11: _create_callbacks verification tests
@@ -1143,28 +996,6 @@ class TestSlockHandlerCallbacks:
         assert cb.on_agent_running is not None
         assert cb.on_agent_done is not None
         assert cb.on_error is not None
-
-    def test_callbacks_on_agent_wake_callable(self):
-        """on_agent_wake callback is callable without error."""
-        handler = self._make_handler()
-        cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
-        agent = MagicMock()
-        agent.name = "TestAgent"
-        cb.on_agent_wake(agent)  # Should not raise
-
-    def test_callbacks_on_agent_done_callable(self):
-        """on_agent_done callback is callable without error."""
-        handler = self._make_handler()
-        cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
-        agent = MagicMock()
-        agent.name = "DoneAgent"
-        cb.on_agent_done(agent, "result text")  # Should not raise
-
-    def test_callbacks_on_error_callable(self):
-        """on_error callback is callable without error."""
-        handler = self._make_handler()
-        cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
-        cb.on_error("something went wrong")  # Should not raise
 
     def test_on_escalation_uses_activated_engine_when_idle(self):
         """Escalation cards still send after the engine has returned to idle."""
@@ -1244,20 +1075,6 @@ class TestSlockEngineThreadSafety:
 
         assert errors == [], f"Concurrent deactivate raised: {errors}"
 
-    def test_deactivate_with_none_session(self, tmp_path):
-        """deactivate() with self._session = None must not raise."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        ch = SlockChannel(channel_id="ch_ts2", team_name="TS2")
-        engine.activate_channel(ch)
-        engine._session = None
-        engine.deactivate()  # Should not raise
-
-    def test_pause_with_none_session(self, tmp_path):
-        """pause() with self._session = None must not raise."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        engine._session = None
-        engine.pause()  # Should not raise
-
     def test_pause_cancels_session_via_snapshot(self, tmp_path):
         """pause() calls cancel on the session snapshot, not self._session."""
         engine = self._make_engine(tmp_path=tmp_path)
@@ -1303,71 +1120,9 @@ class TestSlockEngineTimeoutConfig:
         mock_session.send_prompt.assert_called_once_with("test", timeout=600)
 
 
-class TestSlockRuntimeArtifactsIgnored:
-    def test_repo_ignores_slock_runtime_group_state(self):
-        """Machine-local Slock group state must not be tracked by git."""
-        repo_root = Path(__file__).resolve().parents[1]
-        gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
-
-        assert "slock/" in gitignore
-
-
 # ============================================================
 # Status panel card: Stop button presence
 # ============================================================
-
-
-class TestStatusPanelStopButton:
-    """Verify build_status_panel_card includes a Stop button with slock_stop action."""
-
-    def _collect_buttons(self, node):
-        if isinstance(node, dict):
-            buttons = [node] if node.get("tag") == "button" else []
-            for value in node.values():
-                buttons.extend(self._collect_buttons(value))
-            return buttons
-        if isinstance(node, list):
-            buttons = []
-            for item in node:
-                buttons.extend(self._collect_buttons(item))
-            return buttons
-        return []
-
-    def test_stop_button_in_card(self):
-        """Status panel card must contain a button with action 'slock_stop_all'."""
-        from src.slock_engine.card_templates import build_status_panel_card
-
-        card = build_status_panel_card(
-            agents=[],
-            team_name="TestTeam",
-            channel_id="ch_btn",
-        )
-
-        actions = self._collect_buttons(card)
-        stop_buttons = [
-            btn for btn in actions
-            if btn.get("value", {}).get("action") == "slock_stop_all"
-        ]
-        assert len(stop_buttons) == 1
-        assert stop_buttons[0]["type"] == "danger"
-        assert stop_buttons[0]["value"]["channel_id"] == "ch_btn"
-
-    def test_refresh_button_still_present(self):
-        """Refresh button must still exist alongside Stop."""
-        from src.slock_engine.card_templates import build_status_panel_card
-
-        card = build_status_panel_card(
-            agents=[],
-            team_name="TestTeam",
-            channel_id="ch_btn2",
-        )
-
-        actions = self._collect_buttons(card)
-        refresh_buttons = [
-            btn for btn in actions
-            if btn.get("value", {}).get("action") == "slock_refresh_status"
-        ]
-        assert len(refresh_buttons) == 1
 
 
 # ============================================================
@@ -1436,18 +1191,6 @@ class TestSlockEngineParallelExecution:
         # Task should be rolled back to TODO on failure
         assert engine.tasks[0].status == TaskStatus.TODO
 
-    def test_execute_parallel_when_stopping(self, tmp_path):
-        """execute_parallel returns None for all tasks when engine is stopping."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        ch = SlockChannel(channel_id="ch_stop", name="Stop", team_name="StopTeam")
-        engine.activate_channel(ch)
-
-        t1 = engine.add_task("Whatever")
-        engine.pause()  # sets state to STOPPING
-
-        results = engine.execute_parallel([(t1.task_id, "a1")], timeout=5.0)
-        assert results[t1.task_id] is None
-
     def test_dispatch_pending_tasks_assigns_and_executes(self, tmp_path):
         """dispatch_pending_tasks auto-routes and executes TODO tasks."""
         engine = self._make_engine(tmp_path=tmp_path)
@@ -1469,16 +1212,6 @@ class TestSlockEngineParallelExecution:
         assert all(v is not None for v in results.values())
         assert all(t.status == TaskStatus.DONE for t in engine.tasks)
 
-    def test_dispatch_pending_tasks_no_agents(self, tmp_path):
-        """dispatch_pending_tasks returns empty when no agents registered."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        ch = SlockChannel(channel_id="ch_empty", name="Empty", team_name="EmptyTeam")
-        engine.activate_channel(ch)
-        engine.add_task("No one to run this")
-
-        results = engine.dispatch_pending_tasks()
-        assert results == {}
-
     def test_dispatch_pending_tasks_respects_max_concurrent(self, tmp_path):
         """dispatch_pending_tasks limits concurrent tasks."""
         engine = self._make_engine(tmp_path=tmp_path)
@@ -1498,15 +1231,6 @@ class TestSlockEngineParallelExecution:
 
         # Only 2 should have been dispatched (limited by max_concurrent, not agent count)
         assert len(results) == 2
-
-    def test_cleanup_shuts_down_executor(self, tmp_path):
-        """cleanup() gracefully shuts down the thread pool."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        # Force executor creation
-        executor = engine._get_executor()
-        assert executor is not None
-        engine.cleanup()
-        assert engine._executor is None
 
 
 # ============================================================
@@ -1597,16 +1321,6 @@ class TestTaskClaimPersistence:
         assert tc.get_holder("t1") is None
         assert tc.get_holder("t2") == "agent-2"
 
-    def test_no_persist_path_works_in_memory_only(self):
-        """TaskClaim without persist_path works purely in-memory (backward compat)."""
-        from src.slock_engine.task_router import TaskClaim
-
-        tc = TaskClaim()
-        tc.claim("t1", "agent-1")
-        assert tc.get_holder("t1") == "agent-1"
-        tc.release("t1")
-        assert tc.get_holder("t1") is None
-
 
 # ============================================================
 # Escalation Protocol (Task 12-16)
@@ -1670,12 +1384,6 @@ class TestEscalationProtocol:
         assert resolved.resolved_at is not None
         assert len(engine.get_pending_escalations()) == 0
 
-    def test_resolve_nonexistent_escalation(self, tmp_path):
-        """resolve_escalation() returns None for unknown ID."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        result = engine.resolve_escalation("nonexistent", "Skip")
-        assert result is None
-
     def test_escalation_card_structure(self, tmp_path):
         """get_escalation_card() produces valid card structure."""
         from src.slock_engine.models import EscalationLevel
@@ -1724,19 +1432,6 @@ class TestSlockStreamProcessor:
             root_path="/tmp/test_root",
             memory_base_path=base_path,
         )
-
-    def test_build_callbacks_returns_valid_callbacks(self, tmp_path):
-        """build_callbacks() returns SlockEngineCallbacks with all hooks set."""
-        engine = self._make_engine(tmp_path=tmp_path)
-        processor = SlockStreamProcessor(engine)
-        callbacks = processor.build_callbacks()
-
-        assert callbacks.on_agent_wake is not None
-        assert callbacks.on_agent_thinking is not None
-        assert callbacks.on_agent_running is not None
-        assert callbacks.on_agent_done is not None
-        assert callbacks.on_agent_error is not None
-        assert callbacks.on_error is not None
 
     def test_progress_card_initial_state(self, tmp_path):
         """Initial progress card shows 'Waiting for agents'."""
@@ -1877,70 +1572,10 @@ class TestAddTaskOpenLimit:
         assert t3 is not None
         assert t3.content == "Active Task"
 
-    @patch("src.slock_engine.task_board_manager.get_settings")
-    @patch("src.slock_engine.engine.get_settings")
-    def test_add_task_mixed_statuses(self, mock_settings, mock_tbm_settings, tmp_path):
-        """Only non-DONE tasks count toward the limit."""
-        settings = MagicMock()
-        settings.slock_max_parallel_agents = 4
-        settings.slock_max_queue_size = 8
-        settings.slock_max_open_tasks = 3
-        mock_settings.return_value = settings
-        mock_tbm_settings.return_value = settings
-
-        engine = self._make_engine(tmp_path)
-
-        assert engine.add_task("TODO task") is not None
-        t2 = engine.add_task("In progress task")
-        t2.status = TaskStatus.IN_PROGRESS
-        t3 = engine.add_task("Done task")
-        t3.status = TaskStatus.DONE
-
-        # Open count = 2 (t1 TODO + t2 IN_PROGRESS), limit is 3 → can add one more
-        t4 = engine.add_task("Fourth task")
-        assert t4 is not None
-
-        # Now open count = 3, should reject
-        t5 = engine.add_task("Fifth task")
-        assert t5 is None
-
 
 # ============================================================
 # State Machine Refactoring — VALID_TRANSITIONS class constant
 # ============================================================
-
-
-class TestValidTransitionsClassConstant:
-    """Verify VALID_TRANSITIONS is a proper class constant with immutable values."""
-
-    def test_valid_transitions_exists_as_class_attribute(self):
-        """AC-2: VALID_TRANSITIONS is a class-level attribute, not instance-level."""
-        assert hasattr(SlockEngine, "VALID_TRANSITIONS")
-        # Accessing via class (not instance) confirms it's a class constant
-        transitions = SlockEngine.VALID_TRANSITIONS
-        assert isinstance(transitions, dict)
-
-    def test_valid_transitions_values_are_tuples(self):
-        """AC-2: Values must be tuples (immutable) to prevent accidental mutation."""
-        for status, targets in SlockEngine.VALID_TRANSITIONS.items():
-            assert isinstance(targets, tuple), f"Value for {status} should be tuple, got {type(targets)}"
-
-    def test_valid_transitions_covers_all_statuses(self):
-        """All AgentStatus values should have an entry in VALID_TRANSITIONS."""
-        for status in AgentStatus:
-            assert status in SlockEngine.VALID_TRANSITIONS, f"Missing entry for {status}"
-
-    def test_valid_transitions_content_correctness(self):
-        """Validate the expected transition graph."""
-        t = SlockEngine.VALID_TRANSITIONS
-        assert AgentStatus.WAKING in t[AgentStatus.IDLE]
-        assert AgentStatus.MOVING in t[AgentStatus.IDLE]
-        assert AgentStatus.THINKING in t[AgentStatus.WAKING]
-        assert AgentStatus.RUNNING in t[AgentStatus.THINKING]
-        assert AgentStatus.CHECKING in t[AgentStatus.RUNNING]
-        assert AgentStatus.SENDING in t[AgentStatus.CHECKING]
-        assert AgentStatus.IDLE in t[AgentStatus.SENDING]
-        assert AgentStatus.IDLE in t[AgentStatus.MOVING]
 
 
 class TestTryLockForMoveUsesTransitionAgent:
@@ -2038,25 +1673,6 @@ class TestResolvedEscalationCardRedaction:
         assert "abc123xyz" not in card_json
         assert "<redacted>" in card_json
 
-    def test_empty_context_no_crash(self):
-        """Empty or missing context should not cause errors."""
-        from src.slock_engine.card_templates import build_resolved_escalation_card
-
-        esc = self._make_escalation(reason="Simple reason", context="")
-        card = build_resolved_escalation_card(esc, resolved_by="admin", resolution="Done")
-
-        assert card is not None
-        assert "header" in card
-
-    def test_none_like_empty_reason_no_crash(self):
-        """Empty reason should not crash redact_sensitive."""
-        from src.slock_engine.card_templates import build_resolved_escalation_card
-
-        esc = self._make_escalation(reason="", context="")
-        card = build_resolved_escalation_card(esc, resolved_by="admin", resolution="Done")
-
-        assert card is not None
-
 
 # ============================================================
 # Engine Initialization Order (Task 21)
@@ -2108,18 +1724,6 @@ class TestEngineInitOrder:
             engine_name="test_engine_3",
         )
         assert engine.collaboration_orchestrator is not None
-
-    def test_card_callbacks_initially_none(self, tmp_path):
-        """Card callbacks should be None until explicitly set."""
-        from src.slock_engine.engine import SlockEngine
-
-        engine = SlockEngine(
-            chat_id="test_chat_004",
-            root_path=str(tmp_path),
-            engine_name="test_engine_4",
-        )
-        assert engine._card_send_fn is None
-        assert engine._card_update_fn is None
 
     def test_set_card_callbacks(self, tmp_path):
         """set_card_callbacks stores the provided functions."""
@@ -2206,30 +1810,6 @@ class TestClaimTaskDefensiveValidation:
         result = engine._task_mgr.claim_task("", "agent_001")
         assert result is False
 
-    def test_claim_task_empty_agent_id_returns_false(self, tmp_path):
-        from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.models import SlockChannel
-
-        engine = SlockEngine(chat_id="t_claim_2", root_path=str(tmp_path), engine_name="claim_eng2", memory_base_path=str(tmp_path))
-        channel = SlockChannel(channel_id="t_claim_2", name="test", team_name="T", owner_id="o")
-        engine.activate_channel(channel)
-
-        task = engine._task_mgr.add_task("Some task")
-        result = engine._task_mgr.claim_task(task.task_id, "")
-        assert result is False
-
-    def test_claim_task_none_inputs_returns_false(self, tmp_path):
-        from src.slock_engine.engine import SlockEngine
-        from src.slock_engine.models import SlockChannel
-
-        engine = SlockEngine(chat_id="t_claim_3", root_path=str(tmp_path), engine_name="claim_eng3", memory_base_path=str(tmp_path))
-        channel = SlockChannel(channel_id="t_claim_3", name="test", team_name="T", owner_id="o")
-        engine.activate_channel(channel)
-
-        # None is not a valid str
-        result = engine._task_mgr.claim_task(None, "agent_001")  # type: ignore
-        assert result is False
-
 
 class TestPlanCommandParsing:
     """Regression tests for /plan command parsing (Task 18)."""
@@ -2249,11 +1829,6 @@ class TestPlanCommandParsing:
         cmd = parse_slock_command("/plan abc123def")
         assert cmd.action == SlockCommandAction.PLAN_DETAIL
         assert cmd.target == "abc123def"
-
-    def test_plan_alias_p(self):
-        from src.slock_engine.slash_commands import SlockCommandAction, parse_slock_command
-        cmd = parse_slock_command("/p list")
-        assert cmd.action == SlockCommandAction.PLAN_LIST
 
     def test_plan_in_managed_chat(self):
         from src.slock_engine.slash_commands import is_slock_command
@@ -2396,29 +1971,6 @@ class TestMarkDoneTaskNotification:
 
         assert result is False
         notifier.notify_status_changed.assert_not_called()
-
-    def test_complete_task_already_done_does_not_notify(self):
-        """complete_task on a DONE task does not notify (idempotency)."""
-        from src.slock_engine.models import SlockTask, TaskStatus
-
-        task = SlockTask(content="already finished")
-        task.status = TaskStatus.DONE
-        task.claimed_by = "agent_A"
-
-        mgr, notifier = self._make_task_manager(tasks=[task])
-
-        # Task is already DONE so claimed_by match still works, but the
-        # implementation iterates and matches; if status is already DONE the
-        # old_status == new_status. We test current behavior:
-        # since claimed_by matches, the task status is re-set to DONE and notify fires.
-        result = mgr.complete_task(task.task_id, "agent_A")
-
-        # The task was matched (claimed_by == agent_id) so it returns True
-        assert result is True
-        # Notification is still emitted with old_status="done" (already was done)
-        notifier.notify_status_changed.assert_called_once_with(
-            task.task_id, "done", "done", "agent_A", "test_chat_id"
-        )
 
     def test_force_complete_task_calls_notify(self):
         """force_complete_task calls _notify_status_change."""

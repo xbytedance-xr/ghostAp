@@ -672,60 +672,75 @@ class TestMessageArchiveRotation:
     """AC13: messages.jsonl rotation when exceeding limits."""
 
     def test_rotate_on_line_count_exceeded(self, tmp_path):
-        """File is rotated when line count exceeds 10000."""
+        """File is rotated when line count reaches 10000.
+
+        Strategy: pre-write 9999 lines directly to the archive file (bypass API),
+        then use the API for the 10000th append which triggers rotation, and a
+        10001st append that lands in the fresh file. Also verifies that rotation
+        overwrites any pre-existing .old file.
+        """
+        import json as _json
         from src.slock_engine.memory_manager import MemoryManager
 
         mm = MemoryManager(base_path=str(tmp_path))
         channel_id = "test_rotate_channel"
-
-        # Write 10001 messages
-        for i in range(10001):
-            mm.append_message_archive(
-                channel_id,
-                sender_type="user",
-                content=f"msg {i}",
-                agent_id="",
-                agent_name="",
-            )
-
-        # Check that .old file exists
-        archive_path = mm.message_archive_path(channel_id)
-        old_path = archive_path + ".old"
-        assert os.path.exists(old_path), ".old file should exist after rotation"
-        # Current file should be small (only the last message after rotate)
-        assert os.path.exists(archive_path)
-        with open(archive_path) as f:
-            current_lines = f.readlines()
-        # After rotation, the new file has just 1 line (the one written after rotate)
-        assert len(current_lines) <= 2
-
-    def test_rotate_preserves_old_file(self, tmp_path):
-        """Rotation overwrites existing .old file."""
-        from src.slock_engine.memory_manager import MemoryManager
-
-        mm = MemoryManager(base_path=str(tmp_path))
-        channel_id = "test_rotate_overwrite"
         archive_path = mm.message_archive_path(channel_id)
         old_path = archive_path + ".old"
 
-        # Create a fake .old file
+        # Pre-create a fake .old file to verify it gets overwritten on rotation
         os.makedirs(os.path.dirname(archive_path), exist_ok=True)
         with open(old_path, "w") as f:
             f.write("old content\n")
 
-        # Write enough to trigger rotation
-        for i in range(10001):
-            mm.append_message_archive(
-                channel_id,
-                sender_type="user",
-                content=f"msg {i}",
-            )
+        # Pre-write 9999 lines directly to the archive (bypass API for speed)
+        with open(archive_path, "w", encoding="utf-8") as f:
+            for i in range(9999):
+                record = {
+                    "timestamp": 1000.0 + i,
+                    "channel_id": channel_id,
+                    "sender_type": "user",
+                    "agent_id": "",
+                    "agent_name": "",
+                    "content": f"msg {i}",
+                    "metadata": {},
+                }
+                f.write(_json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 
-        # .old should be overwritten with the rotated content
+        # Now file has 9999 lines. The next append makes it 10000 lines total,
+        # but rotation fires BEFORE the write when line_count >= 10000.
+        # So we need one more line to reach 10000, then the NEXT call rotates.
+        mm.append_message_archive(
+            channel_id,
+            sender_type="user",
+            content="msg 9999",
+            agent_id="",
+            agent_name="",
+        )
+        # File now has 10000 lines. Rotation has not yet fired (it checks >= 10000
+        # at the START of the next append). Trigger with one more append:
+        mm.append_message_archive(
+            channel_id,
+            sender_type="user",
+            content="msg 10000 (post-rotate)",
+            agent_id="",
+            agent_name="",
+        )
+
+        # Verify rotation happened
+        assert os.path.exists(old_path), ".old file should exist after rotation"
+        assert os.path.exists(archive_path), "new archive file should exist"
+
+        # Current file should contain only the post-rotation message
+        with open(archive_path) as f:
+            current_lines = f.readlines()
+        assert len(current_lines) <= 2
+
+        # .old should be overwritten (no "old content") and contain original messages
         with open(old_path) as f:
-            content = f.read()
-        assert "old content" not in content
-        assert "msg 0" in content  # First messages should be in old file
+            old_content = f.read()
+        assert "old content" not in old_content
+        assert "msg 0" in old_content
+        assert "msg 9999" in old_content
 
 
 class TestTailRead:

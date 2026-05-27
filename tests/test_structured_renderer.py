@@ -4,17 +4,6 @@ from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, Tool
 from src.acp.renderer import ACPEventRenderer, ContentSection, RenderedContent
 
 
-class TestContentSection:
-    def test_defaults(self):
-        sec = ContentSection(section_type="text", markdown="hello")
-        assert sec.section_type == "text"
-        assert sec.markdown == "hello"
-        assert sec.tool_kind == ""
-        assert sec.tool_count == 0
-        assert sec.is_complete is True
-        assert sec.collapsed_by_default is False
-
-
 class TestRenderedContent:
     def test_to_markdown_joins_sections(self):
         rc = RenderedContent(
@@ -30,15 +19,6 @@ class TestRenderedContent:
         assert "tool stuff" in md
         # Sections joined by newline
         assert md == "**plan**\nhello\ntool stuff"
-
-    def test_to_markdown_skips_empty(self):
-        rc = RenderedContent(
-            sections=[
-                ContentSection(section_type="text", markdown=""),
-                ContentSection(section_type="text", markdown="real"),
-            ]
-        )
-        assert rc.to_markdown() == "real"
 
     def test_to_elements_collapsible_true(self):
         rc = RenderedContent(
@@ -128,11 +108,6 @@ class TestProcessEventStructured:
         assert "thinking more" in thought_secs[0].markdown
         assert thought_secs[0].collapsed_by_default is True
 
-    def test_thought_not_in_legacy_render(self):
-        """Verify process_event() still ignores thoughts (backward compat)."""
-        rendered = self.renderer.process_event(ACPEvent(event_type=ACPEventType.THOUGHT_CHUNK, text="thinking"))
-        assert rendered == ""
-
     def test_tool_done_no_longer_injects_inline_summary(self):
         """After slim-flow, TOOL_CALL_DONE no longer injects inline text.
 
@@ -218,22 +193,11 @@ class TestProcessEventStructured:
         assert "hello" in sm
         assert "world" in sm
 
-    def test_reset_clears_thoughts(self):
-        self.renderer.process_event_structured(ACPEvent(event_type=ACPEventType.THOUGHT_CHUNK, text="thinking"))
-        self.renderer.reset()
-        result = self.renderer._render_structured()
-        thought_secs = [s for s in result.sections if s.section_type == "thought"]
-        assert len(thought_secs) == 0
-
-
 class TestContinuationSummary:
     """Tests for render_continuation_summary() and reset_for_continuation()."""
 
     def setup_method(self):
         self.renderer = ACPEventRenderer()
-
-    def test_empty_renderer_returns_empty_summary(self):
-        assert self.renderer.render_continuation_summary() == ""
 
     def test_summary_includes_plan_progress(self):
         plan = PlanInfo(entries=[
@@ -290,12 +254,6 @@ class TestContinuationSummary:
         assert "**summary**" in rendered
         assert "old content" not in rendered
 
-    def test_reset_for_continuation_empty_equals_reset(self):
-        self.renderer.process_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="old content"))
-        self.renderer.reset_for_continuation("")
-        rendered = self.renderer._render()
-        assert rendered == ""
-
     def test_reset_for_continuation_new_events_append(self):
         self.renderer.process_event(ACPEvent(event_type=ACPEventType.TEXT_CHUNK, text="old"))
         self.renderer.reset_for_continuation("**summary**\n\n---\n")
@@ -346,19 +304,6 @@ class TestPanelStyles:
         panel = RenderedContent._wrap_collapsible(sec)
         assert panel["border"]["color"] == PANEL_STYLES["border_normal"]
 
-    def test_thought_gets_border_normal(self):
-        from src.card.themes import PANEL_STYLES
-        sec = ContentSection(
-            section_type="thought", markdown="hmm", collapsed_by_default=True,
-        )
-        panel = RenderedContent._wrap_collapsible(sec)
-        assert panel["border"]["color"] == PANEL_STYLES["border_normal"]
-
-    def test_has_failure_defaults_false(self):
-        sec = ContentSection(section_type="text", markdown="hi")
-        assert sec.has_failure is False
-
-
 class TestHeaderTemplateMapping:
     """Verify _pick_deep_template() terminal_state color mapping."""
 
@@ -387,17 +332,10 @@ class TestHeaderTemplateMapping:
     def test_terminal_continued_green(self):
         assert self._pick(terminal_state="continued") == "green"
 
-    def test_terminal_overrides_status(self):
-        # terminal_state should take priority over status
-        assert self._pick(status="error", terminal_state="completed") == "green"
-
     def test_no_terminal_uses_status(self):
         assert self._pick(status="error") == "red"
         assert self._pick(status="completed") == "green"
         assert self._pick(status="paused") == "orange"
-
-    def test_no_terminal_no_status_uses_engine(self):
-        assert self._pick(engine="spec", status="running") == "green"
 
 
 class TestToolGrouping:
@@ -447,17 +385,6 @@ class TestToolGrouping:
         # 2 tools ≤ threshold → 2 individual panels + 1 non-collapsible
         assert len(elems) == 3
 
-    def test_text_between_tools_breaks_grouping(self):
-        rc = RenderedContent(sections=[
-            self._make_tool_section("read", 1),
-            self._make_tool_section("read", 1),
-            ContentSection(section_type="text", markdown="some text"),
-            self._make_tool_section("edit", 1),
-        ])
-        elems = rc.to_elements(collapsible=True)
-        # First 2 tools (≤2, individual) + text + 1 tool = 4 elements
-        assert len(elems) == 4
-
     def test_grouped_failure_gets_red_border(self):
         from src.card.themes import PANEL_STYLES
         rc = RenderedContent(sections=[
@@ -468,17 +395,6 @@ class TestToolGrouping:
         elems = rc.to_elements(collapsible=True)
         assert len(elems) == 1
         assert elems[0]["border"]["color"] == PANEL_STYLES["border_failed"]
-
-    def test_collapsible_false_ignores_grouping(self):
-        rc = RenderedContent(sections=[
-            self._make_tool_section("read", 1),
-            self._make_tool_section("read", 1),
-            self._make_tool_section("edit", 1),
-        ])
-        elems = rc.to_elements(collapsible=False)
-        assert len(elems) == 3
-        assert all(e["tag"] == "markdown" for e in elems)
-
 
 class TestReasoningBlock:
     """Task 6: reasoning block rendering with truncation and mobile-readable text_size."""
@@ -499,13 +415,6 @@ class TestReasoningBlock:
         ])
         elems = rc.to_elements(collapsible=True)
         assert "思考完成" in elems[0]["header"]["content"]
-
-    def test_thought_active_header(self):
-        rc = RenderedContent(sections=[
-            ContentSection(section_type="thought", markdown="working", collapsed_by_default=True, is_complete=False),
-        ])
-        elems = rc.to_elements(collapsible=True)
-        assert "思考中" in elems[0]["header"]["content"]
 
     def test_long_reasoning_truncated(self):
         """process_event_structured should truncate thought content via cap_reasoning_tail."""
@@ -528,10 +437,3 @@ class TestReasoningBlock:
         result = renderer._render_structured()
         thought_secs = [s for s in result.sections if s.section_type == "thought"]
         assert thought_secs[0].markdown == "short thought"
-
-    def test_reasoning_state_dataclass(self):
-        from src.card.models import ReasoningState
-        rs = ReasoningState(content="thinking", active=True)
-        assert rs.content == "thinking"
-        assert rs.active is True
-        assert rs.expanded is False

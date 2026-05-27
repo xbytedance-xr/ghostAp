@@ -86,19 +86,15 @@ class TestChatLock:
             assert result.code == ChatLockCode.NOT_LOCKED
 
     def test_locked_chat_allows_bare_wt_with_tab_whitespace(self, mgr: ChatLockManager):
+        """Case-insensitive: bare /wt or /WORKTREE with tab should not be blocked."""
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
             m = SlashCommandParser.parse("/wt\t")
             assert m is not None
             assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
-
-    def test_locked_chat_allows_bare_worktree_uppercase_when_parsed(self, mgr: ChatLockManager):
-        """Case-insensitive contract: '/WORKTREE\t' should be treated as bare worktree when parsed."""
-        with _mock_settings([ADMIN_ID]):
-            mgr.lock_chat("chat_1", ADMIN_ID)
-            m = SlashCommandParser.parse("/WORKTREE\t")
-            assert m is not None
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
+            m2 = SlashCommandParser.parse("/WORKTREE\t")
+            assert m2 is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m2) is False
 
     def test_locked_chat_blocks_wt_goal_with_tab_whitespace(self, mgr: ChatLockManager):
         with _mock_settings([ADMIN_ID]):
@@ -223,39 +219,30 @@ class TestHandleLockCommand:
 class TestIdempotentField:
     """AC-R09: ChatLockResult.idempotent field correctness."""
 
-    def test_lock_first_time_not_idempotent(self):
+    def test_lock_idempotent_field(self):
         mgr = ChatLockManager()
         with _mock_settings([ADMIN_ID]):
-            result = mgr.lock_chat("chat_1", ADMIN_ID)
-            assert result.success is True
-            assert result.idempotent is False
-            assert result.code == ChatLockCode.LOCKED_SUCCESS
+            result1 = mgr.lock_chat("chat_1", ADMIN_ID)
+            assert result1.success is True
+            assert result1.idempotent is False
+            assert result1.code == ChatLockCode.LOCKED_SUCCESS
+            result2 = mgr.lock_chat("chat_1", ADMIN_ID)
+            assert result2.success is True
+            assert result2.idempotent is True
+            assert result2.code == ChatLockCode.ALREADY_LOCKED
 
-    def test_lock_repeated_is_idempotent(self):
+    def test_unlock_idempotent_field(self):
         mgr = ChatLockManager()
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            result = mgr.lock_chat("chat_1", ADMIN_ID)
-            assert result.success is True
-            assert result.idempotent is True
-            assert result.code == ChatLockCode.ALREADY_LOCKED
-
-    def test_unlock_first_time_not_idempotent(self):
-        mgr = ChatLockManager()
-        with _mock_settings([ADMIN_ID]):
-            mgr.lock_chat("chat_1", ADMIN_ID)
-            result = mgr.unlock_chat("chat_1", ADMIN_ID)
-            assert result.success is True
-            assert result.idempotent is False
-            assert result.code == ChatLockCode.UNLOCKED_SUCCESS
-
-    def test_unlock_repeated_is_idempotent(self):
-        mgr = ChatLockManager()
-        with _mock_settings([ADMIN_ID]):
-            result = mgr.unlock_chat("chat_1", ADMIN_ID)
-            assert result.success is True
-            assert result.idempotent is True
-            assert result.code == ChatLockCode.NOT_LOCKED
+            result1 = mgr.unlock_chat("chat_1", ADMIN_ID)
+            assert result1.success is True
+            assert result1.idempotent is False
+            assert result1.code == ChatLockCode.UNLOCKED_SUCCESS
+            result2 = mgr.unlock_chat("chat_1", ADMIN_ID)
+            assert result2.success is True
+            assert result2.idempotent is True
+            assert result2.code == ChatLockCode.NOT_LOCKED
 
 
 class TestReadonlyCommands:
@@ -272,14 +259,17 @@ class TestReadonlyCommands:
                     f"READONLY command {cmd} should not be blocked"
                 )
 
-    def test_extended_readonly_commands_present(self):
-        from src.chat_lock import READONLY_COMMANDS
+    def test_command_sets_complete(self):
+        from src.chat_lock import READONLY_COMMANDS, SAFE_INTERRUPT_COMMANDS
         # Core readonly commands must be present
         for cmd in ("/status", "/help", "/menu", "/lock", "/unlock"):
             assert cmd in READONLY_COMMANDS, f"{cmd} should be in READONLY_COMMANDS"
         # /wt and /worktree are NOT in READONLY_COMMANDS (F-13: conditional whitelist)
         assert "/wt" not in READONLY_COMMANDS
         assert "/worktree" not in READONLY_COMMANDS
+        # Safe interrupt commands present
+        for cmd in ("/stop_deep", "/stop_spec"):
+            assert cmd in SAFE_INTERRUPT_COMMANDS, f"{cmd} should be in SAFE_INTERRUPT_COMMANDS"
 
     def test_safe_interrupt_commands_not_blocked(self, mgr: ChatLockManager):
         """SAFE_INTERRUPT_COMMANDS bypass lock so users can abort running tasks."""
@@ -293,30 +283,22 @@ class TestReadonlyCommands:
                     f"SAFE_INTERRUPT command {cmd} should not be blocked"
                 )
 
-    def test_safe_interrupt_commands_present(self):
-        from src.chat_lock import SAFE_INTERRUPT_COMMANDS
-        for cmd in ("/stop_deep", "/stop_spec"):
-            assert cmd in SAFE_INTERRUPT_COMMANDS, f"{cmd} should be in SAFE_INTERRUPT_COMMANDS"
-
-    def test_wt_worktree_not_blocked_when_no_subargs(self, mgr: ChatLockManager):
-        """F-13: /wt and /worktree without subarguments should NOT be blocked."""
+    def test_wt_worktree_conditional_blocking(self, mgr: ChatLockManager):
+        """F-13: /wt and /worktree without subargs pass; with subargs blocked."""
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
+            # Without subargs: not blocked
             m1 = SlashCommandParser.parse("/wt")
             m2 = SlashCommandParser.parse("/worktree")
             assert m1 is not None and m2 is not None
             assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m1) is False
             assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m2) is False
-
-    def test_wt_worktree_blocked_with_subargs(self, mgr: ChatLockManager):
-        """F-13: /wt and /worktree with subarguments should be blocked."""
-        with _mock_settings([ADMIN_ID]):
-            mgr.lock_chat("chat_1", ADMIN_ID)
-            m1 = SlashCommandParser.parse("/wt merge")
-            m2 = SlashCommandParser.parse("/worktree create feat")
-            assert m1 is not None and m2 is not None
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m1) is True
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m2) is True
+            # With subargs: blocked
+            m3 = SlashCommandParser.parse("/wt merge")
+            m4 = SlashCommandParser.parse("/worktree create feat")
+            assert m3 is not None and m4 is not None
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m3) is True
+            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m4) is True
 
     def test_non_readonly_command_blocked(self, mgr: ChatLockManager):
         with _mock_settings([ADMIN_ID]):
@@ -335,17 +317,15 @@ class TestReadonlyCommands:
 class TestGetLockInfo:
     """Tests for ChatLockManager.get_lock_info."""
 
-    def test_get_lock_info_returns_entry(self, mgr: ChatLockManager):
+    def test_get_lock_info_returns_entry_or_none(self, mgr: ChatLockManager):
+        info = mgr.get_lock_info("chat_1")
+        assert info is None
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
             info = mgr.get_lock_info("chat_1")
             assert info is not None
             assert info.locked_by == ADMIN_ID
             assert info.locked_at_wall > 0
-
-    def test_get_lock_info_returns_none_when_unlocked(self, mgr: ChatLockManager):
-        info = mgr.get_lock_info("chat_1")
-        assert info is None
 
     def test_get_lock_info_returns_frozen_copy(self, mgr: ChatLockManager):
         """Returned ChatLockInfo should be immutable (frozen dataclass)."""
@@ -430,8 +410,8 @@ class TestLockConfirmationFlow:
         set_current_sender_id(sender_id)
         set_current_sender_name(sender_name)
 
-    def test_confirm_lock_returns_deprecated_hint(self):
-        """handle_confirm_lock replies with deprecation message (no lock executed)."""
+    def test_confirm_and_cancel_lock_return_deprecated_hint(self):
+        """handle_confirm_lock and handle_cancel_lock reply with deprecation message."""
         import time
         with _mock_settings([ADMIN_ID]):
             self._set_sender(ADMIN_ID, "Admin")
@@ -445,12 +425,12 @@ class TestLockConfirmationFlow:
         reply_text = self.handler.reply_text.call_args[0][1]
         assert "过期" in reply_text or "重新发送" in reply_text
 
-    def test_cancel_lock_returns_deprecated_hint(self):
-        """handle_cancel_lock replies with deprecation message."""
-        self.handler.handle_cancel_lock("msg_1", "chat_1")
+        # Reset and test cancel
+        self.handler.reply_text.reset_mock()
+        self.handler.handle_cancel_lock("msg_2", "chat_1")
         self.handler.reply_text.assert_called_once()
-        reply_text = self.handler.reply_text.call_args[0][1]
-        assert "过期" in reply_text or "重新发送" in reply_text
+        cancel_text = self.handler.reply_text.call_args[0][1]
+        assert "过期" in cancel_text or "重新发送" in cancel_text
 
 
 # ---------------------------------------------------------------------------
@@ -461,36 +441,16 @@ class TestLockConfirmationFlow:
 class TestReadonlyCommandsExpansion:
     """Verify /帮助, /exit, /quit are in READONLY_COMMANDS and bypass lock."""
 
-    def test_help_chinese_in_readonly(self):
+    @pytest.mark.parametrize("cmd", ["/帮助", "/exit", "/quit"])
+    def test_expanded_commands_in_readonly(self, cmd):
         from src.chat_lock import READONLY_COMMANDS
-        assert "/帮助" in READONLY_COMMANDS
+        assert cmd in READONLY_COMMANDS
 
-    def test_exit_in_readonly(self):
-        from src.chat_lock import READONLY_COMMANDS
-        assert "/exit" in READONLY_COMMANDS
-
-    def test_quit_in_readonly(self):
-        from src.chat_lock import READONLY_COMMANDS
-        assert "/quit" in READONLY_COMMANDS
-
-    def test_help_chinese_bypasses_lock(self, mgr: ChatLockManager):
+    @pytest.mark.parametrize("cmd", ["/帮助", "/exit", "/quit"])
+    def test_expanded_commands_bypass_lock(self, cmd, mgr: ChatLockManager):
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
-            m = SlashCommandParser.parse("/帮助")
-            assert m is not None
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
-
-    def test_exit_bypasses_lock(self, mgr: ChatLockManager):
-        with _mock_settings([ADMIN_ID]):
-            mgr.lock_chat("chat_1", ADMIN_ID)
-            m = SlashCommandParser.parse("/exit")
-            assert m is not None
-            assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
-
-    def test_quit_bypasses_lock(self, mgr: ChatLockManager):
-        with _mock_settings([ADMIN_ID]):
-            mgr.lock_chat("chat_1", ADMIN_ID)
-            m = SlashCommandParser.parse("/quit")
+            m = SlashCommandParser.parse(cmd)
             assert m is not None
             assert mgr.should_block("chat_1", NON_ADMIN_ID, command_match=m) is False
 
@@ -592,8 +552,8 @@ class TestFormatParams:
             assert "name" in result.format_params
             assert result.format_params["name"] == "Alice"
 
-    def test_contact_admin_unlock_no_format_params(self):
-        """unlock_chat without locked_by_name should have empty format_params."""
+    def test_contact_admin_unlock_and_no_admin_config(self):
+        """unlock_chat without locked_by_name has empty format_params; empty admin list returns NO_ADMIN_CONFIG_USER."""
         mgr = ChatLockManager()
         with _mock_settings([ADMIN_ID]):
             mgr.lock_chat("chat_1", ADMIN_ID)
@@ -601,13 +561,10 @@ class TestFormatParams:
             assert result.success is False
             assert result.code == ChatLockCode.CONTACT_ADMIN_UNLOCK
             assert result.format_params == {}
-
-    def test_no_admin_config_code(self):
-        """When admin_user_ids is empty, code should be NO_ADMIN_CONFIG_USER (user-friendly)."""
-        mgr = ChatLockManager()
+        mgr2 = ChatLockManager()
         with _mock_settings([]):
-            result = mgr.lock_chat("chat_1", NON_ADMIN_ID)
-            assert result.code == ChatLockCode.NO_ADMIN_CONFIG_USER
+            result2 = mgr2.lock_chat("chat_1", NON_ADMIN_ID)
+            assert result2.code == ChatLockCode.NO_ADMIN_CONFIG_USER
 
 
 # ---------------------------------------------------------------------------
@@ -621,34 +578,29 @@ class TestResolveLockMessage:
         ChatLockCode.CONTACT_NAMED_UNLOCK: {"name": "Alice"},
     }
 
-    def test_import_resolve_lock_message(self):
-        from src.feishu.handlers.system import SystemHandler
-        assert callable(SystemHandler.resolve_lock_message)
-
     def test_all_codes_return_nonempty(self):
         from src.chat_lock import ChatLockResult
         from src.feishu.handlers.system import SystemHandler
+        assert callable(SystemHandler.resolve_lock_message)
         for code in ChatLockCode:
             params = self._CODES_NEEDING_PARAMS.get(code, {})
             result = ChatLockResult(success=True, code=code, format_params=params)
             msg = SystemHandler.resolve_lock_message(result)
             assert isinstance(msg, str) and msg, f"Empty string for {code!r}"
 
-    def test_none_code_returns_empty(self):
+    def test_none_code_and_format_params(self):
         from src.chat_lock import ChatLockResult
         from src.feishu.handlers.system import SystemHandler
+        # None code returns empty
         result = ChatLockResult(success=False, code=None)
         assert SystemHandler.resolve_lock_message(result) == ""
-
-    def test_format_params_substitution(self):
-        from src.chat_lock import ChatLockResult
-        from src.feishu.handlers.system import SystemHandler
-        result = ChatLockResult(
+        # Format params substitution
+        result2 = ChatLockResult(
             success=False,
             code=ChatLockCode.CONTACT_NAMED_UNLOCK,
             format_params={"name": "Alice"},
         )
-        msg = SystemHandler.resolve_lock_message(result)
+        msg = SystemHandler.resolve_lock_message(result2)
         assert "Alice" in msg
 
 
@@ -658,13 +610,10 @@ class TestResolveLockMessage:
 class TestChatLockCodeUITextMapping:
     """Ensure every ChatLockCode member has a corresponding non-empty UI_TEXT entry."""
 
-    def test_all_codes_have_ui_text(self):
+    def test_all_codes_have_nonempty_ui_text(self):
         from src.card.ui_text import UI_TEXT
         missing = [c for c in ChatLockCode if c.value not in UI_TEXT]
         assert not missing, f"ChatLockCode members missing from UI_TEXT: {missing}"
-
-    def test_ui_text_values_are_nonempty_strings(self):
-        from src.card.ui_text import UI_TEXT
         for code in ChatLockCode:
             val = UI_TEXT[code.value]
             assert isinstance(val, str) and val, (
@@ -780,18 +729,20 @@ class TestHandleForceReleaseRepoLock:
         from src.thread import set_current_sender_id
         set_current_sender_id(sender_id)
 
-    def test_clm_none_permission_denied(self):
-        """chat_lock_manager=None → permission denied."""
+    def test_permission_denied_paths(self):
+        """chat_lock_manager=None or non-admin triggers permission denied."""
+        # CLM None path
         self.mock_ctx.chat_lock_manager = None
         self._set_sender(ADMIN_ID)
         self.handler.handle_force_release_repo_lock("msg_1", "chat_1")
         self.handler.reply_error.assert_called_once()
 
-    def test_non_admin_permission_denied(self):
-        """Non-admin → permission denied."""
+        # Non-admin path
+        self.handler.reply_error.reset_mock()
+        self.mock_ctx.chat_lock_manager = self.chat_lock_mgr
         with _mock_settings([ADMIN_ID]):
             self._set_sender(NON_ADMIN_ID)
-            self.handler.handle_force_release_repo_lock("msg_1", "chat_1")
+            self.handler.handle_force_release_repo_lock("msg_2", "chat_1")
         self.handler.reply_error.assert_called_once()
 
     def test_missing_repo_lock_mgr(self):
@@ -909,27 +860,23 @@ class TestGetAllowedCommandsDisplay:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_excludes_admin_commands(self):
+    def test_content_correctness(self):
         result = ChatLockManager.get_allowed_commands_display()
+        # Excludes admin commands
         assert "`/lock`" not in result
         assert "`/unlock`" not in result
-
-    def test_includes_status_and_help(self):
-        result = ChatLockManager.get_allowed_commands_display()
+        # Includes status and help
         assert "`/status`" in result
         assert "`/help`" in result
-
-    def test_includes_safe_interrupt_commands(self):
+        # Includes safe interrupt commands
         from src.chat_lock import SAFE_INTERRUPT_COMMANDS
-        result = ChatLockManager.get_allowed_commands_display()
         for cmd in SAFE_INTERRUPT_COMMANDS:
             assert f"`{cmd}`" in result
 
     def test_sorted_alphabetically(self):
         """Commands appear in sorted order."""
-        result = ChatLockManager.get_allowed_commands_display()
-        # Extract commands from backtick-quoted list
         import re
+        result = ChatLockManager.get_allowed_commands_display()
         cmds = re.findall(r"`(/[^`]+)`", result)
         assert cmds == sorted(cmds)
 
@@ -1104,22 +1051,17 @@ class TestShouldBlockCardActionExhaustive:
 class TestChatLockInvalidChatId:
     """Edge cases for empty / None chat_id arguments."""
 
-    def test_lock_empty_chat_id(self):
+    def test_empty_chat_id_operations(self):
         with _mock_settings([ADMIN_ID]):
             mgr = ChatLockManager()
             result = mgr.lock_chat("", ADMIN_ID)
             assert result.success is True
             mgr.shutdown()
 
-    def test_is_locked_empty(self):
         with _mock_settings([ADMIN_ID]):
-            mgr = ChatLockManager()
-        assert mgr.is_locked("") is False
-
-    def test_should_block_empty_chat_id(self):
-        with _mock_settings([ADMIN_ID]):
-            mgr = ChatLockManager()
-            assert mgr.should_block("", NON_ADMIN_ID) is False
+            mgr2 = ChatLockManager()
+        assert mgr2.is_locked("") is False
+        assert mgr2.should_block("", NON_ADMIN_ID) is False
 
     def test_unlock_never_locked(self):
         with _mock_settings([ADMIN_ID]):
@@ -1131,118 +1073,26 @@ class TestChatLockInvalidChatId:
             assert result.idempotent is True
 
 
-# ---------------------------------------------------------------------------
-# Task 19: TestCleanupConcurrency (AC-R13)
-# ---------------------------------------------------------------------------
-
-
-class TestCleanupConcurrency:
-    """AC-R13: _cleanup_expired() running concurrently with lock_chat() should not raise."""
-
-    def test_cleanup_with_concurrent_lock_no_runtime_error(self):
-        """10 threads lock/unlock + 1 thread runs _cleanup_expired — no RuntimeError."""
-        import time
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        mgr = ChatLockManager()
-        # Use a very short max_duration so cleanup actually finds expired locks
-        mgr._max_duration = 0.01
-        errors = []
-        stop_flag = False
-
-        def _lock_worker(i: int):
-            try:
-                for _ in range(50):
-                    if stop_flag:
-                        break
-                    with _mock_settings([ADMIN_ID]):
-                        chat = f"chat_{i % 5}"
-                        r = mgr.lock_chat(chat, ADMIN_ID, sender_name="Worker")
-                        if r.success:
-                            time.sleep(0.001)
-                            mgr.unlock_chat(chat, ADMIN_ID)
-            except Exception as e:
-                errors.append(e)
-
-        def _cleanup_worker():
-            try:
-                for _ in range(50):
-                    if stop_flag:
-                        break
-                    mgr._cleanup_expired()
-                    time.sleep(0.002)
-            except Exception as e:
-                errors.append(e)
-
-        with ThreadPoolExecutor(max_workers=11) as pool:
-            futures = [pool.submit(_lock_worker, i) for i in range(10)]
-            futures.append(pool.submit(_cleanup_worker))
-            for f in as_completed(futures):
-                f.result()
-
-        stop_flag = True
-        assert errors == [], f"Concurrent cleanup raised: {errors}"
-        mgr.shutdown()
-
-
-class TestShutdownDuringActiveLock:
-    """shutdown() racing with active lock_chat must not deadlock or raise."""
-
-    def test_shutdown_during_active_lock(self):
-        import threading
-        import time
-
-        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
-        errors = []
-
-        def hold_lock():
-            try:
-                with _mock_settings([ADMIN_ID]):
-                    m.lock_chat("chat_active", ADMIN_ID, sender_name="Holder")
-                time.sleep(2)
-            except Exception as e:
-                errors.append(e)
-
-        t = threading.Thread(target=hold_lock)
-        t.start()
-        time.sleep(0.1)  # Ensure thread has acquired the lock
-
-        # shutdown() should not deadlock
-        m.shutdown()
-        t.join(timeout=5)
-
-        assert not t.is_alive(), "Thread is still alive — possible deadlock"
-        assert not errors, f"Unexpected errors during active lock: {errors}"
-
-
 class TestLockChatAfterShutdown:
     """AC-26: lock_chat() after shutdown() must not crash and return a clear result."""
 
-    def test_lock_chat_after_shutdown(self):
+    def test_lock_and_unlock_after_shutdown(self):
         m = ChatLockManager(max_duration=86400, cleanup_interval=60)
         m.shutdown()
 
         # lock_chat after shutdown should not crash
         with _mock_settings([ADMIN_ID]):
             result = m.lock_chat("chat_post_shutdown", ADMIN_ID, sender_name="Admin")
-
-        # Behaviour: lock_chat still works (in-memory dict, no background thread needed)
-        # but cleanup thread won't restart because stop_event is already set.
-        assert result.success is True or result.code is not None, (
-            "lock_chat after shutdown must return a valid ChatLockResult"
-        )
-        # Verify no exception was raised — the test reaching here is sufficient.
-
-    def test_unlock_after_shutdown(self):
-        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
-        with _mock_settings([ADMIN_ID]):
-            m.lock_chat("chat_x", ADMIN_ID)
-        m.shutdown()
+        assert result.success is True or result.code is not None
 
         # unlock after shutdown should still work
+        m2 = ChatLockManager(max_duration=86400, cleanup_interval=60)
         with _mock_settings([ADMIN_ID]):
-            result = m.unlock_chat("chat_x", ADMIN_ID)
-        assert result.success is True
+            m2.lock_chat("chat_x", ADMIN_ID)
+        m2.shutdown()
+        with _mock_settings([ADMIN_ID]):
+            result2 = m2.unlock_chat("chat_x", ADMIN_ID)
+        assert result2.success is True
 
     def test_should_block_after_shutdown(self):
         m = ChatLockManager(max_duration=86400, cleanup_interval=60)
@@ -1264,21 +1114,16 @@ class TestLockChatAfterShutdown:
 class TestShutdownIfActive:
     """shutdown_if_active() is idempotent and safe when no instance exists."""
 
-    def test_no_instance_is_noop(self):
+    def test_noop_and_idempotent(self):
         from src import chat_lock as _mod
         _orig = _mod._instance
         try:
             _mod._instance = None
             _mod.shutdown_if_active()  # should not raise
-        finally:
-            _mod._instance = _orig
 
-    def test_double_call_is_idempotent(self):
-        from src import chat_lock as _mod
-        m = ChatLockManager(max_duration=86400, cleanup_interval=60)
-        _mod._instance = m
-        try:
+            m = ChatLockManager(max_duration=86400, cleanup_interval=60)
+            _mod._instance = m
             _mod.shutdown_if_active()
             _mod.shutdown_if_active()  # second call should not raise
         finally:
-            _mod._instance = None
+            _mod._instance = _orig

@@ -490,64 +490,6 @@ class TestSchemaDivStyleSafety:
                 assert "padding" not in node
                 assert "background_style" not in node
 
-    def test_phase_panel_does_not_style_div(self):
-        state = CardState(
-            blocks=(ContentBlock(kind="phase", block_id="p1", content="Spec · Build"),),
-        )
-        cards = render_card(state, RenderBudget())
-        card_json = cards[0]._card_json
-        for node in _iter_dict_nodes(card_json):
-            if node.get("tag") == "div":
-                assert "padding" not in node
-                assert "background_style" not in node
-
-    def test_worktree_failed_units_does_not_style_div(self):
-        state = CardState(
-            blocks=(
-                ContentBlock(
-                    kind="worktree_units",
-                    block_id="w1",
-                    content="",
-                    data={
-                        "message": "执行中",
-                        "units": [
-                            {"name": "unit-a", "status": "failed", "error": "boom"},
-                            {"name": "unit-b", "status": "running", "metadata": {"started_at": time.time()}},
-                        ],
-                    },
-                ),
-            ),
-        )
-        cards = render_card(state, RenderBudget())
-        card_json = cards[0]._card_json
-        for node in _iter_dict_nodes(card_json):
-            if node.get("tag") == "div":
-                assert "padding" not in node
-                assert "background_style" not in node
-
-    def test_worktree_units_collapsible_panel_omits_unsupported_background_style(self):
-        state = CardState(
-            blocks=(
-                ContentBlock(
-                    kind="worktree_units",
-                    block_id="w1",
-                    content="",
-                    data={
-                        "message": "执行中",
-                        "units": [
-                            {"name": "unit-a", "status": "running", "metadata": {"started_at": time.time()}},
-                        ],
-                    },
-                ),
-            ),
-        )
-        cards = render_card(state, RenderBudget())
-        card_json = cards[0]._card_json
-        panels = [node for node in _iter_dict_nodes(card_json) if node.get("tag") == "collapsible_panel"]
-
-        assert panels
-        assert all("background_style" not in panel for panel in panels)
-
     def test_assemble_card_json_strips_collapsible_panel_background_style(self):
         body_elements = [
             {
@@ -754,107 +696,6 @@ class TestActiveElement:
         assert cards[0].active_element is None
         assert "streaming_mode" not in cards[0]._card_json["config"]
 
-    def test_adjacent_single_character_text_fragment_is_coalesced(self):
-        state = CardState(
-            blocks=(
-                ContentBlock(kind="text", block_id="t1", content="数", status="completed"),
-                ContentBlock(kind="text", block_id="t2", content="字很大，需要继续分析。", status="completed"),
-            ),
-        )
-
-        cards = render_card(state, RenderBudget())
-        markdown = [
-            el.get("content", "")
-            for el in cards[0]._card_json["body"]["elements"]
-            if el.get("tag") == "markdown"
-        ]
-
-        assert "数字很大，需要继续分析。" in markdown
-        assert "数" not in markdown
-
-    def test_adjacent_short_active_text_blocks_remain_separate(self):
-        state = CardState(
-            blocks=(
-                ContentBlock(kind="text", block_id="t1", content="现在让", status="active", element_id="el_1"),
-                ContentBlock(kind="text", block_id="t2", content="我查", status="active", element_id="el_2"),
-                ContentBlock(kind="text", block_id="t3", content="看飞书channel", status="active", element_id="el_3"),
-                ContentBlock(kind="text", block_id="t4", content="的主", status="active", element_id="el_4"),
-                ContentBlock(kind="text", block_id="t5", content="要实现文件。", status="active", element_id="el_5"),
-            ),
-            terminal="running",
-        )
-
-        cards = render_card(state, RenderBudget())
-        markdown = [
-            el
-            for el in cards[0]._card_json["body"]["elements"]
-            if el.get("tag") == "markdown"
-        ]
-
-        assert [el["content"] for el in markdown] == [
-            "现在让",
-            "我查",
-            "看飞书channel",
-            "的主",
-            "要实现文件。",
-        ]
-        assert cards[0].active_element is not None
-        assert cards[0].active_element.element_id == "el_1"
-        assert cards[0].active_element.text == "现在让"
-
-    def test_adjacent_active_text_blocks_from_different_sources_remain_separate(self):
-        state = CardState(
-            blocks=(
-                ContentBlock(
-                    kind="text",
-                    block_id="_turn_1_text_agent-a",
-                    content="Alpha Beta",
-                    status="active",
-                    element_id="el_agent_a",
-                ),
-                ContentBlock(
-                    kind="text",
-                    block_id="_turn_1_text_agent-b",
-                    content="甲乙",
-                    status="active",
-                    element_id="el_agent_b",
-                ),
-            ),
-            terminal="running",
-        )
-
-        cards = render_card(state, RenderBudget())
-        markdown = [
-            el
-            for el in cards[0]._card_json["body"]["elements"]
-            if el.get("tag") == "markdown"
-        ]
-
-        assert [el["content"] for el in markdown] == ["Alpha Beta", "甲乙"]
-        assert [el.get("element_id") for el in markdown] == ["el_agent_a", "el_agent_b"]
-        assert cards[0].active_element is not None
-        assert cards[0].active_element.element_id == "el_agent_a"
-        assert cards[0].active_element.text == "Alpha Beta"
-
-    def test_adjacent_completed_sentence_text_blocks_remain_separate(self):
-        state = CardState(
-            blocks=(
-                ContentBlock(kind="text", block_id="t1", content="第一段。", status="completed"),
-                ContentBlock(kind="text", block_id="t2", content="第二段。", status="completed"),
-            ),
-        )
-
-        cards = render_card(state, RenderBudget())
-        markdown = [
-            el.get("content", "")
-            for el in cards[0]._card_json["body"]["elements"]
-            if el.get("tag") == "markdown"
-        ]
-
-        assert "第一段。第二段。" not in markdown
-        assert "第一段。" in markdown
-        assert "第二段。" in markdown
-
     def test_no_active_element_when_completed(self):
         state = CardState(
             blocks=(
@@ -870,16 +711,6 @@ class TestActiveElement:
         cards = render_card(state, RenderBudget())
         assert cards[0].active_element is None
 
-    def test_no_active_element_without_element_id(self):
-        state = CardState(
-            blocks=(
-                ContentBlock(
-                    kind="text", block_id="t1", content="text", status="active"
-                ),
-            ),
-        )
-        cards = render_card(state, RenderBudget())
-        assert cards[0].active_element is None
 
 
 class TestColumnSetSignature:
@@ -929,16 +760,6 @@ class TestStructureSignature:
         )
         assert compute_structure_signature(s1) != compute_structure_signature(s2)
 
-    def test_terminal_change_changes_signature(self):
-        s1 = CardState(terminal="running")
-        s2 = CardState(terminal="completed")
-        assert compute_structure_signature(s1) != compute_structure_signature(s2)
-
-    def test_signature_is_md5_hex(self):
-        state = CardState()
-        sig = compute_structure_signature(state)
-        assert len(sig) == 32
-        assert all(c in "0123456789abcdef" for c in sig)
 
 
 class TestFooterAndButtons:

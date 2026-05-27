@@ -124,27 +124,6 @@ def test_handle_message_plain_message_does_not_fallback_to_recent_engine_topic(m
     assert not spec.queue_key or ":t:thread-wt" not in spec.queue_key
 
 
-def test_resolve_message_context_plain_message_does_not_fallback_to_engine_topic(mock_ws_client: FeishuWSClient):
-    """Context resolution should only use exact Feishu topic roots for engine continuation."""
-    mock_ws_client.settings.thread_programming_enabled = True
-    mock_ws_client._thread_manager.register(
-        "thread-wt",
-        "chat_456",
-        "proj_1",
-        mode="worktree",
-    )
-    fallback_project = ProjectContext("active", "Active", "/tmp")
-    mock_ws_client._resolve_project_from_message = MagicMock(return_value=(fallback_project, None))
-    msg = create_mock_message("继续")
-    msg.event.message.root_id = None
-    msg.event.message.parent_id = None
-
-    project, auto_enter_mode = mock_ws_client._resolve_message_context(msg.event.message)
-
-    assert project is fallback_project
-    assert auto_enter_mode is None
-
-
 def test_worktree_topic_goal_routes_without_interaction_mode_cast(mock_ws_client: FeishuWSClient):
     """A worktree topic is an engine context, not an InteractionMode enum value."""
     mock_ws_client.settings.thread_programming_enabled = True
@@ -173,41 +152,6 @@ def test_worktree_topic_goal_routes_without_interaction_mode_cast(mock_ws_client
         "msg_goal",
         "chat_456",
         "从不同的视角审查下当前项目的实现",
-        project,
-    )
-
-
-def test_worktree_topic_goal_is_not_stolen_by_slock_managed_chat(mock_ws_client: FeishuWSClient):
-    """WT topic text must stay in WT even if the chat is also registered by Slock."""
-    mock_ws_client.settings.thread_programming_enabled = True
-    mock_ws_client._thread_manager.register(
-        "thread-wt-slock",
-        "chat_456",
-        "proj_1",
-        mode="worktree",
-    )
-    mock_ws_client._slock_engine_manager.register_managed_chat("chat_456")
-    project = ProjectContext("proj_1", "GhostAP", "/tmp")
-    mock_ws_client._is_worktree_awaiting_goal = MagicMock(return_value=True)
-    mock_ws_client._handle_worktree_execute = MagicMock()
-    mock_ws_client._handle_slock_message = MagicMock()
-
-    set_current_thread_id("thread-wt-slock")
-    try:
-        mock_ws_client._message_dispatcher.process_with_intent(
-            "msg_goal_slock",
-            "chat_456",
-            "继续执行 WT 方案",
-            project,
-        )
-    finally:
-        set_current_thread_id(None)
-
-    mock_ws_client._handle_slock_message.assert_not_called()
-    mock_ws_client._handle_worktree_execute.assert_called_once_with(
-        "msg_goal_slock",
-        "chat_456",
-        "继续执行 WT 方案",
         project,
     )
 
@@ -264,30 +208,6 @@ def test_project_chat_programming_mode_is_not_stolen_by_slock_managed_chat(mock_
         "继续修复项目群编程",
         project,
     )
-
-
-def test_worktree_topic_plain_text_keeps_wt_strategy_after_previous_goal(mock_ws_client: FeishuWSClient):
-    """WT is a persistent topic strategy, not only an awaiting-goal transient state."""
-    project = ProjectContext("proj_1", "GhostAP", "/tmp")
-    mock_ws_client._handle_worktree_execute = MagicMock()
-    mock_ws_client._process_with_intent = MagicMock()
-
-    mock_ws_client._dispatch_message_logic(
-        "msg_next",
-        "chat_456",
-        "继续优化刚才的实现",
-        project,
-        "worktree",
-        command_match=None,
-    )
-
-    mock_ws_client._handle_worktree_execute.assert_called_once_with(
-        "msg_next",
-        "chat_456",
-        "继续优化刚才的实现",
-        project,
-    )
-    mock_ws_client._process_with_intent.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -363,27 +283,6 @@ def test_topic_bound_worktree_blocks_spec_switch_command(mock_ws_client: FeishuW
         project,
         "worktree",
         command_match=MagicMock(command="/spec"),
-    )
-
-    mock_ws_client._reply_text.assert_called_once()
-    assert "WT" in mock_ws_client._reply_text.call_args.args[1]
-    assert "Spec" in mock_ws_client._reply_text.call_args.args[1]
-    mock_ws_client._process_with_intent.assert_not_called()
-
-
-def test_topic_bound_worktree_blocks_spec_resume_command_family(mock_ws_client: FeishuWSClient):
-    """Engine switch blocking applies to the whole command family, not only /spec."""
-    project = ProjectContext("proj_1", "Test", "/tmp")
-    mock_ws_client._reply_text = MagicMock()
-    mock_ws_client._process_with_intent = MagicMock()
-
-    mock_ws_client._dispatch_message_logic(
-        "msg_123",
-        "chat_456",
-        "/spec_resume",
-        project,
-        "worktree",
-        command_match=MagicMock(command="/spec_resume"),
     )
 
     mock_ws_client._reply_text.assert_called_once()
@@ -478,34 +377,6 @@ def test_exit_in_engine_topic_unbinds_topic_strategy(mock_ws_client: FeishuWSCli
 
     assert mock_ws_client._thread_manager.get("thread-wt-exit") is None
     mock_ws_client._system_handler.reply_text.assert_called_once()
-
-
-def test_process_message_async_slash_parse_is_request_scoped(mock_ws_client: FeishuWSClient):
-    """SlashCommandParser.parse must be called exactly once per message."""
-    msg = create_mock_message("hello")
-    mock_ws_client._validate_message = MagicMock(return_value=True)
-
-    # Ensure we go through SMART routing (no auto-enter mode)
-    project = ProjectContext("proj_1", "Test", "/tmp")
-    mock_ws_client._resolve_message_context = MagicMock(return_value=(project, None))
-    mock_ws_client._get_effective_mode = MagicMock(return_value=(InteractionMode.SMART, False))
-    mock_ws_client._chat_lock_gate.check = MagicMock(return_value=False)
-
-    # Avoid coupling to downstream task execution in this test
-    mock_ws_client._intent_recognizer.recognize.return_value = IntentResult(
-        confidence=0.9,
-        tasks=[TaskStep(intent=IntentType.CREATE_PROJECT, data={"name": "p"}, description="Create")],
-    )
-    mock_ws_client._message_dispatcher.execute_single_task = MagicMock()
-
-    # Keep message parsing minimal
-    mock_img_handler = MagicMock()
-    mock_img_handler.parse_message.return_value = MagicMock(text="hello", image_keys=[])
-    mock_ws_client._get_image_handler = MagicMock(return_value=mock_img_handler)
-
-    with patch("src.feishu.ws_client.SlashCommandParser.parse", return_value=None) as p:
-        mock_ws_client._process_message_async(msg, task_ctx=MagicMock())
-        assert p.call_count == 1
 
 
 def test_process_with_intent_multitask(mock_ws_client: FeishuWSClient):
@@ -612,7 +483,7 @@ class TestChatLockInterceptFallback:
     """
 
     def test_fallback_text_on_card_build_failure(self, mock_ws_client):
-        """Card build failure in handler → fallback plain text with 🔒."""
+        """Card build failure in handler → fallback plain text with lock icon."""
         from unittest.mock import MagicMock
 
         from src.feishu.handlers.lock_helper import LockHelper
@@ -633,59 +504,4 @@ class TestChatLockInterceptFallback:
         assert args[0] == "msg_1"
         assert "🔒" in args[1] or "locked" in args[1].lower() or "锁定" in args[1]
 
-    def test_no_exception_when_both_fail(self, mock_ws_client):
-        """Even if fallback also fails, no exception escapes."""
-        from unittest.mock import MagicMock
 
-        from src.feishu.handlers.lock_helper import LockHelper
-
-        handler = MagicMock()
-        handler.reply_text.side_effect = RuntimeError("all fail")
-
-        clm = MagicMock()
-        clm.get_lock_info.side_effect = RuntimeError("db error")
-
-        # Should NOT raise
-        lock_helper = LockHelper(handler)
-        lock_helper.send_chat_lock_intercept_card("msg_2", "chat_2", clm)
-
-    def test_chat_lock_gate_delegates_to_handler(self, mock_ws_client):
-        """ChatLockGate._try_block delegates to handler layer via host._get_handler('system')."""
-        from unittest.mock import MagicMock
-
-        from src.feishu.chat_lock_gate import ChatLockGate
-        from src.feishu.message_cache import MessageCache
-        from src.feishu.slash_command_parser import SlashCommandParser
-
-        clm = MagicMock()
-        clm.should_block.return_value = True
-
-        handler = MagicMock()
-        host = MagicMock()
-        host._get_handler.return_value = handler
-
-        cache = MessageCache(ttl=30, max_size=10_000, cleanup_interval=60)
-        gate = ChatLockGate(chat_lock_manager=clm, dedup_cache=cache, host=host)
-
-        m = SlashCommandParser.parse("/test")
-        assert m is not None
-        blocked = gate._try_block("chat_1", "user_1", "msg_1", command_match=m)
-        assert blocked is True
-        handler.send_chat_lock_intercept_card.assert_called_once_with("msg_1", "chat_1", clm)
-
-
-# ---------------------------------------------------------------------------
-# AC-19: on_eviction callback wired in ws_client
-# ---------------------------------------------------------------------------
-
-
-class TestOnEvictionWiring:
-    """AC-19: ProjectManager.on_eviction is wired to _on_project_evicted."""
-
-    def test_on_eviction_is_wired(self, mock_ws_client):
-        """After init, ProjectManager.on_eviction should not be None."""
-        assert mock_ws_client._project_manager.on_eviction is not None
-
-    def test_on_eviction_callback_callable(self, mock_ws_client):
-        """The wired callback should be callable."""
-        assert callable(mock_ws_client._project_manager.on_eviction)

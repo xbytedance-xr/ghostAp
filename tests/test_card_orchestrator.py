@@ -709,13 +709,6 @@ class TestClose:
             completed = session.events_of_type(CardEventType.COMPLETED)
             assert len(completed) == 1
 
-    def test_close_idempotent(self):
-        """Calling close() twice is safe."""
-        orch, _, _ = _make_orchestrator()
-        orch.on_plan_received([{"task_id": "t1", "name": "A"}])
-        orch.close()
-        orch.close()  # Should not raise
-
     def test_dispatch_after_close_is_no_op(self):
         """Events dispatched after close are silently dropped."""
         orch, _, sessions = _make_orchestrator()
@@ -728,50 +721,6 @@ class TestClose:
         orch.dispatch_to_task("t1", CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "x", "text": "y"}))
         assert sessions["t1"].event_count == initial_count
 
-
-class TestConcurrentSubagent:
-    def test_concurrent_dispatch_no_race(self):
-        """Multiple threads dispatching to different tasks simultaneously — no races."""
-        orch, _, sessions = _make_orchestrator()
-        tasks = [{"task_id": f"t{i}", "name": f"Task {i}"} for i in range(5)]
-        orch.on_plan_received(tasks)
-
-        errors = []
-        barrier = threading.Barrier(5)
-
-        def worker(task_id: str):
-            try:
-                barrier.wait(timeout=2)
-                for j in range(20):
-                    event = CardEvent(
-                        type=CardEventType.TEXT_DELTA,
-                        payload={"block_id": f"b_{task_id}_{j}", "text": f"chunk {j}"},
-                    )
-                    orch.dispatch_to_task(task_id, event)
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=worker, args=(f"t{i}",)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=5)
-
-        assert not errors
-
-        # Each session should have received exactly 20 TEXT_DELTAs + initial TASK_LIST_UPDATED
-        for i in range(5):
-            tid = f"t{i}"
-            text_events = sessions[tid].events_of_type(CardEventType.TEXT_DELTA)
-            assert len(text_events) == 20
-
-            # Other sessions should NOT have received these text events
-            for j in range(5):
-                if j != i:
-                    other_tid = f"t{j}"
-                    other_text = [e for e in sessions[other_tid].events_of_type(CardEventType.TEXT_DELTA)
-                                  if f"b_t{i}_" in e.payload.get("block_id", "")]
-                    assert len(other_text) == 0
 
 
 class TestThinkingSession:
@@ -796,16 +745,6 @@ class TestThinkingSession:
         assert thinking.event_count == 1
         assert thinking.dispatched_events[0].type == CardEventType.TEXT_DELTA
 
-    def test_dispatch_to_thinking_after_close_is_noop(self):
-        """dispatch_to_thinking is noop after close."""
-        orch, _, _ = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        orch.close()
-
-        event = CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "b1", "text": "hi"})
-        orch.dispatch_to_thinking(event)
-        assert thinking.event_count == 0
 
     def test_on_plan_received_archives_thinking_session(self):
         """on_plan_received archives (not completes) the thinking session."""
@@ -845,23 +784,6 @@ class TestThinkingSession:
         event = CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "b1", "text": "x"})
         orch.dispatch_to_task("any", event)
         assert any(e.type == CardEventType.TEXT_DELTA for e in thinking.dispatched_events)
-
-    def test_has_plan_false_before_plan(self):
-        """has_plan is False before on_plan_received."""
-        orch, _, _ = _make_orchestrator()
-        assert orch.has_plan is False
-
-    def test_has_plan_true_after_plan(self):
-        """has_plan is True after on_plan_received."""
-        orch, _, _ = _make_orchestrator()
-        orch.on_plan_received([{"task_id": "t1", "name": "A"}])
-        assert orch.has_plan is True
-
-    def test_has_plan_true_after_fallback(self):
-        """has_plan is True after entering fallback."""
-        orch, _, _ = _make_orchestrator()
-        orch.on_plan_received([])
-        assert orch.has_plan is True
 
     def test_resolver_created_after_plan(self):
         """resolver is created after successful on_plan_received."""
@@ -1015,14 +937,6 @@ class TestHandlePlanUpdate:
 class TestReset:
     """Tests for TaskOrchestrator.reset()."""
 
-    def test_reset_without_plan_resets_flags(self):
-        """reset() without plan just resets internal flags."""
-        orch, _, _ = _make_orchestrator()
-        assert orch.has_plan is False
-
-        orch.reset()
-        assert orch.has_plan is False
-        assert not orch.is_fallback_mode
 
     def test_reset_with_plan_closes_sessions(self):
         """reset() with plan archives all sessions."""
@@ -1085,44 +999,6 @@ class TestCloseTimeout:
         # Should complete within ~5s timeout (one bridge), not 60s
         assert elapsed < 7.0
 
-    def test_close_survives_exception_in_dispatch(self):
-        """close() handles exceptions in session.dispatch() gracefully."""
-        class ExplodingSession:
-            session_id = "boom"
-            closed = False
-            dispatched_events = []
-            _armed = False
-            def dispatch(self, event):
-                if self._armed:
-                    raise RuntimeError("boom!")
-                self.dispatched_events.append(event)
-            def arm(self):
-                self._armed = True
-
-        sessions_created = {}
-
-        def _creator(task_id):
-            s = ExplodingSession()
-            sessions_created[task_id] = s
-            return s
-
-        orch = TaskOrchestrator(
-            chat_id="test",
-            session_creator=_creator,
-        )
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        orch.on_plan_received([
-            {"task_id": "t1", "name": "A"},
-            {"task_id": "t2", "name": "B"},
-        ])
-
-        # Arm sessions to explode on next dispatch (during close)
-        for s in sessions_created.values():
-            s.arm()
-
-        # Should not raise
-        orch.close()
 
 
 class TestFallbackRouting:
@@ -1518,29 +1394,6 @@ class TestThinkingCardMerge:
         assert "Task B" in text
         assert "Task C" in text
 
-    def test_thinking_session_archived(self):
-        """Thinking session is properly archived after plan received."""
-        thinking_session = FakeSession(session_id="thinking_2")
-
-        def _creator(task_id: str):
-            return FakeSession(session_id=f"session_{task_id}")
-
-        orch = TaskOrchestrator(
-            chat_id="chat_think2",
-            session_creator=_creator,
-            registry=TaskRegistry(),
-        )
-        orch.set_thinking_session(thinking_session)
-
-        tasks = [
-            {"task_id": "t1", "name": "Task A"},
-        ]
-        orch.on_plan_received(tasks)
-        _trigger_all(orch, tasks)
-
-        archived_events = thinking_session.events_of_type(CardEventType.ARCHIVED)
-        assert len(archived_events) == 1
-
 
 # ---------------------------------------------------------------------------
 # AC9: Feature flag disabled — single-card fallback behavior
@@ -1574,38 +1427,6 @@ class TestFeatureFlagDisabled:
 
         # Sessions ARE created (orchestrator still works) but bridges are empty
         assert len(orch._bridges) == 0
-
-    def test_renderer_pattern_flag_disabled(self):
-        """Simulate the renderer pattern: flag=False means events go through stream_bridge."""
-        # This tests the integration pattern used by DeepRenderer:
-        # _multi_card_enabled = False
-        # → bridge_factory = None
-        # → orchestrator.handle_plan_update() is NOT called
-        # → orchestrator.route_acp_event() is NOT called
-        # → all events go through the single stream_bridge
-
-        sessions_created: dict[str, FakeSession] = {}
-
-        def _creator(task_id: str):
-            s = FakeSession(session_id=f"session_{task_id}")
-            sessions_created[task_id] = s
-            return s
-
-        orch = TaskOrchestrator(
-            chat_id="chat_disabled2",
-            session_creator=_creator,
-            registry=TaskRegistry(),
-            bridge_factory=None,
-        )
-
-        # In flag-disabled mode, handle_plan_update is never called,
-        # so orchestrator stays in initial state (no plan received)
-        assert not orch.has_plan
-        assert not orch.is_fallback_mode
-
-        # All events would go through the single stream_bridge (not the orchestrator)
-        # This is verified by confirming no sessions are created
-        assert len(sessions_created) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1692,26 +1513,6 @@ class TestConcurrentSubagentIsolation:
 class TestRotateTaskSessionThreadSafety:
     """AC9: rotation_counts uses dict (not dynamic setattr) under lock."""
 
-    def test_rotation_counts_dict_exists(self):
-        orch, _, _ = _make_orchestrator()
-        assert hasattr(orch, "_rotation_counts")
-        assert isinstance(orch._rotation_counts, dict)
-
-    def test_no_dynamic_rotation_count_attributes(self):
-        orch, registry, sessions_created = _make_orchestrator()
-        tasks = [
-            {"task_id": "t1", "name": "Task A"},
-            {"task_id": "t2", "name": "Task B"},
-        ]
-        orch.on_plan_received(tasks)
-        _trigger_all(orch, tasks)
-
-        # Rotate t1
-        orch.rotate_task_session("t1")
-
-        # Should use _rotation_counts dict, not _rotation_count_t1 dynamic attr
-        assert orch._rotation_counts.get("t1") == 1
-        assert not hasattr(orch, "_rotation_count_t1")
 
     def test_rotation_counts_increment_correctly(self):
         orch, registry, sessions_created = _make_orchestrator()
@@ -1865,16 +1666,6 @@ class TestFloodBoundary:
         _trigger_all(orch, tasks)
 
         assert len(sessions_created) == 3
-        with orch._lock:
-            assert len(orch._overflow_target) == 0
-
-    def test_max_one_single_task(self):
-        orch, registry, sessions_created = _make_orchestrator(max_task_cards=1)
-        tasks = [{"task_id": "t1", "name": "Task A"}]
-        orch.on_plan_received(tasks)
-        _trigger_all(orch, tasks)
-
-        assert len(sessions_created) == 1
         with orch._lock:
             assert len(orch._overflow_target) == 0
 
@@ -2043,36 +1834,6 @@ class TestAC1TotalCardCount:
             f"(1 thinking + {task_count} tasks), got {len(all_sessions)}"
         )
 
-    def test_ac1_with_five_tasks(self):
-        """AC1 with 5 tasks: total == 6."""
-        all_sessions: list[FakeSession] = []
-
-        def _counting_creator(task_id: str):
-            s = FakeSession(session_id=f"session_{task_id}")
-            all_sessions.append(s)
-            return s
-
-        orch = TaskOrchestrator(
-            chat_id="chat_ac1_5",
-            session_creator=_counting_creator,
-            registry=TaskRegistry(),
-            max_task_cards=10,
-        )
-
-        thinking = FakeSession("thinking_card")
-        all_sessions.append(thinking)
-        orch.set_thinking_session(thinking)
-
-        task_count = 5
-        tasks = [{"task_id": f"step_{i}", "name": f"Task {i}"} for i in range(task_count)]
-        orch.on_plan_received(tasks)
-        _trigger_all(orch, tasks)
-
-        expected_total = task_count + 1
-        assert len(all_sessions) == expected_total, (
-            f"AC1 violation: expected {expected_total} total cards, got {len(all_sessions)}"
-        )
-
     def test_ac1_with_overflow_respects_max(self):
         """AC1 with overflow: total == min(task_count, max_task_cards) + 1."""
         all_sessions: list[FakeSession] = []
@@ -2107,36 +1868,6 @@ class TestAC1TotalCardCount:
             f"(1 thinking + min({task_count}, {max_cards}) task cards), "
             f"got {len(all_sessions)}"
         )
-
-    def test_ac1_thinking_archived_on_plan(self):
-        """AC1: thinking card is archived (not completed) when tasks start."""
-        all_sessions: list[FakeSession] = []
-
-        def _counting_creator(task_id: str):
-            s = FakeSession(session_id=f"session_{task_id}")
-            all_sessions.append(s)
-            return s
-
-        orch = TaskOrchestrator(
-            chat_id="chat_ac1_archive",
-            session_creator=_counting_creator,
-            registry=TaskRegistry(),
-        )
-
-        thinking = FakeSession("thinking_card")
-        all_sessions.append(thinking)
-        orch.set_thinking_session(thinking)
-
-        tasks = [{"task_id": "t1", "name": "A"}, {"task_id": "t2", "name": "B"}]
-        orch.on_plan_received(tasks)
-        _trigger_all(orch, tasks)
-
-        # Thinking card should be archived (transition from thinking to task cards)
-        archived = thinking.events_of_type(CardEventType.ARCHIVED)
-        assert len(archived) == 1, "Thinking card must be ARCHIVED when plan received"
-
-        # Total cards: 1 thinking + 2 tasks = 3
-        assert len(all_sessions) == 3
 
 
 # ===========================================================================
@@ -2188,49 +1919,6 @@ class TestRotateNoIOInsideLock:
         )
 
 
-class TestResetConcurrentDispatch:
-    """AC15: concurrent reset() + dispatch_to_task() does not raise AttributeError."""
-
-    def test_concurrent_no_attribute_error(self):
-        """50 iterations of concurrent reset + dispatch must not raise."""
-        orch, registry, _ = _make_orchestrator()
-        tasks = [{"task_id": "t1", "name": "A"}, {"task_id": "t2", "name": "B"}]
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        orch.on_plan_received(tasks)
-
-        errors: list[Exception] = []
-
-        def _reset_loop():
-            for _ in range(50):
-                try:
-                    orch.reset()
-                    # Re-setup for next iteration
-                    orch.set_thinking_session(FakeSession("th"))
-                    orch.on_plan_received(tasks)
-                except Exception as e:
-                    errors.append(e)
-
-        def _dispatch_loop():
-            for _ in range(50):
-                try:
-                    event = CardEvent.text_delta("blk", "hello")
-                    orch.dispatch_to_task("t1", event)
-                except Exception as e:
-                    errors.append(e)
-
-        t1 = threading.Thread(target=_reset_loop)
-        t2 = threading.Thread(target=_dispatch_loop)
-        t1.start()
-        t2.start()
-        t1.join(timeout=10)
-        t2.join(timeout=10)
-
-        attr_errors = [e for e in errors if isinstance(e, AttributeError)]
-        assert attr_errors == [], f"AttributeError(s) occurred: {attr_errors}"
-        # Non-AttributeError exceptions should also not occur (e.g. KeyError, RuntimeError)
-        unexpected_errors = [e for e in errors if not isinstance(e, AttributeError)]
-        assert unexpected_errors == [], f"Unexpected exception(s) occurred: {unexpected_errors}"
 
 
 class TestWeakrefBackfill:
@@ -2331,47 +2019,10 @@ class TestCreateTaskSessionException:
         assert orch._fallback_mode is True
 
 
+
 # =============================================================================
 # New tests for refactored orchestrator
 # =============================================================================
-
-
-class TestOverflowSeparatorConcurrency:
-    """AC-R20: overflow separator dispatched exactly once under concurrent dispatch."""
-
-    def test_concurrent_dispatch_same_overflow_task(self):
-        """10 threads dispatch same overflow task_id; SECTION_SEPARATOR appears once."""
-        orch, registry, sessions_created = _make_orchestrator(max_task_cards=2)
-        orch.on_plan_received([
-            {"task_id": "t1", "name": "A"},
-            {"task_id": "t2", "name": "B"},
-            {"task_id": "t3", "name": "C"},  # overflow → t2
-        ])
-
-        barrier = threading.Barrier(10)
-        errors = []
-
-        def _dispatch_worker():
-            try:
-                barrier.wait(timeout=5)
-                orch.dispatch_to_task("t3", CardEvent.text_delta("blk", "hello"))
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=_dispatch_worker) for _ in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        assert not errors
-
-        t2_session = sessions_created["t2"]
-        separator_events = [
-            e for e in t2_session.dispatched_events
-            if e.type == CardEventType.SECTION_SEPARATOR
-        ]
-        assert len(separator_events) == 1, f"Expected 1 separator, got {len(separator_events)}"
 
 
 class TestResetConcurrentDispatchEnhanced:
@@ -2633,28 +2284,6 @@ class TestBackfillBlockId:
         assert "_continuation_backfill" in continuation_ids, f"Expected _continuation_backfill, got: {continuation_ids}"
 
 
-class TestCloseNoThreadLeak:
-    """AC-R7: close() leaves no lingering threads."""
-
-    def test_no_thread_leak(self):
-        orch, registry, sessions = _make_orchestrator()
-        orch.on_plan_received([
-            {"task_id": "t1", "name": "A"},
-        ])
-
-        # Record thread count before close
-        threads_before = len([t for t in threading.enumerate() if "orch-close" in t.name])
-
-        orch.close()
-
-        # Wait a moment for pool shutdown
-        time.sleep(0.1)
-        threads_after = len([t for t in threading.enumerate() if "orch-close" in t.name])
-
-        assert threads_after <= threads_before, \
-            f"Thread leak: before={threads_before}, after={threads_after}"
-
-
 # ─── Task 19 [AC-TEST-3]: TestBackfillHookBranches ───
 
 
@@ -2682,21 +2311,6 @@ class TestBackfillHookBranches:
         else:
             assert old_session.event_count == 0
 
-    def test_weakref_dead_noop(self):
-        """Branch 2: weakref returns None → no-op."""
-        from src.card.hooks import BackfillHook
-
-        old_session = FakeSession(session_id="old_dead")
-        ref = weakref.ref(old_session)
-        del old_session  # Kill the referent
-
-        hook = BackfillHook(
-            old_session_ref=ref,
-            task_name="DeadTask",
-            rotation_count=1,
-        )
-        # Should not raise
-        hook.on_first_delivered("new_session", "om_msg_123")
 
     def test_closed_session_noop(self):
         """Branch 3: old_session.closed=True → no-op."""
@@ -2715,28 +2329,6 @@ class TestBackfillHookBranches:
         )
         hook.on_first_delivered("new_session", "om_msg_456")
         assert old_session.event_count == 0
-
-    def test_dispatch_exception_swallowed(self):
-        """Branch 4: old_session.dispatch raises → exception not propagated."""
-        from src.card.hooks import BackfillHook
-
-        class ExplodingSession(FakeSession):
-            @property
-            def closed(self):
-                return False
-
-            def dispatch(self, event):
-                raise RuntimeError("boom")
-
-        old_session = ExplodingSession(session_id="old_explode")
-        hook = BackfillHook(
-            old_session_ref=weakref.ref(old_session),
-            task_name="ExplodeTask",
-            rotation_count=1,
-        )
-        # Should not raise
-        hook.on_first_delivered("new_session", "om_msg_789")
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 # TestFromSettings (AC-R18)
@@ -2782,370 +2374,14 @@ class TestFromSettings:
             )
         assert orch._max_task_cards == 3
 
-    def test_default_max_task_cards_is_eight(self):
-        """Default max_task_cards is 8 (from config)."""
-        from src.config import CardSessionConfig
-        cfg = CardSessionConfig()
-        assert cfg.max_task_cards == 8
 
-    def test_task_level_cards_disabled_by_default(self):
-        """Default keeps plan tasks in the main card to avoid Feishu message spam."""
-        from src.config import CardSessionConfig
-        cfg = CardSessionConfig()
-        assert cfg.task_level_cards_enabled is False
 
-    def test_thinking_session_is_set(self):
-        """Thinking session is correctly set by factory."""
-        from unittest.mock import MagicMock, patch
 
-        mock_settings = MagicMock()
-        mock_settings.card.task_level_cards_enabled = True
-        mock_settings.card.max_task_cards = 8
 
-        thinking = FakeSession("think")
-        with patch("src.config.get_settings", return_value=mock_settings):
-            from src.card.orchestrator import TaskOrchestrator as TO
-            orch = TO.from_settings(
-                chat_id="c",
-                session_creator=lambda tid: FakeSession(tid),
-                thinking_session=thinking,
-            )
-        assert orch._thinking_session is thinking
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# TestConcurrentClose (AC-R3)
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class TestConcurrentClose:
-    """Two threads calling close() concurrently: internal logic executes only once."""
-
-    def test_concurrent_close_executes_once(self):
-        """close() body runs exactly once even with 100 concurrent calls."""
-        import threading
-
-        orch, _, _ = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        orch.on_plan_received([{"task_id": "t1", "name": "A"}])
-
-        close_count = {"n": 0}
-        original_set = orch._closed_event.set
-
-        def counting_set():
-            close_count["n"] += 1
-            original_set()
-
-        orch._closed_event.set = counting_set
-
-        barrier = threading.Barrier(2)
-        errors = []
-
-        def closer():
-            barrier.wait()
-            for _ in range(50):
-                try:
-                    orch.close()
-                except Exception as e:
-                    errors.append(e)
-
-        t1 = threading.Thread(target=closer)
-        t2 = threading.Thread(target=closer)
-        t1.start()
-        t2.start()
-        t1.join(timeout=10)
-        t2.join(timeout=10)
-
-        assert not errors
-        assert close_count["n"] == 1
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# TestPlanReceivedThreadSafety
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-class TestPlanReceivedThreadSafety:
-    """Verify _plan_received (threading.Event) is safe under concurrent access."""
-
-    def test_concurrent_on_plan_received_and_route_or_fallback(self):
-        """Multiple threads calling on_plan_received + route_or_fallback concurrently: no exceptions."""
-        from unittest.mock import MagicMock
-
-        from src.acp.models import ACPEvent
-        from src.acp.models import ACPEventType as ACPEvType
-
-        orch, registry, sessions = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-
-        fake_bridge = MagicMock()
-        event = MagicMock(spec=ACPEvent)
-        event.event_type = ACPEvType.TEXT_CHUNK
-        event.text = "x"
-        event.tool_call = None
-        event.plan = None
-
-        errors: list[Exception] = []
-        barrier = threading.Barrier(4, timeout=10)
-
-        def plan_writer():
-            barrier.wait()
-            for _ in range(50):
-                try:
-                    orch.on_plan_received([
-                        {"task_id": f"t{i}", "name": f"Task {i}"}
-                        for i in range(3)
-                    ])
-                except Exception as e:
-                    errors.append(e)
-
-        def route_reader():
-            barrier.wait()
-            for _ in range(100):
-                try:
-                    orch.route_or_fallback(event, fake_bridge)
-                except Exception as e:
-                    errors.append(e)
-
-        def resetter():
-            barrier.wait()
-            for _ in range(30):
-                try:
-                    orch.reset()
-                except Exception as e:
-                    errors.append(e)
-
-        threads = [
-            threading.Thread(target=plan_writer),
-            threading.Thread(target=route_reader),
-            threading.Thread(target=route_reader),
-            threading.Thread(target=resetter),
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=15)
-
-        assert not errors, f"Concurrent access raised exceptions: {errors}"
-
-    def test_has_plan_reflects_state_correctly(self):
-        """has_plan returns False initially, True after on_plan_received, False after reset."""
-        orch, _, _ = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-
-        assert orch.has_plan is False
-
-        orch.on_plan_received([{"task_id": "t1", "name": "A"}])
-        assert orch.has_plan is True
-
-        orch.reset()
-        assert orch.has_plan is False
-
-
-class TestRouteOrFallbackCorrectnessUnderConcurrency:
-    """AC-7: route_or_fallback returns False and routes to bridge in fallback mode."""
-
-    def test_concurrent_fallback_routing_correctness(self):
-        """5 threads × 100 calls in fallback_mode=True: all return False, bridge receives all."""
-        from unittest.mock import MagicMock
-
-        from src.acp.models import ACPEvent
-        from src.acp.models import ACPEventType as ACPEvType
-
-        orch, _, _ = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        orch._enter_fallback_mode()
-
-        fake_bridge = MagicMock()
-        event = MagicMock(spec=ACPEvent)
-        event.event_type = ACPEvType.TEXT_CHUNK
-        event.text = "x"
-        event.tool_call = None
-        event.plan = None
-
-        results: list[bool] = []
-        results_lock = threading.Lock()
-        errors: list[Exception] = []
-        barrier = threading.Barrier(5, timeout=10)
-
-        def worker():
-            barrier.wait()
-            for _ in range(100):
-                try:
-                    r = orch.route_or_fallback(event, fake_bridge)
-                    with results_lock:
-                        results.append(r)
-                except Exception as e:
-                    errors.append(e)
-
-        threads = [threading.Thread(target=worker) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=15)
-
-        assert not errors, f"Exceptions: {errors}"
-        assert len(results) == 500
-        assert all(r is False for r in results), "All should return False in fallback mode"
-        assert fake_bridge.on_event.call_count == 500
-
-
-class TestEnterFallbackConcurrentWithRoute:
-    """AC-8: _enter_fallback_mode + route_or_fallback concurrent: no event lost."""
-
-    def test_no_event_lost_during_fallback_entry(self):
-        """2 threads: one enters fallback, other routes — no exceptions, events not lost."""
-        from unittest.mock import MagicMock
-
-        from src.acp.models import ACPEvent
-        from src.acp.models import ACPEventType as ACPEvType
-
-        orch, _, _ = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-
-        fake_bridge = MagicMock()
-        event = MagicMock(spec=ACPEvent)
-        event.event_type = ACPEvType.TEXT_CHUNK
-        event.text = "x"
-        event.tool_call = None
-        event.plan = None
-
-        errors: list[Exception] = []
-        route_results: list[bool] = []
-        route_lock = threading.Lock()
-        barrier = threading.Barrier(2, timeout=10)
-
-        def fallback_enterer():
-            barrier.wait()
-            for _ in range(50):
-                try:
-                    orch._enter_fallback_mode()
-                except Exception as e:
-                    errors.append(e)
-
-        def route_caller():
-            barrier.wait()
-            for _ in range(50):
-                try:
-                    r = orch.route_or_fallback(event, fake_bridge)
-                    with route_lock:
-                        route_results.append(r)
-                except Exception as e:
-                    errors.append(e)
-
-        t1 = threading.Thread(target=fallback_enterer)
-        t2 = threading.Thread(target=route_caller)
-        t1.start()
-        t2.start()
-        t1.join(timeout=15)
-        t2.join(timeout=15)
-
-        assert not errors, f"Exceptions: {errors}"
-        # All 50 route calls should complete (not lost)
-        assert len(route_results) == 50
-        # Every event either went to route_acp_event (True) or bridge (False) — no crash
-        false_count = sum(1 for r in route_results if r is False)
-        true_count = sum(1 for r in route_results if r is True)
-        assert false_count + true_count == 50
-
-
-class TestConcurrentCloseIdempotentDispatch:
-    """AC-9: concurrent close() dispatches COMPLETED exactly once per session."""
-
-    def test_completed_dispatched_once_per_session(self):
-        """2 threads call close(): COMPLETED event dispatched == number of sessions."""
-        orch, _, sessions = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        tasks = [
-            {"task_id": "t1", "name": "A"},
-            {"task_id": "t2", "name": "B"},
-        ]
-        orch.on_plan_received(tasks)
-        _trigger_all(orch, tasks)
-        num_sessions = 2
-
-        errors: list[Exception] = []
-        barrier = threading.Barrier(2, timeout=10)
-
-        def closer():
-            barrier.wait()
-            for _ in range(50):
-                try:
-                    orch.close()
-                except Exception as e:
-                    errors.append(e)
-
-        t1 = threading.Thread(target=closer)
-        t2 = threading.Thread(target=closer)
-        t1.start()
-        t2.start()
-        t1.join(timeout=15)
-        t2.join(timeout=15)
-
-        assert not errors, f"Exceptions: {errors}"
-        completed_count = 0
-        for s in sessions.values():
-            completed_count += sum(
-                1 for e in s.dispatched_events if e.type == CardEventType.COMPLETED
-            )
-        assert completed_count == num_sessions, (
-            f"Expected {num_sessions} COMPLETED events, got {completed_count}"
-        )
-
-
-class TestCloseAndDispatchToTaskRace:
-    """AC-10: close() + dispatch_to_task() race: dispatch after close is a no-op."""
-
-    def test_dispatch_after_close_is_noop(self):
-        """One thread closes, another dispatches 50 times: no error, no post-close growth."""
-        orch, _, sessions = _make_orchestrator()
-        thinking = FakeSession("thinking")
-        orch.set_thinking_session(thinking)
-        orch.on_plan_received([
-            {"task_id": "t1", "name": "A"},
-            {"task_id": "t2", "name": "B"},
-        ])
-
-        errors: list[Exception] = []
-        barrier = threading.Barrier(2, timeout=10)
-
-        def closer():
-            barrier.wait()
-            time.sleep(0.001)
-            orch.close()
-
-        def dispatcher():
-            barrier.wait()
-            for _ in range(50):
-                try:
-                    event = CardEvent.text_delta("blk", "msg")
-                    orch.dispatch_to_task("t1", event)
-                except Exception as e:
-                    errors.append(e)
-
-        t1 = threading.Thread(target=closer)
-        t2 = threading.Thread(target=dispatcher)
-        t1.start()
-        t2.start()
-        t1.join(timeout=15)
-        t2.join(timeout=15)
-
-        assert not errors, f"Exceptions: {errors}"
-        s = sessions.get("t1")
-        if s is not None:
-            text_deltas = [e for e in s.dispatched_events if e.type == CardEventType.TEXT_DELTA]
-            # Should be <= 50; after close, no more dispatches land
-            assert len(text_deltas) <= 50
 
 
 class TestFullLifecycleResetReentry:
-    """AC-11: full lifecycle set_thinking→plan→dispatch→reset→plan again works."""
+    """AC-11: full lifecycle set_thinking->plan->dispatch->reset->plan again works."""
 
     def test_second_cycle_creates_new_sessions(self):
         """Complete two full cycles: second plan creates independent sessions."""

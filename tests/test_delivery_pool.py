@@ -1,4 +1,4 @@
-"""Tests for src/card/delivery/pool.py — thread pool lifecycle."""
+"""Tests for src/card/delivery/pool.py — thread pool lifecycle, integration, and fallback."""
 from __future__ import annotations
 
 import threading
@@ -6,6 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from src.card.delivery.engine import CardDelivery
+from src.card.events import CardEvent, CardEventType
+from src.card.session import CardSession
+from src.card.session.config import SessionCallbacks, SessionConfig
+from src.card.state.models import CardMetadata
 
 
 @pytest.fixture(autouse=True)
@@ -94,36 +100,117 @@ class TestShutdownDeliveryPool:
             get_delivery_pool()
 
 
-class TestRuntimeErrorFallback:
-    """Test _submit_delivery fallback when pool raises RuntimeError."""
+# ---------------------------------------------------------------------------
+# RuntimeError fallback — AC-18
+# ---------------------------------------------------------------------------
 
-    def test_sync_fallback_on_pool_runtime_error(self):
-        """When pool.submit raises RuntimeError, delivery runs synchronously."""
-        from src.card.session import CardSession
 
-        # Create a session with mocked delivery
-        mock_delivery = MagicMock()
-        mock_delivery.deliver.return_value = []
+class MockDeliveryClient:
+    """Minimal mock for CardAPIClient."""
 
-        with patch("src.card.delivery.pool.get_delivery_pool") as mock_get_pool:
-            mock_pool = MagicMock()
-            mock_pool.submit.side_effect = RuntimeError("pool shut down")
-            mock_get_pool.return_value = mock_pool
+    def __init__(self):
+        self.creates = []
 
-            # Create a minimal session
-            session = MagicMock(spec=CardSession)
-            session._sync_delivery = False
-            session._session_id = "test-123"
-            session._coordinator = MagicMock()
-            session._coordinator.deliver.return_value = []
+    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+        self.creates.append(chat_id)
+        return ("msg_1", "card_1")
 
-            # Call _submit_delivery directly
-            rendered = [MagicMock()]
-            from src.card.events import CardEvent
+    def update_card(self, card_id, card_json, *, sequence=0):
+        pass
 
-            event = CardEvent.started()
-            # Use the real method on the mock
-            CardSession._submit_delivery(session, rendered, False, event)
+    def update_element(self, card_id, element_id, content, *, sequence=0):
+        pass
 
-            # Should have fallen back to synchronous _deliver_and_track
-            session._deliver_and_track.assert_called_once_with(rendered, False, event=event)
+
+class TestDeliveryPoolRuntimeErrorFallback:
+    """When pool.submit raises RuntimeError, delivery falls back to sync."""
+
+    def _make_session(self, *, sync_delivery=False):
+        client = MockDeliveryClient()
+        delivery = CardDelivery(client)
+        metadata = CardMetadata(engine_type="deep")
+        config = SessionConfig(metadata=metadata, sync_delivery=sync_delivery)
+        session = CardSession(
+            chat_id="chat_pool_test",
+            config=config,
+            delivery=delivery,
+            session_id="pool_fallback_test",
+        )
+        return session, client
+
+    def test_pool_shutdown_falls_back_to_sync_delivery(self):
+        """RuntimeError from pool.submit -> synchronous delivery succeeds."""
+        session, client = self._make_session(sync_delivery=False)
+
+        # Patch get_delivery_pool to return a mock that raises RuntimeError on submit
+        mock_pool = MagicMock()
+        mock_pool.submit.side_effect = RuntimeError("cannot schedule new futures after shutdown")
+
+        with patch("src.card.delivery.pool.get_delivery_pool", return_value=mock_pool):
+            # This should NOT raise — it falls back to sync delivery
+            session.dispatch(CardEvent(type=CardEventType.STARTED))
+
+        # Verify delivery still happened (synchronous fallback)
+        assert len(client.creates) == 1
+
+    def test_pool_shutdown_delivers_terminal_event(self):
+        """Terminal event delivery also works under pool shutdown fallback."""
+        session, client = self._make_session(sync_delivery=False)
+
+        mock_pool = MagicMock()
+        mock_pool.submit.side_effect = RuntimeError("pool shut down")
+
+        with patch("src.card.delivery.pool.get_delivery_pool", return_value=mock_pool):
+            session.dispatch(CardEvent(type=CardEventType.STARTED))
+            session.dispatch(CardEvent(type=CardEventType.COMPLETED, payload={}))
+
+        # Both events delivered successfully via sync fallback
+        assert len(client.creates) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Integration: verify thread pool delivery end-to-end
+# ---------------------------------------------------------------------------
+
+pytestmark_integration = pytest.mark.integration
+
+
+@pytest.mark.integration
+def test_delivery_runs_on_non_main_thread():
+    """With _sync_delivery=False, delivery executes on a pool thread."""
+    delivery_thread_name = []
+
+    mock_delivery = MagicMock()
+
+    def _fake_deliver(*args, **kwargs):
+        delivery_thread_name.append(threading.current_thread().name)
+        return []
+
+    mock_delivery.deliver.side_effect = _fake_deliver
+    mock_delivery.close = MagicMock()
+
+    metadata = CardMetadata(engine_type="deep")
+    config = SessionConfig(metadata=metadata)
+    callbacks = SessionCallbacks(notify_callback=lambda _cid, _txt: None)
+
+    with patch("src.card.session.core.render_card") as mock_render:
+        mock_render.return_value = [MagicMock(_card_json={"schema": "2.0"}, structure_signature="sig", content_hash="h")]
+
+        session = CardSession(
+            chat_id="test-chat",
+            config=config,
+            delivery=mock_delivery,
+            callbacks=callbacks,
+        )
+        # Override sync delivery
+        session._sync_delivery = False
+
+        session.dispatch(CardEvent.started())
+
+        # Wait for pool thread to complete
+        from src.card.delivery.pool import get_delivery_pool
+        get_delivery_pool().shutdown(wait=True)
+
+    # Delivery should have been called on a card-delivery thread
+    assert len(delivery_thread_name) >= 1
+    assert "card-delivery" in delivery_thread_name[0]

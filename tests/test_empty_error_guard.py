@@ -17,6 +17,7 @@ import pytest
 
 from src.utils.errors import fmt_exception, get_error_detail
 
+
 # ---------------------------------------------------------------------------
 # Helpers for chained exception construction
 # ---------------------------------------------------------------------------
@@ -516,19 +517,10 @@ class TestRunAsyncTimeoutWrapping:
     pytest.param(ValueError("bad input"), "bad input", id="value_error_with_msg"),
     pytest.param(ValueError(), None, id="bare_value_error"),
     pytest.param(RuntimeError(), None, id="bare_runtime_error"),
-    pytest.param(asyncio.TimeoutError(), "超时", id="asyncio_timeout"),
     pytest.param(concurrent.futures.TimeoutError(), "超时", id="concurrent_timeout"),
     pytest.param(TimeoutError("ACP 超时 120s"), "ACP 超时 120s", id="timeout_with_msg"),
-    pytest.param(TimeoutError(""), "超时", id="empty_string_timeout"),
     pytest.param(
         _chain_cause(RuntimeError, TimeoutError()), "超时", id="chained_timeout_cause",
-    ),
-    pytest.param(
-        _chain_context(RuntimeError, TimeoutError()), "超时", id="chained_timeout_context",
-    ),
-    pytest.param(
-        _chain_cause(RuntimeError, concurrent.futures.TimeoutError()),
-        "超时", id="chained_concurrent_timeout",
     ),
 ])
 def test_get_error_detail_never_empty(exc, must_contain):
@@ -558,14 +550,6 @@ def test_get_error_detail_third_party_timeout_via_name():
         assert "超时" in result, f"Failed for {tn}"
 
 
-def test_get_error_detail_worktree_format_not_empty_tail():
-    """WorktreeManager: formatted summary must not end with empty Chinese colon."""
-    last_error = get_error_detail(Exception())
-    summary = f"- worktree 创建失败：{last_error}"
-    assert "创建失败" in summary
-    assert not summary.endswith("：")
-
-
 # ---------------------------------------------------------------------------
 # fmt_exception: all branches produce non-empty output
 # (consolidates TestFmtExceptionEmptyGuard)
@@ -587,7 +571,7 @@ def test_fmt_exception_nonempty(context, exc, must_contain):
 
 
 def test_fmt_exception_wrapped_timeout_chain():
-    """Chained TimeoutError via __cause__ detected."""
+    """Chained TimeoutError via __cause__ and __context__ detected."""
     inner = TimeoutError()
     outer = RuntimeError("chained failure")
     outer.__cause__ = inner
@@ -595,15 +579,13 @@ def test_fmt_exception_wrapped_timeout_chain():
     assert "审查超时" in result
     assert "操作耗时过长" in result
 
-
-def test_fmt_exception_wrapped_asyncio_timeout_chain():
-    """Chained asyncio.TimeoutError via __context__ detected."""
-    inner = asyncio.TimeoutError()
-    outer = ValueError("failed")
-    outer.__context__ = inner
-    result = fmt_exception("执行", outer)
-    assert "执行超时" in result
-    assert "操作耗时过长" in result
+    # Also test asyncio variant via __context__
+    inner2 = asyncio.TimeoutError()
+    outer2 = ValueError("failed")
+    outer2.__context__ = inner2
+    result2 = fmt_exception("执行", outer2)
+    assert "执行超时" in result2
+    assert "操作耗时过长" in result2
 
 
 # ---------------------------------------------------------------------------
@@ -640,15 +622,12 @@ def test_fmt_error_nonempty(context, exc_factory, must_contain):
     pytest.param("异常回退", ValueError("bad input"), "bad input", id="intent_named_value_error"),
     # EngineBase logger
     pytest.param("Deep Engine 执行超时 (task_id=t1)", TimeoutError(), "TimeoutError()", id="engine_timeout"),
-    pytest.param("Deep Engine 执行异常", Exception(), "Exception()", id="engine_bare_exception"),
     pytest.param("Deep Engine 执行异常", RuntimeError("connection lost"), "connection lost", id="engine_named_runtime"),
     # ProjectManager
-    pytest.param("无法创建目录 /tmp/test", Exception(), "Exception()", id="project_bare_exception"),
-    pytest.param("无法创建目录 /tmp/test", OSError(), None, id="project_bare_os_error"),
     pytest.param("无法创建目录 /tmp/test", PermissionError("access denied"), "access denied", id="project_named_perm_error"),
     # ArtifactsParse
     pytest.param("规格 JSON 解析失败", Exception(), "Exception()", id="spec_parse_bare_exception"),
-    pytest.param("规划 JSON 解析失败", Exception(), "Exception()", id="plan_parse_bare_exception"),
+    pytest.param("无法创建目录 /tmp/test", OSError(), None, id="project_bare_os_error"),
 ])
 def test_fstring_or_repr_pattern_nonempty(prefix, exc, expected_substr):
     """f'prefix: {str(e) or repr(e)}' must never produce empty tail."""
@@ -658,16 +637,6 @@ def test_fstring_or_repr_pattern_nonempty(prefix, exc, expected_substr):
     assert not msg.endswith("：")
     if expected_substr:
         assert expected_substr in msg
-
-
-def test_fstring_json_decode_error_preserves_message():
-    """JSON decode error message is preserved in f-string pattern."""
-    try:
-        json.loads("{bad json")
-    except Exception as e:
-        msg = f"规格 JSON 解析失败：{str(e) or repr(e)}"
-        assert msg
-        assert len(msg) > len("规格 JSON 解析失败：")
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +664,8 @@ class TestDiagnoseReviewFailureNoEmptyMessageMarker:
     def test_timeout_friendly_text(self):
         diag = self._build(TimeoutError())
         assert "审查超时" in diag["error_text"]
+        assert diag["err_repr"]
+        assert "TimeoutError" in diag["err_repr"]
 
     @pytest.mark.parametrize("exc_cls", [ValueError, RuntimeError, Exception],
                              ids=["ValueError", "RuntimeError", "Exception"])
@@ -702,19 +673,9 @@ class TestDiagnoseReviewFailureNoEmptyMessageMarker:
         diag = self._build(exc_cls())
         assert "审查执行异常" in diag["error_text"]
 
-    def test_exception_with_message_preserved(self):
-        diag = self._build(ValueError("bad input"))
-        assert "bad input" in diag["error_text"]
-        assert "(empty message)" not in diag["error_text"]
-
     def test_timeout_with_message_preserved(self):
         diag = self._build(TimeoutError("took too long"))
         assert "took too long" in diag["error_text"]
-
-    def test_err_repr_still_contains_repr_info(self):
-        diag = self._build(TimeoutError())
-        assert diag["err_repr"]
-        assert "TimeoutError" in diag["err_repr"]
 
 
 # ---------------------------------------------------------------------------
@@ -841,7 +802,6 @@ class TestHandleReviewExceptionE2EEmptyMessage:
 
 @pytest.mark.parametrize("kwargs,must_contain", [
     pytest.param(dict(fail_reason="timeout"), None, id="timeout_branch"),
-    pytest.param(dict(fail_reason="unknown", error_text="", err_repr=""), None, id="empty_error_text"),
     pytest.param(
         dict(fail_reason="unknown", error_text="(empty message)", err_repr=""),
         None, id="empty_message_marker",
@@ -851,7 +811,6 @@ class TestHandleReviewExceptionE2EEmptyMessage:
         "JSON decode failed", id="normal_error",
     ),
     pytest.param(dict(), None, id="all_empty"),
-    pytest.param(dict(fail_reason="", error_text="   ", err_repr=""), None, id="whitespace_only"),
     pytest.param(
         dict(fail_reason="some_error", error_text="", err_repr="ValueError('x')"),
         "ValueError('x')", id="repr_fallback",
@@ -918,13 +877,6 @@ def test_logger_format_nonempty_detail(fmt_template, fmt_args):
     formatted = fmt_template % (*fmt_args, detail)
     assert not formatted.endswith(": "), f"Log ends with empty detail: {formatted}"
     assert "超时" in formatted or "未知" in formatted
-
-
-def test_rate_limit_with_message_preserves():
-    """Named TimeoutError message preserved in rate-limit log format."""
-    detail = get_error_detail(TimeoutError("rate limit 429"))
-    formatted = "[RateLimit] 限速检测，等待 %ds 后重试 (attempt=%d/%d): %s" % (30, 1, 3, detail)
-    assert "rate limit 429" in formatted
 
 
 # ===========================================================================

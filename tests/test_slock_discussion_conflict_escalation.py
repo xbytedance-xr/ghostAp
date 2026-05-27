@@ -214,17 +214,17 @@ class TestLLMSemanticConflictDetection:
         mock_engine = MagicMock()
         mock_engine.registry.list_agents.return_value = [MagicMock()]
 
-        # Make run_agent_session_full hang (simulate timeout)
-        def slow_call(*args, **kwargs):
-            import time
-            time.sleep(10)  # Will be interrupted by our 5s timeout
-            return MagicMock(text='{"conflict": true, "reason": "timeout test"}')
+        # Make run_agent_session_full raise TimeoutError immediately
+        from concurrent.futures import TimeoutError as FutureTimeoutError
 
-        mock_engine.run_agent_session_full.side_effect = slow_call
+        def timeout_call(*args, **kwargs):
+            raise FutureTimeoutError("simulated timeout")
+
+        mock_engine.run_agent_session_full.side_effect = timeout_call
 
         dm = DiscussionManager(engine=mock_engine)
 
-        # This should return within the timeout period
+        # This should return quickly since we raise immediately
         import time
         start = time.time()
         has_conflict, details = dm._detect_conflict_llm_semantic(
@@ -233,8 +233,8 @@ class TestLLMSemanticConflictDetection:
         )
         elapsed = time.time() - start
 
-        # Should return quickly (within 6 seconds for our 5s timeout)
-        assert elapsed < 7
+        # Should return very quickly (no actual wait)
+        assert elapsed < 2
         # Should return False to allow rule-based fallback
         assert has_conflict is False
         assert details == ""

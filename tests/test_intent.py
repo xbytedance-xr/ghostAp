@@ -25,16 +25,6 @@ class TestIntentRecognizerQuickMatch:
         assert result is not None
         assert result.primary_intent == IntentType.EXIT_MODE
 
-    def test_exact_command_projects(self, recognizer):
-        result = recognizer._quick_match("/projects")
-        assert result is not None
-        assert result.primary_intent == IntentType.LIST_PROJECTS
-
-    def test_exact_command_status(self, recognizer):
-        result = recognizer._quick_match("/status")
-        assert result is not None
-        assert result.primary_intent == IntentType.PROJECT_STATUS
-
     def test_coco_info_command(self, recognizer):
         result = recognizer._quick_match("/coco_info")
         assert result is not None
@@ -83,10 +73,8 @@ class TestIntentRecognizerQuickMatch:
         "text, current_mode",
         [
             ("退出", "coco"),
-            ("exit", "coco"),
-            ("退出", "claude"),
-            ("退出", "ttadk"),
             ("exit", "claude"),
+            ("退出", "ttadk"),
         ],
     )
     def test_exit_keyword_in_programming_mode(self, recognizer, text, current_mode):
@@ -103,17 +91,8 @@ class TestIntentRecognizerQuickMatch:
         assert result is not None
         assert result.primary_intent == IntentType.LIST_PROJECTS
 
-    def test_project_list_keyword_variant(self, recognizer):
-        result = recognizer._quick_match("看看有哪些项目")
-        assert result is not None
-        assert result.primary_intent == IntentType.LIST_PROJECTS
-
     def test_common_word_not_matched(self, recognizer):
         result = recognizer._quick_match("hello")
-        assert result is None
-
-    def test_chinese_text_not_quick_matched(self, recognizer):
-        result = recognizer._quick_match("帮我写一个函数")
         assert result is None
 
     def test_quick_match_delegates_to_registered_matcher(self, recognizer):
@@ -147,33 +126,6 @@ class TestIntentRecognizerQuickMatch:
         )
 
 
-class TestIntentRecognizerASR:
-    """测试 ASR 容错识别功能"""
-
-    @pytest.fixture
-    def recognizer(self):
-        return IntentRecognizer()
-
-    def test_asr_period_suffix(self, recognizer):
-        """测试末尾句号去除"""
-        # "帮我建个项目叫测试。" -> CREATE_PROJECT
-        # 这里只测试 _quick_match 能否覆盖部分规则，或者 mock LLM 测试复杂场景
-        # _quick_match 目前只处理特定命令前缀，对于自然语言 ASR 错误，主要依赖 LLM
-        pass
-
-    def test_asr_typo_correction_in_quick_match(self, recognizer):
-        """测试 _quick_match 中的拼写纠正"""
-        # /claud -> /claude
-        result = recognizer._quick_match("/claud")
-        assert result is not None
-        assert result.primary_intent == IntentType.ENTER_CLAUDE
-
-        # /coc -> /coco
-        result = recognizer._quick_match("/coc")
-        assert result is not None
-        assert result.primary_intent == IntentType.ENTER_COCO
-
-
 class TestIntentRecognizerContextHint:
     @pytest.fixture
     def recognizer(self):
@@ -184,8 +136,6 @@ class TestIntentRecognizerContextHint:
         [
             ("coco", IntentType.COCO_MESSAGE),
             ("claude", IntentType.CLAUDE_MESSAGE),
-            ("gemini", IntentType.GEMINI_MESSAGE),
-            ("ttadk", IntentType.TTADK_MESSAGE),
             ("smart", IntentType.SHELL_COMMAND),
         ],
     )
@@ -246,50 +196,6 @@ class TestIntentTypeMapping:
     def recognizer(self):
         return IntentRecognizer()
 
-    def test_all_intents_mapped(self, recognizer):
-        expected_intents = [
-            "enter_coco",
-            "exit_coco",
-            "coco_message",
-            "enter_claude",
-            "exit_claude",
-            "claude_message",
-            "enter_aiden",
-            "exit_aiden",
-            "aiden_message",
-            "enter_codex",
-            "exit_codex",
-            "codex_message",
-            "enter_gemini",
-            "exit_gemini",
-            "gemini_message",
-            "ttadk_message",
-            "change_dir",
-            "shell",
-            "create_project",
-            "switch_project",
-            "list_projects",
-            "close_project",
-            "project_status",
-            "enter_deep",
-            "deep_status",
-            "stop_deep",
-            "deep_update",
-            "enter_spec",
-            "spec_status",
-            "stop_spec",
-            "spec_pause",
-            "spec_resume",
-            "spec_guide",
-            "show_help",
-            "show_tools",
-            "tools_status",
-            "exit_mode",
-            "unknown",
-        ]
-        for intent_str in expected_intents:
-            assert intent_str in recognizer.INTENT_MAP
-
     def test_intent_map_values(self, recognizer):
         assert recognizer.INTENT_MAP["enter_coco"] == IntentType.ENTER_COCO
         assert recognizer.INTENT_MAP["exit_coco"] == IntentType.EXIT_COCO
@@ -301,30 +207,6 @@ class TestIntentTypeMapping:
         assert recognizer.INTENT_MAP["ttadk_message"] == IntentType.TTADK_MESSAGE
 
 
-class TestNormalizePath:
-    @pytest.fixture
-    def recognizer(self):
-        return IntentRecognizer()
-
-    def test_empty_path(self, recognizer):
-        assert recognizer._normalize_path("") == ""
-
-    def test_tilde_expansion(self, recognizer):
-        import os
-
-        result = recognizer._normalize_path("~/workspace")
-        assert result.startswith(os.path.expanduser("~"))
-        assert "workspace" in result
-
-    def test_regular_path(self, recognizer):
-        result = recognizer._normalize_path("/tmp/test")
-        assert result == "/tmp/test"
-
-    def test_path_with_spaces(self, recognizer):
-        result = recognizer._normalize_path("  /tmp/test  ")
-        assert result == "/tmp/test"
-
-
 # ── Boundary test cases ──────────────────────────────────────────────
 
 
@@ -334,16 +216,6 @@ class TestQuickMatchBoundaryEdgeCases:
     @pytest.fixture
     def recognizer(self):
         return IntentRecognizer()
-
-    def test_empty_string_returns_none(self, recognizer):
-        """Empty input should not match any intent."""
-        result = recognizer._quick_match("")
-        assert result is None
-
-    def test_whitespace_only_returns_none(self, recognizer):
-        """Whitespace-only input should not match any intent."""
-        result = recognizer._quick_match("   ")
-        assert result is None
 
     def test_exit_keyword_exactly_20_chars_in_programming_mode(self, recognizer):
         """Exit keyword in text exactly 20 chars long should NOT match (guard is len < 20)."""

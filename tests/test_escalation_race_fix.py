@@ -97,12 +97,12 @@ class TestCardMessageIdAvailableBeforeTimeout:
             return True
 
         mgr, mocks = _make_manager(
-            escalation_timeout_s=1,  # 1 second - short but safe
+            escalation_timeout_s=0.3,  # 300ms - short for fast testing
             update_card_fn=mock_update_card,
             send_text_fn=MagicMock(),
         )
         # Override IO call timeout to be short for testing
-        mgr._IO_CALL_TIMEOUT_S = 5
+        mgr._IO_CALL_TIMEOUT_S = 2
 
         agent = _make_agent()
 
@@ -114,7 +114,7 @@ class TestCardMessageIdAvailableBeforeTimeout:
         mgr.escalate(agent, "test reason", callbacks=callbacks)
 
         # Wait for timeout to fire + IO to complete
-        time.sleep(2.5)
+        time.sleep(0.8)
         mgr._io_executor.shutdown(wait=True)
 
         # Verify update_card was called with the correct message_id
@@ -125,7 +125,7 @@ class TestCardMessageIdAvailableBeforeTimeout:
         """If on_escalation doesn't set card_message_id, update_card is skipped."""
         update_card_fn = MagicMock()
         mgr, mocks = _make_manager(
-            escalation_timeout_s=1,
+            escalation_timeout_s=0.3,
             update_card_fn=update_card_fn,
             send_text_fn=MagicMock(),
         )
@@ -138,7 +138,7 @@ class TestCardMessageIdAvailableBeforeTimeout:
         callbacks = _FakeCallbacks(on_escalation=on_escalation)
         mgr.escalate(agent, "test reason", callbacks=callbacks)
 
-        time.sleep(2.5)
+        time.sleep(0.8)
         mgr._io_executor.shutdown(wait=True)
 
         # update_card should NOT have been called (card_message_id is None)
@@ -151,7 +151,7 @@ class TestTimerStartsEvenIfCallbackRaises:
     def test_timer_fires_after_callback_exception(self):
         send_text_fn = MagicMock()
         mgr, mocks = _make_manager(
-            escalation_timeout_s=1,
+            escalation_timeout_s=0.3,
             send_text_fn=send_text_fn,
         )
 
@@ -164,7 +164,7 @@ class TestTimerStartsEvenIfCallbackRaises:
         esc = mgr.escalate(agent, "test reason", callbacks=callbacks)
 
         # Wait for timeout
-        time.sleep(2.5)
+        time.sleep(0.8)
         mgr._io_executor.shutdown(wait=True)
 
         # Escalation should be resolved (timer fired)
@@ -182,11 +182,11 @@ class TestConcurrentEscalationsThreadBounded:
 
     def test_thread_count_bounded(self):
         mgr, mocks = _make_manager(
-            escalation_timeout_s=1,
+            escalation_timeout_s=0.3,
             update_card_fn=MagicMock(return_value=True),
             send_text_fn=MagicMock(),
         )
-        mgr._IO_CALL_TIMEOUT_S = 5
+        mgr._IO_CALL_TIMEOUT_S = 2
 
         baseline_threads = threading.active_count()
 
@@ -211,7 +211,7 @@ class TestConcurrentEscalationsThreadBounded:
             mgr.escalate(agent_i, f"reason {i}", callbacks=callbacks)
 
         # Wait for all timers to fire
-        time.sleep(2.0)
+        time.sleep(0.8)
 
         # Check thread growth is bounded
         # Expected: _timeout_call_executor(4) + _io_executor consumer(1) + timer threads
@@ -226,4 +226,4 @@ class TestConcurrentEscalationsThreadBounded:
 
         # Cleanup
         mgr.shutdown_timers()
-        time.sleep(1.0)
+        time.sleep(0.3)

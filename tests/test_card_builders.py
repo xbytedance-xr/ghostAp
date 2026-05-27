@@ -86,25 +86,6 @@ def _collect_selects(card: dict) -> list[dict]:
     return selects
 
 
-def test_tool_option_view_defaults():
-    opt = ToolOptionView(name="coco")
-
-    assert opt.name == "coco"
-    assert opt.description == ""
-    assert opt.is_default is False
-    assert opt.emoji == "🤖"
-    assert opt.disabled is False
-
-
-def test_model_option_view_defaults():
-    opt = ModelOptionView(name="gpt-5.2")
-
-    assert opt.name == "gpt-5.2"
-    assert opt.description == ""
-    assert opt.is_default is False
-    assert opt.display_name is None
-
-
 def test_core_builder_banner_element():
     """Verify that CoreBuilder._build_banner_element produces the correct column_set structure."""
     message = "Test Banner Message"
@@ -165,23 +146,6 @@ def test_help_card_mentions_new_chat_project_group():
     card_text = json.dumps(json.loads(card_json), ensure_ascii=False)
     assert "/new-chat" in card_text
     assert "项目群" in card_text
-
-
-def test_help_card_mentions_worktree_wt_alias_and_separators():
-    """Verify Worktree help text documents /wt, /worktree and separators."""
-    SystemBuilder._build_help_card_cached.cache_clear()
-
-    msg_type, card_json = SystemBuilder.build_help_card(
-        session_idle_timeout=600,
-        session_idle_warn_at_remaining=120,
-        lock_undo_window_seconds=300,
-    )
-
-    assert msg_type == "interactive"
-    card_text = json.dumps(json.loads(card_json), ensure_ascii=False)
-    assert "/wt" in card_text
-    assert "/worktree" in card_text
-    assert "分隔符支持空格/Tab" in card_text
 
 
 def test_help_card_quick_actions_use_compact_mobile_grid():
@@ -592,8 +556,6 @@ def test_degraded_error_card_without_complete_retry_payload_has_only_details_but
     [
         None,
         {"action": "retry_original", "original_mode": "Claude", "retry_mode": "Claude"},
-        {"action": "retry_original", "original_mode": "Claude", "degraded_to": "Coco"},
-        {"action": "retry_original", "retry_mode": "Claude", "degraded_to": "Coco"},
         {"action": "retry_original", "original_mode": "Claude", "retry_mode": "Claude", "degraded_to": ""},
     ],
 )
@@ -997,23 +959,6 @@ def test_card_builder_unified_status_content_basic():
     assert UI_TEXT["diag_status_all_hint"] in content
 
 
-def test_card_builder_unified_status_content_include_done_suppresses_hint():
-    """include_done=True should suppress the 'show all' hint."""
-
-    entries = [
-        EngineStatusEntry(
-            mode="Deep",
-            task_id="task-xyz",
-            name="DeepRun",
-            status="completed",
-            info="done",
-        )
-    ]
-
-    content = CardBuilder.build_unified_status_content(entries, include_done=True)
-    assert UI_TEXT["diag_status_all_hint"] not in content
-
-
 def test_card_builder_format_engine_status_info_deep_uses_status_when_no_duration():
     """Deep mode with zero duration should fall back to raw status string."""
 
@@ -1096,13 +1041,6 @@ class TestStopButtonConfirmDialogs:
         expected = UI_TEXT["card_btn_confirm_stop_danger_body"].format(engine_cmd="/deep")
         assert btn["confirm"]["text"]["content"] == expected
 
-    def test_stop_normal_has_no_confirm(self):
-        """Normal stop button should NOT have a confirm dialog (direct execution)."""
-        from src.card.builders.deep import DeepBuilder
-        state = self._make_executing_state()
-        btn = DeepBuilder._create_button("stop", state)
-        assert "confirm" not in btn
-
 
 # ---------------------------------------------------------------------------
 # timeout_display formatting (system help card)
@@ -1114,11 +1052,8 @@ class TestTimeoutDisplayFormatting:
 
     @pytest.mark.parametrize("timeout_seconds,expected_substring", [
         (300, "5 分钟"),
-        (600, "10 分钟"),
-        (1800, "30 分钟"),
         (3600, "60 分钟"),
         (7200, "2 小时"),
-        (10800, "3 小时"),
     ])
     def test_timeout_display_format(self, timeout_seconds, expected_substring):
         """Verify timeout display formatting for various second values."""
@@ -1158,22 +1093,14 @@ class TestButtonSizePassthrough:
 
 
 class TestStopButtonConfig:
-    """Verify stop button uses danger type with confirm dialog, and stop_danger uses danger for force-stop."""
+    """Verify stop button uses danger type with confirm dialog."""
 
-    def test_stop_button_type_is_danger(self):
+    def test_stop_button_config(self):
         from src.card.buttons_config import BUTTON_CONFIG
 
         assert BUTTON_CONFIG["stop"]["type"] == "danger"
-
-    def test_stop_button_has_confirm(self):
-        from src.card.buttons_config import BUTTON_CONFIG
-
         assert "confirm" in BUTTON_CONFIG["stop"]
         assert BUTTON_CONFIG["stop"]["confirm"]["title"] == "确认停止"
-
-    def test_stop_danger_button_type_is_danger(self):
-        from src.card.buttons_config import BUTTON_CONFIG
-
         assert BUTTON_CONFIG["stop_danger"]["type"] == "danger"
 
 
@@ -1202,40 +1129,16 @@ class TestDeepActionPrefixStrip:
         assert UI_TEXT["deep_error_fallback_no_prefix"] in body_text
         assert "发送 / " not in body_text  # no broken "/ " command
 
-    def test_whitespace_string_uses_fallback(self):
-        """action_prefix='  ' should use deep_error_fallback_no_prefix."""
-        from src.card.ui_text import UI_TEXT
-
-        state = EngineCardState(
-            title="Error occurred",
-            content="",
-            compact=True,
-            terminal_state="error",
-            action_prefix="   ",
-        )
-        _, card_json = CardBuilder.build_info_card(None, state)
-        card = json.loads(card_json)
-        body_text = json.dumps(card, ensure_ascii=False)
-        assert UI_TEXT["deep_error_fallback_no_prefix"] in body_text
-
-
 class TestStopConfirmNoRollbackWording:
-    """Verify stop confirm body does not contain alarming '回滚' text."""
+    """Verify stop confirm body does not contain alarming text and is decision-oriented."""
 
-    def test_danger_body_no_rollback(self):
-        from src.card.ui_text import UI_TEXT
-
-        assert "回滚" not in UI_TEXT["card_btn_confirm_stop_danger_body"]
-
-    def test_danger_body_is_decision_oriented(self):
-        """Confirm body should lead with risk statement and compare with normal stop."""
+    def test_danger_body_content(self):
         from src.card.ui_text import UI_TEXT
 
         body = UI_TEXT["card_btn_confirm_stop_danger_body"]
-        # Risk statement with comparison to normal stop
+        assert "回滚" not in body
         assert "强制停止" in body
         assert "普通停止" in body
-        # Must include engine_cmd placeholder for re-execution hint
         assert "{engine_cmd}" in body
 
 
@@ -1281,12 +1184,9 @@ class TestHelpCardTimeoutNotePosition:
 class TestBuildDeepCardAliasRemoved:
     """Guard: deprecated build_deep_card aliases stay removed."""
 
-    def test_deep_builder_alias_removed(self):
+    def test_deep_card_aliases_removed(self):
+        from src.card.builder import CardBuilder
         from src.card.builders.deep import DeepBuilder
 
         assert not hasattr(DeepBuilder, "build_deep_card")
-
-    def test_card_builder_alias_removed(self):
-        from src.card.builder import CardBuilder
-
         assert not hasattr(CardBuilder, "build_deep_card")

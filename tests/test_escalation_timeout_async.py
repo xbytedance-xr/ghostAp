@@ -152,10 +152,10 @@ class TestTimerReturnsImmediately:
     """Verify the Timer thread is not blocked by slow I/O."""
 
     def test_timer_returns_within_100ms_with_slow_card_update(self):
-        """Even with a 15s-blocking update_card_fn, _timeout_auto_abort returns fast."""
+        """Even with a 3s-blocking update_card_fn, _timeout_auto_abort returns fast."""
 
         def slow_update(*args):
-            time.sleep(15)
+            time.sleep(3)
             return True
 
         mgr, mocks = _make_manager(update_card_fn=slow_update)
@@ -173,10 +173,10 @@ class TestTimerReturnsImmediately:
         mgr._io_executor.shutdown(wait=False)
 
     def test_timer_returns_within_100ms_with_slow_send_text(self):
-        """Even with a 15s-blocking send_text_fn, _timeout_auto_abort returns fast."""
+        """Even with a 3s-blocking send_text_fn, _timeout_auto_abort returns fast."""
 
         def slow_send(*args):
-            time.sleep(15)
+            time.sleep(3)
 
         mgr, mocks = _make_manager(send_text_fn=slow_send)
         esc = _make_escalation(card_message_id=None)
@@ -202,13 +202,13 @@ class TestSendTextTimeoutSkipped:
 
         mgr, mocks = _make_manager(send_text_fn=blocking_send)
         # Reduce IO timeout for faster test
-        mgr._IO_CALL_TIMEOUT_S = 2
+        mgr._IO_CALL_TIMEOUT_S = 0.5
 
         esc = _make_escalation(card_message_id=None)
         mgr._escalations.append(esc)
 
         mgr._timeout_auto_abort(esc.escalation_id)
-        # Wait for IO executor to process (should take ~2s for timeout + resume)
+        # Wait for IO executor to process (should take ~0.5s for timeout + resume)
         mgr._io_executor.shutdown(wait=True)
 
         # Abort branch sets dirty (resume was still reached despite send timeout)
@@ -233,7 +233,7 @@ class TestSendTextTimeoutSkipped:
             update_card_fn=blocking_update,
             send_text_fn=capture_send,
         )
-        mgr._IO_CALL_TIMEOUT_S = 2
+        mgr._IO_CALL_TIMEOUT_S = 0.5
 
         esc = _make_escalation()
         mgr._escalations.append(esc)

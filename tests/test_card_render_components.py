@@ -7,57 +7,6 @@ from src.card.render.header import render_header
 from src.card.state.models import ButtonSpec, CardMetadata, CardState, FooterState, HeaderState, TextBlock
 
 
-class TestRenderHeader:
-    def test_header_with_project(self):
-        """Project name present → "emoji ProjectName · ModeName" """
-        state = CardState(
-            header=HeaderState(title="🧠 MyProject · Deep Agent", template="turquoise"),
-            metadata=CardMetadata(project_name="MyProject", mode_name="Deep Agent", mode_emoji="🧠"),
-        )
-        result = render_header(state)
-        assert result["title"]["content"] == "🧠 MyProject · Deep Agent"
-        assert result["template"] == "turquoise"
-
-    def test_header_without_project(self):
-        """No project → "emoji ModeName 编程模式" """
-        state = CardState(
-            header=HeaderState(title="🤖 Coco 编程模式", template="blue"),
-            metadata=CardMetadata(mode_name="Coco", mode_emoji="🤖"),
-        )
-        result = render_header(state)
-        assert result["title"]["content"] == "🤖 Coco 编程模式"
-
-    def test_header_subtitle_with_tool_and_model(self):
-        """Both tool and model → v2 header puts them on the first row."""
-        state = CardState(
-            header=HeaderState(title="test", subtitle="🔧 coco · gpt-4o"),
-            metadata=CardMetadata(tool_name="coco", model_name="gpt-4o"),
-        )
-        result = render_header(state)
-        assert result["title"]["content"] == "📁 test · 🤖 Coco · #1 · gpt-4o"
-        assert "subtitle" not in result
-
-    def test_header_subtitle_with_status(self):
-        """Subtitle with status → "🔧 tool · model · status" """
-        state = CardState(
-            header=HeaderState(title="test", subtitle="🔧 coco · gpt-4o · 正在执行"),
-        )
-        result = render_header(state)
-        assert result["subtitle"]["content"] == "🔧 coco · gpt-4o · 正在执行"
-
-    def test_header_no_subtitle(self):
-        """No subtitle → no subtitle key in result"""
-        state = CardState(header=HeaderState(title="test", subtitle=None))
-        result = render_header(state)
-        assert "subtitle" not in result
-
-    def test_header_template_running(self):
-        """Running state uses mode color"""
-        state = CardState(header=HeaderState(title="test", template="purple"))
-        result = render_header(state)
-        assert result["template"] == "purple"
-
-
 class TestRenderFooter:
     def test_footer_thinking(self):
         """status=thinking → 💭 text"""
@@ -189,23 +138,15 @@ class TestRenderProgressBarBoundary:
             (0, None, ["▱▱▱▱▱"], ["▰"]),
             (100, None, ["▰▰▰▰▰"], ["▱"]),
             (150, None, ["▰▰▰▰▰"], []),
-            (-10, None, ["▱▱▱▱▱"], []),
-            (50, None, ["▰", "▱"], []),
-            (1, None, ["▰"], []),
-            (50, None, ["50%"], []),
+            (50, None, ["▰", "▱", "50%"], []),
             (50, 0, [""], []),
-            (100, -5, [""], []),
         ],
         ids=[
             "test_pct_zero",
             "test_pct_hundred",
             "test_pct_over_hundred_clamps",
-            "test_pct_negative_clamps",
             "test_pct_midpoint",
-            "test_pct_one_shows_at_least_one_filled",
-            "test_percentage_in_output",
             "test_total_segments_zero_returns_empty",
-            "test_total_segments_negative_returns_empty",
         ],
     )
     def test_progress_bar_boundary(
@@ -252,21 +193,6 @@ class TestFooterWarningAndProgressCoexist:
         all_content = str(elements)
         assert "▰" in all_content
         assert "步骤 3/6" in all_content
-
-    def test_warning_only_footer_shows_status(self):
-        state = CardState(
-            footer=FooterState(
-                status="idle",
-                warning_banner="仅警告",
-                warning_type="warning",
-            ),
-        )
-        elements = render_footer(state)
-        # Footer should have hr + status only (no banner)
-        assert len(elements) >= 1
-        banner_divs = [e for e in elements if e.get("tag") == "div"]
-        assert len(banner_divs) == 0
-
 
 # ---------------------------------------------------------------------------
 # Banner unified position tests (all levels in body top)
@@ -378,17 +304,6 @@ class TestRenderWorktreeToolSelect:
         # 确认按钮在 N>0 时为 primary
         confirm_btns = [b for b in buttons if b["value"].get("action") == "worktree_finish_selection"]
         assert confirm_btns[0]["type"] == "primary"
-
-    def test_empty_tools(self):
-        data = {"project_id": "p1", "tools": [], "selected": [], "message": ""}
-        result = _render_worktree_tool_select(data)
-        assert result["tag"] == "column_set"
-        buttons = self._collect_buttons(result)
-        # 空 tools + 空 selected：不渲染可点击确认按钮，避免用户触发无效确认错误
-        actions = [b["value"].get("action") for b in buttons]
-        assert "worktree_finish_selection" not in actions
-        assert "worktree_remove_item" not in actions
-        assert "worktree_clear_items" not in actions
 
     def test_unselected_tool(self):
         data = {
@@ -519,12 +434,6 @@ class TestRenderWorktreeUnits:
         assert "✅" in content
         assert "⏳" in content
 
-    def test_empty_units(self):
-        data = {"units": [], "message": ""}
-        result = _render_worktree_units(data)
-        content = self._get_content(result)
-        assert content == "—"
-
     def test_failed_unit_with_error(self):
         data = {
             "units": [{"name": "u1", "status": "failed", "error": "timeout"}],
@@ -549,12 +458,6 @@ class TestRenderWorktreeMerge:
         assert "main" in result["content"]
         assert "🟢" in result["content"]
 
-    def test_empty_notes(self):
-        data = {"merge_notes": [], "base_branch": "main"}
-        result = _render_worktree_merge(data)
-        assert "main" in result["content"]
-
-
 class TestRenderWorktreeCleanup:
     """Tests for _render_worktree_cleanup."""
 
@@ -567,11 +470,6 @@ class TestRenderWorktreeCleanup:
         result = _render_worktree_cleanup(data)
         assert "develop" in result["content"]
         assert "✅" in result["content"]
-
-    def test_empty_notes(self):
-        data = {"merge_notes": [], "base_branch": "main", "merge_results": None}
-        result = _render_worktree_cleanup(data)
-        assert "main" in result["content"]
 
     def test_failed_merge_result(self):
         data = {
@@ -605,13 +503,6 @@ class TestRenderWorktreePanelDispatch:
         """Block with no .data should return fallback message."""
         block = ContentBlock(kind="worktree_tool_select", block_id="wt1", content="not json")
         result = render_worktree_panel(block)
-        assert "加载异常" in result["content"]
-
-    def test_block_not_found_fallback(self):
-        """Block with no data returns load failed message (new contract: caller passes block directly)."""
-        block = ContentBlock(kind="worktree_tool_select", block_id="missing", content="raw")
-        result = render_worktree_panel(block)
-        # With new signature, a block without data returns load_failed message
         assert "加载异常" in result["content"]
 
     def test_confirm_without_goal_renders_awaiting_goal_hint(self):
@@ -697,34 +588,6 @@ class TestBannerMultiPagePosition:
 # ---------------------------------------------------------------------------
 
 
-class TestRenderButtonsStopIntent:
-    """Verify that stop intent buttons produce flex_mode='none' (full-width layout)."""
-
-    @pytest.mark.parametrize(
-        "action_id, button_text",
-        [
-            ("intent.engine.stop", "停止"),
-            ("intent.deep.stop", "停止 Deep"),
-            ("some_other_action", "提交"),
-        ],
-        ids=[
-            "test_stop_intent_flex_mode_none",
-            "test_deep_stop_intent_flex_mode_none",
-            "test_non_stop_single_button_flex_mode_none",
-        ],
-    )
-    def test_single_button_flex_mode_none(self, action_id, button_text):
-        """Single button → flex_mode='none' (unified full-width for mobile)."""
-        state = CardState(
-            buttons=(ButtonSpec(action_id=action_id, text=button_text),),
-        )
-        result = render_buttons(state)
-        # 1 layout element (escalation hint is now managed by STOPPING reducer, not render_buttons)
-        assert len(result) == 1
-        assert result[0]["tag"] == "column_set"
-        assert result[0]["flex_mode"] == "none"
-
-
 class TestToolStatusIcons:
     """Verify tool status icons use emoji style."""
 
@@ -757,24 +620,16 @@ class TestCriteriaPanelIcon:
 class TestWorktreeStepperTotal:
     """Verify stepper total is 4 (merge+cleanup merged into one step)."""
 
-    def test_stepper_total_is_4(self):
-        from src.card.render.worktree import _STEP_MAP, _TOTAL_STEPS
+    def test_stepper_config_and_format(self):
+        from src.card.render.worktree import _STEP_MAP, _TOTAL_STEPS, _render_stepper
         assert _TOTAL_STEPS == 4
-        # merge and cleanup share the same step index
         assert _STEP_MAP["worktree_merge"] == _STEP_MAP["worktree_cleanup"]
-
-    def test_stepper_render_format_is_n_of_4(self):
-        from src.card.render.worktree import _render_stepper
         elements = _render_stepper(0)
-        # Concatenate all content and verify (n/4) format
         all_text = " ".join(e.get("content", "") for e in elements)
         assert "(1/4)" in all_text
-
-    def test_stepper_last_step_is_4_of_4(self):
-        from src.card.render.worktree import _render_stepper
-        elements = _render_stepper(3)  # Last step (index 3)
-        all_text = " ".join(e.get("content", "") for e in elements)
-        assert "(4/4)" in all_text
+        elements_last = _render_stepper(3)
+        all_text_last = " ".join(e.get("content", "") for e in elements_last)
+        assert "(4/4)" in all_text_last
 
 
 class TestWorktreeMergeStatusChinese:

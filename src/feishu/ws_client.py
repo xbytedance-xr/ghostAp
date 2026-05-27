@@ -712,13 +712,13 @@ class FeishuWSClient:
 
     _chat_locks: dict[str, threading.Lock] = {}
     _chat_locks_meta: dict[str, float] = {}  # chat_id → last_used timestamp
-    _chat_locks_guard = threading.Lock()
+    _chat_locks_guard = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def _get_chat_lock(self, chat_id: str) -> threading.Lock:
         """Get or create a per-chat activation lock."""
         with self._chat_locks_guard:
             if chat_id not in self._chat_locks:
-                self._chat_locks[chat_id] = threading.Lock()
+                self._chat_locks[chat_id] = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
             self._chat_locks_meta[chat_id] = time.time()
             return self._chat_locks[chat_id]
 

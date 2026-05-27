@@ -85,11 +85,11 @@ class MemoryManager:
 
     def __init__(self, base_path: str = ""):
         self._base_path = os.path.realpath(base_path or default_slock_storage_base())
-        self._lock = threading.RLock()  # legacy: kept for backward compat, used by global/template ops
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._agent_locks: dict[str, threading.RLock] = {}
         self._channel_locks: dict[str, threading.RLock] = {}
-        self._global_lock = threading.RLock()
-        self._locks_lock = threading.Lock()  # meta-lock for creating per-agent/channel locks
+        self._global_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._locks_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._llm_callback: Optional[Callable[[str], Optional[str]]] = None
         self._write_counts: dict[str, int] = {}
         self._byte_counters: dict[str, int] = {}
@@ -147,7 +147,7 @@ class MemoryManager:
             return self._agent_locks[agent_id]
         with self._locks_lock:
             if agent_id not in self._agent_locks:
-                self._agent_locks[agent_id] = threading.RLock()
+                self._agent_locks[agent_id] = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
             return self._agent_locks[agent_id]
 
     def _get_channel_lock(self, channel_id: str) -> threading.RLock:
@@ -156,7 +156,7 @@ class MemoryManager:
             return self._channel_locks[channel_id]
         with self._locks_lock:
             if channel_id not in self._channel_locks:
-                self._channel_locks[channel_id] = threading.RLock()
+                self._channel_locks[channel_id] = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
             return self._channel_locks[channel_id]
 
     def shutdown(self) -> None:
@@ -308,7 +308,7 @@ class MemoryManager:
                 memory._version = expected_version
                 self.write_agent_memory(agent_id, memory)
             except Exception as exc:
-                logger.warning("Async memory write failed for %s: %s", agent_id, exc)
+                logger.warning("Async memory write failed for %s: %s", agent_id, str(exc))
 
         thread = threading.Thread(
             target=_do_write,

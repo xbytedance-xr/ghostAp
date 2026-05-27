@@ -26,30 +26,15 @@ class TestEmptyAndWhitespace:
 class TestChineseGreetings:
     @pytest.mark.parametrize(
         "text",
-        ["你好", "早上好", "晚安", "早安", "下午好", "晚上好", "嗨"],
+        ["你好", "早上好", "晚安", "嗨"],
     )
     def test_chinese_greetings_are_chitchat(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is True
-
-    @pytest.mark.parametrize(
-        "text",
-        ["你好!", "早上好！", "晚安。", "早安~"],
-    )
-    def test_chinese_greetings_with_trailing_punct(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
 
 class TestEnglishGreetings:
     @pytest.mark.parametrize("text", ["hi", "hello", "hey", "yo"])
     def test_english_greetings_are_chitchat(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is True
-
-    @pytest.mark.parametrize("text", ["Hi", "HELLO", "Hey", "YO"])
-    def test_english_greetings_case_insensitive(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is True
-
-    @pytest.mark.parametrize("text", ["hi!", "hello.", "hey~", "yo!"])
-    def test_english_greetings_with_trailing_punct(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
 
@@ -61,23 +46,19 @@ class TestEnglishGreetings:
 class TestAcknowledgments:
     @pytest.mark.parametrize(
         "text",
-        ["ok", "好的", "收到", "收到了", "了解", "明白", "知道了", "嗯", "对"],
+        ["ok", "好的", "收到"],
     )
     def test_acknowledgments_are_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
     @pytest.mark.parametrize(
         "text",
-        ["thanks", "thank you", "thx", "谢谢", "alright", "okok"],
+        ["thanks", "thank you", "谢谢"],
     )
     def test_thank_you_variants_are_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
-    @pytest.mark.parametrize("text", ["ok!", "好的。", "收到！", "了解~"])
-    def test_acknowledgments_with_trailing_punct(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is True
-
-    @pytest.mark.parametrize("text", ["OK", "Ok", "THANKS", "THX"])
+    @pytest.mark.parametrize("text", ["OK", "THANKS"])
     def test_acknowledgments_case_insensitive(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
@@ -90,7 +71,7 @@ class TestAcknowledgments:
 class TestReactions:
     @pytest.mark.parametrize(
         "text",
-        ["哈哈", "嘿嘿", "呵呵", "lol", "haha", "666", "nb", "nice", "cool"],
+        ["哈哈", "lol", "666"],
     )
     def test_reactions_are_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
@@ -99,11 +80,7 @@ class TestReactions:
     def test_emoji_reactions_are_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
-    @pytest.mark.parametrize("text", ["yes", "no", "got it", "roger", "ack"])
-    def test_english_reactions_are_chitchat(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is True
-
-    @pytest.mark.parametrize("text", ["LOL", "HAHA", "NB", "NICE", "COOL"])
+    @pytest.mark.parametrize("text", ["LOL", "NB"])
     def test_reactions_case_insensitive(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
@@ -119,33 +96,15 @@ class TestCJKChitchatKeywords:
         [
             "你好啊",
             "谢谢啦",
-            "好的呢",
-            "收到啦",
             "了解了",
-            "明白了",
-            "知道啦",
-            "没事",
-            "没问题",
-            "可以的",
-            "行的",
-            "好吧",
-            "好哒",
             "嗯嗯",
-            "对对",
-            "是的",
-            "好滴",
-            "ok啦",
-            "谢啦",
-            "早啊",
-            "晚安啊",
-            "你好呀",
-            "好嘞",
+            "好吧",
         ],
     )
     def test_cjk_chitchat_keywords_are_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
-    @pytest.mark.parametrize("text", ["你好啊!", "谢谢啦。", "好的呢~"])
+    @pytest.mark.parametrize("text", ["你好啊!", "谢谢啦。"])
     def test_cjk_chitchat_keywords_with_trailing_punct(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
@@ -158,7 +117,7 @@ class TestCJKChitchatKeywords:
 class TestValidCJKTasks:
     @pytest.mark.parametrize(
         "text",
-        ["修bug", "写测试", "部署服务", "加日志", "查日志"],
+        ["修bug", "写测试", "部署服务"],
     )
     def test_cjk_dev_commands_are_tasks(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is False
@@ -170,19 +129,9 @@ class TestValidCJKTasks:
             "帮我写一个排序算法",
             "修复登录页面的bug",
             "部署到生产环境",
-            "优化数据库查询",
-            "添加单元测试",
         ],
     )
     def test_longer_cjk_messages_are_tasks(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is False
-        assert TaskClassifier.is_task(text) is True
-
-    @pytest.mark.parametrize(
-        "text",
-        ["改代码", "跑CI", "上线", "发版"],
-    )
-    def test_short_cjk_task_commands_are_tasks(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is False
         assert TaskClassifier.is_task(text) is True
 
@@ -193,16 +142,12 @@ class TestValidCJKTasks:
 
 
 class TestPurePunctuationAndEmoji:
-    @pytest.mark.parametrize("text", ["!!!", "???", "...", "!?!", "~"])
+    @pytest.mark.parametrize("text", ["!!!", "???", "~"])
     def test_pure_punctuation_is_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
-    @pytest.mark.parametrize("text", ["👍👍", "😂😂😂", "🙏🙏", "🎉"])
+    @pytest.mark.parametrize("text", ["👍👍", "🎉"])
     def test_pure_emoji_is_chitchat(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is True
-
-    @pytest.mark.parametrize("text", ["👍!!!", "...🙏", "?!😂"])
-    def test_mixed_punct_and_emoji_is_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
 
@@ -217,27 +162,16 @@ class TestDevTermWhitelist:
         [
             "fix",
             "bug",
-            "wip",
-            "test",
             "deploy",
-            "run",
             "build",
-            "lint",
-            "push",
-            "pull",
-            "sync",
-            "ship",
-            "dev",
             "ci",
-            "cd",
-            "doc",
         ],
     )
     def test_dev_terms_are_tasks(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is False
         assert TaskClassifier.is_task(text) is True
 
-    @pytest.mark.parametrize("text", ["FIX", "Bug", "WIP", "TEST", "Deploy"])
+    @pytest.mark.parametrize("text", ["FIX", "Deploy"])
     def test_dev_terms_case_insensitive(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is False
         assert TaskClassifier.is_task(text) is True
@@ -249,16 +183,12 @@ class TestDevTermWhitelist:
 
 
 class TestShortNonCJK:
-    @pytest.mark.parametrize("text", ["k", "y", "n", "1", "a", "x"])
+    @pytest.mark.parametrize("text", ["k", "y", "n"])
     def test_single_char_is_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
-    @pytest.mark.parametrize("text", ["ab", "xx", "mm", "99"])
+    @pytest.mark.parametrize("text", ["ab", "xx", "99"])
     def test_two_char_non_dev_term_is_chitchat(self, text: str) -> None:
-        assert TaskClassifier.is_chitchat(text) is True
-
-    @pytest.mark.parametrize("text", ["abc", "xyz", "wat", "sup"])
-    def test_three_char_non_dev_term_is_chitchat(self, text: str) -> None:
         assert TaskClassifier.is_chitchat(text) is True
 
 

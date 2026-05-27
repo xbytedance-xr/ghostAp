@@ -458,6 +458,7 @@ class TestWorktreeCommandRouting(unittest.TestCase):
                 None,
                 command_match=SlashCommandParser.parse("/wt\t实现登录功能"),
                 shell_fast_tracked=False,
+                chat_type="group",
             )
             programming_handler.handle_message.assert_not_called()
 

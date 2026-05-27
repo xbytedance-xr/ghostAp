@@ -139,8 +139,8 @@ class TestPlaceholderCardSentImmediately:
         handler.send_card_to_chat.assert_called()
         call_args = handler.send_card_to_chat.call_args
         card_json_str = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("card_json", "")
-        # The placeholder card content should contain processing indicator
-        assert "处理" in card_json_str or "思考" in card_json_str
+        # The placeholder card content should contain acknowledgment indicator
+        assert "处理" in card_json_str or "思考" in card_json_str or "收到" in card_json_str
 
     def test_placeholder_sent_to_correct_chat(self):
         handler = _make_handler()

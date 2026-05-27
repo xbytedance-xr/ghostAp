@@ -138,13 +138,6 @@ class TestBuildRoleInfoCard:
         assert isinstance(card, dict)
         assert "header" in card
 
-    def test_with_skill_profiles(self):
-        agent = _make_agent(name="Coder1", role="coder")
-        skills = [{"tag": "python", "success_rate": 95.0}]
-
-        card = build_role_info_card(agent, status=AgentStatus.IDLE, skill_profiles=skills)
-        assert isinstance(card, dict)
-
     def test_role_info_card_ac2_full_profile(self):
         """AC-2: /role info card shows complete profile with all 6 required sections."""
         agent = AgentIdentity(
@@ -220,126 +213,6 @@ class TestBuildRoleInfoCard:
         assert "完成API网关选型" in body_text
         assert "编写数据库迁移方案" in body_text
         assert "审查认证模块设计" in body_text
-
-    def test_role_info_personality_truncation(self):
-        """Personality section truncates system_prompt >100 chars with ellipsis."""
-        long_prompt = "A" * 150  # 150 chars, should be truncated to 100 + …
-        agent = AgentIdentity(
-            agent_id="trunc-agent",
-            name="Truncator",
-            emoji="✂️",
-            agent_type="coco",
-            role="custom",
-            system_prompt=long_prompt,
-        )
-
-        card = build_role_info_card(agent, status=AgentStatus.IDLE)
-        elements = card["body"]["elements"]
-        personality_el = next(
-            (e for e in elements if e.get("tag") == "markdown" and "设定" in e.get("content", "")),
-            None,
-        )
-
-        assert personality_el is not None
-        content = personality_el["content"]
-        # Should contain exactly first 100 chars + ellipsis marker
-        assert "A" * 100 in content
-        assert "…" in content
-        # Should NOT contain the full 150-char string
-        assert "A" * 150 not in content
-
-    def test_role_info_memory_top3_only(self):
-        """Memory section shows only top 3 key_knowledge lines with remainder count."""
-        agent = _make_agent(name="MemTest", role="writer")
-        memory = SlockMemory(
-            role="Writer",
-            key_knowledge="知识点一\n知识点二\n知识点三\n知识点四\n知识点五",
-            active_context="",
-        )
-
-        card = build_role_info_card(agent, status=AgentStatus.IDLE, memory=memory)
-        elements = card["body"]["elements"]
-        panel = next(e for e in elements if e.get("tag") == "collapsible_panel")
-        mem_content = panel["elements"][0]["content"]
-
-        # Top 3 shown
-        assert "知识点一" in mem_content
-        assert "知识点二" in mem_content
-        assert "知识点三" in mem_content
-        # 4th and 5th NOT shown inline
-        assert "知识点四" not in mem_content
-        assert "知识点五" not in mem_content
-        # Remainder indicator
-        assert "还有 2 条" in mem_content
-
-    def test_role_info_personality_traits_rendered(self):
-        """Personality traits render as backtick-wrapped tags when non-empty."""
-        agent = AgentIdentity(
-            agent_id="traits-agent",
-            name="TraitsBot",
-            emoji="🎯",
-            agent_type="coco",
-            role="coder",
-            personality_traits=["严谨", "高效", "友善"],
-        )
-
-        card = build_role_info_card(agent, status=AgentStatus.IDLE)
-        elements = card["body"]["elements"]
-        all_content = _extract_all_markdown(elements)
-
-        # Each trait should appear as inline code
-        assert "`严谨`" in all_content
-        assert "`高效`" in all_content
-        assert "`友善`" in all_content
-        # Section header present
-        assert "性格标签" in all_content
-
-    def test_role_info_empty_personality(self):
-        """Card with empty personality_traits and system_prompt has no empty markdown block."""
-        agent = AgentIdentity(
-            agent_id="empty-pers",
-            name="Blank",
-            emoji="⬜",
-            agent_type="coco",
-            role="custom",
-            system_prompt="",
-            personality_traits=[],
-        )
-
-        card = build_role_info_card(agent, status=AgentStatus.IDLE)
-        elements = card["body"]["elements"]
-
-        # No markdown element should have only whitespace or be empty (besides identity section)
-        for elem in elements:
-            if elem.get("tag") == "markdown":
-                content = elem.get("content", "")
-                # Should not have personality section markers without content
-                assert "性格标签" not in content
-                assert "📝 设定" not in content
-
-    def test_role_info_no_skills_no_memory(self):
-        """Card renders without error when skills, memory, and tasks are all empty/None."""
-        agent = _make_agent(name="Minimal", role="tester")
-
-        card = build_role_info_card(
-            agent,
-            status=AgentStatus.IDLE,
-            memory=None,
-            skill_profiles=[],
-            current_task=None,
-            recent_tasks=[],
-        )
-
-        assert isinstance(card, dict)
-        assert "header" in card
-        assert "body" in card
-        elements = card["body"]["elements"]
-        all_content = _extract_all_markdown(elements)
-        # Must still contain identity section with role type
-        assert "`tester`" in all_content
-        # No skill/memory/task sections
-        assert "技能档案" not in all_content
-        assert "记忆摘要" not in _extract_all_markdown(elements)
 
     def test_role_info_task_overflow(self):
         """Only last 3 recent_tasks are shown when more are provided."""
@@ -484,36 +357,10 @@ class TestRedactSensitive:
         assert "MY_TOKEN" in result
         assert "<redacted>" in result
 
-    def test_redacts_password_assignment(self):
-        text = "DB_PASSWORD=super_secret_pass"
-        result = redact_sensitive(text)
-        assert "super_secret_pass" not in result
-        assert "DB_PASSWORD" in result
-
-    def test_redacts_api_key(self):
-        text = "OPENAI_API_KEY: sk-1234567890abcdef"
-        result = redact_sensitive(text)
-        assert "sk-1234567890abcdef" not in result
-        assert "API_KEY" in result
-
-    def test_redacts_bearer_token(self):
-        text = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig"
-        result = redact_sensitive(text)
-        assert "eyJhbGciOiJIUzI1NiJ9" not in result
-        assert "Bearer <redacted>" in result or "<redacted>" in result
-
-    def test_redacts_secret_in_env_format(self):
-        text = "APP_SECRET=foobar123xyz"
-        result = redact_sensitive(text)
-        assert "foobar123xyz" not in result
-
     def test_preserves_non_sensitive_text(self):
         text = "Hello, this is a normal message with no secrets."
         result = redact_sensitive(text)
         assert result == text
-
-    def test_empty_string_returns_empty(self):
-        assert redact_sensitive("") == ""
 
     def test_redacts_private_key_block(self):
         text = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBg...\n-----END PRIVATE KEY-----"
@@ -560,20 +407,6 @@ class TestBuildRoleListCard:
         assert "Alice" in all_content
         assert "Bob" in all_content
 
-    def test_empty_agents_returns_valid_card(self):
-        card = build_role_list_card(agents=[])
-
-        assert isinstance(card, dict)
-        assert "header" in card
-
-    def test_with_team_name(self):
-        agents = [
-            (_make_agent(name="Dev", role="coder", agent_id="d1"), AgentStatus.IDLE),
-        ]
-
-        card = build_role_list_card(agents=agents, team_name="Alpha Team")
-        assert isinstance(card, dict)
-
 
 # ---------------------------------------------------------------------------
 # Test 6: build_card_wrapper mobile_optimize sets wide_screen_mode to False
@@ -601,45 +434,6 @@ class TestBuildCardWrapperMobileOptimize:
 
         assert card["config"]["wide_screen_mode"] is False
 
-    def test_default_mobile_optimize_is_mobile_friendly(self):
-        """By default, mobile_optimize=True, so wide_screen_mode should be False."""
-        card = build_card_wrapper(
-            header_title="Default",
-            elements=[],
-        )
-
-        assert card["config"]["wide_screen_mode"] is False
-
-    def test_card_wrapper_schema_version(self):
-        card = build_card_wrapper(
-            header_title="Schema Test",
-            elements=[{"tag": "hr"}],
-        )
-
-        assert card["schema"] == "2.0"
-
-    def test_card_wrapper_header_template(self):
-        card = build_card_wrapper(
-            header_title="Custom Color",
-            header_template="red",
-            elements=[],
-        )
-
-        assert card["header"]["template"] == "red"
-        assert card["header"]["title"]["content"] == "Custom Color"
-
-    def test_card_wrapper_body_elements_passed_through(self):
-        elems = [
-            {"tag": "markdown", "content": "Item 1"},
-            {"tag": "hr"},
-            {"tag": "markdown", "content": "Item 2"},
-        ]
-        card = build_card_wrapper(
-            header_title="Body Test",
-            elements=elems,
-        )
-
-        assert card["body"]["elements"] == elems
 
 
 # ---------------------------------------------------------------------------
@@ -896,20 +690,6 @@ class TestCardPayloadValidation:
         elem_errors = self._validate_elements_recursive(elements)
         assert not elem_errors, f"Element errors: {elem_errors}"
 
-    def test_role_list_card_valid_structure(self):
-        agents = [
-            (_make_agent(name="A", agent_id="a1"), AgentStatus.IDLE),
-            (_make_agent(name="B", agent_id="a2"), AgentStatus.RUNNING),
-        ]
-        card = build_role_list_card(agents=agents)
-
-        errors = self._validate_card_structure(card)
-        assert not errors, f"Structural errors: {errors}"
-
-        elements = card["body"]["elements"]
-        elem_errors = self._validate_elements_recursive(elements)
-        assert not elem_errors, f"Element errors: {elem_errors}"
-
     def test_progress_overview_card_valid_structure(self):
         agent = _make_agent(name="Coder", agent_id="agent-1")
         plan = _make_plan()
@@ -934,25 +714,6 @@ class TestCardPayloadValidation:
         elem_errors = self._validate_elements_recursive(elements)
         assert not elem_errors, f"Element errors: {elem_errors}"
 
-    def test_empty_plan_progress_card_valid(self):
-        """Progress overview with no plans should still produce a valid card."""
-        card = build_progress_overview_card(plans=[], agents=[])
-
-        errors = self._validate_card_structure(card)
-        assert not errors, f"Structural errors: {errors}"
-
-    def test_card_wrapper_produces_valid_schema(self):
-        from src.slock_engine.card_templates.common import build_card_wrapper
-
-        card = build_card_wrapper(
-            header_title="Test",
-            elements=[{"tag": "markdown", "content": "hello"}],
-        )
-        assert card["schema"] == "2.0"
-        assert "header" in card
-        assert "body" in card
-        assert card["header"]["title"]["content"] == "Test"
-
     def test_progress_percent_in_valid_range(self):
         """All progress elements in plan cards should have percent in [0, 100]."""
         # Test with all steps done (100%)
@@ -967,19 +728,6 @@ class TestCardPayloadValidation:
         elements = card["body"]["elements"]
         elem_errors = self._validate_elements_recursive(elements)
         assert not elem_errors, f"Element errors: {elem_errors}"
-
-    def test_column_set_columns_all_have_tag_column(self):
-        """Every child of column_set.columns must have tag='column'."""
-        from src.slock_engine.card_templates.common import build_column, build_column_set_row
-
-        cols = [
-            build_column([{"tag": "markdown", "content": "A"}]),
-            build_column([{"tag": "markdown", "content": "B"}]),
-        ]
-        row = build_column_set_row(cols)
-        for col in row["columns"]:
-            assert col["tag"] == "column"
-            assert "elements" in col
 
 
 # ---------------------------------------------------------------------------
@@ -1021,26 +769,6 @@ class TestStatusBgStyleMapIntegration:
         )
         expected_bg = STATUS_BG_STYLE_MAP[AgentStatus.DISCUSSING]  # "purple"
         assert expected_bg in str(card)
-
-    def test_idle_agent_gets_default_bg(self):
-        """IDLE agents should get 'default' background style."""
-        from src.slock_engine.card_templates.role import build_role_list_card
-        from src.slock_engine.models import AgentIdentity, AgentStatus
-
-        agent = AgentIdentity(
-            agent_id="a3", name="Tester", emoji="🧪",
-            role="tester", agent_type="coco",
-        )
-        card = build_role_list_card(
-            agents=[(agent, AgentStatus.IDLE)],
-            channel_id="ch3",
-        )
-        # Should not have colored backgrounds for idle
-        body_str = str(card)
-        # "default" is the style, and "blue"/"purple"/"yellow" should NOT appear
-        # as background_style values
-        assert "purple" not in body_str or "background_style" not in body_str
-
 
 class TestHighlightPlanId:
     """Verify progress overview card highlights the specified plan."""

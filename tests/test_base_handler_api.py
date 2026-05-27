@@ -34,6 +34,7 @@ def _make_handler(**settings_overrides) -> BaseHandler:
         codex_manager=MagicMock(),
         gemini_manager=MagicMock(),
         ttadk_manager=MagicMock(),
+        tui2acp_manager=MagicMock(),
         intent_recognizer=MagicMock(),
         scheduler=MagicMock(),
         project_manager=MagicMock(),

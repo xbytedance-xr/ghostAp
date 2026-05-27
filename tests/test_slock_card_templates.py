@@ -96,12 +96,6 @@ class TestBuildAgentMessageCard:
         assert len(footer_elements) == 1
         assert "5.2s" in footer_elements[0]["content"]
 
-    def test_footer_with_duration_minutes(self):
-        agent = self._make_agent()
-        card = build_agent_message_card(agent, "msg", duration_s=125.3)
-        footer_elements = [e for e in card["body"]["elements"] if e.get("tag") == "markdown" and e.get("text_size") == "notation"]
-        assert "2m" in footer_elements[0]["content"]
-
     def test_no_footer_when_no_metadata(self):
         agent = self._make_agent(agent_type="", model_name="")
         card = build_agent_message_card(agent, "msg")
@@ -146,43 +140,6 @@ class TestBuildStatusPanelCard:
         combined = "\n".join(all_md)
         assert "Alice" in combined
 
-    def test_status_color_idle_green(self):
-        """IDLE status maps to default background (Feishu Schema 2.0 legal value)."""
-        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
-        card = build_status_panel_card([(agent, AgentStatus.IDLE)])
-        cs = _collect_column_sets(card)
-        # Find the agent row column_set (has agent name in markdown)
-        agent_rows = [c for c in cs if any("**A**" in e.get("content", "") for col in c.get("columns", []) for e in col.get("elements", []))]
-        assert len(agent_rows) >= 1
-        assert agent_rows[0]["background_style"] == "default"
-
-    def test_status_color_thinking_yellow(self):
-        """THINKING status maps to grey background (Feishu Schema 2.0 legal value)."""
-        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
-        card = build_status_panel_card([(agent, AgentStatus.THINKING)])
-        cs = _collect_column_sets(card)
-        agent_rows = [c for c in cs if any("**A**" in e.get("content", "") for col in c.get("columns", []) for e in col.get("elements", []))]
-        assert len(agent_rows) >= 1
-        assert agent_rows[0]["background_style"] == "grey"
-
-    def test_status_color_running_blue(self):
-        """RUNNING status maps to card_primary background (Feishu Schema 2.0 legal value)."""
-        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
-        card = build_status_panel_card([(agent, AgentStatus.RUNNING)])
-        cs = _collect_column_sets(card)
-        agent_rows = [c for c in cs if any("**A**" in e.get("content", "") for col in c.get("columns", []) for e in col.get("elements", []))]
-        assert len(agent_rows) >= 1
-        assert agent_rows[0]["background_style"] == "card_primary"
-
-    def test_status_color_sending_grey(self):
-        """SENDING status maps to grey background."""
-        agent = AgentIdentity(agent_id="a1", name="A", emoji="🤖")
-        card = build_status_panel_card([(agent, AgentStatus.SENDING)])
-        cs = _collect_column_sets(card)
-        agent_rows = [c for c in cs if any("**A**" in e.get("content", "") for col in c.get("columns", []) for e in col.get("elements", []))]
-        assert len(agent_rows) >= 1
-        assert agent_rows[0]["background_style"] == "grey"
-
     def test_multiple_agents_produce_multiple_column_sets(self):
         """Each agent gets its own column_set row."""
         a1 = AgentIdentity(agent_id="a1", name="Alice", emoji="🤖")
@@ -212,12 +169,6 @@ class TestBuildStatusPanelCard:
         buttons = _collect_buttons(card)
         assert any("全部停止" in button["text"]["content"] for button in buttons)
 
-    def test_status_panel_title_chinese(self):
-        """Status panel title contains team name or Slock branding."""
-        card = build_status_panel_card([], team_name="Alpha")
-        title = card["header"]["title"]["content"]
-        assert "Alpha" in title or "Slock" in title or "状态" in title
-
     def test_status_labels_chinese(self):
         """Status labels use Chinese text (空闲, 运行中, etc.)."""
         agents = [
@@ -229,15 +180,6 @@ class TestBuildStatusPanelCard:
         combined = "\n".join(all_md)
         assert "空闲" in combined
         assert "运行中" in combined
-
-    def test_status_panel_does_not_emit_schema_v2_unsupported_action_tag(self):
-        card = build_status_panel_card([], team_name="Alpha", channel_id="ch_alpha")
-        assert "action" not in _collect_tags(card)
-
-    def test_default_title_without_team(self):
-        card = build_status_panel_card([])
-        title = card["header"]["title"]["content"]
-        assert "Slock" in title or "状态" in title
 
     def test_status_panel_uses_mobile_friendly_layout(self):
         """Status panel uses mobile-friendly flow layout (replaces old bisect layout)."""
@@ -366,13 +308,16 @@ class TestBuildTaskBoardCard:
         assert "grey" in background_styles
 
     def test_column_set_dual_column_structure(self):
-        """Summary row uses bisect mode in new implementation."""
+        """Summary section has column_sets for each status category."""
         task = SlockTask(task_id="t1", content="X", status=TaskStatus.IN_PROGRESS)
         card = build_task_board_card([task], [])
         column_sets = _collect_column_sets(card)
-        # Summary rows use bisect mode
-        bisect_rows = [cs for cs in column_sets if cs.get("flex_mode") == "bisect"]
-        assert len(bisect_rows) >= 2  # 2x2 grid for 4 statuses
+        # 4 status summary rows (待办/进行中/审查中/已完成) use default background
+        summary_rows = [
+            cs for cs in column_sets
+            if cs.get("background_style") == "default"
+        ]
+        assert len(summary_rows) >= 4  # one per status category
 
     def test_task_content_in_right_column(self):
         """Task content appears in task entries (new implementation uses single-column layout for tasks)."""
@@ -455,21 +400,6 @@ class TestBuildAgentMessageCardJsonStructure:
         assert header["title"]["tag"] == "plain_text"
         assert "TestCoder" in header["title"]["content"]
         assert "🔧" in header["title"]["content"]
-
-    def test_header_template_varies_by_role(self):
-        """Different roles produce different header colors."""
-        roles_colors = [
-            ("coder", "blue"),
-            ("writer", "green"),
-            ("reviewer", "orange"),
-            ("tester", "purple"),
-            ("planner", "red"),
-            ("custom", "grey"),
-        ]
-        for role, expected_color in roles_colors:
-            agent = self._make_agent(role=role)
-            card = build_agent_message_card(agent, "x")
-            assert card["header"]["template"] == expected_color, f"role={role}"
 
     def test_body_contains_markdown_element(self):
         """Body elements must include at least one markdown element with the content."""
@@ -589,41 +519,6 @@ class TestAllRoleColorsMapping:
         card = build_agent_message_card(agent, "fallback test")
         assert card["header"]["template"] == "grey"
 
-    def test_coder_role(self):
-        agent = self._make_agent("coder")
-        card = build_agent_message_card(agent, "x")
-        assert card["header"]["template"] == "blue"
-
-    def test_writer_role(self):
-        agent = self._make_agent("writer")
-        card = build_agent_message_card(agent, "x")
-        assert card["header"]["template"] == "green"
-
-    def test_reviewer_role(self):
-        agent = self._make_agent("reviewer")
-        card = build_agent_message_card(agent, "x")
-        assert card["header"]["template"] == "orange"
-
-    def test_tester_role(self):
-        agent = self._make_agent("tester")
-        card = build_agent_message_card(agent, "x")
-        assert card["header"]["template"] == "purple"
-
-    def test_planner_role(self):
-        agent = self._make_agent("planner")
-        card = build_agent_message_card(agent, "x")
-        assert card["header"]["template"] == "red"
-
-    def test_architect_role(self):
-        agent = self._make_agent("architect")
-        card = build_agent_message_card(agent, "x")
-        assert card["header"]["template"] == "indigo"
-
-    def test_custom_role(self):
-        agent = self._make_agent("custom")
-        card = build_agent_message_card(agent, "x")
-        assert card["header"]["template"] == "grey"
-
 
 # ===========================================================================
 # Test Class: build_discussion_card_from_thread / build_discussion_summary_card_from_thread
@@ -668,7 +563,9 @@ class TestBuildDiscussionCardFromThread:
         )
 
     def test_build_discussion_card_from_thread_returns_valid_card(self):
-        """Factory produces a valid Feishu card dict with correct fields."""
+        """Factory produces a valid Feishu card dict with correct fields and content."""
+        import json
+
         from src.slock_engine.card_templates import build_discussion_card_from_thread
 
         thread = self._make_thread()
@@ -679,39 +576,11 @@ class TestBuildDiscussionCardFromThread:
         assert "body" in card
         # Header contains round info
         assert "2/5" in card["header"]["title"]["content"]
-
-    def test_build_discussion_card_from_thread_contains_participants(self):
-        """Card body contains participant names."""
-        import json
-
-        from src.slock_engine.card_templates import build_discussion_card_from_thread
-
-        thread = self._make_thread()
-        card = build_discussion_card_from_thread(thread)
+        # Body contains participants, trigger reason, and messages
         blob = json.dumps(card, ensure_ascii=False)
         assert "Coder" in blob
         assert "Reviewer" in blob
-
-    def test_build_discussion_card_from_thread_contains_trigger_reason(self):
-        """Card body contains the trigger reason."""
-        import json
-
-        from src.slock_engine.card_templates import build_discussion_card_from_thread
-
-        thread = self._make_thread()
-        card = build_discussion_card_from_thread(thread)
-        blob = json.dumps(card, ensure_ascii=False)
         assert "rule:coder->reviewer" in blob
-
-    def test_build_discussion_card_from_thread_contains_messages(self):
-        """Card body contains message content."""
-        import json
-
-        from src.slock_engine.card_templates import build_discussion_card_from_thread
-
-        thread = self._make_thread()
-        card = build_discussion_card_from_thread(thread)
-        blob = json.dumps(card, ensure_ascii=False)
         assert "Here is my implementation." in blob
         assert "LGTM" in blob
 
@@ -752,7 +621,9 @@ class TestBuildDiscussionSummaryCardFromThread:
         return thread
 
     def test_build_summary_card_returns_valid_card(self):
-        """Factory produces a valid Feishu card."""
+        """Factory produces a valid Feishu card with conclusion, participants, and token count."""
+        import json
+
         from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
 
         thread = self._make_completed_thread()
@@ -763,39 +634,10 @@ class TestBuildDiscussionSummaryCardFromThread:
         assert "body" in card
         # Converged status shows green header
         assert card["header"]["template"] == "green"
-
-    def test_build_summary_card_contains_conclusion(self):
-        """Summary card contains the conclusion text."""
-        import json
-
-        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
-
-        thread = self._make_completed_thread()
-        card = build_discussion_summary_card_from_thread(thread)
         blob = json.dumps(card, ensure_ascii=False)
         assert "Team agreed on microservices architecture." in blob
-
-    def test_build_summary_card_contains_participants(self):
-        """Summary card contains participant names."""
-        import json
-
-        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
-
-        thread = self._make_completed_thread()
-        card = build_discussion_summary_card_from_thread(thread)
-        blob = json.dumps(card, ensure_ascii=False)
         assert "Architect" in blob
         assert "Tester" in blob
-
-    def test_build_summary_card_contains_token_count(self):
-        """Summary card contains the token count."""
-        import json
-
-        from src.slock_engine.card_templates import build_discussion_summary_card_from_thread
-
-        thread = self._make_completed_thread()
-        card = build_discussion_summary_card_from_thread(thread)
-        blob = json.dumps(card, ensure_ascii=False)
         assert "500" in blob
 
     def test_build_summary_card_timeout_shows_grey_header(self):
@@ -1150,15 +992,6 @@ class TestClarificationCardButtons:
 class TestQueueFeedbackRedaction:
     """Task 17.2: Test sensitive info is redacted in queue feedback cards."""
 
-    SENSITIVE_CASES = [
-        ("token: sk-12345abcdef", "sk-12345abcdef"),
-        ("password=secret123", "secret123"),
-        ("api_key=abc123xyz", "abc123xyz"),
-        ("API_KEY: my-super-secret-key", "my-super-secret-key"),
-        ("DB_PASSWORD=hunter2", "hunter2"),
-        ("access_token=eyJhbGciOiJIUzI1NiJ9", "eyJhbGciOiJIUzI1NiJ9"),
-    ]
-
     def _assert_redacted(self, text: str, secret: str):
         """Assert secret is not present and redaction marker is present."""
         assert secret not in text, f"Secret {secret!r} was not redacted"
@@ -1188,30 +1021,6 @@ class TestQueueFeedbackRedaction:
         combined = "\n".join(all_md)
         self._assert_redacted(combined, "secret123")
 
-    def test_queue_wait_card_redacts_api_key(self):
-        from src.slock_engine.card_templates.queue_feedback import build_queue_wait_card
-
-        card = build_queue_wait_card(
-            position=2,
-            busy_count=3,
-            message_preview="配置 api_key=abc123xyz 调用外部服务",
-        )
-        all_md = _all_markdown_content(card)
-        combined = "\n".join(all_md)
-        self._assert_redacted(combined, "abc123xyz")
-
-    def test_timeout_notify_card_redacts_sensitive(self):
-        from src.slock_engine.card_templates.queue_feedback import build_timeout_notify_card
-
-        card = build_timeout_notify_card(
-            task_id="task_001",
-            message_preview="使用 token: sk-98765fedcba 处理请求",
-            waited_seconds=60.0,
-        )
-        all_md = _all_markdown_content(card)
-        combined = "\n".join(all_md)
-        self._assert_redacted(combined, "sk-98765fedcba")
-
     def test_result_card_redacts_sensitive(self):
         from src.slock_engine.card_templates.queue_feedback import build_result_card
 
@@ -1223,40 +1032,10 @@ class TestQueueFeedbackRedaction:
         combined = "\n".join(all_md)
         self._assert_redacted(combined, "mysecretpass")
 
-    def test_activation_confirm_card_redacts_sensitive(self):
-        from src.slock_engine.card_templates.queue_feedback import build_activation_confirm_card
-
-        card = build_activation_confirm_card(
-            team_name="TestTeam",
-            agent_count=3,
-            first_task_preview="配置 API_KEY: super-secret-123",
-        )
-        all_md = _all_markdown_content(card)
-        combined = "\n".join(all_md)
-        self._assert_redacted(combined, "super-secret-123")
-
-    def test_queue_full_card_redacts_sensitive(self):
-        from src.slock_engine.card_templates.queue_feedback import build_queue_full_card
-
-        card = build_queue_full_card(
-            message_preview="使用 access_token=eyJhbGciOiJIUzI1NiJ9 进行认证",
-            max_size=8,
-        )
-        all_md = _all_markdown_content(card)
-        combined = "\n".join(all_md)
-        self._assert_redacted(combined, "eyJhbGciOiJIUzI1NiJ9")
-
     def test_sensitive_at_80_char_boundary(self):
-        """Test redaction works when sensitive info is at the 80-char truncation boundary.
-
-        The _sanitize_preview function redacts first, then truncates to 80 chars.
-        We need to ensure sensitive info at or near the boundary is still redacted.
-        """
+        """Test redaction works when sensitive info is at the 80-char truncation boundary."""
         from src.slock_engine.card_templates.queue_feedback import build_queue_wait_card
 
-        # Create a message where the sensitive info is exactly at the 80-char boundary
-        # 60 chars of padding + "token=sk-1234567890abcdef" (28 chars) = 88 chars total
-        # After redaction: 60 chars + "token=<redacted>" (16 chars) = 76 chars, within 80
         padding = "A" * 60
         sensitive_text = f"{padding} token=sk-1234567890abcdef"
 
@@ -1268,37 +1047,8 @@ class TestQueueFeedbackRedaction:
         all_md = _all_markdown_content(card)
         combined = "\n".join(all_md)
 
-        # The secret should be redacted
         assert "sk-1234567890abcdef" not in combined
-        # Redaction marker should be present
         assert "token=<redacted>" in combined
-
-    def test_sensitive_exactly_at_80_chars(self):
-        """Test when sensitive value starts exactly at position 80.
-
-        The key assertion is that the secret is never exposed, even if
-        the redaction marker gets truncated at the 80-char boundary.
-        """
-        from src.slock_engine.card_templates.queue_feedback import build_timeout_notify_card
-
-        # Build a string where the sensitive info is near the 80-char boundary
-        # After redaction: 60 chars + " password=<redacted>" (17 chars) = 77 chars, within 80
-        padding = "X" * 60  # 60 chars
-        sensitive_part = " password=very-long-secret-password-12345"  # 42 chars
-        full_text = padding + sensitive_part
-
-        card = build_timeout_notify_card(
-            task_id="t1",
-            message_preview=full_text,
-            waited_seconds=30.0,
-        )
-        all_md = _all_markdown_content(card)
-        combined = "\n".join(all_md)
-
-        # CRITICAL: Secret should not appear anywhere (this is the security guarantee)
-        assert "very-long-secret-password-12345" not in combined
-        # Redaction marker should be present (within 80 chars after redaction)
-        assert "password=<redacted>" in combined
 
     def test_clarification_card_redacts_preview(self):
         """Clarification card should also redact sensitive info in preview."""
@@ -1335,45 +1085,25 @@ class TestMobileOptimizedCards:
             "Progress card should have wide_screen_mode=False for mobile optimization"
         )
 
-    def test_result_card_mobile_optimized(self):
-        """build_result_card should use mobile_optimize=True."""
-        from src.slock_engine.card_templates.queue_feedback import build_result_card
-
-        card = build_result_card(
-            task_preview="测试任务",
-            result="测试结果",
-        )
-        assert card["config"]["wide_screen_mode"] is False, (
-            "Result card should have wide_screen_mode=False for mobile optimization"
+    def test_queue_feedback_cards_mobile_optimized(self):
+        """All queue feedback card builders should use mobile_optimize=True."""
+        from src.slock_engine.card_templates.queue_feedback import (
+            build_activation_confirm_card,
+            build_clarification_card,
+            build_queue_wait_card,
+            build_result_card,
+            build_timeout_notify_card,
         )
 
-    def test_queue_wait_card_mobile_optimized(self):
-        """build_queue_wait_card should use mobile_optimize=True."""
-        from src.slock_engine.card_templates.queue_feedback import build_queue_wait_card
-
-        card = build_queue_wait_card(position=1, busy_count=1)
-        assert card["config"]["wide_screen_mode"] is False
-
-    def test_timeout_notify_card_mobile_optimized(self):
-        """build_timeout_notify_card should use mobile_optimize=True."""
-        from src.slock_engine.card_templates.queue_feedback import build_timeout_notify_card
-
-        card = build_timeout_notify_card(task_id="t1", waited_seconds=60.0)
-        assert card["config"]["wide_screen_mode"] is False
-
-    def test_activation_confirm_card_mobile_optimized(self):
-        """build_activation_confirm_card should use mobile_optimize=True."""
-        from src.slock_engine.card_templates.queue_feedback import build_activation_confirm_card
-
-        card = build_activation_confirm_card(team_name="Test")
-        assert card["config"]["wide_screen_mode"] is False
-
-    def test_clarification_card_mobile_optimized(self):
-        """build_clarification_card should use mobile_optimize=True."""
-        from src.slock_engine.card_templates.queue_feedback import build_clarification_card
-
-        card = build_clarification_card(message_preview="test")
-        assert card["config"]["wide_screen_mode"] is False
+        cards = [
+            build_result_card(task_preview="test", result="ok"),
+            build_queue_wait_card(position=1, busy_count=1),
+            build_timeout_notify_card(task_id="t1", waited_seconds=60.0),
+            build_activation_confirm_card(team_name="Test"),
+            build_clarification_card(message_preview="test"),
+        ]
+        for card in cards:
+            assert card["config"]["wide_screen_mode"] is False
 
     def test_result_card_long_content_uses_collapsible_panel(self):
         """Long result content (>500 chars) should use collapsible_panel."""

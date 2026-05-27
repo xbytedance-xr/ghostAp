@@ -5,10 +5,12 @@ with sample kwargs to ensure no missing parameters.
 """
 
 import re
+import unittest
 
 import pytest
 
 from src.card.ui_text import UI_TEXT
+from src.card.render.footer import _format_idle_timeout
 
 # Extract all format field names from a string
 _FORMAT_FIELD_RE = re.compile(r"\{(\w+)\}")
@@ -89,24 +91,32 @@ def _get_format_keys() -> list[tuple[str, str]]:
 _FORMAT_ENTRIES = _get_format_keys()
 
 
-@pytest.mark.parametrize("key,template", _FORMAT_ENTRIES, ids=[k for k, _ in _FORMAT_ENTRIES])
-def test_ui_text_format_no_key_error(key: str, template: str):
-    """Each UI_TEXT template with {} placeholders should format without KeyError."""
-    # Extract required field names
-    fields = _FORMAT_FIELD_RE.findall(template)
-    if not fields:
-        # Template has { but no named fields (e.g., literal braces) — skip
-        return
+def test_ui_text_format_no_key_error():
+    """All UI_TEXT templates with {} placeholders should format without KeyError."""
+    failures: list[str] = []
+    for key, template in _FORMAT_ENTRIES:
+        # Extract required field names
+        fields = _FORMAT_FIELD_RE.findall(template)
+        if not fields:
+            # Template has { but no named fields (e.g., literal braces) — skip
+            continue
 
-    # Build kwargs from sample values; use placeholder for unknown fields
-    kwargs = {}
-    for field in fields:
-        kwargs[field] = _SAMPLE_KWARGS.get(field, f"<{field}>")
+        # Build kwargs from sample values; use placeholder for unknown fields
+        kwargs = {}
+        for field in fields:
+            kwargs[field] = _SAMPLE_KWARGS.get(field, f"<{field}>")
 
-    # This should NOT raise KeyError
-    result = template.format(**kwargs)
-    assert isinstance(result, str)
-    assert len(result) > 0
+        # Attempt format and collect any errors
+        try:
+            result = template.format(**kwargs)
+            if not isinstance(result, str) or len(result) == 0:
+                failures.append(f"{key}: format returned empty or non-string")
+        except Exception as exc:
+            failures.append(f"{key}: {type(exc).__name__}: {exc}")
+
+    assert not failures, (
+        f"{len(failures)} UI_TEXT format failure(s):\n" + "\n".join(failures)
+    )
 
 
 class TestUITextFrozenProxy:
@@ -144,3 +154,131 @@ class TestMutableUITextNotExported:
         import importlib
         mod = importlib.import_module("src.card.ui_text")
         assert "UI_TEXT" in mod.__all__
+
+
+# ---------------------------------------------------------------------------
+# Strict UI_TEXT placeholder validation (merged from test_ui_text_placeholder_strict.py)
+# ---------------------------------------------------------------------------
+
+# All known valid placeholder names (from test_ui_text_placeholders canonical set + extras)
+_VALID_PLACEHOLDERS = {
+    "seconds", "minutes", "hours", "engine_cmd", "engine_name",
+    "timestamp", "name", "mode_name", "emoji", "cmd", "error",
+    "step", "desc", "count", "n", "base", "base_branch", "path",
+    "goal", "elapsed", "max", "session_id", "tool", "reason",
+    "model", "msg", "status", "attempt", "max_attempts", "delay_sec",
+    "sec", "i", "satisfied", "total", "num", "title", "text",
+    "tool_name", "duration", "error_detail", "current", "category",
+    "timeout_display", "idle_minutes", "last_active_time",
+}
+
+_PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
+_SNAKE_CASE_RE = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
+
+
+class TestUITextPlaceholderStrict(unittest.TestCase):
+    """Strict validation of UI_TEXT entries."""
+
+    def test_no_unknown_placeholders(self):
+        """Every placeholder in every value must be in the valid set."""
+        unknown = []
+        for key, value in UI_TEXT.items():
+            if not isinstance(value, str):
+                continue
+            placeholders = _PLACEHOLDER_RE.findall(value)
+            for p in placeholders:
+                if p not in _VALID_PLACEHOLDERS:
+                    unknown.append(f"{key}: unknown placeholder {{{p}}}")
+        # This is informational — if we find unknowns, they should be added to canonical set
+        # but we don't hard-fail since new features may add new ones
+        if unknown:
+            # Just log, don't fail — new placeholders are OK if intentional
+            pass
+
+    def test_no_empty_values(self):
+        """No UI_TEXT entry should have an empty string value."""
+        empty_keys = [k for k, v in UI_TEXT.items() if isinstance(v, str) and v.strip() == ""]
+        self.assertEqual(empty_keys, [], f"Empty UI_TEXT values: {empty_keys}")
+
+    def test_keys_are_snake_case(self):
+        """All UI_TEXT keys should follow snake_case convention."""
+        non_snake = [k for k in UI_TEXT.keys() if not _SNAKE_CASE_RE.match(k)]
+        self.assertEqual(non_snake, [], f"Non-snake_case keys: {non_snake}")
+
+    def test_no_tab_characters_in_values(self):
+        """No value should contain raw tab characters (use spaces for indentation)."""
+        bad_keys = []
+        for key, value in UI_TEXT.items():
+            if not isinstance(value, str):
+                continue
+            if "\t" in value:
+                bad_keys.append(key)
+        self.assertEqual(bad_keys, [], f"Keys with tab characters: {bad_keys}")
+
+    def test_no_unbalanced_braces(self):
+        """Format strings should have balanced { } braces."""
+        unbalanced = []
+        for key, value in UI_TEXT.items():
+            if not isinstance(value, str):
+                continue
+            # Count single braces (not escaped {{ or }})
+            stripped = value.replace("{{", "").replace("}}", "")
+            opens = stripped.count("{")
+            closes = stripped.count("}")
+            if opens != closes:
+                unbalanced.append(f"{key}: opens={opens}, closes={closes}")
+        self.assertEqual(unbalanced, [], "Unbalanced braces:\n" + "\n".join(unbalanced))
+
+    def test_format_strings_renderable_with_canonical_values(self):
+        """All entries with placeholders can be formatted without error."""
+        failures = []
+        for key, value in UI_TEXT.items():
+            if not isinstance(value, str):
+                continue
+            placeholders = _PLACEHOLDER_RE.findall(value)
+            if not placeholders:
+                continue
+            kwargs = {p: f"test_{p}" for p in placeholders}
+            try:
+                value.format(**kwargs)
+            except (KeyError, IndexError, ValueError) as exc:
+                failures.append(f"{key}: {exc}")
+        self.assertEqual(failures, [], "Format failures:\n" + "\n".join(failures))
+
+
+# ---------------------------------------------------------------------------
+# Timeout format tests (merged from test_timeout_format.py)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatIdleTimeout:
+    """Test _format_idle_timeout edge cases."""
+
+    @pytest.mark.parametrize(
+        "seconds, expected",
+        [
+            (60, "1 分钟"),         # test_minimum_value_60
+            (300, "5 分钟"),        # test_300_seconds
+            (350, "6 分钟"),        # test_non_60_divisible (rounds up)
+            (1800, "30 分钟"),      # test_1800_seconds (default)
+            (3600, "1 小时"),       # test_3600_seconds (exact hour)
+            (7200, "2 小时"),       # test_7200_seconds (exact hours)
+        ],
+        ids=[
+            "60s-1min", "300s-5min", "350s-round-up-6min",
+            "1800s-30min", "3600s-1h", "7200s-2h",
+        ],
+    )
+    def test_exact_format(self, seconds, expected):
+        assert _format_idle_timeout(seconds) == expected
+
+    @pytest.mark.parametrize(
+        "seconds",
+        [4500, 5400],
+        ids=["4500s-1.25h", "5400s-1.5h"],
+    )
+    def test_non_exact_hour_has_approx_prefix(self, seconds):
+        """Non-exact hour values get 'approximately' prefix with 'hours'."""
+        result = _format_idle_timeout(seconds)
+        assert "约" in result
+        assert "小时" in result

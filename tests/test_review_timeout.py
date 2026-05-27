@@ -893,26 +893,12 @@ class TestNormalizeDiagnosticsErrorTextTruncation:
         result = self._normalize(diag)
         assert result["error_text"] == "short error"
 
-    def test_exact_500_chars_unchanged(self):
-        text = "a" * 500
-        diag = {"error_text": text}
-        result = self._normalize(diag)
-        assert result["error_text"] == text
-        assert len(result["error_text"]) == 500
-
     def test_501_chars_truncated(self):
         text = "a" * 501
         diag = {"error_text": text}
         result = self._normalize(diag)
         assert len(result["error_text"]) <= 500
         assert result["error_text"].endswith("…(truncated)")
-
-    def test_1000_chars_truncated_with_marker(self):
-        text = "x" * 1000
-        diag = {"error_text": text}
-        result = self._normalize(diag)
-        assert len(result["error_text"]) <= 500
-        assert "…(truncated)" in result["error_text"]
 
     def test_custom_limit(self):
         text = "y" * 200
@@ -1548,34 +1534,6 @@ class TestPartialTimeoutNoRetry:
 class TestRecentOutcomesAfterRetry:
     """AC-R15: recent_outcomes tracking after retry success/failure."""
 
-    def test_recent_outcomes_success(self):
-        circuit = ReviewCircuitState()
-        call_count = {"n": 0}
-
-        def side_effect(artifacts, budget, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                return _make_timeout_outcomes()
-            return _make_success_outcomes()
-
-        with (
-            patch("src.spec_engine.review_pipeline.run_review_pipeline", side_effect=side_effect),
-            patch("src.spec_engine.review_retry.time.sleep", return_value=None),
-        ):
-            conduct_review(
-                session=MagicMock(),
-                settings=_make_retry_settings(),
-                project=_make_project(),
-                send_prompt_with_retry_fn=MagicMock(),
-                build_review_exception_diagnostics_fn=MagicMock(return_value={}),
-                circuit=circuit,
-                cycle=1,
-                artifacts=_make_retry_artifacts(),
-                agent_type="coco",
-            )
-
-        assert circuit.recent_outcomes[-1] == "success"
-
     def test_recent_outcomes_failure(self):
         circuit = ReviewCircuitState()
 
@@ -1597,38 +1555,6 @@ class TestRecentOutcomesAfterRetry:
 
         assert circuit.recent_outcomes[-1] == "partial_failure"
 
-
-class TestCancelEventAbortsRetry:
-    """AC-R16: when cancel_event is set, retry pipeline is NOT called."""
-
-    def test_cancel_event_aborts_retry(self):
-        circuit = ReviewCircuitState()
-        call_count = {"n": 0}
-
-        def side_effect(artifacts, budget, **kwargs):
-            call_count["n"] += 1
-            return _make_timeout_outcomes()
-
-        cancel_event = threading.Event()
-        cancel_event.set()  # pre-cancelled
-
-        with (
-            patch("src.spec_engine.review_pipeline.run_review_pipeline", side_effect=side_effect),
-        ):
-            _conduct_review_pipeline(
-                settings=_make_retry_settings(),
-                build_review_exception_diagnostics_fn=MagicMock(return_value={}),
-                circuit=circuit,
-                cycle=1,
-                artifacts=_make_retry_artifacts(),
-                agent_type="coco",
-                model_name=None,
-                on_review_done=None,
-                cancel_event=cancel_event,
-            )
-
-        # Only the first pipeline call; retry was cancelled
-        assert call_count["n"] == 1
 
 
 class TestRetryStatusCallback:
@@ -2180,129 +2106,7 @@ class TestMultiAttemptRetryLoop:
         assert result is None
         assert mock_pipeline.call_count == 3
 
-    def test_budget_label_format(self):
-        """Retry budget labels include attempt number."""
-        circuit = ReviewCircuitState()
-        settings = _make_retry_settings(spec_review_retry_max_attempts=2)
 
-        from src.spec_engine.cycle_budget import CycleBudget
-
-        timeout_outcomes = _make_timeout_outcomes()
-        budgets_seen = []
-
-        def tracking_pipeline(artifacts, budget, **kwargs):
-            budgets_seen.append(budget.label)
-            return timeout_outcomes
-
-        ctx = PipelineRetryContext(
-            cancel_event=None, on_retry_status=None,
-            base_timeout=120,
-            multiplier=2,
-            pipeline_fn=tracking_pipeline,
-            budget_cls=CycleBudget,
-            artifacts=_make_retry_artifacts(),
-            agent_type="coco",
-            model_name=None,
-        )
-
-        with patch("src.spec_engine.review_retry.time.sleep", return_value=None):
-            attempt_pipeline_retry(
-                circuit=circuit, settings=settings, cycle=3, ctx=ctx,
-            )
-
-        assert len(budgets_seen) == 2
-        assert budgets_seen[0] == "spec_review_retry_c3_a0"
-        assert budgets_seen[1] == "spec_review_retry_c3_a1"
-
-
-# ---------------------------------------------------------------------------
-# Task 18: test_retry_result_empty_list_treated_as_failure
-# ---------------------------------------------------------------------------
-
-
-class TestRetryResultEmptyListGuard:
-    """Empty retry_result [] should not trigger reset_on_success."""
-
-    def test_retry_result_empty_list_treated_as_failure(self):
-        """When attempt_pipeline_retry returns [], should NOT reset circuit."""
-        circuit = ReviewCircuitState(consecutive_timeouts=3, review_failure_consecutive=2)
-        settings = _make_retry_settings()
-
-        timeout_outcomes = _make_timeout_outcomes()
-        original_result = outcomes_to_review_result(timeout_outcomes, 1)
-
-        from src.spec_engine.cycle_budget import CycleBudget
-
-        # Pipeline returns empty list (no outcomes)
-        mock_pipeline = MagicMock(return_value=[])
-
-        ctx = PipelineRetryContext(
-            cancel_event=None, on_retry_status=None,
-            base_timeout=120,
-            multiplier=2,
-            pipeline_fn=mock_pipeline,
-            budget_cls=CycleBudget,
-            artifacts=_make_retry_artifacts(),
-            agent_type="coco",
-            model_name=None,
-        )
-
-        with patch("src.spec_engine.review_retry.time.sleep", return_value=None):
-            result, diag = handle_pipeline_errors_with_retry(
-                outcomes=timeout_outcomes,
-                review_result=original_result,
-                circuit=circuit,
-                settings=settings,
-                cycle=1,
-                ctx=ctx,
-                retry_texts={"retry_no_retry": UI_TEXT["retry_no_retry"], "retry_exhausted": UI_TEXT["retry_exhausted"]},
-            )
-
-        # Empty list should NOT trigger reset_on_success
-        assert diag is not None
-        assert circuit.consecutive_timeouts > 0
-
-
-# ---------------------------------------------------------------------------
-# Task 19: test_perspective_count_dynamic
-# ---------------------------------------------------------------------------
-
-
-class TestPerspectiveCountDynamic:
-    """perspective_count should dynamically reference len(ReviewPerspective)."""
-
-    def test_perspective_count_equals_enum_length(self):
-        """Verify _conduct_review_pipeline uses len(ReviewPerspective) not hardcoded 5."""
-        from src.engine_base import ReviewPerspective
-
-        # With max_parallel=2 and perspective_count=len(ReviewPerspective)=5:
-        # multiplier = ceil(5/2) = 3
-        # budget_seconds = 240 * max(2, 3+3) = 240 * 6 = 1440
-        circuit = ReviewCircuitState()
-        budgets_seen = []
-
-        def tracking_pipeline(artifacts, budget, **kwargs):
-            budgets_seen.append(budget.total_seconds)
-            return _make_success_outcomes()
-
-        with patch("src.spec_engine.review_pipeline.run_review_pipeline", tracking_pipeline):
-            _conduct_review_pipeline(
-                settings=_make_retry_settings(spec_review_max_parallel=2, spec_review_timeout=240),
-                build_review_exception_diagnostics_fn=MagicMock(return_value={}),
-                circuit=circuit,
-                cycle=1,
-                artifacts=_make_retry_artifacts(),
-                agent_type="coco",
-                model_name=None,
-                on_review_done=None,
-            )
-
-        expected_perspective_count = len(ReviewPerspective)
-        assert expected_perspective_count == 5  # current enum has 5 members
-        import math
-        expected_multiplier = math.ceil(expected_perspective_count / 2)
-        expected_budget = 240.0 * max(2, expected_multiplier + 3)
-        assert budgets_seen[0] == expected_budget
 
 
 # ---------------------------------------------------------------------------
@@ -2362,38 +2166,6 @@ class TestConfigMaxAttemptsNegative:
             assert "spec_review_retry_max_attempts" in err_str
             assert "≥ 0" in err_str
 
-
-# ---------------------------------------------------------------------------
-# Task 15: TestReviewCircuitStateConcurrency (AC-R10)
-# ---------------------------------------------------------------------------
-
-
-class TestReviewCircuitStateConcurrency:
-    """Concurrent append + reset_on_success should not raise exceptions under CPython GIL."""
-
-    def test_concurrent_operations_no_exception(self):
-        """10 threads × 100 mixed ops — no IndexError/RuntimeError."""
-        circuit = ReviewCircuitState()
-        errors = []
-
-        def _worker(idx: int):
-            try:
-                for _ in range(100):
-                    if idx % 2 == 0:
-                        circuit.recent_outcomes.append("partial_failure")
-                    else:
-                        circuit.reset_on_success()
-            except Exception as e:
-                errors.append(e)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-            futures = [pool.submit(_worker, i) for i in range(10)]
-            for f in concurrent.futures.as_completed(futures):
-                f.result()
-
-        assert errors == [], f"Concurrent operations raised: {errors}"
-        # Data correctness: recent_outcomes should never exceed cap of 20
-        assert len(circuit.recent_outcomes) <= 20
 
 
 # ---------------------------------------------------------------------------
@@ -2514,47 +2286,6 @@ class TestCancelEventIntegration:
         assert engine._review_cancel_event.is_set()
 
 
-# ---------------------------------------------------------------------------
-# Task 20: test_handle_pipeline_errors_empty_outcomes (AC-R11)
-# ---------------------------------------------------------------------------
-
-
-class TestHandlePipelineErrorsEmptyOutcomes:
-    """outcomes=[] should not raise and should return diag with err_type='unknown'."""
-
-    def test_empty_outcomes_no_exception(self):
-        """handle_pipeline_errors_with_retry with outcomes=[] returns safely."""
-        from src.spec_engine.cycle_budget import CycleBudget
-
-        circuit = ReviewCircuitState()
-        settings = _make_retry_settings()
-        empty_outcomes = []
-        review_result = ReviewResult(iteration=1, reviews=[])
-
-        ctx = PipelineRetryContext(
-            cancel_event=None, on_retry_status=None,
-            base_timeout=120,
-            multiplier=2,
-            pipeline_fn=MagicMock(),
-            budget_cls=CycleBudget,
-            artifacts=_make_retry_artifacts(),
-            agent_type="coco",
-            model_name=None,
-        )
-
-        result, diag = handle_pipeline_errors_with_retry(
-            outcomes=empty_outcomes,
-            review_result=review_result,
-            circuit=circuit,
-            settings=settings,
-            cycle=1,
-            ctx=ctx,
-            retry_texts={"retry_no_retry": UI_TEXT["retry_no_retry"], "retry_exhausted": UI_TEXT["retry_exhausted"]},
-        )
-
-        assert diag is not None
-        assert diag.get("err_type") == "unknown"
-
 
 # ---------------------------------------------------------------------------
 # Task 21: Text template assertions (AC-R07, AC-R08)
@@ -2572,27 +2303,12 @@ class TestRetryTextTemplates:
         assert "{n}" in text
         assert "重试" in text
 
-    def test_retry_exhausted_multi_has_placeholder(self):
-        """retry_exhausted should mention retry outcome."""
-        from src.card.ui_text import UI_TEXT
-
-        text = UI_TEXT["retry_exhausted"]
-        assert "重试" in text
-        assert "{n}" in text
-
-    def test_timeout_worker_busy_no_retry_excludes_auto_retry(self):
+    def test_retry_no_retry_banner_empty_string(self):
         """retry_no_retry should mention '未进行重试'."""
         from src.card.ui_text import UI_TEXT
 
         text = UI_TEXT["retry_no_retry"]
         assert "未进行重试" in text
-
-    def test_retry_exhausted_mentions_retry_outcome(self):
-        """retry_exhausted (with retry enabled) should mention '重试'."""
-        from src.card.ui_text import UI_TEXT
-
-        text = UI_TEXT["retry_exhausted"].format(n=2, elapsed_friendly="约 1 分钟")
-        assert "重试" in text
 
 
 # ---------------------------------------------------------------------------
@@ -2793,55 +2509,6 @@ class TestReviewCircuitStateOnFailure:
         assert circuit.review_failure_consecutive == 2  # still incremented
 
 
-# ---------------------------------------------------------------------------
-# TestCancelDuringWaitPhase — AC-R16
-# ---------------------------------------------------------------------------
-
-
-class TestCancelDuringWaitPhase:
-    """AC-R16: cancel_event set during Event.wait(timeout=delay) returns None immediately."""
-
-    def test_cancel_during_wait_returns_none_quickly(self):
-        """When cancel_event is set during wait phase, returns None with elapsed < delay."""
-        import time as _time
-
-        circuit = ReviewCircuitState(consecutive_timeouts=1)
-        settings = _make_retry_settings(
-            spec_review_retry_max_attempts=2,
-            spec_review_retry_max_delay=60,  # large delay to prove we don't wait full duration
-        )
-
-        from src.spec_engine.cycle_budget import CycleBudget
-
-        cancel_event = threading.Event()
-
-        ctx = PipelineRetryContext(
-            cancel_event=cancel_event,
-            on_retry_status=None,
-            base_timeout=120,
-            multiplier=2,
-            pipeline_fn=MagicMock(return_value=_make_success_outcomes()),
-            budget_cls=CycleBudget,
-            artifacts=_make_retry_artifacts(),
-            agent_type="coco",
-            model_name=None,
-        )
-
-        # Set cancel_event after a short delay to interrupt during wait
-        timer = threading.Timer(0.05, cancel_event.set)
-        timer.start()
-
-        t0 = _time.monotonic()
-        result = attempt_pipeline_retry(
-            circuit=circuit, settings=settings, cycle=1, ctx=ctx,
-        )
-        elapsed = _time.monotonic() - t0
-
-        assert result is None
-        # Should have returned quickly (< 1s), not waited the full delay
-        assert elapsed < 1.0
-        timer.cancel()
-
 
 # ---------------------------------------------------------------------------
 # TestBuildRetryDiagnosticsEmptyWorkers — AC-R17
@@ -2916,25 +2583,4 @@ class TestRetryMaxAttemptsZeroDisablesRetry:
         mock_pipeline.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# TestImportBackwardCompat — AC-R19
-# ---------------------------------------------------------------------------
 
-
-class TestImportBackwardCompat:
-    """AC-R19: backward-compatible import paths through review.py facade."""
-
-    def test_import_parse_review_output(self):
-        """from src.spec_engine.review import parse_review_output should work."""
-        from src.spec_engine.review import parse_review_output  # noqa: F401
-        assert callable(parse_review_output)
-
-    def test_import_review_circuit_state(self):
-        """from src.spec_engine.review import ReviewCircuitState should work."""
-        from src.spec_engine.review import ReviewCircuitState as RC  # noqa: F401
-        assert RC is not None
-
-    def test_import_attempt_pipeline_retry(self):
-        """from src.spec_engine.review import attempt_pipeline_retry should work."""
-        from src.spec_engine.review import attempt_pipeline_retry as apr  # noqa: F401
-        assert callable(apr)

@@ -206,7 +206,7 @@ class MessageDispatcher:
                             )
                         )
                     except Exception as e:
-                        logger.warning("Autonomous resolution failed, falling back to clarification: %s", e)
+                        logger.warning("Autonomous resolution failed, falling back to clarification: %s", str(e))
                         resolve_result = None
 
                     # If resolved, treat as task and try auto-activate

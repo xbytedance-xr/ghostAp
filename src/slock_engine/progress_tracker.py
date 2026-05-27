@@ -65,13 +65,13 @@ class ProgressTracker:
         self._card_builder = card_builder
         self._min_interval = max(min_interval, self.MIN_INTERVAL)
         self._states: dict[str, ProgressState] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._stop_event = threading.Event()
 
         # Debounce state for overview card updates (per plan_id)
         self._overview_timers: dict[str, threading.Timer] = {}
         self._overview_msg_ids: dict[str, str] = {}  # plan_id -> message_id
-        self._overview_lock = threading.Lock()
+        self._overview_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         if auto_flush:
             self._flush_thread = threading.Thread(

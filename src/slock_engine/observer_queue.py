@@ -244,7 +244,7 @@ class TaskStatusNotifier:
 
     def __init__(self) -> None:
         self._observers: list[TaskStatusObserver] = []
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def subscribe(self, observer: TaskStatusObserver) -> None:
         """Register an observer for task status events."""

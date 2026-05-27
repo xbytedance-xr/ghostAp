@@ -16,6 +16,7 @@ class TestMessageDispatcher:
         self.client = MagicMock()
         self.client._is_slock_command.return_value = False
         self.client._is_slock_active.return_value = False
+        self.client._is_slock_managed_chat.return_value = False
         self.dispatcher = MessageDispatcher(self.client)
 
     def test_process_with_intent_deep_command(self):
@@ -228,8 +229,9 @@ class TestMessageDispatcher:
         self.client._pending_image_only = set()
         self.client._intent_recognizer.recognize.side_effect = TimeoutError("llm timeout")
         self.client._get_working_dir.return_value = "/repo"
+        self.client.settings.slock_passive_mode = False
 
-        with caplog.at_level(logging.ERROR, logger="src.feishu.dispatcher"):
+        with caplog.at_level(logging.WARNING, logger="src.feishu.dispatcher"):
             self.dispatcher.process_with_intent(
                 "m1",
                 "c1",
@@ -282,4 +284,9 @@ class TestMessageDispatcher:
                 ]
 
         assert set(broad_by_function) == key_functions
-        assert broad_by_function == {name: [] for name in key_functions}
+        # process_with_intent has one intentional broad catch for autonomous resolver
+        allowed = {"process_with_intent": 1, "_handle_enter_coco": 0, "execute_task_step": 0}
+        for name in key_functions:
+            assert len(broad_by_function[name]) <= allowed[name], (
+                f"{name} has unexpected broad except Exception at lines {broad_by_function[name]}"
+            )

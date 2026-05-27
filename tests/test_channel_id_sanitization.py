@@ -13,7 +13,7 @@ class TestPathSanitization:
     """Verify channel_id and agent_id containing traversal sequences are blocked."""
 
     def setup_method(self):
-        self.tmpdir = tempfile.mkdtemp()
+        self.tmpdir = os.path.realpath(tempfile.mkdtemp())
         self.mm = MemoryManager(base_path=self.tmpdir)
 
     def test_normal_channel_id_works(self):

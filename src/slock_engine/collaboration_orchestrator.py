@@ -98,7 +98,7 @@ class CollaborationOrchestrator(TaskStatusObserver):
         self._step_timers: dict[str, threading.Timer] = {}  # step_id -> timeout timer
         self._plan_timers: dict[str, threading.Timer] = {}  # plan_id -> auto-start timer
         self._retry_counts: dict[str, int] = {}  # "{plan_id}:{step_id}" -> retry count
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._channel_map: dict[str, str] = {}  # plan_id -> channel_id
         self._progress_tracker: Any = None
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="slock-dispatch")

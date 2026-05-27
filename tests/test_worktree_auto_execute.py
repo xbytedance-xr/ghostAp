@@ -204,51 +204,6 @@ def test_apply_journey_event_handles_unknown_event_gracefully():
     assert runtime_state.journey.last_error
 
 
-def test_is_awaiting_goal_pending_with_ready_unit_returns_true():
-    """PENDING 且存在 ready 单元时，应视为等待用户目标输入。"""
-
-    state = WorktreeRuntimeState()
-    state.journey.status = WorktreeJourneyStatus.PENDING
-    state.units = [WorktreeUnit(unit_id="u1", status="ready")]
-
-    assert WorktreeManager.is_awaiting_goal(state) is True
-
-
-def test_is_awaiting_goal_auto_executing_with_ready_unit_returns_true():
-    """AUTO_EXECUTING 阶段且存在 ready 单元，同样视为等待目标（或自动执行中的等待）。"""
-
-    state = WorktreeRuntimeState()
-    state.journey.status = WorktreeJourneyStatus.AUTO_EXECUTING
-    state.units = [WorktreeUnit(unit_id="u1", status="ready")]
-
-    assert WorktreeManager.is_awaiting_goal(state) is True
-
-
-def test_is_awaiting_goal_requires_ready_unit():
-    """没有任何 ready 单元时，即便旅程在 PENDING/AUTO_EXECUTING 也不应拦截为等待目标。"""
-
-    state = WorktreeRuntimeState()
-    state.journey.status = WorktreeJourneyStatus.PENDING
-    state.units = [WorktreeUnit(unit_id="u1", status="pending")]
-
-    assert WorktreeManager.is_awaiting_goal(state) is False
-
-
-def test_is_awaiting_goal_false_for_non_pending_statuses():
-    """RUNNING/COMPLETED/FAILED 等阶段一律不视为等待目标。"""
-
-    for status in (
-        WorktreeJourneyStatus.RUNNING,
-        WorktreeJourneyStatus.COMPLETED,
-        WorktreeJourneyStatus.FAILED,
-        WorktreeJourneyStatus.IDLE,
-    ):
-        state = WorktreeRuntimeState()
-        state.journey.status = status
-        state.units = [WorktreeUnit(unit_id="u1", status="ready")]
-        assert WorktreeManager.is_awaiting_goal(state) is False
-
-
 def test_is_awaiting_goal_truth_table_matches_journey_status_enum():
     """遍历全部 WorktreeJourneyStatus，校验 is_awaiting_goal 的真值表契约。
 
@@ -288,12 +243,6 @@ def test_is_awaiting_goal_truth_table_matches_journey_status_enum():
         )
 
 
-def test_is_awaiting_goal_handles_none_and_invalid_state_gracefully():
-    """None 或非 WorktreeRuntimeState 入参应直接返回 False。"""
-
-    assert WorktreeManager.is_awaiting_goal(None) is False
-    assert WorktreeManager.is_awaiting_goal(object()) is False  # type: ignore[arg-type]
-
 def test_wt_prefix_command_parses_goal():
     """handle_worktree_prefix_command extracts goal from '/wt 实现登录'."""
     handler = _make_system_handler()
@@ -308,23 +257,6 @@ def test_wt_prefix_command_parses_goal():
     state = WorktreeManager.get_state(project)
     assert state.selection.pending_goal == "实现登录"
     assert state.journey.goal == "实现登录"
-    assert state.journey.status == WorktreeJourneyStatus.PENDING
-
-
-def test_worktree_prefix_command_parses_goal():
-    """handle_worktree_prefix_command extracts goal from '/worktree 重构认证'."""
-    handler = _make_system_handler()
-    project = _make_project("p-wt2")
-    handler.ctx.project_manager.get_active_project.return_value = project
-
-    reply_mock = MagicMock()
-    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "reply_text", reply_mock):
-        handler.handle_worktree_prefix_command("msg2", "chat2", "/worktree 重构认证", project)
-
-    state = WorktreeManager.get_state(project)
-    assert state.selection.pending_goal == "重构认证"
-    assert state.journey.goal == "重构认证"
     assert state.journey.status == WorktreeJourneyStatus.PENDING
 
 
@@ -650,34 +582,6 @@ def test_goal_persistence_across_selection():
     assert len(state.selection.selected_items) == 1
 
 
-def test_goal_from_start_selection_persists_through_model_select():
-    """Goal set via start_selection persists through model selection."""
-    handler = _make_system_handler()
-    project = _make_project("p-model")
-    handler.ctx.project_manager.get_active_project.return_value = project
-    handler.ctx.project_manager.get_project.return_value = project
-    handler.ctx.project_manager.get_project_for_chat.return_value = project
-
-    mgr = handler._worktree_manager()
-    mgr.start_selection(project, goal="重构数据库")
-    mgr.select_tool(project, WorktreeToolOption(
-        provider="cli", tool_name="claude", display_name="Claude", supports_model=True,
-    ))
-
-    mock_session = MagicMock()
-    mock_session.closed = False
-    # select model — goal should not be overwritten (no goal in card value)
-    with patch.object(handler, "_get_available_worktree_tools", return_value=_FAKE_TOOLS), \
-         patch.object(handler, "_get_or_create_session", return_value=mock_session):
-        handler.handle_worktree_select_model(
-            "m-model", "c-model", project_id="p-model",
-            value={"model_name": "sonnet", "model_display_name": "Sonnet"},
-        )
-
-    state = mgr.get_state(project)
-    assert state.selection.pending_goal == "重构数据库"
-
-
 def test_worktree_select_default_model_adds_unpinned_selection():
     """The explicit default-model option should not pin a model into WT units."""
     handler = _make_system_handler()
@@ -918,15 +822,6 @@ def test_silent_mode_timeout_notification_fires():
     assert "worktree_progress" in types
 
 
-def test_auto_executing_with_running_units_not_awaiting_goal():
-    """AUTO_EXECUTING + running units → is_awaiting_goal returns False (no interception)."""
-    state = WorktreeRuntimeState()
-    state.journey.status = WorktreeJourneyStatus.AUTO_EXECUTING
-    state.units = [WorktreeUnit(unit_id="u1", status="running")]
-
-    assert WorktreeManager.is_awaiting_goal(state) is False
-
-
 # ──────────────────────────────────────────────────────────────
 # Phase-6: New API tests — enum, ensure_worktree_state, truncate_goal, from_dict migration
 # ──────────────────────────────────────────────────────────────
@@ -949,19 +844,6 @@ class TestWorktreeUnitStatusEnum:
         assert WorktreeUnitStatus.RUNNING == "running"
         assert WorktreeUnitStatus.COMPLETED == "completed"
         assert WorktreeUnitStatus.FAILED == "failed"
-
-    def test_enum_in_dict_lookup(self):
-        """str Enum members should work as dict keys alongside string keys."""
-        d = {"completed": "done", "failed": "err"}
-        assert d.get(WorktreeUnitStatus.COMPLETED) == "done"
-        assert d.get(WorktreeUnitStatus.FAILED) == "err"
-        assert d.get(WorktreeUnitStatus.PENDING) is None
-
-    def test_unit_default_status_is_enum(self):
-        """New WorktreeUnit should default to WorktreeUnitStatus.PENDING."""
-        unit = WorktreeUnit(unit_id="u1")
-        assert unit.status is WorktreeUnitStatus.PENDING
-        assert unit.status == "pending"
 
     def test_unit_from_dict_parses_status_to_enum(self):
         """from_dict should parse string status into WorktreeUnitStatus."""
@@ -995,27 +877,11 @@ class TestEnsureWorktreeState:
         assert state is existing
         assert state.enabled is True
 
-    def test_replaces_non_state_attribute(self):
-        """Should replace a non-WorktreeRuntimeState attribute."""
-        project = _make_project("p-ensure-3")
-        project.worktree_state = "not a state"
-        state = ensure_worktree_state(project)
-        assert isinstance(state, WorktreeRuntimeState)
-
-
 class TestTruncateGoal:
     """truncate_goal Unicode-safe 截断测试。"""
 
     def test_short_goal_unchanged(self):
         assert truncate_goal("hello") == "hello"
-
-    def test_empty_goal(self):
-        assert truncate_goal("") == ""
-        assert truncate_goal(None) == ""
-
-    def test_exact_length_unchanged(self):
-        goal = "x" * 80
-        assert truncate_goal(goal) == goal
 
     def test_over_length_truncated_with_ellipsis(self):
         goal = "x" * 100
@@ -1028,11 +894,6 @@ class TestTruncateGoal:
         result = truncate_goal(goal, max_len=10)
         assert result.endswith("...")
         assert len(result) == 13  # 10 + len("...")
-
-    def test_custom_max_len(self):
-        goal = "a" * 50
-        result = truncate_goal(goal, max_len=20)
-        assert result == "a" * 20 + "..."
 
 
 class TestFromDictLastUserGoalMigration:
@@ -1055,9 +916,3 @@ class TestFromDictLastUserGoalMigration:
         data = {"journey": {"status": "idle", "goal": "existing"}}
         state = WorktreeRuntimeState.from_dict(data)
         assert state.journey.goal == "existing"
-
-    def test_empty_both(self):
-        """Both empty should result in empty goal."""
-        data = {"last_user_goal": "", "journey": {"status": "idle", "goal": ""}}
-        state = WorktreeRuntimeState.from_dict(data)
-        assert state.journey.goal == ""

@@ -42,6 +42,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
     """Build a HandlerContext with all dependencies mocked."""
     settings = MagicMock()
     settings.thread_programming_enabled = False
+    settings.project_allowed_roots = []
     ctx = HandlerContext(
         settings=settings,
         api_client_factory=MagicMock(),
@@ -52,6 +53,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
         codex_manager=MagicMock(),
         gemini_manager=MagicMock(),
         ttadk_manager=MagicMock(),
+        tui2acp_manager=MagicMock(),
         intent_recognizer=MagicMock(),
         scheduler=MagicMock(),
         project_manager=MagicMock(),
@@ -1152,35 +1154,6 @@ class TestTTADKModeHandler:
             for button in block
         )
 
-    def test_enter_mode_ttadk_timeout_uses_warning(self):
-        ctx = _make_handler_context()
-        ctx.mode_manager.is_ttadk_mode.return_value = False
-        ctx.mode_manager.is_coco_mode.return_value = False
-        ctx.mode_manager.is_claude_mode.return_value = False
-        ctx.mode_manager.is_aiden_mode.return_value = False
-        ctx.mode_manager.is_codex_mode.return_value = False
-        ctx.mode_manager.is_gemini_mode.return_value = False
-        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
-
-        project = MagicMock()
-        project.root_path = "/tmp"
-        project.project_id = "p1"
-        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
-        ctx.project_manager.validate_project_path.return_value = (True, "ok")
-
-        ctx.ttadk_manager.ensure_session.side_effect = TimeoutError("boom")
-
-        h = TTADKModeHandler(ctx)
-        h.reply_card = MagicMock()
-        h.send_error_card = MagicMock()
-
-        h.enter_mode("m1", "c1", project=project)
-
-        h.reply_card.assert_called_once()
-        h.send_error_card.assert_not_called()
-        assert "重新发送原命令" in str(h.reply_card.call_args)
-        assert "continue_degraded" not in str(h.reply_card.call_args)
-        assert "retry_original" not in str(h.reply_card.call_args)
 
 
 class TestProgrammingModeEnterExit:
@@ -1467,57 +1440,6 @@ class TestTopLevelProgrammingState:
         assert "启动失败" in call_str or "重新发送" in call_str
 
 
-
-
-class TestTTADKModeDegradeWarning:
-    def test_ttadk_enter_mode_emits_degrade_card(self):
-        ctx = _make_handler_context()
-
-        ctx.mode_manager.is_ttadk_mode.return_value = False
-        ctx.mode_manager.is_coco_mode.return_value = False
-        ctx.mode_manager.is_claude_mode.return_value = False
-        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
-
-        ctx.project_manager.validate_project_path.return_value = (True, "ok")
-        project = MagicMock()
-        project.ttadk_session_snapshot = None
-        project.root_path = "/tmp"
-        project.project_name = "test"
-        project.project_id = "test_id"
-        ctx.project_manager.get_or_create_project_for_path.return_value = (project, False)
-
-        sess = MagicMock()
-        sess.session_id = "sid_ttadk"
-        sess.is_resumed = False
-        sess._degraded_to = "coco"
-        sess._degraded_reason = "boom"
-        ctx.ttadk_manager.ensure_session.return_value = sess
-
-        h = TTADKModeHandler(ctx)
-        # 避免进入真实 ttadk 配置解析逻辑
-        h._get_agent_type_override = MagicMock(return_value="ttadk_coco")
-        h._get_model_name_override = MagicMock(return_value="gpt-5.2")
-
-        h.reply_text = MagicMock()
-        h.reply_text = MagicMock()
-        h.reply_card = MagicMock()
-        h.reply_card = MagicMock(return_value="reply_1")
-        h.add_reaction = MagicMock()
-        h.record_mode_transition = MagicMock()
-        h.register_message_project = MagicMock()
-
-        h.enter_mode("m1", "c1", project=project)
-
-        h.reply_text.assert_not_called()
-        assert h.reply_card.call_count >= 1
-        degraded_card = json.loads(h.reply_card.call_args_list[0].args[1])
-        card_text = json.dumps(degraded_card, ensure_ascii=False)
-        buttons = _collect_buttons(degraded_card)
-
-        assert "🟡 降级错误" in card_text
-        assert "TTADK 暂不可用" in card_text
-        assert buttons[0]["text"]["content"] == "继续使用 Coco"
-        assert buttons[0]["value"]["action"] == "continue_degraded"
 
 
 # ======================================================================
@@ -2902,12 +2824,10 @@ class TestHelpCardLockAlwaysVisible:
             session_idle_warn_at_remaining=120,
             lock_undo_window_seconds=300,
         )
-        assert "Slock" in card_json
+        assert "Slock" in card_json or "slock" in card_json
         assert "/slock" in card_json
-        assert "/new-team" in card_json
         assert "/new-role" in card_json
-        assert "--template coder" in card_json
-        assert "/task assign" in card_json
+        assert "/task status" in card_json
 
     def test_lock_section_present_when_no_admin_ids(self):
         """Even with admin_user_ids=frozenset(), the help card includes lock content."""

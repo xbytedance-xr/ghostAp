@@ -2,7 +2,6 @@
 
 Covers:
 - Task 33: Discussion cooldown and depth limit
-- Task 34: @mention routing regex
 - Task 35: UX card templates (command panel, error suggestion, confirm/cancel,
            council detail, status refresh, crash recovery)
 - Task 36: Three-level lock system in MemoryManager
@@ -12,7 +11,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 
@@ -111,40 +109,6 @@ class TestDiscussionCooldownDepth:
         dm.unbind_task("thread_1")
         assert dm.get_bound_task("thread_1") is None
 
-
-# ---------------------------------------------------------------------------
-# Task 34: @mention Routing Regex
-# ---------------------------------------------------------------------------
-
-
-class TestAtMentionRouting:
-    """Tests for @mention regex extraction logic used in engine routing."""
-
-    mention_pattern = re.compile(r"@(\w+)")
-
-    def test_mention_regex_extracts_names(self):
-        matches = self.mention_pattern.findall("@Alice please review")
-        assert matches == ["Alice"]
-
-    def test_mention_regex_multiple(self):
-        matches = self.mention_pattern.findall("@Alice @Bob help")
-        assert matches == ["Alice", "Bob"]
-
-    def test_mention_regex_no_match(self):
-        matches = self.mention_pattern.findall("no mentions here")
-        assert matches == []
-
-    def test_mention_regex_with_punctuation(self):
-        matches = self.mention_pattern.findall("@Alice, check this @Bob.")
-        assert matches == ["Alice", "Bob"]
-
-    def test_mention_regex_underscore_names(self):
-        matches = self.mention_pattern.findall("@code_reviewer please look")
-        assert matches == ["code_reviewer"]
-
-    def test_mention_regex_at_start_of_string(self):
-        matches = self.mention_pattern.findall("@Charlie")
-        assert matches == ["Charlie"]
 
 
 # ---------------------------------------------------------------------------

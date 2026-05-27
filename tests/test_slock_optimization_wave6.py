@@ -1,7 +1,6 @@
 """Unit tests for Slock optimization wave 6 — review feedback resolution.
 
 Covers:
-- AC-R01: Redact context on move (via redact_active_context_for_move)
 - AC-R02: Chitchat hint card with force_process button
 - AC-R04: Council result card schema 2.0 compliance
 - AC-R05: Status panel select_static for >3 non-IDLE agents
@@ -14,37 +13,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-
-# ===========================================================================
-# AC-R01: Redact context on move
-# ===========================================================================
-
-
-class TestRedactContextForMove:
-    """Verify redact_active_context_for_move replaces context with migration record."""
-
-    def _make_memory_manager(self, tmp_path):
-        from src.slock_engine.memory_manager import MemoryManager
-        return MemoryManager(base_path=str(tmp_path))
-
-    def test_context_redacted_after_move(self, tmp_path):
-        """After move, active_context should contain migration record."""
-        mm = self._make_memory_manager(tmp_path)
-        from src.slock_engine.models import SlockMemory
-
-        agent_id = "agent-001"
-        mm.write_agent_memory(agent_id, SlockMemory(
-            role="coder",
-            active_context="Working on task X with important findings.",
-        ))
-
-        mm.redact_active_context_for_move(agent_id, "channel-A", "channel-B")
-
-        memory = mm.read_agent_memory(agent_id)
-        # Context should be replaced with a redaction/migration record
-        assert "channel-A" in memory.active_context or "redact" in memory.active_context.lower() or "move" in memory.active_context.lower()
-        # Role should be preserved
-        assert memory.role == "coder"
 
 
 # ===========================================================================

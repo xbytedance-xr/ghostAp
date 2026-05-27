@@ -210,7 +210,7 @@ class AutonomousResolver:
             try:
                 memory_context = self._gather_memory_context(memory, channel_id)
             except Exception as e:
-                logger.debug("autonomous_resolver: failed to gather memory context: %s", e)
+                logger.debug("autonomous_resolver: failed to gather memory context: %s", str(e))
 
         # Step 2: Build resolution prompt
         prompt = self._build_resolution_prompt(task_text, context, memory_context)
@@ -278,7 +278,7 @@ class AutonomousResolver:
             else:
                 return self._llm_callback(prompt)
         except Exception as e:
-            logger.warning("autonomous_resolver: LLM invocation failed: %s", e)
+            logger.warning("autonomous_resolver: LLM invocation failed: %s", str(e))
             return None
 
     def _parse_resolution_response(self, response: str, original_task: str) -> ResolveResult:

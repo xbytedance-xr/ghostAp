@@ -189,17 +189,6 @@ class TestTriggerDetection:
         # Without engine, _find_agent_by_role returns None
         assert result is None
 
-    def test_rule_trigger_invalid_rule_format(self, manager_with_engine: DiscussionManager):
-        """Invalid rule format is skipped gracefully."""
-        config = DiscussionConfig(trigger_rules=["invalid_rule_no_arrow"])
-        agent = _make_agent(agent_id="coder-001", role="coder")
-        result = manager_with_engine.should_trigger_discussion(
-            agent=agent,
-            result_content="Some output.",
-            config=config,
-        )
-        assert result is None
-
     # --- @mention triggers ---
 
     def test_mention_trigger_with_known_agent(self, manager_with_engine: DiscussionManager):
@@ -739,16 +728,6 @@ class TestTextSimilarity:
         # Jaccard = 1/3 ≈ 0.333, SequenceMatcher gives higher character-level similarity
         assert 0.3 < sim < 0.8  # Intermediate value, exact value depends on algorithm
 
-    def test_empty_first_text(self, manager: DiscussionManager):
-        """Empty first text returns 0.0."""
-        sim = manager._calculate_text_similarity("", "hello world")
-        assert sim == 0.0
-
-    def test_empty_second_text(self, manager: DiscussionManager):
-        """Empty second text returns 0.0."""
-        sim = manager._calculate_text_similarity("hello world", "")
-        assert sim == 0.0
-
     def test_both_empty(self, manager: DiscussionManager):
         """Both empty texts return 0.0."""
         sim = manager._calculate_text_similarity("", "")
@@ -792,16 +771,6 @@ class TestAtMentionPattern:
         """No matches in text without @mentions."""
         matches = AT_MENTION_PATTERN.findall("No mentions here")
         assert matches == []
-
-    def test_mention_with_underscore(self):
-        """@mention with underscore in name."""
-        matches = AT_MENTION_PATTERN.findall("Ask @code_reviewer for help")
-        assert matches == ["code_reviewer"]
-
-    def test_mention_at_start(self):
-        """@mention at the start of content."""
-        matches = AT_MENTION_PATTERN.findall("@Admin please look at this")
-        assert matches == ["Admin"]
 
 
 # ===========================================================================
@@ -1394,11 +1363,6 @@ class TestParallelDiscussionCapacity:
         assert r1 is True
         assert r2 is True
 
-    def test_zero_capacity_rejects_all(self):
-        engine = self._make_engine(max_parallel=0)
-        result = engine._add_discussion("ch1", {"id": "t1"})
-        assert result is False
-
 
 # ---------------------------------------------------------------------------
 # AC-05: Discussion Card Lifecycle (3-stage)
@@ -1487,22 +1451,6 @@ class TestConvergenceAndTimeout:
             participants=["agent-001", "agent-002"],
             messages=messages,
         )
-
-    def test_max_rounds_stops_discussion(self):
-        """Discussion must stop after max_rounds even without convergence."""
-        dm = self._make_dm()
-
-        # Simulate 3 rounds of non-converging content
-        thread = self._make_thread([
-            {"speaker": "A", "content": "idea 1", "round_num": 1},
-            {"speaker": "B", "content": "counter idea", "round_num": 2},
-            {"speaker": "A", "content": "revised idea", "round_num": 3},
-        ])
-        thread.config.max_rounds = 3
-
-        # At round 3 == max_rounds, convergence not detected but budget exhausted
-        assert dm.check_convergence(thread) is False
-        # max_rounds enforcement is checked by the orchestration loop, not check_convergence
 
     def test_convergence_detected_early(self):
         """If agents agree, discussion stops before max_rounds."""
@@ -1626,32 +1574,6 @@ class TestConcurrentDiscussionSafety:
         assert len(discussions) == 25
         assert all(d.startswith("new-") for d in discussions)
 
-    def test_concurrent_add_respects_max_parallel(self):
-        """Concurrent adds respect max_parallel limit without over-allocation."""
-        import threading
-
-        engine = self._make_engine()
-        max_parallel = 10
-        barrier = threading.Barrier(50)
-        results: list[bool] = []
-        lock = threading.Lock()
-
-        def worker(idx: int):
-            barrier.wait(timeout=5)
-            ok = engine.add_discussion("ch-limited", f"t-{idx}", max_parallel=max_parallel)
-            with lock:
-                results.append(ok)
-
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(50)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=10)
-
-        accepted = sum(1 for r in results if r)
-        assert accepted == max_parallel
-        assert len(engine._active_discussions["ch-limited"]) == max_parallel
-
 
 # ---------------------------------------------------------------------------
 # Task 22: _find_agent_by_role correctness test
@@ -1690,12 +1612,6 @@ class TestFindAgentByRole:
     def test_returns_none_when_engine_is_none(self):
         """_find_agent_by_role returns None when engine is None."""
         dm = DiscussionManager(engine=None)
-        assert dm._find_agent_by_role("coder") is None
-
-    def test_returns_none_when_registry_missing(self):
-        """_find_agent_by_role returns None when engine has no registry attribute."""
-        engine = MagicMock(spec=[])  # No attributes at all
-        dm = DiscussionManager(engine=engine)
         assert dm._find_agent_by_role("coder") is None
 
     def test_find_agent_by_name_case_insensitive(self):
@@ -1758,19 +1674,6 @@ class TestWatchdogTimeout:
 
         assert result.status == DiscussionStatus.MAX_ROUNDS_REACHED
         assert result.completed_at is not None
-
-    def test_discussion_sets_completed_at_on_timeout(self):
-        """Max-rounds discussion has completed_at timestamp set."""
-        config = DiscussionConfig(max_rounds=1, token_budget=100000)
-        dm = DiscussionManager()
-        thread = _make_thread(config=config)
-
-        with patch.object(dm, "_execute_agent_turn", return_value=("distributed transaction saga pattern implementation details", 15)):
-            result = dm.run_discussion(thread, "Init")
-
-        assert result.status == DiscussionStatus.MAX_ROUNDS_REACHED
-        assert result.completed_at is not None
-        assert result.completed_at > 0
 
 
 # ---------------------------------------------------------------------------

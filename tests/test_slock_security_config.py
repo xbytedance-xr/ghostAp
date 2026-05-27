@@ -10,6 +10,7 @@ Verifies:
 
 from __future__ import annotations
 
+import os
 import re
 
 import pytest
@@ -170,7 +171,7 @@ class TestSettingsIndependentImport:
             ],
             capture_output=True,
             text=True,
-            cwd="/home/jiataorui/work/ghostAp",
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         )
 
         assert result.returncode == 0, f"Import failed: {result.stderr}"

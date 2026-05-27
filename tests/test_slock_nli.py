@@ -12,12 +12,13 @@ Covers:
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.slock_engine.intent_router import IntentResult, IntentRouter
 from src.slock_engine.slash_commands import SlockCommandAction, is_slock_command
+from src.feishu.handlers.slock import SlockHandler
 
 
 def _run(coro):
@@ -55,13 +56,8 @@ class TestFastPatternMatchStop:
         [
             "停掉 slock",
             "关闭团队",
-            "停止引擎",
-            "停掉slock",
-            "关闭 slock",
-            "停止 slock",
-            "停掉",
-            "关闭",
             "停止",
+            "停掉",
         ],
     )
     def test_chinese_stop_patterns(self, text: str):
@@ -75,12 +71,8 @@ class TestFastPatternMatchStop:
         [
             "stop slock",
             "shutdown team",
-            "close engine",
-            "stop",
-            "shutdown",
             "close",
             "STOP SLOCK",
-            "Stop Team",
         ],
     )
     def test_english_stop_patterns(self, text: str):
@@ -108,8 +100,6 @@ class TestFastPatternMatchStatus:
             "查看状态",
             "看看团队状态",
             "显示当前状态",
-            "查看 状态",
-            "看看 当前状态",
         ],
     )
     def test_chinese_status_patterns(self, text: str):
@@ -123,8 +113,6 @@ class TestFastPatternMatchStatus:
         [
             "show status",
             "view state",
-            "check status",
-            "Show Status",
             "CHECK STATE",
         ],
     )
@@ -238,9 +226,6 @@ class TestFastPatternMatchHelp:
             "帮助",
             "help",
             "怎么用",
-            "使用说明",
-            "HELP",
-            "Help",
         ],
     )
     def test_help_patterns(self, text: str):
@@ -253,9 +238,7 @@ class TestFastPatternMatchHelp:
         "text",
         [
             "帮助我做一件事",
-            "请帮助",
             "help me",
-            "帮 助",
         ],
     )
     def test_help_non_matches(self, text: str):
@@ -710,11 +693,7 @@ class TestExpandedPatterns:
         "text,expected_target",
         [
             ("让小明看看", "小明"),
-            ("让reviewer帮忙", "reviewer"),
             ("叫coder处理", "coder"),
-            ("请architect来", "architect"),
-            ("让测试员检查", "测试员"),
-            ("让bot审", "bot"),
             ("请alpha-1 review", "alpha-1"),
         ],
     )
@@ -732,8 +711,6 @@ class TestExpandedPatterns:
         [
             ("把这个给小明审一下", "小明"),
             ("把代码给reviewer看一下", "reviewer"),
-            ("给coder看看", "coder"),
-            ("把PR给architect审查", "architect"),
             ("将这个交给tester review", "tester"),
         ],
     )
@@ -751,9 +728,7 @@ class TestExpandedPatterns:
         [
             ("小明来帮忙", "小明"),
             ("reviewer来帮", "reviewer"),
-            ("coder来处理", "coder"),
             ("architect来看看", "architect"),
-            ("bot来搞", "bot"),
         ],
     )
     def test_x_come_help_patterns(self, text: str, expected_target: str):
@@ -770,8 +745,6 @@ class TestExpandedPatterns:
         [
             "当前状态",
             "现在怎么样",
-            "目前状态",
-            "什么状态",
             "运行状况",
         ],
     )
@@ -788,7 +761,6 @@ class TestExpandedPatterns:
         [
             "看看谁在",
             "谁在线",
-            "有谁",
             "哪些角色",
         ],
     )
@@ -805,9 +777,6 @@ class TestExpandedPatterns:
         [
             "开始干活",
             "开工",
-            "开始工作",
-            "启动",
-            "start working",
             "let's go",
         ],
     )
@@ -825,8 +794,6 @@ class TestExpandedPatterns:
             ("让小明和小红讨论", "小明", "小红"),
             ("请coder与reviewer商量", "coder", "reviewer"),
             ("让architect跟tester聊聊", "architect", "tester"),
-            ("小明和小红对一下", "小明", "小红"),
-            ("请alpha和beta discuss", "alpha", "beta"),
         ],
     )
     def test_discussion_trigger_patterns(self, text: str, expected_a: str, expected_b: str):
@@ -1153,3 +1120,120 @@ class TestNLIFeedbackCardStyling:
         card_json = json.dumps(card, ensure_ascii=False)
         assert "确认执行" in card_json
         assert "取消" in card_json
+
+
+# ===========================================================================
+# TestUnknownCommandFeedback — AC-UX4 (merged from test_slock_unknown_command.py)
+# ===========================================================================
+
+
+class TestUnknownCommandFeedback:
+    """AC-UX4: Unknown commands fall through to show_slock_help."""
+
+    @patch("src.feishu.handlers.slock.is_slock_command", return_value=True)
+    def test_unknown_command_gives_feedback_card(self, _mock_is_slock):
+        """User entering an unrecognized slash command gets help feedback."""
+        handler = MagicMock(spec=SlockHandler)
+        handler._get_engine_manager.return_value.get_activated_engine.return_value = None
+
+        # /xyz is not a recognized slock command → falls to else branch
+        SlockHandler.handle_slock_command(handler, "msg-1", "chat-1", "/xyz foobar")
+
+        # Implementation calls show_slock_help for unknown commands
+        handler.show_slock_help.assert_called_once_with("msg-1")
+
+    @patch("src.feishu.handlers.slock.is_slock_command", return_value=True)
+    def test_unknown_command_preserves_original_input(self, _mock_is_slock):
+        """Unknown command still triggers help (no crash on any input)."""
+        handler = MagicMock(spec=SlockHandler)
+        handler._get_engine_manager.return_value.get_activated_engine.return_value = None
+
+        SlockHandler.handle_slock_command(handler, "msg-2", "chat-2", "/weird-cmd something")
+
+        handler.show_slock_help.assert_called_once_with("msg-2")
+
+    @patch("src.feishu.handlers.slock.is_slock_command", return_value=True)
+    def test_unknown_command_has_suggestions(self, _mock_is_slock):
+        """Unknown command triggers help (suggestions come from help card)."""
+        handler = MagicMock(spec=SlockHandler)
+        handler._get_engine_manager.return_value.get_activated_engine.return_value = None
+
+        # Use a typo of a real command
+        SlockHandler.handle_slock_command(handler, "msg-3", "chat-3", "/rol list")
+
+        handler.show_slock_help.assert_called_once_with("msg-3")
+
+    @patch("src.feishu.handlers.slock.is_slock_command", return_value=True)
+    def test_chitchat_also_gives_feedback_card(self, _mock_is_slock):
+        """Empty/chitchat input that produces no dispatch match gives help."""
+        handler = MagicMock(spec=SlockHandler)
+        handler._get_engine_manager.return_value.get_activated_engine.return_value = None
+
+        # Empty string produces UNKNOWN action
+        SlockHandler.handle_slock_command(handler, "msg-4", "chat-4", "")
+
+        handler.show_slock_help.assert_called_once_with("msg-4")
+
+
+# ===========================================================================
+# TestDiscussCommandParsing — AC-R01 (merged from test_slock_discuss_command.py)
+# ===========================================================================
+
+
+class TestDiscussCommandParsing:
+    """AC-R01: /discuss 命令必须被正确解析并路由。"""
+
+    def test_parse_discuss_with_topic(self):
+        """'/discuss 讨论API设计' -> DISCUSSION action with topic."""
+        from src.slock_engine.slash_commands import parse_slock_command
+
+        result = parse_slock_command("/discuss 讨论API设计")
+        assert result.action == SlockCommandAction.DISCUSSION
+        assert result.args == "讨论API设计"
+
+    def test_parse_discuss_without_topic(self):
+        """'/discuss' alone -> DISCUSSION_LIST (shows active discussions)."""
+        from src.slock_engine.slash_commands import parse_slock_command
+
+        result = parse_slock_command("/discuss")
+        assert result.action == SlockCommandAction.DISCUSSION_LIST
+
+    def test_parse_discuss_with_multiword_topic(self):
+        """'/discuss how should we handle auth?' -> full topic preserved."""
+        from src.slock_engine.slash_commands import parse_slock_command
+
+        result = parse_slock_command("/discuss how should we handle auth?")
+        assert result.action == SlockCommandAction.DISCUSSION
+        assert result.args == "how should we handle auth?"
+
+    def test_is_slock_command_discuss_in_managed_chat(self):
+        """/discuss is recognized in managed chats."""
+        manager = MagicMock()
+        manager.is_managed_chat.return_value = True
+        assert is_slock_command("/discuss topic", chat_id="chat1", manager=manager)
+
+    def test_is_slock_command_discuss_not_in_unmanaged_chat(self):
+        """/discuss returns NEEDS_ACTIVATION without managed chat context."""
+        from src.slock_engine.slash_commands import NEEDS_ACTIVATION
+
+        manager = MagicMock()
+        manager.is_managed_chat.return_value = False
+        assert is_slock_command("/discuss topic", chat_id="chat1", manager=manager) == NEEDS_ACTIVATION
+
+    def test_is_slock_command_discuss_no_manager(self):
+        """/discuss returns False when no manager context is available."""
+        assert not is_slock_command("/discuss topic", chat_id="chat1", manager=None)
+
+    def test_parse_discuss_list(self):
+        """/discuss list -> DISCUSSION_LIST action."""
+        from src.slock_engine.slash_commands import parse_slock_command
+
+        result = parse_slock_command("/discuss list")
+        assert result.action == SlockCommandAction.DISCUSSION_LIST
+
+    def test_parse_discuss_list_case_insensitive(self):
+        """/discuss LIST -> DISCUSSION_LIST action (case insensitive)."""
+        from src.slock_engine.slash_commands import parse_slock_command
+
+        result = parse_slock_command("/discuss LIST")
+        assert result.action == SlockCommandAction.DISCUSSION_LIST

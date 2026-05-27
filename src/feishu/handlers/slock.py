@@ -501,7 +501,7 @@ class SlockHandler(BaseEngineHandler):
                             # Reply to original message
                             self.reply_text(message_id, result)
                     except Exception as e:
-                        logger.warning("Failed to deliver final result for task %s: %s", task_id, e)
+                        logger.warning("Failed to deliver final result for task %s: %s", task_id, str(e))
 
                 queued = QueuedTask(
                     task_id=f"msg:{message_id}",
@@ -1273,7 +1273,7 @@ class SlockHandler(BaseEngineHandler):
                         else:
                             self.reply_text(message_id, result)
                 except Exception as e:
-                    logger.warning("Failed to deliver first message result: %s", e)
+                    logger.warning("Failed to deliver first message result: %s", str(e))
 
             task = QueuedTask(
                 task_id=f"first-msg-{_uuid.uuid4().hex[:8]}",

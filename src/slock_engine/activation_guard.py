@@ -49,7 +49,7 @@ class ActivationGuard:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         # Per-user timestamps: bounded LRU OrderedDict -> deque per user
         self._user_timestamps: OrderedDict[str, deque] = OrderedDict()
         # Global timestamps: bounded deque

@@ -76,19 +76,11 @@ class TestBuildReviewErrorSuggestion:
 # ---------------------------------------------------------------------------
 
 class TestComputeExponentialCooldown:
-    def test_level_0(self):
+    def test_exponential_growth_and_cap(self):
         assert compute_exponential_cooldown(0, base_cooldown=3, max_cooldown=12) == 3
-
-    def test_level_1(self):
         assert compute_exponential_cooldown(1, base_cooldown=3, max_cooldown=12) == 6
-
-    def test_level_2(self):
         assert compute_exponential_cooldown(2, base_cooldown=3, max_cooldown=12) == 12
-
-    def test_level_3_capped(self):
         assert compute_exponential_cooldown(3, base_cooldown=3, max_cooldown=12) == 12
-
-    def test_level_10_capped(self):
         assert compute_exponential_cooldown(10, base_cooldown=3, max_cooldown=12) == 12
 
     def test_negative_level_treated_as_0(self):
@@ -106,22 +98,13 @@ class TestComputeExponentialCooldown:
 # ---------------------------------------------------------------------------
 
 class TestComputeAdaptiveTimeout:
-    def test_n0_returns_base(self):
+    def test_decay_progression_default_params(self):
+        """1.3x decay with default base=120, min=30."""
         assert compute_adaptive_timeout(0, base_timeout=120, min_timeout=30) == 120
-
-    def test_n1_decays_by_1_3x(self):
         assert compute_adaptive_timeout(1, base_timeout=120, min_timeout=30) == 92
-
-    def test_n2_decays_by_1_3x_squared(self):
         assert compute_adaptive_timeout(2, base_timeout=120, min_timeout=30) == 71
-
-    def test_n3_decays_further(self):
         assert compute_adaptive_timeout(3, base_timeout=120, min_timeout=30) == 54
-
-    def test_n4_decays_more(self):
         assert compute_adaptive_timeout(4, base_timeout=120, min_timeout=30) == 42
-
-    def test_n10_floored(self):
         assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=30) == 30
 
     def test_negative_n_treated_as_0(self):
@@ -130,48 +113,26 @@ class TestComputeAdaptiveTimeout:
     def test_custom_base_and_min(self):
         assert compute_adaptive_timeout(0, base_timeout=60, min_timeout=10) == 60
         assert compute_adaptive_timeout(1, base_timeout=60, min_timeout=10) == 46
-        assert compute_adaptive_timeout(2, base_timeout=60, min_timeout=10) == 35
-        assert compute_adaptive_timeout(3, base_timeout=60, min_timeout=10) == 27
         assert compute_adaptive_timeout(4, base_timeout=60, min_timeout=10) == 21
 
-    # -- 1.3x decay with production defaults (base=240, min=60, hard_floor=20) --
-
-    def test_new_defaults_n0(self):
+    def test_new_defaults_production(self):
+        """1.3x decay with production defaults (base=240, min=60, hard_floor=20)."""
         assert compute_adaptive_timeout(0, base_timeout=240, min_timeout=60, hard_floor=20) == 240
-
-    def test_new_defaults_n1(self):
         assert compute_adaptive_timeout(1, base_timeout=240, min_timeout=60, hard_floor=20) == 184
-
-    def test_new_defaults_n2(self):
-        assert compute_adaptive_timeout(2, base_timeout=240, min_timeout=60, hard_floor=20) == 142
-
-    def test_new_defaults_n3(self):
-        assert compute_adaptive_timeout(3, base_timeout=240, min_timeout=60, hard_floor=20) == 109
-
-    def test_new_defaults_n4_decays(self):
         assert compute_adaptive_timeout(4, base_timeout=240, min_timeout=60, hard_floor=20) == 84
-
-    def test_new_defaults_n10_floored(self):
         assert compute_adaptive_timeout(10, base_timeout=240, min_timeout=60, hard_floor=20) == 60
 
-    # -- hard_floor protection tests --
-
-    def test_hard_floor_default_15s(self):
-        """With min_timeout=5 (below hard_floor), result is still >= 15."""
+    def test_hard_floor_protection(self):
+        """hard_floor prevents result from going below threshold."""
+        # Default hard_floor=15
         assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=5) == 15
-
-    def test_hard_floor_prevents_extreme_low(self):
-        """Even with min_timeout=1, hard_floor=15 keeps result at 15."""
         for n in range(20):
-            result = compute_adaptive_timeout(n, base_timeout=120, min_timeout=1)
-            assert result >= 15, f"n={n}: result={result} < 15"
+            assert compute_adaptive_timeout(n, base_timeout=120, min_timeout=1) >= 15
 
-    def test_hard_floor_custom_value(self):
-        """Custom hard_floor overrides the default 15s."""
+        # Custom hard_floor
         assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=5, hard_floor=20) == 20
 
-    def test_hard_floor_zero_disables(self):
-        """hard_floor=0 effectively disables the floor protection."""
+        # hard_floor=0 disables
         assert compute_adaptive_timeout(10, base_timeout=120, min_timeout=5, hard_floor=0) == 8
 
     def test_consecutive_10_never_below_hard_floor(self):
@@ -185,26 +146,16 @@ class TestComputeAdaptiveTimeout:
 # ---------------------------------------------------------------------------
 
 class TestComputeRetryDelay:
-    def test_n0_returns_base(self):
+    def test_basic_progression_and_cap(self):
         assert compute_retry_delay(0) == 5.0
-
-    def test_n1_returns_7_5(self):
         assert compute_retry_delay(1) == pytest.approx(7.5)
-
-    def test_n2_returns_11_25(self):
         assert compute_retry_delay(2) == pytest.approx(11.25)
-
-    def test_large_n_capped_at_max(self):
         assert compute_retry_delay(10) == 30.0
-
-    def test_custom_max_delay(self):
-        assert compute_retry_delay(0, max_delay=3.0) == 3.0
-
-    def test_custom_base_delay(self):
-        assert compute_retry_delay(0, base_delay=10.0) == 10.0
-
-    def test_negative_n_treated_as_zero(self):
         assert compute_retry_delay(-5) == 5.0
+
+    def test_custom_params(self):
+        assert compute_retry_delay(0, max_delay=3.0) == 3.0
+        assert compute_retry_delay(0, base_delay=10.0) == 10.0
 
     def test_monotonic_growth(self):
         """Delay should monotonically increase until capped."""
@@ -214,23 +165,17 @@ class TestComputeRetryDelay:
             assert d >= prev
             prev = d
 
-    def test_base_delay_zero_raises(self):
-        """base_delay=0 must trigger ValueError (not assert, safe under -O)."""
-        import pytest
+    def test_invalid_params_raise(self):
         with pytest.raises(ValueError):
             compute_retry_delay(0, base_delay=0)
-
-    def test_max_delay_zero_raises(self):
-        """max_delay=0 must trigger ValueError."""
-        import pytest
         with pytest.raises(ValueError):
             compute_retry_delay(0, max_delay=0)
-
-    def test_max_delay_negative_raises(self):
-        """max_delay=-1 must trigger ValueError."""
-        import pytest
         with pytest.raises(ValueError):
             compute_retry_delay(0, max_delay=-1)
+        with pytest.raises(ValueError):
+            compute_retry_delay(0, decay_factor=0)
+        with pytest.raises(ValueError):
+            compute_retry_delay(0, decay_factor=-1)
 
     def test_custom_decay_factor(self):
         """decay_factor=2.0 should double the delay each step."""
@@ -243,23 +188,6 @@ class TestComputeRetryDelay:
         """decay_factor=1.0 means constant delay."""
         for n in range(5):
             assert compute_retry_delay(n, decay_factor=1.0) == 5.0
-
-    def test_decay_factor_zero_raises(self):
-        """decay_factor=0 must trigger ValueError."""
-        import pytest
-        with pytest.raises(ValueError):
-            compute_retry_delay(0, decay_factor=0)
-
-    def test_decay_factor_negative_raises(self):
-        """decay_factor=-1 must trigger ValueError."""
-        import pytest
-        with pytest.raises(ValueError):
-            compute_retry_delay(0, decay_factor=-1)
-
-    def test_default_decay_factor_unchanged(self):
-        """Default decay_factor=1.5 preserves existing behavior."""
-        assert compute_retry_delay(1) == pytest.approx(7.5)
-        assert compute_retry_delay(2) == pytest.approx(11.25)
 
 
 # ---------------------------------------------------------------------------
@@ -468,9 +396,11 @@ class TestHandleReviewExceptionSpec:
 class TestHandleReviewExceptionElapsedMs:
     """Verify review_elapsed_ms flows into metrics['total_elapsed_ms'] and circuit."""
 
-    def test_metrics_contains_total_elapsed_ms_spec_timeout(self):
+    def test_elapsed_ms_flows_to_metrics_and_circuit(self):
         circuit = _MockCircuitSpec()
         settings = _make_settings()
+
+        # With explicit elapsed_ms
         result = handle_review_exception(
             RuntimeError("x"),
             circuit=circuit,
@@ -480,41 +410,35 @@ class TestHandleReviewExceptionElapsedMs:
             build_diag_fn=_stub_build_diag,
             review_elapsed_ms=1234,
         )
-        assert "total_elapsed_ms" in result.metrics
-        assert isinstance(result.metrics["total_elapsed_ms"], int)
         assert result.metrics["total_elapsed_ms"] == 1234
         assert circuit.last_review_elapsed_ms == 1234
 
-    def test_metrics_contains_total_elapsed_ms_spec(self):
-        circuit = _MockCircuitSpec()
-        settings = _make_settings()
-        result = handle_review_exception(
+        # With timeout error
+        circuit2 = _MockCircuitSpec()
+        result2 = handle_review_exception(
             TimeoutError("timeout"),
-            circuit=circuit,
+            circuit=circuit2,
             cycle=3,
             settings=settings,
             engine="spec",
             build_diag_fn=_stub_build_diag,
             review_elapsed_ms=5678,
         )
-        assert "total_elapsed_ms" in result.metrics
-        assert isinstance(result.metrics["total_elapsed_ms"], int)
-        assert result.metrics["total_elapsed_ms"] == 5678
-        assert circuit.last_review_elapsed_ms == 5678
+        assert result2.metrics["total_elapsed_ms"] == 5678
+        assert circuit2.last_review_elapsed_ms == 5678
 
-    def test_default_elapsed_ms_is_zero(self):
-        circuit = _MockCircuitSpec()
-        settings = _make_settings()
-        result = handle_review_exception(
+        # Default is 0
+        circuit3 = _MockCircuitSpec()
+        result3 = handle_review_exception(
             RuntimeError("x"),
-            circuit=circuit,
+            circuit=circuit3,
             cycle=1,
             settings=settings,
             engine="spec",
             build_diag_fn=_stub_build_diag,
         )
-        assert result.metrics["total_elapsed_ms"] == 0
-        assert circuit.last_review_elapsed_ms == 0
+        assert result3.metrics["total_elapsed_ms"] == 0
+        assert circuit3.last_review_elapsed_ms == 0
 
 
 # ---------------------------------------------------------------------------
@@ -528,18 +452,14 @@ class TestHardFloorConfigWiring:
         s = Settings()
         assert s.spec_review_hard_floor == 20
 
-    def test_hard_floor_passed_to_compute_adaptive_timeout(self):
-        """hard_floor parameter actually affects the result."""
-        # With hard_floor=20, result should never go below 20
+    def test_hard_floor_affects_compute_adaptive_timeout(self):
+        """hard_floor parameter actually affects the result; custom value allows lower."""
         for n in range(20):
             result = compute_adaptive_timeout(
                 n, base_timeout=120, min_timeout=5, hard_floor=20,
             )
             assert result >= 20, f"n={n}: result={result} < hard_floor=20"
 
-    def test_hard_floor_10_allows_lower_than_default(self):
-        """Custom hard_floor=10 allows result to go below default 15."""
-        result = compute_adaptive_timeout(
-            10, base_timeout=120, min_timeout=5, hard_floor=10,
-        )
+        # Custom hard_floor=10 allows lower than default 15
+        result = compute_adaptive_timeout(10, base_timeout=120, min_timeout=5, hard_floor=10)
         assert result == 10

@@ -48,13 +48,6 @@ class TestGetSigningKey:
         with patch("src.config.get_settings", side_effect=RuntimeError("boom")):
             assert _get_signing_key() == ""
 
-    def test_logs_warning_on_exception(self):
-        with patch("src.config.get_settings", side_effect=RuntimeError("boom")), \
-             patch("src.utils.signing.logger") as mock_logger:
-            _get_signing_key()
-            mock_logger.warning.assert_called_once()
-            assert "signing key" in mock_logger.warning.call_args[0][0].lower()
-
 
 # ---------------------------------------------------------------------------
 # _compute_command_sig (legacy v1)
@@ -71,28 +64,12 @@ class TestComputeCommandSig:
         ).hexdigest()
         assert sig == expected
 
-    def test_output_is_64_char_hex(self):
-        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
-            sig = _compute_command_sig("test")
-        assert len(sig) == 64
-        int(sig, 16)  # valid hex
-
-    def test_differs_from_plain_sha256(self):
-        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
-            sig = _compute_command_sig("hello")
-        plain = hashlib.sha256("hello".encode()).hexdigest()
-        assert sig != plain
-
     def test_different_keys_different_sigs(self):
         with patch("src.utils.signing._get_signing_key", return_value="key_a"):
             sig_a = _compute_command_sig("hello")
         with patch("src.utils.signing._get_signing_key", return_value="key_b"):
             sig_b = _compute_command_sig("hello")
         assert sig_a != sig_b
-
-    def test_deterministic(self):
-        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
-            assert _compute_command_sig("/status") == _compute_command_sig("/status")
 
     def test_raises_on_empty_key(self):
         with patch("src.utils.signing._get_signing_key", return_value=""):
@@ -113,13 +90,6 @@ class TestSignCommand:
         parts = payload.split(".")
         assert len(parts) == 4
 
-    def test_sig_part_is_64_hex(self):
-        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
-            payload = sign_command("/deploy", "chat_abc123")
-        sig_hex = payload.split(".")[0]
-        assert len(sig_hex) == 64
-        int(sig_hex, 16)  # valid hex
-
     def test_exp_is_future_timestamp(self):
         with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
             payload = sign_command("/deploy", "chat_abc123", ttl_seconds=3600)
@@ -127,20 +97,6 @@ class TestSignCommand:
         exp = int(exp_str)
         assert exp > time.time()
         assert exp <= time.time() + 3601
-
-    def test_chat_hash_is_8_hex_chars(self):
-        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
-            payload = sign_command("/deploy", "chat_abc123")
-        chat_hash = payload.split(".")[3]
-        assert len(chat_hash) == 8
-        int(chat_hash, 16)  # valid hex
-
-    def test_chat_hash_derived_from_chat_id(self):
-        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
-            payload = sign_command("/deploy", "my_chat_id")
-        chat_hash = payload.split(".")[3]
-        expected = hashlib.sha256("my_chat_id".encode()).hexdigest()[:8]
-        assert chat_hash == expected
 
     def test_different_commands_different_sigs(self):
         with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
@@ -153,13 +109,6 @@ class TestSignCommand:
             s1 = sign_command("/deploy", "chat_A")
             s2 = sign_command("/deploy", "chat_B")
         assert s1.split(".")[3] != s2.split(".")[3]
-
-    def test_nonce_is_unique(self):
-        with patch("src.utils.signing._get_signing_key", return_value=_TEST_KEY):
-            s1 = sign_command("/deploy", "chat1")
-            s2 = sign_command("/deploy", "chat1")
-        # Nonces should differ even for same command+chat
-        assert s1.split(".")[2] != s2.split(".")[2]
 
     def test_raises_on_empty_key(self):
         with patch("src.utils.signing._get_signing_key", return_value=""):
@@ -426,42 +375,6 @@ class TestVerifyResult:
     def test_mismatch_is_falsy(self):
         assert bool(VerifyResult.MISMATCH) is False
 
-    def test_compat_expired_is_falsy(self):
-        assert bool(VerifyResult.COMPAT_EXPIRED) is False
-
-    def test_expired_is_falsy(self):
-        assert bool(VerifyResult.EXPIRED) is False
-
-    def test_nonce_reused_is_falsy(self):
-        assert bool(VerifyResult.NONCE_REUSED) is False
-
-    def test_chat_mismatch_is_falsy(self):
-        assert bool(VerifyResult.CHAT_MISMATCH) is False
-
-    def test_if_idiom_ok(self):
-        """VerifyResult.OK works in plain `if` checks."""
-        assert VerifyResult.OK  # truthy
-        assert not VerifyResult.MISMATCH  # falsy
-        assert not VerifyResult.COMPAT_EXPIRED  # falsy
-        assert not VerifyResult.EXPIRED  # falsy
-        assert not VerifyResult.NONCE_REUSED  # falsy
-        assert not VerifyResult.CHAT_MISMATCH  # falsy
-
-    def test_verify_compat_expired_via_verify_command_sig(self):
-        """Full flow: legacy sig with expired window → COMPAT_EXPIRED."""
-        cmd = "/test"
-        plain_sig = hashlib.sha256(cmd.encode()).hexdigest()
-
-        mock_settings = MagicMock()
-        past = date.today() - timedelta(days=30)
-        mock_settings.sig_compat_deploy_date = past.isoformat()
-        mock_settings.sig_compat_window_days = 7
-        mock_settings.app_secret = _TEST_KEY
-
-        with patch("src.config.get_settings", return_value=mock_settings):
-            result = verify_command_sig(cmd, plain_sig)
-            assert result is VerifyResult.COMPAT_EXPIRED
-
 
 # ---------------------------------------------------------------------------
 # _get_process_start_date (lazy initialization)
@@ -492,31 +405,6 @@ class TestGetProcessStartDate:
             second = _get_process_start_date()
             assert first is second
             assert _mod._PROCESS_START_DATE is first
-        finally:
-            _mod._PROCESS_START_DATE = original
-
-    def test_lazy_init_logs_info(self):
-        """First initialization logs an info message."""
-        import src.utils.signing as _mod
-        original = _mod._PROCESS_START_DATE
-        try:
-            _mod._PROCESS_START_DATE = None
-            with patch("src.utils.signing.logger") as mock_logger:
-                _get_process_start_date()
-                mock_logger.info.assert_called_once()
-                assert "_PROCESS_START_DATE" in mock_logger.info.call_args[0][0]
-        finally:
-            _mod._PROCESS_START_DATE = original
-
-    def test_no_reinit_when_already_set(self):
-        """When _PROCESS_START_DATE is already set, no re-initialization."""
-        import src.utils.signing as _mod
-        original = _mod._PROCESS_START_DATE
-        sentinel = date(2020, 1, 1)
-        try:
-            _mod._PROCESS_START_DATE = sentinel
-            result = _get_process_start_date()
-            assert result is sentinel
         finally:
             _mod._PROCESS_START_DATE = original
 

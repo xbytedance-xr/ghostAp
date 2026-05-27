@@ -43,6 +43,7 @@ from src.spec_engine.reporter import SpecReporter
 from src.spec_engine.task_persistence import SpecTaskState, load_task_state
 from src.spec_engine.tracker import PhaseTracker
 from src.spec_engine.utils import parse_review_output_loose
+from src.utils.retry import RetryPolicy
 
 # ---------------------------------------------------------------------------
 # Shared spec settings factory — avoids 50-line duplication across test classes
@@ -2321,6 +2322,7 @@ class TestSpecHandler:
             codex_manager=MagicMock(),
             gemini_manager=MagicMock(),
             ttadk_manager=MagicMock(),
+            tui2acp_manager=MagicMock(),
             intent_recognizer=MagicMock(),
             scheduler=MagicMock(),
             project_manager=MagicMock(),
@@ -4383,3 +4385,135 @@ class TestSpecEngineCycleResilience:
         assert "error_message" in d
         restored = SpecCycle.from_dict(d)
         assert restored.error_message == cycle.error_message
+
+
+# ---------------------------------------------------------------------------
+# Tests merged from test_spec_engine_di.py
+# ---------------------------------------------------------------------------
+
+
+def test_spec_engine_di_injected_dependencies_used():
+    """Verify that injected dependencies are stored and used by SpecEngine."""
+    mock_retry_policy = RetryPolicy(max_retries=99, retry_delay=0.1)
+
+    mock_session = MagicMock()
+    mock_create_session_fn = MagicMock(return_value=mock_session)
+
+    engine = SpecEngine(
+        chat_id="test_chat",
+        root_path="/tmp/test_root",
+        retry_policy=mock_retry_policy,
+        create_session_fn=mock_create_session_fn,
+    )
+
+    # Verify the injected instances are stored
+    assert engine._retry_policy is mock_retry_policy
+    assert engine._create_session_fn is mock_create_session_fn
+
+    # 1. Verify create_session_fn is used
+    # Initialize fake project state to avoid execute setup logic
+    engine._project = SpecProject.create(name="test", root_path="/tmp/test_root")
+    engine._project.requirement = "do something"
+    engine._project.status = SpecProjectStatus.PAUSED
+    engine._run_state = EngineRunState.STOPPING
+
+    # Mock _run_cycle_loop to prevent infinite loops in the test
+    engine._run_cycle_loop = MagicMock(return_value="success")
+
+    engine.resume()
+
+    # create_session_fn should be called during resume
+    mock_create_session_fn.assert_called_once_with(
+        agent_type="coco",
+        cwd="/tmp/test_root",
+        on_rate_limit=None,
+        model_name=None,
+    )
+
+    # 3. Verify retry_policy values are used in run_phase
+    mock_callbacks = MagicMock()
+    # Provide a dummy session that raises to test the retry policy mapping implicitly
+    engine._session = MagicMock()
+    engine._session.send_prompt_with_retry = MagicMock(return_value="dummy_output")
+
+    try:
+        engine._run_phase(
+            cycle_num=1,
+            phase=SpecPhase.SPEC,
+            prompt="test prompt",
+            callbacks=mock_callbacks,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+    # We can check that the retry_delay and backoff_multiplier were read from mock_retry_policy
+    # indirectly if we patch RetryPolicy inside engine._run_phase, but knowing it's stored
+    # and accessed is usually sufficient for DI unit tests.
+
+
+# ---------------------------------------------------------------------------
+# Tests merged from test_spec_gc.py
+# ---------------------------------------------------------------------------
+
+
+@patch("gc.collect")
+def test_spec_engine_no_inline_gc_collect(mock_gc_collect):
+    """SpecEngine.execute should NOT call gc.collect() directly."""
+    fast_settings = MagicMock()
+    fast_settings.spec_max_cycles = 3
+    fast_settings.spec_max_cycles_limit = 3
+    fast_settings.spec_execution_timeout = 30
+    fast_settings.spec_convergence_window = 0
+    fast_settings.spec_min_cycles = 1
+    fast_settings.spec_review_enabled = False
+    fast_settings.spec_discovery_enabled = False
+    fast_settings.spec_disable_convergence = False
+    fast_settings.spec_disable_early_stop = False
+    fast_settings.spec_infinite_mode = False
+    fast_settings.spec_persist_phase_artifacts = False
+    fast_settings.spec_allow_resume_from_disk = False
+    fast_settings.spec_rebuild_session_between_cycles = False
+
+    with patch("src.engine_base.get_settings", return_value=fast_settings):
+        engine = SpecEngine(
+            chat_id="test",
+            root_path="/tmp",
+            agent_type="coco",
+        )
+
+    engine._run_phase = MagicMock(return_value="dummy_prompt")
+    engine._close_session_safely = MagicMock()
+    engine._parse_requirement_to_criteria = MagicMock(return_value=["test criteria"])
+    engine._evaluate_criteria = MagicMock(return_value=True)
+    engine._conduct_review = MagicMock()
+
+    for attr, val in (
+        ("spec_max_cycles", 3),
+        ("spec_max_cycles_limit", 3),
+        ("spec_execution_timeout", 30),
+        ("spec_convergence_window", 0),
+        ("spec_min_cycles", 1),
+        ("spec_review_enabled", False),
+        ("spec_discovery_enabled", False),
+    ):
+        try:
+            setattr(engine.settings, attr, val)
+        except Exception:
+            pass
+
+    with (
+        patch("src.spec_engine.engine.create_engine_session") as mock_create,
+        patch("src.spec_engine.session_utils.get_coco_model_manager") as mock_model_manager,
+    ):
+        mock_create.return_value = MagicMock()
+        mock_model_manager.return_value = MagicMock()
+
+        callbacks = SpecEngineCallbacks()
+        try:
+            engine.execute("test req", callbacks)
+        except Exception:
+            pass
+
+    # gc.collect() should NOT be called inline by SpecEngine anymore
+    mock_gc_collect.assert_not_called()
