@@ -499,6 +499,41 @@ class SlockEngine(BaseEngine):
         """List all registered agents. Delegates to registry."""
         return self._registry.list_agents(channel_id=channel_id)
 
+    def _effective_wake_policy(self, agent: AgentIdentity) -> str:
+        """Resolve effective wake policy for an agent.
+
+        Precedence (highest first): agent.wake_policy > channel.wake_policy >
+        settings.slock_default_wake_policy. Empty/whitespace values fall
+        through to the next layer; the function never returns empty.
+        """
+        agent_pol = (getattr(agent, "wake_policy", "") or "").strip()
+        if agent_pol:
+            return agent_pol
+        if self._channel is not None:
+            ch_pol = (getattr(self._channel, "wake_policy", "") or "").strip()
+            if ch_pol:
+                return ch_pol
+        return (getattr(get_settings(), "slock_default_wake_policy", "smart_judge") or "smart_judge").strip()
+
+    def _apply_wake_policy(self, text: str, agents: list[AgentIdentity]) -> list[AgentIdentity]:
+        """Drop agents whose effective wake policy disqualifies them for ``text``.
+
+        Currently only ``on_mention`` filters: such agents stay candidates only
+        when the text explicitly mentions them. ``smart_judge`` and unknown
+        values pass through unchanged so behavior stays compatible with the
+        legacy router.
+        """
+        if not agents:
+            return agents
+        filtered: list[AgentIdentity] = []
+        for agent in agents:
+            policy = self._effective_wake_policy(agent)
+            if policy == "on_mention":
+                if self._router._extract_mention(text or "", [agent]) is None:
+                    continue
+            filtered.append(agent)
+        return filtered
+
     @property
     def memory(self) -> MemoryManager:
         return self._memory
@@ -740,8 +775,9 @@ class SlockEngine(BaseEngine):
                 self._task_queue.enqueue(task)
             return
 
-        # Find idle agent via router
-        routing_result = self._router.route_message_with_fallback(task.text, agents)
+        # Find idle agent via router (after wake-policy filtering)
+        candidates = self._apply_wake_policy(task.text, agents)
+        routing_result = self._router.route_message_with_fallback(task.text, candidates)
 
         from .task_router import RoutingStatus
         if routing_result.status == RoutingStatus.ASSIGNED and routing_result.agent:
@@ -1651,7 +1687,8 @@ class SlockEngine(BaseEngine):
 
             # Route message to agent with fallback semantics
             from .task_router import RoutingStatus
-            routing_result = self._router.route_message_with_fallback(message, agents)
+            candidates = self._apply_wake_policy(message, agents)
+            routing_result = self._router.route_message_with_fallback(message, candidates)
 
             if routing_result.status == RoutingStatus.ASSIGNED and routing_result.agent:
                 target_agent = routing_result.agent
@@ -2149,6 +2186,52 @@ class SlockEngine(BaseEngine):
                 )
         return routed
 
+    def _render_team_roster(self, current: AgentIdentity) -> str:
+        """Render a teammate roster section for inclusion in the agent prompt.
+
+        The roster lists every other agent in the same channel using *only*
+        fields the user supplied via the registry (name, role, personality
+        traits). The function does not embed any built-in role taxonomy —
+        an empty registry yields an empty string, and a renamed role is
+        reflected verbatim. Returns "" when the feature is disabled, the
+        cap is 0, or no other teammates exist.
+        """
+        settings = get_settings()
+        if not getattr(settings, "slock_inject_team_roster", True):
+            return ""
+        cap = int(getattr(settings, "slock_team_roster_max_entries", 20) or 0)
+        if cap <= 0:
+            return ""
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        try:
+            peers = self._registry.list_agents(channel_id=channel_id)
+        except Exception:
+            logger.debug("Team roster: list_agents failed", exc_info=True)
+            return ""
+        # Drop self; preserve registry order so the user controls listing.
+        peers = [p for p in peers if p.agent_id != current.agent_id]
+        if not peers:
+            return ""
+        peers = peers[:cap]
+        lines: list[str] = []
+        for peer in peers:
+            name = (peer.name or peer.agent_id).strip()
+            extras: list[str] = []
+            role = (peer.role or "").strip()
+            if role and role.lower() != "custom":
+                extras.append(role)
+            traits = [t.strip() for t in (peer.personality_traits or []) if t and t.strip()]
+            if traits:
+                extras.append(", ".join(traits))
+            suffix = f" — {' · '.join(extras)}" if extras else ""
+            lines.append(f"- @{name}{suffix}")
+        header = (
+            "\n# Teammates in This Channel\n"
+            "Other agents you can address with `@<name>` in this channel. "
+            "Names, roles and traits below are user-defined via the agent registry.\n"
+        )
+        return header + "\n".join(lines)
+
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
         """Build the full prompt for an agent including system prompt and memory."""
         logger.debug(
@@ -2171,6 +2254,14 @@ class SlockEngine(BaseEngine):
                 f"You are ONLY permitted to use the following tools: "
                 f"{', '.join(agent.permissions)}."
             )
+
+        # Teammate roster: dynamically derived from AgentRegistry.
+        # Roster content is *entirely* user-defined — every line comes from the
+        # agent record (name / role / personality_traits) that the user authored
+        # via /role or registry edits. No role taxonomy is hardcoded here.
+        roster_block = self._render_team_roster(agent)
+        if roster_block:
+            parts.append(roster_block)
 
         if memory.role:
             parts.append(f"\n# Your Role\n{memory.role}")
@@ -2709,6 +2800,7 @@ class SlockEngine(BaseEngine):
         for task in pending[:limit]:
             # Route task content to best available agent (not already assigned)
             available = [a for a in agents if a.agent_id not in assigned_agents]
+            available = self._apply_wake_policy(task.content, available)
             target = self._router.route_message(task.content, available)
             if not target:
                 continue  # no idle agent available for this task

@@ -18,6 +18,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 from .models import AgentIdentity, AgentStatus, SkillProfile
+from .agent_registry import _normalize_at_token
 from .task_classifier import TaskClassifier
 
 if TYPE_CHECKING:
@@ -565,17 +566,26 @@ class TaskRouter:
         return len(stale)
 
     def _extract_mention(self, text: str, agents: list[AgentIdentity]) -> Optional[AgentIdentity]:
-        """Extract @mention and match to an agent."""
+        """Extract @mention and match to an agent.
+
+        Resolution order: ``<at>...</at>`` markup inner text, then plain
+        ``@token`` matches. Each candidate is normalized via
+        ``_normalize_at_token`` and compared against agent.name and agent_id,
+        keeping in sync with ``AgentRegistry.find_by_at_token``.
+        """
         matches = self._FEISHU_MENTION_PATTERN.findall(text)
         matches.extend(self._MENTION_PATTERN.findall(text))
         if not matches:
             return None
 
         for mention in matches:
-            mention_lower = re.sub(r"\s+", " ", mention).strip().lower()
+            normalized = _normalize_at_token(mention)
+            if not normalized:
+                continue
             for agent in agents:
-                agent_name = re.sub(r"\s+", " ", agent.name).strip().lower()
-                if agent_name == mention_lower:
+                if _normalize_at_token(agent.name) == normalized:
+                    return agent
+                if agent.agent_id.lower() == normalized:
                     return agent
         return None
 

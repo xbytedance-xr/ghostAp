@@ -48,6 +48,43 @@ class TestAgentRegistry:
         assert found is not None
         assert found.agent_id == "a2"
 
+    def test_find_by_at_token_matches_name_with_prefix_and_whitespace(self, tmp_path):
+        reg = AgentRegistry(base_path=str(tmp_path))
+        reg.register(self._make_agent(agent_id="a1", name="关羽", owner_group="g1"))
+        # Bare token, leading '@', surrounding whitespace, mixed case all collapse
+        assert reg.find_by_at_token("关羽").agent_id == "a1"
+        assert reg.find_by_at_token("@关羽").agent_id == "a1"
+        assert reg.find_by_at_token("  @关羽  ").agent_id == "a1"
+
+    def test_find_by_at_token_falls_back_to_agent_id(self, tmp_path):
+        reg = AgentRegistry(base_path=str(tmp_path))
+        reg.register(self._make_agent(agent_id="zhang-fei", name="张飞", owner_group="g1"))
+        assert reg.find_by_at_token("zhang-fei").agent_id == "zhang-fei"
+        assert reg.find_by_at_token("ZHANG-FEI").agent_id == "zhang-fei"
+
+    def test_find_by_at_token_respects_channel_scope(self, tmp_path):
+        reg = AgentRegistry(base_path=str(tmp_path))
+        reg.register(self._make_agent(agent_id="a1", name="赵云", owner_group="g1"))
+        reg.register(self._make_agent(agent_id="a2", name="赵云", owner_group="g2"))
+        assert reg.find_by_at_token("赵云", channel_id="g2").agent_id == "a2"
+        assert reg.find_by_at_token("赵云", channel_id="g3") is None
+
+    def test_find_by_at_token_returns_none_for_empty_or_unknown(self, tmp_path):
+        reg = AgentRegistry(base_path=str(tmp_path))
+        reg.register(self._make_agent(agent_id="a1", name="Alice"))
+        assert reg.find_by_at_token("") is None
+        assert reg.find_by_at_token("   ") is None
+        assert reg.find_by_at_token("@") is None
+        assert reg.find_by_at_token("nobody") is None
+
+    def test_format_at_for_text_uses_name_when_present(self, tmp_path):
+        agent = self._make_agent(agent_id="a1", name="赵云")
+        assert AgentRegistry.format_at_for_text(agent) == "**@赵云**"
+
+    def test_format_at_for_text_falls_back_to_agent_id(self, tmp_path):
+        agent = self._make_agent(agent_id="anon", name="")
+        assert AgentRegistry.format_at_for_text(agent) == "**@anon**"
+
     def test_list_agents_all(self, tmp_path):
         reg = AgentRegistry(base_path=str(tmp_path))
         reg.register(self._make_agent(agent_id="a1", name="One", owner_group="g1"))

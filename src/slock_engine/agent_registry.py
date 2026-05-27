@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass
 from enum import Enum
@@ -18,6 +19,22 @@ from .memory_manager import default_slock_storage_base
 from .models import AgentIdentity
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_at_token(value: str) -> str:
+    """Normalize an at-token candidate for case-insensitive comparison.
+
+    Collapses whitespace, strips a leading '@', and lowercases. Used by both
+    the inbound mention matcher (TaskRouter._extract_mention) and the
+    outbound text renderer so that '@关羽', '@ 关羽 ', '关羽' all map to
+    the same token.
+    """
+    if not value:
+        return ""
+    cleaned = re.sub(r"\s+", " ", value).strip()
+    if cleaned.startswith("@"):
+        cleaned = cleaned[1:].strip()
+    return cleaned.lower()
 
 
 class DuplicateAgentNameError(Exception):
@@ -156,6 +173,41 @@ class AgentRegistry:
                     if channel_id is None or self._belongs_to_channel(agent, channel_id):
                         return agent
             return None
+
+    def find_by_at_token(
+        self, token: str, channel_id: Optional[str] = None
+    ) -> Optional[AgentIdentity]:
+        """Find agent by an at-token (display name, agent_id, or normalized variant).
+
+        Matches against name first, then agent_id. Used by mention extraction so
+        that ``@<name>``, ``<at>`` markup inner text, and explicit agent_id refs
+        all resolve to the same agent. Channel-scoped when channel_id given.
+        """
+        normalized = _normalize_at_token(token)
+        if not normalized:
+            return None
+        with self._lock:
+            self._ensure_loaded()
+            for agent in self._agents.values():
+                if channel_id is not None and not self._belongs_to_channel(agent, channel_id):
+                    continue
+                if _normalize_at_token(agent.name) == normalized:
+                    return agent
+                if agent.agent_id.lower() == normalized:
+                    return agent
+            return None
+
+    @staticmethod
+    def format_at_for_text(agent: AgentIdentity) -> str:
+        """Render an agent reference for inclusion in plain-text messages.
+
+        Slock virtual agents share one Feishu bot identity, so a real Feishu
+        ``<at user_id="ou_xxx">`` markup would not highlight them. We emit a
+        bold ``@name`` instead so the reference is at least visible to humans
+        and round-trippable through ``find_by_at_token``.
+        """
+        name = agent.name or agent.agent_id
+        return f"**@{name}**"
 
     def list_agents(self, channel_id: Optional[str] = None) -> list[AgentIdentity]:
         """List all agents, optionally filtered by channel."""

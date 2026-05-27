@@ -555,6 +555,192 @@ class TestSlockEngine:
         assert "Observed actor complete" in observer_memory.active_context
 
 
+class TestSlockTeamRosterInjection:
+    """Verify _render_team_roster pulls everything from AgentRegistry — no hardcoded role names."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _engine_with_channel(self, mock_create_session, tmp_path, channel_id="ros_ch"):
+        mock_create_session.return_value = None
+        engine = SlockEngine(
+            chat_id=channel_id,
+            root_path="/tmp/test_root",
+            memory_base_path=str(tmp_path),
+        )
+        ch = SlockChannel(channel_id=channel_id, team_name="Roster Team")
+        engine.activate_channel(ch)
+        return engine
+
+    def test_returns_empty_when_no_other_agents(self, tmp_path):
+        engine = self._engine_with_channel(tmp_path=tmp_path)
+        me = AgentIdentity(agent_id="solo", name="Solo", owner_group="ros_ch")
+        engine.registry.register(me)
+        assert engine._render_team_roster(me) == ""
+
+    def test_renders_user_supplied_fields_only(self, tmp_path):
+        engine = self._engine_with_channel(tmp_path=tmp_path)
+        me = AgentIdentity(agent_id="me", name="Me", owner_group="ros_ch")
+        peer1 = AgentIdentity(
+            agent_id="p1",
+            name="Alice",
+            role="planner",  # user-defined, no taxonomy assumption
+            personality_traits=["careful", "concise"],
+            owner_group="ros_ch",
+        )
+        peer2 = AgentIdentity(
+            agent_id="p2",
+            name="Bob",
+            role="custom",  # 'custom' is the AgentIdentity default — should be hidden
+            personality_traits=[],
+            owner_group="ros_ch",
+        )
+        engine.registry.register(me)
+        engine.registry.register(peer1)
+        engine.registry.register(peer2)
+
+        block = engine._render_team_roster(me)
+
+        assert "# Teammates in This Channel" in block
+        assert "@Alice" in block
+        assert "planner" in block
+        assert "careful, concise" in block
+        # 'custom' default role is suppressed; Bob still appears with bare @
+        assert "@Bob" in block
+        assert "custom" not in block.lower()
+        # Roster never mentions self
+        assert "@Me" not in block
+
+    def test_excludes_agents_outside_channel(self, tmp_path):
+        engine = self._engine_with_channel(tmp_path=tmp_path, channel_id="ros_ch_a")
+        me = AgentIdentity(agent_id="me", name="Me", owner_group="ros_ch_a")
+        in_channel = AgentIdentity(agent_id="in", name="InsidePeer", owner_group="ros_ch_a")
+        outsider = AgentIdentity(agent_id="out", name="OutsidePeer", owner_group="ros_ch_b")
+        engine.registry.register(me)
+        engine.registry.register(in_channel)
+        engine.registry.register(outsider)
+
+        block = engine._render_team_roster(me)
+        assert "@InsidePeer" in block
+        assert "@OutsidePeer" not in block
+
+    def test_disabled_via_settings(self, tmp_path, monkeypatch):
+        engine = self._engine_with_channel(tmp_path=tmp_path)
+        me = AgentIdentity(agent_id="me", name="Me", owner_group="ros_ch")
+        peer = AgentIdentity(agent_id="p", name="Peer", owner_group="ros_ch")
+        engine.registry.register(me)
+        engine.registry.register(peer)
+
+        from src.config import get_settings
+        monkeypatch.setattr(get_settings(), "slock_inject_team_roster", False, raising=False)
+
+        assert engine._render_team_roster(me) == ""
+
+    def test_capped_by_max_entries(self, tmp_path, monkeypatch):
+        engine = self._engine_with_channel(tmp_path=tmp_path)
+        me = AgentIdentity(agent_id="me", name="Me", owner_group="ros_ch")
+        engine.registry.register(me)
+        for i in range(5):
+            engine.registry.register(
+                AgentIdentity(agent_id=f"p{i}", name=f"Peer{i}", owner_group="ros_ch")
+            )
+
+        from src.config import get_settings
+        monkeypatch.setattr(get_settings(), "slock_team_roster_max_entries", 2, raising=False)
+
+        block = engine._render_team_roster(me)
+        # Exactly 2 listed peers
+        listed = [line for line in block.splitlines() if line.startswith("- @")]
+        assert len(listed) == 2
+
+    def test_renamed_role_appears_verbatim(self, tmp_path):
+        """User-renamed role must surface unchanged — no normalization to a fixed taxonomy."""
+        engine = self._engine_with_channel(tmp_path=tmp_path)
+        me = AgentIdentity(agent_id="me", name="Me", owner_group="ros_ch")
+        peer = AgentIdentity(
+            agent_id="p",
+            name="Peer",
+            role="灵感缪斯",  # arbitrary user-defined role
+            owner_group="ros_ch",
+        )
+        engine.registry.register(me)
+        engine.registry.register(peer)
+
+        block = engine._render_team_roster(me)
+        assert "灵感缪斯" in block
+
+
+class TestSlockWakePolicyOverride:
+    """Verify 3-tier wake policy: Agent > Channel > Settings default."""
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    def _engine(self, mock_create_session, tmp_path, channel_id="wp_ch"):
+        mock_create_session.return_value = None
+        engine = SlockEngine(
+            chat_id=channel_id,
+            root_path="/tmp/test_root",
+            memory_base_path=str(tmp_path),
+        )
+        ch = SlockChannel(channel_id=channel_id, team_name="WP")
+        engine.activate_channel(ch)
+        return engine
+
+    def test_default_is_smart_judge(self, tmp_path):
+        engine = self._engine(tmp_path=tmp_path)
+        agent = AgentIdentity(agent_id="a", name="A", owner_group="wp_ch")
+        engine.registry.register(agent)
+        assert engine._effective_wake_policy(agent) == "smart_judge"
+
+    def test_agent_override_takes_priority(self, tmp_path):
+        engine = self._engine(tmp_path=tmp_path)
+        # Channel says smart_judge, agent says on_mention — agent wins
+        engine._channel.wake_policy = "smart_judge"
+        agent = AgentIdentity(agent_id="a", name="A", owner_group="wp_ch", wake_policy="on_mention")
+        engine.registry.register(agent)
+        assert engine._effective_wake_policy(agent) == "on_mention"
+
+    def test_channel_override_used_when_agent_empty(self, tmp_path):
+        engine = self._engine(tmp_path=tmp_path)
+        engine._channel.wake_policy = "on_mention"
+        agent = AgentIdentity(agent_id="a", name="A", owner_group="wp_ch", wake_policy="")
+        engine.registry.register(agent)
+        assert engine._effective_wake_policy(agent) == "on_mention"
+
+    def test_on_mention_excludes_non_mentioned_agent(self, tmp_path):
+        engine = self._engine(tmp_path=tmp_path)
+        a1 = AgentIdentity(agent_id="a1", name="Alpha", owner_group="wp_ch", wake_policy="on_mention")
+        a2 = AgentIdentity(agent_id="a2", name="Beta", owner_group="wp_ch", wake_policy="smart_judge")
+        engine.registry.register(a1)
+        engine.registry.register(a2)
+
+        # Text mentions only Beta — Alpha filtered out
+        candidates = engine._apply_wake_policy("@Beta do something", [a1, a2])
+        assert a2 in candidates
+        assert a1 not in candidates
+
+    def test_on_mention_passes_when_mentioned(self, tmp_path):
+        engine = self._engine(tmp_path=tmp_path)
+        agent = AgentIdentity(agent_id="a", name="Alpha", owner_group="wp_ch", wake_policy="on_mention")
+        engine.registry.register(agent)
+
+        candidates = engine._apply_wake_policy("@Alpha help me", [agent])
+        assert agent in candidates
+
+    def test_smart_judge_passes_unconditionally(self, tmp_path):
+        engine = self._engine(tmp_path=tmp_path)
+        agent = AgentIdentity(agent_id="a", name="Alpha", owner_group="wp_ch", wake_policy="smart_judge")
+        engine.registry.register(agent)
+
+        candidates = engine._apply_wake_policy("no mention here", [agent])
+        assert agent in candidates
+
+    def test_serialization_roundtrip(self):
+        """wake_policy survives to_dict / from_dict for both Agent and Channel."""
+        a = AgentIdentity(agent_id="x", name="X", wake_policy="on_mention")
+        assert AgentIdentity.from_dict(a.to_dict()).wake_policy == "on_mention"
+
+        ch = SlockChannel(channel_id="c", wake_policy="on_mention")
+        assert SlockChannel.from_dict(ch.to_dict()).wake_policy == "on_mention"
+
+
 class TestSlockAgentRegistryCrossTeam:
     def test_same_agent_id_can_join_multiple_groups_without_losing_original_team(self, tmp_path):
         """Agent identity follows the agent across teams while membership includes both groups."""

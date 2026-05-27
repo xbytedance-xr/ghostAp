@@ -229,6 +229,11 @@ class AgentIdentity:
     member_groups: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     personality_traits: list[str] = field(default_factory=list)  # e.g. ['严谨', '注重细节']
+    # Wake policy: "" (inherit channel/settings default) | "on_mention" | "smart_judge".
+    # Free-form to leave room for future modes; the router treats unknown values
+    # as the safe default (smart_judge) and only short-circuits on the exact
+    # token "on_mention".
+    wake_policy: str = ""
 
     def __post_init__(self) -> None:
         # Sanitize agent_id to prevent path traversal; dots are allowed (e.g. model versions like v3.5)
@@ -263,6 +268,7 @@ class AgentIdentity:
             "member_groups": self.member_groups,
             "created_at": self.created_at,
             "personality_traits": self.personality_traits,
+            "wake_policy": self.wake_policy,
         }
 
     @classmethod
@@ -283,6 +289,7 @@ class AgentIdentity:
             member_groups=data.get("member_groups", []),
             created_at=data.get("created_at", time.time()),
             personality_traits=data.get("personality_traits", []),
+            wake_policy=data.get("wake_policy", ""),
         )
 
 
@@ -395,6 +402,9 @@ class SlockChannel:
     owner_id: str = ""  # User who created this team (for permission checks)
     created_at: float = field(default_factory=time.time)
     bootstrap_failed: bool = False
+    # Channel-level wake policy override: "" inherits settings default. Effective
+    # wake policy precedence is Agent > Channel > Settings.
+    wake_policy: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -406,6 +416,7 @@ class SlockChannel:
             "owner_id": self.owner_id,
             "created_at": self.created_at,
             "bootstrap_failed": self.bootstrap_failed,
+            "wake_policy": self.wake_policy,
         }
 
     @classmethod
@@ -419,6 +430,7 @@ class SlockChannel:
             owner_id=data.get("owner_id", ""),
             created_at=data.get("created_at", time.time()),
             bootstrap_failed=data.get("bootstrap_failed", False),
+            wake_policy=data.get("wake_policy", ""),
         )
 
 
