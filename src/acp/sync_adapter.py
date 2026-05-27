@@ -784,6 +784,46 @@ def _resolve_with_auto_update(command: str) -> bool:
     return False
 
 
+def _resolve_tui2acp_adapters_dir() -> Optional[str]:
+    """Locate tui2acp's bundled adapter YAML directory.
+
+    The built-in declarative adapter registry inside tui2acp ships incomplete
+    configs (missing `states`) that crash at construction time for adapters
+    like pi-coding-agent / aichat / sgpt / open-interpreter. The package's
+    `adapters/` directory contains complete YAML configs; we point tui2acp at
+    them via `--adapters-dir` to override the broken built-ins.
+    """
+    import os
+    import shutil
+
+    # 1. Resolve via the tui2acp executable's npm install location.
+    bin_path = shutil.which("tui2acp")
+    if bin_path:
+        try:
+            real = os.path.realpath(bin_path)
+            # Typical layouts:
+            #   <prefix>/lib/node_modules/tui2acp/dist/cli.js (real)
+            #   <prefix>/lib/node_modules/tui2acp/adapters/  (target)
+            pkg_root = os.path.dirname(os.path.dirname(real))
+            candidate = os.path.join(pkg_root, "adapters")
+            if os.path.isdir(candidate):
+                return candidate
+        except Exception:
+            logger.debug("tui2acp adapters-dir resolve via realpath failed", exc_info=True)
+
+    # 2. Fallback: probe common npm-global install locations.
+    home = os.path.expanduser("~")
+    for prefix in (
+        os.path.join(home, ".npm-global"),
+        "/opt/homebrew",
+        "/usr/local",
+    ):
+        candidate = os.path.join(prefix, "lib", "node_modules", "tui2acp", "adapters")
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
 def resolve_agent_spec(
     agent_type: str, model_name: Optional[str] = None, *, ttadk_use_pty: bool = False
 ) -> tuple[str, list[str]]:
@@ -887,7 +927,14 @@ def resolve_agent_spec(
 
     if agent_type.startswith("tui2acp_"):
         adapter_name = agent_type[len("tui2acp_"):]
-        return "tui2acp", ["--adapter", adapter_name, "--unsafe"]
+        args = ["--adapter", adapter_name, "--unsafe"]
+        # tui2acp's built-in declarative adapter registry has incomplete
+        # configs (missing `states`) that crash on construction. Force loading
+        # the bundled adapter YAML files so adapter configs are complete.
+        adapters_dir = _resolve_tui2acp_adapters_dir()
+        if adapters_dir:
+            args.extend(["--adapters-dir", adapters_dir])
+        return "tui2acp", args
 
     # Delegate to ToolRegistry for registered tools, or fallback.
     # NOTE: this also triggers a best-effort async preheat so that common
