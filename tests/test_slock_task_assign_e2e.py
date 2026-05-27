@@ -1,8 +1,4 @@
-"""Tests for /task assign end-to-end flow (AC-06).
-
-Validates that /task assign creates a task, routes it to the specified agent,
-and the agent claims it with status changing to IN_PROGRESS.
-"""
+"""Tests for task assignment compatibility boundaries."""
 
 from __future__ import annotations
 
@@ -12,7 +8,7 @@ from src.slock_engine.models import AgentIdentity, SlockTask, TaskStatus
 
 
 class TestSlockTaskAssign:
-    """Test /task assign command flow."""
+    """Test deprecated /task assign command flow."""
 
     def _make_handler(self):
         """Create a SlockHandler with mocked context."""
@@ -69,22 +65,22 @@ class TestSlockTaskAssign:
         return engine, agent
 
     def test_task_assign_creates_and_claims(self):
-        """AC-06: /task assign creates task and agent claims it."""
+        """/task assign is deprecated and no longer creates tasks directly."""
         handler = self._make_handler()
-        engine, agent = self._make_engine_with_agent("Coder-A")
+        handler.show_slock_help = MagicMock()
+        engine, _agent = self._make_engine_with_agent("Coder-A")
         handler.ctx.slock_engine_manager.get_activated_engine = MagicMock(return_value=engine)
 
-        # Simulate /task assign command
         handler.handle_slock_command("msg-001", "chat-001", "/task assign Fix login bug Coder-A", None)
 
-        # Task should be created
-        engine.add_task.assert_called_once()
-        # Agent should be found
-        engine.registry.find_by_name.assert_called()
+        engine.add_task.assert_not_called()
+        engine.registry.find_by_name.assert_not_called()
+        handler.show_slock_help.assert_called_once_with("msg-001")
 
     def test_task_assign_unknown_role_feedback(self):
-        """Assigning to unknown role gives error feedback."""
+        """/task assign with an unknown role falls back to help, not legacy assignment."""
         handler = self._make_handler()
+        handler.show_slock_help = MagicMock()
         engine = MagicMock()
         engine.is_active = True
         engine.channel = MagicMock()
@@ -102,8 +98,8 @@ class TestSlockTaskAssign:
 
         handler.handle_slock_command("msg-001", "chat-001", "/task assign Fix bug UnknownAgent", None)
 
-        # Should provide feedback about unknown agent
-        assert handler.reply_text.called or handler.send_text_to_chat.called
+        engine.add_task.assert_not_called()
+        handler.show_slock_help.assert_called_once_with("msg-001")
 
     def test_task_status_changes_to_in_progress(self):
         """Task status should be IN_PROGRESS after successful claim."""

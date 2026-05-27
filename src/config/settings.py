@@ -670,6 +670,15 @@ class Settings(BaseSettings):
             raise ValueError(f"slock_auto_activate_default_policy 必须是 {valid} 之一，当前值: {v!r}")
         return v
 
+    @field_validator("slock_default_wake_policy", mode="before")
+    @classmethod
+    def _validate_default_wake_policy(cls, v: str) -> str:
+        normalized = (v or "smart_judge").strip().lower().replace("-", "_")
+        valid = {"on_mention", "smart_judge"}
+        if normalized not in valid:
+            raise ValueError(f"slock_default_wake_policy 必须是 {valid} 之一，当前值: {v!r}")
+        return normalized
+
     @field_validator("slock_default_roles")
     @classmethod
     def _validate_default_roles(cls, v: str) -> str:

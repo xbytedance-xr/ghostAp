@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from pydantic import ValidationError
 
 
 class TestSlockDefaultRolesDefaultValue:
@@ -62,3 +63,21 @@ class TestSlockDefaultRolesWarningLog:
             f"Expected no WARNING log when SLOCK_DEFAULT_ROLES is set. "
             f"Records: {[r.message for r in caplog.records]}"
         )
+
+
+class TestSlockWakePolicyConfig:
+    def test_default_wake_policy_accepts_and_normalizes_alias(self, monkeypatch):
+        monkeypatch.delenv("SLOCK_DEFAULT_ROLES", raising=False)
+
+        from src.config.settings import Settings
+
+        s = Settings(slock_default_wake_policy=" ON-MENTION ", _env_file=None)
+        assert s.slock_default_wake_policy == "on_mention"
+
+    def test_default_wake_policy_rejects_unknown_value(self, monkeypatch):
+        monkeypatch.delenv("SLOCK_DEFAULT_ROLES", raising=False)
+
+        from src.config.settings import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(slock_default_wake_policy="mention-only", _env_file=None)

@@ -142,6 +142,48 @@ class TestTimeoutDetection:
             engine._card_send_fn.assert_not_called()
             mock_executor.submit.assert_called_once()
 
+    def test_dispatch_uses_active_channel_scope_for_agents(self):
+        """Queued tasks must only route to agents in the active Slock channel."""
+        from src.slock_engine.engine import SlockEngine
+        from src.slock_engine.task_router import RoutingStatus
+
+        with patch.object(SlockEngine, "__init__", lambda self, *a, **kw: None):
+            engine = SlockEngine.__new__(SlockEngine)
+            engine._channel = MagicMock()
+            engine._channel.channel_id = "chat_active"
+            engine._card_send_fn = MagicMock()
+            engine._router = MagicMock()
+            engine._task_queue = TaskQueue(max_size=8)
+            from src.utils.lock_order import LockLevel, ordered_rlock
+            engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
+
+            active_agent = MagicMock()
+            active_agent.agent_id = "agent-active"
+            routing_result = MagicMock()
+            routing_result.status = RoutingStatus.ASSIGNED
+            routing_result.agent = active_agent
+            engine._router.route_message_with_fallback.return_value = routing_result
+            engine.list_agents = MagicMock(return_value=[active_agent])
+            engine._apply_wake_policy = MagicMock(return_value=[active_agent])
+            engine._get_executor = MagicMock()
+            engine._get_executor.return_value = MagicMock()
+
+            task = QueuedTask(
+                task_id="t-channel",
+                text="fix channel scoped bug",
+                chat_id="chat_active",
+                message_id="msg",
+                enqueue_time=time.time(),
+                callbacks=MagicMock(),
+            )
+
+            mock_settings = MagicMock()
+            mock_settings.slock_queue_wait_timeout = 60
+            with patch("src.slock_engine.engine.get_settings", return_value=mock_settings):
+                engine._dispatch_single_task(task)
+
+            engine.list_agents.assert_called_once_with(channel_id="chat_active")
+
 
 # ============================================================
 # Queue wait card (enqueue path)

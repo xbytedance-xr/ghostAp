@@ -499,6 +499,11 @@ class SlockEngine(BaseEngine):
         """List all registered agents. Delegates to registry."""
         return self._registry.list_agents(channel_id=channel_id)
 
+    @staticmethod
+    def _normalize_wake_policy(policy: str) -> str:
+        normalized = (policy or "").strip().lower().replace("-", "_")
+        return normalized
+
     def _effective_wake_policy(self, agent: AgentIdentity) -> str:
         """Resolve effective wake policy for an agent.
 
@@ -506,14 +511,16 @@ class SlockEngine(BaseEngine):
         settings.slock_default_wake_policy. Empty/whitespace values fall
         through to the next layer; the function never returns empty.
         """
-        agent_pol = (getattr(agent, "wake_policy", "") or "").strip()
+        agent_pol = self._normalize_wake_policy(getattr(agent, "wake_policy", "") or "")
         if agent_pol:
             return agent_pol
         if self._channel is not None:
-            ch_pol = (getattr(self._channel, "wake_policy", "") or "").strip()
+            ch_pol = self._normalize_wake_policy(getattr(self._channel, "wake_policy", "") or "")
             if ch_pol:
                 return ch_pol
-        return (getattr(get_settings(), "slock_default_wake_policy", "smart_judge") or "smart_judge").strip()
+        return self._normalize_wake_policy(
+            getattr(get_settings(), "slock_default_wake_policy", "smart_judge") or "smart_judge"
+        )
 
     def _apply_wake_policy(self, text: str, agents: list[AgentIdentity]) -> list[AgentIdentity]:
         """Drop agents whose effective wake policy disqualifies them for ``text``.
@@ -765,7 +772,7 @@ class SlockEngine(BaseEngine):
             self._send_timeout_card(task, waited)
             return
 
-        agents = self.list_agents()
+        agents = self.list_agents(channel_id=channel_snapshot.channel_id)
         if not agents:
             # No agents registered yet — re-enqueue with non-blocking backoff
             task.retry_count += 1
@@ -2165,16 +2172,15 @@ class SlockEngine(BaseEngine):
 
         Returns list of agent_ids that were successfully notified.
         """
-        import re
-        mention_pattern = re.compile(r"@(\w+)")
+        mention_pattern = re.compile(r"@([A-Za-z0-9_.:\-\u4e00-\u9fff]+)", re.UNICODE)
         mentions = mention_pattern.findall(content)
         if not mentions:
             return []
 
         routed: list[str] = []
         channel_id = self._channel.channel_id if self._channel else None
-        for name in mentions:
-            agent = self._registry.find_by_name(name, channel_id=channel_id)
+        for token in mentions:
+            agent = self._registry.find_by_at_token(token, channel_id=channel_id)
             if agent and agent.agent_id != source_agent_id:
                 # Update the mentioned agent's context with the mention
                 mention_context = f"[@mention from {source_agent_id}] {content[:200]}"
@@ -2185,6 +2191,17 @@ class SlockEngine(BaseEngine):
                     source_agent_id, agent.agent_id,
                 )
         return routed
+
+    @staticmethod
+    def _sanitize_roster_field(value: str, *, max_len: int = 80) -> str:
+        """Keep user-authored roster metadata as a bounded single-line data field."""
+        cleaned = re.sub(r"\s+", " ", value or "").strip()
+        cleaned = cleaned.replace("`", "'")
+        cleaned = re.sub(r"^[#>\-*+\s]+", "", cleaned)
+        cleaned = re.sub(r"\s+[#>]+\s*", " ", cleaned)
+        if len(cleaned) > max_len:
+            cleaned = f"{cleaned[: max_len - 1].rstrip()}…"
+        return cleaned
 
     def _render_team_roster(self, current: AgentIdentity) -> str:
         """Render a teammate roster section for inclusion in the agent prompt.
@@ -2215,12 +2232,19 @@ class SlockEngine(BaseEngine):
         peers = peers[:cap]
         lines: list[str] = []
         for peer in peers:
-            name = (peer.name or peer.agent_id).strip()
+            name = self._sanitize_roster_field(peer.name or peer.agent_id, max_len=48)
+            if not name:
+                name = peer.agent_id
             extras: list[str] = []
-            role = (peer.role or "").strip()
+            role = self._sanitize_roster_field(peer.role or "", max_len=48)
             if role and role.lower() != "custom":
                 extras.append(role)
-            traits = [t.strip() for t in (peer.personality_traits or []) if t and t.strip()]
+            traits = [
+                self._sanitize_roster_field(t, max_len=48)
+                for t in (peer.personality_traits or [])
+                if t and t.strip()
+            ]
+            traits = [t for t in traits if t]
             if traits:
                 extras.append(", ".join(traits))
             suffix = f" — {' · '.join(extras)}" if extras else ""

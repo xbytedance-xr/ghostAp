@@ -372,18 +372,18 @@ def _parse_task_subcommand(args: str) -> SlockCommand:
 
     sub = args.split(None, 1)
     subcmd = sub[0].lower()
-    sub_args = sub[1].strip() if len(sub) > 1 else ""
 
     if subcmd == "list":
         return SlockCommand(action=SlockCommandAction.TASK_LIST)
     elif subcmd == "status":
         return SlockCommand(action=SlockCommandAction.TASK_STATUS)
     elif subcmd == "assign":
-        content, role = _parse_assign_args(sub_args)
         return SlockCommand(
-            action=SlockCommandAction.TASK_ASSIGN,
-            args=content,
-            target=role,
+            action=SlockCommandAction.UNKNOWN,
+            args=(
+                "/task assign is deprecated; send the task text directly in the "
+                "Slock group so the dispatcher can route it automatically."
+            ),
         )
     else:
         return SlockCommand(action=SlockCommandAction.TASK_LIST)

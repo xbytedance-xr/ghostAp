@@ -691,51 +691,46 @@ class TestTaskAssignQuotedParsing:
     """Test _parse_assign_args and /task assign with quoted multi-word arguments."""
 
     def test_both_quoted(self):
-        """'\"multi word task\" \"Role Name\"' parses correctly."""
+        """/task assign is deprecated even for quoted arguments."""
         from src.slock_engine.slash_commands import parse_slock_command
         cmd = parse_slock_command('/task assign "multi word task" "Role Name"')
-        assert cmd.action.value == "task_assign"
-        assert cmd.args == "multi word task"
-        assert cmd.target == "Role Name"
+        assert cmd.action.value == "unknown"
+        assert "deprecated" in cmd.args.lower()
 
     def test_quoted_task_unquoted_role(self):
-        """'\"multi word task\" role' parses correctly."""
+        """/task assign is deprecated for quoted task and role input."""
         from src.slock_engine.slash_commands import parse_slock_command
         cmd = parse_slock_command('/task assign "build the feature" coder')
-        assert cmd.action.value == "task_assign"
-        assert cmd.args == "build the feature"
-        assert cmd.target == "coder"
+        assert cmd.action.value == "unknown"
+        assert "deprecated" in cmd.args.lower()
 
     def test_simple_two_words(self):
-        """'simple_task role' parses correctly."""
+        """/task assign simple input is deprecated."""
         from src.slock_engine.slash_commands import parse_slock_command
         cmd = parse_slock_command("/task assign fix_bug reviewer")
-        assert cmd.action.value == "task_assign"
-        assert cmd.args == "fix_bug"
-        assert cmd.target == "reviewer"
+        assert cmd.action.value == "unknown"
+        assert "deprecated" in cmd.args.lower()
 
     def test_multi_word_unquoted_last_is_role(self):
-        """'simple task description role' — last word is role, rest is content."""
+        """/task assign no longer parses target role from the final word."""
         from src.slock_engine.slash_commands import parse_slock_command
         cmd = parse_slock_command("/task assign fix the login bug coder")
-        assert cmd.action.value == "task_assign"
-        assert cmd.target == "coder"
-        assert "fix" in cmd.args
-        assert "login" in cmd.args
+        assert cmd.action.value == "unknown"
+        assert "deprecated" in cmd.args.lower()
 
     def test_single_word_no_role(self):
-        """Single word after assign becomes args with no target."""
+        """/task assign single-word input is deprecated."""
         from src.slock_engine.slash_commands import parse_slock_command
         cmd = parse_slock_command("/task assign cleanup")
-        assert cmd.action.value == "task_assign"
-        assert cmd.args == "cleanup"
-        assert cmd.target == ""
+        assert cmd.action.value == "unknown"
+        assert "deprecated" in cmd.args.lower()
 
     def test_empty_assign(self):
-        """Empty assign returns task_assign with empty args."""
+        """Empty /task assign is deprecated."""
         from src.slock_engine.slash_commands import parse_slock_command
         cmd = parse_slock_command("/task assign")
-        assert cmd.action.value == "task_assign"
+        assert cmd.action.value == "unknown"
+        assert "deprecated" in cmd.args.lower()
 
     def test_parse_assign_args_directly(self):
         """Direct unit test of _parse_assign_args helper."""
