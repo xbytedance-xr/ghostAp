@@ -6,6 +6,7 @@ and that exceptions are properly propagated (not swallowed).
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import patch
 
 from src.slock_engine.engine import SlockEngine
@@ -82,6 +83,22 @@ class TestAgentStatusReset:
         # Status should still be reset even though exception was caught
         final_status = engine.get_agent_status(agent.agent_id)
         assert final_status == AgentStatus.IDLE
+        engine.cleanup()
+
+    def test_acp_failure_escalation_does_not_double_idle_transition(self, tmp_path, caplog):
+        """ACP failures should escalate from RUNNING to IDLE once, without idle->idle noise."""
+        engine = self._make_engine(tmp_path)
+        ch = SlockChannel(channel_id="ch_escalate", name="Esc", team_name="EscTeam")
+        engine.activate_channel(ch)
+        agent = AgentIdentity(agent_id="agent-escalate", name="EscBot", agent_type="coco")
+
+        caplog.set_level(logging.WARNING, logger="src.slock_engine.engine")
+        with patch.object(engine, "_run_acp_session", side_effect=RuntimeError("boom")):
+            result = engine._execute_agent(agent, "fail and escalate", None)
+
+        assert result is None
+        assert engine.get_agent_status(agent.agent_id) == AgentStatus.IDLE
+        assert "Invalid agent transition: idle -> idle" not in caplog.text
         engine.cleanup()
 
     def test_normal_execution_path_status_transitions(self, tmp_path):

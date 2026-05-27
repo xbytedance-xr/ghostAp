@@ -645,6 +645,7 @@
 - **Shell 空黑名单默认** - 白名单改黑名单 + 默认放行远程 Shell → [2026-05-26.md](2026-05-26.md)
 
 ## 2026-05-27
+- **Slock ACP 过滤修复** - Claude Slock 走 ACP tool filter + callback 实际拦截 + 失败升级去重 → [2026-05-27.md](2026-05-27.md)
 - **Slock 日志错误修复** - slash 命令不被动激活 + 合法 column_set 卡片 + escalation 兜底 → [2026-05-27.md](2026-05-27.md)
 - **tui2acp PTY 降级** - node-pty posix_spawnp 失败时启用 Python PTY fallback，不改官方 ACP → [2026-05-27.md](2026-05-27.md)
 

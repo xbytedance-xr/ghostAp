@@ -132,6 +132,7 @@ def create_engine_session(
     *,
     thread_id: Optional[str] = None,
     auto_approve: bool = False,
+    require_tool_filter: bool = False,
 ) -> SyncSession:
     """Create and start a session for Deep/Spec/Slock engines.
 
@@ -145,6 +146,7 @@ def create_engine_session(
     Keyword args:
         thread_id: Optional isolation key for concurrent sessions (e.g. slock agents).
         auto_approve: If True, suppress interactive confirmation prompts (slock mode).
+        require_tool_filter: If True, choose a backend that exposes set_tool_filter.
     """
     from ..acp.sync_adapter import start_session_with_retry
     from ..coco_model import get_coco_model_manager
@@ -186,7 +188,7 @@ def create_engine_session(
             model_name,
         )
 
-    if agent_type == "claude":
+    if agent_type == "claude" and not require_tool_filter:
         session: SyncSession = SyncClaudeCLISession(cwd=cwd)
         session.start()
     elif agent_type.startswith("ttadk_"):
@@ -218,7 +220,7 @@ def create_engine_session(
             raise
     else:
         effective_model = model_name
-        if not effective_model:
+        if not effective_model and agent_type in ("coco", ""):
             effective_model = get_coco_model_manager().get_current_model()
 
         session = start_session_with_retry(

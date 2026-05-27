@@ -1661,6 +1661,8 @@ class SyncACPSession:
         This is stored locally and checked by the engine before tool execution.
         """
         self._tool_filter = filter_fn
+        if self._acp_session is not None:
+            self._acp_session.set_tool_filter(filter_fn)
 
     def get_tool_filter(self) -> "Optional[Callable[[str, dict | None], bool]]":
         """Return the currently installed tool filter, or None."""

@@ -130,6 +130,8 @@ class ACPSession:
             agent_type=agent_cmd,
             cwd=cwd,
         )
+        self._client: Optional[GhostAPClient] = None
+        self._tool_filter: Optional[Callable[[str, dict | None], bool]] = None
         self._event_handler: Optional[Callable[[ACPEvent], None]] = None
         self._handler_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
@@ -149,6 +151,9 @@ class ACPSession:
             auto_approve=settings.acp_permission_auto_approve,
             root_dir=self._cwd,
         )
+        self._client = client
+        if self._tool_filter is not None:
+            client.set_tool_filter(self._tool_filter)
         # Raise the stdio stream buffer limit to handle large agent responses.
         # Default asyncio limit (64KB) causes "Separator is found, but chunk is
         # longer than limit" on verbose JSON-RPC messages from long-running tasks.
@@ -225,6 +230,16 @@ class ACPSession:
                 fail_phase=phase or "unknown",
                 cause=e,
             ) from e
+
+    def set_tool_filter(self, filter_fn: Optional[Callable[[str, dict | None], bool]]) -> None:
+        """Install a per-session tool filter on the local ACP client callbacks."""
+        self._tool_filter = filter_fn
+        if self._client is not None:
+            self._client.set_tool_filter(filter_fn)
+
+    def get_tool_filter(self) -> Optional[Callable[[str, dict | None], bool]]:
+        """Return the currently installed ACP callback tool filter."""
+        return self._tool_filter
 
     async def load_session(self, session_id: str) -> None:
         """Load an existing session by ID (for resume)."""

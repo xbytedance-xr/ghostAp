@@ -42,7 +42,7 @@ try:
 except ImportError:
     from acp.schema import KillTerminalResponse as KillTerminalCommandResponse
 
-from ..sandbox.executor import SandboxExecutor
+from ..sandbox.executor import DangerousPatternCheckStrategy, SandboxExecutor
 from ..utils.errors import get_error_detail
 from .models import (
     ACPEvent,
@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 # Default fallback; prefer Settings.acp_max_file_chars at runtime.
 _MAX_FILE_CHARS = 200_000
+_ACP_PERMISSION_DANGEROUS_CHECK = DangerousPatternCheckStrategy()
 
 
 def _get_max_file_chars() -> int:
@@ -406,6 +407,25 @@ class GhostAPClient(Client):
         self._terminals: dict[str, _TerminalRecord] = {}
         self._terminals_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._history = history_store or ACPHistoryStore()
+        self._tool_filter: Optional[Callable[[str, dict | None], bool]] = None
+
+    def set_tool_filter(self, filter_fn: Optional[Callable[[str, dict | None], bool]]) -> None:
+        """Install or clear a per-session tool filter."""
+        self._tool_filter = filter_fn
+
+    def get_tool_filter(self) -> Optional[Callable[[str, dict | None], bool]]:
+        """Return the current per-session tool filter, if any."""
+        return self._tool_filter
+
+    def _is_tool_allowed(self, tool_name: str, args: dict | None = None) -> bool:
+        filter_fn = self._tool_filter
+        if not callable(filter_fn):
+            return True
+        try:
+            return bool(filter_fn(tool_name, args or {}))
+        except Exception as exc:
+            logger.warning("[ACP] tool filter failed closed: tool=%s err=%s", tool_name, get_error_detail(exc))
+            return False
 
     def _record(self, session_id: str, kind: str, data: dict) -> None:
         try:
@@ -513,6 +533,30 @@ class GhostAPClient(Client):
                 elif isinstance(raw_input, str):
                     command = raw_input
                 if command:
+                    tool_args = {"command": command}
+                    if isinstance(raw_input, dict):
+                        tool_args.update(raw_input)
+                    if not self._is_tool_allowed("shell", tool_args):
+                        self._record(
+                            session_id,
+                            "permission",
+                            {"outcome": "cancelled", "reason": "tool_filter_denied", "command": command},
+                        )
+                        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
+                    hard_ok, hard_reason = _ACP_PERMISSION_DANGEROUS_CHECK.check(command, None)
+                    if not hard_ok:
+                        logger.info("[ACP] Reject dangerous auto-approved command: %s (%s)", command, hard_reason)
+                        self._record(
+                            session_id,
+                            "permission",
+                            {
+                                "outcome": "cancelled",
+                                "reason": "dangerous_execute",
+                                "command": command,
+                                "detail": hard_reason,
+                            },
+                        )
+                        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
                     ok, reason = self._sandbox.is_command_safe(command)
                     if not ok:
                         logger.info("[ACP] Reject unsafe command: %s (%s)", command, reason)
@@ -546,6 +590,9 @@ class GhostAPClient(Client):
     # File operations (delegate to agent's own filesystem)
     # ------------------------------------------------------------------
     async def read_text_file(self, path: str, session_id: str, **kwargs: Any) -> ReadTextFileResponse:
+        if not self._is_tool_allowed("file_read", {"path": path, **kwargs}):
+            self._record(session_id, "read_file", {"path": path, "blocked": True, "reason": "tool_filter_denied"})
+            return ReadTextFileResponse(content="", field_meta={"blocked": True, "reason": "tool_filter_denied"})
         try:
             resolved = _safe_resolve_path(self._root_dir, path)
             content = resolved.read_text(encoding="utf-8")
@@ -569,6 +616,9 @@ class GhostAPClient(Client):
     async def write_text_file(
         self, content: str, path: str, session_id: str, **kwargs: Any
     ) -> Optional[WriteTextFileResponse]:
+        if not self._is_tool_allowed("file_write", {"path": path, **kwargs}):
+            self._record(session_id, "write_file", {"path": path, "blocked": True, "reason": "tool_filter_denied"})
+            return WriteTextFileResponse(field_meta={"blocked": True, "reason": "tool_filter_denied", "path": path})
         try:
             resolved = _safe_resolve_path(self._root_dir, path)
             resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -587,6 +637,18 @@ class GhostAPClient(Client):
         # Lazy cleanup of expired terminals to prevent unbounded growth
         self._cleanup_expired_terminals()
 
+        if not self._is_tool_allowed("shell", {"command": command, **kwargs}):
+            term_id = f"term_{uuid.uuid4().hex[:8]}"
+            with self._terminals_lock:
+                self._terminals[term_id] = _TerminalRecord(
+                    output="❌ 工具权限检查未通过: tool_filter_denied",
+                    exit_code=1,
+                    truncated=False,
+                    created_at=time.time(),
+                )
+            self._record(session_id, "execute", {"command": command, "blocked": True, "reason": "tool_filter_denied"})
+            return CreateTerminalResponse(terminal_id=term_id, field_meta={"blocked": True, "reason": "tool_filter_denied"})
+
         ok, reason = self._sandbox.is_command_safe(command)
         if not ok:
             # Create a virtual terminal that immediately returns the safety error.
@@ -594,7 +656,7 @@ class GhostAPClient(Client):
             with self._terminals_lock:
                 self._terminals[term_id] = _TerminalRecord(
                     output=f"❌ 安全检查未通过: {reason}",
-                    exit_code=-1,
+                    exit_code=1,
                     truncated=False,
                     created_at=time.time(),
                 )

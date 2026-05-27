@@ -505,6 +505,50 @@ def test_read_write_text_file(tmp_path: Path):
         loop.close()
 
 
+def test_tool_filter_blocks_acp_file_and_terminal_tools(tmp_path: Path):
+    root = str(tmp_path)
+    (tmp_path / "a.txt").write_text("hello", encoding="utf-8")
+    client = GhostAPClient(on_event=lambda e: None, root_dir=root, sandbox=SandboxExecutor())
+    client.set_tool_filter(lambda tool, args: False)
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        read_resp = loop.run_until_complete(client.read_text_file("a.txt", session_id="s1"))
+        write_resp = loop.run_until_complete(client.write_text_file("changed", "a.txt", session_id="s1"))
+        term_resp = loop.run_until_complete(client.create_terminal(command="echo hi", session_id="s1"))
+        term_out = loop.run_until_complete(client.terminal_output(session_id="s1", terminal_id=term_resp.terminal_id))
+
+        assert read_resp.content == ""
+        assert read_resp.field_meta and read_resp.field_meta.get("blocked") is True
+        assert write_resp and write_resp.field_meta and write_resp.field_meta.get("blocked") is True
+        assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "hello"
+        assert term_resp.field_meta and term_resp.field_meta.get("blocked") is True
+        assert "工具权限" in term_out.output
+    finally:
+        loop.close()
+
+
+def test_tool_filter_blocks_auto_approved_permission_request():
+    client = GhostAPClient(on_event=lambda e: None, auto_approve=True)
+    client.set_tool_filter(lambda tool, args: False)
+
+    opt = MagicMock()
+    opt.kind = "allow_once"
+    opt.option_id = "opt1"
+    tool_call = MagicMock()
+    tool_call.kind = "execute"
+    tool_call.raw_input = {"command": "echo hi"}
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        resp = loop.run_until_complete(client.request_permission(options=[opt], session_id="s1", tool_call=tool_call))
+        assert resp.outcome.outcome == "cancelled"
+    finally:
+        loop.close()
+
+
 class TestRebindThread:
     def _make_manager(self):
         from src.acp.manager import ACPSessionManager

@@ -6,6 +6,7 @@ TaskRouter, and Mouthpiece for orchestrating virtual agent teams.
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import contextlib
 import logging
 import os
@@ -16,7 +17,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from ..agent_session import close_session_safely, create_engine_session
 from ..config import get_settings
@@ -29,13 +30,13 @@ from .escalation_manager import EscalationManager
 from .exceptions import SecurityPolicyDegradedError
 from .memory_manager import MemoryManager, default_slock_storage_base
 from .models import (
+    ABORT_OPTIONS,
+    SKIP_OPTIONS,
     AgentIdentity,
     AgentStatus,
-    ABORT_OPTIONS,
     DiscussionStatus,
     EscalationLevel,
     EscalationRequest,
-    SKIP_OPTIONS,
     SlockChannel,
     SlockTask,
     TaskStatus,
@@ -46,16 +47,10 @@ from .observer_queue import ObserverLearningQueue, TaskStatusNotifier
 from .progress_tracker import ProgressTracker
 from .task_board_manager import TaskBoardManager
 from .task_chain_manager import TaskChainManager
-from .task_queue import TaskQueue
+from .task_queue import QueuedTask, TaskQueue
 from .task_router import TaskRouter
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Shared asyncio event loop for async operations from worker threads.
-# Avoids creating/destroying event loops per agent execution.
-# ---------------------------------------------------------------------------
-import asyncio as _asyncio
 
 _SHARED_LOOP: _asyncio.AbstractEventLoop | None = None
 _SHARED_LOOP_LOCK = threading.Lock()
@@ -552,10 +547,6 @@ class SlockEngine(BaseEngine):
     @property
     def mouthpiece(self) -> Mouthpiece:
         return self._mouthpiece
-
-    @property
-    def channel(self) -> Optional[SlockChannel]:
-        return self._channel
 
     def get_channel(self) -> Optional[SlockChannel]:
         """Public accessor for the active SlockChannel instance."""
@@ -1815,7 +1806,6 @@ class SlockEngine(BaseEngine):
                 result = self._run_acp_session(agent, prompt)
             except Exception as exc:
                 logger.exception("Unexpected error in ACP session for agent %s", agent.name)
-                self.set_agent_status(agent_id, AgentStatus.IDLE)
                 self.escalate(
                     agent,
                     f"Agent execution failed: {exc}",
@@ -1828,7 +1818,6 @@ class SlockEngine(BaseEngine):
                 execution_errors = self._get_agent_execution_errors()
                 error_detail = execution_errors.pop(agent_id, "")
                 if error_detail:
-                    self.set_agent_status(agent_id, AgentStatus.IDLE)
                     self.escalate(
                         agent,
                         f"Agent execution failed: {error_detail}",
@@ -2382,11 +2371,16 @@ class SlockEngine(BaseEngine):
                 model_name=agent.model_name or None,
                 thread_id=thread_id,
                 auto_approve=True,
+                require_tool_filter=True,
             )
             if session is None:
                 logger.warning("Failed to create ACP session for agent %s", agent.name)
                 return None
-            self._apply_tool_restrictions(session, agent)
+            try:
+                self._apply_tool_restrictions(session, agent)
+            except Exception:
+                close_session_safely(session)
+                raise
 
             with self._lock:
                 self._agent_sessions[agent.agent_id] = session
