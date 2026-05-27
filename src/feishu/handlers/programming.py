@@ -934,6 +934,23 @@ class ProgrammingModeHandler(BaseHandler):
             final_response = UI_TEXT["mode_exec_exception_msg"].format(error=get_error_detail(e))
             log_exception(logger, f"{self.mode_name} ACP执行异常", e)
             prog_session.fail(final_response)
+            if self.interaction_mode == InteractionMode.TUI2ACP and self._is_terminal_state_error(e):
+                try:
+                    self._get_session_manager().end_session(
+                        chat_id,
+                        project_id=project_id,
+                        thread_id=_thread_id,
+                    )
+                    logger.info(
+                        "[%s] ended terminal ACP session after prompt rejection: chat=%s project=%s thread=%s session=%s",
+                        self.mode_name,
+                        chat_id[:12] if chat_id else "?",
+                        project_id or "-",
+                        (_thread_id or "-")[:12],
+                        (getattr(session, "session_id", "") or "none")[:8],
+                    )
+                except Exception:
+                    logger.debug("[%s] terminal session cleanup failed", self.mode_name, exc_info=True)
             from ...utils.errors import GhostAPError
             if isinstance(e, GhostAPError) and e.quick_actions:
                 self.send_error_card(chat_id, e, title=UI_TEXT["mode_exec_exception_title"], origin_message_id=message_id)
@@ -968,6 +985,11 @@ class ProgrammingModeHandler(BaseHandler):
 
         if card_message_id and project:
             self.register_message_project(card_message_id, project)
+
+    @staticmethod
+    def _is_terminal_state_error(exc: Exception) -> bool:
+        detail = get_error_detail(exc)
+        return "terminal state" in detail.lower() and "session" in detail.lower()
 
     def _handle_response_non_streaming(
         self, message_id: str, chat_id: str, text: str, session: SyncSession, project, global_working_dir: str,
