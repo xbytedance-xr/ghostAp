@@ -708,7 +708,7 @@ class TestColumnSetHelpers:
         assert len(col["elements"]) == 1
 
     def test_status_card_uses_column_set(self):
-        """Refactored status card should contain mobile_card_row (div) elements per agent."""
+        """Refactored status card should contain schema-safe column_set rows per agent."""
         from src.slock_engine.card_templates import build_status_panel_card
 
         agents = [
@@ -718,20 +718,19 @@ class TestColumnSetHelpers:
         card = build_status_panel_card(agents=agents, channel_id="ch1")
         elements = card["body"]["elements"]
 
-        # Mobile card rows are wrapped in div elements
-        div_rows = [e for e in elements if e.get("tag") == "div"]
-        assert len(div_rows) >= 2  # one per agent
+        row_elements = [e for e in elements if e.get("tag") == "column_set"]
+        assert len(row_elements) >= 2  # one per agent
 
     def test_role_list_card_uses_column_set(self):
-        """Refactored role list card should contain mobile_card_row (div) elements."""
+        """Refactored role list card should contain schema-safe column_set rows."""
         agents = [
             (_make_agent(name="Dev", role="coder", agent_id="d1"), AgentStatus.IDLE),
         ]
         card = build_role_list_card(agents=agents)
         elements = card["body"]["elements"]
 
-        div_rows = [e for e in elements if e.get("tag") == "div"]
-        assert len(div_rows) >= 1
+        row_elements = [e for e in elements if e.get("tag") == "column_set"]
+        assert len(row_elements) >= 1
 
     def test_progress_overview_uses_native_progress(self):
         """Progress overview card should use native progress elements."""

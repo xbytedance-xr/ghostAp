@@ -73,6 +73,8 @@ def should_auto_activate(
         return False
     if is_managed:
         return True
+    if (text or "").lstrip().startswith("/"):
+        return False
 
     from src.slock_engine.task_classifier import TaskClassifier
 

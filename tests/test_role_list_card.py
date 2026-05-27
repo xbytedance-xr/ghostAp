@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from src.slock_engine.card_templates.role import build_role_list_card
 from src.slock_engine.models import AgentIdentity, AgentStatus, SlockTask, TaskStatus
@@ -28,6 +29,16 @@ def _make_task(content: str = "Test task", **kwargs) -> SlockTask:
     return SlockTask(**defaults)
 
 
+def _walk_nodes(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_nodes(child)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_nodes(item)
+
+
 class TestRoleListCardAlternatingBg:
     """Verify alternating background for visual separation."""
 
@@ -42,6 +53,19 @@ class TestRoleListCardAlternatingBg:
         # Even rows use "default", odd rows use "grey"
         assert '"background_style": "default"' in serialized
         assert '"background_style": "grey"' in serialized
+
+    def test_rows_do_not_use_invalid_div_elements(self):
+        """Feishu Card 2.0 rejects div.elements; row containers must be schema-safe."""
+        agents = [
+            (_make_agent(agent_id="schema-1", name="SchemaAgent"), AgentStatus.IDLE),
+        ]
+        card = build_role_list_card(agents=agents)
+
+        invalid_divs = [
+            node for node in _walk_nodes(card)
+            if node.get("tag") == "div" and "elements" in node
+        ]
+        assert invalid_divs == []
 
 
 class TestRoleListCardSkillTags:

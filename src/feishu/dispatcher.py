@@ -125,9 +125,11 @@ class MessageDispatcher:
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
             # In passive mode, auto-activate instead of asking user to run /slock
             _passive_mode = getattr(self.client.settings, "slock_passive_mode", True)
+            _is_explicit_slash_command = (text or "").lstrip().startswith("/")
             if (
                 _passive_mode
                 and slock_auto_activate_allowed
+                and not _is_explicit_slash_command
                 and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type)
             ):
                 activated, _ = self.client._auto_activate_slock(chat_id, text, project)

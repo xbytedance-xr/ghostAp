@@ -1166,6 +1166,37 @@ class TestSlockHandlerCallbacks:
         cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
         cb.on_error("something went wrong")  # Should not raise
 
+    def test_on_escalation_uses_activated_engine_when_idle(self):
+        """Escalation cards still send after the engine has returned to idle."""
+        from src.slock_engine.models import EscalationRequest
+
+        handler = self._make_handler()
+        manager = MagicMock()
+        engine = MagicMock()
+        engine.get_escalation_card.return_value = {"schema": "2.0", "body": {"elements": []}}
+        manager.get_active_engine.return_value = None
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        with patch("src.slock_engine.card_channel.SlockCardChannel") as mock_channel_cls:
+            mock_channel = mock_channel_cls.return_value
+            mock_channel.send_card.return_value = "card_msg_1"
+            cb = handler._create_callbacks("msg1", "chat1", None, "eng", "/tmp")
+            escalation = EscalationRequest(
+                escalation_id="esc_1",
+                task_id="task_1",
+                agent_id="agent_1",
+                reason="failed",
+                options=["retry"],
+            )
+
+            cb.on_escalation(escalation)
+
+        manager.get_active_engine.assert_called_once_with("chat1")
+        manager.get_activated_engine.assert_called_once_with("chat1")
+        mock_channel.send_card.assert_called_once()
+        assert escalation.card_message_id == "card_msg_1"
+
 
 # ============================================================
 # Thread safety: deactivate/pause snapshot-under-lock
@@ -2277,8 +2308,8 @@ class TestMarkDoneTaskNotification:
     def _make_task_manager(tasks=None, notifier=None):
         """Build a TaskBoardManager with mocked dependencies."""
         import threading
-        from unittest.mock import MagicMock
         from dataclasses import dataclass
+        from unittest.mock import MagicMock
 
         from src.slock_engine.task_board_manager import TaskBoardManager
 

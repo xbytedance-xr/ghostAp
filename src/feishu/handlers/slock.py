@@ -112,6 +112,8 @@ class SlockHandler(BaseEngineHandler):
             """Send escalation card to chat and write back message_id."""
             manager = self._get_engine_manager()
             engine = manager.get_active_engine(chat_id)
+            if not engine and hasattr(manager, "get_activated_engine"):
+                engine = manager.get_activated_engine(chat_id)
             if not engine:
                 logger.warning("on_escalation: engine not found for chat %s", chat_id)
                 return
@@ -2809,9 +2811,9 @@ class SlockHandler(BaseEngineHandler):
             memory = engine.memory.read_agent_memory(agent.agent_id)
             item_count = 0
             if memory.key_knowledge:
-                item_count += len([l for l in memory.key_knowledge.split("\n") if l.strip()])
+                item_count += len([line for line in memory.key_knowledge.split("\n") if line.strip()])
             if memory.active_context:
-                item_count += len([l for l in memory.active_context.split("\n") if l.strip()])
+                item_count += len([line for line in memory.active_context.split("\n") if line.strip()])
             rows.append(f"| {agent.emoji} | {agent.name} | {item_count} 条 |")
 
         table_md = "| 头像 | 角色 | 记忆条数 |\n| --- | --- | --- |\n" + "\n".join(rows)
@@ -3560,7 +3562,6 @@ class SlockHandler(BaseEngineHandler):
 
         message_preview = str(value.get("message_preview") or "")
         original_message_id = str(value.get("message_id") or "")
-        channel_id = str(value.get("channel_id") or open_chat_id)
         original_sender_id = str(value.get("sender_id") or "")
         current_sender_id = get_current_sender_id() or ""
 

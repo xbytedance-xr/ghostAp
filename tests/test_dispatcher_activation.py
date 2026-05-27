@@ -46,6 +46,23 @@ class TestSlockActivationRouting:
         # _handle_slock_command must NOT be called
         self.client._handle_slock_command.assert_not_called()
 
+    def test_needs_activation_slash_command_does_not_auto_activate(self):
+        """Explicit Slock slash commands must not be treated as first task text."""
+        self.client._is_slock_command.return_value = NEEDS_ACTIVATION
+        self.client._should_auto_activate_slock.return_value = True
+
+        self.dispatcher.process_with_intent(
+            message_id="msg_role_list",
+            chat_id="chat_unmanaged",
+            text="/role list",
+            project=None,
+        )
+
+        self.client._auto_activate_slock.assert_not_called()
+        self.client._handle_slock_message.assert_not_called()
+        self.client._handle_slock_command.assert_not_called()
+        self.client._reply_text.assert_called_once()
+
     def test_active_slock_routes_to_handler(self):
         """When _is_slock_command returns True, _handle_slock_command is called."""
         self.client._is_slock_command.return_value = True
@@ -273,3 +290,9 @@ class TestDefaultPolicyAllowAllInManagedChat:
         assert result is True
         # TaskClassifier should NOT be called (short-circuit)
         client._is_slock_managed_chat.assert_called_once_with("chat_managed")
+
+    def test_unmanaged_slash_command_does_not_auto_activate(self):
+        """Unmanaged slash commands are control-plane input, not task text."""
+        from src.feishu.slock_dispatch import should_auto_activate
+
+        assert should_auto_activate("chat_unmanaged", "/role list", chat_type="group", is_managed=False) is False

@@ -6,7 +6,7 @@ used across all card template modules.
 
 from __future__ import annotations
 
-from typing import Optional
+import logging as _logging
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -14,16 +14,9 @@ from src.card.shared import apply_compact_style, build_responsive_layout
 from src.utils.redact import redact_sensitive
 
 from ..models import (
-    ABORT_OPTIONS,
     AGENT_STATUS_BG_COLOR_MAP,
-    AgentIdentity,
     AgentStatus,
-    CouncilRun,
     CouncilStatus,
-    EscalationLevel,
-    EscalationRequest,
-    SlockMemory,
-    SlockTask,
     TaskStatus,
 )
 
@@ -119,8 +112,6 @@ STATUS_TEXT_COLOR_MAP: dict[AgentStatus, str] = {
 
 # Legal Feishu column_set background_style values
 _VALID_BACKGROUND_STYLES = frozenset({"default", "grey", "card_primary"})
-
-import logging as _logging
 
 _bg_logger = _logging.getLogger(__name__)
 
@@ -464,8 +455,9 @@ def build_mobile_card_row(
 ) -> dict:
     """Build a mobile-friendly single-column card row.
 
-    Stacks title, content, and action rows vertically for optimal
-    mobile display without horizontal overflow.
+    Stacks title, content, and action content inside one column for optimal
+    mobile display without horizontal overflow.  Feishu Card 2.0 rejects
+    ``div.elements``, so the row itself must be a schema-safe ``column_set``.
 
     Args:
         title_elements: First row elements (e.g. avatar + name + status).
@@ -474,46 +466,15 @@ def build_mobile_card_row(
         background_style: Row background — "default", "grey", etc.
         margin: CSS margin around the container.
     """
-    rows: list[dict] = []
-
-    # Title row — always present
-    rows.append({
-        "tag": "column_set",
-        "flex_mode": "flow",
-        "background_style": validate_background_style(background_style),
-        "margin": "0px",
-        "columns": [
-            build_column(title_elements, width="weighted", weight=1),
-        ],
-    })
-
-    # Content row — optional
+    column_elements: list[dict] = [*title_elements]
     if content_elements:
-        rows.append({
-            "tag": "column_set",
-            "flex_mode": "flow",
-            "background_style": "default",
-            "margin": "0px",
-            "columns": [
-                build_column(content_elements, width="weighted", weight=1),
-            ],
-        })
-
-    # Action row — optional
+        column_elements.extend(content_elements)
     if action_elements:
-        rows.append({
-            "tag": "column_set",
-            "flex_mode": "flow",
-            "background_style": "default",
-            "margin": "0px",
-            "columns": [
-                build_column(action_elements, width="weighted", weight=1),
-            ],
-        })
+        column_elements.extend(action_elements)
 
-    # Wrap in a container div for spacing
-    return {
-        "tag": "div",
-        "elements": rows,
-        "margin": margin,
-    }
+    return build_column_set_row(
+        [build_column(column_elements, width="weighted", weight=1)],
+        flex_mode="flow",
+        background_style=background_style,
+        margin=margin,
+    )
