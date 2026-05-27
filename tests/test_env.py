@@ -116,7 +116,7 @@ class TestBuildCleanEnv:
         }
         result = build_clean_env(base_env)
         assert "CLAUDECODE" not in result
-        assert result["PATH"] == "/usr/bin"
+        assert result["PATH"].startswith("/usr/bin")
         assert result["HOME"] == "/home/user"
 
     def test_copies_all_other_keys(self):
@@ -127,7 +127,9 @@ class TestBuildCleanEnv:
             "CLAUDECODE": "value3",
         }
         result = build_clean_env(base_env)
-        assert result == {"KEY1": "value1", "KEY2": "value2"}
+        assert result["KEY1"] == "value1"
+        assert result["KEY2"] == "value2"
+        assert "CLAUDECODE" not in result
 
     def test_uses_os_environ_when_no_base_provided(self):
         """Should use os.environ when base is None."""
@@ -137,9 +139,11 @@ class TestBuildCleanEnv:
             assert result["OTHER"] == "keep"
 
     def test_handles_empty_base_env(self):
-        """Should handle empty base environment."""
+        """Should handle empty base environment gracefully."""
         result = build_clean_env({})
-        assert result == {}
+        # PATH may be added by _ensure_npm_global_in_path
+        non_path_keys = {k: v for k, v in result.items() if k != "PATH"}
+        assert non_path_keys == {}
 
     def test_base_env_not_modified(self):
         """Should not modify the original base environment dict."""

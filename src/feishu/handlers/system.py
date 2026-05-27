@@ -1111,7 +1111,26 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         import shutil
         import subprocess
 
-        if not shutil.which("tui2acp"):
+        def _find_tui2acp() -> str | None:
+            """Find tui2acp in PATH + common npm-global locations."""
+            found = shutil.which("tui2acp")
+            if found:
+                return found
+            import os
+            home = os.path.expanduser("~")
+            extra_dirs = [
+                os.path.join(home, ".npm-global", "bin"),
+                os.path.join(home, ".local", "bin"),
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+            ]
+            for d in extra_dirs:
+                candidate = os.path.join(d, "tui2acp")
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    return candidate
+            return None
+
+        if not _find_tui2acp():
             if not shutil.which("npm"):
                 self.reply_text(
                     message_id,
@@ -1126,7 +1145,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 )
             except Exception:
                 pass
-            if not shutil.which("tui2acp"):
+            if not _find_tui2acp():
                 self.reply_text(
                     message_id,
                     "❌ tui2acp 自动安装失败。请手动运行 `npm install -g tui2acp`。",

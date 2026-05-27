@@ -85,6 +85,30 @@ def get_test_environment_checker() -> Optional[TestEnvironmentChecker]:
         return _test_environment_checker
 
 
+def _ensure_npm_global_in_path(env: dict[str, str]) -> dict[str, str]:
+    """Ensure common npm-global bin directories are in PATH.
+
+    GUI-launched or launchd-spawned Python processes often inherit a minimal
+    PATH that excludes user-level npm global installs (e.g. ~/.npm-global/bin).
+    """
+    home = os.path.expanduser("~")
+    extra_dirs = [
+        os.path.join(home, ".npm-global", "bin"),
+        os.path.join(home, ".local", "bin"),
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+    ]
+    current_path = env.get("PATH", "")
+    path_parts = current_path.split(os.pathsep) if current_path else []
+    path_set = set(path_parts)
+    for d in extra_dirs:
+        if d not in path_set and os.path.isdir(d):
+            path_parts.append(d)
+            path_set.add(d)
+    env["PATH"] = os.pathsep.join(path_parts)
+    return env
+
+
 def build_clean_env(base: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Return a copy of *base* (default: ``os.environ``) with guard keys removed.
 
@@ -94,6 +118,7 @@ def build_clean_env(base: Optional[dict[str, str]] = None) -> dict[str, str]:
     env = dict(base) if base is not None else os.environ.copy()
     for key in _GUARD_KEYS:
         env.pop(key, None)
+    env = _ensure_npm_global_in_path(env)
     return env
 
 
