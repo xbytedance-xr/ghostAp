@@ -179,7 +179,9 @@ def build_role_info_card(
         elements.append({"tag": "markdown", "content": "**📋 任务**"})
         elements.extend(task_elements)
 
-    # -- Section 7: Assign Task Form (collapsible) --
+    # -- Section 7: Assign Task Form --
+    # NOTE: Feishu does NOT support `form` inside `collapsible_panel` (error 200621).
+    # Place form directly in top-level elements.
     assign_form = {
         "tag": "form",
         "name": f"assign_task_{agent.agent_id}",
@@ -206,13 +208,7 @@ def build_role_info_card(
         ],
     }
     elements.append({"tag": "hr"})
-    elements.append(
-        build_collapsible_panel(
-            "📝 分配任务",
-            [assign_form],
-            expanded=False,
-        )
-    )
+    elements.append(assign_form)
 
     return build_card_wrapper(
         header_title=header_title,

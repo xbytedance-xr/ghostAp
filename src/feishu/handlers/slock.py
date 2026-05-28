@@ -611,6 +611,27 @@ class SlockHandler(BaseEngineHandler):
                 channel_id = engine.channel.channel_id if engine.channel else chat_id
                 agents = engine.registry.list_agents(channel_id=channel_id)
                 fallback_agents = [a for a in agents if a != agent_used] if agent_used else agents
+
+                # Filter out agents whose agent_type is known to be ACP-incompatible
+                # (avoids wasting ~100s retrying claude when it can't serve ACP)
+                if fallback_agents:
+                    try:
+                        from ...acp.sync_adapter import resolve_agent_spec
+                        _acp_compatible = []
+                        for a in fallback_agents:
+                            try:
+                                resolve_agent_spec(a.agent_type, model_name=a.model_name or None)
+                                _acp_compatible.append(a)
+                            except (RuntimeError, Exception):
+                                logger.debug(
+                                    "Retry skip agent %s (%s): ACP incompatible",
+                                    a.name, a.agent_type,
+                                )
+                        if _acp_compatible:
+                            fallback_agents = _acp_compatible
+                    except ImportError:
+                        pass
+
                 if fallback_agents:
                     alt_agent = engine.router.route_message(text, fallback_agents)
                     if alt_agent:

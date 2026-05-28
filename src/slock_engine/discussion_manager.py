@@ -1492,9 +1492,9 @@ class DiscussionManager:
 
                     agent = agents[0]
 
-                    # Call LLM with 5 second timeout
+                    # Call LLM with 30 second timeout (ACP startup + prompt)
                     result = self._engine.run_agent_session_full(
-                        agent, prompt, timeout=5.0, max_tokens=200,
+                        agent, prompt, timeout=30.0, max_tokens=200,
                     )
 
                     if result and result.text:
@@ -1534,9 +1534,9 @@ class DiscussionManager:
             executor = ThreadPoolExecutor(max_workers=1)
             try:
                 future = executor.submit(_call_llm)
-                return future.result(timeout=5.0)
+                return future.result(timeout=35.0)
             except FutureTimeoutError:
-                logger.warning("LLM semantic conflict detection timed out after 5s")
+                logger.warning("LLM semantic conflict detection timed out after 35s")
                 return False, ""
             finally:
                 executor.shutdown(wait=False)
