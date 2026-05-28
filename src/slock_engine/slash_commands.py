@@ -434,12 +434,26 @@ def is_slock_command(
         return SlockCommandResult(is_command=False)
     normalized = text.strip().lower()
 
+    # Resolve aliases so /tm → /team, /r → /role, etc.
+    parts = normalized.split(None, 1)
+    cmd_word = parts[0] if parts else ""
+    if cmd_word in _ALIASES:
+        cmd_word = _ALIASES[cmd_word]
+        normalized = f"{cmd_word} {parts[1]}" if len(parts) > 1 else cmd_word
+
     # Always capture /slock and /new-team regardless of chat state
     if normalized.startswith(("/slock", "/new-team")):
         return SlockCommandResult(is_command=True)
 
-    # Team-internal commands require managed chat context
-    if normalized.startswith(("/new-role", "/role", "/task", "/team", "/council", "/discuss", "/memory", "/plan")):
+    # Global management commands: /team and /role operate across all teams
+    # (find_team resolves by name globally), so capture whenever manager exists.
+    if normalized.startswith(("/team", "/role")):
+        if manager is not None:
+            return SlockCommandResult(is_command=True)
+        return SlockCommandResult(is_command=False)
+
+    # Chat-scoped commands require managed chat context
+    if normalized.startswith(("/new-role", "/task", "/council", "/discuss", "/memory", "/plan")):
         if manager is not None and chat_id:
             if manager.is_managed_chat(chat_id):
                 return SlockCommandResult(is_command=True)

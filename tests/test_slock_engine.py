@@ -50,10 +50,9 @@ class TestIsSLockCommand:
 
     @pytest.mark.parametrize("text", [
         "/new-role Coder",
-        "/team dissolve Alpha",
     ])
     def test_not_captured_in_unmanaged_chat(self, text):
-        """Team commands in unmanaged chats return NEEDS_ACTIVATION (not True)."""
+        """Chat-scoped commands in unmanaged chats return NEEDS_ACTIVATION (not True)."""
         from src.slock_engine.slash_commands import NEEDS_ACTIVATION
         manager = MagicMock()
         manager.is_managed_chat.return_value = False
@@ -62,6 +61,18 @@ class TestIsSLockCommand:
         assert not result
         # It returns NEEDS_ACTIVATION for slock-related commands in unmanaged chats
         assert result == NEEDS_ACTIVATION
+
+    @pytest.mark.parametrize("text", [
+        "/team dissolve Alpha",
+        "/role remove Coder",
+        "/team list",
+    ])
+    def test_team_role_globally_captured(self, text):
+        """/team and /role are globally captured even in unmanaged chats."""
+        manager = MagicMock()
+        manager.is_managed_chat.return_value = False
+        result = is_slock_command(text, chat_id="chat_456", manager=manager)
+        assert result
 
     @pytest.mark.parametrize("text", [
         "",

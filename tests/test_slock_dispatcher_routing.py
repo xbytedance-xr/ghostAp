@@ -50,18 +50,27 @@ class TestCommandScopingUnmanagedChat:
         assert result  # SlockCommandResult.__bool__ returns is_command
 
     @pytest.mark.parametrize("text", [
-        "/role list",
-        "/role remove Coder",
         "/task list",
         "/task assign fix-bug Coder",
-        "/team list",
-        "/team status Alpha",
         "/new-role Writer",
     ])
-    def test_team_commands_passthrough_in_unmanaged(self, text):
-        """AC2: Team commands return NEEDS_ACTIVATION in unmanaged chats."""
+    def test_chat_scoped_commands_need_activation_in_unmanaged(self, text):
+        """AC2: Chat-scoped commands return NEEDS_ACTIVATION in unmanaged chats."""
         manager = self._make_manager(is_managed=False)
         assert is_slock_command(text, chat_id="unmanaged_chat", manager=manager) == NEEDS_ACTIVATION
+
+    @pytest.mark.parametrize("text", [
+        "/role list",
+        "/role remove Coder",
+        "/team list",
+        "/team status Alpha",
+        "/team dissolve Alpha",
+    ])
+    def test_team_role_commands_globally_captured(self, text):
+        """AC2: /team and /role are global — captured even in unmanaged chats."""
+        manager = self._make_manager(is_managed=False)
+        result = is_slock_command(text, chat_id="unmanaged_chat", manager=manager)
+        assert result  # Always captured when manager exists
 
     @pytest.mark.parametrize("text", [
         "/role list",
@@ -617,10 +626,10 @@ class TestSlockCommandResultType:
             is_slock_command,
         )
 
-        # A slock subcommand in unmanaged chat should return NEEDS_ACTIVATION
+        # A chat-scoped subcommand in unmanaged chat should return NEEDS_ACTIVATION
         manager = MagicMock()
         manager.is_managed_chat.return_value = False
-        result = is_slock_command("/role list", chat_id="unmanaged_chat", manager=manager)
+        result = is_slock_command("/task list", chat_id="unmanaged_chat", manager=manager)
         assert isinstance(result, SlockCommandResult)
         assert result == NEEDS_ACTIVATION
         assert bool(result) is False

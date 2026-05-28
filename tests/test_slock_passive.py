@@ -209,7 +209,8 @@ class TestSlashCommandsNoActivation:
         from src.slock_engine.slash_commands import NEEDS_ACTIVATION, is_slock_command
         manager = MagicMock()
         manager.is_managed_chat.return_value = False
-        assert is_slock_command("/role list", "chat_123", manager) == NEEDS_ACTIVATION
+        # /task is chat-scoped → NEEDS_ACTIVATION; /role is now global
+        assert is_slock_command("/task list", "chat_123", manager) == NEEDS_ACTIVATION
 
 
 # ============================================================

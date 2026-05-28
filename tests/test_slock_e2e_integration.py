@@ -44,7 +44,9 @@ class TestE2EDispatcherToHandler:
         """AC-02: Non-slock commands in unmanaged chats don't trigger slock."""
         manager = MagicMock()
         manager.is_managed_chat.return_value = False
-        assert not is_slock_command("/role list", chat_id="chat_99", manager=manager)
+        # /role is now globally captured (handler will show proper error)
+        assert is_slock_command("/role list", chat_id="chat_99", manager=manager)
+        # /task is chat-scoped → needs activation
         assert not is_slock_command("/task list", chat_id="chat_99", manager=manager)
         assert not is_slock_command("hello world", chat_id="chat_99", manager=manager)
 
