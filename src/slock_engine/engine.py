@@ -1945,6 +1945,10 @@ class SlockEngine(BaseEngine):
                     agent_id, threshold=settings_obj.slock_memory_summarize_threshold
                 )
 
+                # Role evolution: periodically update memory.role from accumulated skills
+                evolution_threshold = getattr(settings_obj, 'slock_role_evolution_threshold', 3)
+                self._memory.evolve_agent_role(agent_id, agent, task_threshold=evolution_threshold)
+
             return formatted
 
         except AgentCancellationError:

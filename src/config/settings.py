@@ -590,6 +590,7 @@ class Settings(BaseSettings):
     slock_escalation_timeout: int = Field(default=1800, ge=60, description="Slock 升级请求自动中止超时（秒），默认 30 分钟")
     slock_idle_scan_interval: int = Field(default=10, ge=1, description="空闲角色扫描 TODO 池间隔（秒）")
     slock_auto_plan_delay: int = Field(default=5, ge=1, le=30, description="任务创建后自动触发规划的延迟（秒）")
+    slock_role_evolution_threshold: int = Field(default=3, ge=1, description="角色进化触发阈值（每完成 N 个任务自动更新角色身份描述）")
 
     # Slock Discussion / NLI / Memory Enhancement ----------------------------
     slock_discussion_enabled: bool = Field(default=True, description="是否启用 Agent 间自动讨论（默认开启）")

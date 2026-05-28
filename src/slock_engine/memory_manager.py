@@ -469,6 +469,48 @@ class MemoryManager:
         self.write_skill_profiles(agent_id, ordered)
         return ordered
 
+    def evolve_agent_role(self, agent_id: str, agent_identity, *, task_threshold: int = 3) -> bool:
+        """Evolve the agent's role description based on accumulated experience.
+
+        Updates memory.role with a synthesized identity from skill profiles and
+        task history. Only triggers after every `task_threshold` tasks.
+
+        Returns True if role was updated.
+        """
+        profiles = self.read_skill_profiles(agent_id)
+        if not profiles:
+            return False
+
+        total_tasks = sum(p.total_tasks for p in profiles)
+        # Only evolve every N tasks
+        if total_tasks < task_threshold or total_tasks % task_threshold != 0:
+            return False
+
+        # Build evolved role description from top skills
+        top_skills = sorted(profiles, key=lambda p: p.total_tasks, reverse=True)[:5]
+        skill_lines = [f"- {p.tag} ({p.total_tasks} tasks, {p.success_rate:.0f}% quality)" for p in top_skills]
+
+        with self._get_agent_lock(agent_id):
+            memory = self._read_agent_memory_unlocked(agent_id)
+            # Preserve any user-authored role prefix, append evolved section
+            base_role = agent_identity.role if hasattr(agent_identity, 'role') else "custom"
+            traits = ", ".join(agent_identity.personality_traits) if hasattr(agent_identity, 'personality_traits') and agent_identity.personality_traits else ""
+
+            evolved_role = (
+                f"Base: {base_role}"
+                + (f" | Traits: {traits}" if traits else "")
+                + f"\n\nEvolved expertise (auto-derived from {total_tasks} completed tasks):\n"
+                + "\n".join(skill_lines)
+            )
+            memory.role = evolved_role
+            self._write_agent_memory_unlocked(agent_id, memory)
+
+        logger.info(
+            "Agent role evolved | agent=%s total_tasks=%d top_skills=%s",
+            agent_id, total_tasks, [p.tag for p in top_skills[:3]],
+        )
+        return True
+
     def _reasoning_snapshot_path(self, agent_id: str, task_id: str) -> str:
         safe_id = self._sanitize_path_component(agent_id)
         safe_task_id = re.sub(r"[^A-Za-z0-9_.:-]+", "_", task_id or "message").strip("_") or "message"
