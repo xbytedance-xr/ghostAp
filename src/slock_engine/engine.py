@@ -773,6 +773,12 @@ class SlockEngine(BaseEngine):
                 self._task_queue.enqueue(task)
             return
 
+        # Broadcast detection: fan out to all agents if message targets everyone
+        if self._router.is_broadcast_message(task.text):
+            logger.info("Dispatch: broadcast task detected, fanning out to %d agents", len(agents))
+            self._dispatch_broadcast_task(task, agents, channel_snapshot)
+            return
+
         # Find idle agent via router (after wake-policy filtering)
         candidates = self._apply_wake_policy(task.text, agents)
         routing_result = self._router.route_message_with_fallback(task.text, candidates)
@@ -841,6 +847,25 @@ class SlockEngine(BaseEngine):
             executor.submit(self._execute_agent, agent, message, callbacks)
         except Exception as exc:
             logger.error("Failed to submit to executor: %s", exc, exc_info=True)
+
+    def _dispatch_broadcast_task(self, task: "QueuedTask", agents: list, channel_snapshot) -> None:
+        """Fan out a broadcast task to ALL agents in parallel.
+
+        Each agent gets the same message and executes independently.
+        Results are delivered via on_agent_done callbacks (per-agent identity cards).
+        """
+        callbacks = task.callbacks
+        executor = self._get_executor()
+        message = task.text
+
+        for agent in agents:
+            try:
+                executor.submit(self._execute_agent, agent, message, callbacks)
+            except Exception as exc:
+                logger.warning(
+                    "Broadcast: failed to submit to agent %s: %s",
+                    agent.name, exc,
+                )
 
     def _send_timeout_card(self, task: "QueuedTask", waited_seconds: float) -> None:
         """Send a timeout notification card for a task that waited too long."""

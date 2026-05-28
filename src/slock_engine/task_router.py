@@ -36,6 +36,7 @@ class RoutingStatus(Enum):
     """Result status from route_message."""
 
     ASSIGNED = "assigned"       # An idle agent was found
+    BROADCAST = "broadcast"     # Message targets all agents (e.g., "大家做个自我介绍")
     QUEUE_WAIT = "queue_wait"   # All agents busy but running; caller should wait/retry
     NO_MATCH = "no_match"       # No agent scored (chitchat or no agents at all)
 
@@ -359,6 +360,17 @@ class TaskRouter:
         between dispatcher auto-activation and router message filtering.
         """
         return TaskClassifier.is_chitchat(text)
+
+    # Broadcast detection patterns: messages targeting ALL agents
+    _BROADCAST_PATTERNS = re.compile(
+        r"(大家|所有人|每个人|各位|everyone|all\s+agents?|每个角色|各个角色|"
+        r"你们都|你们每个|团队里每|全员|all\s+of\s+you)",
+        re.IGNORECASE,
+    )
+
+    def is_broadcast_message(self, text: str) -> bool:
+        """Check if message targets all agents (broadcast/fan-out intent)."""
+        return bool(self._BROADCAST_PATTERNS.search(text))
 
     def route_message(
         self,
