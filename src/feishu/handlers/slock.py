@@ -3254,13 +3254,22 @@ class SlockHandler(BaseEngineHandler):
         self.update_card(message_id, json.dumps(card, ensure_ascii=False))
 
     def _has_slock_permission(self, engine) -> bool:
-        """Pure boolean check: is current operator admin or channel owner? No side effects."""
+        """Pure boolean check: is current operator admin or channel owner? No side effects.
+
+        When ADMIN_USER_IDS is empty (bootstrap state), all users are permitted —
+        consistent with the one-way /setadmin bootstrap contract.
+        """
         from ...config import get_settings
         from ...thread.manager import get_current_sender_id
 
         operator_id = get_current_sender_id() or ""
         settings = get_settings()
         admin_ids = settings.admin_user_ids if hasattr(settings, "admin_user_ids") else frozenset()
+
+        # Bootstrap state: no admin configured → permissive
+        if not admin_ids:
+            return True
+
         channel_owner_id = ""
         if engine.channel:
             channel_owner_id = getattr(engine.channel, "owner_id", "") or ""
@@ -3283,6 +3292,7 @@ class SlockHandler(BaseEngineHandler):
         """Check permission and return rejection card if denied, None if allowed.
 
         Authorized: admin_user_ids | channel_owner | (task claimed_by if allow_assignee).
+        When ADMIN_USER_IDS is empty (bootstrap state), all users are permitted.
         """
         from ...config import get_settings
         from ...thread.manager import get_current_sender_id
@@ -3292,6 +3302,11 @@ class SlockHandler(BaseEngineHandler):
 
         # Check admin
         admin_ids = settings.admin_user_ids if hasattr(settings, "admin_user_ids") else frozenset()
+
+        # Bootstrap state: no admin configured → permissive
+        if not admin_ids:
+            return None  # allowed
+
         if sender_id and sender_id in admin_ids:
             return None  # allowed
 
