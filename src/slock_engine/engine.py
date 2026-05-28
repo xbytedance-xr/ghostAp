@@ -773,12 +773,6 @@ class SlockEngine(BaseEngine):
                 self._task_queue.enqueue(task)
             return
 
-        # Broadcast detection: fan out to all agents if message targets everyone
-        if self._router.is_broadcast_message(task.text):
-            logger.info("Dispatch: broadcast task detected, fanning out to %d agents", len(agents))
-            self._dispatch_broadcast_task(task, agents, channel_snapshot)
-            return
-
         # Find idle agent via router (after wake-policy filtering)
         candidates = self._apply_wake_policy(task.text, agents)
         routing_result = self._router.route_message_with_fallback(task.text, candidates)
@@ -866,6 +860,35 @@ class SlockEngine(BaseEngine):
                     "Broadcast: failed to submit to agent %s: %s",
                     agent.name, exc,
                 )
+
+    def _fan_out_to_others(
+        self,
+        source_agent: AgentIdentity,
+        message: str,
+        channel_id: str,
+        callbacks: Optional[SlockEngineCallbacks],
+    ) -> None:
+        """Re-dispatch a message to all agents EXCEPT the source agent.
+
+        Called when an agent decides (via [DELEGATE:ALL]) that a task should
+        involve all team members. The source agent already produced its own
+        response; this dispatches to the rest.
+        """
+        agents = self.list_agents(channel_id=channel_id)
+        others = [a for a in agents if a.agent_id != source_agent.agent_id]
+        if not others:
+            return
+
+        logger.info(
+            "Agent-driven fan-out: %s delegated to %d other agents",
+            source_agent.name, len(others),
+        )
+        executor = self._get_executor()
+        for agent in others:
+            try:
+                executor.submit(self._execute_agent, agent, message, callbacks)
+            except Exception as exc:
+                logger.warning("Fan-out: failed to submit to %s: %s", agent.name, exc)
 
     def _send_timeout_card(self, task: "QueuedTask", waited_seconds: float) -> None:
         """Send a timeout notification card for a task that waited too long."""
@@ -1921,6 +1944,14 @@ class SlockEngine(BaseEngine):
 
             # Format output through mouthpiece
             if result:
+                # Agent-driven fan-out: if the agent determines this task should
+                # involve all team members, it prefixes its response with [DELEGATE:ALL].
+                # We strip the marker, execute the agent's own response, then re-dispatch
+                # the original message to all other agents.
+                if result.strip().startswith("[DELEGATE:ALL]"):
+                    result = result.strip().removeprefix("[DELEGATE:ALL]").strip()
+                    self._fan_out_to_others(agent, message, channel_id, callbacks)
+
                 formatted = self._mouthpiece.format_text(agent, result)
                 self._memory.append_message_archive(
                     channel_id,
@@ -2321,6 +2352,17 @@ class SlockEngine(BaseEngine):
         roster_block = self._render_team_roster(agent)
         if roster_block:
             parts.append(roster_block)
+            # Delegation instruction: allow agent to fan out tasks to all teammates
+            parts.append(
+                "\n# Task Delegation\n"
+                "If the incoming task explicitly requires ALL teammates to participate "
+                "(e.g., self-introductions, team-wide surveys, each-person responses), "
+                "prefix your response with `[DELEGATE:ALL]` on the first line. "
+                "This will automatically forward the same task to every other agent. "
+                "You should still provide YOUR OWN response after the prefix.\n"
+                "Only use this when the task semantically requires input from EVERY team member. "
+                "Normal tasks that just need one expert should NOT use this prefix."
+            )
 
         if memory.role:
             parts.append(f"\n# Your Role\n{memory.role}")

@@ -361,17 +361,6 @@ class TaskRouter:
         """
         return TaskClassifier.is_chitchat(text)
 
-    # Broadcast detection patterns: messages targeting ALL agents
-    _BROADCAST_PATTERNS = re.compile(
-        r"(大家|所有人|每个人|各位|everyone|all\s+agents?|每个角色|各个角色|"
-        r"你们都|你们每个|团队里每|全员|all\s+of\s+you)",
-        re.IGNORECASE,
-    )
-
-    def is_broadcast_message(self, text: str) -> bool:
-        """Check if message targets all agents (broadcast/fan-out intent)."""
-        return bool(self._BROADCAST_PATTERNS.search(text))
-
     def route_message(
         self,
         text: str,

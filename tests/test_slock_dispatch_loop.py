@@ -106,7 +106,6 @@ class TestTimeoutDetection:
             engine._channel = MagicMock()
             engine._card_send_fn = MagicMock()
             engine._router = MagicMock()
-            engine._router.is_broadcast_message.return_value = False
             engine._task_queue = TaskQueue(max_size=8)
             # Initialize _lock since we bypassed __init__
             from src.utils.lock_order import LockLevel, ordered_rlock
@@ -154,7 +153,6 @@ class TestTimeoutDetection:
             engine._channel.channel_id = "chat_active"
             engine._card_send_fn = MagicMock()
             engine._router = MagicMock()
-            engine._router.is_broadcast_message.return_value = False
             engine._task_queue = TaskQueue(max_size=8)
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
@@ -338,7 +336,6 @@ class TestRetryBackoff:
             engine._task_queue = TaskQueue(max_size=8)
             engine._send_timeout_card = MagicMock()
             engine._router = MagicMock()
-            engine._router.is_broadcast_message.return_value = False
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
 
@@ -385,7 +382,6 @@ class TestExecuteQueueWaitConsistency:
             engine._task_queue = TaskQueue(max_size=8)
             engine._send_timeout_card = MagicMock()
             engine._router = MagicMock()
-            engine._router.is_broadcast_message.return_value = False
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
 
@@ -426,7 +422,6 @@ class TestExecuteQueueWaitConsistency:
             engine._task_queue = TaskQueue(max_size=8)
             engine._send_timeout_card = MagicMock()
             engine._router = MagicMock()
-            engine._router.is_broadcast_message.return_value = False
             engine._get_executor = MagicMock()
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
@@ -577,7 +572,6 @@ class TestBootstrapRaceConditions:
             engine._bootstrap_ready.set()
             engine._send_timeout_card = MagicMock()
             engine._router = MagicMock()
-            engine._router.is_broadcast_message.return_value = False
             engine._get_executor = MagicMock()
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
