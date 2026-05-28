@@ -44,6 +44,30 @@ _DEFAULT_EMOJI: dict[str, str] = {
     "architect": "🏗️",
 }
 
+# Extended emoji pool per role — used to assign unique emojis when multiple agents share a role
+_EMOJI_POOL: dict[str, list[str]] = {
+    "coder": ["👨‍💻", "💻", "⌨️", "🔧", "🛠️", "⚡", "🦾", "🧑‍💻"],
+    "reviewer": ["🔍", "👁️", "🧐", "📝", "✅", "🎯", "🔎", "📌"],
+    "writer": ["✍️", "📖", "🖊️", "📄", "💬", "🗒️", "📚", "🪶"],
+    "tester": ["🧪", "🔬", "🐛", "🧫", "🏃", "🎲", "🧩", "⚗️"],
+    "planner": ["📋", "🗺️", "📐", "🧭", "📊", "🗓️", "🎯", "📑"],
+    "architect": ["🏗️", "🏛️", "🌐", "🧱", "📐", "🔺", "🏰", "🗼"],
+    "custom": ["🤖", "🌟", "🎭", "🦊", "🐙", "🌈", "🎪", "🔮"],
+}
+
+
+def pick_unique_emoji(role: str, used_emojis: set[str]) -> str:
+    """Pick an emoji for the given role that is not already used.
+
+    Falls back to the default emoji if all pool entries are exhausted.
+    """
+    pool = _EMOJI_POOL.get(role, _EMOJI_POOL["custom"])
+    for e in pool:
+        if e not in used_emojis:
+            return e
+    # All exhausted — fall back to default or first pool entry
+    return _DEFAULT_EMOJI.get(role, "🤖")
+
 # Role → default permissions mapping (least privilege principle)
 _DEFAULT_PERMISSIONS: dict[str, list[str]] = {
     "coder": ["shell", "file_write", "git"],
@@ -110,10 +134,13 @@ def bootstrap_default_roles(
             continue
 
         agent_id = f"{tool_type}:default:{uuid.uuid4().hex[:8]}"
+        # Pick unique emoji — avoid duplicates with existing agents in registry
+        used_emojis = {a.emoji for a in registry.list_agents() if hasattr(a, 'emoji')}
+        emoji = pick_unique_emoji(role_name, used_emojis | {a.emoji for a in created if hasattr(a, 'emoji')})
         identity = AgentIdentity(
             agent_id=agent_id,
             name=role_name,
-            emoji=_DEFAULT_EMOJI.get(role_name, "🤖"),
+            emoji=emoji,
             agent_type=tool_type,
             role=role_name,
             permissions=_DEFAULT_PERMISSIONS.get(role_name, ["file_read"]),

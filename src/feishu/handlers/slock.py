@@ -1848,6 +1848,12 @@ class SlockHandler(BaseEngineHandler):
         else:
             role = self.TOOL_TYPE_ROLE_MAP.get(tool_type, "custom")
 
+        # Assign unique emoji if not explicitly provided
+        if not emoji_explicit:
+            from ...slock_engine.role_bootstrap import pick_unique_emoji
+            used_emojis = {a.emoji for a in engine.registry.list_agents() if hasattr(a, 'emoji')}
+            emoji = pick_unique_emoji(role, used_emojis)
+
         runtime_agent_type = self._resolve_slock_runtime_agent_type(tool_type)
         agent_id = f"{runtime_agent_type}:{model_name or 'default'}:{role_name}"
         existing_raw = engine.registry.get(agent_id)
