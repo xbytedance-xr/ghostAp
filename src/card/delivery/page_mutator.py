@@ -130,6 +130,7 @@ class PageMutator:
         card: RenderedCard,
         *,
         reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
     ) -> "MutationOutcome":
         """Create a new card page via API."""
 
@@ -142,16 +143,16 @@ class PageMutator:
                 try:
                     card_id = self._client.create_streaming_card(card_payload)
                     message_id = self._client.send_card_reference(
-                        chat_id, card_id, reply_to=reply_to, idempotency_key=idempotency_key
+                        chat_id, card_id, reply_to=reply_to, reply_in_thread=reply_in_thread, idempotency_key=idempotency_key
                     )
                 except Exception:
                     logger.debug("Streaming card creation failed, falling back to IM API")
                     message_id, card_id = self._client.create_card(
-                        chat_id, card_payload, reply_to=reply_to, idempotency_key=idempotency_key
+                        chat_id, card_payload, reply_to=reply_to, reply_in_thread=reply_in_thread, idempotency_key=idempotency_key
                     )
             else:
                 message_id, card_id = self._client.create_card(
-                    chat_id, card_payload, reply_to=reply_to, idempotency_key=idempotency_key
+                    chat_id, card_payload, reply_to=reply_to, reply_in_thread=reply_in_thread, idempotency_key=idempotency_key
                 )
 
             last_text = _actual_active_text(card, card_payload)

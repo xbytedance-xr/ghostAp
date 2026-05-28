@@ -93,12 +93,13 @@ class FeishuCardAPIClient:
         card_json: dict,
         *,
         reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
         idempotency_key: str | None = None,
     ) -> tuple[str, str]:
         """Create a card message. Returns (message_id, card_id).
 
         Uses reply API if reply_to is set, otherwise creates directly.
-        Respects reply_in_thread setting from config.
+        Respects reply_in_thread override, falling back to config default_reply_mode.
         """
         from lark_oapi.api.im.v1 import (
             CreateMessageRequest,
@@ -110,7 +111,8 @@ class FeishuCardAPIClient:
         content = json.dumps(card_json, ensure_ascii=False)
 
         if reply_to:
-            reply_in_thread = self._settings.default_reply_mode == "thread"
+            if reply_in_thread is None:
+                reply_in_thread = self._settings.default_reply_mode == "thread"
             request = (
                 ReplyMessageRequest.builder()
                 .message_id(reply_to)
@@ -270,6 +272,7 @@ class FeishuCardAPIClient:
         card_id: str,
         *,
         reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
         idempotency_key: str | None = None,
     ) -> str:
         """Send an IM message referencing a CardKit card entity.
@@ -286,7 +289,8 @@ class FeishuCardAPIClient:
         content = json.dumps({"type": "card", "data": {"card_id": card_id}})
 
         if reply_to:
-            reply_in_thread = self._settings.default_reply_mode == "thread"
+            if reply_in_thread is None:
+                reply_in_thread = self._settings.default_reply_mode == "thread"
             request = (
                 ReplyMessageRequest.builder()
                 .message_id(reply_to)

@@ -16,7 +16,7 @@ class _SlowClient:
         self.created: list[dict] = []
         self.updated: list[dict] = []
 
-    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         idx = len(self.created) + 1
         self.created.append(card_json)
         return (f"msg_{idx}", f"card_{idx}")

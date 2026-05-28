@@ -21,7 +21,7 @@ def _reset_shutdown_flag():
 class _MockClient:
     """Minimal mock for CardAPIClient protocol."""
 
-    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         return ("msg_id", "card_id")
 
     def update_card(self, card_id, card_json, *, sequence=0):
@@ -33,7 +33,7 @@ class _MockClient:
     def create_streaming_card(self, card_json):
         return "card_id"
 
-    def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         return "msg_id"
 
 
@@ -139,7 +139,7 @@ class TestSlowBindingDuringShutdown:
         import time
 
         class SlowClient(_MockClient):
-            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
                 time.sleep(0.5)
                 return ("msg_id", "card_id")
 

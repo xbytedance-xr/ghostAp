@@ -27,7 +27,7 @@ class MockCardClient:
         self._raise_on_update: Exception | None = None
         self._raise_on_streaming_create: Exception | None = None
 
-    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         self._create_counter += 1
         msg_id = f"msg_{self._create_counter}"
         card_id = f"card_{self._create_counter}"
@@ -55,7 +55,7 @@ class MockCardClient:
         self.streaming_creates.append({"card_json": card_json})
         return card_id
 
-    def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         self._create_counter += 1
         msg_id = f"msg_{self._create_counter}"
         self.card_references.append({
@@ -471,7 +471,7 @@ class TestPartialMultipageFailure:
         call_count = 0
         original_create = client.create_card
 
-        def _failing_second_create(chat_id, card_json, *, reply_to=None, idempotency_key=None):
+        def _failing_second_create(chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
             nonlocal call_count
             call_count += 1
             if call_count == 2:
@@ -502,7 +502,7 @@ class TestPartialMultipageFailure:
         call_count = 0
         original_create = client.create_card
 
-        def _failing_second_create(chat_id, card_json, *, reply_to=None, idempotency_key=None):
+        def _failing_second_create(chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
             nonlocal call_count
             call_count += 1
             if call_count == 2:
@@ -773,7 +773,7 @@ class _SlowCreateClient:
         self.creates: list[dict] = []
         self.create_started = threading.Event()
 
-    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         self.create_started.set()
         time.sleep(self._delay)
         self._create_counter += 1
@@ -789,7 +789,7 @@ class _SlowCreateClient:
     def create_streaming_card(self, card_json):
         raise NotImplementedError
 
-    def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         raise NotImplementedError
 
 

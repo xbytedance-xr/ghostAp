@@ -13,7 +13,7 @@ from src.card.state.models import CardMetadata
 class _MockClient:
     """Minimal CardAPIClient mock."""
 
-    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         return ("msg_1", "card_1")
 
     def update_card(self, card_id, card_json, *, sequence=0):

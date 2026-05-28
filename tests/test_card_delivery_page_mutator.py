@@ -25,7 +25,7 @@ class MockClient:
         self._raise_on_element: Exception | None = None
         self._raise_on_streaming: Exception | None = None
 
-    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         if self._raise_on_create:
             raise self._raise_on_create
         self._counter += 1
@@ -47,7 +47,7 @@ class MockClient:
         self._counter += 1
         return f"stream_card_{self._counter}"
 
-    def send_card_reference(self, chat_id, card_id, *, reply_to=None, idempotency_key=None):
+    def send_card_reference(self, chat_id, card_id, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         self._counter += 1
         return f"ref_msg_{self._counter}"
 
@@ -492,6 +492,7 @@ class TestCreatePageStreamingSuccess:
             "chat_1",
             "card_id_1",
             reply_to=None,
+            reply_in_thread=None,
             idempotency_key=ANY,
         )
 

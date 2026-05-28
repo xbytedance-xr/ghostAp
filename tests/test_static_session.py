@@ -18,7 +18,7 @@ class FakeDelivery:
         self.deliver_calls: list[dict] = []
         self.close_calls: list[str] = []
 
-    def deliver(self, session_id, chat_id, rendered, *, reply_to=None):
+    def deliver(self, session_id, chat_id, rendered, *, reply_to=None, reply_in_thread=None):
         if self._fail:
             raise RuntimeError("delivery failed")
         self.deliver_calls.append({"session_id": session_id, "chat_id": chat_id, "rendered": rendered})

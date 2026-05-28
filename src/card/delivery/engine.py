@@ -132,6 +132,7 @@ class CardDelivery:
         rendered: list[RenderedCard],
         *,
         reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
     ) -> list[MutationOutcome]:
         """Deliver rendered cards to Feishu.
 
@@ -168,7 +169,7 @@ class CardDelivery:
         self._lock_pool.enter_delivery()
         try:
             with session_lock:
-                return self._deliver_unlocked(session_id, chat_id, rendered, reply_to=reply_to)
+                return self._deliver_unlocked(session_id, chat_id, rendered, reply_to=reply_to, reply_in_thread=reply_in_thread)
         finally:
             self._lock_pool.exit_delivery()
 
@@ -179,6 +180,7 @@ class CardDelivery:
         rendered: list[RenderedCard],
         *,
         reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
     ) -> list[MutationOutcome]:
         """Internal deliver implementation (caller holds per-session lock)."""
         # Second check under session lock: eliminates TOCTOU window between
@@ -197,7 +199,7 @@ class CardDelivery:
             # Only create the most recent pages (latest content is most relevant).
             pages_to_create = rendered[-_MAX_RECREATE_PAGES:] if len(rendered) > _MAX_RECREATE_PAGES else rendered
             for card in pages_to_create:
-                outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to)
+                outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
                 outcomes.append(outcome)
         else:
             for card in rendered:
@@ -208,7 +210,7 @@ class CardDelivery:
                 existing_page = binding.pages.get(page_idx)
 
                 if existing_page is None:
-                    outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to)
+                    outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
                 elif existing_page.signature != card.structure_signature:
                     outcome = self._update_page(session_id, existing_page, card)
                 elif (
@@ -268,9 +270,10 @@ class CardDelivery:
         card: RenderedCard,
         *,
         reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
     ) -> MutationOutcome:
         """Create a new card page via API."""
-        return self._mutator.create_page(session_id, chat_id, card, reply_to=reply_to)
+        return self._mutator.create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
 
     def _update_page(
         self, session_id: str, page: PageBinding, card: RenderedCard

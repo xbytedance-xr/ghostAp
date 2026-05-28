@@ -578,6 +578,7 @@ class Settings(BaseSettings):
     )
 
     # Slock 引擎运行参数 --------------------------------------------------------
+    slock_reply_mode: str = Field(default="direct", description="Slock 群回复模式: direct（不开话题） / thread（话题回复）")
     slock_max_parallel_agents: int = Field(default=4, ge=1, description="Slock 最大并行 Agent 数（ThreadPool workers）")
     slock_max_queue_size: int = Field(default=8, ge=1, description="Slock 执行队列最大深度，超出时拒绝提交")
     slock_queue_wait_timeout: int = Field(default=60, ge=1, le=600, description="Slock 排队等待超时（秒），超时未执行则取消")

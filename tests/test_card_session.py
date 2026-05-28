@@ -31,7 +31,7 @@ class MockDeliveryClient:
         self.elements = []
         self._counter = 0
 
-    def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+    def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
         self._counter += 1
         self.creates.append({"chat_id": chat_id, "card_json": card_json})
         return (f"msg_{self._counter}", f"card_{self._counter}")
@@ -1703,7 +1703,7 @@ class TestCardSessionLifecycleHooks:
         attempt_count = {"n": 0}
 
         class FlakeyClient:
-            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
                 return ("msg_1", "card_1")
 
             def update_card(self, card_id, card_json, *, sequence=0):
@@ -1803,7 +1803,7 @@ class TestMaxFailuresBannerFormatting:
 
         class FailingClient:
             """Client that always fails on update_card."""
-            def create_card(self, chat_id, card_json, *, reply_to=None, idempotency_key=None):
+            def create_card(self, chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
                 return ("msg_1", "card_1")
             def update_card(self, card_id, card_json, *, sequence=0):
                 raise ConnectionError("always fail")

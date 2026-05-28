@@ -72,6 +72,22 @@ class SlockHandler(BaseEngineHandler):
             logger.warning("SlockHandler cleanup error: %s", str(exc))
 
     # ------------------------------------------------------------------
+    # Reply mode override: Slock uses slock_reply_mode (default "direct")
+    # ------------------------------------------------------------------
+
+    def reply_text(self, message_id: str, text: str, *, reply_in_thread: Optional[bool] = None) -> Optional[str]:
+        """Override: default to slock_reply_mode instead of default_reply_mode."""
+        if reply_in_thread is None:
+            reply_in_thread = self.ctx.settings.slock_reply_mode == "thread"
+        return super().reply_text(message_id, text, reply_in_thread=reply_in_thread)
+
+    def reply_card(self, message_id: str, card_content: str, *, reply_in_thread: Optional[bool] = None) -> Optional[str]:
+        """Override: default to slock_reply_mode instead of default_reply_mode."""
+        if reply_in_thread is None:
+            reply_in_thread = self.ctx.settings.slock_reply_mode == "thread"
+        return super().reply_card(message_id, card_content, reply_in_thread=reply_in_thread)
+
+    # ------------------------------------------------------------------
     # BaseEngineHandler abstract method implementations
     # ------------------------------------------------------------------
 
@@ -94,7 +110,8 @@ class SlockHandler(BaseEngineHandler):
         from ...slock_engine.engine import SlockEngineCallbacks
 
         # Unified card channel — routes through CardDelivery for payload guard + retry
-        channel = SlockCardChannel(self.get_card_delivery(), chat_id)
+        _slock_thread = self.ctx.settings.slock_reply_mode == "thread"
+        channel = SlockCardChannel(self.get_card_delivery(), chat_id, reply_in_thread=_slock_thread)
 
         def on_agent_wake(agent):
             logger.debug("Slock agent waking: %s in chat %s", agent.name, chat_id)

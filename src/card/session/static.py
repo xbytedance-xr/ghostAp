@@ -47,11 +47,13 @@ class StaticCardSession:
         *,
         session_id: str | None = None,
         reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
     ) -> None:
         self._delivery = delivery
         self._chat_id = chat_id
         self._session_id = session_id or str(uuid.uuid4())
         self._reply_to = reply_to
+        self._reply_in_thread = reply_in_thread
         self._closed = threading.Event()
 
     @property
@@ -107,6 +109,7 @@ class StaticCardSession:
                 chat_id=self._chat_id,
                 rendered=rendered,
                 reply_to=self._reply_to,
+                reply_in_thread=self._reply_in_thread,
             )
         except Exception as exc:
             logger.warning("StaticCardSession %s: deliver failed: %s", self._session_id, repr(exc))

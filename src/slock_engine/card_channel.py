@@ -7,7 +7,7 @@ automatically gaining:
 - Binding management and delivery tracking
 
 Usage:
-    channel = SlockCardChannel(handler.get_card_delivery(), chat_id)
+    channel = SlockCardChannel(handler.get_card_delivery(), chat_id, reply_in_thread=False)
     msg_id = channel.send_card(card_dict, reply_to=message_id)
     channel.update_card(msg_id, updated_card_dict)
     channel.close()
@@ -33,9 +33,10 @@ class SlockCardChannel:
     management. Updates route through the session that created the card.
     """
 
-    def __init__(self, delivery: CardDelivery, chat_id: str) -> None:
+    def __init__(self, delivery: CardDelivery, chat_id: str, *, reply_in_thread: bool | None = None) -> None:
         self._delivery = delivery
         self._chat_id = chat_id
+        self._reply_in_thread = reply_in_thread
         self._sessions: dict[str, StaticCardSession] = {}
         self._sessions_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._periodic_updates: dict[str, threading.Timer] = {}  # msg_id -> timer
@@ -47,7 +48,8 @@ class SlockCardChannel:
         """Send a new card via CardDelivery. Returns message_id or None."""
         card_dict = json.loads(card) if isinstance(card, str) else card
         session = StaticCardSession(
-            self._delivery, self._chat_id, reply_to=reply_to
+            self._delivery, self._chat_id, reply_to=reply_to,
+            reply_in_thread=self._reply_in_thread,
         )
         msg_id = session.send(card_dict)
         if msg_id:
