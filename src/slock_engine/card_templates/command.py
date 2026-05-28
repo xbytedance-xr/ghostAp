@@ -155,6 +155,70 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
         "content": "<font color='grey'>\U0001f4a1 也可直接输入命令：/team、/role、/task、/council、/discuss、/memory</font>",
     })
 
+    # Detailed command reference (collapsible)
+    cmd_ref_content = [
+        {
+            "tag": "markdown",
+            "content": (
+                "**\U0001f465 团队管理**（全局命令，任意群可用）\n"
+                "```\n"
+                "/new-team <名称>        创建团队\n"
+                "/team list             列出所有团队\n"
+                "/team status <名称>    查看团队状态\n"
+                "/team dissolve <名称>  解散团队\n"
+                "```\n"
+                "别名: `/nt` = `/new-team`, `/tm` = `/team`\n\n"
+                "**\U0001f3ad 角色管理**（全局命令）\n"
+                "```\n"
+                "/new-role <名称>       创建角色\n"
+                "/role list             列出角色\n"
+                "/role info <名称>      查看角色详情\n"
+                "/role remove <名称>    删除角色\n"
+                "/role move <角色> <目标团队>  转移角色\n"
+                "```\n"
+                "别名: `/nr` = `/new-role`, `/r` = `/role`\n\n"
+                "**\U0001f4dd 任务管理**（需在团队群内）\n"
+                "```\n"
+                "/task list             列出任务\n"
+                "/task status           查看任务状态\n"
+                "/task assign <内容> @<角色>  分配任务\n"
+                "```\n"
+                "别名: `/t` = `/task`\n\n"
+                "**\U0001f5e3 讨论 & 评审**（需在团队群内）\n"
+                "```\n"
+                "/discuss <话题> @agent1 @agent2  发起讨论\n"
+                "/discuss list          列出讨论\n"
+                "/discuss history [n]   查看历史\n"
+                "/discuss stop          停止讨论\n"
+                "/council <议题>        发起 Council 评审\n"
+                "```\n\n"
+                "**\U0001f9e0 记忆 & 规划**（需在团队群内）\n"
+                "```\n"
+                "/memory                查看记忆概览\n"
+                "/memory list           列出所有记忆\n"
+                "/memory @<角色>        查看角色记忆\n"
+                "/memory group          按组查看记忆\n"
+                "/plan list             列出规划\n"
+                "/plan <plan_id>        查看规划详情\n"
+                "```\n\n"
+                "**⚙️ 系统控制**\n"
+                "```\n"
+                "/slock                 激活/显示面板\n"
+                "/slock status          查看引擎状态\n"
+                "/slock stop            停止引擎\n"
+                "/slock help            显示此帮助\n"
+                "```\n"
+                "别名: `/s` = `/slock`"
+            ),
+        },
+    ]
+    elements.append(build_collapsible_panel(
+        "\U0001f4d6 完整命令参考",
+        cmd_ref_content,
+        expanded=False,
+        vertical_spacing="4px",
+    ))
+
     return build_card_wrapper(
         header_title="\U0001f4cb Slock 命令面板",
         header_template="blue",
