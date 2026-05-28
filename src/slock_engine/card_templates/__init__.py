@@ -47,6 +47,15 @@ from ..card_templates_legacy import (  # noqa: F401
     build_team_list_card,
     build_transfer_suggestion_card,
 )
+
+# Migrated submodule cards
+from .action_card import (  # noqa: F401
+    ActionProposal,
+    ActionStatus,
+    ActionType,
+    build_action_proposal_card,
+    build_action_result_card,
+)
 from .command import (  # noqa: F401
     build_command_hub_card,
     build_command_panel_card,
@@ -99,8 +108,6 @@ from .queue_feedback import (  # noqa: F401
     build_retry_swap_card,
     build_timeout_notify_card,
 )
-
-# Migrated submodule cards
 from .role import build_role_info_card, build_role_list_card  # noqa: F401
 
 # New canonical status panel card (migrated from legacy)

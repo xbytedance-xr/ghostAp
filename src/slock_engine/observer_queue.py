@@ -130,6 +130,18 @@ class ObserverLearningQueue:
                 self._requeue_front(remaining_records)
                 break
             try:
+                # Avoidance propagation: lighter-weight context update for
+                # behavior convergence observations (Insight #5)
+                if "[avoidance]" in record.message_snippet:
+                    context_entry = (
+                        f"[{time.strftime('%Y-%m-%d %H:%M', time.localtime(record.timestamp))}] "
+                        f"Noted: {record.actor_id} avoids skill "
+                        f"{', '.join(record.skill_tags)} — not suitable for them"
+                    )
+                    self._memory.update_agent_context(record.observer_id, context_entry)
+                    flushed += 1
+                    continue
+
                 profiles = self._memory.record_skill_feedback(
                     record.observer_id,
                     list(record.skill_tags),

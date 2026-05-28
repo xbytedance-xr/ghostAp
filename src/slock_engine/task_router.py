@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
-from .models import AgentIdentity, AgentStatus, SkillProfile
 from .agent_registry import _normalize_at_token
+from .models import AgentIdentity, AgentStatus, SkillProfile
 from .task_classifier import TaskClassifier
 
 if TYPE_CHECKING:
@@ -595,8 +595,21 @@ class TaskRouter:
         text: str,
         agents: list[AgentIdentity],
     ) -> Optional[AgentIdentity]:
-        """Score agents by skill relevance and availability, return best match."""
-        scored = self._score_agents(text, agents)
+        """Score agents by skill relevance and availability, return best match.
+
+        Applies semantic pre-filter first to exclude obviously irrelevant agents
+        before running full scoring (Slock Insight #4).
+        """
+        from ..config import get_settings
+        settings = get_settings()
+
+        candidates = agents
+        if settings.slock_semantic_prefilter_enabled and len(agents) > 1:
+            candidates = self._semantic_prefilter(text, agents)
+            if not candidates:
+                candidates = agents  # fallback if filter is too aggressive
+
+        scored = self._score_agents(text, candidates)
 
         if not scored:
             return None
@@ -610,6 +623,70 @@ class TaskRouter:
             selected = tied[self._round_robin_index % len(tied)]
             self._round_robin_index += 1
         return selected
+
+    def _semantic_prefilter(
+        self,
+        text: str,
+        agents: list[AgentIdentity],
+    ) -> list[AgentIdentity]:
+        """Quick rule-based filter: exclude agents whose role is obviously irrelevant.
+
+        Uses keyword matching between the task text and the agent's role/personality.
+        Only agents that have at least minimal overlap pass through. Agents without
+        a defined role always pass (generic agents should not be filtered out).
+        """
+        text_lower = text.lower()
+        required_skills = self.extract_skill_keywords(text)
+        passed: list[AgentIdentity] = []
+
+        for agent in agents:
+            # Agents without explicit role always pass
+            role_text = (getattr(agent, "role", "") or "").lower()
+            if not role_text:
+                passed.append(agent)
+                continue
+
+            # Check direct keyword overlap between role and task text
+            role_words = set(re.split(r"[\s,;/|]+", role_text))
+            task_words = set(re.split(r"[\s,;/|]+", text_lower))
+
+            # Direct word overlap
+            if role_words & task_words:
+                passed.append(agent)
+                continue
+
+            # Check if any required_skill tag appears in the role description
+            skill_match = any(skill in role_text for skill in required_skills)
+            if skill_match:
+                passed.append(agent)
+                continue
+
+            # Check personality traits overlap
+            traits = getattr(agent, "personality_traits", []) or []
+            trait_text = " ".join(t.lower() for t in traits)
+            if any(skill in trait_text for skill in required_skills):
+                passed.append(agent)
+                continue
+
+            # Check cached skill profiles for any non-zero relevance
+            self._ensure_skill_profiles_loaded(agent.agent_id)
+            with self._lock:
+                profiles = self._skill_profiles.get(agent.agent_id, [])
+            if profiles:
+                has_relevant = any(
+                    p.tag in required_skills and p.success_rate > 0
+                    for p in profiles
+                )
+                if has_relevant:
+                    passed.append(agent)
+                    continue
+
+            logger.debug(
+                "Semantic prefilter: agent %s (role=%s) skipped for task: %s",
+                agent.agent_id, role_text[:30], text[:50],
+            )
+
+        return passed
 
     def _score_agents(self, text: str, agents: list[AgentIdentity]) -> list[tuple[AgentIdentity, float]]:
         """Score agents by relevance, success, and availability."""

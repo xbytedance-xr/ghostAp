@@ -1174,6 +1174,164 @@ class MemoryManager:
             os.makedirs(os.path.join(self._base_path, "global"), exist_ok=True)
 
     # ------------------------------------------------------------------
+    # Freshness Gate: message counting and retrieval since a timestamp
+    # ------------------------------------------------------------------
+
+    def count_messages_since(
+        self,
+        channel_id: str,
+        since_ts: float,
+        *,
+        exclude_agent_id: str = "",
+    ) -> int:
+        """Count messages in the channel archive that arrived after since_ts.
+
+        If exclude_agent_id is given, messages from that agent are not counted
+        (an agent's own outgoing messages should not trigger freshness failure).
+        """
+        import json
+
+        path = self.message_archive_path(channel_id)
+        with self._get_channel_lock(channel_id):
+            if not os.path.exists(path):
+                return 0
+            try:
+                lines = self._tail_read_lines(path, 50)
+            except OSError:
+                return 0
+
+        count = 0
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            ts = record.get("timestamp", 0.0)
+            if ts <= since_ts:
+                continue
+            if exclude_agent_id and record.get("agent_id") == exclude_agent_id:
+                continue
+            count += 1
+        return count
+
+    def get_messages_since(
+        self,
+        channel_id: str,
+        since_ts: float,
+        *,
+        exclude_agent_id: str = "",
+        limit: int = 5,
+    ) -> list[dict]:
+        """Return messages that arrived after since_ts (newest last, up to limit).
+
+        Used by Freshness Gate to provide new context to the agent for draft re-evaluation.
+        """
+        import json
+
+        path = self.message_archive_path(channel_id)
+        with self._get_channel_lock(channel_id):
+            if not os.path.exists(path):
+                return []
+            try:
+                lines = self._tail_read_lines(path, 50)
+            except OSError:
+                return []
+
+        results: list[dict] = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            ts = record.get("timestamp", 0.0)
+            if ts <= since_ts:
+                continue
+            if exclude_agent_id and record.get("agent_id") == exclude_agent_id:
+                continue
+            results.append({
+                "sender_type": record.get("sender_type", ""),
+                "agent_name": record.get("agent_name", ""),
+                "content": record.get("content", ""),
+                "timestamp": ts,
+            })
+        return results[-limit:]
+
+    # ------------------------------------------------------------------
+    # Behavior Self-Convergence: track agent failure patterns
+    # ------------------------------------------------------------------
+
+    def record_task_outcome(
+        self,
+        agent_id: str,
+        skill_tag: str,
+        success: bool,
+    ) -> None:
+        """Record a task outcome for behavior convergence tracking.
+
+        Stores recent outcomes per agent+skill in a lightweight JSONL file.
+        When consecutive failures reach threshold, writes avoidance strategy
+        into L1 memory.
+        """
+        import json
+
+        safe_agent = self._sanitize_path_component(agent_id)
+        outcomes_path = self._safe_path("agents", safe_agent, "outcomes.jsonl")
+        record = {
+            "timestamp": time.time(),
+            "skill_tag": skill_tag,
+            "success": success,
+        }
+        with self._get_agent_lock(agent_id):
+            os.makedirs(os.path.dirname(outcomes_path), exist_ok=True)
+            with open(outcomes_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def get_consecutive_failures(self, agent_id: str, skill_tag: str) -> int:
+        """Count consecutive recent failures for a specific skill tag."""
+        import json
+
+        safe_agent = self._sanitize_path_component(agent_id)
+        outcomes_path = self._safe_path("agents", safe_agent, "outcomes.jsonl")
+        with self._get_agent_lock(agent_id):
+            if not os.path.exists(outcomes_path):
+                return 0
+            try:
+                lines = self._tail_read_lines(outcomes_path, 20)
+            except OSError:
+                return 0
+
+        consecutive = 0
+        for line in reversed(lines):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if record.get("skill_tag") != skill_tag:
+                continue
+            if record.get("success"):
+                break
+            consecutive += 1
+        return consecutive
+
+    def write_avoidance_strategy(self, agent_id: str, skill_tag: str, reason: str) -> None:
+        """Write an avoidance strategy into agent L1 memory."""
+        entry = (
+            f"\n## Behavioral Note\n"
+            f"- Skill `{skill_tag}`: 连续失败多次，建议回避此类任务或降低自评分。"
+            f" 原因: {reason[:200]}\n"
+        )
+        self.update_agent_context(agent_id, entry)
+
+    # ------------------------------------------------------------------
     # Memory Enhancement: Context Summarization
     # ------------------------------------------------------------------
 

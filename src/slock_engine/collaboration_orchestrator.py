@@ -5,6 +5,7 @@ Orchestrates collaboration plans by:
 2. Auto-starting plans after timeout (configurable, default 30s)
 3. Driving event-driven role participation via TaskStatusObserver
 4. Managing timeout protection for unresponsive roles
+5. Graceful degradation when orchestrator/coordinator is unavailable
 """
 
 from __future__ import annotations
@@ -584,7 +585,11 @@ class CollaborationOrchestrator(TaskStatusObserver):
     # ------------------------------------------------------------------
 
     def _handle_step_timeout(self, plan_id: str, step_id: str) -> None:
-        """Handle a step that has timed out waiting for role response."""
+        """Handle a step that has timed out waiting for role response.
+
+        When degradation is enabled, attempts to let the previous step's agent
+        self-advance to maintain progress even without the timed-out coordinator.
+        """
         with self._lock:
             plan = self._plans.get(plan_id)
             if not plan or plan.status != CollaborationPlanStatus.EXECUTING:
@@ -626,7 +631,30 @@ class CollaborationOrchestrator(TaskStatusObserver):
             self._notify_overview(plan_id)
             return
 
-        # Try next step
+        # Degradation: if the timed-out step had a task_id, try self-advance
+        # using the most recently completed agent as the driver
+        settings = get_settings()
+        if settings.slock_orchestrator_degradation_enabled and timed_out_step.task_id:
+            channel_id = self._channel_map.get(plan_id, "")
+            # Find the last completed step's agent to drive continuation
+            last_completed_agent = ""
+            with self._lock:
+                for step in sorted(plan.steps, key=lambda s: s.order, reverse=True):
+                    if step.status == PlanStepStatus.DONE and step.agent_id:
+                        last_completed_agent = step.agent_id
+                        break
+            if last_completed_agent:
+                advanced = self.attempt_self_advance(
+                    timed_out_step.task_id, last_completed_agent, channel_id,
+                )
+                if advanced:
+                    logger.info(
+                        "Degradation: agent %s self-advanced after timeout of step %s",
+                        last_completed_agent, step_id,
+                    )
+                    return
+
+        # Normal fallback: try next step
         self._start_next_step(plan)
         self._notify_overview(plan_id)
 
@@ -900,3 +928,117 @@ class CollaborationOrchestrator(TaskStatusObserver):
             self._cancel_step_timer(step_id)
 
         logger.info("CollaborationOrchestrator shutdown complete")
+
+    # ------------------------------------------------------------------
+    # Orchestrator Degradation Protocol (Slock Insight #3)
+    # ------------------------------------------------------------------
+
+    def attempt_self_advance(
+        self,
+        task_id: str,
+        completing_agent_id: str,
+        channel_id: str,
+    ) -> bool:
+        """Allow the completing agent to self-advance the plan when the orchestrator is unavailable.
+
+        Called when a task completes but the normal on_task_status_changed path
+        cannot resolve the next step's agent (coordinator role is missing or timed out).
+        The completing agent takes over and drives the next step directly.
+
+        Returns True if self-advance was successful, False otherwise.
+        """
+        settings = get_settings()
+        if not settings.slock_orchestrator_degradation_enabled:
+            return False
+
+        with self._lock:
+            plan_id = self._task_to_plan.get(task_id)
+            if not plan_id:
+                return False
+            plan = self._plans.get(plan_id)
+            if not plan or plan.status != CollaborationPlanStatus.EXECUTING:
+                return False
+
+            # Find next TODO steps whose dependencies are met
+            ready_steps: list[PlanStep] = []
+            for step in sorted(plan.steps, key=lambda s: s.order):
+                if step.status != PlanStepStatus.TODO:
+                    continue
+                deps_met = all(
+                    any(
+                        s.step_id == dep_id
+                        and s.status in (PlanStepStatus.DONE, PlanStepStatus.SKIPPED, PlanStepStatus.TIMED_OUT)
+                        for s in plan.steps
+                    )
+                    for dep_id in step.depends_on
+                )
+                if deps_met:
+                    ready_steps.append(step)
+
+        if not ready_steps:
+            return False
+
+        advanced_any = False
+        for step in ready_steps:
+            # Try to resolve the designated agent
+            agent = self._resolve_agent(step.role, channel_id) if self._resolve_agent else None
+
+            if agent is None:
+                # Degradation: assign to the completing agent itself
+                step.agent_id = completing_agent_id
+                agent = self._resolve_agent(step.role, channel_id) if self._resolve_agent else None
+                if agent is None:
+                    # Create a minimal identity for the completing agent to take over
+                    logger.warning(
+                        "Orchestrator degradation: agent %s self-advancing plan %s step %s (role=%s)",
+                        completing_agent_id, plan_id, step.step_id, step.role,
+                    )
+                    step.status = PlanStepStatus.SKIPPED
+                    continue
+
+            # Create task and dispatch
+            task: Optional[SlockTask] = None
+            if self._add_task_fn:
+                task = self._add_task_fn(step.description)
+                if not task:
+                    step.status = PlanStepStatus.SKIPPED
+                    continue
+                step.task_id = task.task_id
+                if self._claim_task_fn and agent:
+                    self._claim_task_fn(task.task_id, agent.agent_id)
+            else:
+                task = SlockTask(
+                    task_id=str(uuid.uuid4()),
+                    content=step.description,
+                    status=TaskStatus.IN_PROGRESS,
+                    claimed_by=agent.agent_id if agent else completing_agent_id,
+                    claimed_at=time.time(),
+                    created_in=channel_id,
+                )
+                step.task_id = task.task_id
+
+            with self._lock:
+                step.status = PlanStepStatus.IN_PROGRESS
+                self._task_to_plan[task.task_id] = plan.plan_id
+
+            task.timeline.append(TaskTimelineEvent(
+                event_type="self_advanced",
+                agent_id=completing_agent_id,
+                timestamp=time.time(),
+                detail=f"Degradation: agent self-advanced to step {step.role}",
+            ))
+
+            if agent:
+                try:
+                    self._executor.submit(self._dispatch_task, task, agent)
+                    advanced_any = True
+                except Exception:
+                    logger.exception("Failed to dispatch self-advanced task %s", task.task_id)
+                    step.status = PlanStepStatus.SKIPPED
+
+            self._start_step_timer(plan.plan_id, step.step_id)
+
+        if advanced_any:
+            self._persist()
+            self._notify_overview(plan.plan_id)
+        return advanced_any

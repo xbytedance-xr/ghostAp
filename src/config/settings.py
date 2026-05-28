@@ -626,6 +626,14 @@ class Settings(BaseSettings):
     slock_proactive_followup_enabled: bool = Field(default=True, description="是否允许 Agent 在交付结果后主动跟进")
     slock_proactive_followup_delay: int = Field(default=60, ge=10, le=600, description="结果交付后等待用户反馈的秒数，超时则主动跟进")
     slock_resolution_learning_enabled: bool = Field(default=True, description="是否将自主决策假设持久化以复用（减少重复 LLM 调用）")
+    slock_freshness_gate_enabled: bool = Field(default=True, description="发送前检查 channel 是否有新消息（Freshness Gate），防止过期回复")
+    slock_freshness_max_retries: int = Field(default=2, ge=0, le=5, description="Freshness Gate 检查不通过时最大重试次数，超出强制发送")
+    slock_freshness_reeval_timeout: float = Field(default=15.0, ge=1.0, le=60.0, description="Freshness 重新评估的 LLM 超时（秒）")
+    slock_orchestrator_degradation_enabled: bool = Field(default=True, description="协调者不可用时允许执行 agent 自主推进计划")
+    slock_semantic_prefilter_enabled: bool = Field(default=True, description="路由前进行 agent 语义自评估，明显不相关的 agent 直接跳过")
+    slock_behavior_convergence_enabled: bool = Field(default=True, description="连续失败时自动写入回避策略到 agent 记忆")
+    slock_behavior_convergence_threshold: int = Field(default=3, ge=2, le=10, description="连续失败 N 次后触发行为收敛")
+    slock_action_card_enabled: bool = Field(default=True, description="副作用操作（shell/commit/delete）强制走 Action Card 确认流")
 
     # Slock Memory Capacity & Task Chain -------------------------------------------
     slock_l1_max_size: int = Field(default=51200, ge=1024, description="L1 agent 私有记忆最大字节数（默认 50KB），超出触发摘要压缩")

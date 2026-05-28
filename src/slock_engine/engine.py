@@ -1788,6 +1788,7 @@ class SlockEngine(BaseEngine):
         # Set up cancellation event and watchdog timer
         cancel_event = self._get_cancel_event(agent_id)
         settings = get_settings()
+        watchdog_start_ts = time.time()
         watchdog = threading.Timer(
             settings.slock_agent_execution_timeout,
             cancel_event.set,
@@ -1933,6 +1934,21 @@ class SlockEngine(BaseEngine):
                     status="checking", detail=f"{agent.name} 检查中",
                 )
 
+            # --- Freshness Gate (P0) ---
+            # Before sending, check if new messages arrived since execution started.
+            # If so, hold the draft and let agent re-evaluate (bounded retries).
+            settings_obj = get_settings()
+            if result and settings_obj.slock_freshness_gate_enabled:
+                result = self._freshness_gate_check(
+                    agent=agent,
+                    original_message=message,
+                    draft_result=result,
+                    execution_start_ts=watchdog_start_ts,
+                    channel_id=channel_id,
+                    max_retries=settings_obj.slock_freshness_max_retries,
+                    reeval_timeout=settings_obj.slock_freshness_reeval_timeout,
+                )
+
             # CHECKING → SENDING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.SENDING):
                 return None
@@ -1989,6 +2005,9 @@ class SlockEngine(BaseEngine):
                 self._router.set_skill_profiles(agent_id, profiles)
                 self._record_observer_learning(agent, message, skill_tags)
 
+                # Behavior self-convergence tracking (Insight #5)
+                self._check_behavior_convergence(agent, message, success=True)
+
                 # Discussion hook: trigger inter-agent discussion if enabled
                 self._maybe_trigger_discussion(agent, result, channel_id, callbacks)
 
@@ -2031,6 +2050,8 @@ class SlockEngine(BaseEngine):
                 close_session_safely(session)
             if callbacks and callbacks.on_agent_error:
                 callbacks.on_agent_error(agent, redact_sensitive(str(exc)))
+            # Behavior self-convergence: record failure (Insight #5)
+            self._check_behavior_convergence(agent, message, success=False)
             return None
         finally:
             watchdog.cancel()
@@ -2042,6 +2063,83 @@ class SlockEngine(BaseEngine):
                 with contextlib.suppress(Exception):  # intentional: cleanup path
                     autonomous_resolver.cleanup_task(task_id)
                     autonomous_resolver.cleanup_stale()
+
+    # ------------------------------------------------------------------
+    # Freshness Gate + Draft Save (Slock Collaboration Insight #1 & #2)
+    # ------------------------------------------------------------------
+
+    def _freshness_gate_check(
+        self,
+        agent: AgentIdentity,
+        original_message: str,
+        draft_result: str,
+        execution_start_ts: float,
+        channel_id: str,
+        max_retries: int = 2,
+        reeval_timeout: float = 15.0,
+    ) -> str:
+        """Check freshness before sending and optionally re-evaluate the draft.
+
+        If new messages arrived in the channel since the agent started executing,
+        the draft is held and the agent is asked to re-evaluate with the new context.
+        After max_retries, the draft is force-sent with a stale-context annotation.
+
+        Returns the final result text to send.
+        """
+        for attempt in range(max_retries):
+            new_msg_count = self._memory.count_messages_since(
+                channel_id, execution_start_ts, exclude_agent_id=agent.agent_id
+            )
+            if new_msg_count == 0:
+                return draft_result
+
+            logger.info(
+                "Freshness Gate: %d new message(s) since agent %s started (attempt %d/%d)",
+                new_msg_count, agent.name, attempt + 1, max_retries,
+            )
+
+            new_messages = self._memory.get_messages_since(
+                channel_id, execution_start_ts, exclude_agent_id=agent.agent_id, limit=3
+            )
+            new_context_lines = []
+            for msg in new_messages:
+                sender = msg.get("agent_name") or msg.get("sender_type", "user")
+                content = msg.get("content", "")[:300]
+                new_context_lines.append(f"[{sender}]: {content}")
+            new_context_summary = "\n".join(new_context_lines)
+
+            reeval_prompt = (
+                f"你之前对以下消息生成了一个回复草稿，但在你生成回复期间，"
+                f"群里又出现了新消息。请判断你的草稿是否仍然有效。\n\n"
+                f"## 原始消息\n{original_message[:500]}\n\n"
+                f"## 你的草稿回复\n{draft_result[:1000]}\n\n"
+                f"## 新到达的消息\n{new_context_summary}\n\n"
+                f"## 指令\n"
+                f"如果你的草稿仍然有效且不需要修改，请原样输出草稿内容。\n"
+                f"如果需要根据新上下文修改回复，请输出修改后的完整回复。\n"
+                f"不要解释你的决策，直接输出最终回复。"
+            )
+
+            try:
+                revised = self._run_acp_session(agent, reeval_prompt, timeout=reeval_timeout)
+                if revised and revised.strip():
+                    draft_result = revised.strip()
+                    execution_start_ts = time.time()
+            except Exception as exc:
+                logger.warning(
+                    "Freshness reeval failed for agent %s: %s, using original draft",
+                    agent.name, exc,
+                )
+                break
+
+        # Final check: if still stale after max retries, annotate
+        final_new_count = self._memory.count_messages_since(
+            channel_id, execution_start_ts, exclude_agent_id=agent.agent_id
+        )
+        if final_new_count > 0:
+            draft_result += "\n\n---\n⚠️ *此回复基于较早上下文生成，发送期间群内有新消息到达。*"
+
+        return draft_result
 
     def _record_observer_learning(
         self,
@@ -2062,6 +2160,57 @@ class SlockEngine(BaseEngine):
                 message=message,
                 skill_tags=skill_tags,
             )
+
+    def _check_behavior_convergence(
+        self,
+        agent: AgentIdentity,
+        message: str,
+        success: bool,
+    ) -> None:
+        """Track task outcomes and trigger avoidance strategy on repeated failures.
+
+        Implements Slock Collaboration Insight #5: Behavior Self-Convergence.
+        When an agent fails the same skill_tag N consecutive times, it writes an
+        avoidance note to L1 memory and broadcasts that information to observers.
+        """
+        settings = get_settings()
+        if not settings.slock_behavior_convergence_enabled:
+            return
+
+        skill_tags = self._router.extract_skill_keywords(message)
+        if not skill_tags:
+            return
+
+        threshold = settings.slock_behavior_convergence_threshold
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+
+        for tag in skill_tags:
+            self._memory.record_task_outcome(agent.agent_id, tag, success)
+
+            if not success:
+                consecutive = self._memory.get_consecutive_failures(agent.agent_id, tag)
+                if consecutive >= threshold:
+                    reason = (
+                        f"Agent {agent.name} failed skill '{tag}' "
+                        f"{consecutive} consecutive times"
+                    )
+                    self._memory.write_avoidance_strategy(agent.agent_id, tag, reason)
+                    logger.info(
+                        "Behavior convergence: %s avoids skill '%s' after %d failures",
+                        agent.name, tag, consecutive,
+                    )
+                    # Notify idle observers so they learn about this avoidance
+                    for observer in self._registry.list_agents(channel_id=channel_id):
+                        if observer.agent_id == agent.agent_id:
+                            continue
+                        if self.get_agent_status(observer.agent_id) != AgentStatus.IDLE:
+                            continue
+                        self._observer_queue.enqueue(
+                            observer_id=observer.agent_id,
+                            actor_id=agent.agent_id,
+                            message=f"[avoidance] {agent.name} avoids skill '{tag}': {reason}",
+                            skill_tags=[tag],
+                        )
 
     def _maybe_trigger_discussion(
         self,
@@ -2322,6 +2471,59 @@ class SlockEngine(BaseEngine):
         )
         return header + "\n".join(lines)
 
+    def _render_collaboration_context(self, agent: AgentIdentity, channel_id: str) -> str:
+        """Render a dynamic collaboration context block for injection into agent prompts.
+
+        Contains: task board summary, active collaboration plans, and behavioral rules.
+        Returns "" if roster injection is disabled (isolation mode) or no meaningful content.
+        """
+        settings = get_settings()
+        if not getattr(settings, "slock_inject_team_roster", True):
+            return ""
+
+        sections: list[str] = []
+
+        # 1. Task Board Summary
+        tasks = list(self._tasks)
+        if tasks:
+            from .models import TaskStatus
+            todo_count = sum(1 for t in tasks if t.status == TaskStatus.TODO)
+            in_progress_count = sum(1 for t in tasks if t.status == TaskStatus.IN_PROGRESS)
+            done_count = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+            sections.append(f"任务看板: {todo_count} 待办 / {in_progress_count} 进行中 / {done_count} 已完成")
+
+        # 2. Active Collaboration Plans
+        try:
+            active_plans = self._collaboration_orchestrator.list_active_plans(channel_id)
+            if active_plans:
+                plan_lines: list[str] = []
+                for plan in active_plans:
+                    template_label = plan.chain_template or "custom"
+                    status_map = {
+                        "executing": "执行中",
+                        "pending_approval": "待确认",
+                        "paused": "已暂停",
+                    }
+                    status_label = status_map.get(plan.status.value, plan.status.value)
+                    plan_lines.append(f"协作计划: {template_label} ({status_label})")
+                sections.extend(plan_lines)
+        except Exception:
+            pass  # Non-critical; skip if orchestrator unavailable
+
+        # 3. Collaboration Rules
+        rules = [
+            "执行任务前先通过 Task Claim 声明所有权",
+            "完成后在回复中 @ 下一位同事",
+            "不确定是否该你处理时，先观察再行动",
+            "遇到阻塞及时 escalate，不要无限重试",
+        ]
+        sections.append("协作规则:\n" + "\n".join(f"- {r}" for r in rules))
+
+        if not sections:
+            return ""
+
+        return "\n# Collaboration Context\n" + "\n".join(sections)
+
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
         """Build the full prompt for an agent including system prompt and memory."""
         logger.debug(
@@ -2426,6 +2628,11 @@ class SlockEngine(BaseEngine):
                         disc_lines.append(f"[Round {msg.round_num}] {msg.sender_agent_id}: {content}")
                     parts.append("\n# Discussion Context\n" + "\n".join(disc_lines))
                     break  # Only inject the most recent active discussion
+
+        # Dynamic collaboration context: task board + active plans + rules
+        collab_context = self._render_collaboration_context(agent, channel_id)
+        if collab_context:
+            parts.append(collab_context)
 
         parts.append(f"\n# User Message\n{message}")
 
@@ -2751,6 +2958,135 @@ class SlockEngine(BaseEngine):
     def _trim_escalations(self) -> None:
         """Delegate escalation trimming to the escalation manager."""
         self._escalation_mgr._trim_escalations()
+
+    # ------------------------------------------------------------------
+    # Action Card Side-Effect Gate (Slock Insight #6)
+    # ------------------------------------------------------------------
+
+    def propose_action(
+        self,
+        agent: AgentIdentity,
+        action_type: str,
+        title: str,
+        *,
+        description: str = "",
+        command: str = "",
+        impact_summary: str = "",
+        reversible: bool = True,
+        callbacks: Optional[SlockEngineCallbacks] = None,
+    ) -> Optional[str]:
+        """Propose a side-effect action that requires human confirmation.
+
+        Returns the action_id if proposal card was sent, None otherwise.
+        The action is held until the user approves or rejects via card callback.
+        """
+        from .card_templates.action_card import (
+            ActionProposal,
+            ActionType,
+            build_action_proposal_card,
+        )
+
+        settings = get_settings()
+        if not settings.slock_action_card_enabled:
+            return None
+
+        try:
+            a_type = ActionType(action_type)
+        except ValueError:
+            a_type = ActionType.CUSTOM
+
+        channel_id = self._channel.channel_id if self._channel else self.chat_id
+        proposal = ActionProposal(
+            action_type=a_type,
+            agent_id=agent.agent_id,
+            agent_name=agent.name,
+            title=title,
+            description=description,
+            command=command,
+            impact_summary=impact_summary,
+            reversible=reversible,
+            channel_id=channel_id,
+        )
+
+        card = build_action_proposal_card(proposal)
+        msg_id = None
+        if callbacks and callbacks.on_card_send:
+            msg_id = callbacks.on_card_send(card)
+        elif self._card_send_fn:
+            msg_id = self._card_send_fn(card)
+
+        if msg_id:
+            proposal.card_message_id = msg_id
+
+        # Store pending action for resolution
+        if not hasattr(self, "_pending_actions"):
+            self._pending_actions: dict[str, "ActionProposal"] = {}
+        self._pending_actions[proposal.action_id] = proposal
+
+        logger.info(
+            "Action proposed: id=%s type=%s agent=%s title=%s",
+            proposal.action_id, action_type, agent.name, title[:50],
+        )
+        return proposal.action_id
+
+    def resolve_action(
+        self,
+        action_id: str,
+        approved: bool,
+    ) -> Any:
+        """Resolve a pending action proposal (approve or reject).
+
+        Returns the updated proposal, or None if not found.
+        """
+        from .card_templates.action_card import ActionStatus
+
+        pending = getattr(self, "_pending_actions", {})
+        proposal = pending.get(action_id)
+        if not proposal:
+            return None
+
+        proposal.resolved_at = time.time()
+        if approved:
+            proposal.status = ActionStatus.APPROVED
+        else:
+            proposal.status = ActionStatus.REJECTED
+
+        logger.info(
+            "Action %s: id=%s agent=%s",
+            "approved" if approved else "rejected",
+            action_id, proposal.agent_name,
+        )
+        return proposal
+
+    def complete_action(
+        self,
+        action_id: str,
+        *,
+        success: bool = True,
+        result: str = "",
+    ) -> Any:
+        """Mark an approved action as completed or failed after execution."""
+        from .card_templates.action_card import ActionStatus, build_action_result_card
+
+        pending = getattr(self, "_pending_actions", {})
+        proposal = pending.get(action_id)
+        if not proposal:
+            return None
+
+        proposal.status = ActionStatus.COMPLETED if success else ActionStatus.FAILED
+        proposal.result = result
+        proposal.resolved_at = time.time()
+
+        # Send result card
+        result_card = build_action_result_card(proposal)
+        if proposal.card_message_id and self._card_update_fn:
+            self._card_update_fn(proposal.card_message_id, result_card)
+        elif self._card_send_fn:
+            self._card_send_fn(result_card)
+
+        # Clean up
+        pending.pop(action_id, None)
+        return proposal
 
     def capture_dissolve_snapshot(self) -> TeamSnapshot:
         """Capture the active channel, role bindings, and task board for undo."""
