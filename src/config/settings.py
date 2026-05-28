@@ -593,6 +593,8 @@ class Settings(BaseSettings):
 
     # Slock Discussion / NLI / Memory Enhancement ----------------------------
     slock_discussion_enabled: bool = Field(default=True, description="是否启用 Agent 间自动讨论（默认开启）")
+    slock_discussion_broadcast_rounds: bool = Field(default=True, description="讨论时逐轮以角色身份卡片单独发送到群")
+    slock_discussion_live_card: bool = Field(default=False, description="讨论时是否显示合并式总览卡片（逐轮广播开启时默认关闭）")
     slock_max_discussion_rounds: int = Field(default=3, ge=1, le=10, description="讨论链最大轮次，超限强制收敛")
     slock_uncertainty_markers: list[str] = Field(
         default_factory=lambda: list(_DEFAULT_UNCERTAINTY_MARKERS),

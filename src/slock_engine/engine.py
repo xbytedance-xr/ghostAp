@@ -2066,10 +2066,12 @@ class SlockEngine(BaseEngine):
             self._remove_discussion(channel_id, thread.thread_id)
             return
 
-        # Send "discussion in progress" card to user
+        # Send "discussion in progress" card to user (only when live card enabled)
         from .card_templates import build_discussion_card_from_thread, build_discussion_summary_card_from_thread
+        broadcast_rounds = getattr(settings, 'slock_discussion_broadcast_rounds', True)
+        show_live_card = getattr(settings, 'slock_discussion_live_card', False)
         discussion_card_msg_id = None
-        if callbacks and callbacks.on_card_send:
+        if show_live_card and callbacks and callbacks.on_card_send:
             try:
                 card = build_discussion_card_from_thread(thread)
                 discussion_card_msg_id = callbacks.on_card_send(card)
@@ -2098,10 +2100,25 @@ class SlockEngine(BaseEngine):
                 thread.cancellation_event = watchdog_fired
 
                 def on_round_complete(updated_thread):
-                    """Update the discussion card after each round."""
+                    """Broadcast per-round agent identity card and optionally update live card."""
                     if watchdog_fired.is_set():
                         return
-                    if discussion_card_msg_id and callbacks and callbacks.on_card_update:
+                    # Per-round broadcast: send independent identity card for the respondent
+                    if broadcast_rounds and updated_thread.messages and callbacks and callbacks.on_card_send:
+                        last_msg = updated_thread.messages[-1]
+                        respondent = self.registry.get(last_msg.sender_agent_id)
+                        if respondent:
+                            try:
+                                round_card = self._mouthpiece.format_card(
+                                    respondent,
+                                    last_msg.content,
+                                    channel_id=channel_id,
+                                )
+                                callbacks.on_card_send(round_card)
+                            except Exception as bcast_exc:
+                                logger.warning("Failed to broadcast round card: %s", bcast_exc, exc_info=True)
+                    # Optional: update live card
+                    if show_live_card and discussion_card_msg_id and callbacks and callbacks.on_card_update:
                         try:
                             card = build_discussion_card_from_thread(updated_thread)
                             callbacks.on_card_update(discussion_card_msg_id, card)

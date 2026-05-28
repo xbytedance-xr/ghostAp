@@ -121,6 +121,15 @@ class SlockHandler(BaseEngineHandler):
 
         def on_agent_done(agent, result):
             logger.debug("Slock agent done: %s result_len=%d", agent.name, len(result))
+            # Broadcast agent result as identity card when broadcast mode enabled
+            if getattr(self.ctx.settings, 'slock_discussion_broadcast_rounds', True) and result.strip():
+                from ...slock_engine.mouthpiece import Mouthpiece
+                mouthpiece = Mouthpiece()
+                try:
+                    card = mouthpiece.format_card(agent, result, channel_id=chat_id)
+                    channel.send_card(card)
+                except Exception as bcast_exc:
+                    logger.debug("on_agent_done broadcast failed: %s", bcast_exc)
 
         def on_error(err_msg):
             logger.error("Slock engine error in chat %s: %s", chat_id, err_msg)
