@@ -239,6 +239,13 @@ TASK_SCHEDULER_MAX_CONCURRENT=10      # 全局最大并发数
 uv run python -m src.main
 ```
 
+### 5. 设置管理员
+
+首次启动后，在飞书**私聊**机器人发送 `/setadmin` 即可将自己设为 Bot 管理员。
+该命令会自动将你的 open_id 写入 `.env` 的 `ADMIN_USER_IDS` 字段。
+
+> ⚠️ `/setadmin` 仅在 `ADMIN_USER_IDS` 为空时对任何人开放；设置后只有当前管理员可修改。
+
 ## 命令参考
 
 ### 模式控制
