@@ -58,7 +58,7 @@ class CardRateLimiter:
         """Get or create the token bucket for a message_id."""
         bucket = self._buckets.get(message_id)
         if bucket is None:
-            bucket = TokenBucketLimiter(capacity=1, fill_rate=1.0 / self._min_interval)
+            bucket = TokenBucketLimiter(capacity=3, fill_rate=1.0 / self._min_interval)
             self._buckets[message_id] = bucket
         return bucket
 

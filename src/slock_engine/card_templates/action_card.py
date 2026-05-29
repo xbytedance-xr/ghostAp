@@ -134,11 +134,11 @@ def build_action_proposal_card(proposal: ActionProposal) -> dict:
             "content": f"**影响范围:** {proposal.impact_summary[:200]}",
         })
 
-    # Reversibility indicator
+    # Reversibility indicator + timeout notice
     reversible_text = "✅ 可撤销" if proposal.reversible else "⚠️ 不可撤销"
     elements.append({
         "tag": "markdown",
-        "content": reversible_text,
+        "content": f"{reversible_text} | ⏱ 5分钟内未响应将自动拒绝",
         "text_size": "notation",
     })
 

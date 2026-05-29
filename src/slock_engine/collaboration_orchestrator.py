@@ -63,6 +63,7 @@ class CollaborationOrchestrator(TaskStatusObserver):
         register_task: Callable[[SlockTask], None] | None = None,
         add_task_fn: Callable[[str], Optional[SlockTask]] | None = None,
         claim_task_fn: Callable[[str, str], bool] | None = None,
+        get_task_result_fn: Callable[[str], Optional[str]] | None = None,
         persist_fn: Callable[[], None] | None = None,
         auto_plan_timeout: int | None = None,
         role_response_timeout: int | None = None,
@@ -78,6 +79,8 @@ class CollaborationOrchestrator(TaskStatusObserver):
             register_task: Optional callback to register tasks in the board for persistence.
             add_task_fn: Callable(content) -> SlockTask or None. Standard board task creation.
             claim_task_fn: Callable(task_id, agent_id) -> bool. Standard board task claim.
+            get_task_result_fn: Callable(task_id) -> str or None. Gets execution result
+                               from a completed task for predecessor context passing.
             persist_fn: Optional callback to persist plans to disk after state changes.
             auto_plan_timeout: Seconds to wait before auto-starting plan.
             role_response_timeout: Seconds to wait for a role to respond.
@@ -90,6 +93,7 @@ class CollaborationOrchestrator(TaskStatusObserver):
         self._register_task = register_task
         self._add_task_fn = add_task_fn
         self._claim_task_fn = claim_task_fn
+        self._get_task_result_fn = get_task_result_fn
         self._persist_fn = persist_fn
         self._auto_plan_timeout = auto_plan_timeout or settings.slock_auto_plan_timeout
         self._role_response_timeout = role_response_timeout or settings.slock_role_response_timeout
@@ -296,6 +300,7 @@ class CollaborationOrchestrator(TaskStatusObserver):
             ):
                 return False
             plan.status = CollaborationPlanStatus.CANCELLED
+            plan.completed_at = time.time()
 
         self._cancel_plan_timer(plan_id)
         self._cancel_all_step_timers(plan_id)
@@ -397,6 +402,7 @@ class CollaborationOrchestrator(TaskStatusObserver):
             )
             if all_done:
                 plan.status = CollaborationPlanStatus.COMPLETED
+                plan.completed_at = time.time()
 
         # Cancel timeout timer for this step
         self._cancel_step_timer(completed_step.step_id)
@@ -716,6 +722,7 @@ class CollaborationOrchestrator(TaskStatusObserver):
             )
             if all_done:
                 plan.status = CollaborationPlanStatus.COMPLETED
+                plan.completed_at = time.time()
 
         logger.warning(
             "Step timed out: plan=%s step=%s role=%s (timeout=%ds)",
@@ -769,136 +776,204 @@ class CollaborationOrchestrator(TaskStatusObserver):
 
         Steps whose depends_on are all DONE/SKIPPED/TIMED_OUT are started concurrently.
         This enables parallel role groups (e.g. coder+tester running simultaneously).
+
+        Uses a loop instead of recursion to prevent stack overflow when cascading
+        skips unblock subsequent steps.  If ALL steps end up skipped, the plan is
+        marked FAILED (not COMPLETED) since no useful work was produced.
         """
-        if plan.status == CollaborationPlanStatus.PAUSED:
-            return
-        channel_id = self._channel_map.get(plan.plan_id, "")
+        _MAX_SKIP_ITERATIONS = 50  # Safety cap to prevent infinite loops
 
-        # Collect all steps ready to start under lock to prevent race conditions
-        with self._lock:
-            ready_steps: list[PlanStep] = []
-            for step in sorted(plan.steps, key=lambda s: s.order):
-                if step.status != PlanStepStatus.TODO:
-                    continue
+        for _iteration in range(_MAX_SKIP_ITERATIONS):
+            if plan.status == CollaborationPlanStatus.PAUSED:
+                return
+            channel_id = self._channel_map.get(plan.plan_id, "")
 
-                # Check dependencies — all must be resolved
-                deps_met = all(
-                    any(
-                        s.step_id == dep_id
-                        and s.status in (PlanStepStatus.DONE, PlanStepStatus.SKIPPED, PlanStepStatus.TIMED_OUT)
-                        for s in plan.steps
-                    )
-                    for dep_id in step.depends_on
-                )
-                if not deps_met:
-                    continue
-
-                ready_steps.append(step)
-
-        # Start all ready steps (outside main lock to avoid holding it during dispatch)
-        any_skipped = False
-        for step in ready_steps:
-            # CAS guard: re-check under lock that step is still TODO before proceeding
+            # Collect all steps ready to start under lock to prevent race conditions
             with self._lock:
-                if step.status != PlanStepStatus.TODO:
-                    continue  # Another thread already claimed this step
+                ready_steps: list[PlanStep] = []
+                for step in sorted(plan.steps, key=lambda s: s.order):
+                    if step.status != PlanStepStatus.TODO:
+                        continue
 
-            # Resolve agent
-            agent = None
-            if not step.agent_id:
-                agent = self._resolve_agent(step.role, channel_id)
-                if agent:
-                    step.agent_id = agent.agent_id
-                else:
-                    logger.warning("No agent for role %s in channel %s", step.role, channel_id)
-                    step.status = PlanStepStatus.SKIPPED
-                    any_skipped = True
-                    continue
-            else:
-                agent = self._resolve_agent(step.role, channel_id)
+                    # Check dependencies — all must be resolved
+                    deps_met = all(
+                        any(
+                            s.step_id == dep_id
+                            and s.status in (PlanStepStatus.DONE, PlanStepStatus.SKIPPED, PlanStepStatus.TIMED_OUT)
+                            for s in plan.steps
+                        )
+                        for dep_id in step.depends_on
+                    )
+                    if not deps_met:
+                        continue
 
-            # Create task for this step via standard board flow
-            task: Optional[SlockTask] = None
-            if self._add_task_fn:
-                task = self._add_task_fn(step.description)
-                if not task:
-                    logger.warning("Board rejected task for step %s (limit reached)", step.step_id)
-                    step.status = PlanStepStatus.SKIPPED
-                    any_skipped = True
-                    continue
-                step.task_id = task.task_id
-                # Claim task for the resolved agent
-                if self._claim_task_fn and agent:
-                    claimed = self._claim_task_fn(task.task_id, agent.agent_id)
-                    if not claimed:
-                        logger.warning("Claim failed for task %s agent %s", task.task_id, agent.agent_id)
+                    ready_steps.append(step)
+
+            if not ready_steps:
+                # No more steps to start — check if plan is fully resolved
+                all_resolved = all(
+                    s.status in (PlanStepStatus.DONE, PlanStepStatus.SKIPPED, PlanStepStatus.TIMED_OUT)
+                    for s in plan.steps
+                )
+                if all_resolved:
+                    # Determine if plan produced any useful work
+                    any_done = any(s.status == PlanStepStatus.DONE for s in plan.steps)
+                    if any_done:
+                        plan.status = CollaborationPlanStatus.COMPLETED
+                        plan.completed_at = time.time()
+                    else:
+                        # All steps skipped/timed out — no useful work produced
+                        plan.status = CollaborationPlanStatus.FAILED
+                        plan.completed_at = time.time()
+                        logger.warning(
+                            "Plan %s marked FAILED: all steps skipped/timed out, no useful work produced",
+                            plan.plan_id[:8],
+                        )
+                break
+
+            # Start all ready steps (outside main lock to avoid holding it during dispatch)
+            any_skipped = False
+            for step in ready_steps:
+                # CAS guard: re-check under lock that step is still TODO before proceeding
+                with self._lock:
+                    if step.status != PlanStepStatus.TODO:
+                        continue  # Another thread already claimed this step
+
+                # Resolve agent
+                agent = None
+                if not step.agent_id:
+                    agent = self._resolve_agent(step.role, channel_id)
+                    if agent:
+                        step.agent_id = agent.agent_id
+                    else:
+                        logger.warning("No agent for role %s in channel %s", step.role, channel_id)
                         step.status = PlanStepStatus.SKIPPED
                         any_skipped = True
                         continue
-                # CAS: mark IN_PROGRESS under lock
-                with self._lock:
-                    if step.status != PlanStepStatus.TODO:
-                        continue  # Race: another thread beat us
-                    step.status = PlanStepStatus.IN_PROGRESS
-            else:
-                # Legacy fallback: direct construction
-                task = SlockTask(
-                    task_id=str(uuid.uuid4()),
-                    content=step.description,
-                    status=TaskStatus.IN_PROGRESS,
-                    claimed_by=step.agent_id,
-                    claimed_at=time.time(),
-                    created_in=channel_id,
-                )
-                step.task_id = task.task_id
-                # CAS: mark IN_PROGRESS under lock
-                with self._lock:
-                    if step.status != PlanStepStatus.TODO:
+                else:
+                    agent = self._resolve_agent(step.role, channel_id)
+
+                # Collect predecessor context from completed dependency steps
+                if step.depends_on:
+                    predecessor_outputs: list[str] = []
+                    for dep_id in step.depends_on:
+                        for dep_step in plan.steps:
+                            if dep_step.step_id == dep_id and dep_step.status == PlanStepStatus.DONE:
+                                # Find the task result from the board
+                                if dep_step.task_id and self._get_task_result_fn:
+                                    dep_result = self._get_task_result_fn(dep_step.task_id)
+                                    if dep_result:
+                                        predecessor_outputs.append(
+                                            f"[{dep_step.role}的输出]:\n{dep_result[:800]}"
+                                        )
+                                break
+                    if predecessor_outputs:
+                        # Cap total predecessor context to 2000 chars
+                        joined = "\n\n".join(predecessor_outputs)
+                        step.predecessor_context = joined[:2000]
+
+                # Create task for this step via standard board flow
+                # Enrich task content with predecessor context for continuity
+                task_description = step.description
+                if step.predecessor_context:
+                    task_description = (
+                        f"{step.description}\n\n"
+                        f"--- 前序步骤输出 ---\n{step.predecessor_context}"
+                    )
+                task: Optional[SlockTask] = None
+                if self._add_task_fn:
+                    task = self._add_task_fn(task_description)
+                    if not task:
+                        logger.warning("Board rejected task for step %s (limit reached)", step.step_id)
+                        step.status = PlanStepStatus.SKIPPED
+                        any_skipped = True
                         continue
-                    step.status = PlanStepStatus.IN_PROGRESS
-                # Register task in the board for persistence/tracking
-                if self._register_task:
+                    step.task_id = task.task_id
+                    # Claim task for the resolved agent
+                    if self._claim_task_fn and agent:
+                        claimed = self._claim_task_fn(task.task_id, agent.agent_id)
+                        if not claimed:
+                            logger.warning("Claim failed for task %s agent %s", task.task_id, agent.agent_id)
+                            step.status = PlanStepStatus.SKIPPED
+                            any_skipped = True
+                            continue
+                    # CAS: mark IN_PROGRESS under lock
+                    with self._lock:
+                        if step.status != PlanStepStatus.TODO:
+                            continue  # Race: another thread beat us
+                        step.status = PlanStepStatus.IN_PROGRESS
+                else:
+                    # Legacy fallback: direct construction
+                    task = SlockTask(
+                        task_id=str(uuid.uuid4()),
+                        content=task_description,
+                        status=TaskStatus.IN_PROGRESS,
+                        claimed_by=step.agent_id,
+                        claimed_at=time.time(),
+                        created_in=channel_id,
+                    )
+                    step.task_id = task.task_id
+                    # CAS: mark IN_PROGRESS under lock
+                    with self._lock:
+                        if step.status != PlanStepStatus.TODO:
+                            continue
+                        step.status = PlanStepStatus.IN_PROGRESS
+                    # Register task in the board for persistence/tracking
+                    if self._register_task:
+                        try:
+                            self._register_task(task)
+                        except Exception:
+                            logger.warning("Failed to register task %s in board", task.task_id)
+
+                # Record timeline event
+                task.timeline.append(TaskTimelineEvent(
+                    event_type="started",
+                    agent_id=step.agent_id,
+                    timestamp=time.time(),
+                    detail=f"Plan step started: {step.role} — {step.description[:50]}",
+                ))
+
+                # Register task -> plan mapping
+                with self._lock:
+                    self._task_to_plan[task.task_id] = plan.plan_id
+
+                # Dispatch to agent asynchronously via bounded executor
+                if agent:
                     try:
-                        self._register_task(task)
+                        self._executor.submit(self._dispatch_task, task, agent)
                     except Exception:
-                        logger.warning("Failed to register task %s in board", task.task_id)
+                        logger.exception("Failed to submit dispatch for task %s", task.task_id)
+                        step.status = PlanStepStatus.SKIPPED
+                        any_skipped = True
+                        continue
 
-            # Record timeline event
-            task.timeline.append(TaskTimelineEvent(
-                event_type="started",
-                agent_id=step.agent_id,
-                timestamp=time.time(),
-                detail=f"Plan step started: {step.role} — {step.description[:50]}",
-            ))
+                # Start timeout timer
+                self._start_step_timer(plan.plan_id, step.step_id)
 
-            # Register task -> plan mapping
-            with self._lock:
-                self._task_to_plan[task.task_id] = plan.plan_id
+            # If no steps were skipped, we're done dispatching for this round
+            if not any_skipped:
+                break
 
-            # Dispatch to agent asynchronously via bounded executor
-            if agent:
-                try:
-                    self._executor.submit(self._dispatch_task, task, agent)
-                except Exception:
-                    logger.exception("Failed to submit dispatch for task %s", task.task_id)
-                    step.status = PlanStepStatus.SKIPPED
-                    any_skipped = True
-                    continue
-
-            # Start timeout timer
-            self._start_step_timer(plan.plan_id, step.step_id)
-
-        # If any steps were skipped, re-check for newly unblocked steps
-        if any_skipped:
-            # Check if plan is now complete (all steps resolved)
+            # Check if plan is now fully resolved after skips
             all_resolved = all(
                 s.status in (PlanStepStatus.DONE, PlanStepStatus.SKIPPED, PlanStepStatus.TIMED_OUT)
                 for s in plan.steps
             )
             if all_resolved:
-                plan.status = CollaborationPlanStatus.COMPLETED
-                return
-            self._start_next_step(plan)
+                any_done = any(s.status == PlanStepStatus.DONE for s in plan.steps)
+                if any_done:
+                    plan.status = CollaborationPlanStatus.COMPLETED
+                    plan.completed_at = time.time()
+                else:
+                    plan.status = CollaborationPlanStatus.FAILED
+                    plan.completed_at = time.time()
+                    logger.warning(
+                        "Plan %s marked FAILED: all steps skipped/timed out, no useful work produced",
+                        plan.plan_id[:8],
+                    )
+                break
+
+            # Loop continues to check for newly unblocked steps after skips
 
         self._notify_overview(plan.plan_id)
 
@@ -998,12 +1073,18 @@ class CollaborationOrchestrator(TaskStatusObserver):
     def _cleanup_expired_plans(self, ttl_seconds: float) -> None:
         """Remove plans that have been completed/cancelled longer than TTL."""
         now = time.time()
+        max_active_lifetime = 7200  # 2 hours safety net for stuck active plans
         to_remove = []
         with self._lock:
             for plan_id, plan in self._plans.items():
-                if plan.status in (CollaborationPlanStatus.COMPLETED, CollaborationPlanStatus.CANCELLED):
-                    # Use created_at + generous TTL as proxy (plans don't store completion time)
-                    if now - plan.created_at > ttl_seconds:
+                if plan.status in (CollaborationPlanStatus.COMPLETED, CollaborationPlanStatus.CANCELLED, CollaborationPlanStatus.FAILED):
+                    # Use completed_at if available, otherwise fall back to created_at
+                    reference_time = plan.completed_at if plan.completed_at else plan.created_at
+                    if now - reference_time > ttl_seconds:
+                        to_remove.append(plan_id)
+                else:
+                    # Active plans: use created_at with a much longer max lifetime as safety net
+                    if now - plan.created_at > max_active_lifetime:
                         to_remove.append(plan_id)
             for plan_id in to_remove:
                 del self._plans[plan_id]
@@ -1086,17 +1167,13 @@ class CollaborationOrchestrator(TaskStatusObserver):
             agent = self._resolve_agent(step.role, channel_id) if self._resolve_agent else None
 
             if agent is None:
-                # Degradation: assign to the completing agent itself
+                # Degradation: completing agent takes over directly
+                logger.warning(
+                    "Orchestrator degradation: agent %s self-advancing plan %s step %s (role=%s)",
+                    completing_agent_id, plan_id, step.step_id, step.role,
+                )
                 step.agent_id = completing_agent_id
-                agent = self._resolve_agent(step.role, channel_id) if self._resolve_agent else None
-                if agent is None:
-                    # Create a minimal identity for the completing agent to take over
-                    logger.warning(
-                        "Orchestrator degradation: agent %s self-advancing plan %s step %s (role=%s)",
-                        completing_agent_id, plan_id, step.step_id, step.role,
-                    )
-                    step.status = PlanStepStatus.SKIPPED
-                    continue
+                agent = AgentIdentity(agent_id=completing_agent_id, role=step.role)
 
             # Create task and dispatch
             task: Optional[SlockTask] = None

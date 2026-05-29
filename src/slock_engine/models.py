@@ -328,6 +328,7 @@ class SlockTask:
     sla_seconds: float = 300.0  # Default 5 min SLA
     deadline_at: Optional[float] = None  # Unix timestamp; auto-set on claim if None
     sender_id: str = ""  # Original message sender (for result delivery tracking)
+    execution_result: str = ""  # Agent output summary stored on completion (for context passing)
 
     def to_dict(self) -> dict:
         return {
@@ -350,6 +351,7 @@ class SlockTask:
             "sla_seconds": self.sla_seconds,
             "deadline_at": self.deadline_at,
             "sender_id": self.sender_id,
+            "execution_result": self.execution_result,
             "timeline": [
                 {"event_type": e.event_type, "agent_id": e.agent_id, "timestamp": e.timestamp, "detail": e.detail}
                 for e in self.timeline
@@ -378,6 +380,7 @@ class SlockTask:
             sla_seconds=data.get("sla_seconds", 300.0),
             deadline_at=data.get("deadline_at"),
             sender_id=data.get("sender_id", ""),
+            execution_result=data.get("execution_result", ""),
             timeline=[
                 TaskTimelineEvent(
                     event_type=e.get("event_type", ""),
@@ -903,6 +906,7 @@ class PlanStep:
     status: PlanStepStatus = PlanStepStatus.TODO
     task_id: str = ""  # Created SlockTask ID once started
     depends_on: list[str] = field(default_factory=list)  # step_ids that must complete first
+    predecessor_context: str = ""  # Output summary from predecessor step(s) for continuity
 
     def to_dict(self) -> dict:
         return {
@@ -914,6 +918,7 @@ class PlanStep:
             "status": self.status.value,
             "task_id": self.task_id,
             "depends_on": self.depends_on,
+            "predecessor_context": self.predecessor_context,
         }
 
     @classmethod
@@ -927,6 +932,7 @@ class PlanStep:
             status=PlanStepStatus(data.get("status", "todo")),
             task_id=data.get("task_id", ""),
             depends_on=data.get("depends_on", []),
+            predecessor_context=data.get("predecessor_context", ""),
         )
 
 
@@ -940,6 +946,7 @@ class CollaborationPlan:
     steps: list[PlanStep] = field(default_factory=list)
     status: CollaborationPlanStatus = CollaborationPlanStatus.PLANNING
     created_at: float = field(default_factory=time.time)
+    completed_at: Optional[float] = None  # Unix timestamp when plan reached terminal state
     auto_start_at: Optional[float] = None  # Unix timestamp when auto-execution begins
     chain_template: str = ""  # Which chain template was used
     planner_agent_id: str = ""  # Agent that created this plan
@@ -952,6 +959,7 @@ class CollaborationPlan:
             "steps": [s.to_dict() for s in self.steps],
             "status": self.status.value,
             "created_at": self.created_at,
+            "completed_at": self.completed_at,
             "auto_start_at": self.auto_start_at,
             "chain_template": self.chain_template,
             "planner_agent_id": self.planner_agent_id,
@@ -966,6 +974,7 @@ class CollaborationPlan:
             steps=[PlanStep.from_dict(s) for s in data.get("steps", [])],
             status=CollaborationPlanStatus(data.get("status", "planning")),
             created_at=data.get("created_at", time.time()),
+            completed_at=data.get("completed_at"),
             auto_start_at=data.get("auto_start_at"),
             chain_template=data.get("chain_template", ""),
             planner_agent_id=data.get("planner_agent_id", ""),

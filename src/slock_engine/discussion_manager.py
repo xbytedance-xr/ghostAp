@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 MAX_DISCUSSION_CONTENT_LENGTH = 64 * 1024  # 64KB
 
 # Regex pattern for @mention detection
-AT_MENTION_PATTERN: re.Pattern[str] = re.compile(r"@(\w+)")
+AT_MENTION_PATTERN: re.Pattern[str] = re.compile(r"@([\w-]+)")
 
 # Signals that indicate discussion convergence (agents agreeing)
 CONVERGENCE_SIGNALS: set[str] = {
@@ -551,10 +551,27 @@ class DiscussionManager:
     def _is_on_cooldown(self, agent_id: str) -> bool:
         """Check if agent is on discussion cooldown."""
         last_time = self._last_discussion_time.get(agent_id, 0)
-        return (time.time() - last_time) < self._cooldown_seconds
+        effective = getattr(self, '_cooldown_seconds_effective', self._cooldown_seconds)
+        return (time.time() - last_time) < effective
 
-    def _record_discussion_participation(self, agent_id: str) -> None:
-        """Record that an agent participated in a discussion."""
+    def _record_discussion_participation(self, agent_id: str, status: Optional["DiscussionStatus"] = None) -> None:
+        """Record that an agent participated in a discussion.
+
+        Applies adaptive cooldown based on how the discussion ended:
+        - CONVERGED: 15s (quick resolution, allow fast re-engagement)
+        - TIMEOUT / MAX_ROUNDS_REACHED: 60s (moderate backoff)
+        - BUDGET_EXHAUSTED: 120s (longest, prevent resource drain)
+        - Other/None: uses default _cooldown_seconds (60s)
+        """
+        if status == DiscussionStatus.CONVERGED:
+            cooldown = 15.0
+        elif status in (DiscussionStatus.TIMEOUT, DiscussionStatus.MAX_ROUNDS_REACHED):
+            cooldown = 60.0
+        elif status == DiscussionStatus.BUDGET_EXHAUSTED:
+            cooldown = 120.0
+        else:
+            cooldown = self._cooldown_seconds
+        self._cooldown_seconds_effective = cooldown
         self._last_discussion_time[agent_id] = time.time()
 
     def _check_depth_limit(self, parent_thread_id: Optional[str] = None) -> bool:
@@ -1255,12 +1272,16 @@ class DiscussionManager:
                 # Attempt forced convergence via Final Arbiter
                 self._run_final_arbiter(thread)
 
+                # If arbiter failed to produce a conclusion, escalate to Council
+                if not thread.conclusion or len(thread.conclusion.strip()) < 20:
+                    self._escalate_to_council(thread)
+
             # Persist conclusion to L2 shared memory and reasoning snapshot
             self._persist_conclusion(thread)
         finally:
             # Record cooldown for all participants to prevent re-triggering
             for participant_id in thread.participants:
-                self._record_discussion_participation(participant_id)
+                self._record_discussion_participation(participant_id, status=thread.status)
 
             # NFR03: Force flush final state — always sync card regardless of pending state
             if on_round_complete is not None:
@@ -1354,8 +1375,21 @@ class DiscussionManager:
             )
             return
 
-        # Select first participant as arbiter
-        arbiter_agent_id = thread.participants[0]
+        # Select arbiter: choose the participant who spoke LEAST to reduce bias.
+        # The initiator (participants[0]) tends to be biased toward their original
+        # framing; picking the least-spoken agent produces a more neutral arbiter.
+        message_counts: dict[str, int] = {}
+        for p in thread.participants:
+            message_counts[p] = 0
+        for msg in thread.messages:
+            if msg.sender_agent_id in message_counts:
+                message_counts[msg.sender_agent_id] = message_counts.get(msg.sender_agent_id, 0) + 1
+        # Sort by message count ascending; break ties by position (later = less invested)
+        sorted_participants = sorted(
+            thread.participants,
+            key=lambda p: (message_counts.get(p, 0), -thread.participants.index(p)),
+        )
+        arbiter_agent_id = sorted_participants[0] if sorted_participants else thread.participants[0]
         registry = getattr(getattr(self._engine, "registry", None), "list_agents", None)
         if callable(registry):
             try:
@@ -1366,14 +1400,31 @@ class DiscussionManager:
                 return
 
         # Build arbiter prompt — strict JSON output for security and parseability
+        # Include recent discussion history so arbiter has full context
+        recent_history = ""
+        if thread.messages:
+            history_msgs = thread.messages[-10:]  # Last 10 messages for context
+            history_lines = []
+            for msg in history_msgs:
+                speaker = msg.sender_agent_id.split(":")[-1] if ":" in msg.sender_agent_id else msg.sender_agent_id
+                content_preview = msg.content[:300] if msg.content else ""
+                history_lines.append(f"- [{speaker}]: {content_preview}")
+            recent_history = (
+                "DISCUSSION HISTORY (recent messages):\n"
+                + "\n".join(history_lines)
+                + "\n\n"
+            )
+
         arbiter_prompt = (
             "[SYSTEM - Final Arbiter]\n"
             "The discussion has reached its maximum rounds without consensus. "
             "You MUST now produce a clear, definitive conclusion.\n\n"
+            f"{recent_history}"
             "REQUIREMENTS:\n"
             "1. Summarize the key points discussed\n"
             "2. State a firm decision or recommendation\n"
-            "3. Do NOT use uncertain language (no '不确定', 'needs review', 'maybe')\n\n"
+            "3. Do NOT use uncertain language (no '不确定', 'needs review', 'maybe')\n"
+            "4. Consider ALL participants' viewpoints fairly\n\n"
             "OUTPUT FORMAT — Respond ONLY with valid JSON, no other text:\n"
             '{"conclusion": "完整的结论文本", "key_points": ["要点1", "要点2"], "decision": "明确决策"}\n\n'
             "All three fields are REQUIRED. Do NOT include markdown code blocks, explanations, or any text outside the JSON."
@@ -1439,6 +1490,141 @@ class DiscussionManager:
                 "Final Arbiter failed: %s | thread=%s — using existing conclusion",
                 str(exc), thread.thread_id[:8],
             )
+
+    def _escalate_to_council(self, thread: "DiscussionThread") -> None:
+        """Escalate a deadlocked discussion to the Council protocol.
+
+        Called when the Final Arbiter fails to produce a meaningful conclusion.
+        The Council protocol (independent answers → anonymous review → synthesis)
+        provides a more rigorous decision-making process for complex disagreements.
+        """
+        from .council_manager import CouncilManager
+
+        if not thread.participants or len(thread.participants) < 2:
+            return
+
+        # Extract the discussion question from the trigger message or topic
+        question = ""
+        if thread.messages:
+            # Use the first message as the question
+            question = thread.messages[0].content[:500]
+        if not question:
+            question = f"讨论未能达成共识，请各位独立给出判断: {thread.topic or 'unknown topic'}"
+
+        # Build council manager using the engine's execution protocol
+        engine = self._engine
+        if not hasattr(engine, '_council_manager') or engine._council_manager is None:
+            logger.warning(
+                "Council escalation failed: no council_manager available | thread=%s",
+                thread.thread_id[:8],
+            )
+            return
+
+        try:
+            council_mgr: CouncilManager = engine._council_manager
+            run = council_mgr.run_council(
+                question=question,
+                agent_ids=thread.participants[:5],  # Cap at 5 participants
+                channel_id=getattr(thread, 'channel_id', ''),
+            )
+            if run and run.final_answer:
+                thread.conclusion = f"[Council决策] {run.final_answer}"
+                thread.status = DiscussionStatus.CONVERGED
+                logger.info(
+                    "Discussion escalated to Council successfully | thread=%s conclusion_len=%d",
+                    thread.thread_id[:8], len(thread.conclusion),
+                )
+            else:
+                logger.warning(
+                    "Council escalation produced no answer | thread=%s",
+                    thread.thread_id[:8],
+                )
+        except Exception as exc:
+            logger.warning(
+                "Council escalation failed: %s | thread=%s",
+                str(exc), thread.thread_id[:8],
+            )
+
+    def detect_organic_divergence(self, channel_id: str, recent_outputs: list[dict]) -> bool:
+        """Detect organic divergence between agents' recent outputs in the same channel.
+
+        When multiple agents produce conflicting recommendations on the same topic
+        without an explicit discussion, this detects the divergence and can
+        trigger a discussion to resolve it.
+
+        Args:
+            channel_id: The channel to check for divergence.
+            recent_outputs: List of dicts with keys: agent_id, content, timestamp, task_content.
+                           Should contain outputs from the last N minutes.
+
+        Returns:
+            True if divergence was detected and a discussion was triggered.
+        """
+        if len(recent_outputs) < 2:
+            return False
+
+        # Group outputs by similar task content (agents working on related tasks)
+        from collections import defaultdict
+        topic_groups: dict[str, list[dict]] = defaultdict(list)
+        for output in recent_outputs:
+            # Use first 50 chars of task_content as rough topic key
+            topic_key = (output.get("task_content") or "")[:50].strip().lower()
+            if topic_key:
+                topic_groups[topic_key].append(output)
+
+        for topic_key, group in topic_groups.items():
+            if len(group) < 2:
+                continue
+
+            # Simple divergence heuristic: check for contradictory signals
+            # Look for opposing sentiment markers in outputs from different agents
+            _POSITIVE_MARKERS = {"通过", "可以", "建议采用", "推荐", "approve", "LGTM", "looks good"}
+            _NEGATIVE_MARKERS = {"不通过", "不建议", "反对", "reject", "有问题", "需要修改", "不可以"}
+
+            positive_agents: list[str] = []
+            negative_agents: list[str] = []
+
+            for item in group:
+                content = item.get("content", "")
+                agent_id = item.get("agent_id", "")
+                has_positive = any(m in content for m in _POSITIVE_MARKERS)
+                has_negative = any(m in content for m in _NEGATIVE_MARKERS)
+
+                if has_positive and not has_negative:
+                    positive_agents.append(agent_id)
+                elif has_negative and not has_positive:
+                    negative_agents.append(agent_id)
+
+            # Divergence: at least one agent positive and one negative
+            if positive_agents and negative_agents:
+                # Trigger a discussion between the divergent agents
+                participants = list(set(positive_agents[:2] + negative_agents[:2]))
+                trigger_msg = (
+                    f"[系统检测到观点分歧] 关于「{topic_key[:30]}」，"
+                    f"部分成员持肯定意见，部分成员持否定意见。请讨论并达成共识。"
+                )
+                try:
+                    thread = DiscussionThread(
+                        thread_id=str(uuid.uuid4()),
+                        channel_id=channel_id,
+                        participants=participants,
+                        config=self._config,
+                        trigger_reason="organic_divergence",
+                        topic=self._build_thread_topic(
+                            f"divergence:{topic_key[:30]}", participants[0], channel_id=channel_id
+                        ),
+                    )
+                    self.run_discussion(thread, trigger_msg)
+                    logger.info(
+                        "Organic divergence detected and discussion triggered | "
+                        "channel=%s topic=%s positive=%s negative=%s",
+                        channel_id[:8], topic_key[:30], positive_agents, negative_agents,
+                    )
+                    return True
+                except Exception as exc:
+                    logger.warning("Failed to trigger divergence discussion: %s", exc)
+
+        return False
 
     def _detect_conflict_llm_semantic(self, conclusion: str, key_knowledge: str) -> tuple[bool, str]:
         """使用 LLM 进行语义冲突检测，5s 超时后降级到规则检测。

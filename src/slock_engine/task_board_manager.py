@@ -322,6 +322,13 @@ class TaskBoardManager:
         try:
             result = self._context.execute_agent(agent, task_content, callbacks)
             if result:
+                # Store execution result summary on task for context passing
+                with self._lock:
+                    for t in self._tasks:
+                        if t.task_id == task_id:
+                            # Keep last 2000 chars as execution context for successors
+                            t.execution_result = result[-2000:] if len(result) > 2000 else result
+                            break
                 self._mark_task_in_review(task_id, agent_id)
                 # Attempt to trigger review; if no reviewer available, auto-complete
                 review_requested = self.request_review(task_id, agent_id, result)
@@ -546,14 +553,25 @@ class TaskBoardManager:
 
     @staticmethod
     def _extract_review_verdict(review_result: str) -> str:
-        """Extract APPROVE or REJECT verdict from review result text."""
+        """Extract APPROVE or REJECT verdict from review result text.
+
+        When the text is ambiguous (no explicit markers), defaults to REJECT
+        to prevent silent quality bypass.  The reviewer will be re-prompted
+        with clearer instructions.
+        """
         upper = review_result.upper()
         if "[APPROVE]" in upper or "LGTM" in upper or "通过" in review_result or "合格" in review_result:
             return "approve"
         if "[REJECT]" in upper or "不通过" in review_result or "需要修改" in review_result or "打回" in review_result:
             return "reject"
-        # Default: if ambiguous, approve (avoid blocking)
-        return "approve"
+        # Default: if ambiguous, reject to avoid silent quality bypass.
+        # The parent task is reset to IN_PROGRESS so the executor can
+        # address feedback and resubmit.
+        logger.info(
+            "Review verdict ambiguous (no explicit markers), defaulting to reject: %s",
+            review_result[:100],
+        )
+        return "reject"
 
     def force_complete_task(
         self,

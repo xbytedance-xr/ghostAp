@@ -15,7 +15,7 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from .agent_registry import _normalize_at_token
 from .models import AgentIdentity, AgentStatus, SkillProfile
@@ -27,9 +27,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Weights for automatic task assignment scoring
-_WEIGHT_SUCCESS_RATE = 0.4
-_WEIGHT_SKILL_RELEVANCE = 0.35
-_WEIGHT_AVAILABILITY = 0.25
+# Skill relevance is prioritized over raw success rate because a highly relevant
+# agent with moderate history should beat an irrelevant agent with perfect history.
+_WEIGHT_SKILL_RELEVANCE = 0.45
+_WEIGHT_SUCCESS_RATE = 0.25
+_WEIGHT_AVAILABILITY = 0.30
+
+# Confidence penalty: agents with very few completed tasks get their success_rate
+# discounted.  Without this, an agent completing 1/1 tasks scores 100% success,
+# beating a reliable agent at 48/50 (96%).  The penalty ramps linearly from 0 to 1
+# over CONFIDENCE_MIN_TASKS executions.
+_CONFIDENCE_MIN_TASKS = 5
 
 
 class RoutingStatus(Enum):
@@ -59,7 +67,7 @@ class TaskClaim:
 
     def __init__(
         self,
-        default_ttl: float = 3600.0,
+        default_ttl: float = 600.0,
         persist_path: Optional[str] = None,
         memory_manager: Optional["MemoryManager"] = None,
     ):
@@ -68,6 +76,7 @@ class TaskClaim:
         self._default_ttl = default_ttl
         self._persist_path = persist_path
         self._memory_manager = memory_manager
+        self._on_expired_callbacks: list[Callable] = []
         if persist_path:
             self._load_from_disk()
 
@@ -144,17 +153,52 @@ class TaskClaim:
         """Remove all expired claims. Returns the number purged."""
         now = time.time()
         purged = 0
+        expired_tasks: list[tuple[str, str]] = []
         with self._lock:
             expired_keys = [
                 tid for tid, (_, claimed_at) in self._claims.items()
                 if now - claimed_at >= self._default_ttl
             ]
             for tid in expired_keys:
+                agent_id = self._claims[tid][0]
+                expired_tasks.append((tid, agent_id))
                 del self._claims[tid]
                 purged += 1
             if purged:
                 self._persist()
+
+        # Notify callbacks outside lock
+        for tid, agent_id in expired_tasks:
+            for cb in self._on_expired_callbacks:
+                try:
+                    cb(tid, agent_id)
+                except Exception:
+                    logger.warning("on_expired callback failed for task %s", tid)
+
         return purged
+
+    def renew(self, task_id: str, agent_id: str) -> bool:
+        """Heartbeat: renew a claim's timestamp to prevent expiry.
+
+        Returns True if the claim was successfully renewed, False if the claim
+        doesn't exist or is held by a different agent.
+        """
+        with self._lock:
+            if task_id not in self._claims:
+                return False
+            holder_id, _ = self._claims[task_id]
+            if holder_id != agent_id:
+                return False
+            self._claims[task_id] = (agent_id, time.time())
+            self._persist()
+            return True
+
+    def on_expired(self, callback: Callable[[str, str], None]) -> None:
+        """Register a callback invoked when a claim expires during purge_expired.
+
+        Callback signature: (task_id: str, agent_id: str) -> None
+        """
+        self._on_expired_callbacks.append(callback)
 
     def get_active_claim_count(self, agent_id: Optional[str] = None) -> int:
         """Return count of active (non-expired) claims, optionally filtered by agent_id.
@@ -466,14 +510,15 @@ class TaskRouter:
 
             # Session affinity: prefer the agent that last served this sender
             if sender_id:
-                affinity_agent = self._get_affinity_agent(sender_id, idle_agents)
+                current_skills = self.extract_skill_keywords(text)
+                affinity_agent = self._get_affinity_agent(sender_id, idle_agents, current_skills)
                 if affinity_agent:
-                    self._record_affinity(sender_id, affinity_agent.agent_id)
+                    self._record_affinity(sender_id, affinity_agent.agent_id, current_skills)
                     return RoutingResult(status=RoutingStatus.ASSIGNED, agent=affinity_agent)
 
             assigned = self._score_and_assign(text, idle_agents)
             if assigned:
-                self._record_affinity(sender_id, assigned.agent_id)
+                self._record_affinity(sender_id, assigned.agent_id, self.extract_skill_keywords(text))
                 return RoutingResult(status=RoutingStatus.ASSIGNED, agent=assigned)
 
         # Fallback: check for RUNNING agents → queue wait signal
@@ -525,26 +570,50 @@ class TaskRouter:
     # Session Affinity: multi-turn continuity
     # ------------------------------------------------------------------
 
-    def _record_affinity(self, sender_id: str, agent_id: str) -> None:
+    def _record_affinity(self, sender_id: str, agent_id: str, skill_keywords: list[str] | None = None) -> None:
         """Record that sender was routed to agent (for affinity window)."""
         if not sender_id:
             return
-        self._session_affinity[sender_id] = (agent_id, time.time())
+        self._session_affinity[sender_id] = (agent_id, time.time(), skill_keywords or [])
 
     def _get_affinity_agent(
-        self, sender_id: str, idle_agents: list[AgentIdentity]
+        self, sender_id: str, idle_agents: list[AgentIdentity], current_skills: list[str] | None = None
     ) -> Optional[AgentIdentity]:
-        """Return the affinity agent if still IDLE and within the time window."""
+        """Return the affinity agent if still IDLE, within time window, and topic unchanged.
+
+        Topic-aware: if the current message's skill keywords differ significantly from
+        the last routed message, the affinity is broken to allow re-routing to a more
+        relevant agent. This prevents a coder from handling documentation questions
+        just because they handled the previous code question.
+        """
         if not sender_id:
             return None
         entry = self._session_affinity.get(sender_id)
         if entry is None:
             return None
-        agent_id, last_ts = entry
+        # Unpack (supports both old 2-tuple and new 3-tuple format)
+        if len(entry) == 3:
+            agent_id, last_ts, prev_skills = entry
+        else:
+            agent_id, last_ts = entry[0], entry[1]
+            prev_skills = []
         if time.time() - last_ts > self._session_affinity_window:
             # Expired — remove stale entry
             del self._session_affinity[sender_id]
             return None
+
+        # Topic change detection: if skill keywords changed, break affinity
+        if current_skills and prev_skills:
+            # If no overlap between previous and current skills, topic changed
+            overlap = set(current_skills) & set(prev_skills)
+            if not overlap and "general" not in current_skills:
+                logger.debug(
+                    "Session affinity broken (topic change): sender=%s prev_skills=%s new_skills=%s",
+                    sender_id, prev_skills, current_skills,
+                )
+                del self._session_affinity[sender_id]
+                return None
+
         # Check if agent is still idle
         for agent in idle_agents:
             if agent.agent_id == agent_id:
@@ -597,7 +666,7 @@ class TaskRouter:
     ) -> Optional[AgentIdentity]:
         """Score agents by skill relevance and availability, return best match.
 
-        Applies semantic pre-filter first to exclude obviously irrelevant agents
+        Applies keyword-based pre-filter first to exclude obviously irrelevant agents
         before running full scoring (Slock Insight #4).
         """
         from ..config import get_settings
@@ -605,7 +674,7 @@ class TaskRouter:
 
         candidates = agents
         if settings.slock_semantic_prefilter_enabled and len(agents) > 1:
-            candidates = self._semantic_prefilter(text, agents)
+            candidates = self._keyword_prefilter(text, agents)
             if not candidates:
                 candidates = agents  # fallback if filter is too aggressive
 
@@ -624,12 +693,12 @@ class TaskRouter:
             self._round_robin_index += 1
         return selected
 
-    def _semantic_prefilter(
+    def _keyword_prefilter(
         self,
         text: str,
         agents: list[AgentIdentity],
     ) -> list[AgentIdentity]:
-        """Quick rule-based filter: exclude agents whose role is obviously irrelevant.
+        """Quick keyword-based filter: exclude agents whose role is obviously irrelevant.
 
         Uses keyword matching between the task text and the agent's role/personality.
         Only agents that have at least minimal overlap pass through. Agents without
@@ -682,7 +751,7 @@ class TaskRouter:
                     continue
 
             logger.debug(
-                "Semantic prefilter: agent %s (role=%s) skipped for task: %s",
+                "Keyword prefilter: agent %s (role=%s) skipped for task: %s",
                 agent.agent_id, role_text[:30], text[:50],
             )
 
@@ -709,7 +778,12 @@ class TaskRouter:
             relevance = self._calculate_relevance(profiles, required_skills)
             avg_success = 0.5  # default
             if profiles:
-                avg_success = sum(p.success_rate for p in profiles) / len(profiles) / 100.0
+                raw_success = sum(p.success_rate for p in profiles) / len(profiles) / 100.0
+                # Apply confidence penalty: agents with few tasks get discounted
+                total_tasks = sum(getattr(p, "total_tasks", 0) for p in profiles)
+                confidence = min(1.0, total_tasks / _CONFIDENCE_MIN_TASKS)
+                # Blend toward 0.5 (neutral) when confidence is low
+                avg_success = 0.5 + (raw_success - 0.5) * confidence
 
             score = (
                 avg_success * _WEIGHT_SUCCESS_RATE
@@ -746,15 +820,33 @@ class TaskRouter:
         return self.extract_skill_keywords(text)
 
     def _calculate_relevance(self, profiles: list[SkillProfile], required_skills: list[str]) -> float:
-        """Calculate skill relevance score (0.0 - 1.0)."""
+        """Calculate skill relevance score (0.0 - 1.0) with time decay.
+
+        Skill profiles that haven't been exercised recently are decayed toward
+        the neutral value (0.5), reflecting that expertise fades or context
+        shifts over time.  Half-life is 7 days.
+        """
         if not required_skills:
             return 0.5
+
+        now = time.time()
+        _HALF_LIFE_SECONDS = 7 * 24 * 3600  # 7 days
 
         total = 0.0
         for skill in required_skills:
             match = next((p for p in profiles if p.tag == skill), None)
             if match:
-                total += match.success_rate / 100.0
+                raw_score = match.success_rate / 100.0
+                # Apply time decay: blend toward 0.5 as time since last_active grows
+                if match.last_active > 0:
+                    elapsed = now - match.last_active
+                    # Exponential decay factor: 1.0 at t=0, 0.5 at t=half_life
+                    decay = 0.5 ** (elapsed / _HALF_LIFE_SECONDS)
+                    # Decayed score blends toward neutral (0.5)
+                    decayed_score = 0.5 + (raw_score - 0.5) * decay
+                    total += decayed_score
+                else:
+                    total += raw_score
             else:
                 total += 0.3  # partial credit for uncharted skills
 

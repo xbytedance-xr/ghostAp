@@ -40,6 +40,7 @@ from .models import (
     SlockChannel,
     SlockTask,
     TaskStatus,
+    TaskTimelineEvent,
     TeamSnapshot,
 )
 from .mouthpiece import Mouthpiece
@@ -411,6 +412,7 @@ class SlockEngine(BaseEngine):
             register_task=self._register_collaboration_task,
             add_task_fn=self._task_mgr.add_task,
             claim_task_fn=self._task_mgr.claim_task,
+            get_task_result_fn=self._get_task_execution_result,
             persist_fn=self._persist_plans,
         )
         self._task_notifier.subscribe(self._collaboration_orchestrator)
@@ -445,46 +447,42 @@ class SlockEngine(BaseEngine):
     def _summarize_via_llm(self, prompt: str) -> Optional[str]:
         """LLM callback for memory summarization via ACP session.
 
-        Submits summarization to the discussion bounded executor so the calling
-        agent worker slot is released immediately. Returns None to caller;
-        the actual result is stored asynchronously by the memory manager.
+        Called synchronously from _summarize_text (which is itself invoked in a
+        background thread with a join-timeout).  Returns the LLM response text
+        directly so the memory compressor can use the result inline.
 
         Must NOT be called while holding self._memory._lock (caller ensures this).
         """
-        def _do_summarize():
+        try:
+            session = create_engine_session(
+                agent_type=self._agent_type,
+                cwd=self.root_path,
+                model_name=None,
+                thread_id="slock_memory_summarize",
+                auto_approve=False,
+            )
+            if session is None:
+                logger.warning("Failed to create session for memory summarization")
+                return None
             try:
-                session = create_engine_session(
-                    agent_type=self._agent_type,
-                    cwd=self.root_path,
-                    model_name=None,
-                    thread_id="slock_memory_summarize",
-                    auto_approve=False,
-                )
-                if session is None:
-                    logger.warning("Failed to create session for memory summarization")
-                    return
-                try:
-                    result = session.send_prompt(prompt, timeout=60)
-                    if result and result.text:
-                        self._memory.store_summary(result.text)
-                except Exception as exc:
-                    from src.utils.errors import redact_sensitive
-                    logger.warning("Memory summarization LLM call failed: %s", redact_sensitive(str(exc)), exc_info=True)
-                finally:
-                    close_session_safely(session)
+                result = session.send_prompt(prompt, timeout=60)
+                if result and result.text:
+                    logger.debug(
+                        "Memory summarization LLM returned %d chars",
+                        len(result.text),
+                    )
+                    return result.text
+                return None
             except Exception as exc:
                 from src.utils.errors import redact_sensitive
-                logger.warning("Memory summarization setup failed: %s", redact_sensitive(str(exc)), exc_info=True)
-
-        try:
-            # Use discussion executor for background summarization tasks
-            self._discussion_executor.submit(_do_summarize)
-            logger.debug("Memory summarization submitted to executor")
-        except QueueFullError:
-            logger.warning(
-                "Memory summarization executor queue full, skipping summarization"
-            )
-        return None
+                logger.warning("Memory summarization LLM call failed: %s", redact_sensitive(str(exc)), exc_info=True)
+                return None
+            finally:
+                close_session_safely(session)
+        except Exception as exc:
+            from src.utils.errors import redact_sensitive
+            logger.warning("Memory summarization setup failed: %s", redact_sensitive(str(exc)), exc_info=True)
+            return None
 
     @property
     def registry(self) -> AgentRegistry:
@@ -1148,7 +1146,9 @@ class SlockEngine(BaseEngine):
                 self._patrol_check_sla()
                 self._patrol_idle_agents()
                 self._patrol_purge_stale()
+                self._patrol_detect_orphan_tasks()
                 self._patrol_proactive_followup()
+                self._patrol_renew_active_claims()
             except Exception as exc:
                 logger.warning("Patrol loop error: %s", exc, exc_info=True)
 
@@ -1178,6 +1178,35 @@ class SlockEngine(BaseEngine):
                 self._patrol_escalate_overdue(task, overdue_s)
                 # Extend deadline to avoid repeated escalation every interval
                 task.deadline_at = now + task.sla_seconds
+
+    def _patrol_detect_orphan_tasks(self) -> None:
+        """Detect tasks stuck IN_PROGRESS for more than 2x SLA and reset them."""
+        now = time.time()
+        with self._lock:
+            tasks_snapshot = list(self._tasks)
+
+        for task in tasks_snapshot:
+            if task.status != TaskStatus.IN_PROGRESS:
+                continue
+            if not task.claimed_at:
+                continue
+            orphan_threshold = task.sla_seconds * 2
+            if (now - task.claimed_at) > orphan_threshold:
+                logger.warning(
+                    "Patrol: orphan task %s — stuck %.0fs (claimed_by=%s), resetting to TODO",
+                    task.task_id, now - task.claimed_at, task.claimed_by,
+                )
+                with self._lock:
+                    task.status = TaskStatus.TODO
+                    task.claimed_by = None
+                    task.claimed_at = None
+                    task.deadline_at = None
+                    task.timeline.append(TaskTimelineEvent(
+                        event_type="orphan_recovered",
+                        agent_id="patrol",
+                        timestamp=now,
+                        detail=f"Reset after {orphan_threshold:.0f}s orphan threshold",
+                    ))
 
     def _patrol_escalate_overdue(self, task: "SlockTask", overdue_seconds: float) -> None:
         """Send a notification card for an overdue task."""
@@ -1275,6 +1304,28 @@ class SlockEngine(BaseEngine):
     # Collaboration helpers
     # ------------------------------------------------------------------
 
+    def _patrol_renew_active_claims(self) -> None:
+        """Renew heartbeats for all actively running tasks to prevent TTL expiry.
+
+        Also purges expired claims (agent crashed without releasing).
+        """
+        # Renew claims for tasks currently in IN_PROGRESS
+        with self._lock:
+            active_tasks = [
+                (t.task_id, t.claimed_by)
+                for t in self._tasks
+                if t.status == TaskStatus.IN_PROGRESS and t.claimed_by
+            ]
+
+        task_claim = self._task_mgr._router.task_claim
+        for task_id, agent_id in active_tasks:
+            task_claim.renew(task_id, agent_id)
+
+        # Purge expired claims (catches crashed agents)
+        purged = task_claim.purge_expired()
+        if purged:
+            logger.info("Patrol: purged %d expired task claims", purged)
+
     def _resolve_agent_for_role(self, role: str, channel_id: str) -> Optional[AgentIdentity]:
         """Find the best idle agent matching a role in this channel.
 
@@ -1344,6 +1395,18 @@ class SlockEngine(BaseEngine):
             if not any(t.task_id == task.task_id for t in self._tasks):
                 self._tasks.append(task)
                 self._dirty = True
+
+    def _get_task_execution_result(self, task_id: str) -> Optional[str]:
+        """Get the execution result of a completed task for context passing.
+
+        Called by CollaborationOrchestrator to provide predecessor context
+        to successor steps, enabling collaboration continuity.
+        """
+        with self._lock:
+            for task in self._tasks:
+                if task.task_id == task_id and task.status == TaskStatus.DONE:
+                    return task.execution_result or None
+        return None
 
     def _persist_plans(self) -> None:
         """Persist all plans to disk (called by orchestrator after state changes)."""
@@ -2702,7 +2765,20 @@ class SlockEngine(BaseEngine):
         return "\n# Collaboration Context\n" + "\n".join(sections)
 
     def _build_agent_prompt(self, agent: AgentIdentity, message: str, memory) -> str:
-        """Build the full prompt for an agent including system prompt and memory."""
+        """Build the full prompt for an agent including system prompt and memory.
+
+        Applies a total token budget (estimated as chars/3.5) to prevent context
+        overflow.  Components are prioritized:
+          1. system_prompt + permissions + user message (always included)
+          2. role + key_knowledge (always included)
+          3. team roster + collaboration context (trimmed if tight)
+          4. conversation replay / active context (trimmed to budget)
+          5. group memory / global wiki (trimmed last)
+        """
+        settings = get_settings()
+        # Budget in characters (rough estimate: 1 token ≈ 3.5 chars for mixed CJK/EN)
+        max_prompt_chars = getattr(settings, "slock_max_prompt_chars", 32000)
+
         logger.debug(
             "_build_agent_prompt: agent=%s memory_path=%s has_role=%s has_knowledge=%s has_context=%s",
             agent.agent_id,
@@ -2769,6 +2845,10 @@ class SlockEngine(BaseEngine):
         if memory.key_knowledge:
             parts.append(f"\n# Key Knowledge\n{memory.key_knowledge}")
 
+        # Reasoning snapshot injection: provide thinking continuity from prior turns
+        if hasattr(memory, 'reasoning_snapshot') and memory.reasoning_snapshot:
+            parts.append(f"\n# Prior Reasoning\n{memory.reasoning_snapshot[-1500:]}")
+
         # Memory Enhancement: use conversation replay instead of raw truncation
         channel_id = self._channel.channel_id if self._channel else self.chat_id
         settings = get_settings()
@@ -2833,7 +2913,55 @@ class SlockEngine(BaseEngine):
 
         parts.append(f"\n# User Message\n{message}")
 
-        return "\n".join(parts)
+        # Budget enforcement: trim lower-priority sections if total exceeds limit
+        combined = "\n".join(parts)
+        if len(combined) > max_prompt_chars:
+            # Strategy: rebuild with trimmed optional sections
+            overshoot = len(combined) - max_prompt_chars
+            # Trim from lowest priority first: global_wiki, group_memory, replay
+            # Find and trim these sections
+            trimmed_parts: list[str] = []
+            trim_budget_remaining = overshoot
+            for part in parts:
+                if trim_budget_remaining <= 0:
+                    trimmed_parts.append(part)
+                    continue
+                # Lower priority sections get trimmed
+                if part.startswith("\n# Global Knowledge"):
+                    if trim_budget_remaining >= len(part):
+                        trim_budget_remaining -= len(part)
+                        continue  # Drop entirely
+                    else:
+                        keep_chars = len(part) - trim_budget_remaining
+                        trimmed_parts.append(part[:keep_chars])
+                        trim_budget_remaining = 0
+                elif part.startswith("\n# Team Shared Memory"):
+                    if trim_budget_remaining >= len(part):
+                        trim_budget_remaining -= len(part)
+                        continue
+                    else:
+                        keep_chars = len(part) - trim_budget_remaining
+                        trimmed_parts.append(part[:keep_chars])
+                        trim_budget_remaining = 0
+                elif part.startswith("\n# Recent Conversation") or part.startswith("\n# Recent Context"):
+                    if trim_budget_remaining >= len(part) // 2:
+                        # Keep at least half of conversation context
+                        keep_chars = max(len(part) // 2, len(part) - trim_budget_remaining)
+                        trimmed_parts.append(part[:keep_chars] + "\n[...truncated...]")
+                        trim_budget_remaining -= (len(part) - keep_chars)
+                    else:
+                        keep_chars = len(part) - trim_budget_remaining
+                        trimmed_parts.append(part[:keep_chars])
+                        trim_budget_remaining = 0
+                else:
+                    trimmed_parts.append(part)
+            combined = "\n".join(trimmed_parts)
+            logger.info(
+                "Prompt budget enforcement: trimmed %d chars (budget=%d, final=%d) agent=%s",
+                overshoot, max_prompt_chars, len(combined), agent.agent_id,
+            )
+
+        return combined
 
     def _run_acp_session(
         self,
@@ -3220,6 +3348,11 @@ class SlockEngine(BaseEngine):
             self._pending_actions: dict[str, "ActionProposal"] = {}
         self._pending_actions[proposal.action_id] = proposal
 
+        # Start timeout timer for auto-reject if no human response
+        from ..config import get_settings as _get_settings
+        action_timeout = getattr(_get_settings(), "slock_action_timeout_seconds", 300.0)  # 5 min default
+        self._start_action_timeout(proposal.action_id, action_timeout)
+
         logger.info(
             "Action proposed: id=%s type=%s agent=%s title=%s",
             proposal.action_id, action_type, agent.name, title[:50],
@@ -3247,6 +3380,12 @@ class SlockEngine(BaseEngine):
             proposal.status = ActionStatus.APPROVED
         else:
             proposal.status = ActionStatus.REJECTED
+
+        # Cancel timeout timer
+        action_timers = getattr(self, "_action_timers", {})
+        timer = action_timers.pop(action_id, None)
+        if timer:
+            timer.cancel()
 
         logger.info(
             "Action %s: id=%s agent=%s",
@@ -3285,7 +3424,44 @@ class SlockEngine(BaseEngine):
         pending.pop(action_id, None)
         return proposal
 
-    def capture_dissolve_snapshot(self) -> TeamSnapshot:
+    def _start_action_timeout(self, action_id: str, timeout_seconds: float) -> None:
+        """Start a daemon timer that auto-rejects an action if not resolved in time."""
+        def _timeout_handler():
+            pending = getattr(self, "_pending_actions", {})
+            proposal = pending.get(action_id)
+            if proposal is None:
+                return  # Already resolved
+            from .card_templates.action_card import ActionStatus
+            if proposal.status != ActionStatus.PROPOSED:
+                return  # Already resolved
+
+            # Auto-reject due to timeout
+            logger.info(
+                "Action auto-rejected (timeout %.0fs): id=%s title=%s",
+                timeout_seconds, action_id, proposal.title[:50],
+            )
+            proposal.status = ActionStatus.REJECTED
+            proposal.resolved_at = time.time()
+            proposal.result = f"⏰ 操作已超时自动拒绝（{int(timeout_seconds)}秒未响应）"
+
+            # Update the card to show timeout status
+            from .card_templates.action_card import build_action_result_card
+            result_card = build_action_result_card(proposal)
+            if proposal.card_message_id and self._card_update_fn:
+                self._card_update_fn(proposal.card_message_id, result_card)
+
+            # Clean up
+            pending.pop(action_id, None)
+
+        timer = threading.Timer(timeout_seconds, _timeout_handler)
+        timer.daemon = True
+        timer.name = f"action-timeout-{action_id[:8]}"
+        timer.start()
+
+        # Store timer ref for cancellation on early resolution
+        if not hasattr(self, "_action_timers"):
+            self._action_timers: dict[str, threading.Timer] = {}
+        self._action_timers[action_id] = timer
         """Capture the active channel, role bindings, and task board for undo."""
         channel = self._channel
         channel_id = channel.channel_id if channel else self.chat_id

@@ -203,7 +203,7 @@ class TestSemanticPreFilter:
             self._make_agent("a1"),
             self._make_agent("a2", role="coder"),
         ]
-        result = router._semantic_prefilter("fix this bug", agents)
+        result = router._keyword_prefilter("fix this bug", agents)
         # a1 has no role -> always passes
         assert any(a.agent_id == "a1" for a in result)
 
@@ -213,7 +213,7 @@ class TestSemanticPreFilter:
             self._make_agent("coder1", role="code implementation"),
             self._make_agent("designer1", role="UI design"),
         ]
-        result = router._semantic_prefilter("implement the login function", agents)
+        result = router._keyword_prefilter("implement the login function", agents)
         # coder1 matches "code" skill
         assert any(a.agent_id == "coder1" for a in result)
 
@@ -223,7 +223,7 @@ class TestSemanticPreFilter:
             self._make_agent("coder1", role="code implementation bug fix"),
             self._make_agent("artist1", role="logo graphic visual branding"),
         ]
-        result = router._semantic_prefilter("fix the null pointer bug in auth module", agents)
+        result = router._keyword_prefilter("fix the null pointer bug in auth module", agents)
         # artist1 has no keyword overlap with code/fix/debug
         assert any(a.agent_id == "coder1" for a in result)
         # artist might be excluded (no overlap with "code", "fix", "debug" skills)
@@ -235,7 +235,7 @@ class TestSemanticPreFilter:
             self._make_agent("a1", role="completely unrelated domain xyz"),
         ]
         # Even if prefilter returns empty, the caller falls back to all agents
-        result = router._semantic_prefilter("deploy the service", agents)
+        result = router._keyword_prefilter("deploy the service", agents)
         # Could be empty, which is fine — caller handles it
         assert isinstance(result, list)
 

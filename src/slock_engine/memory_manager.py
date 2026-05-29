@@ -1322,14 +1322,114 @@ class MemoryManager:
             consecutive += 1
         return consecutive
 
+    def _count_knowledge_references(self, knowledge_line: str, channel_id: str, exclude_agent_id: str) -> int:
+        """Check how many other agents in the channel have matching knowledge.
+
+        Scans all agent L1 memories in the agents directory and counts those
+        whose key_knowledge contains the same line (stripped comparison).
+        """
+        agents_dir = self._safe_path("agents")
+        if not os.path.isdir(agents_dir):
+            return 0
+
+        target = knowledge_line.strip()
+        count = 0
+        for entry in os.listdir(agents_dir):
+            if entry == self._sanitize_path_component(exclude_agent_id):
+                continue
+            agent_dir = os.path.join(agents_dir, entry)
+            if not os.path.isdir(agent_dir):
+                continue
+            memory_path = os.path.join(agent_dir, "MEMORY.md")
+            if not os.path.exists(memory_path):
+                continue
+            try:
+                with open(memory_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                mem = SlockMemory.from_markdown(content)
+                for line in (mem.key_knowledge or "").splitlines():
+                    if line.strip() == target:
+                        count += 1
+                        break
+            except (OSError, ValueError):
+                continue
+        return count
+
+    def check_and_promote_knowledge(self, agent_id: str, channel_id: str) -> None:
+        """Promote L1 knowledge entries to L2 group shared memory when widespread.
+
+        Reads the agent's L1 key_knowledge, and for each entry (lines starting
+        with "- "), checks how many other agents have the same knowledge. If 3+
+        agents share the entry, it is promoted to L2 group shared memory.
+        """
+        memory = self.read_agent_memory(agent_id)
+        if not memory.key_knowledge:
+            return
+
+        existing_group_memory = self.read_group_memory(channel_id)
+
+        for line in memory.key_knowledge.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("- "):
+                continue
+            # Skip if already present in L2
+            if stripped in existing_group_memory:
+                continue
+            ref_count = self._count_knowledge_references(stripped, channel_id, agent_id)
+            if ref_count >= 2:  # 2 others + self = 3+ total
+                timestamp = time.strftime("%Y-%m-%d %H:%M")
+                promoted_entry = f"[{timestamp}] [Promoted] {stripped}"
+                self.append_group_memory(channel_id, promoted_entry)
+                logger.info(
+                    "Knowledge promoted L1→L2 | agent=%s channel=%s refs=%d entry=%s",
+                    agent_id, channel_id, ref_count + 1, stripped[:80],
+                )
+
     def write_avoidance_strategy(self, agent_id: str, skill_tag: str, reason: str) -> None:
-        """Write an avoidance strategy into agent L1 memory."""
+        """Write an avoidance strategy into agent L1 memory with expiry tracking.
+
+        Avoidance strategies are not permanent — they expire after N consecutive
+        successes in the avoided skill area, reflecting agent growth.
+        """
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
         entry = (
-            f"\n## Behavioral Note\n"
-            f"- Skill `{skill_tag}`: 连续失败多次，建议回避此类任务或降低自评分。"
+            f"\n## Behavioral Note (expires after 3 consecutive successes)\n"
+            f"- Skill `{skill_tag}`: 连续失败多次，暂时回避此类任务或降低自评分。"
             f" 原因: {reason[:200]}\n"
+            f"- 记录日期: {now_str} | 成功计数: 0/3 (达到3次自动解除)\n"
         )
         self.update_agent_context(agent_id, entry)
+
+    def clear_expired_avoidance(self, agent_id: str, skill_tag: str) -> bool:
+        """Clear an avoidance strategy after consecutive successes.
+
+        Returns True if an avoidance entry was found and cleared.
+        """
+        with self._get_agent_lock(agent_id):
+            memory = self._read_agent_memory_unlocked(agent_id)
+            if f"Skill `{skill_tag}`" in memory.active_context and "暂时回避" in memory.active_context:
+                # Remove the avoidance note
+                lines = memory.active_context.split("\n")
+                cleaned_lines = []
+                skip_block = False
+                for line in lines:
+                    if f"Skill `{skill_tag}`" in line and "暂时回避" in line:
+                        skip_block = True
+                        continue
+                    if skip_block and (line.startswith("- 记录日期") or line.strip() == ""):
+                        skip_block = False
+                        continue
+                    skip_block = False
+                    cleaned_lines.append(line)
+                memory.active_context = "\n".join(cleaned_lines)
+                self._write_agent_memory_unlocked(agent_id, memory)
+                logger.info(
+                    "Avoidance strategy cleared: agent=%s skill=%s (consecutive successes)",
+                    agent_id, skill_tag,
+                )
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Memory Enhancement: Context Summarization
