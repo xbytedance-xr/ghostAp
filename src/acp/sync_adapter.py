@@ -784,6 +784,7 @@ def _resolve_with_auto_update(command: str) -> bool:
     return False
 
 
+@lru_cache(maxsize=1)
 def _resolve_tui2acp_adapters_dir() -> Optional[str]:
     """Locate tui2acp's bundled adapter YAML directory.
 
@@ -926,8 +927,15 @@ def resolve_agent_spec(
         return "python3", args
 
     if agent_type.startswith("tui2acp_"):
+        import shutil
+        if not shutil.which("tui2acp"):
+            raise AgentSpecResolveError(
+                "tui2acp 未安装或不在 PATH 中，请运行: npm install -g tui2acp",
+                agent_cmd="tui2acp",
+                agent_args=[],
+            )
         adapter_name = agent_type[len("tui2acp_"):]
-        args = ["--adapter", adapter_name, "--unsafe"]
+        args = ["--adapter", adapter_name, "--unsafe", "--minimal"]
         # tui2acp's built-in declarative adapter registry has incomplete
         # configs (missing `states`) that crash on construction. Force loading
         # the bundled adapter YAML files so adapter configs are complete.

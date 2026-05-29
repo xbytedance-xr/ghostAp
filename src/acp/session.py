@@ -328,7 +328,8 @@ class ACPSession:
         # We keep a tiny grace window only when no text has been observed yet.
         try:
             if not (result.text or ""):
-                deadline = time.time() + 0.05
+                grace_s = 0.2 if "tui2acp" in self._agent_cmd else 0.05
+                deadline = time.time() + grace_s
                 while time.time() < deadline and not (result.text or ""):
                     await asyncio.sleep(0.005)
         except Exception:
