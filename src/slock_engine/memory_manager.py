@@ -92,7 +92,6 @@ class MemoryManager:
         self._locks_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._llm_callback: Optional[Callable[[str], Optional[str]]] = None
         self._write_counts: dict[str, int] = {}
-        self._byte_counters: dict[str, int] = {}
         self._file_lock_counts: dict[str, int] = {}
         self._audit_writer = _AuditLogWriter(self._base_path)
         self._restore_write_counts()
@@ -337,7 +336,6 @@ class MemoryManager:
                 f.write(str(next_version))
             os.replace(version_path + ".tmp", version_path)
             self._write_counts[agent_id] = next_version
-            self._byte_counters[agent_id] = len(content.encode("utf-8"))
 
     def _merge_agent_memory(self, current: SlockMemory, incoming: SlockMemory) -> SlockMemory:
         """Merge stale incoming writes with current disk state."""
@@ -680,14 +678,12 @@ class MemoryManager:
             return
         if file_size < max_size:
             return
-        self._byte_counters[agent_id] = file_size
 
         # Phase 1: check size
         with self._get_agent_lock(agent_id):
             memory = self._read_agent_memory_unlocked(agent_id)
             content_size = len(memory.to_markdown().encode("utf-8"))
         if content_size <= max_size:
-            self._byte_counters[agent_id] = content_size
             return
 
         logger.info(
@@ -709,7 +705,6 @@ class MemoryManager:
             memory = self._read_agent_memory_unlocked(agent_id)
             content_size = len(memory.to_markdown().encode("utf-8"))
             if content_size <= target_size:
-                self._byte_counters[agent_id] = content_size
                 return
 
             role, key_knowledge = self._preserve_critical_sections(memory)
@@ -724,7 +719,6 @@ class MemoryManager:
                 memory.archived_context = ""
                 memory.active_context = self._tail_text_bytes(memory.active_context, budget)
             self._write_agent_memory_unlocked(agent_id, memory)
-            self._byte_counters[agent_id] = len(memory.to_markdown().encode("utf-8"))
 
         logger.info(
             "L1 FIFO truncation applied | agent=%s new_context_len=%d",

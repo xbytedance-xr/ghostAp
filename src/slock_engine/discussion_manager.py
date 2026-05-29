@@ -664,10 +664,6 @@ class DiscussionManager:
         """Remove task binding when discussion completes."""
         self._task_bindings.pop(thread_id, None)
 
-    def cleanup_agent(self, agent_id: str) -> None:
-        """Remove agent tracking state when an agent is deregistered."""
-        self._last_discussion_time.pop(agent_id, None)
-
     # ------------------------------------------------------------------
     # Discussion Lifecycle
     # ------------------------------------------------------------------
@@ -1899,22 +1895,17 @@ class DiscussionManager:
                     "trigger_reason": thread.trigger_reason,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
+                prompt_summary = f"Discussion: {thread.topic[:100] if thread.topic else 'inter-agent'}"
+                result_summary = f"Discussion conclusion: {thread.conclusion[:300]}"
                 existing = memory_mgr.read_agent_reasoning_snapshot(primary_agent_id, task_id)
                 if existing:
-                    # Merge conclusion fields into existing snapshot
-                    existing.update(conclusion_data)
-                    memory_mgr.write_discussion_conclusion_snapshot(
-                        primary_agent_id, task_id, existing,
-                    )
-                else:
-                    # Create a new snapshot with conclusion
-                    conclusion_data["agent_id"] = primary_agent_id
-                    conclusion_data["task_id"] = task_id
-                    conclusion_data["prompt_summary"] = f"Discussion: {thread.topic[:100] if thread.topic else 'inter-agent'}"
-                    conclusion_data["result_summary"] = f"Discussion conclusion: {thread.conclusion[:300]}"
-                    memory_mgr.write_discussion_conclusion_snapshot(
-                        primary_agent_id, task_id, conclusion_data,
-                    )
+                    prompt_summary = existing.get("prompt_summary", prompt_summary)
+                    result_summary = f"{existing.get('result_summary', '')} | {result_summary}"
+                memory_mgr.write_agent_reasoning_snapshot(
+                    primary_agent_id, task_id,
+                    prompt_summary=prompt_summary,
+                    result_summary=result_summary,
+                )
                 logger.info(
                     "Discussion conclusion written to reasoning snapshot | agent=%s task=%s",
                     primary_agent_id[:8], task_id[:8],
@@ -2115,123 +2106,6 @@ class DiscussionManager:
                 engine.conclusion_card_callback(card)
         except Exception as exc:
             logger.debug("Failed to send conclusion notification card: %s", str(exc))
-
-    def _persist_conclusion_to_task(self, thread: DiscussionThread, task_id: str) -> None:
-        """Persist discussion conclusion to task reasoning_snapshot and L2 shared memory.
-
-        Writes the conclusion text to:
-        1. The SlockTask's ``reasoning_snapshot`` field (in-memory model update).
-        2. The L2 SHARED_MEMORY.md Decisions section via MemoryManager.
-
-        Args:
-            thread: The completed discussion thread (must have .conclusion set).
-            task_id: The task ID to update with the conclusion.
-        """
-        conclusion = thread.conclusion or ""
-        if not conclusion:
-            return
-
-        # 1. Write to task's reasoning_snapshot field
-        if self._engine and task_id:
-            tasks = getattr(self._engine, '_tasks', None)
-            if tasks is not None:
-                for task in tasks:
-                    if task.task_id == task_id:
-                        task.reasoning_snapshot = conclusion
-                        logger.debug(
-                            "Conclusion written to task reasoning_snapshot | task=%s",
-                            task_id[:8],
-                        )
-                        break
-
-        # 2. Write to L2 SHARED_MEMORY Decisions section
-        memory_mgr = self._memory_manager
-        channel_id = thread.channel_id or ""
-        if memory_mgr and channel_id:
-            topic_hash = hashlib.md5(
-                (thread.thread_id[:8] + conclusion[:30]).encode()
-            ).hexdigest()[:8]
-            title = conclusion[:60].split("\n")[0]
-            participants_display = [
-                self._resolve_agent_display(pid) for pid in thread.participants
-            ]
-            try:
-                memory_mgr.append_discussion_conclusion(
-                    channel_id,
-                    conclusion,
-                    section="Decisions",
-                    topic_hash=topic_hash,
-                    title=title,
-                    participants=participants_display,
-                )
-                logger.debug(
-                    "Conclusion persisted to L2 Decisions | channel=%s thread=%s",
-                    channel_id[:8],
-                    thread.thread_id[:8],
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to persist conclusion to L2 Decisions: %s", str(exc)
-                )
-
-    def _persist_conclusion_to_memory(self, thread: DiscussionThread) -> None:
-        """Persist discussion conclusion to L2 SHARED_MEMORY.md Decisions section.
-
-        Writes the conclusion to the shared memory file for long-term retention.
-        Failures are logged as warnings but do not block the main flow.
-
-        Args:
-            thread: The completed discussion thread (must have .conclusion set).
-        """
-        conclusion = thread.conclusion or ""
-        if not conclusion:
-            return
-
-        memory_mgr = self._memory_manager
-        channel_id = getattr(thread, "channel_id", "") or ""
-
-        if not memory_mgr:
-            logger.debug("No memory_manager available, skipping L2 persistence")
-            return
-
-        if not channel_id:
-            logger.debug("No channel_id available, skipping L2 persistence")
-            return
-
-        try:
-            # Generate topic_hash from thread_id and conclusion
-            topic_hash = hashlib.md5(
-                (thread.thread_id[:8] + conclusion[:30]).encode()
-            ).hexdigest()[:8]
-
-            # Title: first line of conclusion, max 60 chars
-            title = conclusion[:60].split("\n")[0]
-
-            # Build display-friendly participant list
-            participants_display = [
-                self._resolve_agent_display(pid) for pid in thread.participants
-            ]
-
-            # Write to L2 SHARED_MEMORY.md Decisions section
-            memory_mgr.append_discussion_conclusion(
-                channel_id,
-                conclusion,
-                section="Decisions",
-                topic_hash=topic_hash,
-                title=title,
-                participants=participants_display,
-            )
-
-            logger.info(
-                "Discussion conclusion persisted to L2 Decisions | thread=%s channel=%s",
-                thread.thread_id[:8],
-                channel_id[:8],
-            )
-        except Exception as exc:
-            # Log warning but do not block main flow
-            logger.warning(
-                "Failed to persist conclusion to L2 memory: %s", str(exc)
-            )
 
     # ------------------------------------------------------------------
     # Stop Discussion

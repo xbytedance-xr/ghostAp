@@ -44,7 +44,6 @@ class RoutingStatus(Enum):
     """Result status from route_message."""
 
     ASSIGNED = "assigned"       # An idle agent was found
-    BROADCAST = "broadcast"     # Message targets all agents (e.g., "大家做个自我介绍")
     QUEUE_WAIT = "queue_wait"   # All agents busy but running; caller should wait/retry
     NO_MATCH = "no_match"       # No agent scored (chitchat or no agents at all)
 

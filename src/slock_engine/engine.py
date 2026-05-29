@@ -338,6 +338,9 @@ class SlockEngine(BaseEngine):
         # Independent executor for inter-agent discussions (decoupled from main agent execution)
         self._discussion_executor = BoundedExecutor(max_workers=2, max_queue_size=6)
 
+        # Shared executor for parallel prompt context reads (reused across prompt builds)
+        self._prompt_context_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="slock-ctx")
+
         # Sidebar channel for lightweight inter-agent communication
         from .sidebar_channel import SidebarChannel
         self._sidebar_channel = SidebarChannel()
@@ -858,89 +861,6 @@ class SlockEngine(BaseEngine):
         else:
             # NO_MATCH — likely chitchat that slipped through, just drop
             logger.debug("Dispatch: NO_MATCH for task %s, dropping", task.task_id)
-
-    def _submit_to_executor(
-        self, agent: "AgentIdentity", message: str, callbacks: "Optional[SlockEngineCallbacks]"
-    ) -> None:
-        """Submit agent execution to the bounded thread pool."""
-        executor = self._get_executor()
-        try:
-            executor.submit(self._execute_agent, agent, message, callbacks)
-        except Exception as exc:
-            logger.error("Failed to submit to executor: %s", exc, exc_info=True)
-
-    def _dispatch_broadcast_task(self, task: "QueuedTask", agents: list, channel_snapshot) -> None:
-        """Fan out a broadcast task to ALL agents in parallel with result aggregation.
-
-        Each agent gets the same message and executes independently.
-        Results are collected, ordered, and delivered as a consolidated summary.
-        """
-        import threading
-        from concurrent.futures import Future
-
-        callbacks = task.callbacks
-        executor = self._get_executor()
-        message = task.text
-
-        # Track all futures for aggregation
-        futures: list[tuple[AgentIdentity, Future]] = []
-        results_lock = threading.Lock()
-        collected_results: list[tuple[int, str, str]] = []  # (order, agent_name, result)
-
-        for idx, agent in enumerate(agents, start=1):
-            def _execute_and_collect(a=agent, order=idx):
-                try:
-                    result = self._execute_agent(a, message, callbacks)
-                    if result:
-                        with results_lock:
-                            collected_results.append((order, a.name, result))
-                except Exception as exc:
-                    logger.warning("Broadcast agent %s failed: %s", a.name, exc)
-
-            try:
-                fut = executor.submit(_execute_and_collect)
-                futures.append((agent, fut))
-            except Exception as exc:
-                logger.warning(
-                    "Broadcast: failed to submit to agent %s: %s",
-                    agent.name, exc,
-                )
-
-        # Aggregation: wait for all and produce summary (in background)
-        def _aggregate():
-            for _, fut in futures:
-                try:
-                    fut.result(timeout=300)  # 5min max per agent
-                except Exception:
-                    pass
-
-            if collected_results:
-                # Sort by order for consistent display
-                collected_results.sort(key=lambda x: x[0])
-                summary_lines = []
-                for order, name, result in collected_results:
-                    # Truncate each result for summary
-                    preview = result[:200].replace("\n", " ")
-                    summary_lines.append(f"[{name}#{order}] {preview}")
-
-                summary = "\n".join(summary_lines)
-                logger.info(
-                    "Broadcast aggregation complete: %d/%d agents responded",
-                    len(collected_results), len(agents),
-                )
-
-                # Deliver aggregated summary via final_result_callback if available
-                if task.final_result_callback:
-                    try:
-                        task.final_result_callback(
-                            task.task_id,
-                            f"📊 **团队报数汇总** ({len(collected_results)}/{len(agents)}人)\n\n{summary}",
-                            task.card_message_id,
-                        )
-                    except Exception as exc:
-                        logger.warning("Failed to deliver broadcast summary: %s", exc)
-
-        threading.Thread(target=_aggregate, daemon=True, name="broadcast-agg").start()
 
     def _handle_agent_plan_output(
         self,
@@ -2942,14 +2862,14 @@ class SlockEngine(BaseEngine):
         def _read_global():
             return self._memory.read_global_wiki()
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future_replay = executor.submit(_read_replay)
-            future_group = executor.submit(_read_group)
-            future_global = executor.submit(_read_global)
+        executor = self._prompt_context_executor
+        future_replay = executor.submit(_read_replay)
+        future_group = executor.submit(_read_group)
+        future_global = executor.submit(_read_global)
 
-            replay = future_replay.result()
-            group_memory = future_group.result()
-            global_wiki = future_global.result()
+        replay = future_replay.result(timeout=5)
+        group_memory = future_group.result(timeout=5)
+        global_wiki = future_global.result(timeout=5)
 
         if replay:
             replay_lines = []
