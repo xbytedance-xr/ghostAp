@@ -1756,6 +1756,103 @@ class DiscussionManager:
         # 4. Send lightweight notification card to channel
         self._send_conclusion_notification(thread, participants_display)
 
+        # 5. Drive task state from discussion verdict (if bound to a task)
+        self._apply_verdict_to_bound_task(thread)
+
+    def _apply_verdict_to_bound_task(self, thread: "DiscussionThread") -> None:
+        """If discussion is bound to a task, extract verdict and drive task state.
+
+        APPROVE signal → complete the task via task board.
+        REJECT signal → trigger rejection via orchestrator for retry.
+        Neutral → no action (existing behavior: just persist to memory).
+        """
+        task_id = self.get_bound_task(thread.thread_id)
+        if not task_id or not thread.conclusion:
+            return
+
+        verdict = self._extract_verdict_from_conclusion(thread.conclusion)
+        if verdict == "neutral":
+            return
+
+        # Get engine references for task board and orchestrator
+        engine = self._engine
+        if not engine:
+            logger.debug("No engine reference, cannot apply verdict to task %s", task_id)
+            return
+
+        task_board = getattr(engine, "_task_mgr", None)
+        orchestrator = getattr(engine, "_collaboration_orchestrator", None)
+
+        if verdict == "approve":
+            if task_board:
+                # Find the task's claimer and complete it
+                claimer_id = ""
+                tasks = getattr(task_board, "_tasks", [])
+                for t in tasks:
+                    if t.task_id == task_id and t.claimed_by:
+                        claimer_id = t.claimed_by
+                        break
+                if claimer_id:
+                    try:
+                        task_board.complete_task(task_id, claimer_id)
+                        logger.info(
+                            "Discussion verdict APPROVE applied to task %s",
+                            task_id,
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to apply APPROVE verdict: %s", exc)
+        elif verdict == "reject":
+            # Determine rejector from discussion participants
+            rejector_role = ""
+            if thread.participants and engine:
+                # Use the last speaker as rejector
+                last_participant = thread.participants[-1] if len(thread.participants) > 1 else thread.participants[0]
+                agent = engine.get_agent(last_participant)
+                if agent:
+                    rejector_role = getattr(agent, "role", "") or "reviewer"
+
+            if orchestrator:
+                try:
+                    orchestrator.on_task_rejected(task_id, rejector_role)
+                    logger.info(
+                        "Discussion verdict REJECT applied to task %s (rejector=%s)",
+                        task_id, rejector_role,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to apply REJECT verdict: %s", exc)
+
+    @staticmethod
+    def _extract_verdict_from_conclusion(conclusion: str) -> str:
+        """Extract verdict signal from discussion conclusion text.
+
+        Returns: "approve", "reject", or "neutral".
+        """
+        upper = conclusion.upper()
+        lower = conclusion.lower()
+
+        # Strong approve signals
+        approve_signals = [
+            "[APPROVE]", "LGTM", "APPROVED",
+            "通过", "合格", "没有问题", "可以发布", "确认通过",
+            "同意方案", "方案可行",
+        ]
+        # Strong reject signals
+        reject_signals = [
+            "[REJECT]", "REJECTED",
+            "不通过", "打回", "需要修改", "需要重做", "存在问题",
+            "方案不可行", "建议重新", "质量不达标",
+        ]
+
+        for signal in reject_signals:
+            if signal in upper or signal in lower or signal in conclusion:
+                return "reject"
+
+        for signal in approve_signals:
+            if signal in upper or signal in lower or signal in conclusion:
+                return "approve"
+
+        return "neutral"
+
     def _send_conclusion_notification(
         self, thread: "DiscussionThread", participants_display: list[str]
     ) -> None:

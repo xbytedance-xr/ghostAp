@@ -779,15 +779,27 @@ class SlockEngine(BaseEngine):
 
         from .task_router import RoutingStatus
         if routing_result.status == RoutingStatus.ASSIGNED and routing_result.agent:
-            # Submit to executor (non-blocking)
+            # Route through TaskBoard for unified lifecycle tracking
             agent = routing_result.agent
             callbacks = task.callbacks
 
             # Wrap callbacks to deliver final result via task's callback
             original_on_done = callbacks.on_agent_done if callbacks else None
-            task_id = task.task_id
+            queued_task_id = task.task_id
             card_message_id = task.card_message_id
             final_callback = task.final_result_callback
+
+            # Create a board-level SlockTask for lifecycle tracking
+            board_task = self._task_mgr.add_task(task.text)
+            if board_task is None:
+                # Board full — re-enqueue with backoff
+                task.retry_count += 1
+                task.next_retry_at = _time.time() + min(2 ** task.retry_count, 30)
+                with contextlib.suppress(Exception):
+                    self._task_queue.enqueue(task)
+                return
+
+            board_task_id = board_task.task_id
 
             def wrapped_on_done(a: AgentIdentity, result: str) -> None:
                 if original_on_done:
@@ -795,9 +807,9 @@ class SlockEngine(BaseEngine):
                 # Deliver final result via callback
                 if final_callback:
                     try:
-                        final_callback(task_id, result, card_message_id)
+                        final_callback(queued_task_id, result, card_message_id)
                     except Exception as e:
-                        logger.error("Failed to deliver final result for task %s: %s", task_id, e, exc_info=True)
+                        logger.error("Failed to deliver final result for task %s: %s", queued_task_id, e, exc_info=True)
                 # Notify queue that agent is idle
                 self._task_queue.notify_idle()
 
@@ -816,10 +828,20 @@ class SlockEngine(BaseEngine):
             )
 
             logger.info(
-                "Dispatch: assigning task %s to agent %s (waited %.1fs)",
-                task.task_id, agent.name, waited,
+                "Dispatch: assigning task %s (board=%s) to agent %s (waited %.1fs)",
+                queued_task_id, board_task_id, agent.name, waited,
             )
-            self._submit_to_executor(agent, task.text, wrapped_callbacks)
+            # Execute through TaskBoard lifecycle: claim → execute → review
+            executor = self._get_executor()
+            try:
+                executor.submit(
+                    self._task_mgr.execute_task,
+                    board_task_id,
+                    agent.agent_id,
+                    wrapped_callbacks,
+                )
+            except Exception as exc:
+                logger.error("Failed to submit board task to executor: %s", exc, exc_info=True)
         elif routing_result.status == RoutingStatus.QUEUE_WAIT:
             # All agents still busy — put task back with non-blocking backoff
             task.retry_count += 1
@@ -843,23 +865,169 @@ class SlockEngine(BaseEngine):
             logger.error("Failed to submit to executor: %s", exc, exc_info=True)
 
     def _dispatch_broadcast_task(self, task: "QueuedTask", agents: list, channel_snapshot) -> None:
-        """Fan out a broadcast task to ALL agents in parallel.
+        """Fan out a broadcast task to ALL agents in parallel with result aggregation.
 
         Each agent gets the same message and executes independently.
-        Results are delivered via on_agent_done callbacks (per-agent identity cards).
+        Results are collected, ordered, and delivered as a consolidated summary.
         """
+        import threading
+        from concurrent.futures import Future
+
         callbacks = task.callbacks
         executor = self._get_executor()
         message = task.text
 
-        for agent in agents:
+        # Track all futures for aggregation
+        futures: list[tuple[AgentIdentity, Future]] = []
+        results_lock = threading.Lock()
+        collected_results: list[tuple[int, str, str]] = []  # (order, agent_name, result)
+
+        for idx, agent in enumerate(agents, start=1):
+            def _execute_and_collect(a=agent, order=idx):
+                try:
+                    result = self._execute_agent(a, message, callbacks)
+                    if result:
+                        with results_lock:
+                            collected_results.append((order, a.name, result))
+                except Exception as exc:
+                    logger.warning("Broadcast agent %s failed: %s", a.name, exc)
+
             try:
-                executor.submit(self._execute_agent, agent, message, callbacks)
+                fut = executor.submit(_execute_and_collect)
+                futures.append((agent, fut))
             except Exception as exc:
                 logger.warning(
                     "Broadcast: failed to submit to agent %s: %s",
                     agent.name, exc,
                 )
+
+        # Aggregation: wait for all and produce summary (in background)
+        def _aggregate():
+            for _, fut in futures:
+                try:
+                    fut.result(timeout=300)  # 5min max per agent
+                except Exception:
+                    pass
+
+            if collected_results:
+                # Sort by order for consistent display
+                collected_results.sort(key=lambda x: x[0])
+                summary_lines = []
+                for order, name, result in collected_results:
+                    # Truncate each result for summary
+                    preview = result[:200].replace("\n", " ")
+                    summary_lines.append(f"[{name}#{order}] {preview}")
+
+                summary = "\n".join(summary_lines)
+                logger.info(
+                    "Broadcast aggregation complete: %d/%d agents responded",
+                    len(collected_results), len(agents),
+                )
+
+                # Deliver aggregated summary via final_result_callback if available
+                if task.final_result_callback:
+                    try:
+                        task.final_result_callback(
+                            task.task_id,
+                            f"📊 **团队报数汇总** ({len(collected_results)}/{len(agents)}人)\n\n{summary}",
+                            task.card_message_id,
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to deliver broadcast summary: %s", exc)
+
+        threading.Thread(target=_aggregate, daemon=True, name="broadcast-agg").start()
+
+    def _handle_agent_plan_output(
+        self,
+        agent: AgentIdentity,
+        result: str,
+        original_message: str,
+        channel_id: str,
+        callbacks: Optional[SlockEngineCallbacks],
+    ) -> bool:
+        """Parse a [PLAN]...[/PLAN] block from agent output and register with orchestrator.
+
+        Returns True if a valid plan was created, False otherwise.
+        """
+        import re
+
+        # Extract the plan block
+        plan_match = re.search(r'\[PLAN\](.*?)\[/PLAN\]', result, re.DOTALL)
+        if not plan_match:
+            return False
+
+        plan_body = plan_match.group(1).strip()
+        if not plan_body:
+            return False
+
+        # Parse sub-tasks: [SUB:role] description [DEPENDS:n,m]
+        sub_pattern = re.compile(
+            r'\[SUB:([^\]]+)\]\s*(.+?)(?:\s*\[DEPENDS:([^\]]+)\])?\s*$',
+            re.MULTILINE,
+        )
+        sub_tasks = []
+        for match in sub_pattern.finditer(plan_body):
+            role = match.group(1).strip()
+            description = match.group(2).strip()
+            depends_str = match.group(3)
+            depends_on = []
+            if depends_str:
+                depends_on = [d.strip() for d in depends_str.split(",") if d.strip()]
+            sub_tasks.append({
+                "role": role,
+                "description": description,
+                "depends_on": depends_on,
+            })
+
+        if not sub_tasks:
+            return False
+
+        # Create a plan via the orchestrator
+        try:
+            plan = self._collaboration_orchestrator.create_plan_from_agent_output(
+                planner_agent=agent,
+                original_task_content=original_message,
+                sub_tasks=sub_tasks,
+                channel_id=channel_id,
+            )
+            if plan:
+                logger.info(
+                    "Agent %s created plan with %d steps for: %s",
+                    agent.name, len(sub_tasks), original_message[:80],
+                )
+                return True
+        except Exception as exc:
+            logger.error("Failed to create plan from agent output: %s", exc, exc_info=True)
+
+        return False
+
+    @staticmethod
+    def _format_plan_acknowledgment(result: str) -> str:
+        """Format a plan output into a user-friendly acknowledgment message."""
+        import re
+
+        plan_match = re.search(r'\[PLAN\](.*?)\[/PLAN\]', result, re.DOTALL)
+        if not plan_match:
+            return result
+
+        plan_body = plan_match.group(1).strip()
+        # Count sub-tasks
+        sub_count = plan_body.count("[SUB:")
+
+        # Build acknowledgment
+        acknowledgment = (
+            f"📋 **已创建协作计划** ({sub_count} 个子任务)\n\n"
+            f"{plan_body}\n\n"
+            f"---\n"
+            f"计划已注册，子任务将自动分配给对应角色执行。"
+        )
+
+        # If there's content after [/PLAN], append it
+        after_plan = result.split("[/PLAN]")[-1].strip()
+        if after_plan:
+            acknowledgment += f"\n\n{after_plan}"
+
+        return acknowledgment
 
     def _fan_out_to_others(
         self,
@@ -1960,6 +2128,15 @@ class SlockEngine(BaseEngine):
 
             # Format output through mouthpiece
             if result:
+                # Agent-driven planning: if the agent outputs a [PLAN] block,
+                # parse it into sub-tasks and register with the collaboration orchestrator.
+                if result.strip().startswith("[PLAN]"):
+                    plan_created = self._handle_agent_plan_output(agent, result, message, channel_id, callbacks)
+                    if plan_created:
+                        # Plan was registered — the orchestrator will dispatch sub-tasks.
+                        # Replace result with a plan acknowledgment for display.
+                        result = self._format_plan_acknowledgment(result)
+
                 # Agent-driven fan-out: if the agent determines this task should
                 # involve all team members, it prefixes its response with [DELEGATE:ALL].
                 # We strip the marker, execute the agent's own response, then re-dispatch
@@ -2564,6 +2741,26 @@ class SlockEngine(BaseEngine):
                 "You should still provide YOUR OWN response after the prefix.\n"
                 "Only use this when the task semantically requires input from EVERY team member. "
                 "Normal tasks that just need one expert should NOT use this prefix."
+            )
+
+            # Planning Protocol: agent can decompose complex tasks
+            parts.append(
+                "\n# Task Planning Protocol\n"
+                "如果任务复杂（涉及多步骤、多角色协作、或需要拆解），你可以输出规划方案：\n"
+                "1. 以 `[PLAN]` 作为回复的第一行前缀\n"
+                "2. 每个子任务一行，格式: `[SUB:目标角色] 子任务描述`\n"
+                "3. 如有依赖关系，在子任务后追加 `[DEPENDS:序号]`（序号从1开始）\n"
+                "4. 规划结束后以 `[/PLAN]` 结尾\n\n"
+                "示例:\n"
+                "```\n"
+                "[PLAN]\n"
+                "[SUB:coder] 实现用户登录接口\n"
+                "[SUB:coder] 实现权限校验中间件 [DEPENDS:1]\n"
+                "[SUB:tester] 编写登录接口单元测试 [DEPENDS:1]\n"
+                "[SUB:reviewer] 代码审查 [DEPENDS:2,3]\n"
+                "[/PLAN]\n"
+                "```\n\n"
+                "仅当任务确实需要多步骤协作时才使用规划。简单的单步任务直接执行即可。"
             )
 
         if memory.role:

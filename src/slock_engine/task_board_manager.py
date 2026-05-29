@@ -234,9 +234,21 @@ class TaskBoardManager:
 
         Creates the successor task AND auto-executes it (no idle wait).
         Returns the new successor task if created, else None.
+
+        Skipped when the task belongs to an active collaboration plan
+        (orchestrator owns chain advancement in that case).
         """
         if self._chain_manager is None:
             return None
+
+        # Skip if orchestrator already manages this task's chain
+        if hasattr(self._context, 'has_plan_for_task'):
+            if self._context.has_plan_for_task(task.task_id):
+                logger.debug(
+                    "Skipping chain successor for task %s — orchestrator owns plan",
+                    task.task_id,
+                )
+                return None
 
         # Get the completing agent's role
         agent = self._registry_get(agent_id)
@@ -282,7 +294,12 @@ class TaskBoardManager:
         agent_id: str,
         callbacks=None,
     ) -> Optional[str]:
-        """Execute a task end-to-end: claim -> execute -> complete/rollback."""
+        """Execute a task end-to-end: claim -> execute -> review gate -> complete/rollback.
+
+        After execution, the task transitions to IN_REVIEW. If a reviewer role
+        is available in the chain, a review sub-task is spawned. Otherwise the
+        task auto-completes (simple tasks skip review).
+        """
         with self._lock:
             task = None
             for t in self._tasks:
@@ -306,7 +323,11 @@ class TaskBoardManager:
             result = self._context.execute_agent(agent, task_content, callbacks)
             if result:
                 self._mark_task_in_review(task_id, agent_id)
-                self.complete_task(task_id, agent_id)
+                # Attempt to trigger review; if no reviewer available, auto-complete
+                review_requested = self.request_review(task_id, agent_id, result)
+                if not review_requested:
+                    # No reviewer role in chain — auto-complete (simple task path)
+                    self.complete_task(task_id, agent_id)
                 return result
             else:
                 self._rollback_task(task_id, agent_id)
@@ -383,6 +404,156 @@ class TaskBoardManager:
             self._notify_status_change(task_id, "in_progress", "in_review", agent_id)
             return True
         return False
+
+    def request_review(self, task_id: str, executor_agent_id: str, execution_result: str) -> bool:
+        """Request a review for a completed task by spawning a review sub-task.
+
+        Looks up the reviewer role from the chain manager. If found, creates a
+        review sub-task and dispatches it to the reviewer agent.
+
+        Returns:
+            True if a review was requested (task stays IN_REVIEW).
+            False if no reviewer available (caller should auto-complete).
+        """
+        if self._chain_manager is None:
+            return False
+
+        # Check if "reviewer" role exists in any chain
+        reviewer_role = self._chain_manager.get_successor_role("coder")
+        if reviewer_role is None:
+            # Try to find any role containing "review"
+            reviewer_role = "reviewer"
+
+        # Resolve reviewer agent
+        agent = self._registry_get(executor_agent_id)
+        if agent is None:
+            return False
+
+        channel_id = ""
+        with self._lock:
+            for t in self._tasks:
+                if t.task_id == task_id:
+                    channel_id = t.created_in
+                    break
+
+        reviewer_agent = self._context.resolve_agent_for_role(reviewer_role, channel_id)
+        if reviewer_agent is None or reviewer_agent.agent_id == executor_agent_id:
+            # No distinct reviewer available — skip review
+            return False
+
+        # Build review sub-task content
+        task_content = ""
+        with self._lock:
+            for t in self._tasks:
+                if t.task_id == task_id:
+                    task_content = t.content
+                    break
+
+        review_content = (
+            f"[REVIEW] 请审核以下任务的执行结果:\n"
+            f"原始任务: {task_content[:500]}\n"
+            f"执行结果: {execution_result[:1000]}\n\n"
+            f"请回复:\n"
+            f"- [APPROVE] 如果结果合格\n"
+            f"- [REJECT] 反馈内容 — 如果需要修改\n"
+            f"审核对象任务ID: {task_id}"
+        )
+
+        # Create review sub-task
+        review_task = self.add_task(review_content)
+        if review_task is None:
+            return False
+
+        # Link review task to parent
+        with self._lock:
+            for t in self._tasks:
+                if t.task_id == task_id:
+                    t.sub_tasks.append(review_task.task_id)
+                    break
+            review_task.parent_task_id = task_id
+
+        # Claim and dispatch review to reviewer agent
+        claimed = self.claim_task(review_task.task_id, reviewer_agent.agent_id)
+        if not claimed:
+            return False
+
+        # Execute review asynchronously via context
+        import threading
+        def _run_review():
+            try:
+                review_result = self._context.execute_agent(reviewer_agent, review_content, None)
+                if review_result:
+                    self._process_review_verdict(task_id, review_task.task_id, reviewer_agent.agent_id, review_result)
+            except Exception as exc:
+                logger.error("Review execution failed for task %s: %s", task_id, repr(exc))
+                # On review failure, auto-complete the parent task
+                self.complete_task(task_id, executor_agent_id)
+
+        threading.Thread(target=_run_review, daemon=True, name=f"review-{task_id[:8]}").start()
+
+        logger.info(
+            "Review requested: task=%s reviewer=%s review_task=%s",
+            task_id, reviewer_agent.name, review_task.task_id,
+        )
+        return True
+
+    def _process_review_verdict(
+        self, parent_task_id: str, review_task_id: str, reviewer_agent_id: str, review_result: str
+    ) -> None:
+        """Process a reviewer's verdict and advance the parent task accordingly."""
+        verdict = self._extract_review_verdict(review_result)
+
+        # Complete the review sub-task itself
+        self.complete_task(review_task_id, reviewer_agent_id)
+
+        if verdict == "approve":
+            # Find the original executor to complete the parent task
+            executor_id = ""
+            with self._lock:
+                for t in self._tasks:
+                    if t.task_id == parent_task_id:
+                        executor_id = t.claimed_by or ""
+                        t.timeline.append(TaskTimelineEvent(
+                            event_type="review_approved",
+                            agent_id=reviewer_agent_id,
+                            timestamp=time.time(),
+                            detail=f"Approved by reviewer: {review_result[:200]}",
+                        ))
+                        break
+            if executor_id:
+                self.complete_task(parent_task_id, executor_id)
+            logger.info("Review APPROVED: task=%s reviewer=%s", parent_task_id, reviewer_agent_id)
+        else:
+            # REJECT: record feedback and trigger retry via orchestrator
+            feedback = review_result.replace("[REJECT]", "").strip()[:500]
+            with self._lock:
+                for t in self._tasks:
+                    if t.task_id == parent_task_id:
+                        t.timeline.append(TaskTimelineEvent(
+                            event_type="review_rejected",
+                            agent_id=reviewer_agent_id,
+                            timestamp=time.time(),
+                            detail=f"Rejected: {feedback}",
+                        ))
+                        # Reset to IN_PROGRESS for retry (not TODO — keep the claimer)
+                        t.status = TaskStatus.IN_PROGRESS
+                        self._context.set_dirty(True)
+                        break
+                snapshot = list(self._tasks)
+            self._flush_if_dirty(snapshot)
+            self._notify_status_change(parent_task_id, "in_review", "in_progress", reviewer_agent_id)
+            logger.info("Review REJECTED: task=%s feedback=%s", parent_task_id, feedback[:100])
+
+    @staticmethod
+    def _extract_review_verdict(review_result: str) -> str:
+        """Extract APPROVE or REJECT verdict from review result text."""
+        upper = review_result.upper()
+        if "[APPROVE]" in upper or "LGTM" in upper or "通过" in review_result or "合格" in review_result:
+            return "approve"
+        if "[REJECT]" in upper or "不通过" in review_result or "需要修改" in review_result or "打回" in review_result:
+            return "reject"
+        # Default: if ambiguous, approve (avoid blocking)
+        return "approve"
 
     def force_complete_task(
         self,

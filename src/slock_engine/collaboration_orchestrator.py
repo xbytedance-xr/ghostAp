@@ -502,6 +502,108 @@ class CollaborationOrchestrator(TaskStatusObserver):
         if plan:
             logger.info("Auto-plan triggered for task %s: plan=%s", task_id, plan.plan_id)
 
+    def create_plan_from_agent_output(
+        self,
+        planner_agent: "AgentIdentity",
+        original_task_content: str,
+        sub_tasks: list[dict],
+        channel_id: str,
+    ) -> "Optional[CollaborationPlan]":
+        """Create a collaboration plan from an agent's parsed [PLAN] output.
+
+        Args:
+            planner_agent: The agent that produced the plan.
+            original_task_content: The original task the agent was responding to.
+            sub_tasks: List of dicts with keys: role, description, depends_on (list of 1-based indices).
+            channel_id: The channel where the plan operates.
+
+        Returns:
+            CollaborationPlan if successfully created, None otherwise.
+        """
+        import uuid
+
+        if not sub_tasks:
+            return None
+
+        # Build plan steps from parsed sub-tasks
+        steps: list["PlanStep"] = []
+        step_id_map: dict[int, str] = {}  # 1-based index -> step_id
+
+        for idx, st in enumerate(sub_tasks, start=1):
+            step_id = str(uuid.uuid4())[:12]
+            step_id_map[idx] = step_id
+
+            # Resolve agent for the role
+            agent = self._resolve_agent(st["role"], channel_id)
+            agent_id = agent.agent_id if agent else ""
+
+            steps.append(PlanStep(
+                step_id=step_id,
+                role=st["role"],
+                agent_id=agent_id,
+                description=st["description"],
+                order=idx,
+                status=PlanStepStatus.TODO,
+            ))
+
+        # Resolve depends_on references (1-based index to step_id)
+        for idx, st in enumerate(sub_tasks, start=1):
+            if st.get("depends_on"):
+                step = steps[idx - 1]
+                for dep_ref in st["depends_on"]:
+                    try:
+                        dep_idx = int(dep_ref)
+                        if dep_idx in step_id_map:
+                            step.depends_on.append(step_id_map[dep_idx])
+                    except (ValueError, TypeError):
+                        pass
+
+        # Create the plan
+        plan_id = str(uuid.uuid4())[:12]
+        plan = CollaborationPlan(
+            plan_id=plan_id,
+            task_id="",  # No parent board task yet — orchestrator owns lifecycle
+            task_content=original_task_content[:200],
+            steps=steps,
+            status=CollaborationPlanStatus.EXECUTING,
+            chain_template="agent_generated",
+            planner_agent_id=planner_agent.agent_id,
+        )
+
+        with self._lock:
+            self._plans[plan_id] = plan
+            self._channel_map[plan_id] = channel_id
+            # Map each step's future task_id (will be populated when step starts)
+            for step in steps:
+                if step.task_id:
+                    self._task_to_plan[step.task_id] = plan_id
+
+        self._persist()
+
+        # Start executing the plan immediately
+        self._start_next_step(plan)
+
+        logger.info(
+            "Created plan from agent output: plan=%s steps=%d planner=%s",
+            plan_id, len(steps), planner_agent.name,
+        )
+        return plan
+
+    def has_plan_for_task(self, task_id: str) -> bool:
+        """Check if a task has an active collaboration plan."""
+        with self._lock:
+            plan_id = self._task_to_plan.get(task_id)
+            if not plan_id:
+                return False
+            plan = self._plans.get(plan_id)
+            if not plan:
+                return False
+            return plan.status in (
+                CollaborationPlanStatus.EXECUTING,
+                CollaborationPlanStatus.PENDING_APPROVAL,
+                CollaborationPlanStatus.PLANNING,
+            )
+
     # ------------------------------------------------------------------
     # Task Rejection / Retry Logic
     # ------------------------------------------------------------------
