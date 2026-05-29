@@ -297,7 +297,10 @@ class ACPSessionManager:
                 for key, session in snapshot:
                     try:
                         idle = now - session.last_active
-                        if idle <= self._idle_healthcheck_s:
+                        # Always check sessions that have been force-marked dead
+                        # (e.g. after terminal-state errors); skip idle threshold.
+                        force_dead = getattr(session, "_force_dead", False)
+                        if not force_dead and idle <= self._idle_healthcheck_s:
                             continue
                         alive = session.is_server_running()
                         if not alive:

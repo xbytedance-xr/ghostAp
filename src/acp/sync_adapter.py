@@ -797,8 +797,12 @@ def _resolve_tui2acp_adapters_dir() -> Optional[str]:
     import os
     import shutil
 
+    from ..utils.env import build_clean_env
+
+    _augmented_path = build_clean_env().get("PATH", "")
+
     # 1. Resolve via the tui2acp executable's npm install location.
-    bin_path = shutil.which("tui2acp")
+    bin_path = shutil.which("tui2acp", path=_augmented_path)
     if bin_path:
         try:
             real = os.path.realpath(bin_path)
@@ -928,7 +932,11 @@ def resolve_agent_spec(
 
     if agent_type.startswith("tui2acp_"):
         import shutil
-        if not shutil.which("tui2acp"):
+
+        from ..utils.env import build_clean_env
+
+        _augmented_path = build_clean_env().get("PATH", "")
+        if not shutil.which("tui2acp", path=_augmented_path):
             raise AgentSpecResolveError(
                 "tui2acp 未安装或不在 PATH 中，请运行: npm install -g tui2acp",
                 agent_cmd="tui2acp",
@@ -1442,6 +1450,10 @@ class SyncACPSession:
         self._active_future: Optional[asyncio.Future] = None
         self._watchdog_stop = threading.Event()
         self._watchdog_thread: Optional[threading.Thread] = None
+        # Terminal-state marker: set True when a prompt detects the session is
+        # irrecoverably dead so that is_server_running() immediately returns False
+        # without relying on asyncio process reaping.
+        self._force_dead: bool = False
 
         # Public state (compatible with old BaseSession interface)
         self.session_id: str = ""
@@ -1495,6 +1507,10 @@ class SyncACPSession:
 
     def is_server_running(self) -> bool:
         """Best-effort check whether the ACP agent process is still alive."""
+        # Fast path: if a previous prompt detected terminal-state death, skip
+        # expensive process introspection.
+        if getattr(self, "_force_dead", False):
+            return False
         try:
             if not self._acp_session:
                 return False
@@ -1631,6 +1647,8 @@ class SyncACPSession:
         try:
             return future.result(timeout=effective_timeout)
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            # Mark session dead so ensure_session evicts it immediately.
+            self._force_dead = True
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
         except TimeoutError as e:
             agent_type_str = getattr(self, "_agent_type", "unknown")
@@ -1641,6 +1659,19 @@ class SyncACPSession:
             # rejects it with `-32602 Invalid params`.
             self.cancel(wait=True, timeout=2.0)
             raise TimeoutError(f"ACP prompt 执行超时 ({effective_timeout}s)") from e
+        except Exception as e:
+            # Detect terminal-state / broken-pipe errors indicating the session
+            # is irrecoverably dead.  Mark it so ensure_session evicts on the
+            # NEXT call rather than serving the stale cached session.
+            err_detail = str(e).lower()
+            if "terminal state" in err_detail or "broken pipe" in err_detail or "connection" in err_detail and "closed" in err_detail:
+                self._force_dead = True
+                logger.warning(
+                    "[ACP:%s] Session marked dead after prompt error: %s",
+                    getattr(self, "_agent_type", "unknown"),
+                    str(e)[:120],
+                )
+            raise
         finally:
             self._active_future = None
 
