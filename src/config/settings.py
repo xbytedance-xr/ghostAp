@@ -70,7 +70,11 @@ class Settings(BaseSettings):
     sandbox_command_whitelist: str = ""
 
     # 允许 set_working_dir 切换到的根目录列表
-    project_allowed_roots: list[str] = [os.path.expanduser("~/workspaces")]
+    # 校验时会通过 realpath 解析 symlink，所以 ~/work 能匹配 /data00/home/x/work
+    project_allowed_roots: list[str] = [
+        os.path.expanduser("~/workspaces"),
+        os.path.expanduser("~/work"),
+    ]
 
     coco_execution_timeout: int = 7200
     coco_session_timeout: int = 86400

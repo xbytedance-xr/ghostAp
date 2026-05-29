@@ -120,14 +120,10 @@ class TestSetWorkingDirPathValidation:
         outside_dir = str(tmp_path / "evil")
         os.makedirs(outside_dir, exist_ok=True)
 
-        with patch("src.config.get_settings") as mock_get:
-            mock_settings = MagicMock()
-            mock_settings.project_allowed_roots = ["/Users/allowed/workspaces"]
-            mock_get.return_value = mock_settings
-
-            ok, msg = handler.set_working_dir("chat123", outside_dir)
-            assert ok is False
-            assert "不在允许范围内" in msg
+        handler.ctx.settings.project_allowed_roots = ["/Users/allowed/workspaces"]
+        ok, msg = handler.set_working_dir("chat123", outside_dir)
+        assert ok is False
+        assert "不在允许范围内" in msg
 
     def test_accepts_path_within_allowed_roots(self, tmp_path):
         handler = self._make_handler()
@@ -137,24 +133,16 @@ class TestSetWorkingDirPathValidation:
         project_dir = os.path.join(allowed_root, "myproject")
         os.makedirs(project_dir, exist_ok=True)
 
-        with patch("src.config.get_settings") as mock_get:
-            mock_settings = MagicMock()
-            mock_settings.project_allowed_roots = [allowed_root]
-            mock_get.return_value = mock_settings
-
-            ok, msg = handler.set_working_dir("chat123", project_dir)
-            assert ok is True
-            assert msg == project_dir
+        handler.ctx.settings.project_allowed_roots = [allowed_root]
+        ok, msg = handler.set_working_dir("chat123", project_dir)
+        assert ok is True
+        assert msg == project_dir
 
     def test_allows_any_path_when_roots_empty(self, tmp_path):
         handler = self._make_handler()
 
         target_dir = str(tmp_path)
 
-        with patch("src.config.get_settings") as mock_get:
-            mock_settings = MagicMock()
-            mock_settings.project_allowed_roots = []
-            mock_get.return_value = mock_settings
-
-            ok, msg = handler.set_working_dir("chat123", target_dir)
-            assert ok is True
+        handler.ctx.settings.project_allowed_roots = []
+        ok, msg = handler.set_working_dir("chat123", target_dir)
+        assert ok is True
