@@ -338,6 +338,10 @@ class SlockEngine(BaseEngine):
         # Independent executor for inter-agent discussions (decoupled from main agent execution)
         self._discussion_executor = BoundedExecutor(max_workers=2, max_queue_size=6)
 
+        # Sidebar channel for lightweight inter-agent communication
+        from .sidebar_channel import SidebarChannel
+        self._sidebar_channel = SidebarChannel()
+
         # Channel state
         self._channel: Optional[SlockChannel] = None
         self._tasks: list[SlockTask] = []
@@ -1149,6 +1153,7 @@ class SlockEngine(BaseEngine):
                 self._patrol_detect_orphan_tasks()
                 self._patrol_proactive_followup()
                 self._patrol_renew_active_claims()
+                self._sidebar_channel.expire_stale()
             except Exception as exc:
                 logger.warning("Patrol loop error: %s", exc, exc_info=True)
 
@@ -2842,12 +2847,27 @@ class SlockEngine(BaseEngine):
         if memory.role:
             parts.append(f"\n# Your Role\n{memory.role}")
 
+        # Personality-Driven Style: inject behavioral directives from traits
+        if hasattr(agent, 'personality_traits') and agent.personality_traits:
+            from .personality_engine import PersonalityEngine
+            if not hasattr(self, '_personality_engine'):
+                self._personality_engine = PersonalityEngine()
+            profile = self._personality_engine.get_profile(agent.agent_id, agent.personality_traits)
+            style_block = profile.to_behavioral_prompt()
+            if style_block:
+                parts.append(f"\n# Your Communication Style\n{style_block}")
+
         if memory.key_knowledge:
             parts.append(f"\n# Key Knowledge\n{memory.key_knowledge}")
 
         # Reasoning snapshot injection: provide thinking continuity from prior turns
         if hasattr(memory, 'reasoning_snapshot') and memory.reasoning_snapshot:
             parts.append(f"\n# Prior Reasoning\n{memory.reasoning_snapshot[-1500:]}")
+
+        # Sidebar messages: lightweight inter-agent communication
+        sidebar_block = self._sidebar_channel.render_pending_for_prompt(agent.agent_id)
+        if sidebar_block:
+            parts.append(sidebar_block)
 
         # Memory Enhancement: use conversation replay instead of raw truncation
         channel_id = self._channel.channel_id if self._channel else self.chat_id
