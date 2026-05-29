@@ -342,6 +342,9 @@ class SlockEngine(BaseEngine):
         from .sidebar_channel import SidebarChannel
         self._sidebar_channel = SidebarChannel()
 
+        # Relationship graph for inter-agent collaboration history (lazy init)
+        self._relationship_graph = None  # Initialized on first channel activation
+
         # Channel state
         self._channel: Optional[SlockChannel] = None
         self._tasks: list[SlockTask] = []
@@ -1865,6 +1868,14 @@ class SlockEngine(BaseEngine):
         self._channel = channel
         self._memory.ensure_directories(channel_id=channel.channel_id)
         self._memory.initialize_team_workspace(channel, project_path=self.root_path)
+
+        # Lazily initialize relationship graph now that channel is known
+        if self._relationship_graph is None:
+            from .relationship_graph import RelationshipGraph
+            graph_path = os.path.join(
+                self._memory.base_path, "groups", channel.channel_id, "relationships.json"
+            )
+            self._relationship_graph = RelationshipGraph(graph_path)
         persisted_tasks = self._memory.read_task_board(channel.channel_id)
         if persisted_tasks:
             self._tasks.clear()
@@ -2184,6 +2195,25 @@ class SlockEngine(BaseEngine):
                     max_retries=settings_obj.slock_freshness_max_retries,
                     reeval_timeout=settings_obj.slock_freshness_reeval_timeout,
                 )
+
+            # Sidebar marker parsing: extract lightweight inter-agent messages
+            if result:
+                from .sidebar_channel import SidebarChannel, SidebarMessage, SidebarMsgType
+                cleaned_output, sidebar_markers = SidebarChannel.parse_output_markers(result)
+                for msg_type_str, recipient_name, content in sidebar_markers:
+                    recipient = self._registry.find_by_name(recipient_name)
+                    if recipient:
+                        msg_type = SidebarMsgType(msg_type_str.lower())
+                        sidebar_msg = SidebarMessage(
+                            sender_id=agent_id,
+                            sender_name=agent.name,
+                            recipient_id=recipient.agent_id,
+                            msg_type=msg_type,
+                            content=content,
+                        )
+                        self._sidebar_channel.post(sidebar_msg)
+                if sidebar_markers:
+                    result = cleaned_output
 
             # CHECKING → SENDING
             if not self._transition_agent_or_abort(agent_id, AgentStatus.SENDING):
@@ -2708,6 +2738,14 @@ class SlockEngine(BaseEngine):
             if traits:
                 extras.append(", ".join(traits))
             suffix = f" — {' · '.join(extras)}" if extras else ""
+            # Append relationship context hint if available
+            rel_hint = ""
+            if hasattr(self, "_relationship_graph") and self._relationship_graph:
+                rel_hint = self._relationship_graph.get_interaction_context(
+                    current.agent_id, peer.agent_id
+                )
+            if rel_hint:
+                suffix += f" {rel_hint}"
             lines.append(f"- @{name}{suffix}")
         header = (
             "\n# Teammates in This Channel\n"
@@ -2763,6 +2801,16 @@ class SlockEngine(BaseEngine):
             "遇到阻塞及时 escalate，不要无限重试",
         ]
         sections.append("协作规则:\n" + "\n".join(f"- {r}" for r in rules))
+
+        # 4. Lightweight sidebar communication instructions
+        sections.append(
+            "# 轻量通讯\n"
+            "你可以用以下前缀向队友发送非正式消息（不触发正式讨论）：\n"
+            "- [FYI:@队友名] 信息通知（无需回复）\n"
+            "- [QUESTION:@队友名] 快速提问（期望简短回复）\n"
+            "- [OFFER:@队友名] 主动帮助提议\n"
+            "每条消息限500字以内。仅在确实有价值时使用，不要每次都发。"
+        )
 
         if not sections:
             return ""
@@ -2842,6 +2890,16 @@ class SlockEngine(BaseEngine):
                 "[/PLAN]\n"
                 "```\n\n"
                 "仅当任务确实需要多步骤协作时才使用规划。简单的单步任务直接执行即可。"
+            )
+
+            # Sidebar communication protocol
+            parts.append(
+                "\n# 轻量通讯\n"
+                "你可以用以下前缀向队友发送非正式消息（不触发正式讨论）：\n"
+                "- [FYI:@队友名] 信息通知（无需回复）\n"
+                "- [QUESTION:@队友名] 快速提问（期望简短回复）\n"
+                "- [OFFER:@队友名] 主动帮助提议\n"
+                "每条消息限500字以内。仅在确实有价值时使用，不要每次都发。"
             )
 
         if memory.role:

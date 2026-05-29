@@ -198,6 +198,51 @@ class DiscussionManager:
             return tuple(CONVERGENCE_SIGNALS)
 
     # ------------------------------------------------------------------
+    # Adaptive Discussion Governance (Self-Assessment Gate)
+    # ------------------------------------------------------------------
+
+    def _assess_collaboration_need(self, agent_id: str, content: str) -> float:
+        """Heuristic assessment: 0.0-1.0 score for discussion need.
+
+        < 0.3: confident, proceed alone (skip discussion trigger)
+        0.3-0.6: mild uncertainty, sidebar notification sufficient
+        >= 0.6: genuine uncertainty, formal discussion warranted
+        """
+        score = 0.0
+
+        # 1. Uncertainty marker density in content
+        window = content[-500:] if len(content) > 500 else content
+        uncertainty_words = [
+            "不确定", "可能", "也许", "需要确认", "不太清楚", "有疑问",
+            "unsure", "maybe", "unclear", "not sure", "needs review",
+            "uncertain", "需要讨论", "需要检查",
+        ]
+        marker_count = sum(1 for m in uncertainty_words if m in window)
+        score += min(marker_count * 0.15, 0.35)
+
+        # 2. Question density
+        question_marks = window.count("?") + window.count("？")
+        if question_marks >= 3:
+            score += 0.15
+        elif question_marks >= 1:
+            score += 0.05
+
+        # 3. Content length as complexity proxy
+        if len(content) > 3000:
+            score += 0.1
+
+        # 4. Contradictory signals (agent expressing two opposing views)
+        contradiction_pairs = [("但是", "然而"), ("不过", "虽然"), ("however", "but")]
+        contradiction_count = sum(
+            1 for pair in contradiction_pairs
+            if any(w in window for w in pair)
+        )
+        if contradiction_count >= 2:
+            score += 0.15
+
+        return min(1.0, score)
+
+    # ------------------------------------------------------------------
     # Trigger Detection
     # ------------------------------------------------------------------
 
@@ -326,7 +371,12 @@ class DiscussionManager:
             thread = self._create_forced_discussion_thread(agent, result_content, cfg, channel_id=channel_id)
             return thread
 
-        # --- Strategy 1: Rule-based trigger ---
+        # Self-assessment gate: skip discussion trigger for confident outputs.
+        # Rule-based and @mention triggers represent explicit collaboration signals
+        # and bypass this gate. The gate prevents spurious uncertainty-only triggers.
+        governance_score = self._assess_collaboration_need(agent.agent_id, result_content)
+
+        # --- Strategy 1: Rule-based trigger (explicit, bypasses gate) ---
         thread = self._check_rule_trigger(agent, cfg, channel_id=channel_id)
         if thread is not None:
             logger.info(
@@ -336,7 +386,7 @@ class DiscussionManager:
             )
             return thread
 
-        # --- Strategy 2: @mention trigger ---
+        # --- Strategy 2: @mention trigger (explicit, bypasses gate) ---
         thread = self._check_mention_trigger(agent, result_content, cfg, channel_id=channel_id)
         if thread is not None:
             logger.info(
@@ -345,7 +395,15 @@ class DiscussionManager:
             )
             return thread
 
-        # --- Strategy 3: Uncertainty trigger ---
+        # Gate check: skip uncertainty trigger for confident outputs
+        if governance_score < 0.3:
+            logger.debug(
+                "Governance gate: skipping discussion trigger (score=%.2f < 0.3)",
+                governance_score,
+            )
+            return None
+
+        # --- Strategy 3: Uncertainty trigger (gated by self-assessment) ---
         thread = self._check_uncertainty_trigger(agent, result_content, cfg, channel_id=channel_id)
         if thread is not None:
             logger.info(

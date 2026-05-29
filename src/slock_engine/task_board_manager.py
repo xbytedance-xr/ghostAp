@@ -323,12 +323,49 @@ class TaskBoardManager:
             result = self._context.execute_agent(agent, task_content, callbacks)
             if result:
                 # Store execution result summary on task for context passing
+                predecessor_name = ""
                 with self._lock:
                     for t in self._tasks:
                         if t.task_id == task_id:
                             # Keep last 2000 chars as execution context for successors
                             t.execution_result = result[-2000:] if len(result) > 2000 else result
+                            predecessor_name = t.predecessor_agent_name
                             break
+
+                # Record successful handoff in the relationship graph
+                if predecessor_name:
+                    relationship_graph = getattr(self._context, "_relationship_graph", None)
+                    if relationship_graph is not None:
+                        predecessor_agent = None
+                        try:
+                            predecessor_agent = self._context.resolve_agent_for_role(
+                                "", ""
+                            )  # unused — find by name instead
+                        except Exception:
+                            pass
+                        # Resolve predecessor agent_id from name via registry
+                        registry_get = self._registry_get
+                        predecessor_id = ""
+                        channel_id = ""
+                        channel = self._context.channel
+                        if channel:
+                            channel_id = getattr(channel, "channel_id", "")
+                            # Search agents in channel for predecessor by name
+                            for aid in getattr(channel, "agents", []):
+                                peer = registry_get(aid)
+                                if peer and peer.name == predecessor_name:
+                                    predecessor_id = aid
+                                    break
+                        if predecessor_id:
+                            try:
+                                relationship_graph.record_interaction(
+                                    agent_id, predecessor_id, quality=80
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    "Failed to record relationship interaction: %s", e
+                                )
+
                 self._mark_task_in_review(task_id, agent_id)
                 # Attempt to trigger review; if no reviewer available, auto-complete
                 review_requested = self.request_review(task_id, agent_id, result)
