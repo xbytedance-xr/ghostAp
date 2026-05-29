@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from typing import Any, Optional
@@ -1709,9 +1710,6 @@ class DiscussionManager:
 只返回 JSON，不要添加其他解释。"""
 
         try:
-            from concurrent.futures import ThreadPoolExecutor
-            from concurrent.futures import TimeoutError as FutureTimeoutError
-
             def _call_llm() -> tuple[bool, str]:
                 try:
                     # Use the engine's LLM session API with 5s timeout
@@ -1770,16 +1768,26 @@ class DiscussionManager:
                     logger.debug("LLM semantic conflict detection failed: %s", str(exc))
                     return False, ""
 
-            # Execute with timeout protection
-            executor = ThreadPoolExecutor(max_workers=1)
-            try:
-                future = executor.submit(_call_llm)
-                return future.result(timeout=35.0)
-            except FutureTimeoutError:
+            # Execute with timeout protection via daemon thread
+            result_box: list[tuple[bool, str]] = []
+            error_box: list[Exception] = []
+
+            def _run() -> None:
+                try:
+                    result_box.append(_call_llm())
+                except Exception as e:
+                    error_box.append(e)
+
+            worker = threading.Thread(target=_run, daemon=True)
+            worker.start()
+            worker.join(timeout=35.0)
+            if worker.is_alive():
                 logger.warning("LLM semantic conflict detection timed out after 35s")
                 return False, ""
-            finally:
-                executor.shutdown(wait=False)
+            if error_box:
+                logger.debug("LLM semantic conflict detection failed: %s", str(error_box[0]))
+                return False, ""
+            return result_box[0] if result_box else (False, "")
 
         except Exception as exc:
             logger.warning("LLM semantic conflict detection error: %s", str(exc))

@@ -94,6 +94,7 @@ class MemoryManager:
         self._write_counts: dict[str, int] = {}
         self._file_lock_counts: dict[str, int] = {}
         self._audit_writer = _AuditLogWriter(self._base_path)
+        self._memory_cache: dict[str, tuple[float, SlockMemory]] = {}
         self._restore_write_counts()
 
     @staticmethod
@@ -288,9 +289,15 @@ class MemoryManager:
         path = self._agent_memory_path(agent_id)
         if not os.path.exists(path):
             return SlockMemory()
+        mtime = os.path.getmtime(path)
+        cached = self._memory_cache.get(agent_id)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
-        return SlockMemory.from_markdown(content)
+        memory = SlockMemory.from_markdown(content)
+        self._memory_cache[agent_id] = (mtime, memory)
+        return memory
 
     def write_agent_memory(self, agent_id: str, memory: SlockMemory) -> None:
         """Write L1 agent private memory."""
