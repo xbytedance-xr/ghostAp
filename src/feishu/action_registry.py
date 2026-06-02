@@ -235,6 +235,12 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.SELECT_TUI2ACP_ADAPTER,
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._handle_select_tui2acp_custom_command(
+            mid, cid, val.get("_form_value", {}).get("custom_command", ""), pid
+        ),
+        exact=action_ids.SELECT_TUI2ACP_CUSTOM_COMMAND,
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._handle_tui2acp_command(
             mid, cid, _resolve_project(client, pid, cid), True
         ),
