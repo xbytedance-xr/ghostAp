@@ -91,6 +91,7 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_card_new_tui2acp": ("tui2acp", "handle_card_new"),
     "_handle_tui2acp_command": ("system", "handle_tui2acp_command"),
     "_handle_select_tui2acp_adapter": ("system", "handle_select_tui2acp_adapter"),
+    "_handle_select_tui2acp_custom_command": ("system", "handle_select_tui2acp_custom_command"),
     "_handle_ttadk_command": ("system", "handle_ttadk_command"),
     "_handle_worktree_command": ("worktree", "handle_worktree_command"),
     "_handle_worktree_execute": ("worktree", "handle_worktree_execute"),

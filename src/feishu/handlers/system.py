@@ -1087,17 +1087,9 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
     # ------------------------------------------------------------------
 
     _TUI2ACP_ADAPTERS = [
+        {"name": "coco", "emoji": "🤖", "description": "Coco (TraeCLI)"},
         {"name": "claude", "emoji": "🔮", "description": "Claude Code"},
         {"name": "codex", "emoji": "⚡", "description": "OpenAI Codex CLI"},
-        {"name": "aider", "emoji": "🛠️", "description": "Aider"},
-        {"name": "gemini", "emoji": "✨", "description": "Gemini CLI"},
-        {"name": "cursor", "emoji": "🖱️", "description": "Cursor Agent"},
-        {"name": "opencode", "emoji": "📝", "description": "OpenCode"},
-        {"name": "tmates", "emoji": "🤝", "description": "TMates"},
-        {"name": "aichat", "emoji": "💬", "description": "AIChat"},
-        {"name": "open-interpreter", "emoji": "🐍", "description": "Open Interpreter"},
-        {"name": "sgpt", "emoji": "🗨️", "description": "SGPT"},
-        {"name": "pi-coding-agent", "emoji": "🥧", "description": "Pi Coding Agent"},
     ]
 
     def handle_tui2acp_command(
@@ -1188,6 +1180,30 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         handler = self.get_handler("tui2acp")
         if handler:
             handler.current_adapter = adapter
+            handler.enter_mode(message_id, chat_id, project=project)
+
+    def handle_select_tui2acp_custom_command(
+        self,
+        message_id: str,
+        chat_id: str,
+        custom_command: str,
+        project_id: Optional[str] = None,
+    ):
+        """Handle form submission when user enters a custom tui2acp command."""
+        command = (custom_command or "").strip()
+        if not command:
+            self.reply_text(message_id, "❌ 请输入工具启动命令")
+            return
+
+        project = self.project_manager.get_project_for_chat(project_id, chat_id) if project_id else self.project_manager.get_active_project(chat_id)
+
+        if project:
+            project.tui2acp_adapter_name = f"custom:{command}"
+            project.acp_tool_name = "tui2acp"
+
+        handler = self.get_handler("tui2acp")
+        if handler:
+            handler.current_adapter = f"custom:{command}"
             handler.enter_mode(message_id, chat_id, project=project)
 
     # ------------------------------------------------------------------

@@ -987,6 +987,36 @@ class SystemBuilder:
 
         elements.extend(build_responsive_layout(buttons))
 
+        # Custom command input form
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "markdown", "content": "**其他工具：** 输入启动命令直接进入 TUI2ACP"})
+        elements.append({
+            "tag": "form",
+            "name": "tui2acp_custom_command_form",
+            "elements": [
+                {
+                    "tag": "input",
+                    "name": "custom_command",
+                    "placeholder": {
+                        "tag": "plain_text",
+                        "content": "例如: aider --model gpt-4o",
+                    },
+                    "max_length": 200,
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🚀 启动"},
+                    "type": "primary",
+                    "action_type": "form_action",
+                    "name": "custom_command_submit",
+                    "value": {
+                        "action": "select_tui2acp_custom_command",
+                        "project_id": project_id,
+                    },
+                },
+            ],
+        })
+
         card = CoreBuilder._wrap_card("🌉 Tui2ACP 工具选择", "purple", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)
 

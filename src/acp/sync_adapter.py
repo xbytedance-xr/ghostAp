@@ -935,6 +935,19 @@ def resolve_agent_spec(
                 agent_args=[],
             )
         adapter_name = agent_type[len("tui2acp_"):]
+
+        # Custom command mode: "custom:<full command>"
+        if adapter_name.startswith("custom:"):
+            custom_cmd = adapter_name[len("custom:"):]
+            # First word is the agent name for tui2acp
+            parts = custom_cmd.split()
+            agent_name = parts[0] if parts else "custom"
+            args = ["--agent", agent_name, "--unsafe", "--minimal"]
+            adapters_dir = _resolve_tui2acp_adapters_dir()
+            if adapters_dir:
+                args.extend(["--adapters-dir", adapters_dir])
+            return "tui2acp", args
+
         args = ["--adapter", adapter_name, "--unsafe", "--minimal"]
         # tui2acp's built-in declarative adapter registry has incomplete
         # configs (missing `states`) that crash on construction. Force loading

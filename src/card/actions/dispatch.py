@@ -109,6 +109,7 @@ REFRESH_ACP_MODELS = "refresh_acp_models"  # Refresh available ACP model list
 # Tui2ACP actions
 # ---------------------------------------------------------------------------
 SELECT_TUI2ACP_ADAPTER = "select_tui2acp_adapter"  # Select a tui2acp adapter
+SELECT_TUI2ACP_CUSTOM_COMMAND = "select_tui2acp_custom_command"  # Custom command for tui2acp
 SHOW_TUI2ACP_MENU = "show_tui2acp_menu"  # Show tui2acp adapter selection menu
 
 # ---------------------------------------------------------------------------
