@@ -36,6 +36,12 @@ class TestModeManagerBasics:
         assert old == InteractionMode.SMART
         assert mgr.get_mode("chat1") == InteractionMode.TTADK
 
+    def test_enter_traex_mode(self):
+        mgr = ModeManager()
+        old = mgr.enter_traex_mode("chat1")
+        assert old == InteractionMode.SMART
+        assert mgr.get_mode("chat1") == InteractionMode.TRAEX
+
     def test_exit_to_smart(self):
         mgr = ModeManager()
         mgr.enter_coco_mode("chat1")
@@ -80,6 +86,12 @@ class TestModeManagerProgrammingEntry:
         assert old == InteractionMode.SMART
         assert mgr.get_mode("chat1", project_id="proj2") == InteractionMode.GEMINI
 
+    def test_enter_programming_mode_accepts_traex(self):
+        mgr = ModeManager()
+        old = mgr.enter_programming_mode("chat1", InteractionMode.TRAEX, project_id="proj3")
+        assert old == InteractionMode.SMART
+        assert mgr.get_mode("chat1", project_id="proj3") == InteractionMode.TRAEX
+
 
 class TestModeManagerPredicates:
     def test_is_coco_mode(self):
@@ -112,6 +124,12 @@ class TestModeManagerPredicates:
         mgr.enter_ttadk_mode("chat1")
         assert mgr.is_ttadk_mode("chat1") is True
 
+    def test_is_traex_mode(self):
+        mgr = ModeManager()
+        assert mgr.is_traex_mode("chat1") is False
+        mgr.enter_traex_mode("chat1")
+        assert mgr.is_traex_mode("chat1") is True
+
     def test_is_programming_mode(self):
         mgr = ModeManager()
         assert mgr.is_programming_mode("chat1") is False
@@ -122,6 +140,9 @@ class TestModeManagerPredicates:
         assert mgr.is_programming_mode("chat1") is True
         mgr.exit_to_smart("chat1")
         mgr.enter_ttadk_mode("chat1")
+        assert mgr.is_programming_mode("chat1") is True
+        mgr.exit_to_smart("chat1")
+        mgr.enter_traex_mode("chat1")
         assert mgr.is_programming_mode("chat1") is True
         mgr.exit_to_smart("chat1")
         mgr.enter_shell_mode("chat1")
@@ -140,6 +161,8 @@ class TestModeManagerDisplayName:
         assert "Gemini" in mgr.get_mode_display_name("chat1")
         mgr.set_mode("chat1", InteractionMode.TTADK)
         assert "TTADK" in mgr.get_mode_display_name("chat1")
+        mgr.set_mode("chat1", InteractionMode.TRAEX)
+        assert "Traex" in mgr.get_mode_display_name("chat1")
         mgr.enter_shell_mode("chat1")
         assert "Shell" in mgr.get_mode_display_name("chat1")
 

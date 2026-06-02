@@ -20,6 +20,12 @@ class TestIntentRecognizerQuickMatch:
         assert result.primary_intent == IntentType.ENTER_COCO
         assert result.confidence == 1.0
 
+    def test_exact_command_traex(self, recognizer):
+        result = recognizer._quick_match("/traex")
+        assert result is not None
+        assert result.primary_intent == IntentType.ENTER_TRAEX
+        assert result.confidence == 1.0
+
     def test_exact_command_exit(self, recognizer):
         result = recognizer._quick_match("/exit")
         assert result is not None
@@ -136,6 +142,7 @@ class TestIntentRecognizerContextHint:
         [
             ("coco", IntentType.COCO_MESSAGE),
             ("claude", IntentType.CLAUDE_MESSAGE),
+            ("traex", IntentType.TRAEX_MESSAGE),
             ("smart", IntentType.SHELL_COMMAND),
         ],
     )
@@ -200,6 +207,8 @@ class TestIntentTypeMapping:
         assert recognizer.INTENT_MAP["enter_coco"] == IntentType.ENTER_COCO
         assert recognizer.INTENT_MAP["exit_coco"] == IntentType.EXIT_COCO
         assert recognizer.INTENT_MAP["coco_message"] == IntentType.COCO_MESSAGE
+        assert recognizer.INTENT_MAP["enter_traex"] == IntentType.ENTER_TRAEX
+        assert recognizer.INTENT_MAP["traex_message"] == IntentType.TRAEX_MESSAGE
         assert recognizer.INTENT_MAP["shell"] == IntentType.SHELL_COMMAND
         assert recognizer.INTENT_MAP["unknown"] == IntentType.UNKNOWN
         assert recognizer.INTENT_MAP["show_tools"] == IntentType.SHOW_TOOLS

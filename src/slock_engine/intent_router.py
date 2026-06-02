@@ -90,7 +90,7 @@ class IntentRouter:
     _ACTION_MAP: dict[str, SlockCommandAction] = {a.value: a for a in SlockCommandAction}
 
     # Known tool identifiers for role creation extraction
-    _KNOWN_TOOLS = {"codex", "claude", "coco", "gemini", "aiden", "ttadk"}
+    _KNOWN_TOOLS = {"codex", "claude", "coco", "gemini", "aiden", "traex", "ttadk"}
 
     # Role type keywords (Chinese -> English canonical)
     _ROLE_KEYWORDS: dict[str, str] = {

@@ -70,6 +70,7 @@ from .handlers import (
     SpecHandler,
     SystemHandler,
     TTADKModeHandler,
+    TraexModeHandler,
     Tui2acpModeHandler,
 )
 from .handlers.worktree import WorktreeHandler
@@ -148,6 +149,13 @@ class FeishuWSClient:
         )
         self._gemini_manager = ACPSessionManager(
             "gemini",
+            session_timeout=self.settings.coco_session_timeout,
+            keepalive_interval=self.settings.acp_keepalive_interval,
+            idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
+        self._traex_manager = ACPSessionManager(
+            "traex",
             session_timeout=self.settings.coco_session_timeout,
             keepalive_interval=self.settings.acp_keepalive_interval,
             idle_healthcheck_s=self.settings.acp_session_idle_healthcheck_s,
@@ -251,6 +259,7 @@ class FeishuWSClient:
             aiden_manager=self._aiden_manager,
             codex_manager=self._codex_manager,
             gemini_manager=self._gemini_manager,
+            traex_manager=self._traex_manager,
             ttadk_manager=self._ttadk_manager,
             tui2acp_manager=self._tui2acp_manager,
             intent_recognizer=self._intent_recognizer,
@@ -283,6 +292,7 @@ class FeishuWSClient:
         aiden_handler = AidenModeHandler(self._handler_ctx)
         codex_handler = CodexModeHandler(self._handler_ctx)
         gemini_handler = GeminiModeHandler(self._handler_ctx)
+        traex_handler = TraexModeHandler(self._handler_ctx)
         ttadk_handler = TTADKModeHandler(self._handler_ctx)
         tui2acp_handler = Tui2acpModeHandler(self._handler_ctx)
         deep_handler = DeepHandler(self._handler_ctx)
@@ -305,6 +315,7 @@ class FeishuWSClient:
         self._aiden_handler = aiden_handler
         self._codex_handler = codex_handler
         self._gemini_handler = gemini_handler
+        self._traex_handler = traex_handler
         self._ttadk_handler = ttadk_handler
         self._tui2acp_handler = tui2acp_handler
         self._deep_handler = deep_handler
@@ -321,6 +332,7 @@ class FeishuWSClient:
             "aiden": self._aiden_manager,
             "codex": self._codex_manager,
             "gemini": self._gemini_manager,
+            "traex": self._traex_manager,
             "ttadk": self._ttadk_manager,
             "tui2acp": self._tui2acp_manager,
         })
@@ -330,6 +342,7 @@ class FeishuWSClient:
             "aiden": aiden_handler,
             "codex": codex_handler,
             "gemini": gemini_handler,
+            "traex": traex_handler,
             "ttadk": ttadk_handler,
             "tui2acp": tui2acp_handler,
             "deep": deep_handler,
@@ -826,6 +839,7 @@ class FeishuWSClient:
             InteractionMode.AIDEN: ContextSourceMode.AIDEN,
             InteractionMode.CODEX: ContextSourceMode.CODEX,
             InteractionMode.GEMINI: ContextSourceMode.GEMINI,
+            InteractionMode.TRAEX: ContextSourceMode.TRAEX,
             InteractionMode.TTADK: ContextSourceMode.TTADK,
             InteractionMode.TUI2ACP: ContextSourceMode.TUI2ACP,
         }
@@ -858,7 +872,7 @@ class FeishuWSClient:
 
                     # Resolve mode from ModeManager (single source of truth).
                     _proj_mode = self._mode_manager.get_mode(chat_id, project_id=project_id)
-                    if _proj_mode.value in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
+                    if _proj_mode.value in {"coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk"}:
                         auto_enter_mode = _proj_mode.value
 
                     if auto_enter_mode:
@@ -1056,6 +1070,8 @@ class FeishuWSClient:
             "/enter_codex",
             "/gemini",
             "/enter_gemini",
+            "/traex",
+            "/enter_traex",
             "/ttadk",
             "/acp",
         }
@@ -1381,6 +1397,7 @@ class FeishuWSClient:
             InteractionMode.AIDEN: self._aiden_handler,
             InteractionMode.CODEX: self._codex_handler,
             InteractionMode.GEMINI: self._gemini_handler,
+            InteractionMode.TRAEX: self._traex_handler,
             InteractionMode.TTADK: self._ttadk_handler,
             InteractionMode.TUI2ACP: self._tui2acp_handler,
         }
@@ -1417,6 +1434,7 @@ class FeishuWSClient:
             InteractionMode.AIDEN,
             InteractionMode.CODEX,
             InteractionMode.GEMINI,
+            InteractionMode.TRAEX,
             InteractionMode.TTADK,
             InteractionMode.TUI2ACP,
         }:
@@ -1488,6 +1506,7 @@ class FeishuWSClient:
                 "aiden": {"/aiden", "/enter_aiden"},
                 "codex": {"/codex", "/enter_codex"},
                 "gemini": {"/gemini", "/enter_gemini"},
+                "traex": {"/traex", "/enter_traex"},
                 "ttadk": {"/ttadk", "/acp"},
             }
             if normalized_entry in same_mode_entries.get(auto_enter_mode, set()):
@@ -1545,7 +1564,7 @@ class FeishuWSClient:
                 self._start_spec_engine(message_id, chat_id, text, project)
             return
 
-        if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "ttadk"}:
+        if auto_enter_mode and auto_enter_mode in {"coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk"}:
             from ..mode import InteractionMode
             handler = self._get_mode_handler(InteractionMode(auto_enter_mode))
             if handler:
@@ -1602,7 +1621,7 @@ class FeishuWSClient:
                     saved_tool = str(getattr(bound_project, "acp_tool_name", None) or "").strip().lower()
                     self._add_reaction(message_id, EmojiReaction.on_coco_mode())
                     self._add_reaction(message_id, EmojiReaction.on_processing())
-                    if saved_tool in {"coco", "claude", "aiden", "codex", "gemini"}:
+                    if saved_tool in {"coco", "claude", "aiden", "codex", "gemini", "traex"}:
                         self._system_handler.handle_enter_acp_saved_selection(
                             message_id,
                             chat_id,
@@ -1614,7 +1633,7 @@ class FeishuWSClient:
                         self._message_dispatcher._handle_enter_coco(
                             message_id, chat_id, bound_project, pending_prompt=text,
                         )
-                    elif default_tool in {"codex"}:
+                    elif default_tool in {"codex", "traex"}:
                         self._message_dispatcher._handle_enter_acp_mode(
                             default_tool, message_id, chat_id, bound_project, pending_prompt=text,
                         )

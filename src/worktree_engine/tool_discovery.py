@@ -30,6 +30,7 @@ _KNOWN_TOOLS: tuple[_KnownTool, ...] = (
     _KnownTool("aiden", "Aiden", "Aiden CLI", 1),
     _KnownTool("codex", "Codex", "OpenAI Codex", 2),
     _KnownTool("claude", "Claude", "Anthropic Claude CLI", 3),
+    _KnownTool("traex", "Traex", "TRAE CLI", 4),
 )
 
 
@@ -45,6 +46,8 @@ class WorktreeToolDiscovery:
         ("cli", "codex"): 2,
         ("acp", "claude"): 3,
         ("cli", "claude"): 3,
+        ("acp", "traex"): 4,
+        ("cli", "traex"): 4,
         ("ttadk", "ttadk"): 90,
     }
 
@@ -52,7 +55,7 @@ class WorktreeToolDiscovery:
         """Return available tools as dicts suitable for card builders.
 
         Discovery logic:
-        1. Known tools (coco, aiden, codex, claude) — appear if binary
+        1. Known tools (coco, aiden, codex, claude, traex) — appear if binary
            is found via shutil.which(). Uses ACP provider when available for
            model selection, otherwise falls back to CLI provider.
         2. TTADK-managed tools — unified entry when TTADK returns tools.

@@ -225,6 +225,7 @@ class TestCardActionCrossChatIsolation:
             aiden_manager=MagicMock(),
             codex_manager=MagicMock(),
             gemini_manager=MagicMock(),
+            traex_manager=MagicMock(),
             ttadk_manager=MagicMock(),
             tui2acp_manager=MagicMock(),
             intent_recognizer=MagicMock(),

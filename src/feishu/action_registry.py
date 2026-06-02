@@ -21,6 +21,7 @@ def _display_mode_label(mode: str) -> str:
         "aiden": "Aiden",
         "codex": "Codex",
         "gemini": "Gemini",
+        "traex": "Traex",
         "ttadk": "TTADK",
     }
     raw = str(mode or "").strip()
@@ -176,7 +177,7 @@ def init_action_registry(client: 'FeishuWSClient') -> None:
 
 def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
     """Register enter/exit/resume/new actions for all programming modes."""
-    mode_names = ("coco", "claude", "aiden", "codex", "gemini", "ttadk", "tui2acp")
+    mode_names = ("coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk", "tui2acp")
     for mode in mode_names:
         enter = getattr(client, f"_handle_card_enter_{mode}")
         exit_ = getattr(client, f"_handle_card_exit_{mode}")

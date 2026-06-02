@@ -237,6 +237,8 @@ class ProjectBuilder:
                 effective_mode = InteractionMode.CLAUDE
             elif getattr(project, "gemini_mode", False):
                 effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "traex_mode", False):
+                effective_mode = InteractionMode.TRAEX
             elif getattr(project, "coco_mode", False):
                 effective_mode = InteractionMode.COCO
 
@@ -308,6 +310,8 @@ class ProjectBuilder:
                 effective_mode = InteractionMode.CLAUDE
             elif getattr(project, "gemini_mode", False):
                 effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "traex_mode", False):
+                effective_mode = InteractionMode.TRAEX
             elif getattr(project, "coco_mode", False):
                 effective_mode = InteractionMode.COCO
 
@@ -615,6 +619,8 @@ class ProjectBuilder:
                     effective_mode = InteractionMode.CLAUDE
                 elif getattr(project, "gemini_mode", False):
                     effective_mode = InteractionMode.GEMINI
+                elif getattr(project, "traex_mode", False):
+                    effective_mode = InteractionMode.TRAEX
                 elif getattr(project, "coco_mode", False):
                     effective_mode = InteractionMode.COCO
             elements.extend(

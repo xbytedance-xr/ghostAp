@@ -1,7 +1,7 @@
 """Programming mode handlers — config-driven template for all programming modes.
 
 The ``ProgrammingModeHandler`` captures the shared logic for Coco, Claude, Aiden,
-Codex, Gemini, and TTADK modes.  Concrete subclasses declare configuration
+Codex, Gemini, Traex, and TTADK modes.  Concrete subclasses declare configuration
 attributes; the base class provides default implementations for all hooks.
 """
 
@@ -73,6 +73,7 @@ class ProgrammingModeHandler(BaseHandler):
         (InteractionMode.AIDEN, "is_aiden_mode", "aiden"),
         (InteractionMode.CODEX, "is_codex_mode", "codex"),
         (InteractionMode.GEMINI, "is_gemini_mode", "gemini"),
+        (InteractionMode.TRAEX, "is_traex_mode", "traex"),
         (InteractionMode.TTADK, "is_ttadk_mode", "ttadk"),
         (InteractionMode.TUI2ACP, "is_tui2acp_mode", "tui2acp"),
     )
@@ -117,7 +118,7 @@ class ProgrammingModeHandler(BaseHandler):
     def _set_mode_on_project(self, project: "ProjectContext", active: bool, session_id: str = "", count: int = 0):
         if active:
             project.set_programming_mode(self.mode_key, True, session_id, count)
-            if self.mode_key in {"coco", "claude", "aiden", "codex", "gemini"}:
+            if self.mode_key in {"coco", "claude", "aiden", "codex", "gemini", "traex"}:
                 project.acp_tool_name = self.mode_key
         else:
             project.set_programming_mode(self.mode_key, False)
@@ -170,6 +171,8 @@ class ProgrammingModeHandler(BaseHandler):
             project.set_codex_mode(False)
         if current != InteractionMode.GEMINI:
             project.set_gemini_mode(False)
+        if current != InteractionMode.TRAEX:
+            project.set_traex_mode(False)
         if current != InteractionMode.TTADK:
             project.set_ttadk_mode(False)
         if current != InteractionMode.TUI2ACP:
@@ -1259,6 +1262,15 @@ class GeminiModeHandler(ProgrammingModeHandler):
     mode_key = "gemini"
     context_source = ContextSourceMode.GEMINI
     thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="✨", name="Gemini")
+
+
+class TraexModeHandler(ProgrammingModeHandler):
+    mode_name = "Traex"
+    mode_emoji = "🚀"
+    interaction_mode = InteractionMode.TRAEX
+    mode_key = "traex"
+    context_source = ContextSourceMode.TRAEX
+    thinking_text = UI_TEXT["mode_thinking_msg"].format(emoji="🚀", name="Traex")
 
 
 class TTADKModeHandler(ProgrammingModeHandler):

@@ -48,6 +48,13 @@ class SessionManagerHub:
             idle_healthcheck_s=settings.acp_session_idle_healthcheck_s,
             idle_health_config=idle_health_cfg,
         )
+        self.traex = ACPSessionManager(
+            "traex",
+            session_timeout=settings.coco_session_timeout,
+            keepalive_interval=settings.acp_keepalive_interval,
+            idle_healthcheck_s=settings.acp_session_idle_healthcheck_s,
+            idle_health_config=idle_health_cfg,
+        )
         self.ttadk = ACPSessionManager(
             "ttadk",
             session_timeout=settings.coco_session_timeout,
@@ -58,7 +65,7 @@ class SessionManagerHub:
 
     def cleanup_all(self):
         """Cleanup all session managers."""
-        for name in ("coco", "claude", "aiden", "codex", "gemini", "ttadk"):
+        for name in ("coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk"):
             mgr = getattr(self, name)
             try:
                 mgr.cleanup_all()

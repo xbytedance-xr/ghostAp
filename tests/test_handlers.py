@@ -52,6 +52,7 @@ def _make_handler_context(**overrides) -> HandlerContext:
         aiden_manager=MagicMock(),
         codex_manager=MagicMock(),
         gemini_manager=MagicMock(),
+        traex_manager=MagicMock(),
         ttadk_manager=MagicMock(),
         tui2acp_manager=MagicMock(),
         intent_recognizer=MagicMock(),
@@ -695,8 +696,8 @@ class TestSystemHandlerRouting:
             mock_registry.get_availability.return_value = True
             h.reply_interactive_card = MagicMock()
             h.show_tools_list("m1", "c1", None)
-            # 5 tools in metadata
-            assert mock_registry.get_availability.call_count == 5
+            # 6 tools in metadata
+            assert mock_registry.get_availability.call_count == 6
             h.reply_interactive_card.assert_called_once()
 
 

@@ -121,6 +121,8 @@ class CoreBuilder:
                 effective_mode = InteractionMode.CLAUDE
             elif getattr(project, "gemini_mode", False):
                 effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "traex_mode", False):
+                effective_mode = InteractionMode.TRAEX
             elif getattr(project, "coco_mode", False):
                 effective_mode = InteractionMode.COCO
 
@@ -129,6 +131,8 @@ class CoreBuilder:
                 return UI_TEXT["claude_mode_title"]
             elif effective_mode == InteractionMode.GEMINI:
                 return UI_TEXT["gemini_mode_title"]
+            elif effective_mode == InteractionMode.TRAEX:
+                return UI_TEXT["system_mode_traex"]
             elif effective_mode == InteractionMode.TTADK:
                 return UI_TEXT["system_mode_ttadk"]
             mode_icon = "🤖" if effective_mode == InteractionMode.COCO else "🧠"
@@ -148,6 +152,8 @@ class CoreBuilder:
             elif tool:
                 suffix = f" · {tool}"
             return f"🎮 {project.project_name} · TTADK{suffix}"
+        elif effective_mode == InteractionMode.TRAEX:
+            return f"🚀 {project.project_name} · Traex"
         elif effective_mode == InteractionMode.COCO:
             return f"🤖 {project.project_name} · Coco"
         else:
@@ -206,6 +212,8 @@ class CoreBuilder:
                 effective_mode = InteractionMode.CLAUDE
             elif getattr(project, "gemini_mode", False):
                 effective_mode = InteractionMode.GEMINI
+            elif getattr(project, "traex_mode", False):
+                effective_mode = InteractionMode.TRAEX
             elif getattr(project, "coco_mode", False):
                 effective_mode = InteractionMode.COCO
 

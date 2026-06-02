@@ -308,6 +308,8 @@ class SpecEngine(BaseEngine):
             return "TTADK"
         if normalized == "claude":
             return "Claude"
+        if normalized == "traex":
+            return "Traex"
         return "Coco"
 
     def _build_runtime_context(self) -> dict:

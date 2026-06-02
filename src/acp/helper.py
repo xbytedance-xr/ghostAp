@@ -141,7 +141,7 @@ def list_acp_tools() -> list[ACPToolOption]:
     使用共享文案层提供的工具描述文案，避免直接依赖旧 styles 聚合入口。
     """
 
-    names = ["coco", "claude", "aiden", "codex", "gemini"]
+    names = ["coco", "claude", "aiden", "codex", "gemini", "traex"]
     out: list[ACPToolOption] = []
     headers = get_acp_result_header_text()
 

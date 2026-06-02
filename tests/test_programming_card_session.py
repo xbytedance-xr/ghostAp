@@ -90,7 +90,7 @@ class TestBuildProgrammingMetadata:
         assert meta.working_dir == "/repo"
 
     def test_all_modes_have_display(self):
-        modes = ["coco", "claude", "aiden", "codex", "gemini", "ttadk"]
+        modes = ["coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk"]
         for mode in modes:
             meta = build_programming_metadata(mode)
             assert meta.mode_name != ""

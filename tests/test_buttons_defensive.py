@@ -142,6 +142,7 @@ class TestExitButtonLabels:
         ("exit_claude", "Claude"),
         ("exit_coco", "Coco"),
         ("exit_gemini", "Gemini"),
+        ("exit_traex", "Traex"),
         ("exit_ttadk", "TTADK"),
     ])
     def test_exit_button_text_contains_mode_name(self, button_key: str, expected_mode: str):

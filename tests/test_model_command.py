@@ -33,6 +33,7 @@ def _make_handler():
     ctx.mode_manager.is_aiden_mode.return_value = False
     ctx.mode_manager.is_codex_mode.return_value = False
     ctx.mode_manager.is_gemini_mode.return_value = False
+    ctx.mode_manager.is_traex_mode.return_value = False
     ctx.project_manager.get_active_project.return_value = None
     ctx.working_dirs = {}
 
@@ -42,6 +43,7 @@ def _make_handler():
         "aiden": MagicMock(),
         "codex": MagicMock(),
         "gemini": MagicMock(),
+        "traex": MagicMock(),
     }
 
     handler = SystemHandler(ctx)
@@ -109,6 +111,11 @@ class TestResolveCurrentAcpTool(unittest.TestCase):
         self.handler.mode_manager.is_aiden_mode.return_value = True
         tool = self.handler._resolve_current_acp_tool("chat1")
         self.assertEqual(tool, "aiden")
+
+    def test_returns_tool_from_mode_manager_traex(self):
+        self.handler.mode_manager.is_traex_mode.return_value = True
+        tool = self.handler._resolve_current_acp_tool("chat1")
+        self.assertEqual(tool, "traex")
 
     def test_project_takes_priority_over_mode(self):
         self.handler.mode_manager.is_aiden_mode.return_value = True
@@ -283,6 +290,14 @@ class TestHandleModelCommandSwitch(unittest.TestCase):
         args = mock_enter.call_args[0]
         self.assertEqual(args[2], "aiden")
 
+    def test_model_switch_with_traex_tool(self):
+        self.handler.mode_manager.is_traex_mode.return_value = True
+        with patch.object(self.handler, "_enter_mode_with_acp_model") as mock_enter:
+            self.handler.handle_model_command("msg1", "chat1", "/model gpt-5.2")
+        mock_enter.assert_called_once()
+        args = mock_enter.call_args[0]
+        self.assertEqual(args[2], "traex")
+
     def test_model_empty_name_shows_error(self):
         # /model switch (no name) → error
         with patch.object(self.handler, "_enter_mode_with_acp_model") as mock_enter:
@@ -318,6 +333,22 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         ready_card = json.loads(self.handler.update_card.call_args[0][1])
         self.assertIn("编程模式已就绪", ready_card["header"]["title"]["content"])
         self.assertIn("使用默认模型", json.dumps(ready_card, ensure_ascii=False))
+
+    def test_traex_default_model_selection_enters_traex_mode(self):
+        self.handler.settings.thread_programming_enabled = False
+        project = MagicMock()
+        project.project_id = "ghostap"
+        traex_handler = self.handler.get_handler("traex")
+
+        self.handler.handle_select_acp_model("msg1", "chat1", "traex", None, project)
+
+        self.assertEqual(project.acp_tool_name, "traex")
+        self.assertIsNone(project.acp_model_name)
+        self.assertIsNone(traex_handler.current_model)
+        traex_handler.enter_mode.assert_called_once_with(
+            "msg1", "chat1", project=project, silent=True
+        )
+        self.handler.update_card.assert_called_once()
 
     def test_default_model_selection_clears_stale_tool_snapshot(self):
         project = SimpleNamespace(

@@ -102,6 +102,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/enter_codex": lambda m, c, t, p: self.handle_select_acp_tool(m, c, "codex", project_id=self._project_id(p)),
             "/gemini": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "gemini", p),
             "/enter_gemini": lambda m, c, t, p: self._handle_direct_mode_enter(m, c, "gemini", p),
+            "/traex": lambda m, c, t, p: self.handle_select_acp_tool(m, c, "traex", project_id=self._project_id(p)),
+            "/enter_traex": lambda m, c, t, p: self.handle_select_acp_tool(m, c, "traex", project_id=self._project_id(p)),
             "/exit": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/quit": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/end_coco": lambda m, c, t, p: self.exit_current_mode(m, c, p),
@@ -114,6 +116,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/exit_codex": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/end_gemini": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/exit_gemini": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/end_traex": lambda m, c, t, p: self.exit_current_mode(m, c, p),
+            "/exit_traex": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/end_ttadk": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/exit_ttadk": lambda m, c, t, p: self.exit_current_mode(m, c, p),
             "/coco_status": lambda m, c, t, p: self.show_coco_status(m, c),
@@ -122,6 +126,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/aiden_info": lambda m, c, t, p: self.get_handler("aiden").show_info(m, c, p),
             "/codex_info": lambda m, c, t, p: self.get_handler("codex").show_info(m, c, p),
             "/gemini_info": lambda m, c, t, p: self.get_handler("gemini").show_info(m, c, p),
+            "/traex_info": lambda m, c, t, p: self.get_handler("traex").show_info(m, c, p),
             "/projects": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/project": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
             "/switch": lambda m, c, t, p: self.get_handler("project").show_project_board(m, c),
@@ -242,6 +247,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/exit_codex",
             "/end_gemini",
             "/exit_gemini",
+            "/end_traex",
+            "/exit_traex",
             "/end_ttadk",
             "/exit_ttadk",
         }
@@ -255,6 +262,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "退出aiden",
             "退出codex",
             "退出gemini",
+            "退出traex",
             "退出ttadk",
         }
         if text_lower in exit_commands:
@@ -390,6 +398,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/enter_codex",
             "/gemini",
             "/enter_gemini",
+            "/traex",
+            "/enter_traex",
             "/enter_ttadk",
             "/exit",
             "/quit",
@@ -403,6 +413,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/exit_codex",
             "/end_gemini",
             "/exit_gemini",
+            "/end_traex",
+            "/exit_traex",
             "/end_ttadk",
             "/exit_ttadk",
             "/tui2acp",
@@ -416,6 +428,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/aiden_info",
             "/codex_info",
             "/gemini_info",
+            "/traex_info",
             "/ttadk_info",
             "/projects",
             "/status",
@@ -488,10 +501,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                     wt.handle_worktree_command(message_id, chat_id, project, goal=m.args)
                 return
 
-        # ACP model-select mode enter: /codex, /enter_codex
-        if not m.has_args and text_lower in {"/codex", "/enter_codex"}:
+        # ACP model-select mode enter: /codex, /traex, ...
+        if not m.has_args and text_lower in {"/codex", "/enter_codex", "/traex", "/enter_traex"}:
             _pid = self._project_id(project)
-            self.handle_select_acp_tool(message_id, chat_id, "codex", project_id=_pid)
+            tool = text_lower.rsplit("_", 1)[-1].lstrip("/") if text_lower.startswith("/enter_") else text_lower.lstrip("/")
+            self.handle_select_acp_tool(message_id, chat_id, tool, project_id=_pid)
             return
 
         if text_lower == "/btw":
@@ -697,6 +711,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             ("aiden",  "is_aiden_mode"),
             ("codex",  "is_codex_mode"),
             ("gemini", "is_gemini_mode"),
+            ("traex", "is_traex_mode"),
         ]
         for _tool, _mode_check in _TOOL_HANDLER_MAP:
             if tool_name != _tool:
@@ -913,7 +928,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if target_project:
             target_project.acp_tool_name = tool
             target_project.acp_model_name = model
-            if tool in {"coco", "claude", "aiden", "codex", "gemini"}:
+            if tool in {"coco", "claude", "aiden", "codex", "gemini", "traex"}:
                 setattr(target_project, f"{tool}_session_snapshot", None)
         if handler and hasattr(handler, "current_model"):
             handler.current_model = model
@@ -959,6 +974,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "codex": "codex",
             "gemini": "gemini",
             "claude": "claude",
+            "traex": "traex",
         }
         for mode_check, tool in mode_to_tool.items():
             checker = getattr(self.mode_manager, f"is_{mode_check}_mode", None)
@@ -1346,13 +1362,14 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
     def show_tools_list(self, message_id: str, chat_id: str, project: Optional["ProjectContext"] = None):
         """Show a list of all available ACP tools with quick access buttons."""
         # Define tool names
-        names = ["coco", "claude", "aiden", "codex", "gemini"]
+        names = ["coco", "claude", "aiden", "codex", "gemini", "traex"]
         emojis = {
             "coco": "🤖",
             "claude": "🔮",
             "aiden": "🎯",
             "codex": "💻",
             "gemini": "✨",
+            "traex": "🚀",
         }
 
         # Cached-first availability check: avoid blocking user-path on external probe.
@@ -1381,6 +1398,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             {"name": "aiden", "emoji": "🎯", "manager": self.ctx.aiden_manager},
             {"name": "codex", "emoji": "💻", "manager": self.ctx.codex_manager},
             {"name": "gemini", "emoji": "✨", "manager": self.ctx.gemini_manager},
+            {"name": "traex", "emoji": "🚀", "manager": self.ctx.traex_manager},
         ]
 
         def _format_last_used(ts: float) -> str:

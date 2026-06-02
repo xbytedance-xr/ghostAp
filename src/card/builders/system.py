@@ -1387,6 +1387,7 @@ class SystemBuilder:
             InteractionMode.AIDEN: UI_TEXT["system_mode_aiden"],
             InteractionMode.CODEX: UI_TEXT["system_mode_codex"],
             InteractionMode.GEMINI: UI_TEXT["system_mode_gemini"],
+            InteractionMode.TRAEX: UI_TEXT["system_mode_traex"],
             InteractionMode.TTADK: UI_TEXT["system_mode_ttadk"],
             InteractionMode.TUI2ACP: "🌉 Tui2ACP",
         }

@@ -269,11 +269,16 @@ def _ensure_providers() -> dict[str, GenericACPProvider]:
             ["gemini", "--help"],
             ["usage:", "--acp"],
         )
-        _checkers = {"aiden": aiden, "codex": codex, "gemini": gemini}
+        traex = _make_custom_help_checker_with_cache_handle(
+            ["traex", "acp", "serve", "--help"],
+            ["usage:", "acp serve"],
+        )
+        _checkers = {"aiden": aiden, "codex": codex, "gemini": gemini, "traex": traex}
 
         _aiden_checker, _aiden_help_loader, _ = aiden
         _codex_checker, _codex_help_loader, _ = codex
         _gemini_checker, _gemini_help_loader, _ = gemini
+        _traex_checker, _traex_help_loader, _ = traex
 
         # --- 2) build configs ---
         configs = [
@@ -312,6 +317,13 @@ def _ensure_providers() -> dict[str, GenericACPProvider]:
                 availability_checker=_gemini_checker,
                 model_style="dynamic",
                 help_blob_loader=_gemini_help_loader,
+            ),
+            _ProviderConfig(
+                tool_name="traex",
+                serve_args=["acp", "serve"],
+                availability_checker=_traex_checker,
+                model_style="config_model",
+                help_blob_loader=_traex_help_loader,
             ),
         ]
 
@@ -367,6 +379,7 @@ ClaudeProvider = type("ClaudeProvider", (), {"__new__": lambda cls: _ensure_prov
 AidenProvider = type("AidenProvider", (), {"__new__": lambda cls: _ensure_providers()["aiden"]})
 CodexProvider = type("CodexProvider", (), {"__new__": lambda cls: _ensure_providers()["codex"]})
 GeminiProvider = type("GeminiProvider", (), {"__new__": lambda cls: _ensure_providers()["gemini"]})
+TraexProvider = type("TraexProvider", (), {"__new__": lambda cls: _ensure_providers()["traex"]})
 
 
 def _get_aiden_acp_serve_help_blob() -> str:
@@ -390,6 +403,13 @@ def _get_gemini_acp_serve_help_blob() -> str:
 _get_gemini_acp_serve_help_blob.cache_clear = lambda: _get_checker("gemini")[2]()  # type: ignore[attr-defined]
 
 
+def _get_traex_acp_serve_help_blob() -> str:
+    _, loader, _ = _get_checker("traex")
+    return loader()
+
+_get_traex_acp_serve_help_blob.cache_clear = lambda: _get_checker("traex")[2]()  # type: ignore[attr-defined]
+
+
 __all__ = [
     "ACPProvider",
     "ToolRegistry",
@@ -401,10 +421,12 @@ __all__ = [
     "AidenProvider",
     "CodexProvider",
     "GeminiProvider",
+    "TraexProvider",
     "GenericACPProvider",
     "CodexACPProvider",
     "CODEX_ACP_NPM_PACKAGE",
     "_get_aiden_acp_serve_help_blob",
     "_get_codex_acp_serve_help_blob",
     "_get_gemini_acp_serve_help_blob",
+    "_get_traex_acp_serve_help_blob",
 ]

@@ -398,6 +398,7 @@ class MessageDispatcher:
                 IntentType.ENTER_AIDEN,
                 IntentType.ENTER_CODEX,
                 IntentType.ENTER_GEMINI,
+                IntentType.ENTER_TRAEX,
                 IntentType.TTADK_MESSAGE,
             }:
                 break
@@ -420,6 +421,7 @@ class MessageDispatcher:
         IntentType.ENTER_AIDEN: "aiden",
         IntentType.ENTER_CODEX: "codex",
         IntentType.ENTER_GEMINI: "gemini",
+        IntentType.ENTER_TRAEX: "traex",
     }
 
     _MODE_EXIT_MAP: dict = {
@@ -428,6 +430,7 @@ class MessageDispatcher:
         IntentType.EXIT_AIDEN: "aiden",
         IntentType.EXIT_CODEX: "codex",
         IntentType.EXIT_GEMINI: "gemini",
+        IntentType.EXIT_TRAEX: "traex",
     }
 
     _MODE_MESSAGE_MAP: dict = {
@@ -436,9 +439,10 @@ class MessageDispatcher:
         IntentType.AIDEN_MESSAGE: "aiden",
         IntentType.CODEX_MESSAGE: "codex",
         IntentType.GEMINI_MESSAGE: "gemini",
+        IntentType.TRAEX_MESSAGE: "traex",
     }
 
-    _MODEL_SELECT_ENTER_MODES: set[str] = {"codex"}
+    _MODEL_SELECT_ENTER_MODES: set[str] = {"codex", "traex"}
 
     _ENGINE_ENTER_MAP: dict = {
         IntentType.ENTER_DEEP: "_start_deep_engine",

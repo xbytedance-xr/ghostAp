@@ -69,6 +69,16 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_card_exit_codex": ("codex", "handle_card_exit"),
     "_handle_card_resume_codex": ("codex", "handle_card_resume"),
     "_handle_card_new_codex": ("codex", "handle_card_new"),
+    # --- Traex mode ---
+    "_enter_traex_mode": ("traex", "enter_mode"),
+    "_exit_traex_mode": ("traex", "exit_mode"),
+    "_handle_traex_message": ("traex", "handle_message"),
+    "_handle_traex_response": ("traex", "handle_response"),
+    "_show_traex_info": ("traex", "show_info"),
+    "_handle_card_enter_traex": ("traex", "handle_card_enter"),
+    "_handle_card_exit_traex": ("traex", "handle_card_exit"),
+    "_handle_card_resume_traex": ("traex", "handle_card_resume"),
+    "_handle_card_new_traex": ("traex", "handle_card_new"),
     # --- TTADK mode ---
     "_enter_ttadk_mode": ("ttadk", "enter_mode"),
     "_exit_ttadk_mode": ("ttadk", "exit_mode"),
@@ -194,6 +204,7 @@ def _handler_classes() -> dict[str, type]:
         CodexModeHandler,
         GeminiModeHandler,
         TTADKModeHandler,
+        TraexModeHandler,
         Tui2acpModeHandler,
     )
     from .handlers.project import ProjectHandler
@@ -208,6 +219,7 @@ def _handler_classes() -> dict[str, type]:
         "aiden": AidenModeHandler,
         "codex": CodexModeHandler,
         "gemini": GeminiModeHandler,
+        "traex": TraexModeHandler,
         "ttadk": TTADKModeHandler,
         "tui2acp": Tui2acpModeHandler,
         "system": SystemHandler,

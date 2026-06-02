@@ -50,6 +50,7 @@ class ContextSourceMode(Enum):
     AIDEN = "aiden"
     CODEX = "codex"
     GEMINI = "gemini"
+    TRAEX = "traex"
     SHELL = "shell"
     DEEP_ENGINE = "deep_engine"
     TTADK = "ttadk"

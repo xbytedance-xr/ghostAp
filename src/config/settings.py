@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     app_id: str = ""
     app_secret: str = ""
 
-    # Default ACP tool for SMART mode (e.g., "coco", "claude", "aiden", "codex", "gemini")
+    # Default ACP tool for SMART mode (e.g., "coco", "claude", "aiden", "codex", "gemini", "traex")
     # When set, unmatched messages in SMART mode are forwarded to this tool.
     # When empty, all unmatched messages are treated as shell commands.
     default_acp_tool: str = ""

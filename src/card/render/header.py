@@ -11,6 +11,7 @@ _TOOL_DISPLAY = {
     "aiden": "Aiden",
     "codex": "Codex",
     "gemini": "Gemini",
+    "traex": "Traex",
     "ttadk": "TTADK",
 }
 

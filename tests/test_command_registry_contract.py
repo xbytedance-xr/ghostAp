@@ -8,7 +8,7 @@ Protected regression scenarios:
 - Prefix command set in SystemHandler._prefix_handlers must not shrink
 - Deep engine commands (/deep, /deep_status, /stop_deep) must remain routable
 - Spec engine commands (/spec, /spec_status, /stop_spec, ...) must remain routable
-- Exit commands must cover all tool variants (coco/claude/aiden/codex/gemini/ttadk)
+- Exit commands must cover all tool variants (coco/claude/aiden/codex/gemini/traex/ttadk)
 - Alias normalization (/wt -> /worktree) must be preserved
 """
 
@@ -37,6 +37,8 @@ EXPECTED_EXACT_COMMANDS = frozenset({
     "/enter_codex",
     "/gemini",
     "/enter_gemini",
+    "/traex",
+    "/enter_traex",
     "/exit",
     "/quit",
     "/end_coco",
@@ -49,6 +51,8 @@ EXPECTED_EXACT_COMMANDS = frozenset({
     "/exit_codex",
     "/end_gemini",
     "/exit_gemini",
+    "/end_traex",
+    "/exit_traex",
     "/end_ttadk",
     "/exit_ttadk",
     "/coco_status",
@@ -57,6 +61,7 @@ EXPECTED_EXACT_COMMANDS = frozenset({
     "/aiden_info",
     "/codex_info",
     "/gemini_info",
+    "/traex_info",
     "/projects",
     "/project",
     "/switch",
@@ -119,6 +124,8 @@ EXPECTED_EXIT_COMMANDS = frozenset({
     "/exit_codex",
     "/end_gemini",
     "/exit_gemini",
+    "/end_traex",
+    "/exit_traex",
     "/end_ttadk",
     "/exit_ttadk",
 })
@@ -130,6 +137,7 @@ EXPECTED_INTERCEPTABLE_EXACT = frozenset({
     "/aiden", "/enter_aiden",
     "/codex", "/enter_codex",
     "/gemini", "/enter_gemini",
+    "/traex", "/enter_traex",
     "/enter_ttadk",
     "/exit", "/quit",
     "/end_coco", "/exit_coco",
@@ -137,9 +145,10 @@ EXPECTED_INTERCEPTABLE_EXACT = frozenset({
     "/end_aiden", "/exit_aiden",
     "/end_codex", "/exit_codex",
     "/end_gemini", "/exit_gemini",
+    "/end_traex", "/exit_traex",
     "/end_ttadk", "/exit_ttadk",
     "/coco_status",
-    "/coco_info", "/claude_info", "/aiden_info", "/codex_info", "/gemini_info",
+    "/coco_info", "/claude_info", "/aiden_info", "/codex_info", "/gemini_info", "/traex_info",
     "/ttadk_info",
     "/projects", "/status", "/project", "/switch", "/new-chat",
     "/tasks", "/diff", "/trace",

@@ -87,6 +87,20 @@ class TestProjectContext:
         assert ctx.coco_session_snapshot.session_id == "session_123"
         assert ctx.coco_session_snapshot.query_count == 5
 
+    def test_set_traex_mode(self):
+        ctx = ProjectContext(
+            project_id="test",
+            project_name="Test",
+            root_path="/tmp/test",
+        )
+
+        ctx.set_traex_mode(True, "session_traex", 7)
+
+        assert ctx.traex_mode is True
+        assert ctx.traex_session_snapshot is not None
+        assert ctx.traex_session_snapshot.session_id == "session_traex"
+        assert ctx.traex_session_snapshot.query_count == 7
+
     def test_get_status_emoji(self):
         ctx = ProjectContext(
             project_id="test",
@@ -113,6 +127,7 @@ class TestProjectContext:
             emoji_prefix="🔵",
         )
         ctx.set_coco_mode(True, "session_456", 10)
+        ctx.set_traex_mode(True, "session_traex", 7)
         ctx.ttadk_tool_name = "codex"
         ctx.ttadk_model_name = "gpt-5.2"
         ctx.ttadk_yolo_enabled = True
@@ -122,6 +137,7 @@ class TestProjectContext:
         assert snapshot["project_id"] == "test"
         assert snapshot["project_name"] == "Test Project"
         assert snapshot["coco_session_snapshot"]["session_id"] == "session_456"
+        assert snapshot["traex_session_snapshot"]["session_id"] == "session_traex"
         assert snapshot["ttadk_tool_name"] == "codex"
         assert snapshot["ttadk_model_name"] == "gpt-5.2"
         assert snapshot["ttadk_yolo_enabled"] is True
@@ -132,6 +148,7 @@ class TestProjectContext:
         assert restored.project_name == ctx.project_name
         assert restored.theme_color == ctx.theme_color
         assert restored.coco_session_snapshot.session_id == "session_456"
+        assert restored.traex_session_snapshot.session_id == "session_traex"
         assert restored.ttadk_tool_name == "codex"
         assert restored.ttadk_model_name == "gpt-5.2"
         assert restored.ttadk_yolo_enabled is True

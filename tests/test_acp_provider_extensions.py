@@ -8,9 +8,11 @@ from src.acp.providers import (
     AidenProvider,
     CodexProvider,
     GeminiProvider,
+    TraexProvider,
     _get_aiden_acp_serve_help_blob,
     _get_codex_acp_serve_help_blob,
     _get_gemini_acp_serve_help_blob,
+    _get_traex_acp_serve_help_blob,
     _reset_providers_for_testing,
 )
 from src.acp.sync_adapter import resolve_agent_spec
@@ -155,3 +157,47 @@ def test_gemini_provider_serve_command_model_style_short(mock_run):
     cmd, args = GeminiProvider().get_serve_command("gemini-2.5-pro")
     assert cmd == "gemini"
     assert args == ["--acp", "-m", "gemini-2.5-pro"]
+
+
+def test_traex_provider_name():
+    assert TraexProvider().name == "traex"
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_availability(mock_run):
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout="Usage: traecli acp serve [OPTIONS]\nStart the ACP server over stdio\n",
+        stderr="",
+    )
+    assert TraexProvider().check_availability() is True
+
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(stdout="Usage: traecli [OPTIONS]\n", stderr="")
+    assert TraexProvider().check_availability() is False
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_serve_command_uses_config_model(mock_run):
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout='Usage: traecli acp serve [OPTIONS]\n  -c, --config <key=value>\nExamples: -c model="o3"\n',
+        stderr="",
+    )
+    cmd, args = TraexProvider().get_serve_command("gpt-5")
+    assert cmd == "traex"
+    assert args == ["acp", "serve", "-c", 'model="gpt-5"']
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_resolve_agent_spec_uses_registered_traex_provider(mock_run):
+    _reset_providers_for_testing()
+    mock_run.return_value = SimpleNamespace(
+        stdout="Usage: traecli acp serve [OPTIONS]\nStart the ACP server over stdio\n",
+        stderr="",
+    )
+
+    cmd, args = resolve_agent_spec("traex", model_name="gpt-5")
+
+    assert cmd == "traex"
+    assert args == ["acp", "serve", "-c", 'model="gpt-5"']

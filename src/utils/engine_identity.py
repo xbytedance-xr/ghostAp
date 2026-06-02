@@ -47,6 +47,10 @@ def resolve_engine_identity(
         model = acp_model_name if (acp_tool_name or "").strip().lower() == "gemini" else None
         return EngineIdentity(engine_name="Gemini", agent_type="gemini", model_name=model, transport="acp")
 
+    if mode == InteractionMode.TRAEX:
+        model = acp_model_name if (acp_tool_name or "").strip().lower() == "traex" else None
+        return EngineIdentity(engine_name="Traex", agent_type="traex", model_name=model, transport="acp")
+
     if mode == InteractionMode.TTADK:
         tool = (ttadk_tool_name or "").strip().lower() or "coco"
         model = (ttadk_model_name or "").strip() or None
@@ -55,4 +59,3 @@ def resolve_engine_identity(
     # SMART / COCO / SHELL default to Coco engine for orchestrators
     model = acp_model_name if (acp_tool_name or "").strip().lower() == "coco" else None
     return EngineIdentity(engine_name="Coco", agent_type="coco", model_name=model, transport="acp")
-

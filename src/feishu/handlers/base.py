@@ -615,6 +615,7 @@ class BaseHandler:
             InteractionMode.AIDEN: ContextSourceMode.AIDEN,
             InteractionMode.CODEX: ContextSourceMode.CODEX,
             InteractionMode.GEMINI: ContextSourceMode.GEMINI,
+            InteractionMode.TRAEX: ContextSourceMode.TRAEX,
             InteractionMode.TTADK: ContextSourceMode.TTADK,
             InteractionMode.TUI2ACP: ContextSourceMode.TUI2ACP,
         }

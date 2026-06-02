@@ -82,6 +82,9 @@ class ProjectContext:
     gemini_session_snapshot: Optional[SessionSnapshot] = None
     gemini_mode: bool = False
 
+    traex_session_snapshot: Optional[SessionSnapshot] = None
+    traex_mode: bool = False
+
     ttadk_session_snapshot: Optional[SessionSnapshot] = None
     ttadk_mode: bool = False
     ttadk_tool_name: Optional[str] = None
@@ -233,6 +236,7 @@ class ProjectContext:
         "aiden": ("aiden_mode", "aiden_session_snapshot"),
         "codex": ("codex_mode", "codex_session_snapshot"),
         "gemini": ("gemini_mode", "gemini_session_snapshot"),
+        "traex": ("traex_mode", "traex_session_snapshot"),
         "ttadk": ("ttadk_mode", "ttadk_session_snapshot"),
         "tui2acp": ("tui2acp_mode", "tui2acp_session_snapshot"),
     }
@@ -291,6 +295,12 @@ class ProjectContext:
 
     def update_gemini_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
         self.update_programming_snapshot("gemini", query, query_count, session_id)
+
+    def set_traex_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
+        self.set_programming_mode("traex", enabled, session_id, query_count)
+
+    def update_traex_snapshot(self, query: str, query_count: int, session_id: Optional[str] = None):
+        self.update_programming_snapshot("traex", query, query_count, session_id)
 
     def set_ttadk_mode(self, enabled: bool, session_id: Optional[str] = None, query_count: int = 0):
         self.set_programming_mode("ttadk", enabled, session_id, query_count)
@@ -403,6 +413,7 @@ class ProjectContext:
             aiden_mode=data.get("aiden_mode", False),
             codex_mode=data.get("codex_mode", False),
             gemini_mode=data.get("gemini_mode", False),
+            traex_mode=data.get("traex_mode", False),
             ttadk_mode=data.get("ttadk_mode", False),
             tui2acp_mode=data.get("tui2acp_mode", False),
             ttadk_tool_name=data.get("ttadk_tool_name"),

@@ -48,7 +48,7 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
             return SpecEngine._infer_engine_name(normalized_agent), normalized_agent, model_name
         if normalized_agent == "claude":
             return "Claude", "claude", None
-        if normalized_agent in {"aiden", "codex", "gemini", "coco"}:
+        if normalized_agent in {"aiden", "codex", "gemini", "traex", "coco"}:
             from ..mode import InteractionMode
 
             mode_map = {
@@ -56,6 +56,7 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
                 "aiden": InteractionMode.AIDEN,
                 "codex": InteractionMode.CODEX,
                 "gemini": InteractionMode.GEMINI,
+                "traex": InteractionMode.TRAEX,
             }
             identity = resolve_engine_identity(mode=mode_map[normalized_agent])
             return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
@@ -90,6 +91,10 @@ class SpecEngineManager(BaseEngineManager["SpecEngine"]):
 
         if normalized_name.lower().startswith("gemini"):
             identity = resolve_engine_identity(mode=InteractionMode.GEMINI)
+            return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
+
+        if normalized_name.lower().startswith("traex"):
+            identity = resolve_engine_identity(mode=InteractionMode.TRAEX)
             return identity.engine_name, identity.agent_type, (model_name or identity.model_name)
 
         identity = resolve_engine_identity(mode=InteractionMode.COCO)

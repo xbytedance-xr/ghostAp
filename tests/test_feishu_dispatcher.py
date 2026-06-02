@@ -124,6 +124,21 @@ class TestMessageDispatcher:
         )
         self.client._enter_codex_mode.assert_not_called()
 
+    def test_execute_single_task_enter_traex_shows_model_select(self):
+        task = MagicMock()
+        task.intent = IntentType.ENTER_TRAEX
+        task.data = {}
+        project = MagicMock()
+        project.project_id = "pid1"
+        self.client._mode_manager.is_traex_mode.return_value = False
+
+        self.dispatcher.execute_single_task("m1", "c1", task, "/traex", project)
+
+        self.client._system_handler.handle_select_acp_tool.assert_called_once_with(
+            "m1", "c1", "traex", project_id="pid1", pending_prompt=None
+        )
+        self.client._enter_traex_mode.assert_not_called()
+
     def test_process_with_intent_reparses_codex_slash_and_bypasses_intent(self):
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False

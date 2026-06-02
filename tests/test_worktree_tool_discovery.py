@@ -75,14 +75,14 @@ def test_uses_available_acp_provider_even_when_binary_not_on_path():
     discovery = WorktreeToolDiscovery()
 
     def _provider_for(name):
-        if name in {"aiden", "codex"}:
+        if name in {"aiden", "codex", "traex"}:
             provider = MagicMock()
             provider.get_fallback_command.return_value = None
             return provider
         return None
 
     def _available(name, **_kwargs):
-        return name in {"aiden", "codex"}
+        return name in {"aiden", "codex", "traex"}
 
     with patch("src.worktree_engine.tool_discovery.shutil.which", return_value=None), \
          patch("src.worktree_engine.tool_discovery.get_providers"), \
@@ -93,7 +93,7 @@ def test_uses_available_acp_provider_even_when_binary_not_on_path():
         result = discovery.get_available_tools()
 
     names = [tool["tool_name"] for tool in result]
-    assert names == ["aiden", "codex"]
+    assert names == ["aiden", "codex", "traex"]
     assert all(tool["provider"] == "acp" for tool in result)
     assert all(tool["supports_model"] is True for tool in result)
 
@@ -144,7 +144,7 @@ def test_top_level_tools_keep_native_entries_and_ttadk_at_same_level():
         result = discovery.get_available_tools()
 
     names = [tool["tool_name"] for tool in result]
-    assert names == ["coco", "aiden", "codex", "claude", "ttadk"]
+    assert names == ["coco", "aiden", "codex", "claude", "traex", "ttadk"]
 
 
 def test_top_level_tools_prioritize_coco_aiden_codex_claude_before_ttadk():
@@ -166,6 +166,7 @@ def test_top_level_tools_prioritize_coco_aiden_codex_claude_before_ttadk():
         "aiden",
         "codex",
         "claude",
+        "traex",
         "ttadk",
     ]
 
@@ -188,7 +189,7 @@ def test_gemini_binary_is_not_exposed_as_top_level_tool():
 
 
 def test_only_shows_tools_with_binary_in_path():
-    """Tools whose binary is not found via shutil.which should be excluded."""
+    """Tools whose binary is not found via shutil.which should be excluded unless ACP provider is available."""
     discovery = WorktreeToolDiscovery()
 
     def _which(name):
@@ -203,6 +204,38 @@ def test_only_shows_tools_with_binary_in_path():
 
     names = [t["tool_name"] for t in result]
     assert names == ["codex", "claude"]
+
+
+def test_traex_binary_is_exposed_as_top_level_acp_tool():
+    """Traex is a first-class Worktree ACP tool candidate."""
+    discovery = WorktreeToolDiscovery()
+
+    def _which(name):
+        return "/usr/bin/traex" if name == "traex" else None
+
+    mock_provider = MagicMock()
+    mock_provider.get_fallback_command.return_value = None
+
+    with patch("src.worktree_engine.tool_discovery.shutil.which", side_effect=_which), \
+         patch("src.worktree_engine.tool_discovery.get_providers"), \
+         patch("src.worktree_engine.tool_discovery.tool_registry") as mock_reg, \
+         patch("src.worktree_engine.tool_discovery.get_ttadk_manager", side_effect=Exception("skip")):
+        mock_reg.get_provider.side_effect = lambda name: mock_provider if name == "traex" else None
+        mock_reg.get_availability.side_effect = lambda name, **_kwargs: name == "traex"
+        result = discovery.get_available_tools()
+
+    assert result == [
+        {
+            "provider": "acp",
+            "tool_name": "traex",
+            "display_name": "Traex",
+            "description": "TRAE CLI",
+            "supports_model": True,
+            "model_optional": True,
+            "skip_model_selection": False,
+            "agent_name": "",
+        }
+    ]
 
 
 def test_get_ttadk_tools_returns_concrete_ttadk_tools():

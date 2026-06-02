@@ -93,11 +93,13 @@ UI_TEXT = {
     "system_mode_aiden": "🎯 Aiden 编程模式",
     "system_mode_codex": "💻 Codex 编程模式",
     "system_mode_gemini": "✨ Gemini 编程模式",
+    "system_mode_traex": "🚀 Traex 编程模式",
     "system_mode_ttadk": "🎮 TTADK 多工具模式",
     # Mode name labels (without emoji prefix, used in card title building)
     "mode_name_claude": "Claude 编程模式",
     "mode_name_coco": "编程模式",
     "mode_name_gemini": "Gemini 编程模式",
+    "mode_name_traex": "Traex 编程模式",
     "mode_name_smart": "智能模式",
     # Quick action button labels (used in shared.py build_quick_actions)
     "qa_btn_confirm": "✅ 确认",
@@ -170,6 +172,7 @@ UI_TEXT = {
     "system_acp_tool_aiden_display": "AI 编程助手",
     "system_acp_tool_desc_codex": "OpenAI Codex",
     "system_acp_tool_desc_gemini": "Google Gemini CLI",
+    "system_acp_tool_desc_traex": "TRAE CLI",
     "system_arg_error": "参数错误",
     "system_internal_error": "系统错误",
     "system_slash_parse_missing": "命令解析结果缺失（系统侧），请重新发送该命令重试",
@@ -279,9 +282,10 @@ UI_TEXT = {
         "`/aiden` · 进入 Aiden 编程模式\n"
         "`/codex` · 进入 Codex 编程模式\n"
         "`/gemini` · 进入 Gemini 编程模式\n"
+        "`/traex` · 进入 Traex 编程模式\n"
         "`/ttadk` · 进入 TTADK 多工具编程模式\n"
         "`/exit` · 退出当前编程模式\n"
-        "`/coco_info` · `/claude_info` · `/aiden_info` · `/codex_info` · `/ttadk_info` · 查看会话/模型信息"
+        "`/coco_info` · `/claude_info` · `/aiden_info` · `/codex_info` · `/traex_info` · `/ttadk_info` · 查看会话/模型信息"
     ),
     "system_help_section_deep": "💭 Deep Engine · 复杂任务一次交付",
     "system_help_section_deep_body": (

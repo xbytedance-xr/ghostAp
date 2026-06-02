@@ -1119,7 +1119,7 @@ class TestThreadPersistentProgramming(unittest.TestCase):
         client = self._make_client()
         client._add_reaction = MagicMock()
 
-        for mode in ("coco", "claude", "aiden", "codex", "gemini", "ttadk"):
+        for mode in ("coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk"):
             handler = MagicMock()
             client._get_mode_handler = MagicMock(return_value=handler)
             project = MagicMock()
@@ -1274,8 +1274,8 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         self.assertEqual(actual_auto_mode, "coco")
 
     def test_all_modes_resolve_from_thread_ctx(self):
-        """所有编程模式 (coco/claude/aiden/codex/gemini/ttadk) 都能从 thread_ctx 正确解析"""
-        for mode in ("coco", "claude", "aiden", "codex", "gemini", "ttadk"):
+        """所有编程模式 (coco/claude/aiden/codex/gemini/traex/ttadk) 都能从 thread_ctx 正确解析"""
+        for mode in ("coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk"):
             client = self._make_client()
             client.settings = MagicMock()
             client.settings.thread_programming_enabled = True
