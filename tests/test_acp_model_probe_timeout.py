@@ -251,7 +251,6 @@ def test_fetch_acp_models_non_coco_expired_cache_not_used(monkeypatch):
 def test_extract_models_from_config_options_basic():
     """Models are extracted from config_options when available_models is empty."""
     from src.acp.helper import _extract_models_from_config_options
-    from src.ttadk.models import ACPModelOption
 
     class MockOption:
         def __init__(self, name, value, description=None):
@@ -366,3 +365,63 @@ def test_probe_acp_models_falls_back_to_config_options(monkeypatch):
     assert len(models) == 2
     assert models[0].name == "c_o_new_thinking"
     assert models[0].is_default is True
+
+
+def test_probe_acp_models_initializes_lazy_providers_for_traex(monkeypatch):
+    """Traex model probing must not depend on some earlier code path having
+    already initialized the ACP provider registry."""
+    from src.acp.helper import probe_acp_models
+    from src.acp.providers import _reset_providers_for_testing
+
+    _reset_providers_for_testing()
+
+    class FakeModels:
+        available_models = []
+        current_model_id = "c_o_new_thinking/medium"
+
+    class FakeOption:
+        def __init__(self, name, value):
+            self.name = name
+            self.value = value
+            self.description = ""
+
+    class FakeRoot:
+        category = "model"
+        current_value = "c_o_new_thinking"
+        options = [
+            FakeOption("Test-O-New-Thinking", "c_o_new_thinking"),
+            FakeOption("GPT-5.5", "gpt-5.5"),
+        ]
+
+    class FakeConfigOption:
+        root = FakeRoot()
+
+    class FakeResponse:
+        models = FakeModels()
+        config_options = [FakeConfigOption()]
+
+    class FakeConn:
+        async def initialize(self, protocol_version):
+            return None
+
+        async def new_session(self, cwd):
+            return FakeResponse()
+
+    class FakeSpawn:
+        async def __aenter__(self):
+            return FakeConn(), object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_spawn_agent_process(_client, cmd, *args, **_kwargs):
+        assert cmd == "traex"
+        assert args == ("acp", "serve")
+        return FakeSpawn()
+
+    monkeypatch.setattr("src.acp.helper.spawn_agent_process", fake_spawn_agent_process)
+
+    models = asyncio.run(probe_acp_models("traex", cwd="/tmp/ghostap"))
+
+    assert [m.name for m in models] == ["c_o_new_thinking", "gpt-5.5"]
+    assert [m.name for m in models if m.is_default] == ["c_o_new_thinking"]

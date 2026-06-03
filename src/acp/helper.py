@@ -14,7 +14,7 @@ from ..ttadk.models import ACPModelOption, ACPToolOption
 from ..utils.async_helpers import safe_wait_for
 from ..utils.text import get_acp_result_header_text
 from .client import GhostAPClient
-from .providers import tool_registry
+from .providers import get_providers, tool_registry
 
 if TYPE_CHECKING:
     pass
@@ -141,6 +141,7 @@ def list_acp_tools() -> list[ACPToolOption]:
     使用共享文案层提供的工具描述文案，避免直接依赖旧 styles 聚合入口。
     """
 
+    get_providers()
     names = ["coco", "claude", "aiden", "codex", "gemini", "traex"]
     out: list[ACPToolOption] = []
     headers = get_acp_result_header_text()
@@ -427,6 +428,7 @@ async def probe_acp_models(
     tool_name: str, cwd: Optional[str], current_model: Optional[str] = None
 ) -> list[ACPModelOption]:
     """Asynchronously probe available models from an ACP provider."""
+    get_providers()
     provider = tool_registry.get_provider(tool_name)
     if not provider:
         return []
@@ -545,7 +547,6 @@ def _add_config_option_model(
         return
     seen.add(value)
     name_label = str(getattr(option, "name", "") or value).strip()
-    description = str(getattr(option, "description", "") or name_label).strip()
     items.append(
         ACPModelOption(
             name=value,

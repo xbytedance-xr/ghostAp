@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-06-03
+- **Traex 模型列表修复** — 修复 ACP provider lazy-init 缺失导致 `/traex` 模型列表为空；真实 Traex ACP probe 返回 27 个模型，相关回归 79 passed，validate/ruff/diff-check 通过 → [详细记录](2026-06-03.md)
 ## 2026-06-02
 - **Traex ACP 工具接入** — 新增 `/traex` ACP 编程工具，接入模型选择、普通编程、Deep/Spec/Worktree 身份与卡片 UI；相关回归 1065 passed，validate/diff-check 通过 → [详细记录](2026-06-02.md)
 ## 2026-05-27
