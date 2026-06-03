@@ -446,10 +446,11 @@ async def probe_acp_models(
             resp = await conn.new_session(cwd=(cwd or str(Path.cwd())))
             models_state = getattr(resp, "models", None)
             available = list(getattr(models_state, "available_models", []) or [])
-            current_id = str(
+            raw_current_id = str(
                 getattr(models_state, "current_model_id", "")
                 or getattr(models_state, "currentModelId", "")
-            )
+            ).strip()
+            current_id = raw_current_id.split("/")[0] if "/" in raw_current_id else raw_current_id
             target_default = str((current_model or current_id or "")).strip()
 
             items = []
@@ -475,6 +476,10 @@ async def probe_acp_models(
                         is_default=(model_id == target_default),
                     )
                 )
+
+            if not items:
+                items = _extract_models_from_config_options(resp, target_default)
+
             return items
     except Exception as e:
         from ..utils.errors import get_error_detail
@@ -483,3 +488,68 @@ async def probe_acp_models(
             "[ACP] fetch models failed: tool=%s err=%s", tool_name, get_error_detail(e)
         )
         return []
+
+
+def _extract_models_from_config_options(
+    resp: object, target_default: str
+) -> list[ACPModelOption]:
+    """Extract model list from config_options when available_models is empty.
+
+    Some ACP providers (e.g. traex) return models only via the
+    ``config_options`` field with ``category='model'`` instead of via the
+    ``models.available_models`` array.
+    """
+    config_options = getattr(resp, "config_options", None)
+    if not config_options:
+        return []
+
+    for opt in config_options:
+        root = getattr(opt, "root", opt)
+        category = getattr(root, "category", None) or ""
+        if category != "model":
+            continue
+
+        current_value = str(getattr(root, "current_value", "") or "").strip()
+        effective_default = target_default or current_value
+        options = getattr(root, "options", None) or []
+
+        items: list[ACPModelOption] = []
+        seen: set[str] = set()
+        for option in options:
+            if hasattr(option, "options"):
+                group_options = getattr(option, "options", []) or []
+                for go in group_options:
+                    _add_config_option_model(go, effective_default, seen, items)
+            else:
+                _add_config_option_model(option, effective_default, seen, items)
+
+        if items:
+            logger.debug(
+                "[ACP] extracted %d models from config_options (category=model)",
+                len(items),
+            )
+            return items
+
+    return []
+
+
+def _add_config_option_model(
+    option: object,
+    effective_default: str,
+    seen: set[str],
+    items: list[ACPModelOption],
+) -> None:
+    """Add a single model entry from a SessionConfigSelectOption."""
+    value = str(getattr(option, "value", "") or "").strip()
+    if not value or value in seen:
+        return
+    seen.add(value)
+    name_label = str(getattr(option, "name", "") or value).strip()
+    description = str(getattr(option, "description", "") or name_label).strip()
+    items.append(
+        ACPModelOption(
+            name=value,
+            description=name_label,
+            is_default=(value == effective_default),
+        )
+    )

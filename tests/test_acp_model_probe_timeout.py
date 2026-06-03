@@ -241,3 +241,128 @@ def test_fetch_acp_models_non_coco_expired_cache_not_used(monkeypatch):
     # Should not return expired cache; should fall back to current_model only
     assert [m.name for m in models] == ["fallback-model"]
     assert models[0].is_default is True
+
+
+# ---------------------------------------------------------------------------
+# config_options model extraction tests (traex-style providers)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_models_from_config_options_basic():
+    """Models are extracted from config_options when available_models is empty."""
+    from src.acp.helper import _extract_models_from_config_options
+    from src.ttadk.models import ACPModelOption
+
+    class MockOption:
+        def __init__(self, name, value, description=None):
+            self.name = name
+            self.value = value
+            self.description = description
+            self.field_meta = None
+
+    class MockRoot:
+        def __init__(self, category, current_value, options):
+            self.category = category
+            self.current_value = current_value
+            self.options = options
+            self.field_meta = None
+            self.id = "model"
+            self.name = "Model"
+            self.type = "select"
+
+    class MockConfigOption:
+        def __init__(self, root):
+            self.root = root
+
+    class MockResp:
+        def __init__(self, config_options):
+            self.config_options = config_options
+
+    options = [
+        MockOption("Test-O-New-Thinking", "c_o_new_thinking", "200K context"),
+        MockOption("GPT-5.5", "gpt-5.5", "272K context"),
+        MockOption("Doubao-Seed-Code", "Doubao_1_6", "116K context"),
+    ]
+    root = MockRoot("model", "c_o_new_thinking", options)
+    resp = MockResp([MockConfigOption(root)])
+
+    result = _extract_models_from_config_options(resp, "c_o_new_thinking")
+
+    assert len(result) == 3
+    assert result[0].name == "c_o_new_thinking"
+    assert result[0].description == "Test-O-New-Thinking"
+    assert result[0].is_default is True
+    assert result[1].name == "gpt-5.5"
+    assert result[1].is_default is False
+
+
+def test_extract_models_from_config_options_skips_non_model_category():
+    """Only config_options with category='model' are used."""
+    from src.acp.helper import _extract_models_from_config_options
+
+    class MockOption:
+        def __init__(self, name, value):
+            self.name = name
+            self.value = value
+            self.description = None
+            self.field_meta = None
+
+    class MockRoot:
+        def __init__(self, category, current_value, options):
+            self.category = category
+            self.current_value = current_value
+            self.options = options
+
+    class MockConfigOption:
+        def __init__(self, root):
+            self.root = root
+
+    class MockResp:
+        def __init__(self, config_options):
+            self.config_options = config_options
+
+    mode_root = MockRoot("mode", "default", [MockOption("Default", "default")])
+    resp = MockResp([MockConfigOption(mode_root)])
+
+    result = _extract_models_from_config_options(resp, "")
+    assert result == []
+
+
+def test_probe_acp_models_falls_back_to_config_options(monkeypatch):
+    """probe_acp_models returns models from config_options when
+    available_models is empty (traex behavior)."""
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+
+    async def fake_probe(_tool_name, _cwd, _current_model):
+        class FakeOption:
+            def __init__(self, name, value, description=None):
+                self.name = name
+                self.value = value
+                self.description = description
+                self.field_meta = None
+
+        class FakeRoot:
+            category = "model"
+            current_value = "c_o_new_thinking"
+            options = [
+                FakeOption("Test-O-New", "c_o_new_thinking", "200K context"),
+                FakeOption("GPT-5.5", "gpt-5.5", "272K context"),
+            ]
+
+        class FakeConfigOption:
+            root = FakeRoot()
+
+        return [
+            ACPModelOption(name="c_o_new_thinking", description="Test-O-New", is_default=True),
+            ACPModelOption(name="gpt-5.5", description="GPT-5.5", is_default=False),
+        ]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", fake_probe)
+
+    models = fetch_acp_models("traex", cwd="/tmp/ghostap", probe_timeout=5.0)
+
+    assert len(models) == 2
+    assert models[0].name == "c_o_new_thinking"
+    assert models[0].is_default is True
