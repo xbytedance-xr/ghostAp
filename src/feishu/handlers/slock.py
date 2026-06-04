@@ -444,8 +444,77 @@ class SlockHandler(BaseEngineHandler):
             self.reply_card(message_id, json.dumps(error_card, ensure_ascii=False))
             return
 
+        if self._try_start_autonomous_collaboration_task(
+            message_id=message_id,
+            chat_id=chat_id,
+            text=text,
+            project=project,
+            engine=engine,
+            target_agent=target_agent,
+        ):
+            return
+
         # Priority 4: Smart routing — engine.execute() (fallback for UNKNOWN/low confidence)
         self._execute_routed_message(engine, message_id, chat_id, text, project, target_agent=None)
+
+    def _try_start_autonomous_collaboration_task(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        text: str,
+        project: Optional["ProjectContext"],
+        engine,
+        target_agent,
+    ) -> bool:
+        """Turn ordinary task messages into planned multi-role work when enabled."""
+        if not self._autonomous_task_planning_enabled():
+            return False
+        if target_agent is not None:
+            return False
+        if not engine or not text or not text.strip():
+            return False
+        if self._looks_like_shell_text(text):
+            return False
+
+        from src.slock_engine.task_classifier import TaskClassifier
+
+        classification, _confidence = TaskClassifier.classify_with_uncertainty(
+            text,
+            managed_chat=True,
+        )
+        if classification != "task":
+            return False
+
+        self.assign_task(message_id, chat_id, text.strip(), "", project)
+        return True
+
+    def _autonomous_task_planning_enabled(self) -> bool:
+        """Return True only for an explicit boolean True setting."""
+        return getattr(self.ctx.settings, "slock_autonomous_task_planning_enabled", False) is True
+
+    @staticmethod
+    def _looks_like_shell_text(text: str) -> bool:
+        """Mirror shell-like fast path so commands are not stolen by task planning."""
+        if not text:
+            return False
+        text_lower = text.lower().strip()
+        if not text_lower:
+            return False
+        first_word = text_lower.split()[0]
+        try:
+            from src.agent.intent_recognizer import IntentRecognizer
+
+            if first_word == "cd":
+                return True
+            if first_word in IntentRecognizer.SHELL_COMMANDS:
+                return True
+            if first_word in IntentRecognizer.COMMON_WORDS:
+                return False
+            return IntentRecognizer._looks_like_shell_token(first_word, text_lower)
+        except Exception:
+            logger.debug("Shell-like check failed for Slock autonomous task planning", exc_info=True)
+            return False
 
     async def _classify_with_timeout(self, text: str):
         """Run NLI classification with timeout protection.

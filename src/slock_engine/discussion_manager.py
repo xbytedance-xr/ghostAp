@@ -1893,16 +1893,6 @@ class DiscussionManager:
             # Write conclusion to first participant's reasoning snapshot
             primary_agent_id = thread.participants[0]
             try:
-                from datetime import datetime, timezone
-
-                conclusion_data = {
-                    "discussion_conclusion": thread.conclusion,
-                    "discussion_thread_id": thread.thread_id,
-                    "conclusion": thread.conclusion,
-                    "participants": list(thread.participants),
-                    "trigger_reason": thread.trigger_reason,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
                 prompt_summary = f"Discussion: {thread.topic[:100] if thread.topic else 'inter-agent'}"
                 result_summary = f"Discussion conclusion: {thread.conclusion[:300]}"
                 existing = memory_mgr.read_agent_reasoning_snapshot(primary_agent_id, task_id)
@@ -2397,7 +2387,9 @@ class DiscussionManager:
             return None
 
         # Try skill-based matching via TaskRouter if available
-        task_router = getattr(self._engine, "_task_router", None)
+        task_router = getattr(self._engine, "_router", None) or getattr(
+            self._engine, "_task_router", None
+        )
         if task_router and hasattr(task_router, "extract_skill_keywords"):
             required_skills = task_router.extract_skill_keywords(content)
             if required_skills:

@@ -629,6 +629,10 @@ class Settings(BaseSettings):
     slock_memory_summarize_timeout: float = Field(default=30.0, ge=1.0, le=120.0, description="LLM 记忆摘要压缩超时（秒），过短会导致摘要失败退化为截断")
     slock_proactive_followup_enabled: bool = Field(default=True, description="是否允许 Agent 在交付结果后主动跟进")
     slock_proactive_followup_delay: int = Field(default=60, ge=10, le=600, description="结果交付后等待用户反馈的秒数，超时则主动跟进")
+    slock_autonomous_task_planning_enabled: bool = Field(
+        default=True,
+        description="Slock 普通任务消息是否自动进入任务看板和多角色协作规划，而不是直接单 Agent 回复",
+    )
     slock_resolution_learning_enabled: bool = Field(default=True, description="是否将自主决策假设持久化以复用（减少重复 LLM 调用）")
     slock_freshness_gate_enabled: bool = Field(default=True, description="发送前检查 channel 是否有新消息（Freshness Gate），防止过期回复")
     slock_freshness_max_retries: int = Field(default=2, ge=0, le=5, description="Freshness Gate 检查不通过时最大重试次数，超出强制发送")

@@ -1310,7 +1310,46 @@ class SlockEngine(BaseEngine):
             detail=f"{agent.name} 执行中",
         )
         # Execute via the engine's execute_task method
-        self.execute_task(task.task_id, agent.agent_id, callbacks=None)
+        callbacks = self._build_collaboration_task_callbacks(task)
+        self.execute_task(task.task_id, agent.agent_id, callbacks)
+
+    def _build_collaboration_task_callbacks(self, task: SlockTask) -> SlockEngineCallbacks:
+        """Build visible callbacks for orchestrated plan steps."""
+        channel_id = task.created_in or (self._channel.channel_id if self._channel else self.chat_id)
+
+        def on_card_send(card: dict) -> Optional[str]:
+            if self._card_send_fn is None:
+                return None
+            return self._card_send_fn(card)
+
+        def on_card_update(msg_id: str, card: dict) -> bool:
+            if self._card_update_fn is None:
+                return False
+            return self._card_update_fn(msg_id, card)
+
+        def on_agent_done(done_agent: AgentIdentity, result: str) -> None:
+            if not result or self._card_send_fn is None:
+                return
+            try:
+                card = self._mouthpiece.format_card(
+                    done_agent,
+                    result,
+                    channel_id=channel_id,
+                    task_id=task.task_id,
+                )
+                self._card_send_fn(card)
+            except Exception:
+                logger.warning(
+                    "Failed to send collaboration task result card for task %s",
+                    task.task_id,
+                    exc_info=True,
+                )
+
+        return SlockEngineCallbacks(
+            on_agent_done=on_agent_done,
+            on_card_send=on_card_send,
+            on_card_update=on_card_update,
+        )
 
     def _register_collaboration_task(self, task: SlockTask) -> None:
         """Register a collaboration task in the task list for tracking/persistence.
