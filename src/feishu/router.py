@@ -190,6 +190,21 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     # --- Slock Engine ---
     "_handle_slock_command": ("slock", "handle_slock_command"),
     "_handle_slock_message": ("slock", "handle_message"),
+    # --- Workflow Engine ---
+    "_handle_workflow_command": ("workflow", "handle_workflow_command"),
+    "_start_workflow": ("workflow", "start_workflow"),
+    "_stop_workflow": ("workflow", "stop_workflow"),
+    "_show_workflow_status": ("workflow", "show_workflow_status"),
+    "_handle_workflow_confirm_tools": ("workflow", "handle_workflow_confirm_tools"),
+    "_handle_workflow_confirm_start": ("workflow", "handle_workflow_confirm_start"),
+    "_handle_workflow_cancel": ("workflow", "handle_workflow_cancel"),
+    "_handle_workflow_select_tool": ("workflow", "handle_workflow_select_tool"),
+    "_handle_workflow_select_budget": ("workflow", "handle_workflow_select_budget"),
+    "_handle_workflow_select_agent": ("workflow", "handle_workflow_select_agent"),
+    "_handle_workflow_regenerate_script": ("workflow", "handle_workflow_regenerate_script"),
+    "_handle_show_workflow_menu": ("workflow", "handle_show_workflow_menu"),
+    "_handle_workflow_list_templates": ("workflow", "handle_workflow_list_templates"),
+    "_handle_workflow_show_help": ("workflow", "handle_workflow_show_help"),
 }
 
 
@@ -203,14 +218,15 @@ def _handler_classes() -> dict[str, type]:
         CocoModeHandler,
         CodexModeHandler,
         GeminiModeHandler,
-        TTADKModeHandler,
         TraexModeHandler,
+        TTADKModeHandler,
         Tui2acpModeHandler,
     )
     from .handlers.project import ProjectHandler
     from .handlers.slock import SlockHandler
     from .handlers.spec import SpecHandler
     from .handlers.system import SystemHandler
+    from .handlers.workflow import WorkflowHandler
     from .handlers.worktree import WorktreeHandler
 
     return {
@@ -227,6 +243,7 @@ def _handler_classes() -> dict[str, type]:
         "deep": DeepHandler,
         "spec": SpecHandler,
         "slock": SlockHandler,
+        "workflow": WorkflowHandler,
         "project": ProjectHandler,
         "diagnostics": DiagnosticsHandler,
     }

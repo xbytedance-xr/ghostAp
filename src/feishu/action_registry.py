@@ -77,8 +77,11 @@ class _RetryDispatchAdapter:
 
 
 def _resolve_project(client: "FeishuWSClient", pid: str | None, cid: str):
-    """Resolve project from pid+cid, returning None when pid is absent."""
-    return DispatchContext(project_manager=client._project_manager).resolve_project(pid, cid)
+    """Resolve project from pid+cid, falling back to chat's active project when pid is absent."""
+    if pid:
+        return DispatchContext(project_manager=client._project_manager).resolve_project(pid, cid)
+    # Fallback: get the active project for this chat when no explicit project_id
+    return client._project_manager.get_active_project(cid)
 
 
 def init_action_registry(client: 'FeishuWSClient') -> None:
@@ -330,6 +333,48 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
     client._register_action(
         lambda mid, cid, pid, val: client._handle_worktree_retry_all(mid, cid, pid, val),
         exact=action_ids.WORKTREE_RETRY_ALL,
+    )
+
+    # Workflow
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_show_workflow_menu(mid, cid, pid, val),
+        exact=action_ids.SHOW_WORKFLOW_MENU,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_confirm_tools(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_CONFIRM_TOOLS,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_confirm_start(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_CONFIRM_START,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_cancel(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_CANCEL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_select_tool(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_SELECT_TOOL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_select_budget(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_SELECT_BUDGET,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_select_agent(mid, cid, val),
+        exact=action_ids.WORKFLOW_SELECT_AGENT,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_regenerate_script(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REGENERATE_SCRIPT,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_list_templates(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_LIST_TEMPLATES,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_show_help(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_SHOW_HELP,
     )
 
     # ACP
