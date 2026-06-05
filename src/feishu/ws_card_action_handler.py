@@ -123,7 +123,7 @@ class CardActionInspector:
         behaviors = getattr(action, "behaviors", None)
         if isinstance(behaviors, list) and behaviors:
             first_behavior = behaviors[0]
-            behavior_value = getattr(first_behavior, "value", None)
+            behavior_value = _extract_behavior_value(first_behavior)
             if behavior_value is not None:
                 value_raw = behavior_value
         if isinstance(value_raw, dict):
