@@ -54,3 +54,127 @@ def test_card_action_failure_remains_user_reachable():
     fatal = classify_card_action_error(RuntimeError("signature invalid"), phase="security")
     assert fatal.action == CardActionFailureAction.RAISE
     assert fatal.user_reachable is False
+
+
+def test_extract_behavior_value_object_form():
+    """AC18: _extract_behavior_value 正确处理 object 形式的 behavior。"""
+    from src.feishu.ws_card_action_handler import _extract_behavior_value
+
+    class MockBehavior:
+        def __init__(self, value):
+            self.value = value
+
+    # Object with value
+    behavior = MockBehavior({"action": "test", "data": "123"})
+    result = _extract_behavior_value(behavior)
+    assert result == {"action": "test", "data": "123"}
+
+    # Object with None value
+    behavior_none = MockBehavior(None)
+    result_none = _extract_behavior_value(behavior_none)
+    assert result_none is None
+
+
+def test_extract_behavior_value_mapping_form():
+    """AC18: _extract_behavior_value 正确处理 Mapping 形式的 behavior。"""
+    from src.feishu.ws_card_action_handler import _extract_behavior_value
+
+    # Dict (Mapping) with value
+    behavior_dict = {"type": "callback", "value": {"action": "test_dict"}}
+    result = _extract_behavior_value(behavior_dict)
+    assert result == {"action": "test_dict"}
+
+    # Dict without value key
+    behavior_no_value = {"type": "callback"}
+    result_no_value = _extract_behavior_value(behavior_no_value)
+    assert result_no_value is None
+
+    # Dict with None value
+    behavior_none_value = {"type": "callback", "value": None}
+    result_none_value = _extract_behavior_value(behavior_none_value)
+    assert result_none_value is None
+
+
+def test_value_dict_with_object_behavior():
+    """AC18: CardActionInspector.value_dict 正确处理 object 形式的 behaviors。"""
+    from src.feishu.ws_card_action_handler import CardActionInspector
+
+    class MockBehavior:
+        def __init__(self, value):
+            self.value = value
+
+    class MockAction:
+        def __init__(self, behaviors, value=None):
+            self.behaviors = behaviors
+            self.value = value
+
+    # Object form behaviors
+    behavior = MockBehavior({"action": "select_tool", "tool_name": "coco"})
+    action = MockAction(behaviors=[behavior], value=None)
+
+    result = CardActionInspector.value_dict(action)
+    assert result == {"action": "select_tool", "tool_name": "coco"}
+    assert CardActionInspector.action_type(action) == "select_tool"
+
+
+def test_value_dict_with_mapping_behavior():
+    """AC18: CardActionInspector.value_dict 正确处理 Mapping 形式的 behaviors。"""
+    from src.feishu.ws_card_action_handler import CardActionInspector
+
+    class MockAction:
+        def __init__(self, behaviors, value=None):
+            self.behaviors = behaviors
+            self.value = value
+
+    # Mapping form behaviors (dict)
+    behavior_dict = {"type": "callback", "value": {"action": "select_budget", "budget_tokens": 2000000}}
+    action = MockAction(behaviors=[behavior_dict], value=None)
+
+    result = CardActionInspector.value_dict(action)
+    assert result == {"action": "select_budget", "budget_tokens": 2000000}
+    assert CardActionInspector.action_type(action) == "select_budget"
+
+
+def test_value_dict_behavior_priority_over_legacy_value():
+    """AC18: behaviors[0].value 优先于 legacy action.value。"""
+    from src.feishu.ws_card_action_handler import CardActionInspector
+
+    class MockBehavior:
+        def __init__(self, value):
+            self.value = value
+
+    class MockAction:
+        def __init__(self, behaviors, value=None):
+            self.behaviors = behaviors
+            self.value = value
+
+    # Both behaviors and legacy value present — behaviors should win
+    behavior = MockBehavior({"action": "from_behavior"})
+    action = MockAction(
+        behaviors=[behavior],
+        value={"action": "from_legacy_value", "should": "be_ignored"},
+    )
+
+    result = CardActionInspector.value_dict(action)
+    assert result == {"action": "from_behavior"}, \
+        "behaviors[0].value should take priority over legacy action.value"
+
+
+def test_value_dict_fallback_to_legacy_value():
+    """AC18: 无 behaviors 时回退到 legacy action.value。"""
+    from src.feishu.ws_card_action_handler import CardActionInspector
+
+    class MockAction:
+        def __init__(self, behaviors, value=None):
+            self.behaviors = behaviors
+            self.value = value
+
+    # No behaviors, only legacy value
+    action = MockAction(
+        behaviors=None,
+        value={"action": "fallback_value"},
+    )
+
+    result = CardActionInspector.value_dict(action)
+    assert result == {"action": "fallback_value"}, \
+        "Should fallback to legacy action.value when no behaviors"
