@@ -65,6 +65,29 @@ SHOW_WORKTREE_MENU = "show_worktree_menu"  # Return to tool selection menu
 SHOW_WORKTREE_MERGE_ENTRY = "show_worktree_merge_entry"  # Show merge entry card with branch details
 
 # ---------------------------------------------------------------------------
+# Workflow actions
+# ---------------------------------------------------------------------------
+# Design decision: Workflow card interactions are handled directly by the
+# WorkflowHandler (src/feishu/handlers/workflow.py) rather than through the
+# CardSession event pipeline. This is intentional — Workflow's confirmation,
+# tool selection, and budget selection cards are built and updated by the
+# handler layer without a build_workflow_action_registry() factory. The
+# rationale is that Workflow's execution model (isolated JS runtime + bridge)
+# differs from Worktree/Spec's CardSession-driven lifecycle, and adding a
+# registry would require a CardSession instance that doesn't naturally fit
+# the workflow's fire-and-forget execution pattern.
+WORKFLOW_CONFIRM_TOOLS = "workflow_confirm_tools"  # Confirm tool selection and generate script
+WORKFLOW_CONFIRM_START = "workflow_confirm_start"  # Confirm generated script and start execution
+WORKFLOW_CANCEL = "workflow_cancel"  # Cancel workflow before execution starts
+WORKFLOW_SELECT_TOOL = "workflow_select_tool"  # Toggle tool selection for workflow execution
+WORKFLOW_SELECT_BUDGET = "workflow_select_budget"  # Select budget tier for workflow execution
+WORKFLOW_SELECT_AGENT = "workflow_select_agent"  # Select orchestrator agent for workflow script generation
+WORKFLOW_REGENERATE_SCRIPT = "workflow_regenerate_script"  # Regenerate script with current tool selection
+SHOW_WORKFLOW_MENU = "show_workflow_menu"  # Show workflow menu / start workflow flow
+WORKFLOW_LIST_TEMPLATES = "workflow_list_templates"  # List available workflow templates
+WORKFLOW_SHOW_HELP = "workflow_show_help"  # Show workflow help
+
+# ---------------------------------------------------------------------------
 # Global / status actions
 # ---------------------------------------------------------------------------
 SHOW_STATUS = "show_status"  # Show current session status card
