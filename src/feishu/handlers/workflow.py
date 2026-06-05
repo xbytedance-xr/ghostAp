@@ -926,6 +926,58 @@ class WorkflowHandler(BaseEngineHandler):
     # Confirm / Cancel actions (card button callbacks)
     # ------------------------------------------------------------------
 
+    def handle_workflow_select_agent(
+        self,
+        message_id: str,
+        chat_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Handle orchestrator agent selection callback."""
+        from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
+
+        root_path = self._get_root_path(chat_id, None)
+        engine = self.ctx.workflow_engine_manager.get(chat_id, root_path)
+
+        if not engine or not engine.project:
+            self._reply_workflow_error(message_id, "session_expired")
+            return
+
+        if engine.project.status != WorkflowStatus.AWAITING_AGENT_SELECT:
+            self._reply_workflow_error(message_id, "invalid_state")
+            return
+
+        # Security validation
+        stored_session_key = engine.project.pending.engine_session_key if engine.project.pending else ""
+        button_session_key = value.get("engine_session_key", "")
+        if not stored_session_key or button_session_key != stored_session_key:
+            self._reply_workflow_error(message_id, "session_expired")
+            return
+
+        current_user = get_current_sender_id() or ""
+        stored_initiator = engine.project.pending.initiator_user_id if engine.project.pending else ""
+        if not stored_initiator or not current_user or current_user != stored_initiator:
+            self._reply_workflow_error(message_id, "forbidden")
+            return
+
+        # Get selected agent
+        agent_type = value.get("agent_type", "")
+        if not agent_type:
+            self._reply_workflow_error(message_id, "invalid_argument", detail="缺少 agent_type 参数")
+            return
+
+        # Store selected agent in pending state
+        if engine.project.pending is None:
+            from ...workflow_engine.models import PendingConfirmation
+            engine.project.pending = PendingConfirmation()
+        engine.project.pending.orchestrator_agent = agent_type
+
+        # Proceed to tool selection
+        requirement = engine.project.pending.requirement if engine.project.pending else ""
+        project_id = value.get("project_id", "")
+        project = self._resolve_project_from_id(project_id, chat_id)
+        self._show_tool_selection_card(message_id, chat_id, requirement, project, root_path)
+
     def handle_workflow_confirm_tools(
         self,
         message_id: str,
