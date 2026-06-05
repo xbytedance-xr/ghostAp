@@ -253,11 +253,12 @@ class WorkflowHandler(BaseEngineHandler):
             )
             return
 
-        # Also block if awaiting confirmation or tool selection
+        # Also block if awaiting confirmation, tool selection, or agent selection
         from ...workflow_engine.models import WorkflowStatus
         if existing and existing.project and existing.project.status in {
             WorkflowStatus.AWAITING_CONFIRM,
             WorkflowStatus.AWAITING_TOOL_SELECT,
+            WorkflowStatus.AWAITING_AGENT_SELECT,
         }:
             self.reply_error(
                 message_id,
@@ -326,9 +327,8 @@ class WorkflowHandler(BaseEngineHandler):
             )
             return
 
-        # AI generation path: show tool selection first
-        self._show_tool_selection_card(
-            message_id=message_id,
+        # AI generation path: show agent selection first, then tool selection
+        self._show_agent_selection_card(
             chat_id=chat_id,
             requirement=requirement,
             project=project,
@@ -1269,7 +1269,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         from ...workflow_engine.models import WorkflowStatus
 
-        valid_statuses = (WorkflowStatus.AWAITING_CONFIRM, WorkflowStatus.AWAITING_TOOL_SELECT)
+        valid_statuses = (WorkflowStatus.AWAITING_CONFIRM, WorkflowStatus.AWAITING_TOOL_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT)
         if engine.project.status not in valid_statuses:
             self._reply_workflow_error(message_id, "invalid_state")
             return
