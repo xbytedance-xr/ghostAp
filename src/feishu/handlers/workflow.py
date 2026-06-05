@@ -613,6 +613,104 @@ class WorkflowHandler(BaseEngineHandler):
         )
         return tool_select_card
 
+    def _show_agent_selection_card(
+        self,
+        chat_id: str,
+        requirement: str,
+        project: Optional["ProjectContext"],
+        root_path: str,
+    ) -> None:
+        """Show the orchestrator agent selection card before tool selection."""
+        from ...card import CardBuilder
+        from ...card.actions.dispatch import WORKFLOW_SELECT_AGENT, WORKFLOW_CANCEL
+        from ...card.render.buttons import build_responsive_button_row
+        from ...card.ui_text import UI_TEXT
+        from ...thread import get_current_sender_id
+        from ...workflow_engine.constants import (
+            DEFAULT_ORCHESTRATOR_AGENT,
+            ORCHESTRATOR_AGENT_OPTIONS,
+        )
+        from ...workflow_engine.models import PendingConfirmation, WorkflowStatus
+
+        # Initialize pending state
+        engine_name = self.get_engine_name(
+            chat_id, project_id=(project.project_id if project else None)
+        )
+        engine = self.ctx.workflow_engine_manager.get_or_create(
+            chat_id,
+            root_path,
+            engine_name=engine_name,
+        )
+
+        session_key = uuid.uuid4().hex
+        if engine.project:
+            engine.project.status = WorkflowStatus.AWAITING_AGENT_SELECT
+            engine.project.pending = PendingConfirmation(
+                requirement=requirement,
+                initiator_user_id=get_current_sender_id() or "",
+                engine_session_key=session_key,
+                orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
+            )
+
+        project_id = project.project_id if project else ""
+
+        # Build agent selection card
+        elements: list[dict] = []
+
+        # Requirement
+        elements.append({
+            "tag": "markdown",
+            "content": f"**需求**:\n> {requirement[:200]}",
+        })
+        elements.append({
+            "tag": "markdown",
+            "content": "**请选择主编排 Agent**（脚本生成和编排将基于该 Agent 的能力特点优化）：",
+        })
+
+        # Agent options as buttons
+        agent_buttons = []
+        for agent_type, display_name, description in ORCHESTRATOR_AGENT_OPTIONS:
+            is_default = agent_type == DEFAULT_ORCHESTRATOR_AGENT
+            btn_value = {
+                "action": WORKFLOW_SELECT_AGENT,
+                "agent_type": agent_type,
+                "engine_session_key": session_key,
+                "project_id": project_id,
+            }
+            agent_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"{'★ ' if is_default else ''}{display_name}"},
+                "type": "primary" if is_default else "default",
+                "value": btn_value,
+                "behaviors": [{"type": "callback", "value": btn_value}],
+                "tooltip": description,
+            })
+
+        # Add agent buttons in responsive rows
+        elements.extend(build_responsive_button_row(agent_buttons))
+
+        # Cancel button
+        cancel_value = {
+            "action": WORKFLOW_CANCEL,
+            "engine_session_key": session_key,
+            "project_id": project_id,
+        }
+        elements.append({
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "取消"},
+            "type": "default",
+            "value": cancel_value,
+            "behaviors": [{"type": "callback", "value": cancel_value}],
+        })
+
+        card = CardBuilder._wrap_card(
+            header_title="Workflow — 选择主编排 Agent",
+            header_template="blue",
+            elements=elements,
+        )
+
+        self.send_card_to_chat(chat_id, card)
+
     def _show_tool_selection_card(
         self,
         message_id: str,
