@@ -41,6 +41,7 @@ class TestMessageDispatcher:
     def test_process_with_intent_programming_mode_forwarding(self, mock_tid):
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = False
         self.client.settings.thread_programming_enabled = False
@@ -68,6 +69,7 @@ class TestMessageDispatcher:
 
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = False
         self.client.settings.thread_programming_enabled = False
@@ -84,6 +86,7 @@ class TestMessageDispatcher:
     def test_process_with_intent_exit_command(self):
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._is_exit_command.return_value = True
         self.client._control_plane.should_defer_exit.return_value = False
@@ -142,6 +145,7 @@ class TestMessageDispatcher:
     def test_process_with_intent_reparses_codex_slash_and_bypasses_intent(self):
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._is_interceptable_command_match.side_effect = lambda m: bool(m and m.command == "/codex")
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
 
@@ -156,6 +160,7 @@ class TestMessageDispatcher:
     def test_process_with_intent_unknown_slash_still_bypasses_intent(self):
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
 
@@ -199,6 +204,7 @@ class TestMessageDispatcher:
     def test_process_with_intent_smart_mode_recognition(self):
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
         self.client._pending_image_lock = MagicMock()
@@ -238,6 +244,7 @@ class TestMessageDispatcher:
     def test_dispatcher_recoverable_intent_error_falls_back_to_shell_with_log(self, caplog):
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._is_interceptable_command_match.return_value = False
         self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
         self.client._pending_image_lock = MagicMock()
@@ -305,3 +312,133 @@ class TestMessageDispatcher:
             assert len(broad_by_function[name]) <= allowed[name], (
                 f"{name} has unexpected broad except Exception at lines {broad_by_function[name]}"
             )
+
+    def test_process_with_intent_wf_command_routes_to_workflow(self):
+        """Verify /wf command routes to workflow handler."""
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = True
+        self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+
+        self.dispatcher.process_with_intent(
+            "m1",
+            "c1",
+            "/wf do code review",
+            None,
+            command_match=SlashCommandParser.parse("/wf do code review"),
+        )
+
+        self.client._handle_workflow_command.assert_called_once_with(
+            "m1", "c1", "/wf do code review", None
+        )
+        assert self.client._add_reaction.call_count >= 1
+
+    def test_process_with_intent_workflow_command_routes_to_workflow(self):
+        """Verify /workflow command routes to workflow handler."""
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = True
+        self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+
+        self.dispatcher.process_with_intent(
+            "m1",
+            "c1",
+            "/workflow run tests",
+            None,
+            command_match=SlashCommandParser.parse("/workflow run tests"),
+        )
+
+        self.client._handle_workflow_command.assert_called_once_with(
+            "m1", "c1", "/workflow run tests", None
+        )
+        assert self.client._add_reaction.call_count >= 1
+
+    @patch("src.thread.get_current_thread_id", return_value="thread_123")
+    def test_auto_enter_workflow_topic_routing(self, mock_tid):
+        """Verify topic engine context with workflow mode routes to workflow handler.
+
+        WF Contract: Workflow topic free-text messages should go to WorkflowHandler.handle_message
+        instead of generic SMART intent routing.
+        """
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
+        self.client._is_exit_command.return_value = False
+        self.client.settings.thread_programming_enabled = True
+
+        # Mock topic engine context - we're in a workflow topic thread
+        mock_thread_ctx = MagicMock()
+        mock_thread_ctx.mode = "workflow"
+        self.client._thread_manager.get.return_value = mock_thread_ctx
+
+        # Mock _is_topic_engine_context to return True
+        original_method = self.client._is_topic_engine_context
+        self.client._is_topic_engine_context = MagicMock(return_value=True)
+
+        # Mock workflow handler
+        self.client._workflow_handler = MagicMock()
+
+        # Create a mock project (required for workflow routing per ws_client.py:1570-1580)
+        mock_project = MagicMock()
+        mock_project.project_id = "proj_123"
+
+        try:
+            self.client._get_effective_mode.return_value = (InteractionMode.SMART, False)
+            self.client._pending_image_lock = MagicMock()
+            self.client._pending_image_only = set()
+
+            intent_result = MagicMock()
+            intent_result.is_multi_task = False
+            self.client._intent_recognizer.recognize.return_value = intent_result
+
+            with patch.object(self.dispatcher, "execute_single_task") as mock_exec:
+                self.dispatcher.process_with_intent(
+                    "m1",
+                    "c1",
+                    "continue the workflow",
+                    mock_project,
+                    command_match=SlashCommandParser.parse("continue the workflow"),
+                )
+                # Verify message was routed to WorkflowHandler.handle_message (WF contract)
+                self.client._workflow_handler.handle_message.assert_called_once_with(
+                    "m1", "c1", "continue the workflow", mock_project
+                )
+                # Verify intent recognition was NOT called
+                self.client._intent_recognizer.recognize.assert_not_called()
+                # Verify execute_single_task was NOT called
+                mock_exec.assert_not_called()
+                # Verify processing reaction was added
+                self.client._add_reaction.assert_called()
+        finally:
+            self.client._is_topic_engine_context = original_method
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_normal_programming_forwarding_unchanged(self, mock_tid):
+        """Verify normal programming mode forwarding still works when no workflow command."""
+        self.client._is_deep_command.return_value = False
+        self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
+        self.client._is_interceptable_command_match.return_value = False
+        self.client._is_exit_command.return_value = False
+        self.client.settings.thread_programming_enabled = False
+
+        # In COCO mode
+        self.client._get_effective_mode.return_value = (InteractionMode.COCO, True)
+
+        mock_handler = MagicMock()
+        self.client._get_mode_handler.return_value = mock_handler
+
+        self.dispatcher.process_with_intent(
+            "m1",
+            "c1",
+            "write a function",
+            None,
+            command_match=SlashCommandParser.parse("write a function"),
+        )
+
+        # Verify programming mode forwarding works correctly
+        self.client._get_mode_handler.assert_called_once_with(InteractionMode.COCO)
+        mock_handler.handle_message.assert_called_once_with("m1", "c1", "write a function", None)
+        # Verify workflow handler was NOT called
+        self.client._handle_workflow_command.assert_not_called()

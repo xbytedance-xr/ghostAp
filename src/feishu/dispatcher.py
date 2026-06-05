@@ -115,6 +115,26 @@ class MessageDispatcher:
             self.client._handle_spec_command(message_id, chat_id, text, project)
             return
 
+        if self.client._is_workflow_command(text):
+            self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
+            self.client._add_reaction(message_id, EmojiReaction.on_processing())
+            self.client._handle_workflow_command(message_id, chat_id, text, project)
+            return
+
+        # Topic engine context routing: workflow mode free-text goes to WorkflowHandler
+        if is_topic_engine_context:
+            from src.thread import get_current_thread_id
+            thread_id = get_current_thread_id()
+            if thread_id:
+                thread_ctx = self.client._thread_manager.get(thread_id)
+                if thread_ctx and thread_ctx.mode == "workflow":
+                    # Free-text messages in workflow topic context go to WorkflowHandler
+                    # Consistent with ws_client.py:1558-1590 routing logic
+                    if command_match is None and project is not None:
+                        self.client._add_reaction(message_id, EmojiReaction.on_processing())
+                        self.client._workflow_handler.handle_message(message_id, chat_id, text, project)
+                        return
+
         _slock_result = self.client._is_slock_command(text, chat_id)
         if _slock_result:
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
