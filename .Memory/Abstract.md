@@ -3,6 +3,9 @@
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-06-04
 - **Slock 普通任务自动协作** — 普通任务消息默认复用 `/task assign` 无角色路径进入任务看板和多角色协作计划，修复讨论技能路由字段和计划步骤可见 callbacks；Slock 相关回归 150 passed，validate/diff-check 通过 → [详细记录](2026-06-04.md)
+- **Workflow 预算去重** — 移除 renderer 对 budget.used 的重复累加，预算记账收敛到 `_on_token_usage()` 单点；workflow 定向回归 21 passed → [详细记录](2026-06-04.md)
+- **Workflow 按钮 Schema 2.0 迁移** — 废弃 `action` 容器改用 `column_set` 布局，新增 `behaviors` 回调字段和 fallback 读取逻辑，增强工具/预算选择错误反馈；workflow 全量回归 238 passed → [详细记录](2026-06-04.md)
+- **Workflow AC19 错误分类测试** — 新增 13 个单元测试覆盖工具/预算选择回调的 4 种错误类别（session_expired/invalid_state/invalid_argument/forbidden）及错误卡片 UI；13 passed → [详细记录](2026-06-04.md)
 ## 2026-06-03
 - **Traex 模型列表修复** — 修复 ACP provider lazy-init 缺失导致 `/traex` 模型列表为空；真实 Traex ACP probe 返回 27 个模型，相关回归 79 passed，validate/ruff/diff-check 通过 → [详细记录](2026-06-03.md)
 ## 2026-06-02
