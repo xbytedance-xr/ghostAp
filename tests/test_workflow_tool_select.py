@@ -510,5 +510,154 @@ class TestWorkflowToolSelectionCardUI(unittest.TestCase):
         self.assertEqual(engine.project.pending.selected_tools[:3], ["coco", "claude", "codex"])
 
 
+class TestWorkflowToolDiscoverySingleCall(unittest.TestCase):
+    """AC14: Tests for tool discovery single-call guarantee."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.workflow import WorkflowHandler
+
+        handler = WorkflowHandler.__new__(WorkflowHandler)
+        handler.ctx = MagicMock()
+        handler.reply_text = MagicMock()
+        handler.update_card = MagicMock(return_value=True)
+        handler.get_working_dir = MagicMock(return_value="/tmp/project")
+        handler._get_root_path = MagicMock(return_value="/tmp/project")
+        handler.send_card_to_chat = MagicMock()
+        handler.get_engine_name = MagicMock(return_value="test-engine")
+        return handler
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_tool_discovery_single_call(self, mock_sender):
+        """AC14: _show_tool_selection_card 流程中 get_available_tools() 仅调用一次。"""
+        from src.feishu.handlers.workflow import WorkflowHandler
+        from src.workflow_engine.models import WorkflowProject, WorkflowStatus
+
+        # Create a mock handler
+        handler = WorkflowHandler.__new__(WorkflowHandler)
+        handler.ctx = MagicMock()
+        handler.get_engine_name = MagicMock(return_value="test_engine")
+        handler.send_card_to_chat = MagicMock()
+
+        # Mock the workflow engine manager
+        mock_engine = MagicMock()
+        mock_engine.project = WorkflowProject(
+            workflow_id="test_wf",
+            status=WorkflowStatus.IDLE,
+        )
+        handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
+
+        # Mock get_available_tools and track call count
+        with patch('src.workflow_engine.tool_registry.get_available_tools') as mock_get_tools:
+            mock_get_tools.return_value = {
+                "coco": "全栈编程",
+                "claude": "深度推理",
+                "codex": "代码生成",
+            }
+
+            # Call _show_tool_selection_card
+            handler._show_tool_selection_card(
+                message_id="test_msg",
+                chat_id="test_chat",
+                requirement="test requirement",
+                project=MagicMock(project_id="test_proj"),
+                root_path="/tmp",
+            )
+
+            # Assert get_available_tools was called exactly once
+            assert mock_get_tools.call_count == 1, (
+                f"get_available_tools() called {mock_get_tools.call_count} times, expected 1"
+            )
+
+    def test_resolve_tool_lists_returns_consistent_results(self):
+        """AC14: _resolve_tool_lists() 返回一致的结果供 init 和 build 使用。"""
+        from src.feishu.handlers.workflow import WorkflowHandler
+
+        with patch('src.workflow_engine.tool_registry.get_available_tools') as mock_get_tools:
+            mock_get_tools.return_value = {
+                "coco": "全栈编程",
+                "claude": "深度推理",
+                "aiden": "代码审查",
+                "gemini": "多模态",
+                "unknown_tool": "其他",
+            }
+
+            all_tools, recommended, other, default = WorkflowHandler._resolve_tool_lists()
+
+            # Verify structure
+            assert isinstance(all_tools, dict)
+            assert isinstance(recommended, list)
+            assert isinstance(other, list)
+            assert isinstance(default, list)
+
+            # Verify recommended tools are in priority order
+            assert recommended == ["coco", "claude", "aiden", "gemini"]
+
+            # Verify other tools are those not in recommended
+            assert other == ["unknown_tool"]
+
+            # Verify default selection is top 3 recommended
+            assert default == ["coco", "claude", "aiden"]
+
+            # Verify get_available_tools was called once
+            assert mock_get_tools.call_count == 1
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_init_and_build_use_same_tool_lists(self, mock_sender):
+        """AC14: _init_tool_selection_state 和 _build_tool_selection_card 使用相同的工具列表。"""
+        from src.feishu.handlers.workflow import WorkflowHandler
+        from src.workflow_engine.models import WorkflowProject, WorkflowStatus
+
+        handler = WorkflowHandler.__new__(WorkflowHandler)
+        handler.ctx = MagicMock()
+        handler.get_engine_name = MagicMock(return_value="test_engine")
+
+        mock_engine = MagicMock()
+        mock_engine.project = WorkflowProject(
+            workflow_id="test_wf",
+            status=WorkflowStatus.IDLE,
+        )
+        handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
+
+        with patch('src.workflow_engine.tool_registry.get_available_tools') as mock_get_tools:
+            mock_get_tools.return_value = {
+                "coco": "全栈编程",
+                "claude": "深度推理",
+            }
+
+            # Resolve once
+            all_tools, recommended, other, default = handler._resolve_tool_lists()
+
+            # Pass to both init and build
+            engine, project_id, session_key = handler._init_tool_selection_state(
+                chat_id="test_chat",
+                requirement="test",
+                project=MagicMock(project_id="test_proj"),
+                root_path="/tmp",
+                all_tools=all_tools,
+                recommended_tools=recommended,
+                default_selected=default,
+            )
+
+            card = handler._build_tool_selection_card(
+                engine=engine,
+                requirement="test",
+                chat_id="test_chat",
+                project_id="test_proj",
+                session_key=session_key,
+                all_tools=all_tools,
+                recommended_tools=recommended,
+                other_tools=other,
+                default_selected=default,
+            )
+
+            # Verify card was built successfully
+            assert isinstance(card, dict)
+            assert "body" in card
+            assert "elements" in card["body"]
+
+            # Most importantly: get_available_tools was only called once (in _resolve_tool_lists)
+            assert mock_get_tools.call_count == 1
+
+
 if __name__ == "__main__":
     unittest.main()
