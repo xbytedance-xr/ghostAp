@@ -48,23 +48,32 @@ def test_budget_selection_updates_pending_state():
     )
     handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
 
-    with patch('src.thread.get_current_sender_id', return_value="test_user"):
-        handler.handle_workflow_select_budget(
-            message_id="msg_123",
-            chat_id="test_chat",
-            project_id="",
-            value={
-                "action": "workflow_select_budget",
-                "budget_tokens": 5000000,
-                "engine_session_key": "session_123",
-            },
-        )
+    # Mock script generation to avoid actual AI calls
+    with patch.object(handler, '_generate_script_via_ai') as mock_gen:
+        mock_gen.return_value = ("/tmp/new_script.js", {"tools": ["coco"], "budget_tokens": 5000000}, False)
+
+        with patch('src.thread.get_current_sender_id', return_value="test_user"):
+            handler.handle_workflow_select_budget(
+                message_id="msg_123",
+                chat_id="test_chat",
+                project_id="",
+                value={
+                    "action": "workflow_select_budget",
+                    "budget_tokens": 5000000,
+                    "engine_session_key": "session_123",
+                },
+            )
 
     # Verify budget was updated
     assert mock_engine.project.pending.budget == 5000000
 
-    # Verify card was updated
-    handler.update_card.assert_called_once()
+    # Verify card was updated twice: once for "regenerating" card, once for final confirm card
+    assert handler.update_card.call_count == 2
+
+    # Verify script generation was called with the new budget
+    mock_gen.assert_called_once()
+    call_kwargs = mock_gen.call_args.kwargs
+    assert call_kwargs.get("override_budget_tokens") == 5000000
 
 
 def test_budget_change_triggers_script_regeneration():
@@ -110,7 +119,9 @@ def test_budget_change_triggers_script_regeneration():
         if mock_gen.called:
             # Verify script generation was called with new budget
             call_args = mock_gen.call_args
-            assert 5000000 in call_args[0] or 5000000 in str(call_args.kwargs)
+            assert str(5000000) in str(call_args[0]) or str(5000000) in str(call_args.kwargs)
+            # Also verify override_budget_tokens kwarg is set correctly
+            assert call_args.kwargs.get("override_budget_tokens") == 5000000
 
 
 def test_confirm_card_shows_budget_generated_notice():

@@ -441,6 +441,8 @@ class WorkflowHandler(BaseEngineHandler):
             engine_name=engine_name,
         )
         if engine.project:
+            # Preserve existing orchestrator_agent from previous pending state
+            existing_orchestrator = engine.project.pending.orchestrator_agent if engine.project.pending else None
             engine.project.status = WorkflowStatus.AWAITING_TOOL_SELECT
             engine.project.pending = PendingConfirmation(
                 requirement=requirement,
@@ -449,6 +451,7 @@ class WorkflowHandler(BaseEngineHandler):
                 selected_tools=list(default_selected),
                 script_path=None,
                 meta=None,
+                orchestrator_agent=existing_orchestrator,
             )
 
         project_id = project.project_id if project else ""
@@ -1433,10 +1436,11 @@ class WorkflowHandler(BaseEngineHandler):
         project_id: str,
         value: dict[str, Any],
     ) -> None:
-        """Select a budget tier in the pending workflow confirm card.
+        """Handle budget selection callback — triggers script regeneration if budget changed.
 
         Security: validates engine_session_key and initiator_user_id.
-        Updates the confirm card to reflect the new budget selection.
+        When budget changes from the one used to generate the current script,
+        triggers script regeneration with the new budget.
         """
         project_id = project_id or value.get("project_id", "")
         project = self._resolve_project_from_id(project_id, chat_id)
@@ -1475,22 +1479,91 @@ class WorkflowHandler(BaseEngineHandler):
 
         if engine.project.pending is None:
             engine.project.pending = PendingConfirmation()
+
+        # Check if budget actually changed from the one used to generate the script
+        old_budget = (engine.project.pending.meta or {}).get("budget_tokens")
+        if old_budget == budget_tokens:
+            # No change — just update pending.budget and re-render
+            engine.project.pending.budget = budget_tokens
+            _script_content = self._read_pending_script(engine)
+            confirm_card = self._build_confirm_card(
+                meta=engine.project.pending.meta,
+                requirement=engine.project.pending.requirement or "",
+                engine_session_key=engine.project.pending.engine_session_key or "",
+                chat_id=chat_id,
+                project_id=project_id,
+                is_fallback=engine.project.pending.is_fallback,
+                selected_tools=engine.project.pending.selected_tools,
+                selected_budget=budget_tokens,
+                script_content=_script_content,
+            )
+            self.update_card(message_id, confirm_card)
+            return
+
+        # Budget changed — trigger script regeneration
         engine.project.pending.budget = budget_tokens
 
-        # Re-render the confirm card with updated budget
-        _script_content = self._read_pending_script(engine)
-        confirm_card = self._build_confirm_card(
-            meta=engine.project.pending.meta if engine.project.pending else None,
-            requirement=engine.project.pending.requirement if engine.project.pending else "",
-            engine_session_key=engine.project.pending.engine_session_key if engine.project.pending else "",
-            chat_id=chat_id,
-            project_id=project_id,
-            is_fallback=engine.project.pending.is_fallback if engine.project.pending else False,
-            selected_tools=engine.project.pending.selected_tools if engine.project.pending else None,
-            selected_budget=engine.project.pending.budget if engine.project.pending else None,
-            script_content=_script_content,
+        # Show "regenerating" card
+        from ...card import CardBuilder
+        from ...card.ui_text import UI_TEXT
+        gen_card = CardBuilder._wrap_card(
+            header_title="Workflow — 正在重新生成脚本",
+            header_template="blue",
+            elements=[
+                {"tag": "markdown", "content": f"**预算已更新为 {budget_tokens:,} tokens**"},
+                {"tag": "markdown", "content": "正在根据新预算重新生成编排脚本..."},
+                {"tag": "hr"},
+                {"tag": "markdown", "content": "⏳ 请稍候..."},
+            ],
         )
-        self.update_card(message_id, confirm_card)
+        self.update_card(message_id, gen_card)
+
+        # Regenerate script with new budget
+        requirement = engine.project.pending.requirement or ""
+        selected_tools = engine.project.pending.selected_tools
+
+        try:
+            # Clean up old script
+            old_script_path = engine.project.pending.script_path
+            if old_script_path and os.path.exists(old_script_path):
+                os.remove(old_script_path)
+
+            # Generate new script with the new budget
+            script_path, meta, is_fallback = self._generate_script_via_ai(
+                requirement,
+                root_path,
+                selected_tools,
+                engine,
+                override_budget_tokens=budget_tokens,
+            )
+
+            # Update pending state with new script
+            engine.project.pending.script_path = script_path
+            engine.project.pending.meta = meta
+            engine.project.pending.is_fallback = is_fallback
+
+            # Re-render confirm card
+            _script_content = self._read_pending_script(engine)
+            confirm_card = self._build_confirm_card(
+                meta=meta,
+                requirement=requirement,
+                engine_session_key=engine.project.pending.engine_session_key or "",
+                chat_id=chat_id,
+                project_id=project_id,
+                is_fallback=is_fallback,
+                selected_tools=selected_tools,
+                selected_budget=budget_tokens,
+                script_content=_script_content,
+            )
+            self.update_card(message_id, confirm_card)
+
+        except Exception as exc:
+            logger.exception("Script regeneration failed after budget change")
+            self._reply_workflow_error(
+                message_id,
+                "internal_error",
+                detail=f"脚本重新生成失败: {str(exc)}",
+            )
 
     def _resolve_project_from_id(
         self, project_id: str, chat_id: str
@@ -1737,7 +1810,12 @@ class WorkflowHandler(BaseEngineHandler):
 
 
     def _generate_script_via_ai(
-        self, requirement: str, root_path: str, selected_tools: list[str] | None = None, engine: Any = None
+        self,
+        requirement: str,
+        root_path: str,
+        selected_tools: list[str] | None = None,
+        engine: Any = None,
+        override_budget_tokens: int | None = None,
     ) -> tuple[str, dict[str, Any] | None, bool]:
         """Generate a workflow script via AI with fallback to simple generation.
 
@@ -1748,6 +1826,9 @@ class WorkflowHandler(BaseEngineHandler):
                 the script generator will be encouraged to use these tools.
             engine: Optional workflow engine instance. If provided, the selected
                 orchestrator_agent from pending state will be used for script generation.
+            override_budget_tokens: Optional budget override. If provided, uses this
+                value instead of pending.budget or DEFAULT_BUDGET_TOKENS for script
+                generation prompt.
 
         Returns:
             Tuple of (script_path, meta_dict_or_None, is_fallback).
@@ -1766,6 +1847,13 @@ class WorkflowHandler(BaseEngineHandler):
             if engine and engine.project and engine.project.pending and engine.project.pending.orchestrator_agent
             else DEFAULT_ORCHESTRATOR_AGENT
         )
+
+        # Resolve budget tokens: use override if provided, otherwise use pending.budget or default
+        budget_for_gen = override_budget_tokens
+        if budget_for_gen is None and engine and engine.project and engine.project.pending:
+            budget_for_gen = engine.project.pending.budget
+        if budget_for_gen is None:
+            budget_for_gen = DEFAULT_BUDGET_TOKENS
 
         script_dir = os.path.join(root_path, ".ghostap", "workflow_scripts")
         os.makedirs(script_dir, exist_ok=True)
@@ -1796,7 +1884,7 @@ class WorkflowHandler(BaseEngineHandler):
             available_tools=available_tools,
             available_roles=available_roles,
             budget_total=DEFAULT_BUDGET_TOKENS,
-            budget_tokens=DEFAULT_BUDGET_TOKENS,
+            budget_tokens=budget_for_gen,
             orchestrator_agent=agent_type,
         )
 
@@ -1823,6 +1911,10 @@ class WorkflowHandler(BaseEngineHandler):
                     with open(script_path, "w", encoding="utf-8") as f:
                         f.write(script_content)
                     meta = extract_meta_from_script(script_content)
+                    # Record the budget used to generate this script
+                    if meta is None:
+                        meta = {}
+                    meta["budget_tokens"] = budget_for_gen
                     return script_path, meta, False
                 else:
                     logger.warning("Generated script failed validation: %s", errors)
@@ -2126,6 +2218,13 @@ class WorkflowHandler(BaseEngineHandler):
             })
         if budget_buttons:
             elements.extend(build_responsive_button_row(budget_buttons, mobile_force_vertical=True))
+
+        # Add budget generation notice
+        if selected_budget is not None:
+            elements.append({
+                "tag": "markdown",
+                "content": f"💡 **当前脚本按 {selected_budget:,} tokens 预算生成**",
+            })
 
         # Divider before buttons
         elements.append({"tag": "hr"})
