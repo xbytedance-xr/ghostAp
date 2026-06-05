@@ -1985,6 +1985,7 @@ class WorkflowHandler(BaseEngineHandler):
             WORKFLOW_SELECT_BUDGET,
             WORKFLOW_SELECT_TOOL,
         )
+        from ...card.render.budget import RenderBudget
         from ...card.ui_text import UI_TEXT
         from ...workflow_engine.constants import BUDGET_OPTIONS, DEFAULT_BUDGET_TOKENS
         from ...workflow_engine.tool_registry import get_available_tools
@@ -1995,204 +1996,353 @@ class WorkflowHandler(BaseEngineHandler):
         phases = (meta or {}).get("phases", [])
         tools = (meta or {}).get("tools", ["coco"])
         phase_tool_mapping: dict = (meta or {}).get("phase_tool_mapping", {})
+        workflow_refs = (meta or {}).get("workflow_refs", [])
+
+        # Pre-compute has_mismatch for action button state (used in both modes)
+        allowed_tools = set(selected_tools) if selected_tools else set(tools)
+        script_tools = set(tools)
+        has_mismatch = bool(script_tools - allowed_tools)
+
+        # --- Node budget pre-check ---
+        # Estimate element count and apply truncation if needed
+        estimated_nodes = 0
+        estimated_nodes += 5  # requirement, meta, hr, phases header, workflow refs
+        if phases:
+            estimated_nodes += len(phases)
+        if script_content:
+            estimated_nodes += 2  # script preview header + content
+        if selected_tools:
+            estimated_nodes += len(selected_tools)
+        estimated_nodes += 10  # budget buttons, action buttons, etc.
+
+        use_truncated_mode = estimated_nodes > RenderBudget.NODE_BUDGET * 0.8
 
         # Build elements
         elements: list[dict] = []
 
-        # Header info section
-        if is_fallback:
-            elements.append({
-                "tag": "note",
-                "elements": [
-                    {"tag": "plain_text", "content": "⚠️ AI 脚本生成失败，已使用默认模板。结果可能不完全匹配需求。"},
-                ],
-            })
-
-        # Requirement in quoted block for visual distinction
-        elements.append({
-            "tag": "markdown",
-            "content": f"**需求**:\n> {requirement[:200]}",
-        })
-        elements.append({
-            "tag": "markdown",
-            "content": (
-                f"**脚本名称**: `{script_name}`\n"
-                f"**描述**: {description}"
-            ),
-        })
-
-        # Divider
-        elements.append({"tag": "hr"})
-
-        # Phase list
-        if phases:
-            phase_lines = []
-            for i, p in enumerate(phases, 1):
-                title = p.get("title", f"Phase {i}")
-                detail = p.get("detail", "")
-                line = f"{i}. **{title}**"
-                if detail:
-                    line += f" — {detail}"
-                # Append tool tags from phase_tool_mapping
-                phase_tools = phase_tool_mapping.get(title) or phase_tool_mapping.get(str(i))
-                if phase_tools:
-                    tool_tags = " ".join(f"`{t}`" for t in phase_tools)
-                    line += f"  🔧 {tool_tags}"
-                phase_lines.append(line)
-            elements.append({
-                "tag": "markdown",
-                "content": "📋 **执行阶段**:\n" + "\n".join(phase_lines),
-            })
-        else:
-            elements.append({
-                "tag": "markdown",
-                "content": "📋 **执行阶段**: Planning → Execution",
-            })
-
-        # Workflow refs (sub-workflow calls) display
-        workflow_refs = (meta or {}).get("workflow_refs", [])
-        if workflow_refs:
-            ref_lines = []
-            for ref in workflow_refs:
-                if isinstance(ref, dict):
-                    ref_name = ref.get("name", "unknown")
-                    # Normalize: read "path" with legacy fallback to "script_path"
-                    ref_path = ref.get("path", ref.get("script_path", ""))
-                else:
-                    ref_name = str(ref)
-                    ref_path = ""
-                line = f"• `{ref_name}`"
-                if ref_path:
-                    line += f" ({ref_path})"
-                ref_lines.append(line)
-            elements.append({
-                "tag": "markdown",
-                "content": "🔗 **子 Workflow 引用**:\n" + "\n".join(ref_lines),
-            })
-
-        # Script preview section (collapsible code block)
-        if script_content:
-            from ...workflow_engine.renderer import render_script_preview
-
-            preview = render_script_preview(script_content)
-            if preview:
-                elements.append({"tag": "hr"})
+        if use_truncated_mode:
+            # --- Truncated overview mode ---
+            if is_fallback:
                 elements.append({
-                    "tag": "collapsible_panel",
-                    "expanded": False,
-                    "header": {
-                        "title": {
-                            "tag": "plain_text",
-                            "content": "📜 编排脚本预览 (点击展开)",
-                        },
-                    },
-                    "vertical_spacing": "8px",
+                    "tag": "note",
                     "elements": [
-                        {"tag": "markdown", "content": preview},
+                        {"tag": "plain_text", "content": "⚠️ AI 脚本生成失败，已使用默认模板。结果可能不完全匹配需求。"},
                     ],
                 })
 
-        # Tools section — distinguish between script-planned and allowed tools
-        tool_descriptions = get_available_tools()
-        all_tool_names = list(tool_descriptions.keys())
-        allowed_tools = set(selected_tools) if selected_tools else set(tools)
-        script_tools = set(tools)
-
-        # Check for mismatch
-        has_mismatch = bool(script_tools - allowed_tools)
-        if has_mismatch:
-            unmatched = sorted(script_tools - allowed_tools)
             elements.append({
-                "tag": "note",
-                "elements": [
+                "tag": "markdown",
+                "content": f"**需求**:\n> {requirement[:300]}{'...' if len(requirement) > 300 else ''}",
+            })
+
+            # Quick stats in column_set
+            phase_count = len(phases)
+            tool_count = len(selected_tools) if selected_tools else len(tools)
+            budget = selected_budget if selected_budget is not None else DEFAULT_BUDGET_TOKENS
+            budget_display = f"{budget // 1_000_000}M" if budget >= 1_000_000 else f"{budget // 1000}K"
+
+            elements.append({
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "columns": [
                     {
-                        "tag": "plain_text",
-                        "content": f"⚠️ 脚本计划使用的工具 {unmatched} 不在允许列表中。请添加这些工具或点击「重新生成编排」。",
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [
+                            {"tag": "markdown", "content": f"**{phase_count}**\n<font color='grey'>阶段数</font>"},
+                        ],
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [
+                            {"tag": "markdown", "content": f"**{tool_count}**\n<font color='grey'>工具数</font>"},
+                        ],
+                    },
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [
+                            {"tag": "markdown", "content": f"**{budget_display}**\n<font color='grey'>Token 预算</font>"},
+                        ],
                     },
                 ],
             })
 
-        # Section 1: Script planned tools (what the script intends to use)
-        planned_display = " | ".join(
-            f"`{t}`" for t in sorted(script_tools)
-        )
-        elements.append({
-            "tag": "markdown",
-            "content": f"📝 **脚本计划使用**: {planned_display}",
-        })
+            elements.append({"tag": "hr"})
 
-        # Section 2: Allowed tools (user-selected whitelist) — interactive
-        elements.append({
-            "tag": "markdown",
-            "content": "✅ **允许执行的工具**（点击切换，脚本只能使用勾选的工具）：",
-        })
+            # Collapsible panel with full details
+            full_details_elements = []
 
-        # Tier 1: Script-planned tools (prioritized)
-        recommended_tools = [t for t in all_tool_names if t in script_tools]
-        # Tier 2: Other available tools not in script
-        other_tools = [t for t in all_tool_names if t not in script_tools]
-
-        # Tier 1 buttons (script-planned)
-        tool_buttons = []
-        for t in recommended_tools:
-            is_selected = t in allowed_tools
-            btn_value = {
-                "action": WORKFLOW_SELECT_TOOL,
-                "tool_name": t,
-                "chat_id": chat_id,
-                "project_id": project_id,
-                "engine_session_key": engine_session_key,
-            }
-            tool_buttons.append({
-                "tag": "button",
-                "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{t}"},
-                "type": "primary" if is_selected else "default",
-                "value": btn_value,
-                "behaviors": [{"type": "callback", "value": btn_value}],
+            # Full requirement
+            full_details_elements.append({
+                "tag": "markdown",
+                "content": f"**完整需求**:\n> {requirement}",
             })
-        if tool_buttons:
-            elements.extend(build_responsive_button_row(tool_buttons, mobile_force_vertical=True))
 
-        # Tier 2: Other available tools (collapsible)
-        if other_tools:
-            other_display = " | ".join(
-                f"**[✓ `{t}`]**" if t in allowed_tools else f"`{t}`"
-                for t in other_tools
-            )
-            other_buttons = []
-            for t in other_tools:
-                is_selected = t in allowed_tools
-                btn_value = {
-                    "action": WORKFLOW_SELECT_TOOL,
-                    "tool_name": t,
-                    "chat_id": chat_id,
-                    "project_id": project_id,
-                    "engine_session_key": engine_session_key,
-                }
-                other_buttons.append({
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{t}"},
-                    "type": "primary" if is_selected else "default",
-                    "value": btn_value,
-                    "behaviors": [{"type": "callback", "value": btn_value}],
+            # Full phases
+            if phases:
+                phase_text = "**阶段列表**:\n"
+                for i, p in enumerate(phases, 1):
+                    title = p.get("title", p.get("name", f"Phase {i}"))
+                    phase_text += f"{i}. {title}\n"
+                full_details_elements.append({"tag": "markdown", "content": phase_text})
+
+            # Full tools
+            allowed_tools = set(selected_tools) if selected_tools else set(tools)
+            if allowed_tools:
+                tools_text = "**允许使用的工具**:\n"
+                for tool in sorted(allowed_tools):
+                    tools_text += f"- `{tool}`\n"
+                full_details_elements.append({"tag": "markdown", "content": tools_text})
+
+            # Full script preview
+            if script_content:
+                preview = script_content[:3000] + ("\n// ..." if len(script_content) > 3000 else "")
+                full_details_elements.append({
+                    "tag": "markdown",
+                    "content": f"**编排脚本**:\n```javascript\n{preview}\n```",
                 })
+
             elements.append({
                 "tag": "collapsible_panel",
-                "expanded": False,
                 "header": {
                     "title": {
                         "tag": "plain_text",
-                        "content": f"🔧 更多工具 ({len(other_tools)})",
+                        "content": "📂 查看完整详情",
                     },
+                    "template": "blue",
                 },
-                "vertical_spacing": "8px",
-                "elements": [
-                    {"tag": "markdown", "content": other_display},
-                    *build_responsive_button_row(other_buttons, mobile_force_vertical=True),
-                ],
+                "expanded": False,
+                "elements": full_details_elements,
             })
 
-        # Budget selection buttons
+            elements.append({"tag": "hr"})
+
+        else:
+            # --- Normal mode ---
+            # Header info section
+            if is_fallback:
+                elements.append({
+                    "tag": "note",
+                    "elements": [
+                        {"tag": "plain_text", "content": "⚠️ AI 脚本生成失败，已使用默认模板。结果可能不完全匹配需求。"},
+                    ],
+                })
+
+            # Requirement in quoted block for visual distinction
+            elements.append({
+                "tag": "markdown",
+                "content": f"**需求**:\n> {requirement[:200]}",
+            })
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    f"**脚本名称**: `{script_name}`\n"
+                    f"**描述**: {description}"
+                ),
+            })
+
+            # Divider
+            elements.append({"tag": "hr"})
+
+            # Phase list — collapsed by default
+            if phases:
+                phase_elements = []
+                for i, p in enumerate(phases, 1):
+                    title = p.get("title", p.get("name", f"Phase {i}"))
+                    detail = p.get("detail", "")
+                    line = f"**{i}. {title}**"
+                    if detail:
+                        line += f"\n   {detail[:100]}"
+                    # Append tool tags from phase_tool_mapping
+                    phase_tools = phase_tool_mapping.get(title) or phase_tool_mapping.get(str(i))
+                    if phase_tools:
+                        tool_tags = ", ".join(phase_tools)
+                        line += f"\n   工具: {tool_tags}"
+                    phase_elements.append({
+                        "tag": "markdown",
+                        "content": line,
+                    })
+                elements.append({
+                    "tag": "collapsible_panel",
+                    "header": {
+                        "title": {
+                            "tag": "plain_text",
+                            "content": f"📋 阶段列表 ({len(phases)} 个阶段)",
+                        },
+                        "template": "blue",
+                    },
+                    "expanded": False,  # Default collapsed
+                    "elements": phase_elements,
+                })
+            else:
+                elements.append({
+                    "tag": "markdown",
+                    "content": "📋 **执行阶段**: Planning → Execution",
+                })
+
+            # Workflow refs (sub-workflow calls) display
+            if workflow_refs:
+                ref_lines = []
+                for ref in workflow_refs:
+                    if isinstance(ref, dict):
+                        ref_name = ref.get("name", "unknown")
+                        # Normalize: read "path" with legacy fallback to "script_path"
+                        ref_path = ref.get("path", ref.get("script_path", ""))
+                    else:
+                        ref_name = str(ref)
+                        ref_path = ""
+                    line = f"• `{ref_name}`"
+                    if ref_path:
+                        line += f" ({ref_path})"
+                    ref_lines.append(line)
+                elements.append({
+                    "tag": "markdown",
+                    "content": "🔗 **子 Workflow 引用**:\n" + "\n".join(ref_lines),
+                })
+
+            # Script preview section (collapsible code block) — collapsed by default
+            if script_content:
+                from ...workflow_engine.renderer import render_script_preview
+
+                preview = render_script_preview(script_content)
+                if preview:
+                    elements.append({"tag": "hr"})
+                    elements.append({
+                        "tag": "collapsible_panel",
+                        "expanded": False,
+                        "header": {
+                            "title": {
+                                "tag": "plain_text",
+                                "content": "📜 编排脚本预览",
+                            },
+                            "template": "grey",
+                        },
+                        "vertical_spacing": "8px",
+                        "elements": [
+                            {"tag": "markdown", "content": preview},
+                        ],
+                    })
+
+            # Tools section — split into tier1 (recommended) and tier2 (other)
+            tool_descriptions = get_available_tools()
+            all_tool_names = list(tool_descriptions.keys())
+
+            # Check for mismatch (already computed at top level, just show warning)
+            if has_mismatch:
+                unmatched = sorted(script_tools - allowed_tools)
+                elements.append({
+                    "tag": "note",
+                    "elements": [
+                        {
+                            "tag": "plain_text",
+                            "content": f"⚠️ 脚本计划使用的工具 {unmatched} 不在允许列表中。请添加这些工具或点击「重新生成编排」。",
+                        },
+                    ],
+                })
+
+            # Section 1: Script planned tools (what the script intends to use)
+            planned_display = " | ".join(
+                f"`{t}`" for t in sorted(script_tools)
+            )
+            elements.append({
+                "tag": "markdown",
+                "content": f"📝 **脚本计划使用**: {planned_display}",
+            })
+
+            # Section 2: Allowed tools (user-selected whitelist) — interactive
+            elements.append({
+                "tag": "markdown",
+                "content": "✅ **允许执行的工具**（点击切换，脚本只能使用勾选的工具）：",
+            })
+
+            # Split into tier1 (recommended) and tier2 (other) based on recommended_order
+            recommended_order = ["coco", "claude", "codex", "aiden", "gemini", "traex", "ttadk"]
+            # Tier 1: recommended tools that are in selected_tools
+            tier1_tools = [t for t in recommended_order if t in allowed_tools]
+            # Tier 2: other selected tools not in recommended_order
+            tier2_tools = [t for t in sorted(allowed_tools) if t not in recommended_order]
+
+            # Tier 1 tools — always visible
+            if tier1_tools:
+                tools_text = ""
+                for tool in tier1_tools:
+                    desc = tool_descriptions.get(tool, tool)
+                    tools_text += f"- `{tool}`: {desc}\n"
+                elements.append({"tag": "markdown", "content": tools_text})
+
+                # Tier 1 interactive buttons
+                tool_buttons = []
+                for t in tier1_tools:
+                    is_selected = t in allowed_tools
+                    btn_value = {
+                        "action": WORKFLOW_SELECT_TOOL,
+                        "tool_name": t,
+                        "chat_id": chat_id,
+                        "project_id": project_id,
+                        "engine_session_key": engine_session_key,
+                    }
+                    tool_buttons.append({
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{t}"},
+                        "type": "primary" if is_selected else "default",
+                        "value": btn_value,
+                        "behaviors": [{"type": "callback", "value": btn_value}],
+                    })
+                if tool_buttons:
+                    elements.extend(build_responsive_button_row(tool_buttons, mobile_force_vertical=True))
+
+            # Tier 2 tools — behind "更多工具" collapsible panel
+            if tier2_tools:
+                tier2_elements = []
+                for tool in tier2_tools:
+                    desc = tool_descriptions.get(tool, tool)
+                    tier2_elements.append({
+                        "tag": "markdown",
+                        "content": f"- `{tool}`: {desc}",
+                    })
+
+                # Tier 2 interactive buttons
+                other_buttons = []
+                for t in tier2_tools:
+                    is_selected = t in allowed_tools
+                    btn_value = {
+                        "action": WORKFLOW_SELECT_TOOL,
+                        "tool_name": t,
+                        "chat_id": chat_id,
+                        "project_id": project_id,
+                        "engine_session_key": engine_session_key,
+                    }
+                    other_buttons.append({
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{t}"},
+                        "type": "primary" if is_selected else "default",
+                        "value": btn_value,
+                        "behaviors": [{"type": "callback", "value": btn_value}],
+                    })
+
+                elements.append({
+                    "tag": "collapsible_panel",
+                    "header": {
+                        "title": {
+                            "tag": "plain_text",
+                            "content": f"🔧 更多工具 ({len(tier2_tools)} 个)",
+                        },
+                        "template": "grey",
+                    },
+                    "expanded": False,
+                    "elements": [
+                        *tier2_elements,
+                        *build_responsive_button_row(other_buttons, mobile_force_vertical=True),
+                    ],
+                })
+
+        # Budget selection buttons (shown in both modes)
         budget = selected_budget if selected_budget is not None else DEFAULT_BUDGET_TOKENS
         budget_display = f"{budget // 1_000_000}M" if budget >= 1_000_000 else f"{budget // 1000}K"
         elements.append({
