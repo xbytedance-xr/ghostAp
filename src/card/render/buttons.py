@@ -170,7 +170,7 @@ if _invalid_keys:
         RuntimeWarning,
         stacklevel=2,
     )
-del _valid_keys, _invalid_keys
+del _invalid_keys
 
 # Regex to match leading emoji sequences (emoji presentation + optional VS16 + ZWJ sequences)
 _LEADING_EMOJI_RE = re.compile(
