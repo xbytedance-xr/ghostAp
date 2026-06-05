@@ -69,9 +69,10 @@ from .handlers import (
     SlockHandler,
     SpecHandler,
     SystemHandler,
-    TTADKModeHandler,
     TraexModeHandler,
+    TTADKModeHandler,
     Tui2acpModeHandler,
+    WorkflowHandler,
 )
 from .handlers.worktree import WorktreeHandler
 from .image_handler import FeishuImageHandler
@@ -80,7 +81,11 @@ from .renderers.deep_renderer import DeepRenderer
 from .renderers.spec_renderer import SpecRenderer
 from .renderers.worktree_renderer import WorktreeRenderer
 from .slash_command_parser import CommandMatch, SlashCommandParser
-from .ws_card_action_handler import CardActionInspector, classify_card_action_error
+from .ws_card_action_handler import (
+    CardActionInspector,
+    _extract_behavior_value,
+    classify_card_action_error,
+)
 from .ws_event_router import MessageIngressGuard, WSErrorAction, classify_ws_error
 from .ws_health import WSHealthMonitor
 from .ws_lifecycle import ObservedLarkWSClient
@@ -230,6 +235,9 @@ class FeishuWSClient:
         self._spec_reporter = SpecReporter()
         self._slock_engine_manager = SlockEngineManager()
 
+        from ..workflow_engine.manager import WorkflowEngineManager
+        self._workflow_engine_manager = WorkflowEngineManager()
+
         self._context_manager = ProjectContextManager()
 
         # Initialize lock managers before HandlerContext construction
@@ -274,6 +282,7 @@ class FeishuWSClient:
             spec_engine_manager=self._spec_engine_manager,
             spec_reporter=self._spec_reporter,
             slock_engine_manager=self._slock_engine_manager,
+            workflow_engine_manager=self._workflow_engine_manager,
             thread_manager=self._thread_manager,
 
             image_handler_factory=self._get_image_handler,
@@ -305,6 +314,7 @@ class FeishuWSClient:
         worktree_handler._renderer = WorktreeRenderer(worktree_handler)
         diagnostics_handler = DiagnosticsHandler(self._handler_ctx)
         slock_handler = SlockHandler(self._handler_ctx)
+        workflow_handler = WorkflowHandler(self._handler_ctx)
 
         # ------------------------------------------------------------------
         # Populate registry containers in context
@@ -325,6 +335,7 @@ class FeishuWSClient:
         self._worktree_handler = worktree_handler
         self._diagnostics_handler = diagnostics_handler
         self._slock_handler = slock_handler
+        self._workflow_handler = workflow_handler
 
         self._handler_ctx.managers.update({
             "coco": self._coco_manager,
@@ -352,6 +363,7 @@ class FeishuWSClient:
             "worktree": worktree_handler,
             "diagnostics": diagnostics_handler,
             "slock": slock_handler,
+            "workflow": workflow_handler,
         })
 
         # Subscribe to hard-timeout reclaim events on RepoLockManager
@@ -522,6 +534,12 @@ class FeishuWSClient:
             self._thread_manager.close()
         except Exception as e:
             logger.debug("清理thread_manager失败: %s", get_error_detail(e))
+
+        # Workflow engine cleanup
+        try:
+            self._workflow_engine_manager.cleanup_all()
+        except Exception as e:
+            logger.debug("清理workflow_engine_manager失败: %s", get_error_detail(e))
 
         try:
             self._scheduler.stop(wait=True, shutdown_executor=True)
@@ -698,6 +716,11 @@ class FeishuWSClient:
     def _is_spec_command(text: str) -> bool:
         """判断是否为 Spec Engine 命令。"""
         return SystemHandler.is_spec_command(text)
+
+    @staticmethod
+    def _is_workflow_command(text: str) -> bool:
+        """判断是否为 Workflow Engine 命令。"""
+        return SystemHandler.is_workflow_command(text)
 
     def _is_slock_command(self, text: str, chat_id: str = "") -> "bool | str":
         """判断是否为 Slock Engine 命令。"""
@@ -1081,7 +1104,7 @@ class FeishuWSClient:
         normalized = (text or "").strip()
         if not normalized:
             return None
-        if not (self._is_spec_command(normalized) or self._is_programming_entry_command(normalized)):
+        if not (self._is_spec_command(normalized) or self._is_programming_entry_command(normalized) or self._is_workflow_command(normalized)):
             return None
         queue_suffix = project_id or "default"
         return f"{chat_id}:control:{queue_suffix}"
@@ -1387,7 +1410,7 @@ class FeishuWSClient:
         if not thread_id or not self.settings.thread_programming_enabled:
             return False
         thread_ctx = self._thread_manager.get(thread_id)
-        return bool(thread_ctx and thread_ctx.mode in {"worktree", "deep", "spec"})
+        return bool(thread_ctx and thread_ctx.mode in {"worktree", "deep", "spec", "workflow"})
 
     def _get_mode_handler(self, mode):
         from ..mode import InteractionMode
@@ -1532,7 +1555,7 @@ class FeishuWSClient:
                     chat_type=chat_type,
                 )
                 return
-        if auto_enter_mode in {"worktree", "deep", "spec"}:
+        if auto_enter_mode in {"worktree", "deep", "spec", "workflow"}:
             if command_match is not None:
                 self._process_with_intent(
                     message_id,
@@ -1560,6 +1583,8 @@ class FeishuWSClient:
                 self._handle_worktree_execute(message_id, chat_id, text, project)
             elif auto_enter_mode == "deep":
                 self._start_deep_engine(message_id, chat_id, text, project)
+            elif auto_enter_mode == "workflow":
+                self._workflow_handler.handle_message(message_id, chat_id, text, project)
             else:
                 self._start_spec_engine(message_id, chat_id, text, project)
             return
@@ -1674,6 +1699,9 @@ class FeishuWSClient:
             "/stop_spec",
         }:
             return "spec"
+        from ..workflow_engine.commands import TOPIC_ENGINE_COMMANDS as _WF_CMDS
+        if command in _WF_CMDS:
+            return "workflow"
         return None
 
     @staticmethod
@@ -1682,6 +1710,7 @@ class FeishuWSClient:
             "worktree": "WT",
             "deep": "Deep",
             "spec": "Spec",
+            "workflow": "WF",
         }.get(engine, engine)
 
     def _reply_if_topic_engine_switch_blocked(
@@ -1694,7 +1723,7 @@ class FeishuWSClient:
         requested = self._requested_topic_engine(command_match)
         if not requested or requested == current_engine:
             return False
-        if current_engine not in {"worktree", "deep", "spec"}:
+        if current_engine not in {"worktree", "deep", "spec", "workflow"}:
             return False
         self._reply_text(
             message_id,
@@ -1886,7 +1915,14 @@ class FeishuWSClient:
         try:
             start_time = time.perf_counter()
             action = data.event.action
+            # Schema 2.0: prefer behaviors[0].value, fallback to legacy action.value
             value_raw = action.value
+            behaviors = getattr(action, "behaviors", None)
+            if isinstance(behaviors, list) and behaviors:
+                first_behavior = behaviors[0]
+                behavior_value = _extract_behavior_value(first_behavior)
+                if behavior_value is not None:
+                    value_raw = behavior_value
             operator = data.event.operator
             open_message_id = data.event.context.open_message_id
             open_chat_id = data.event.context.open_chat_id
