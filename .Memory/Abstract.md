@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-06-05
+- **AC18 behaviors-only payload 测试** — 新增 5 个单元测试覆盖 Schema 2.0 纯 behaviors 模式（无 legacy `action.value`），验证 object 和 Mapping 两种形式的 behavior 解析、dedup_fingerprint、ws_client 集成及边缘情况；15 passed → [详细记录](2026-06-05.md)
 ## 2026-06-04
 - **Slock 普通任务自动协作** — 普通任务消息默认复用 `/task assign` 无角色路径进入任务看板和多角色协作计划，修复讨论技能路由字段和计划步骤可见 callbacks；Slock 相关回归 150 passed，validate/diff-check 通过 → [详细记录](2026-06-04.md)
 - **Workflow 预算去重** — 移除 renderer 对 budget.used 的重复累加，预算记账收敛到 `_on_token_usage()` 单点；workflow 定向回归 21 passed → [详细记录](2026-06-04.md)
