@@ -17,10 +17,19 @@ from src.card.actions.dispatch import (
     MODE_FULL,
     REJECT_ACTION,
     SHOW_STATUS,
+    SHOW_WORKFLOW_MENU,
     SHOW_WORKTREE_MENU,
     SPEC_RESUME,
     SPEC_SKIP_RETRY,
     SPEC_STOP,
+    WORKFLOW_CANCEL,
+    WORKFLOW_CONFIRM_START,
+    WORKFLOW_CONFIRM_TOOLS,
+    WORKFLOW_LIST_TEMPLATES,
+    WORKFLOW_REGENERATE_SCRIPT,
+    WORKFLOW_SELECT_BUDGET,
+    WORKFLOW_SELECT_TOOL,
+    WORKFLOW_SHOW_HELP,
     WORKTREE_CANCEL,
     WORKTREE_CLEANUP,
     WORKTREE_CONFIRM_START,
@@ -91,6 +100,7 @@ logger = logging.getLogger(__name__)
 _DESTRUCTIVE_ACTIONS = frozenset({
     ENGINE_STOP, DEEP_STOP, SPEC_STOP,
     WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
+    WORKFLOW_CANCEL,
     APPROVE_ACTION,
 })
 
@@ -98,6 +108,7 @@ _DESTRUCTIVE_ACTIONS = frozenset({
 _STOP_INTENTS = frozenset({
     "intent.engine.stop", "intent.deep.stop",
     "intent.spec.stop", "intent.worktree.cancel",
+    WORKFLOW_CANCEL,
 })
 
 # Cancel intents (distinct from stop — these abort before execution starts)
@@ -119,6 +130,8 @@ _CONFIRM_TITLE_MAP: dict[str, str] = {
     ButtonIntent.WORKTREE_RETRY_ALL: "card_btn_confirm_retry_title",
     # Cancel intents — distinct from stop
     ButtonIntent.WORKTREE_CANCEL: "card_btn_confirm_cancel_title",
+    # Workflow
+    WORKFLOW_CANCEL: "workflow_btn_confirm_cancel_title",
     # Execute/start
     ButtonIntent.WORKTREE_CONFIRM_START: "card_btn_confirm_execute_title",
     # Merge/cleanup
@@ -131,7 +144,23 @@ _CONFIRM_TITLE_MAP: dict[str, str] = {
 
 # Import-time assertion: every key in _CONFIRM_TITLE_MAP must be a ButtonIntent
 # member value or a registered action_id, preventing silent fallback bugs.
-_valid_keys = {m.value for m in ButtonIntent} | set(INTENT_TO_ACTION_ID.values())
+# Workflow action_ids are handled directly by WorkflowHandler (not via CardSession
+# event pipeline), so they are not in INTENT_TO_ACTION_ID but are still valid keys.
+_valid_keys = (
+    {m.value for m in ButtonIntent}
+    | set(INTENT_TO_ACTION_ID.values())
+    | {
+        WORKFLOW_CANCEL,
+        WORKFLOW_CONFIRM_TOOLS,
+        WORKFLOW_CONFIRM_START,
+        WORKFLOW_SELECT_TOOL,
+        WORKFLOW_SELECT_BUDGET,
+        WORKFLOW_REGENERATE_SCRIPT,
+        SHOW_WORKFLOW_MENU,
+        WORKFLOW_LIST_TEMPLATES,
+        WORKFLOW_SHOW_HELP,
+    }
+)
 _invalid_keys = set(_CONFIRM_TITLE_MAP.keys()) - _valid_keys
 if _invalid_keys:
     import warnings
@@ -293,6 +322,9 @@ def render_buttons(state: CardState, budget: RenderBudget | None = None) -> list
 def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) -> list[dict]:
     """Internal: arrange buttons into layout elements."""
 
+    horizontal_spacing = budget.button_horizontal_spacing if budget and budget.button_horizontal_spacing else '8px'
+    vertical_spacing = budget.button_vertical_spacing if budget and budget.button_vertical_spacing else '8px'
+
     if len(buttons) == 1:
         # Single button: full width for mobile accessibility (Apple HIG)
         return [
@@ -300,6 +332,7 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
                 "tag": "column_set",
                 "flex_mode": "none",
                 "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
                 "columns": [
                     {
                         "tag": "column",
@@ -327,6 +360,7 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
                 "tag": "column_set",
                 "flex_mode": "bisect",
                 "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
                 "columns": columns,
             }
         ]
@@ -341,6 +375,8 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
                 "tag": "column_set",
                 "flex_mode": "none",
                 "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
+                "vertical_spacing": vertical_spacing,
                 "columns": [
                     {
                         "tag": "column",
@@ -369,6 +405,7 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
                 "tag": "column_set",
                 "flex_mode": "none",
                 "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
                 "columns": columns,
             }
         ]
@@ -382,6 +419,139 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
             "tag": "column_set",
             "flex_mode": "bisect" if len(pair) == 2 else "none",
             "background_style": "default",
+            "horizontal_spacing": horizontal_spacing,
+            "vertical_spacing": vertical_spacing,
+            "columns": [
+                {
+                    "tag": "column",
+                    "width": "weighted",
+                    "weight": 1,
+                    "elements": [btn],
+                }
+                for btn in pair
+            ],
+        })
+    return rows
+
+
+def build_responsive_button_row(
+    buttons: list[dict],
+    *,
+    mobile_force_vertical: bool = False,
+    horizontal_spacing: str = '8px',
+    vertical_spacing: str = '8px',
+) -> list[dict]:
+    """Build a responsive button row layout from a list of button dicts.
+
+    Replaces the deprecated ``{tag: 'action', actions: [...]}`` container with
+    Schema 2.0 compliant ``column_set`` layouts. Handles 1, 2, 3, and >3 buttons
+    with appropriate flex modes for mobile responsiveness.
+
+    Args:
+        buttons: List of button dicts (each must have tag='button' and
+            contain value/behaviors fields).
+        mobile_force_vertical: If True and there are >=3 buttons, stack them
+            vertically in a single column (full width each) for better mobile
+            experience. Defaults to False for backward compatibility.
+        horizontal_spacing: Horizontal spacing between columns in a row.
+            Defaults to '8px'.
+        vertical_spacing: Vertical spacing for multi-row button groups.
+            Defaults to '8px'.
+
+    Returns:
+        List of layout elements (column_set containers) ready to be appended
+        to a card's elements array.
+    """
+    if not buttons:
+        return []
+
+    if len(buttons) == 1:
+        return [
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": buttons,
+                    },
+                ],
+            }
+        ]
+
+    if len(buttons) == 2:
+        return [
+            {
+                "tag": "column_set",
+                "flex_mode": "bisect",
+                "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [btn],
+                    }
+                    for btn in buttons
+                ],
+            }
+        ]
+
+    # >=3 buttons: check for mobile force vertical stacking
+    if mobile_force_vertical and len(buttons) >= 3:
+        return [
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
+                "vertical_spacing": vertical_spacing,
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "vertical_align": "top",
+                        "elements": buttons,
+                    },
+                ],
+            }
+        ]
+
+    if len(buttons) == 3:
+        return [
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default",
+                "horizontal_spacing": horizontal_spacing,
+                "columns": [
+                    {
+                        "tag": "column",
+                        "width": "weighted",
+                        "weight": 1,
+                        "elements": [btn],
+                    }
+                    for btn in buttons
+                ],
+            }
+        ]
+
+    # >3 buttons: two-column rows
+    rows: list[dict] = []
+    for idx in range(0, len(buttons), 2):
+        pair = buttons[idx:idx + 2]
+        rows.append({
+            "tag": "column_set",
+            "flex_mode": "bisect" if len(pair) == 2 else "none",
+            "background_style": "default",
+            "horizontal_spacing": horizontal_spacing,
+            "vertical_spacing": vertical_spacing,
             "columns": [
                 {
                     "tag": "column",
