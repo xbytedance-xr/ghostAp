@@ -1187,12 +1187,14 @@ class WorkflowHandler(BaseEngineHandler):
         engine = self.ctx.workflow_engine_manager.get(chat_id, root_path)
 
         if not engine or not engine.project:
+            self._reply_workflow_error(message_id, "session_expired")
             return
 
         from ...workflow_engine.models import PendingConfirmation, WorkflowStatus
 
         valid_statuses = (WorkflowStatus.AWAITING_CONFIRM, WorkflowStatus.AWAITING_TOOL_SELECT)
         if engine.project.status not in valid_statuses:
+            self._reply_workflow_error(message_id, "invalid_state")
             return
 
         # --- Security validation (fail-closed) ---
@@ -1212,6 +1214,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         tool_name = value.get("tool_name", "")
         if not tool_name:
+            self._reply_workflow_error(message_id, "invalid_argument", detail="缺少 tool_name 参数")
             return
 
         # Initialize selected tools from meta if not yet set (only for AWAITING_CONFIRM)
@@ -1291,11 +1294,13 @@ class WorkflowHandler(BaseEngineHandler):
         engine = self.ctx.workflow_engine_manager.get(chat_id, root_path)
 
         if not engine or not engine.project:
+            self._reply_workflow_error(message_id, "session_expired")
             return
 
         from ...workflow_engine.models import PendingConfirmation, WorkflowStatus
 
         if engine.project.status != WorkflowStatus.AWAITING_CONFIRM:
+            self._reply_workflow_error(message_id, "invalid_state")
             return
 
         # --- Security validation (fail-closed) ---
@@ -1315,6 +1320,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         budget_tokens = value.get("budget_tokens")
         if not isinstance(budget_tokens, int) or budget_tokens <= 0:
+            self._reply_workflow_error(message_id, "invalid_argument", detail="budget_tokens 必须是正整数")
             return
 
         if engine.project.pending is None:
@@ -1595,7 +1601,7 @@ class WorkflowHandler(BaseEngineHandler):
             Tuple of (script_path, meta_dict_or_None, is_fallback).
         """
         from ...agent_session import close_session_safely, create_engine_session
-        from ...workflow_engine.constants import AGENT_CALL_TIMEOUT_S, DEFAULT_BUDGET_TOKENS, SCRIPT_GEN_AGENT_TYPE
+        from ...workflow_engine.constants import AGENT_CALL_TIMEOUT_S, DEFAULT_BUDGET_TOKENS, DEFAULT_ORCHESTRATOR_AGENT, SCRIPT_GEN_AGENT_TYPE
         from ...workflow_engine.script_gen import (
             build_script_gen_prompt,
             extract_meta_from_script,
@@ -1631,6 +1637,8 @@ class WorkflowHandler(BaseEngineHandler):
             available_tools=available_tools,
             available_roles=available_roles,
             budget_total=DEFAULT_BUDGET_TOKENS,
+            budget_tokens=DEFAULT_BUDGET_TOKENS,
+            orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
         )
 
         # Attempt AI generation via one-shot ACP session
