@@ -129,6 +129,7 @@ class SystemBuilder:
         quick_actions = [
             (UI_TEXT["system_menu_btn_deep_task"], "primary", "enter_deep_prompt"),
             (UI_TEXT["system_menu_btn_worktree"], "primary", "show_worktree_menu"),
+            (UI_TEXT["system_menu_btn_workflow"], "primary", "show_workflow_menu"),
             (UI_TEXT["system_menu_btn_acp"], "default", "show_acp_menu"),
             (UI_TEXT["system_menu_btn_ttadk"], "default", "show_ttadk_menu"),
             (UI_TEXT["system_menu_btn_status"], "default", "show_status"),
@@ -1311,6 +1312,11 @@ class SystemBuilder:
                 "action": "enter_deep_prompt",
             },
             {
+                "text": UI_TEXT["system_menu_btn_workflow"],
+                "type": "primary",
+                "action": "show_workflow_menu",
+            },
+            {
                 "text": UI_TEXT["system_menu_btn_status"],
                 "type": "default",
                 "action": "show_status",
@@ -1335,12 +1341,14 @@ class SystemBuilder:
         # Convert to actual card buttons
         card_buttons = []
         for btn in buttons:
+            btn_value = {"action": btn["action"], "project_id": project_id}
             card_buttons.append(
                 {
                     "tag": "button",
                     "text": {"tag": "plain_text", "content": btn["text"]},
                     "type": btn["type"],
-                    "value": {"action": btn["action"], "project_id": project_id},
+                    "value": btn_value,
+                    "behaviors": [{"type": "callback", "value": btn_value}],
                 }
             )
 
@@ -1481,6 +1489,10 @@ class SystemBuilder:
             (
                 UI_TEXT["system_help_section_worktree"],
                 UI_TEXT["system_help_section_worktree_body"]
+            ),
+            (
+                UI_TEXT["system_help_section_workflow"],
+                UI_TEXT["system_help_section_workflow_body"]
             ),
             (
                 UI_TEXT["system_help_section_slock"],
