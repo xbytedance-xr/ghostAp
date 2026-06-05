@@ -782,6 +782,16 @@ class WorkflowHandler(BaseEngineHandler):
         )
         gen_msg_id = self.send_card_to_chat(chat_id, gen_card)
 
+        # Create engine first so we can access pending.orchestrator_agent for script generation
+        engine_name = self.get_engine_name(
+            chat_id, project_id=(project.project_id if project else None)
+        )
+        engine = self.ctx.workflow_engine_manager.get_or_create(
+            chat_id,
+            root_path,
+            engine_name=engine_name,
+        )
+
         parts = requirement.strip().split(None, 1)
         template_name = parts[0] if parts else ""
         templates = discover_templates(root_path)
@@ -823,23 +833,13 @@ class WorkflowHandler(BaseEngineHandler):
             else:
                 # Template load failed — fallback to AI
                 script_path, meta, is_fallback = self._generate_script_via_ai(
-                    requirement, root_path, selected_tools
+                    requirement, root_path, selected_tools, engine
                 )
         else:
             # AI generation path with selected tools
             script_path, meta, is_fallback = self._generate_script_via_ai(
-                requirement, root_path, selected_tools
+                requirement, root_path, selected_tools, engine
             )
-
-        # Store pending state in engine
-        engine_name = self.get_engine_name(
-            chat_id, project_id=(project.project_id if project else None)
-        )
-        engine = self.ctx.workflow_engine_manager.get_or_create(
-            chat_id,
-            root_path,
-            engine_name=engine_name,
-        )
         if engine.project:
             engine.project.status = WorkflowStatus.AWAITING_CONFIRM
             # Keep selected tools as the allow list; meta.tools is what script plans to use
@@ -1737,7 +1737,7 @@ class WorkflowHandler(BaseEngineHandler):
 
 
     def _generate_script_via_ai(
-        self, requirement: str, root_path: str, selected_tools: list[str] | None = None
+        self, requirement: str, root_path: str, selected_tools: list[str] | None = None, engine: Any = None
     ) -> tuple[str, dict[str, Any] | None, bool]:
         """Generate a workflow script via AI with fallback to simple generation.
 
@@ -1746,16 +1746,25 @@ class WorkflowHandler(BaseEngineHandler):
             root_path: Project root path.
             selected_tools: Optional list of tools selected by the user. If provided,
                 the script generator will be encouraged to use these tools.
+            engine: Optional workflow engine instance. If provided, the selected
+                orchestrator_agent from pending state will be used for script generation.
 
         Returns:
             Tuple of (script_path, meta_dict_or_None, is_fallback).
         """
         from ...agent_session import close_session_safely, create_engine_session
-        from ...workflow_engine.constants import AGENT_CALL_TIMEOUT_S, DEFAULT_BUDGET_TOKENS, DEFAULT_ORCHESTRATOR_AGENT, SCRIPT_GEN_AGENT_TYPE
+        from ...workflow_engine.constants import AGENT_CALL_TIMEOUT_S, DEFAULT_BUDGET_TOKENS, DEFAULT_ORCHESTRATOR_AGENT
         from ...workflow_engine.script_gen import (
             build_script_gen_prompt,
             extract_meta_from_script,
             validate_generated_script,
+        )
+
+        # Resolve agent type: use pending.orchestrator_agent if available, otherwise default
+        agent_type = (
+            engine.project.pending.orchestrator_agent
+            if engine and engine.project and engine.project.pending and engine.project.pending.orchestrator_agent
+            else DEFAULT_ORCHESTRATOR_AGENT
         )
 
         script_dir = os.path.join(root_path, ".ghostap", "workflow_scripts")
@@ -1788,14 +1797,14 @@ class WorkflowHandler(BaseEngineHandler):
             available_roles=available_roles,
             budget_total=DEFAULT_BUDGET_TOKENS,
             budget_tokens=DEFAULT_BUDGET_TOKENS,
-            orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
+            orchestrator_agent=agent_type,
         )
 
         # Attempt AI generation via one-shot ACP session
         session = None
         try:
             session = create_engine_session(
-                agent_type=SCRIPT_GEN_AGENT_TYPE,
+                agent_type=agent_type,
                 cwd=root_path,
                 thread_id="workflow_script_gen",
                 auto_approve=True,
