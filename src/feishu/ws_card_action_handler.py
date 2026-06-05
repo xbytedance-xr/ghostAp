@@ -4,9 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
+
+
+def _extract_behavior_value(behavior: Any) -> Any:
+    """Extract value from a behavior object, supporting both object and Mapping forms.
+
+    Handles both:
+    - Object form: getattr(behavior, "value", None)
+    - Mapping form: behavior.get("value") if isinstance(behavior, Mapping)
+    """
+    if isinstance(behavior, Mapping):
+        return behavior.get("value")
+    return getattr(behavior, "value", None)
 
 SYSTEM_CARD_ACTIONS = {
     "show_status",
@@ -67,6 +80,15 @@ SYSTEM_CARD_ACTIONS = {
     "spec_review_clear_items",
     "spec_restore_run",
     "show_spec_review_menu",
+    "workflow_confirm_start",
+    "workflow_cancel",
+    "workflow_select_tool",
+    "workflow_select_budget",
+    "workflow_confirm_tools",
+    "workflow_regenerate_script",
+    "show_workflow_menu",
+    "workflow_list_templates",
+    "workflow_show_help",
 }
 
 
@@ -96,7 +118,14 @@ class CardActionInspector:
 
     @classmethod
     def value_dict(cls, action: Any) -> dict[str, Any]:
+        # Schema 2.0: prefer behaviors[0].value, fallback to legacy action.value
         value_raw = getattr(action, "value", None)
+        behaviors = getattr(action, "behaviors", None)
+        if isinstance(behaviors, list) and behaviors:
+            first_behavior = behaviors[0]
+            behavior_value = getattr(first_behavior, "value", None)
+            if behavior_value is not None:
+                value_raw = behavior_value
         if isinstance(value_raw, dict):
             return value_raw
         if isinstance(value_raw, str):
@@ -122,7 +151,15 @@ class CardActionInspector:
 
     @classmethod
     def dedup_fingerprint(cls, action: Any) -> str:
-        payload: dict[str, Any] = {"value": cls._normalize_value(getattr(action, "value", None))}
+        # Schema 2.0: prefer behaviors[0].value, fallback to legacy action.value
+        value_raw = getattr(action, "value", None)
+        behaviors = getattr(action, "behaviors", None)
+        if isinstance(behaviors, list) and behaviors:
+            first_behavior = behaviors[0]
+            behavior_value = getattr(first_behavior, "value", None)
+            if behavior_value is not None:
+                value_raw = behavior_value
+        payload: dict[str, Any] = {"value": cls._normalize_value(value_raw)}
         for attr in ("option", "options", "form_value", "input_value"):
             extra = getattr(action, attr, None)
             if isinstance(extra, (str, int, float, bool, list, tuple, dict)):
