@@ -178,3 +178,136 @@ def test_value_dict_fallback_to_legacy_value():
     result = CardActionInspector.value_dict(action)
     assert result == {"action": "fallback_value"}, \
         "Should fallback to legacy action.value when no behaviors"
+
+
+def test_value_dict_behaviors_only_no_legacy_value():
+    """AC18: behaviors-only payload（无 legacy action.value）正确解析。
+    
+    Schema 2.0 回调只通过 behaviors[0].value 传递数据，
+    没有 legacy 的 action.value 字段。这种场景必须正确处理。
+    """
+    from src.feishu.ws_card_action_handler import CardActionInspector
+    
+    class MockBehavior:
+        def __init__(self, value):
+            self.value = value
+    
+    class MockAction:
+        def __init__(self, behaviors):
+            self.behaviors = behaviors
+            # 注意：没有 self.value 属性（模拟 Schema 2.0 纯 behaviors 模式）
+    
+    # 只有 behaviors，没有 legacy value
+    behavior = MockBehavior({
+        "action": "confirm_start",
+        "engine_session_key": "session_123",
+        "project_id": "proj_456",
+    })
+    action = MockAction(behaviors=[behavior])
+    
+    # 必须能正确解析，不能因为没有 value 属性而报错
+    result = CardActionInspector.value_dict(action)
+    assert result == {
+        "action": "confirm_start",
+        "engine_session_key": "session_123",
+        "project_id": "proj_456",
+    }
+    assert CardActionInspector.action_type(action) == "confirm_start"
+
+
+def test_value_dict_behaviors_only_dict_form():
+    """AC18: dict 形式的 behaviors-only payload 正确解析。"""
+    from src.feishu.ws_card_action_handler import CardActionInspector
+    
+    class MockAction:
+        def __init__(self, behaviors):
+            self.behaviors = behaviors
+            # 没有 self.value 属性
+    
+    # dict 形式的 behavior，没有 legacy value
+    action = MockAction(behaviors=[{
+        "type": "callback",
+        "value": {
+            "action": "select_tool",
+            "tool_name": "claude",
+            "engine_session_key": "session_789",
+        },
+    }])
+    
+    result = CardActionInspector.value_dict(action)
+    assert result == {
+        "action": "select_tool",
+        "tool_name": "claude",
+        "engine_session_key": "session_789",
+    }
+
+
+def test_dedup_fingerprint_behaviors_only():
+    """AC18: dedup_fingerprint 正确处理 behaviors-only payload。"""
+    from src.feishu.ws_card_action_handler import CardActionInspector
+    
+    class MockBehavior:
+        def __init__(self, value):
+            self.value = value
+    
+    class MockAction:
+        def __init__(self, behaviors, message_id="msg_123"):
+            self.behaviors = behaviors
+            self.message_id = message_id
+            # 没有 self.value 属性
+    
+    behavior = MockBehavior({"action": "test", "data": "value"})
+    action = MockAction(behaviors=[behavior], message_id="msg_123")
+    
+    fingerprint = CardActionInspector.dedup_fingerprint(action)
+    assert isinstance(fingerprint, str)
+    assert len(fingerprint) > 0
+    # 相同内容应该产生相同的 fingerprint
+    action2 = MockAction(behaviors=[behavior], message_id="msg_123")
+    assert CardActionInspector.dedup_fingerprint(action2) == fingerprint
+
+
+def test_ws_client_process_card_action_behaviors_only():
+    """AC18: ws_client._process_card_action_async 正确处理 behaviors-only payload。"""
+    from unittest.mock import MagicMock, patch
+    
+    from src.feishu.ws_client import FeishuWSClient
+    from src.feishu.ws_card_action_handler import _extract_behavior_value
+    
+    # 验证 _extract_behavior_value 被 ws_client 正确导入和使用
+    client = FeishuWSClient.__new__(FeishuWSClient)
+    client.ctx = MagicMock()
+    
+    # Mock a behavior dict (Mapping form) without legacy value
+    mock_action = MagicMock()
+    mock_action.behaviors = [{
+        "type": "callback",
+        "value": {"action": "test_action", "key": "value"},
+    }]
+    # 确保没有 legacy value
+    del mock_action.value
+    
+    # 测试 _extract_behavior_value 能正确处理
+    first_behavior = mock_action.behaviors[0]
+    value = _extract_behavior_value(first_behavior)
+    assert value == {"action": "test_action", "key": "value"}
+
+
+def test_extract_behavior_value_no_value_attribute():
+    """AC18: _extract_behavior_value 处理既没有 value 属性也没有 value key 的对象。"""
+    from src.feishu.ws_card_action_handler import _extract_behavior_value
+    
+    # 对象形式：没有 value 属性
+    class EmptyObject:
+        pass
+    
+    result = _extract_behavior_value(EmptyObject())
+    assert result is None
+    
+    # Mapping 形式：没有 value key
+    result = _extract_behavior_value({"type": "callback"})
+    assert result is None
+    
+    # Mapping 形式：value key 存在但为 None
+    result = _extract_behavior_value({"type": "callback", "value": None})
+    assert result is None
