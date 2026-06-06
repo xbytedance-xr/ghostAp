@@ -55,6 +55,21 @@ def _hr_element() -> dict[str, Any]:
     return {"tag": "hr"}
 
 
+def _collapsible_panel(
+    header: str,
+    elements: list[dict[str, Any]],
+    *,
+    collapsed: bool = True,
+) -> dict[str, Any]:
+    """Wrap elements in a Feishu collapsible_panel."""
+    return {
+        "tag": "collapsible_panel",
+        "header": header,
+        "elements": elements,
+        "collapsed": collapsed,
+    }
+
+
 def _column_set(columns: list[dict[str, Any]], *, flex_mode: str = "none") -> dict[str, Any]:
     """Create a column_set layout element."""
     return {
@@ -146,8 +161,21 @@ class WorkflowProgressRenderer:
 
         Returns a dict with 'header' and 'elements' suitable for
         Feishu Interactive Card v2.
+
+        Layout (top → bottom):
+          1. Current execution summary (active phase / agent / tool / last-change time).
+          2. Overall progress bar.
+          3. Phase tree (collapsed-style detail).
+          4. Budget section.
+          5. Metrics footer.
         """
         elements: list[dict[str, Any]] = []
+
+        # -- Current execution summary section (top) --
+        summary = self._render_summary_section()
+        if summary is not None:
+            elements.append(summary)
+            elements.append(_hr_element())
 
         # -- Progress bar section --
         elements.append(self._render_progress_bar_section())
@@ -169,6 +197,81 @@ class WorkflowProgressRenderer:
             "header": self._render_header(),
             "elements": elements,
         }
+
+    def _render_summary_section(self) -> dict[str, Any] | None:
+        """Render a compact "当前执行中" summary block.
+
+        Returns a markdown element describing the active phase, active
+        agent, active tool, and last change timestamp. Returns None when
+        the workflow has not started yet and there is nothing to report.
+        """
+        # Find a running agent first; fall back to the most-recently changed
+        # agent across all phases.
+        running_agent: Any = None
+        latest_agent: Any = None
+        latest_phase: PhaseProgress | None = None
+        latest_changed_at: float | None = None
+
+        for phase in self._project.phases:
+            for agent in phase.agents:
+                if agent.status == AgentStatus.RUNNING and running_agent is None:
+                    running_agent = agent
+                    latest_phase = phase
+                # Track most recently changed agent
+                changed_at = (
+                    getattr(agent, "finished_at", None)
+                    or getattr(agent, "started_at", None)
+                    or 0.0
+                )
+                if latest_changed_at is None or changed_at > latest_changed_at:
+                    latest_agent = agent
+                    latest_changed_at = changed_at
+                    if running_agent is None:
+                        latest_phase = phase
+
+        active_agent = running_agent or latest_agent
+        if active_agent is None and not self._project.phases:
+            # Nothing meaningful to summarise — let the progress bar stand alone.
+            return None
+
+        # Compose the summary lines
+        lines: list[str] = []
+
+        # Phase
+        phase_title = latest_phase.title if latest_phase is not None else "(暂无阶段)"
+        phase_idx = (
+            self._project.phases.index(latest_phase) + 1
+            if latest_phase in self._project.phases
+            else "—"
+        )
+        lines.append(f"📌 **当前阶段:** Phase {phase_idx} · {phase_title}")
+
+        # Active agent
+        if active_agent is not None:
+            agent_label = active_agent.label or "agent"
+            agent_status_icon = STATUS_ICONS.get(active_agent.status, "⏳")
+            lines.append(f"🤖 **当前 Agent:** {agent_status_icon} {agent_label}")
+            if active_agent.tool:
+                lines.append(f"🛠 **正在使用:** `{active_agent.tool}`")
+            else:
+                lines.append("🛠 **正在使用:** (未指定工具)")
+        else:
+            lines.append("🤖 **当前 Agent:** (尚未派发)")
+            lines.append("🛠 **正在使用:** —")
+
+        # Last-change time
+        if latest_changed_at and latest_changed_at > 0:
+            from datetime import datetime  # local import — keeps module import lean
+
+            try:
+                ts = datetime.fromtimestamp(latest_changed_at).strftime("%H:%M:%S")
+            except (OSError, OverflowError, ValueError):
+                ts = "—"
+            lines.append(f"🕒 **最近变更:** {ts}")
+        else:
+            lines.append("🕒 **最近变更:** —")
+
+        return _md_element("**当前执行中**\n" + "\n".join(lines))
 
     def render_compact_status(self) -> str:
         """One-line text summary of workflow status.
@@ -219,17 +322,17 @@ class WorkflowProgressRenderer:
         }
 
     def _render_progress_bar_section(self) -> dict[str, Any]:
-        """Render overall progress with Unicode block progress bar."""
+        """Render overall progress as compact "进度 M/N · Z%" line + bar."""
         metrics = self._project.metrics
         completed = metrics.completed_agents
         total = max(metrics.total_agents, 1)
         ratio = completed / total
         pct = _pct(completed, total)
         bar = _unicode_progress_bar(ratio)
-        return _md_element(f"✅ {completed}/{total} ({pct}) {bar}")
+        return _md_element(f"进度 {completed}/{total} · {pct}\n{bar}")
 
     def _render_phase_section(self, idx: int, phase: PhaseProgress) -> list[dict[str, Any]]:
-        """Render a single phase as compact single-column markdown (mobile-friendly)."""
+        """Render a phase with agents grouped by status into collapsible panels."""
         elements: list[dict[str, Any]] = []
 
         # Phase header
@@ -243,40 +346,65 @@ class WorkflowProgressRenderer:
             _md_element(f"**{phase_status} Phase {idx + 1}: {phase.title}**{duration}")
         )
 
-        # Agent list as compact single-column lines
+        # Group agents by status buckets
         agents = phase.agents
-        display_agents = self._paginate_agents(agents)
+        if not agents:
+            return elements
 
-        if display_agents:
+        buckets: dict[str, list[AgentProgress]] = {
+            "RUNNING": [],
+            "FAILED": [],
+            "DONE": [],
+            "CACHED": [],
+            "PENDING": [],
+        }
+        for agent in agents:
+            key = agent.status.value if hasattr(agent.status, "value") else str(agent.status)
+            if key in buckets:
+                buckets[key].append(agent)
+            else:
+                buckets["PENDING"].append(agent)
+
+        # Render status groups as collapsible panels (RUNNING expanded, others collapsed)
+        display_order = [
+            ("RUNNING", "执行中", False),
+            ("FAILED", "失败", False),
+            ("DONE", "已完成", True),
+            ("CACHED", "缓存", True),
+            ("PENDING", "待执行", True),
+        ]
+        for key, label, collapsed in display_order:
+            group = buckets[key]
+            if not group:
+                continue
             lines: list[str] = []
-            for agent in display_agents:
-                icon = STATUS_ICONS.get(agent.status, "\u23f3")
+            for agent in group:
                 tool_badge = f"`{agent.tool}`" if agent.tool else ""
-                label = agent.label or "agent"
-                dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
-                dur_suffix = f" {dur}" if dur else ""
-
+                display_label = agent.label or "agent"
                 if agent.status == AgentStatus.RUNNING:
-                    lines.append(f"{icon} {label} {tool_badge} 执行中…")
+                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} 执行中…")
                 elif agent.error:
                     safe_err = _strip_internal_details(agent.error[:60])
-                    lines.append(f"{icon} {label} {tool_badge}{dur_suffix} — {safe_err}")
+                    dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
+                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur} — {safe_err}")
                 else:
-                    lines.append(f"{icon} {label} {tool_badge}{dur_suffix}")
+                    dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
+                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur}")
+            panel = _collapsible_panel(
+                f"{label} ({len(group)})",
+                [_md_element("\n".join(lines))],
+                collapsed=collapsed,
+            )
+            elements.append(panel)
 
-            elements.append(_md_element("\n".join(lines)))
-
-            # Pagination notice
-            if len(agents) > _PHASE_AGENT_DISPLAY_LIMIT:
-                hidden = len(agents) - len(display_agents)
-                elements.append(
-                    _md_element(f"*... +{hidden} agents*")
-                )
+        if len(agents) > _PHASE_AGENT_DISPLAY_LIMIT:
+            hidden = len(agents) - _PHASE_AGENT_DISPLAY_LIMIT
+            elements.append(_md_element(f"... 另有 {hidden} 个 agents"))
 
         return elements
 
     def _render_budget_section(self) -> dict[str, Any]:
-        """Render token budget with Unicode progress bar and usage warning markers."""
+        """Render token budget as compact "预算 X/Y · Z%" line + bar."""
         budget = self._project.budget
         used_str = _format_tokens(budget.used)
         total_str = _format_tokens(budget.total)
@@ -285,16 +413,21 @@ class WorkflowProgressRenderer:
         pct = _pct(budget.used, total)
         bar = _unicode_progress_bar(ratio)
 
-        # Add warning markers based on usage percentage
         pct_value = min(ratio * 100, 100)
         if pct_value > 80:
-            warning = " 🔴 "
+            warning = " 🔴"
         elif pct_value >= 50:
-            warning = " ⚠️ "
+            warning = " ⚠️"
         else:
-            warning = " "
+            warning = ""
 
-        return _md_element(f"💰 {used_str}/{total_str} ({pct}){warning}{bar}")
+        lines = [f"预算 {used_str}/{total_str} · {pct}{warning}", bar]
+        if getattr(budget, "exceeded", False):
+            overage = _format_tokens(budget.used - budget.total)
+            lines.append(
+                f"已超出预算 {overage}，请追加预算或终止执行。"
+            )
+        return _md_element("\n".join(lines))
 
     def _render_metrics_footer(self) -> dict[str, Any]:
         """Render metrics footer: total agents, time elapsed, cached count."""

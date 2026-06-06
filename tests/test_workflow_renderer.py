@@ -129,7 +129,9 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         budget = renderer._render_budget_section()
 
         self.assertEqual(budget["tag"], "markdown")
-        self.assertIn("💰", budget["content"])
+        self.assertIn("预算", budget["content"])
+        self.assertIn("/", budget["content"])
+        self.assertIn("%", budget["content"])
 
     def test_render_compact_status_format(self):
         project = self._make_project()
@@ -152,6 +154,19 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         md_texts = [e["content"] for e in md_elements]
         has_pagination = any("agents" in t and "..." in t for t in md_texts)
         self.assertTrue(has_pagination, "Expected pagination notice for 25 agents")
+
+    def test_phase_section_uses_collapsible_panels(self):
+        """Phase rendering should use collapsible_panel grouped by agent status."""
+        project = self._make_project()
+        # Ensure at least one agent of each major status
+        phase = project.phases[0] if project.phases else None
+        renderer = WorkflowProgressRenderer(project)
+        card = renderer.render_progress_card()
+
+        # Collect all elements (including nested inside collapsible_panel)
+        all_tags = [e.get("tag") for e in card["elements"]]
+        # Phase section now wraps agents in collapsible_panel, so it shouldn't have any top-level markdown for those
+        self.assertIn("collapsible_panel", all_tags)
 
     def test_header_template_reflects_status(self):
         project = self._make_project()
@@ -208,7 +223,11 @@ class TestConfirmCardStructure(unittest.TestCase):
         return card["body"]["elements"]
 
     def test_confirm_card_has_phases_list(self):
-        """Card should contain markdown listing all phase titles."""
+        """Card should contain markdown listing all phase titles.
+
+        Phases live inside a collapsible_panel (not a top-level markdown element), so we must
+        search inside collapsible_panel elements too.
+        """
         phases = [
             {"title": "Analysis", "detail": "Analyze codebase"},
             {"title": "Implementation", "detail": "Write code"},
@@ -218,16 +237,19 @@ class TestConfirmCardStructure(unittest.TestCase):
         card = self._build_card(meta=meta)
         elements = self._get_elements(card)
 
-        # Find markdown element with phase list
-        phase_md = [
-            e for e in elements
-            if e.get("tag") == "markdown" and "执行阶段" in e.get("content", "")
-        ]
-        self.assertEqual(len(phase_md), 1, "Expected exactly one phase list markdown element")
-        content = phase_md[0]["content"]
-        self.assertIn("Analysis", content)
-        self.assertIn("Implementation", content)
-        self.assertIn("Testing", content)
+        # Recursively collect markdown text from the card (including inside collapsible_panel)
+        def flatten_md(els: list[dict]) -> str:
+            out: list[str] = []
+            for e in els:
+                if e.get("tag") == "markdown":
+                    out.append(e.get("content", ""))
+                if e.get("tag") == "collapsible_panel":
+                    out.append(flatten_md(e.get("elements", [])))
+            return "\n".join(out)
+
+        all_text = flatten_md(elements)
+        for p in phases:
+            self.assertIn(p["title"], all_text)
 
     def test_confirm_card_has_tool_buttons(self):
         """Card should contain tool toggle buttons (in column_set for Schema 2.0 compliance)."""
