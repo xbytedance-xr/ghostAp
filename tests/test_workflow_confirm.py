@@ -213,9 +213,13 @@ const fs = require('fs');
 export default async function() { await agent("x"); }
 '''
         is_valid, messages = validate_generated_script(script)
-        # Dangerous patterns are now warnings, not errors — script remains valid
-        self.assertTrue(is_valid)
-        self.assertTrue(any("[warn]" in m.lower() or "warn" in m.lower() for m in messages))
+        # Dangerous patterns are now fail-closed blocking errors (not warnings).
+        # The validator emits "[capability] Forbidden pattern:" messages.
+        self.assertFalse(is_valid)
+        self.assertTrue(any(
+            "[capability]" in m or "Forbidden pattern" in m
+            for m in messages
+        ))
 
 
 class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
@@ -285,6 +289,7 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_select_agent(
             "msg_1b", "chat_1",
+            "proj_1",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_1"}
         )
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
@@ -411,6 +416,7 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         handler._get_root_path = MagicMock(return_value="/tmp/project")
         handler.handle_workflow_select_agent(
             "msg_1b", "chat_1",
+            "proj_1",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_1"}
         )
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
@@ -599,7 +605,11 @@ class TestConfirmCardContent(unittest.TestCase):
         self.assertNotIn("编排脚本预览", all_md)
 
     def test_phases_include_tool_tags(self):
-        """Phase lines should show tool tags when phase_tool_mapping is provided."""
+        """Phase lines should show tool tags when phase_tool_mapping is provided.
+
+        Phases now live inside a collapsible_panel, so we search recursively through
+        top-level and collapsible_panel markdown elements.
+        """
         handler = self._make_handler()
         meta = {
             "name": "review-wf",
@@ -624,20 +634,34 @@ class TestConfirmCardContent(unittest.TestCase):
         )
 
         elements = self._get_elements(card)
-        phase_md = ""
-        for el in elements:
-            if el.get("tag") == "markdown" and "执行阶段" in el.get("content", ""):
-                phase_md = el["content"]
-                break
 
-        self.assertIn("`coco`", phase_md)
-        self.assertIn("`claude`", phase_md)
-        # Tool tags should appear in the correct phase lines
-        lines = phase_md.split("\n")
-        analysis_line = next(l for l in lines if "Analysis" in l)
-        review_line = next(l for l in lines if "Review" in l)
-        self.assertIn("`coco`", analysis_line)
-        self.assertIn("`claude`", review_line)
+        def flatten_md(els: list[dict]) -> str:
+            out: list[str] = []
+            for e in els:
+                if e.get("tag") == "markdown":
+                    out.append(e.get("content", ""))
+                if e.get("tag") == "collapsible_panel":
+                    out.append(flatten_md(e.get("elements", [])))
+            return "\n".join(out)
+
+        all_md = flatten_md(elements)
+        self.assertIn("`coco`", all_md)
+        self.assertIn("`claude`", all_md)
+        # Tool tags should appear near the corresponding phase lines (following sub-line)
+        lines = all_md.split("\n")
+        # Find phase header index and check following lines for tool tag
+        def tool_after_phase_title(phase_title: str, tool_name: str) -> bool:
+            for i, l in enumerate(lines):
+                if phase_title in l:
+                    # Check next few lines for the tool label
+                    window_start = max(0, i)
+                    window_end = min(len(lines), i + 4)
+                    window = " ".join(lines[window_start:window_end])
+                    return f"`{tool_name}`" in window
+            return False
+
+        self.assertTrue(tool_after_phase_title("Analysis", "coco"))
+        self.assertTrue(tool_after_phase_title("Review", "claude"))
 
     def test_payload_script_preview_field(self):
         """WorkflowConfirmPayload should accept script_preview as NotRequired field."""
@@ -762,6 +786,7 @@ export default async function() {
         handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_select_agent(
             "msg_e2e_1b", "chat_e2e",
+            "proj_e2e",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_e2e"}
         )
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
@@ -889,6 +914,7 @@ export default async function() {
         handler._get_root_path = MagicMock(return_value="/tmp/project")
         handler.handle_workflow_select_agent(
             "msg_1b", "chat_e2e2",
+            "proj_e2e2",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": tool_select_session_key, "project_id": "proj_e2e2"}
         )
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
@@ -987,6 +1013,7 @@ class TestWorkflowFallbackPath(unittest.TestCase):
         handler._get_root_path = MagicMock(return_value="/tmp/project")
         handler.handle_workflow_select_agent(
             "msg_fb_1b", "chat_fb",
+            "proj_fb",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_fb"}
         )
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
@@ -1060,6 +1087,7 @@ class TestWorkflowFallbackPath(unittest.TestCase):
         handler._get_root_path = MagicMock(return_value="/tmp/project")
         handler.handle_workflow_select_agent(
             "msg_fb2_1b", "chat_fb2",
+            "proj_fb2",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_fb2"}
         )
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
@@ -1205,6 +1233,7 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
         handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_select_agent(
             "msg_1b", "chat_1",
+            "proj_1",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_1"}
         )
 
@@ -1370,8 +1399,17 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
         )
 
         # Should reject with message about selecting at least one tool
-        handler.reply_text.assert_called_once()
-        rejection_msg = handler.reply_text.call_args[0][1]
+        handler.reply_card.assert_called_once()
+        rejection_card = handler.reply_card.call_args[0][1]
+        # The error card has body > elements with markdown content
+        rejection_msg = ""
+        for el in rejection_card.get("body", {}).get("elements", []):
+            if isinstance(el, dict) and el.get("tag") == "note":
+                for inner in el.get("elements", []):
+                    if isinstance(inner, dict) and inner.get("tag") == "plain_text":
+                        rejection_msg += inner.get("content", "")
+            elif isinstance(el, dict) and el.get("tag") == "markdown":
+                rejection_msg += el.get("content", "")
         self.assertIn("至少选择一个工具", rejection_msg)
         # State should remain AWAITING_TOOL_SELECT
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
@@ -1712,26 +1750,38 @@ class TestConfirmCardToolDistinction(unittest.TestCase):
         return body.get("elements", card.get("elements", []))
 
     def _extract_all_text(self, card: dict) -> str:
-        """Extract all text content from card elements."""
-        elements = self._get_elements(card)
-        all_text = ""
-        for el in elements:
-            if el.get("tag") == "markdown":
-                all_text += " " + el.get("content", "")
-            elif el.get("tag") == "note":
-                for sub in el.get("elements", []):
-                    all_text += " " + sub.get("content", "")
-            elif el.get("tag") == "collapsible_panel":
-                for inner in el.get("elements", []):
-                    if inner.get("tag") == "markdown":
-                        all_text += " " + inner.get("content", "")
-        return all_text
+        """Extract all text content from card elements, including button labels."""
+
+        def _extract(element: dict) -> str:
+            tag = element.get("tag")
+            if tag == "markdown":
+                return " " + element.get("content", "")
+            if tag == "plain_text":
+                return " " + element.get("content", "")
+            if tag == "button":
+                text = element.get("text", {})
+                if isinstance(text, dict):
+                    return " " + text.get("content", "")
+                return ""
+            # Recurse into any container element that has an "elements" list
+            child_text = ""
+            for sub in element.get("elements", []):
+                if isinstance(sub, dict):
+                    child_text += _extract(sub)
+            # Column sets nest columns which nest elements; make sure we cover both.
+            for column in element.get("columns", []):
+                if isinstance(column, dict):
+                    child_text += _extract(column)
+            return child_text
+
+        return "".join(_extract(el) for el in self._get_elements(card))
 
     def _extract_all_actions(self, card: dict) -> list:
-        """Extract all action buttons from card."""
+        """Extract all action buttons from card, including inside collapsible panels."""
         elements = self._get_elements(card)
         all_actions = []
-        for el in elements:
+
+        def _extract_from(el: dict) -> None:
             if el.get("tag") == "action":
                 for action in el.get("actions", []):
                     all_actions.append(action)
@@ -1740,6 +1790,15 @@ class TestConfirmCardToolDistinction(unittest.TestCase):
                     for col_el in col.get("elements", []):
                         if col_el.get("tag") == "button":
                             all_actions.append(col_el)
+            # Recurse into collapsible panels
+            if el.get("tag") == "collapsible_panel":
+                for sub in el.get("elements", []):
+                    if isinstance(sub, dict):
+                        _extract_from(sub)
+
+        for el in elements:
+            if isinstance(el, dict):
+                _extract_from(el)
         return all_actions
 
     def test_confirm_card_shows_script_vs_allowed_tools(self):
@@ -1796,10 +1855,13 @@ class TestConfirmCardToolDistinction(unittest.TestCase):
 
         all_text = self._extract_all_text(card)
 
-        # Should show mismatch warning
-        self.assertIn("不在允许列表中", all_text)
-        self.assertIn("codex", all_text)
-        # Should mention regenerate
+        # Should show mismatch warning with missing tools highlighted
+        self.assertIn("脚本需要这些工具但尚未启用", all_text)
+        self.assertIn("`codex`", all_text)
+        # Should mention both fill-in and back-to-tools paths
+        self.assertIn("一键补齐缺失工具", all_text)
+        self.assertIn("返回工具选择", all_text)
+        # Regenerate option also present
         self.assertIn("重新生成编排", all_text)
 
     def test_confirm_card_has_regenerate_button(self):
