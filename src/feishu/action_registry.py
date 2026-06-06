@@ -361,12 +361,24 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.WORKFLOW_SELECT_BUDGET,
     )
     client._register_action(
-        lambda mid, cid, pid, val: client._handle_workflow_select_agent(mid, cid, val),
+        lambda mid, cid, pid, val: client._handle_workflow_select_agent(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_SELECT_AGENT,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_regenerate_script(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_REGENERATE_SCRIPT,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_apply_budget_regenerate(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_APPLY_BUDGET_REGENERATE,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_fill_missing_tools(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_FILL_MISSING_TOOLS,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_back_to_tools(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_BACK_TO_TOOLS,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_list_templates(mid, cid, pid, val),
