@@ -45,9 +45,12 @@ _PHASE_COMPLETED_TAIL = 5
 # ---------------------------------------------------------------------------
 
 
-def _md_element(content: str) -> dict[str, Any]:
+def _md_element(content: str, *, text_align: str | None = None) -> dict[str, Any]:
     """Create a markdown text element."""
-    return {"tag": "markdown", "content": content}
+    element: dict[str, Any] = {"tag": "markdown", "content": content}
+    if text_align is not None:
+        element["text_align"] = text_align
+    return element
 
 
 def _hr_element() -> dict[str, Any]:
@@ -56,15 +59,24 @@ def _hr_element() -> dict[str, Any]:
 
 
 def _collapsible_panel(
-    header: str,
+    header: str | dict[str, Any],
     elements: list[dict[str, Any]],
     *,
     collapsed: bool = True,
+    template: str | None = None,
 ) -> dict[str, Any]:
     """Wrap elements in a Feishu collapsible_panel."""
+    if isinstance(header, str):
+        header_obj: dict[str, Any] = {
+            "title": {"tag": "plain_text", "content": header},
+        }
+        if template is not None:
+            header_obj["template"] = template
+    else:
+        header_obj = header
     return {
         "tag": "collapsible_panel",
-        "header": header,
+        "header": header_obj,
         "elements": elements,
         "collapsed": collapsed,
     }
@@ -79,14 +91,23 @@ def _column_set(columns: list[dict[str, Any]], *, flex_mode: str = "none") -> di
     }
 
 
-def _column(elements: list[dict[str, Any]], *, weight: int = 1, width: str = "weighted") -> dict[str, Any]:
+def _column(
+    elements: list[dict[str, Any]],
+    *,
+    weight: int = 1,
+    width: str = "weighted",
+    vertical_align: str | None = None,
+) -> dict[str, Any]:
     """Create a single column inside a column_set."""
-    return {
+    column: dict[str, Any] = {
         "tag": "column",
         "width": width,
         "weight": weight,
         "elements": elements,
     }
+    if vertical_align is not None:
+        column["vertical_align"] = vertical_align
+    return column
 
 
 def _pct(used: int, total: int) -> str:
@@ -342,15 +363,16 @@ class WorkflowProgressRenderer:
             if a.status in (AgentStatus.DONE, AgentStatus.CACHED)
         )
 
-        # Phase header with 已完成 M/N summary
+        # Phase header — row 1: title; row 2: completion count + duration
         phase_status = self._get_phase_status_icon(phase)
-        duration = ""
+        elements.append(_md_element(f"**{phase_status} Phase {idx + 1}: {phase.title}**"))
+
         if phase.started_at:
             elapsed = (phase.finished_at or time.time()) - phase.started_at
-            duration = f" ({_format_duration(elapsed)})"
-
-        header = f"**{phase_status} Phase {idx + 1}: {phase.title}** — 已完成 {completed_count}/{total_agents}{duration}"
-        elements.append(_md_element(header))
+            duration_text = _format_duration(elapsed)
+            elements.append(_md_element(f"已完成 {completed_count}/{total_agents} · 耗时 {duration_text}"))
+        else:
+            elements.append(_md_element(f"已完成 {completed_count}/{total_agents}"))
 
         if not agents:
             return elements
@@ -387,18 +409,28 @@ class WorkflowProgressRenderer:
                 hidden_cached = len(buckets["CACHED"]) - _PHASE_COMPLETED_TAIL
                 buckets["CACHED"] = buckets["CACHED"][-_PHASE_COMPLETED_TAIL:]
 
+        # Status → label + color mapping for collapsible_panel headers
+        status_meta: dict[str, tuple[str, str]] = {
+            "RUNNING": ("执行中", "blue"),
+            "FAILED": ("失败", "red"),
+            "DONE": ("已完成", "green"),
+            "CACHED": ("缓存", "turquoise"),
+            "PENDING": ("待执行", "grey"),
+        }
+
         # Render status groups as collapsible panels (RUNNING expanded, others collapsed)
         display_order = [
-            ("RUNNING", "执行中", False),
-            ("FAILED", "失败", False),
-            ("DONE", "已完成", True),
-            ("CACHED", "缓存", True),
-            ("PENDING", "待执行", True),
+            ("RUNNING", False),
+            ("FAILED", False),
+            ("DONE", True),
+            ("CACHED", True),
+            ("PENDING", True),
         ]
-        for key, label, collapsed in display_order:
+        for key, collapsed in display_order:
             group = buckets[key]
             if not group:
                 continue
+            label, color = status_meta[key]
             lines: list[str] = []
             for agent in group:
                 tool_badge = f"`{agent.tool}`" if agent.tool else ""
@@ -412,8 +444,12 @@ class WorkflowProgressRenderer:
                 else:
                     dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
                     lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur}")
+            header_obj: dict[str, Any] = {
+                "title": {"tag": "plain_text", "content": f"{label} ({len(group)})"},
+                "template": color,
+            }
             panel = _collapsible_panel(
-                f"{label} ({len(group)})",
+                header_obj,
                 [_md_element("\n".join(lines))],
                 collapsed=collapsed,
             )
@@ -459,21 +495,40 @@ class WorkflowProgressRenderer:
         return _md_element("\n".join(lines))
 
     def _render_metrics_footer(self) -> dict[str, Any]:
-        """Render metrics footer: total agents, time elapsed, cached count."""
+        """Render metrics footer as a 2-column stretch layout: Agents/Time · Cached/Failed."""
         metrics = self._project.metrics
         elapsed = time.time() - self._start_time
         elapsed_str = _format_duration(elapsed)
 
-        parts = [
-            f"Agents: {metrics.completed_agents}/{metrics.total_agents}",
-            f"Time: {elapsed_str}",
+        # Left column: Agents + Time
+        left_content = [
+            f"**Agents:** {metrics.completed_agents}/{metrics.total_agents}",
+            f"**Time:** {elapsed_str}",
         ]
+        # Right column: Cached + Failed
+        right_content = []
         if metrics.cached_agents > 0:
-            parts.append(f"Cached: {metrics.cached_agents}")
+            right_content.append(f"**Cached:** {metrics.cached_agents}")
         if metrics.failed_agents > 0:
-            parts.append(f"Failed: {metrics.failed_agents}")
+            right_content.append(f"**Failed:** {metrics.failed_agents}")
+        if not right_content:
+            right_content.append("**Cached:** 0")
 
-        return _md_element(" | ".join(parts))
+        return _column_set(
+            [
+                _column(
+                    [_md_element("\n".join(left_content), text_align="center")],
+                    weight=1,
+                    vertical_align="center",
+                ),
+                _column(
+                    [_md_element("\n".join(right_content), text_align="center")],
+                    weight=1,
+                    vertical_align="center",
+                ),
+            ],
+            flex_mode="stretch",
+        )
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -610,22 +665,26 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
 
     def _stat_column(value: str, label: str) -> dict[str, Any]:
         """Create a single stat column with large number + description."""
-        return _column([
-            _md_element(f"**{value}**"),
-            _md_element(f"<font color='grey'>{label}</font>"),
-        ], weight=1)
+        return _column(
+            [
+                _md_element(f"**{value}**", text_align="center"),
+                _md_element(f"<font color='grey'>{label}</font>", text_align="center"),
+            ],
+            weight=1,
+            vertical_align="center",
+        )
 
     # Row 1: 总耗时 + 总 Token 消耗
     elements.append(_column_set([
         _stat_column(_format_duration(elapsed), "总耗时"),
         _stat_column(_format_tokens(budget.used), "总 Token 消耗"),
-    ], flex_mode="none"))
+    ], flex_mode="stretch"))
 
     # Row 2: 完成阶段数 + 成功率
     elements.append(_column_set([
         _stat_column(f"{completed_phases}/{total_phases}", "完成阶段数"),
         _stat_column(f"{success_rate}%", "成功率"),
-    ], flex_mode="none"))
+    ], flex_mode="stretch"))
 
     # Phase summary
     if project.phases:
