@@ -14,13 +14,35 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 SUBAGENT_ENCOURAGEMENT: str = (
-    "**Subagent Usage Encouragement**: Whenever possible, use subagent tools to "
-    "parallelize work. Subagents can independently handle research, implementation, "
-    "verification, and testing tasks, significantly improving efficiency and "
-    "convergence speed. Don't hesitate to spawn multiple subagents for different "
-    "parts of the task — they are designed to work concurrently and will report "
-    "back their results."
+    "**Subagent Usage Encouragement**: When a task can be decomposed, always "
+    "delegate to subagents rather than doing everything yourself. Each subagent "
+    "can further spawn its own subagents or sub-workflows. Subagents work in "
+    "parallel and can independently handle research, implementation, verification, and "
+    "testing tasks, significantly improving efficiency and convergence speed. Don't "
+    "hesitate to spawn multiple subagents for different parts of the task — "
+    "they are designed to work concurrently and will report back their results."
 )
+
+
+def _subagent_hint_enabled() -> bool:
+    """Return True if the subagent / workflow encouragement paragraph should be appended.
+
+    Reads the ``workflow_subagent_hint_enabled`` setting at call time so that
+    runtime configuration changes are honoured.  Falls back to ``True`` if the
+    settings module is unavailable (e.g. during unit tests that do not import
+    the full application stack).
+    """
+    try:
+        from src.config import get_settings
+
+        return bool(getattr(get_settings(), "workflow_subagent_hint_enabled", True))
+    except Exception:
+        return True
+
+
+def get_subagent_encouragement() -> str:
+    """Return the subagent encouragement paragraph, or "" if disabled via settings."""
+    return SUBAGENT_ENCOURAGEMENT if _subagent_hint_enabled() else ""
 
 # ---------------------------------------------------------------------------
 # Dangerous patterns that must not appear in generated scripts
@@ -55,9 +77,18 @@ _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
 # Prompt template for script generation
 # ---------------------------------------------------------------------------
 
+# Injected section sentinels. These markers are removed after the budget /
+# agent capability sections are spliced in. If a marker is missing for any
+# reason (template edits, tests that strip them), insertion falls back to
+# appending the sections at the end of the prompt instead of raising.
+_USER_REQUIREMENT_INSERT_POINT = (
+    "### SENTINEL: USER_REQUIREMENT_INSERT_POINT ###"
+)
+
 _SCRIPT_GEN_PROMPT_TEMPLATE = """\
 # Workflow Script Generation Task
 
+""" + _USER_REQUIREMENT_INSERT_POINT + """
 ## User Requirement
 
 {requirement}
@@ -160,8 +191,9 @@ const subResult = await workflow("sub-workflow-name", {{ arg1: "value" }});
 6. **Encourage subagent usage in prompts** - When writing agent prompts, tell the agent
    to spawn subagents for independent sub-problems. Include this guidance in prompts
    for complex tasks:
-   "When you encounter independent sub-problems, delegate them to subagents for
-   parallel execution. Each subagent should receive a clear, self-contained brief."
+   "When a task can be decomposed, always delegate to subagents rather than doing
+   everything yourself. Each subagent can further spawn its own subagents or
+   sub-workflows."
    This is critical for maximizing parallelism — agents that support subagents (e.g. coco)
    can internally fan out, reducing wall-clock time significantly.
 
@@ -348,17 +380,35 @@ def build_script_gen_prompt(
         budget_total=budget_total,
     )
 
-    # Insert budget and agent capability sections after the title, before user requirement
-    # The template starts with "# Workflow Script Generation Task\n\n## User Requirement\n"
-    insert_point = base_prompt.index("## User Requirement")
-    prompt = (
-        base_prompt[:insert_point]
-        + budget_section
-        + agent_capability_section
-        + base_prompt[insert_point:]
-    )
+    # Inject budget and agent capability sections using an explicit sentinel.
+    # Using str.find() instead of str.index() so we never raise ValueError.
+    # If the sentinel is missing (template edits, test mutations, etc.), we
+    # fall back to appending the sections at the end and log a debug note.
+    insert_idx = base_prompt.find(_USER_REQUIREMENT_INSERT_POINT)
+    injection = budget_section + agent_capability_section
 
-    return prompt + "\n\n" + SUBAGENT_ENCOURAGEMENT
+    if insert_idx >= 0:
+        # Splice the sections in and remove the sentinel line (plus its trailing
+        # newline) so it never reaches the AI.
+        sentinel_len = len(_USER_REQUIREMENT_INSERT_POINT)
+        end_of_sentinel = insert_idx + sentinel_len
+        # Absorb one trailing newline if present so we don't leave a blank line
+        # in the rendered prompt.
+        if end_of_sentinel < len(base_prompt) and base_prompt[end_of_sentinel] == "\n":
+            end_of_sentinel += 1
+        prompt = (
+            base_prompt[:insert_idx]
+            + injection
+            + base_prompt[end_of_sentinel:]
+        )
+    else:
+        logger.debug(
+            "script_gen: USER_REQUIREMENT_INSERT_POINT not found in template; "
+            "appending budget/agent sections at the end of the prompt."
+        )
+        prompt = base_prompt + "\n\n" + injection
+
+    return prompt + ("\n\n" + get_subagent_encouragement() if get_subagent_encouragement() else "")
 
 
 def validate_generated_script(script_content: str) -> tuple[bool, list[str]]:
@@ -370,14 +420,20 @@ def validate_generated_script(script_content: str) -> tuple[bool, list[str]]:
     - Balanced braces and brackets (rough syntax check)
     - At least one `agent(` call exists
     - Presence of `export default` entry function
-    - Dangerous patterns are reported as warnings (non-blocking)
+    - Dangerous patterns are reported as BLOCKING errors (fail-closed — not warnings)
+
+    The runtime sandbox provides defense-in-depth, but script-level rejection
+    is the primary security boundary for user-generated workflows. Templates
+    approved by an admin can be whitelisted via `WORKFLOW_ALLOWLIST_CAPABILITIES`
+    to preserve their intended behavior.
 
     Args:
         script_content: The raw JavaScript source code of the workflow script.
 
     Returns:
-        A tuple of (is_valid, list_of_errors). Warnings are prefixed with "[warn]".
-        is_valid is False only for structural errors, not for warnings.
+        A tuple of (is_valid, list_of_messages). Dangerous patterns are treated
+        as errors (prefix "[capability]"). `is_valid` is False if any structural
+        error OR any dangerous pattern is detected.
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -458,10 +514,14 @@ def validate_generated_script(script_content: str) -> tuple[bool, list[str]]:
             f"({'excess opens' if paren_balance > 0 else 'excess closes'})"
         )
 
-    # --- Check for dangerous patterns (warnings only — sandbox is the real guard) ---
+    # --- Check for dangerous patterns (FAIL-CLOSED — security boundary) ---
+    # Patterns in _DANGEROUS_PATTERNS are non-negotiable: filesystem, network,
+    # child_process, eval, Function, Worker, globalThis, Deno/Bun APIs, etc.
+    # They are reported as blocking errors, not warnings, because the runtime
+    # sandbox is defense-in-depth, not the primary enforcement mechanism.
     for pattern, description in _DANGEROUS_PATTERNS:
         if re.search(pattern, script_content):
-            warnings.append(f"[warn] Suspicious pattern: {description}")
+            errors.append(f"[capability] Forbidden pattern: {description}")
 
     is_valid = len(errors) == 0
     all_messages = errors + warnings
@@ -766,6 +826,10 @@ def generate_simple_script(requirement: str) -> str:
     Used as a fallback when no template matches. Creates a simple two-phase
     workflow: plan → execute.
     """
+    # Resolve subagent encouragement at call time so the runtime setting can
+    # suppress it without reimporting the module.
+    _enc = get_subagent_encouragement()
+
     # Escape the requirement for embedding in JS template literal
     escaped = requirement.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
 
@@ -802,7 +866,7 @@ Output a JSON object with:
 - "approach": brief description of the overall approach
 - "estimated_agents": how many agent calls you expect to need
 
-{SUBAGENT_ENCOURAGEMENT}`,
+{_enc}`,
     schema: {{ tasks: [], approach: "", estimated_agents: 0 }},
     label: "planner",
   }});
@@ -816,7 +880,7 @@ Output a JSON object with:
   if (tasks.length === 0) {{
     // Single-shot execution
     const result = await agent({{
-      prompt: `Complete this task fully:\\n\\n${{requirement}}\\n\\n{SUBAGENT_ENCOURAGEMENT}`,
+      prompt: `Complete this task fully:\\n\\n${{requirement}}\\n\\n{_enc}`,
       label: "executor",
     }});
     return result;
@@ -834,7 +898,7 @@ Your specific task: ${{task.description}}
 
 Complete this task fully and provide the result.
 
-{SUBAGENT_ENCOURAGEMENT}`,
+{_enc}`,
       label: `task-${{i + 1}}`,
     }}))
   );
@@ -851,7 +915,7 @@ ${{results.map((r, i) => `Task ${{i+1}}: ${{typeof r === "string" ? r.slice(0, 5
 
 Provide a concise final summary and any integration notes.
 
-{SUBAGENT_ENCOURAGEMENT}`,
+{_enc}`,
     label: "synthesizer",
   }});
 
