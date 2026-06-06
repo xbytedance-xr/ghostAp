@@ -335,22 +335,32 @@ class WorkflowProgressRenderer:
         """Render a phase with agents grouped by status into collapsible panels."""
         elements: list[dict[str, Any]] = []
 
-        # Phase header
+        agents = phase.agents
+        total_agents = len(agents)
+        completed_count = sum(
+            1 for a in agents
+            if a.status in (AgentStatus.DONE, AgentStatus.CACHED)
+        )
+
+        # Phase header with 已完成 M/N summary
         phase_status = self._get_phase_status_icon(phase)
         duration = ""
         if phase.started_at:
             elapsed = (phase.finished_at or time.time()) - phase.started_at
             duration = f" ({_format_duration(elapsed)})"
 
-        elements.append(
-            _md_element(f"**{phase_status} Phase {idx + 1}: {phase.title}**{duration}")
-        )
+        header = f"**{phase_status} Phase {idx + 1}: {phase.title}** — 已完成 {completed_count}/{total_agents}{duration}"
+        elements.append(_md_element(header))
 
-        # Group agents by status buckets
-        agents = phase.agents
         if not agents:
             return elements
 
+        # Paginate: for phases with more agents than a small-phase threshold,
+        # show all running/failed + the last N done/cached agents.
+        small_phase_threshold = 8
+        apply_pagination = total_agents > small_phase_threshold
+
+        # Group agents by status buckets
         buckets: dict[str, list[AgentProgress]] = {
             "RUNNING": [],
             "FAILED": [],
@@ -359,11 +369,23 @@ class WorkflowProgressRenderer:
             "PENDING": [],
         }
         for agent in agents:
-            key = agent.status.value if hasattr(agent.status, "value") else str(agent.status)
+            raw = agent.status.value if hasattr(agent.status, "value") else str(agent.status)
+            key = raw.upper()
             if key in buckets:
                 buckets[key].append(agent)
             else:
                 buckets["PENDING"].append(agent)
+
+        # Track hidden done/cached for the counter line (only when pagination applies)
+        hidden_done = 0
+        hidden_cached = 0
+        if apply_pagination:
+            if len(buckets["DONE"]) > _PHASE_COMPLETED_TAIL:
+                hidden_done = len(buckets["DONE"]) - _PHASE_COMPLETED_TAIL
+                buckets["DONE"] = buckets["DONE"][-_PHASE_COMPLETED_TAIL:]
+            if len(buckets["CACHED"]) > _PHASE_COMPLETED_TAIL:
+                hidden_cached = len(buckets["CACHED"]) - _PHASE_COMPLETED_TAIL
+                buckets["CACHED"] = buckets["CACHED"][-_PHASE_COMPLETED_TAIL:]
 
         # Render status groups as collapsible panels (RUNNING expanded, others collapsed)
         display_order = [
@@ -397,7 +419,14 @@ class WorkflowProgressRenderer:
             )
             elements.append(panel)
 
-        if len(agents) > _PHASE_AGENT_DISPLAY_LIMIT:
+        # Hidden done/cached counter line
+        if hidden_done or hidden_cached:
+            hidden_total = hidden_done + hidden_cached
+            elements.append(
+                _md_element(f"共 {hidden_total} 条已完成/缓存（已折叠）")
+            )
+
+        if not apply_pagination and len(agents) > _PHASE_AGENT_DISPLAY_LIMIT:
             hidden = len(agents) - _PHASE_AGENT_DISPLAY_LIMIT
             elements.append(_md_element(f"... 另有 {hidden} 个 agents"))
 
@@ -475,25 +504,6 @@ class WorkflowProgressRenderer:
         if has_failed:
             return "\u274c"
         return "\u23f3"
-
-    def _paginate_agents(self, agents: list[AgentProgress]) -> list[AgentProgress]:
-        """Apply pagination: if >20 agents, show active + last 5 completed."""
-        if len(agents) <= _PHASE_AGENT_DISPLAY_LIMIT:
-            return agents
-
-        # Split into active (PENDING/RUNNING) and completed (DONE/FAILED/CACHED)
-        active: list[AgentProgress] = []
-        completed: list[AgentProgress] = []
-
-        for agent in agents:
-            if agent.status in (AgentStatus.PENDING, AgentStatus.RUNNING):
-                active.append(agent)
-            else:
-                completed.append(agent)
-
-        # Show all active + last N completed
-        tail = completed[-_PHASE_COMPLETED_TAIL:] if completed else []
-        return active + tail
 
 
 # ---------------------------------------------------------------------------
