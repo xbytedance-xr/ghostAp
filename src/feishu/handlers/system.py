@@ -294,6 +294,11 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         return any(text_lower == cmd or text_lower.startswith(f"{cmd} ") for cmd in spec_prefixes)
 
     @staticmethod
+    def is_workflow_command(text: str) -> bool:
+        from ...workflow_engine.commands import is_workflow_command
+        return is_workflow_command(text)
+
+    @staticmethod
     def _looks_like_local_executable_path(first_word: str) -> bool:
         token = (first_word or "").strip()
         if token.startswith(("./", "../", "~/")):
@@ -1060,13 +1065,14 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if thread_id and current_mode == InteractionMode.SMART:
             thread_ctx = get_thread_manager().get(thread_id)
             if thread_ctx and thread_ctx.mode != "smart":
-                if thread_ctx.mode in {"worktree", "deep", "spec"}:
+                if thread_ctx.mode in {"worktree", "deep", "spec", "workflow"}:
                     removed = get_thread_manager().remove(thread_ctx.thread_root_id)
                     set_current_thread_id(None)
                     engine_name = {
                         "worktree": "WT",
                         "deep": "Deep",
                         "spec": "Spec",
+                        "workflow": "WF",
                     }.get(thread_ctx.mode, thread_ctx.mode)
                     if removed:
                         self.reply_text(

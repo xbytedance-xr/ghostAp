@@ -116,6 +116,8 @@ class MessageDispatcher:
             return
 
         if self.client._is_workflow_command(text):
+            # Workflow mode entry: /wf is the top-level orchestrator agent entry point
+            # (agent → tools → roles → script confirm → execute), no prior /coco needed
             self.client._add_reaction(message_id, EmojiReaction.on_smart_mode())
             self.client._add_reaction(message_id, EmojiReaction.on_processing())
             self.client._handle_workflow_command(message_id, chat_id, text, project)

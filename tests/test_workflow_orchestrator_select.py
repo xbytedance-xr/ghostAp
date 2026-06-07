@@ -229,8 +229,8 @@ def test_select_agent_uses_project_root_path_when_different_from_chat_dir():
     handler.ctx.workflow_engine_manager.get = MagicMock(side_effect=_manager_get_side_effect)
     handler._get_root_path = MagicMock(return_value=chat_working_dir)
 
-    # _resolve_project_from_id 通过 ctx.project_manager.get_project 实现
-    handler.ctx.project_manager.get_project = MagicMock(return_value=mock_project)
+    # _resolve_project_from_id 通过 ctx.project_manager.get_project_for_chat 实现
+    handler.ctx.project_manager.get_project_for_chat = MagicMock(return_value=mock_project)
 
     with patch("src.thread.get_current_sender_id", return_value="user_1"):
         handler.handle_workflow_select_agent(

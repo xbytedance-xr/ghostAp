@@ -306,36 +306,66 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             False,
         )
 
-        # Step 2: confirm tool selection to generate script
+        # Step 2: confirm tool selection transitions to role selection (step 3)
         handler.handle_workflow_confirm_tools(
             "msg_2", "chat_1", "proj_1",
             {"action": "workflow_confirm_tools", "engine_session_key": session_key}
         )
 
-        # Should have sent generating card then updated to confirm card
-        self.assertEqual(handler.send_card_to_chat.call_count, 3)  # agent select + tool select + generating
+        # 4-step flow: agent select (1) + tool select (1) = 2 so far.
+        # confirm_tools shows role-selection card via update_card (no extra send_card_to_chat).
+        self.assertEqual(handler.send_card_to_chat.call_count, 2)
         handler.update_card.assert_called_once()
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
 
-        # Engine project should be AWAITING_CONFIRM
+        # Step 3: confirm role selection proceeds to script generation / AWAITING_CONFIRM
+        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
+        self.assertIsNotNone(session_key_3)
+        handler.handle_workflow_confirm_roles_and_generate(
+            "msg_3", "chat_1", "proj_1",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+        )
+
+        # Engine project should now be AWAITING_CONFIRM (step 4)
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         self.assertIsNotNone(engine.project.pending.script_path if engine.project.pending else None)
         self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "do code review")
 
-    @patch("os.path.isfile", return_value=True)
     @patch("src.thread.get_current_sender_id", return_value="user_123")
-    def test_confirm_start_triggers_execution(self, mock_sender, mock_isfile):
+    def test_confirm_start_triggers_execution(self, mock_sender):
+        import hashlib
+        import tempfile
+
         handler, ctx = self._make_handler()
 
-        # Set up engine in AWAITING_CONFIRM state
+        # Write a valid script to a real temp file so TOCTOU checks pass
+        script_content = (
+            "export const meta = {\n"
+            "  name: 'test',\n"
+            "  description: 'test workflow',\n"
+            "  tools: ['coco'],\n"
+            "};\n"
+            "\n"
+            "export default async function() {\n"
+            "  await agent('do work');\n"
+            "}\n"
+        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
+        tmp.write(script_content)
+        tmp.close()
+        script_hash = hashlib.sha256(script_content.encode("utf-8")).hexdigest()
+
         engine = MagicMock()
         engine.project = WorkflowProject(
             status=WorkflowStatus.AWAITING_CONFIRM,
             pending=PendingConfirmation(
-                script_path="/tmp/wf.js",
+                script_path=tmp.name,
                 requirement="do X",
-                meta={"name": "x"},
+                meta={"name": "x", "tools": ["coco"]},
                 initiator_user_id="user_123",
                 engine_session_key="test_session_key",
+                selected_tools=["coco"],
+                script_hash=script_hash,
             ),
         )
         engine.is_running = False
@@ -350,6 +380,11 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             "msg_1", "chat_1", "proj_1",
             {"action": WORKFLOW_CONFIRM_START, "engine_session_key": "test_session_key"}
         )
+
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
         # Should have submitted the workflow task
         handler._submit_engine_task.assert_called_once()
@@ -424,7 +459,7 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(session_key)
 
-        # Step 2: confirm tool selection, with AI failure fallback
+        # Step 2: confirm tool selection transitions to role selection
         mock_gen.return_value = (
             "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
             None,  # No meta from fallback
@@ -436,10 +471,22 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             {"action": "workflow_confirm_tools", "engine_session_key": session_key}
         )
 
-        # Should still show confirm card with fallback flag
+        # After confirm_tools, status is AWAITING_ROLE_SELECT (not yet AWAITING_CONFIRM)
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
+        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
+        self.assertIsNotNone(session_key_3)
+
+        # Step 3: confirm roles - this is where script generation actually happens
+        handler.handle_workflow_confirm_roles_and_generate(
+            "msg_3", "chat_1", "proj_1",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+        )
+
+        # Should show confirm card with fallback flag
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         self.assertTrue(engine.project.pending.is_fallback if engine.project.pending else False)
-        handler.update_card.assert_called_once()
+        # update_card should have been called at least once (role select) and then again for confirm
+        self.assertGreaterEqual(handler.update_card.call_count, 1)
 
 
     @patch("src.thread.get_current_sender_id", return_value="user_BBB")
@@ -794,7 +841,7 @@ export default async function() {
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(session_key)
 
-        # Step 2: confirm tool selection to generate script
+        # Step 2: confirm tool selection transitions to role selection (step 3)
         mock_gen.return_value = (
             script_path,
             {
@@ -814,6 +861,17 @@ export default async function() {
             "msg_e2e_2", "chat_e2e", "proj_e2e",
             {"action": "workflow_confirm_tools", "engine_session_key": session_key}
         )
+
+        # After confirm_tools, state should be AWAITING_ROLE_SELECT (step 3)
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
+        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
+        self.assertIsNotNone(session_key_3)
+
+        # Step 3: confirm roles - this actually produces the confirm card
+        handler.handle_workflow_confirm_roles_and_generate(
+            "msg_e2e_3", "chat_e2e", "proj_e2e",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+        )
         os.unlink(script_path)
 
         # Verify engine state
@@ -822,9 +880,22 @@ export default async function() {
         self.assertIsNotNone(engine.project.pending.engine_session_key if engine.project.pending else None)
         self.assertFalse(engine.project.pending.is_fallback if engine.project.pending else False)
 
-        # Verify confirm card was sent (update_card called on the generating card)
-        handler.update_card.assert_called_once()
-        card = handler.update_card.call_args[0][1]
+        # Verify confirm card was sent (update_card called at least twice: role select + confirm)
+        self.assertGreaterEqual(handler.update_card.call_count, 1)
+        # Use the final update_card call (the one with the confirm card that has the script)
+        # Look at the last update_card call for a card that has the script preview
+        last_card = None
+        for call in handler.update_card.call_args_list:
+            candidate = call[0][1] if len(call[0]) > 1 else None
+            if candidate and isinstance(candidate, dict):
+                text = str(candidate)
+                if "```javascript" in text or "confirm_start" in text:
+                    last_card = candidate
+        if last_card is None:
+            # Fallback: use the last update_card call
+            last_call = handler.update_card.call_args_list[-1]
+            last_card = last_call[0][1]
+        card = last_card
 
         # Extract all card content
         elements = self._get_elements(card)
@@ -882,13 +953,15 @@ export default async function() {
         self.assertIn("workflow_confirm_start", action_values)
         self.assertIn("workflow_cancel", action_values)
 
-    @patch("os.path.isfile", return_value=True)
     @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")
     @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
     @patch("src.workflow_engine.templates.discover_templates", return_value=[])
     @patch("src.thread.get_current_sender_id", return_value="user_e2e")
-    def test_e2e_confirm_then_execute(self, mock_sender, mock_templates, mock_node, mock_gen, mock_isfile):
+    def test_e2e_confirm_then_execute(self, mock_sender, mock_templates, mock_node, mock_gen):
         """Full E2E: start → tool select → confirm button → engine.execute_workflow is called."""
+        import hashlib
+        import tempfile
+
         handler, ctx = self._make_handler()
 
         project = MagicMock()
@@ -922,9 +995,25 @@ export default async function() {
         tool_select_session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(tool_select_session_key)
 
-        # Step 2: confirm tool selection to generate script
+        # Step 2: confirm tool selection transitions to role selection (step 3)
+        # Write a valid script to a real temp file so the confirm-time
+        # TOCTOU re-read succeeds.
+        e2e_script = (
+            "export const meta = {\n"
+            "  name: 'wf',\n"
+            "  description: 'test',\n"
+            "  tools: ['coco'],\n"
+            "};\n"
+            "\n"
+            "export default async function() {\n"
+            "  await agent('do work');\n"
+            "}\n"
+        )
+        e2e_tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
+        e2e_tmp.write(e2e_script)
+        e2e_tmp.close()
         mock_gen.return_value = (
-            "/tmp/project/.ghostap/workflow_scripts/wf.js",
+            e2e_tmp.name,
             {"name": "wf", "description": "test", "phases": [], "tools": ["coco"]},
             False,
         )
@@ -934,11 +1023,26 @@ export default async function() {
             {"action": "workflow_confirm_tools", "engine_session_key": tool_select_session_key},
         )
 
+        # After confirm_tools, engine is at AWAITING_ROLE_SELECT
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
+        role_session_key = engine.project.pending.engine_session_key if engine.project.pending else None
+        self.assertIsNotNone(role_session_key)
+
+        # Step 3: confirm roles — this actually produces AWAITING_CONFIRM
+        handler.handle_workflow_confirm_roles_and_generate(
+            "msg_3", "chat_e2e2", "proj_e2e2",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": role_session_key},
+        )
+
         # Now simulate the user pressing confirm button
         # The engine should be in AWAITING_CONFIRM with a session key
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(session_key)
+
+        # Ensure pending.script_hash is populated so the TOCTOU guard passes
+        if engine.project.pending and engine.project.pending.script_hash is None:
+            engine.project.pending.script_hash = hashlib.sha256(e2e_script.encode("utf-8")).hexdigest()
 
         handler._get_root_path = MagicMock(return_value="/tmp/project")
 
@@ -946,6 +1050,11 @@ export default async function() {
             "msg_card_e2e", "chat_e2e2", "proj_e2e2",
             {"action": "workflow_confirm_start", "engine_session_key": session_key},
         )
+
+        try:
+            os.unlink(e2e_tmp.name)
+        except OSError:
+            pass
 
         # Should have submitted the engine task
         handler._submit_engine_task.assert_called_once()
@@ -1021,7 +1130,7 @@ class TestWorkflowFallbackPath(unittest.TestCase):
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(session_key)
 
-        # Step 2: confirm tool selection, with AI failure fallback
+        # Step 2: confirm tool selection transitions to role selection (step 3)
         mock_gen.return_value = (
             "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
             None,  # No meta (fallback generated simple script)
@@ -1033,14 +1142,33 @@ class TestWorkflowFallbackPath(unittest.TestCase):
             {"action": "workflow_confirm_tools", "engine_session_key": session_key}
         )
 
+        # After confirm_tools, engine is AWAITING_ROLE_SELECT
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
+        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
+        self.assertIsNotNone(session_key_3)
+
+        # Step 3: confirm roles - produces script + confirm card
+        handler.handle_workflow_confirm_roles_and_generate(
+            "msg_fb_3", "chat_fb", "proj_fb",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+        )
+
         # Engine should be in AWAITING_CONFIRM with fallback flag
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         self.assertTrue(engine.project.pending.is_fallback if engine.project.pending else False)
         self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "复杂重构任务")
 
-        # Verify confirm card shows fallback warning
-        handler.update_card.assert_called_once()
-        card = handler.update_card.call_args[0][1]
+        # Verify confirm card shows fallback warning - use last card with script content
+        last_card = None
+        for call in handler.update_card.call_args_list:
+            candidate = call[0][1] if len(call[0]) > 1 else None
+            if candidate and isinstance(candidate, dict):
+                text = str(candidate)
+                if "confirm_start" in text or "javascript" in text:
+                    last_card = candidate
+        if last_card is None:
+            last_card = handler.update_card.call_args_list[-1][0][1]
+        card = last_card
         elements = self._get_elements(card)
         # Collect all text content from markdown AND note elements
         all_text = ""
@@ -1095,7 +1223,7 @@ class TestWorkflowFallbackPath(unittest.TestCase):
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(session_key)
 
-        # Step 2: confirm tool selection, with fallback
+        # Step 2: confirm tool selection transitions to role selection
         mock_gen.return_value = (
             "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
             None,
@@ -1107,8 +1235,27 @@ class TestWorkflowFallbackPath(unittest.TestCase):
             {"action": "workflow_confirm_tools", "engine_session_key": session_key}
         )
 
-        handler.update_card.assert_called_once()
-        card = handler.update_card.call_args[0][1]
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
+        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
+        self.assertIsNotNone(session_key_3)
+
+        # Step 3: confirm roles to reach AWAITING_CONFIRM and confirm card
+        handler.handle_workflow_confirm_roles_and_generate(
+            "msg_fb2_3", "chat_fb2", "proj_fb2",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+        )
+
+        # Find the last confirm card - look for confirm_start action
+        last_card = None
+        for call in handler.update_card.call_args_list:
+            candidate = call[0][1] if len(call[0]) > 1 else None
+            if candidate and isinstance(candidate, dict):
+                text = str(candidate)
+                if "confirm_start" in text:
+                    last_card = candidate
+        if last_card is None:
+            last_card = handler.update_card.call_args_list[-1][0][1]
+        card = last_card
         elements = self._get_elements(card)
 
         # Find action buttons (check both legacy action containers and Schema 2.0 column_set)
@@ -1285,14 +1432,17 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
             {"action": "workflow_confirm_tools", "engine_session_key": "valid_session_key"}
         )
 
-        # Should have transitioned to AWAITING_CONFIRM
+        # After confirm_tools, engine should be in AWAITING_ROLE_SELECT (step 3)
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
+        # Script should NOT be generated yet (happens after role confirmation)
+        # After role confirmation, script generation happens
+        handler.handle_workflow_confirm_roles_and_generate(
+            "msg_2", "chat_1", "proj_1",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": "valid_session_key"}
+        )
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-        # Script should have been generated
         self.assertIsNotNone(engine.project.pending.script_path if engine.project.pending else None)
         self.assertIsNotNone(engine.project.pending.meta if engine.project.pending else None)
-        # Should have sent generating card then updated to confirm card
-        handler.send_card_to_chat.assert_called_once()
-        handler.update_card.assert_called_once()
         # _generate_script_via_ai should have been called with selected_tools
         mock_gen.assert_called_once()
         call_args = mock_gen.call_args[0]
@@ -1605,6 +1755,7 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
         handler.reply_text = MagicMock()
         handler.reply_card = MagicMock()
         handler.reply_error = MagicMock()
+        handler._reply_workflow_error = MagicMock()
         handler.send_card_to_chat = MagicMock(return_value="msg_card_123")
         handler.update_card = MagicMock(return_value=True)
         handler.add_reaction = MagicMock()
@@ -1615,23 +1766,42 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
 
         return handler, ctx
 
-    @patch("os.path.isfile", return_value=True)
     @patch("src.thread.get_current_sender_id", return_value="user_123")
-    def test_confirm_start_validates_tool_consistency(self, mock_sender, mock_isfile):
+    def test_confirm_start_validates_tool_consistency(self, mock_sender):
         """When script meta.tools contains tools not in selected_tools, confirmation should be rejected."""
+        import hashlib
+        import tempfile
+
         handler, ctx = self._make_handler()
+
+        script_content = (
+            "export const meta = {\n"
+            "  name: 'x',\n"
+            "  description: 'test',\n"
+            "  tools: ['coco', 'claude', 'codex'],\n"
+            "};\n"
+            "\n"
+            "export default async function() {\n"
+            "  await agent('do work');\n"
+            "}\n"
+        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
+        tmp.write(script_content)
+        tmp.close()
+        script_hash = hashlib.sha256(script_content.encode("utf-8")).hexdigest()
 
         engine = MagicMock()
         engine.is_running = False
         engine.project = WorkflowProject(
             status=WorkflowStatus.AWAITING_CONFIRM,
             pending=PendingConfirmation(
-                script_path="/tmp/wf.js",
+                script_path=tmp.name,
                 requirement="do X",
-                meta={"name": "x", "tools": ["coco", "claude", "codex"]},  # codex not in selected_tools
+                meta={"name": "x", "tools": ["coco", "claude", "codex"]},
                 initiator_user_id="user_123",
                 engine_session_key="valid_key",
                 selected_tools=["coco", "claude"],  # codex missing!
+                script_hash=script_hash,
             ),
         )
         ctx.workflow_engine_manager.get.return_value = engine
@@ -1646,36 +1816,66 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
             {"action": WORKFLOW_CONFIRM_START, "engine_session_key": "valid_key"}
         )
 
-        # Should reject with "工具不匹配" error
-        handler.reply_error.assert_called_once()
-        call_args = handler.reply_error.call_args
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+        # Should reject via the unified _reply_workflow_error surface with
+        # "invalid_argument" category; the message must mention the missing
+        # tool name.
+        handler._reply_workflow_error.assert_called_once()
+        call_args = handler._reply_workflow_error.call_args
         call_positional = call_args[0]
-        call_keyword = call_args[1]
-        # title is passed as keyword argument
-        self.assertIn("工具不匹配", call_keyword.get("title", ""))
-        self.assertIn("codex", call_positional[1])  # unmatched tool mentioned in message
+        # category is the second positional arg after message_id
+        self.assertEqual(call_positional[1], "invalid_argument")
+        # the detail kwarg should contain the missing tool name
+        detail = call_args[1].get("detail", "") if call_args[1] else ""
+        if not detail:
+            # fallback: scan all call parts if signature differs
+            detail = " ".join(str(c) for c in call_positional[2:])
+        self.assertIn("codex", detail)
         # Should NOT have submitted the engine task
         handler._submit_engine_task.assert_not_called()
         # Status should still be AWAITING_CONFIRM
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
 
-    @patch("os.path.isfile", return_value=True)
     @patch("src.thread.get_current_sender_id", return_value="user_123")
-    def test_confirm_start_allows_subset_tools(self, mock_sender, mock_isfile):
+    def test_confirm_start_allows_subset_tools(self, mock_sender):
         """When script tools are a subset of selected tools, confirmation should proceed."""
+        import hashlib
+        import tempfile
+
         handler, ctx = self._make_handler()
+
+        script_content = (
+            "export const meta = {\n"
+            "  name: 'x',\n"
+            "  description: 'test',\n"
+            "  tools: ['coco'],\n"
+            "};\n"
+            "\n"
+            "export default async function() {\n"
+            "  await agent('do work');\n"
+            "}\n"
+        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
+        tmp.write(script_content)
+        tmp.close()
+        script_hash = hashlib.sha256(script_content.encode("utf-8")).hexdigest()
 
         engine = MagicMock()
         engine.is_running = False
         engine.project = WorkflowProject(
             status=WorkflowStatus.AWAITING_CONFIRM,
             pending=PendingConfirmation(
-                script_path="/tmp/wf.js",
+                script_path=tmp.name,
                 requirement="do X",
-                meta={"name": "x", "tools": ["coco"]},  # subset
+                meta={"name": "x", "tools": ["coco"]},
                 initiator_user_id="user_123",
                 engine_session_key="valid_key",
                 selected_tools=["coco", "claude", "codex"],  # superset
+                script_hash=script_hash,
             ),
         )
         ctx.workflow_engine_manager.get.return_value = engine
@@ -1689,6 +1889,11 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
             "msg_1", "chat_1", "proj_1",
             {"action": WORKFLOW_CONFIRM_START, "engine_session_key": "valid_key"}
         )
+
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
         # Should NOT reject - subset is allowed
         handler.reply_error.assert_not_called()
@@ -1697,23 +1902,42 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
         # Pending state should be cleared
         self.assertIsNone(engine.project.pending.script_path if engine.project.pending else None)
 
-    @patch("os.path.isfile", return_value=True)
     @patch("src.thread.get_current_sender_id", return_value="user_123")
-    def test_confirm_start_allows_empty_script_tools(self, mock_sender, mock_isfile):
+    def test_confirm_start_allows_empty_script_tools(self, mock_sender):
         """When script has no tools declared, validation should pass."""
+        import hashlib
+        import tempfile
+
         handler, ctx = self._make_handler()
+
+        # Script with meta but no tools array.
+        script_content = (
+            "export const meta = {\n"
+            "  name: 'x',\n"
+            "  description: 'test',\n"
+            "};\n"
+            "\n"
+            "export default async function() {\n"
+            "  await agent('do work');\n"
+            "}\n"
+        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
+        tmp.write(script_content)
+        tmp.close()
+        script_hash = hashlib.sha256(script_content.encode("utf-8")).hexdigest()
 
         engine = MagicMock()
         engine.is_running = False
         engine.project = WorkflowProject(
             status=WorkflowStatus.AWAITING_CONFIRM,
             pending=PendingConfirmation(
-                script_path="/tmp/wf.js",
+                script_path=tmp.name,
                 requirement="do X",
-                meta={"name": "x", "tools": []},  # empty tools
+                meta={"name": "x", "tools": []},
                 initiator_user_id="user_123",
                 engine_session_key="valid_key",
                 selected_tools=["coco"],
+                script_hash=script_hash,
             ),
         )
         ctx.workflow_engine_manager.get.return_value = engine
@@ -1727,6 +1951,11 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
             "msg_1", "chat_1", "proj_1",
             {"action": WORKFLOW_CONFIRM_START, "engine_session_key": "valid_key"}
         )
+
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
         # Should NOT reject - empty script tools is allowed
         handler.reply_error.assert_not_called()

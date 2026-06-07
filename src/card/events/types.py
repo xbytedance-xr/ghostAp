@@ -50,6 +50,14 @@ class CardEventType(str, Enum):
     WORKTREE_CLEANUP = "worktree_cleanup"
     WORKTREE_MERGE = "worktree_merge"
     WORKTREE_COMPLETED_NO_CHANGE = "worktree_completed_no_change"
+    # Workflow engine
+    WORKFLOW_PROGRESS = "workflow_progress"
+    WORKFLOW_CONFIRM = "workflow_confirm"
+    WORKFLOW_PHASE = "workflow_phase"
+    WORKFLOW_AGENT_STARTED = "workflow_agent_started"
+    WORKFLOW_AGENT_DONE = "workflow_agent_done"
+    WORKFLOW_AGENT_FAILED = "workflow_agent_failed"
+    WORKFLOW_LOG = "workflow_log"
     # UI control
     MODE_TOGGLED = "mode_toggled"
     STOP_ESCALATED = "stop_escalated"

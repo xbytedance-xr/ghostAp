@@ -10,14 +10,15 @@ from .programming import (
     CodexModeHandler,
     GeminiModeHandler,
     ProgrammingModeHandler,
-    TTADKModeHandler,
     TraexModeHandler,
+    TTADKModeHandler,
     Tui2acpModeHandler,
 )
 from .project import ProjectHandler
 from .slock import SlockHandler
 from .spec import SpecHandler
 from .system import SystemHandler
+from .workflow import WorkflowHandler
 
 __all__ = [
     "BaseHandler",
@@ -36,4 +37,5 @@ __all__ = [
     "ProjectHandler",
     "SystemHandler",
     "DiagnosticsHandler",
+    "WorkflowHandler",
 ]

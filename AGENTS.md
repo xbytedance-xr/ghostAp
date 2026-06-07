@@ -81,8 +81,14 @@ Start from these modules instead of reading the whole tree:
   ACP-capable programming tools.
 - `src/ttadk/`: TTADK tool/model selection and startup strategy. `ttadk_*`
   agent types are CLI-bridge only; do not start ACP directly for them.
-- `src/deep_engine/`, `src/spec_engine/`, `src/worktree_engine/`: long-running
-  execution strategies.
+- `src/deep_engine/`, `src/spec_engine/`, `src/worktree_engine/`,
+  `src/workflow_engine/`: long-running execution strategies.
+  - `src/workflow_engine/`: JS-orchestrated multi-agent parallel execution.
+    Key modules: `commands.py` (SSOT command set), `engine.py` (bridge + runtime),
+    `executor.py` (per-agent-call session), `tool_registry.py` (dynamic discovery),
+    `script_gen.py` (prompt template + validation), `renderer.py` (Feishu card).
+    Requires Node.js >= `NODE_MIN_VERSION` (defined in `src/workflow_engine/constants.py`);
+    all user-facing "Node too old" messages derive from that constant.
 - `src/card/`: Feishu card builders, render pipeline, session orchestration, and
   delivery.
 - `src/project/`, `src/project_chat/`, `src/thread/`: project context, project
@@ -104,7 +110,7 @@ Start from these modules instead of reading the whole tree:
 
 GhostAP has two independent axes:
 
-- Execution strategies: Normal programming, Deep, Spec, and Worktree.
+- Execution strategies: Normal programming, Deep, Spec, Worktree, and Workflow.
 - Tool transport: ACP direct mode, shell CLI bridge mode, and TTADK CLI bridge.
 
 Keep these axes separate. A new programming feature should usually work across
@@ -117,7 +123,7 @@ State scoping is also a product contract:
   shell-like commands directly.
 - Normal tool entries such as `/coco`, `/codex`, `/aiden`, `/claude`, `/gemini`,
   and `/ttadk` set a persistent chat+project programming state until `/exit`.
-- Deep, Spec, and Worktree are engine strategies scoped to the Feishu
+- Deep, Spec, Worktree, and Workflow are engine strategies scoped to the Feishu
   topic/root thread; they must not replace chat+project programming state.
 - Shell-like text in SMART must remain shell execution, including commands such
   as `./restart.sh rr`, instead of being stolen by project-chat free text

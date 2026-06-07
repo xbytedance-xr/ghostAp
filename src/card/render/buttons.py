@@ -325,6 +325,37 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
     horizontal_spacing = budget.button_horizontal_spacing if budget and budget.button_horizontal_spacing else '8px'
     vertical_spacing = budget.button_vertical_spacing if budget and budget.button_vertical_spacing else '8px'
 
+    # Detect whether any button has a long label (>8 chars). Used as a
+    # conservative heuristic to force vertical stacking on narrower widths
+    # even when the caller did not set mobile_force_vertical=True.
+    def _label_length(b: dict) -> int:
+        text = b.get("text", {})
+        if isinstance(text, dict):
+            return len(text.get("content", ""))
+        return 0
+
+    has_long_label = any(_label_length(b) > 8 for b in buttons)
+
+    mobile_force_vertical = bool(budget.mobile_force_vertical) if budget else False
+
+    def _vertical_column(button: dict) -> dict:
+        return {
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [button],
+        }
+
+    def _vertical_column_set(column: dict) -> dict:
+        return {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "background_style": "default",
+            "horizontal_spacing": horizontal_spacing,
+            "vertical_spacing": vertical_spacing,
+            "columns": [column],
+        }
+
     if len(buttons) == 1:
         # Single button: full width for mobile accessibility (Apple HIG)
         return [
@@ -345,7 +376,15 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
         ]
 
     if len(buttons) == 2:
-        # Two buttons: equal split via bisect
+        # Two buttons: vertical stack when mobile_force_vertical=True, so
+        # long labels like "确认角色并生成脚本 →" stay readable on narrow
+        # screens and the tap target stays wide enough.
+        if mobile_force_vertical:
+            rows: list[dict] = []
+            for b in buttons:
+                rows.append(_vertical_column_set(_vertical_column(b)))
+            return rows
+
         columns = [
             {
                 "tag": "column",
@@ -365,11 +404,9 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
             }
         ]
 
-    # ≥3 buttons: check config for mobile force vertical.
-    # Feishu Schema 2.0 rejects the old V1 `action` container, so all button
-    # groups are expressed as column_set layouts.
-    mobile_force_vertical = budget.mobile_force_vertical if budget else False
-    if mobile_force_vertical and len(buttons) >= 3:
+    # ≥3 buttons: vertical stack when mobile_force_vertical=True, or when
+    # any button label is too long to fit comfortably on a narrow screen.
+    if mobile_force_vertical or (len(buttons) == 3 and has_long_label):
         return [
             {
                 "tag": "column_set",
@@ -484,6 +521,29 @@ def build_responsive_button_row(
         ]
 
     if len(buttons) == 2:
+        if mobile_force_vertical:
+            # Two long action buttons on narrow screens (e.g. "取消" +
+            # "确认工具并生成脚本 →") would truncate when bisected. Stack
+            # them as separate column_sets so each button takes the full
+            # width individually and the label stays readable.
+            return [
+                {
+                    "tag": "column_set",
+                    "flex_mode": "none",
+                    "background_style": "default",
+                    "horizontal_spacing": horizontal_spacing,
+                    "vertical_spacing": vertical_spacing,
+                    "columns": [
+                        {
+                            "tag": "column",
+                            "width": "weighted",
+                            "weight": 1,
+                            "elements": [btn],
+                        }
+                    ],
+                }
+                for btn in buttons
+            ]
         return [
             {
                 "tag": "column_set",

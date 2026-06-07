@@ -7,6 +7,7 @@ Validates:
 - Cancel also validates session key
 """
 
+import os
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,7 @@ class TestWorkflowConfirmSecurity(unittest.TestCase):
         handler.reply_text = MagicMock()
         handler.reply_card = MagicMock()
         handler.reply_error = MagicMock()
+        handler._reply_workflow_error = MagicMock()  # type: ignore[method-assign]
         handler.update_card = MagicMock(return_value=True)
         handler.send_card_to_chat = MagicMock()
         handler.get_working_dir = MagicMock(return_value="/tmp/project")
@@ -49,17 +51,56 @@ class TestWorkflowConfirmSecurity(unittest.TestCase):
         engine.is_running = False
         return engine
 
-    @patch("os.path.isfile", return_value=True)
     @patch("src.thread.get_current_sender_id", return_value="user_123")
-    def test_valid_credentials_allow_confirm(self, mock_sender, mock_isfile):
+    def test_valid_credentials_allow_confirm(self, mock_sender):
+        import hashlib
+        import tempfile
+
         handler = self._make_handler()
-        engine = self._make_engine_awaiting(session_key="valid_key", initiator="user_123")
+
+        script_content = (
+            "export const meta = {\n"
+            "  name: 'test',\n"
+            "  description: 'test workflow',\n"
+            "  tools: ['coco'],\n"
+            "};\n"
+            "\n"
+            "export default async function() {\n"
+            "  await agent('do work');\n"
+            "}\n"
+        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
+        tmp.write(script_content)
+        tmp.close()
+        script_hash = hashlib.sha256(script_content.encode("utf-8")).hexdigest()
+
+        engine = MagicMock()
+        engine.project = WorkflowProject(
+            status=WorkflowStatus.AWAITING_CONFIRM,
+            pending=PendingConfirmation(
+                script_path=tmp.name,
+                requirement="do X",
+                meta={"name": "test", "tools": ["coco"]},
+                initiator_user_id="user_123",
+                engine_session_key="valid_key",
+                selected_tools=["coco"],
+                script_hash=script_hash,
+            ),
+        )
+        engine.is_running = False
         handler.ctx.workflow_engine_manager.get.return_value = engine
+        handler._get_root_path = MagicMock(return_value="/tmp/project")
+        handler._resolve_project_from_id = MagicMock(return_value=None)
 
         handler.handle_workflow_confirm_start(
             "msg_1", "chat_1", "proj_1",
             {"action": "workflow_confirm_start", "engine_session_key": "valid_key"},
         )
+
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
 
         # Should proceed to execution (submit task)
         handler._submit_engine_task.assert_called_once()
@@ -77,7 +118,7 @@ class TestWorkflowConfirmSecurity(unittest.TestCase):
 
         # Should block — no task submitted
         handler._submit_engine_task.assert_not_called()
-        handler.reply_card.assert_called_once()
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="attacker_456")
     def test_different_user_blocks(self, mock_sender):
@@ -92,7 +133,7 @@ class TestWorkflowConfirmSecurity(unittest.TestCase):
 
         # Should block — different user
         handler._submit_engine_task.assert_not_called()
-        handler.reply_card.assert_called_once()
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     def test_cancel_with_wrong_session_key_blocks(self, mock_sender):
@@ -107,7 +148,7 @@ class TestWorkflowConfirmSecurity(unittest.TestCase):
 
         # State should NOT be reset
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-        handler.reply_card.assert_called_once()
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     def test_cancel_resets_pending_budget(self, mock_sender):
@@ -162,6 +203,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         handler.reply_text = MagicMock()
         handler.reply_card = MagicMock()
         handler.reply_error = MagicMock()
+        handler._reply_workflow_error = MagicMock()  # type: ignore[method-assign]
         handler.update_card = MagicMock(return_value=True)
         handler.send_card_to_chat = MagicMock()
         handler.get_working_dir = MagicMock(return_value="/tmp/project")
@@ -203,8 +245,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         handler.stop_workflow("msg_1", "chat_1")
 
         engine.stop.assert_not_called()
-        handler.reply_text.assert_called_once()
-        self.assertIn("无法验证操作者身份", handler.reply_text.call_args[0][1])
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value=None)
     def test_stop_denied_when_current_user_missing(self, mock_sender):
@@ -220,8 +261,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         handler.stop_workflow("msg_1", "chat_1")
 
         engine.stop.assert_not_called()
-        handler.reply_text.assert_called_once()
-        self.assertIn("无法验证操作者身份", handler.reply_text.call_args[0][1])
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value=None)
     def test_stop_denied_when_both_missing(self, mock_sender):
@@ -237,8 +277,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         handler.stop_workflow("msg_1", "chat_1")
 
         engine.stop.assert_not_called()
-        handler.reply_text.assert_called_once()
-        self.assertIn("无法验证操作者身份", handler.reply_text.call_args[0][1])
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="attacker_456")
     def test_stop_denied_for_non_initiator_non_admin(self, mock_sender):
@@ -254,8 +293,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         handler.stop_workflow("msg_1", "chat_1")
 
         engine.stop.assert_not_called()
-        handler.reply_text.assert_called_once()
-        self.assertIn("只有 Workflow 发起者或管理员才能停止", handler.reply_text.call_args[0][1])
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     def test_stop_allowed_for_initiator(self, mock_sender):
@@ -306,8 +344,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         handler.stop_workflow("msg_1", "chat_1")
 
         engine.stop.assert_not_called()
-        handler.reply_text.assert_called_once()
-        self.assertIn("当前没有运行中的 Workflow 任务", handler.reply_text.call_args[0][1])
+        handler._reply_workflow_error.assert_called_once()
 
     # ------------------------------------------------------------------
     # Admin Source Tests
@@ -345,8 +382,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         # Should be denied because settings.admin_user_ids does NOT have admin_789
         # (config is NOT consulted)
         engine.stop.assert_not_called()
-        handler.reply_text.assert_called_once()
-        self.assertIn("只有 Workflow 发起者或管理员才能停止", handler.reply_text.call_args[0][1])
+        handler._reply_workflow_error.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="admin_789")
     def test_admin_ids_empty_list_fallback(self, mock_sender):
@@ -364,8 +400,7 @@ class TestWorkflowStopSecurity(unittest.TestCase):
 
         # Should be denied because None falls back to [] and admin_789 is not in []
         engine.stop.assert_not_called()
-        handler.reply_text.assert_called_once()
-        self.assertIn("只有 Workflow 发起者或管理员才能停止", handler.reply_text.call_args[0][1])
+        handler._reply_workflow_error.assert_called_once()
 
 
 if __name__ == "__main__":

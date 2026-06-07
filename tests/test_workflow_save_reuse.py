@@ -131,6 +131,7 @@ class TestScriptSaving(unittest.TestCase):
         handler.reply_text = MagicMock()
         handler.reply_card = MagicMock()
         handler.reply_error = MagicMock()
+        handler._reply_workflow_error = MagicMock()
         handler.send_card_to_chat = MagicMock(return_value="msg_123")
         handler.update_card = MagicMock(return_value=True)
         handler.add_reaction = MagicMock()
@@ -535,6 +536,7 @@ class TestWorkflowCommands(unittest.TestCase):
         handler.reply_text = MagicMock()
         handler.reply_card = MagicMock()
         handler.reply_error = MagicMock()
+        handler._reply_workflow_error = MagicMock()
         handler.send_card_to_chat = MagicMock(return_value="msg_123")
         handler.update_card = MagicMock(return_value=True)
         handler.add_reaction = MagicMock()
@@ -555,8 +557,15 @@ class TestWorkflowCommands(unittest.TestCase):
             f.write(content)
         return script_path
 
-    def test_wf_save_command(self):
-        """Verify that /wf_save <name> saves the last generated script with the given name."""
+    @patch("src.thread.get_current_sender_id", return_value="user_123")
+    def test_wf_save_command(self, mock_sender):
+        """Verify that /wf_save <name> saves the last generated script with the given name.
+
+        Owner-based permissions:
+        - project-level: first save is allowed for any user; overwriting an existing
+          project template requires owner or admin
+        - --global: requires admin (ctx.settings.admin_user_ids contains sender)
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             handler, ctx = self._make_handler(tmpdir)
 
@@ -569,7 +578,7 @@ class TestWorkflowCommands(unittest.TestCase):
             )
             ctx.workflow_engine_manager.get.return_value = engine
 
-            # Execute /wf_save command
+            # Execute /wf_save command (first time — template does not exist yet)
             handler._handle_wf_save("msg_1", "chat_1", "my-saved-workflow", project=None)
 
             # Verify success reply
@@ -589,35 +598,57 @@ class TestWorkflowCommands(unittest.TestCase):
             self.assertIn("test-workflow", saved_content)
             self.assertIn("export const meta", saved_content)
 
-            # Test with --global flag (saves to user's home directory)
+            # Test with --global flag (requires admin). Give the handler ctx.settings
+            # so is_admin_user() recognizes the sender as admin.
             handler.reply_text.reset_mock()
+            admin_settings = MagicMock()
+            admin_settings.admin_user_ids = ["user_123"]
+            handler.ctx.settings = admin_settings
             with patch("src.workflow_engine.templates._global_templates_dir",
                        return_value=Path(tmpdir) / "global_templates"):
                 handler._handle_wf_save("msg_2", "chat_1", "global-workflow --global", project=None)
                 handler.reply_text.assert_called_once()
                 reply_content = handler.reply_text.call_args[0][1]
-                self.assertIn("用户级", reply_content)
+                self.assertIn("全局级", reply_content)
+
+            # Test --global without admin permission → should be rejected
+            handler.reply_text.reset_mock()
+            handler._reply_workflow_error.reset_mock()
+            handler.ctx.settings = MagicMock()
+            handler.ctx.settings.admin_user_ids = []
+            with patch("src.workflow_engine.templates._global_templates_dir",
+                       return_value=Path(tmpdir) / "global_templates"):
+                handler._handle_wf_save("msg_2b", "chat_1", "another-global --global", project=None)
+                handler._reply_workflow_error.assert_called_once()
+
+            # Test overwriting existing project template: sender is the owner → allowed
+            handler.reply_text.reset_mock()
+            # my-saved-workflow was just saved by user_123, so user_123 is the owner
+            handler.ctx.settings = MagicMock()
+            handler.ctx.settings.admin_user_ids = []
+            handler._handle_wf_save("msg_5", "chat_1", "my-saved-workflow", project=None)
+            handler.reply_text.assert_called_once()
+            reply_content = handler.reply_text.call_args[0][1]
+            self.assertIn("已保存", reply_content)
 
             # Test saving with no script available
             handler.reply_text.reset_mock()
+            handler._reply_workflow_error.reset_mock()
             if engine.project.pending is None:
                 engine.project.pending = PendingConfirmation()
             engine.project.pending.script_path = None
             engine.project.script_path = None
             handler._handle_wf_save("msg_3", "chat_1", "another-workflow", project=None)
-            handler.reply_text.assert_called_once()
-            reply_content = handler.reply_text.call_args[0][1]
-            self.assertIn("没有可保存的", reply_content)
+            handler._reply_workflow_error.assert_called_once()
 
             # Test saving with invalid name (no spaces — spaces cause split to take first token)
             handler.reply_text.reset_mock()
+            handler._reply_workflow_error.reset_mock()
             if engine.project.pending is None:
                 engine.project.pending = PendingConfirmation()
             engine.project.pending.script_path = script_path
             handler._handle_wf_save("msg_4", "chat_1", "invalid!", project=None)
-            handler.reply_text.assert_called_once()
-            reply_content = handler.reply_text.call_args[0][1]
-            self.assertIn("只能包含字母", reply_content)
+            handler._reply_workflow_error.assert_called_once()
 
     def test_wf_list_command(self):
         """Verify that /wf_list lists all saved workflows with their metadata."""
@@ -666,17 +697,29 @@ class TestWorkflowCommands(unittest.TestCase):
                 # Should not show project icon since no project templates exist
                 self.assertNotIn("📂", reply_content2)
 
-    def test_wf_delete_command(self):
-        """Verify that /wf_delete <name> deletes the specified saved workflow."""
+    @patch("src.thread.get_current_sender_id", return_value="user_123")
+    def test_wf_delete_command(self, mock_sender):
+        """Verify that /wf_delete <name> deletes the specified saved workflow.
+
+        Owner-based permissions:
+        - owner can delete their own project template
+        - templates without an owner file require admin permission
+        - --global requires admin
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             handler, ctx = self._make_handler(tmpdir)
+            # Enable admin-less: user_123 is the owner, so admin is not required
+            handler.ctx.settings = MagicMock()
+            handler.ctx.settings.admin_user_ids = []
 
-            # Create a template to delete
-            save_template(tmpdir, "to-delete", SAMPLE_SCRIPT)
+            # Create a template to delete, saving it with an owner file
+            from src.workflow_engine.templates import save_template as _save_tpl
+
+            _save_tpl(tmpdir, "to-delete", SAMPLE_SCRIPT, owner_id="user_123")
             template_path = os.path.join(tmpdir, WORKFLOW_TEMPLATES_DIR, "to-delete.js")
             self.assertTrue(os.path.isfile(template_path))
 
-            # Execute /wf_delete command
+            # Execute /wf_delete command as the owner
             handler._handle_wf_delete("msg_1", "chat_1", "to-delete", project=None)
 
             # Verify success reply and file deletion
@@ -687,15 +730,19 @@ class TestWorkflowCommands(unittest.TestCase):
             self.assertFalse(os.path.isfile(template_path),
                              "Template file should be deleted")
 
-            # Test deleting non-existent template
+            # Test deleting non-existent template — admin is required to reach
+            # the "does not exist" branch; non-admins get permission-denied.
             handler.reply_text.reset_mock()
+            handler._reply_workflow_error.reset_mock()
+            # Simulate admin context: ctx.settings.admin_user_ids contains sender
+            handler.ctx.settings = MagicMock()
+            handler.ctx.settings.admin_user_ids = ["user_123"]
             handler._handle_wf_delete("msg_2", "chat_1", "nonexistent", project=None)
-            handler.reply_text.assert_called_once()
-            reply_content2 = handler.reply_text.call_args[0][1]
-            self.assertIn("不存在", reply_content2)
+            handler._reply_workflow_error.assert_called_once()
 
             # Test delete with no name
             handler.reply_text.reset_mock()
+            handler._reply_workflow_error.reset_mock()
             handler._handle_wf_delete("msg_3", "chat_1", "", project=None)
             handler.reply_text.assert_called_once()
             reply_content3 = handler.reply_text.call_args[0][1]
@@ -782,6 +829,7 @@ class TestWorkflowReuse(unittest.TestCase):
         handler.reply_text = MagicMock()
         handler.reply_card = MagicMock()
         handler.reply_error = MagicMock()
+        handler._reply_workflow_error = MagicMock()
         handler.send_card_to_chat = MagicMock(return_value="msg_123")
         handler.update_card = MagicMock(return_value=True)
         handler.add_reaction = MagicMock()
@@ -803,11 +851,17 @@ class TestWorkflowReuse(unittest.TestCase):
     def test_start_workflow_with_template_name(
         self, mock_node, mock_sender
     ):
-        """Verify that start_workflow() with a template name loads and executes the template."""
+        """Verify that start_workflow() with a template name enters agent selection.
+
+        Templates now go through the standard three-step flow:
+            agent selection → tool selection → confirmation card.
+        The full requirement (including the template name) is preserved in pending
+        so downstream handlers can recognize and load the template.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             handler, ctx = self._make_handler(tmpdir)
 
-            # Create a project template (use SIMPLE_SCRIPT so meta can be extracted)
+            # Create a project template
             self._create_project_template(tmpdir, "my-template", SIMPLE_SCRIPT)
 
             # Set up project mock
@@ -815,53 +869,78 @@ class TestWorkflowReuse(unittest.TestCase):
             project.root_path = tmpdir
             project.project_id = "proj_1"
             project.project_name = "test"
-            handler._ensure_project.return_value = project
+            handler._ensure_project = MagicMock(return_value=project)
 
-            # Set up engine mock
+            # Set up engine mock — start_workflow calls get_or_create
             engine = MagicMock()
             engine.is_running = False
             engine.project = WorkflowProject()
             ctx.workflow_engine_manager.get.return_value = engine
             ctx.workflow_engine_manager.get_or_create.return_value = engine
 
-            # Start workflow with template name
+            # Start workflow with a template name — goes to agent selection first
             handler.start_workflow("msg_1", "chat_1", "my-template", project)
 
-            # Should NOT show tool selection (template path)
-            # Should go directly to generating/confirm card
-            self.assertEqual(handler.send_card_to_chat.call_count, 1)  # generating card
+            # After start_workflow, status should be AWAITING_AGENT_SELECT
+            # (three-step flow: agent select → tool select → confirm)
+            self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
 
-            # Verify engine state
-            self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-            self.assertIsNotNone(engine.project.pending.script_path if engine.project.pending else None)
-
-            # The script should be saved to workflow_scripts directory
-            expected_script_path = os.path.join(
-                tmpdir, ".ghostap", "workflow_scripts", "my-template.js"
+            # The requirement is preserved so downstream handlers can detect
+            # this is a template invocation
+            self.assertEqual(
+                engine.project.pending.requirement if engine.project.pending else None,
+                "my-template",
             )
-            self.assertEqual(engine.project.pending.script_path if engine.project.pending else None, expected_script_path)
-            self.assertTrue(os.path.isfile(expected_script_path))
 
-            # Verify meta was extracted
-            self.assertIsNotNone(engine.project.pending.meta if engine.project.pending else None)
-            self.assertEqual(engine.project.pending.meta["name"] if engine.project.pending else None, "simple-workflow")
+            # An agent selection card must be sent (send_card_to_chat)
+            self.assertEqual(handler.send_card_to_chat.call_count, 1)
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
     def test_template_with_args(self, mock_node, mock_sender):
-        """Verify that templates can accept arguments via /wf <template> arg1=val1 arg2=val2."""
+        """Verify that templates can accept arguments via /wf <template> arg1=val1 arg2=val2.
+
+        Args are injected into the template script when the template is loaded
+        during the tool-selection-to-confirmation step.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             handler, ctx = self._make_handler(tmpdir)
 
             # Create a template with argument placeholders
             self._create_project_template(tmpdir, "param-template", SAMPLE_TEMPLATE_WITH_ARGS)
 
-            # Set up project mock
+            # Test argument injection directly (bypassing agent/tool selection flow)
+            from src.workflow_engine.templates import load_template, inject_args
+            from src.workflow_engine.script_gen import extract_meta_from_script
+
+            # Load template and inject args manually to verify injection works
+            template_content = load_template(tmpdir, "param-template")
+            self.assertIsNotNone(template_content)
+            self.assertIn("args.target", template_content)
+
+            # Inject arguments
+            args = {"target": "src/", "focus": "security", "count": 3}
+            injected_content = inject_args(template_content, args)
+
+            # Verify placeholders were replaced
+            self.assertIn('"src/"', injected_content)
+            self.assertIn('"security"', injected_content)
+            self.assertIn("3", injected_content)
+            self.assertNotIn("args.target", injected_content)
+            self.assertNotIn("args.focus", injected_content)
+            self.assertNotIn("args.count", injected_content)
+
+            # Verify meta can still be extracted
+            meta = extract_meta_from_script(injected_content)
+            self.assertEqual(meta["name"], "parametrized-workflow")
+
+            # Also test that the full flow preserves arguments through the steps
+            # (start_workflow -> agent select -> tool select -> confirm)
             project = MagicMock()
             project.root_path = tmpdir
             project.project_id = "proj_1"
             project.project_name = "test"
-            handler._ensure_project.return_value = project
+            handler._ensure_project = MagicMock(return_value=project)
 
             # Set up engine mock
             engine = MagicMock()
@@ -877,30 +956,36 @@ class TestWorkflowReuse(unittest.TestCase):
                 project
             )
 
-            # Verify the script was saved with injected arguments
-            script_path = engine.project.pending.script_path if engine.project.pending else None
-            self.assertIsNotNone(script_path)
-            self.assertTrue(os.path.isfile(script_path))
+            # After start_workflow, status should be AWAITING_AGENT_SELECT
+            self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
 
-            with open(script_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            # The full requirement (with args) is preserved in pending so
+            # downstream handlers can detect this is a template + args invocation
+            self.assertEqual(
+                engine.project.pending.requirement if engine.project.pending else None,
+                "param-template target=src/ focus=security count=3",
+            )
 
-            # Args should be injected into the script
-            self.assertIn('"src/"', content)  # target arg
-            self.assertIn('"security"', content)  # focus arg
-            self.assertIn("3", content)  # count arg
-            self.assertNotIn("args.target", content)  # placeholder replaced
-            self.assertNotIn("args.focus", content)  # placeholder replaced
-            self.assertNotIn("args.count", content)  # placeholder replaced
+            # An agent selection card must be sent
+            self.assertEqual(handler.send_card_to_chat.call_count, 1)
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
     def test_template_skips_tool_selection(self, mock_node, mock_sender):
-        """Verify that template execution skips the tool selection step."""
+        """Verify that both template and non-template flows start with agent selection.
+
+        Templates now go through the standard three-step flow (agent selection →
+        tool selection → confirmation). Previously templates skipped tool selection
+        entirely; now both templates and AI-generated scripts start with agent
+        selection, giving users a chance to pick the orchestrator agent.
+
+        This test verifies the start_workflow behavior consistently routes to
+        agent selection regardless of whether the requirement matches a template.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             handler, ctx = self._make_handler(tmpdir)
 
-            # Create a project template (use SIMPLE_SCRIPT so meta can be extracted)
+            # Create a project template
             self._create_project_template(tmpdir, "quick-audit", SIMPLE_SCRIPT)
 
             # Set up project mock
@@ -908,7 +993,7 @@ class TestWorkflowReuse(unittest.TestCase):
             project.root_path = tmpdir
             project.project_id = "proj_1"
             project.project_name = "test"
-            handler._ensure_project.return_value = project
+            handler._ensure_project = MagicMock(return_value=project)
 
             # Set up engine mock
             engine = MagicMock()
@@ -917,52 +1002,31 @@ class TestWorkflowReuse(unittest.TestCase):
             ctx.workflow_engine_manager.get.return_value = engine
             ctx.workflow_engine_manager.get_or_create.return_value = engine
 
-            # Track calls to _show_tool_selection_card and _show_agent_selection_card
-            original_show_tool_selection = handler._show_tool_selection_card
-            original_show_agent_selection = handler._show_agent_selection_card
-            tool_selection_called = [False]
-            agent_selection_called = [False]
-
-            def tracking_show_tool_selection(*args, **kwargs):
-                tool_selection_called[0] = True
-                return original_show_tool_selection(*args, **kwargs)
-
-            def tracking_show_agent_selection(*args, **kwargs):
-                agent_selection_called[0] = True
-                return original_show_agent_selection(*args, **kwargs)
-
-            handler._show_tool_selection_card = tracking_show_tool_selection
-            handler._show_agent_selection_card = tracking_show_agent_selection
-
-            # Start workflow with a requirement that does NOT match a template
-            # (should show agent selection first, not tool selection)
+            # Non-template requirement: goes to agent selection
             handler.start_workflow("msg_1", "chat_1", "some random requirement", project)
-            self.assertTrue(agent_selection_called[0],
-                            "Non-template requirement should show agent selection")
-            self.assertFalse(tool_selection_called[0],
-                            "Non-template requirement should not show tool selection yet")
             self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
+            self.assertEqual(
+                engine.project.pending.requirement if engine.project.pending else None,
+                "some random requirement",
+            )
+            cards_sent_for_requirement = handler.send_card_to_chat.call_count
 
             # Reset for template test
-            tool_selection_called[0] = False
-            agent_selection_called[0] = False
             engine.project = WorkflowProject()
+            handler.send_card_to_chat.reset_mock()
 
-            # Start workflow with a template name (should skip both agent and tool selection)
+            # Template name: ALSO goes to agent selection (three-step flow)
             handler.start_workflow("msg_2", "chat_2", "quick-audit", project)
+            self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
+            self.assertEqual(
+                engine.project.pending.requirement if engine.project.pending else None,
+                "quick-audit",
+            )
+            # Both flows should produce a card (agent selection)
+            self.assertEqual(handler.send_card_to_chat.call_count, 1)
 
-            # Agent selection and tool selection should NOT be called for templates
-            self.assertFalse(agent_selection_called[0],
-                             "Template execution should skip agent selection")
-            self.assertFalse(tool_selection_called[0],
-                             "Template execution should skip tool selection")
-
-            # Should go directly to AWAITING_CONFIRM
-            self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-
-            # pending.selected_tools should be set from meta
-            self.assertIsNotNone(engine.project.pending.selected_tools if engine.project.pending else None)
-            self.assertEqual(engine.project.pending.selected_tools if engine.project.pending else None, ["coco", "claude"])
+            # Both flows should send exactly one card (agent selection card)
+            self.assertEqual(cards_sent_for_requirement, 1)
 
 
 # ---------------------------------------------------------------------------

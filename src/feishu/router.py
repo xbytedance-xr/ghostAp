@@ -201,10 +201,18 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_workflow_select_tool": ("workflow", "handle_workflow_select_tool"),
     "_handle_workflow_select_budget": ("workflow", "handle_workflow_select_budget"),
     "_handle_workflow_select_agent": ("workflow", "handle_workflow_select_agent"),
+    "_handle_workflow_select_role": ("workflow", "handle_workflow_select_role"),
+    "_handle_workflow_confirm_roles_and_generate": ("workflow", "handle_workflow_confirm_roles_and_generate"),
     "_handle_workflow_regenerate_script": ("workflow", "handle_workflow_regenerate_script"),
+    "_handle_workflow_apply_budget_regenerate": ("workflow", "handle_workflow_apply_budget_regenerate"),
+    "_handle_workflow_fill_missing_tools": ("workflow", "handle_workflow_fill_missing_tools"),
+    "_handle_workflow_back_to_tools": ("workflow", "handle_workflow_back_to_tools"),
     "_handle_show_workflow_menu": ("workflow", "handle_show_workflow_menu"),
     "_handle_workflow_list_templates": ("workflow", "handle_workflow_list_templates"),
     "_handle_workflow_show_help": ("workflow", "handle_workflow_show_help"),
+    "_handle_workflow_view_workflow_ref": ("workflow", "handle_workflow_view_workflow_ref"),
+    "_handle_workflow_remove_workflow_ref": ("workflow", "handle_workflow_remove_workflow_ref"),
+    "_handle_workflow_add_workflow_ref": ("workflow", "handle_workflow_add_workflow_ref"),
 }
 
 

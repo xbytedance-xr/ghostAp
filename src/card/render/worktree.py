@@ -435,7 +435,7 @@ def _render_selected_item_row(
                         "selection_key": selection_key,
                         "project_id": project_id,
                     }, thread_root_id),
-                    size="small",
+                    size="medium",
                 )],
             },
         ],
@@ -545,7 +545,7 @@ def _render_worktree_model_option_grid(
                 text=_model_button_label(model_id, name),
                 value=value,
                 button_type="primary",
-                size="small",
+                size="medium",
             )],
         })
         if len(pair) == 2:

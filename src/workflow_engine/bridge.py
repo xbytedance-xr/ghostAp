@@ -66,6 +66,7 @@ class RuntimeBridge:
         allowed_tools: Optional[list[str]] = None,
         nesting_depth: int = 0,
         args: Optional[dict[str, Any]] = None,
+        initiator_user_id: Optional[str] = None,
     ) -> None:
         self._script_path = script_path
         self._cwd = cwd
@@ -78,6 +79,11 @@ class RuntimeBridge:
         self._allowed_tools = allowed_tools
         self._nesting_depth = nesting_depth
         self._args = args or {}
+        # Scoping identity used when resolving workflow_call templates.  Sub
+        # workflows inherit this value from their parent so user-scoped
+        # templates remain consistent across the tree.  May be None when the
+        # bridge is constructed without a known initiator.
+        self._initiator_user_id: Optional[str] = initiator_user_id
 
         # Subprocess handle
         self._process: Optional[subprocess.Popen] = None
@@ -98,7 +104,10 @@ class RuntimeBridge:
         # Separate executor for sub-workflow calls (avoids starvation)
         self._workflow_executor: Optional[ThreadPoolExecutor] = None
 
-        # Track active futures for graceful shutdown (set for O(1) discard)
+        # Track active futures for graceful shutdown (set for O(1) discard).
+        # Once a future is submitted via ``executor.submit`` it is added to
+        # ``_active_futures``; the done-callback ``_discard_future`` removes
+        # it. ``in_flight_count`` reports the size of that set.
         self._active_futures: set[Future] = set()
         self._futures_lock = threading.Lock()
 
@@ -106,6 +115,17 @@ class RuntimeBridge:
         self._parent: Optional["RuntimeBridge"] = None
         self._children: list["RuntimeBridge"] = []
         self._children_lock = threading.Lock()
+
+        # Budget reservation state for sub-workflow tracking
+        # reserved = tokens currently reserved by in-flight sub-workflows
+        # used = tokens already consumed by completed agent() calls on this
+        # bridge (reported by the JS runtime via response_data._budget_used).
+        self._budget_reserved: int = 0
+        self._budget_used: int = 0
+        self._budget_lock = threading.Lock()
+
+        # Shutdown flag to make stop() / cleanup() idempotent
+        self._shutdown_done = False
 
         # Terminal state
         self._done = False
@@ -174,6 +194,19 @@ class RuntimeBridge:
         logger.info("Starting Node.js runtime: %s", " ".join(cmd))
 
         try:
+            # Minimal environment for Node.js runtime — excludes secrets and
+            # API keys from the parent process to enforce sandbox isolation.
+            safe_env = {
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", ""),
+                "NODE_PATH": os.environ.get("NODE_PATH", ""),
+                "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+                "TERM": os.environ.get("TERM", "xterm"),
+            }
+            # Allow explicit NODE_OPTIONS if set (for debugging/flags)
+            if os.environ.get("NODE_OPTIONS"):
+                safe_env["NODE_OPTIONS"] = os.environ["NODE_OPTIONS"]
+
             self._process = subprocess.Popen(
                 cmd,
                 stdin=subprocess.PIPE,
@@ -182,6 +215,7 @@ class RuntimeBridge:
                 cwd=self._cwd,
                 text=True,
                 bufsize=1,  # Line-buffered
+                env=safe_env,
             )
         except OSError as exc:
             raise RuntimeError(f"Failed to spawn Node.js process: {exc}") from exc
@@ -212,11 +246,17 @@ class RuntimeBridge:
                 f"stderr: {stderr_content}"
             )
 
-        # Send init with budget and workflow args
+        # Send init with budget, workflow args, and max_concurrent so the
+        # JS-side parallel() primitive can bound concurrency to match the
+        # Python ThreadPoolExecutor size.
         self._send({
             "jsonrpc": "2.0",
             "method": "init",
-            "params": {"budget_total": self._budget_total, "args": self._args},
+            "params": {
+                "budget_total": self._budget_total,
+                "args": self._args,
+                "max_concurrent": self._max_concurrent,
+            },
         })
 
         # Create executor for agent calls
@@ -292,8 +332,13 @@ class RuntimeBridge:
     def stop(self) -> None:
         """Send cancel notification and kill the subprocess.
 
-        Also cascades cancellation to all child sub-workflows.
+        Also cascades cancellation to all child sub-workflows and shuts down
+        the ThreadPoolExecutors. Idempotent — calling it more than once is
+        safe and does nothing after the first successful call.
         """
+        if self._shutdown_done:
+            return
+
         # Cascade cancel to children first (under lock to avoid race)
         with self._children_lock:
             for child in self._children:
@@ -307,25 +352,172 @@ class RuntimeBridge:
         # Signal our own cancel event
         self._cancel_event.set()
 
-        if self._process is None:
-            return
+        if self._process is not None:
+            try:
+                self._send_cancel()
+            except (OSError, BrokenPipeError):
+                pass  # Process may already be dead
+            self._kill_process()
 
-        try:
-            self._send_cancel()
-        except (OSError, BrokenPipeError):
-            pass  # Process may already be dead
-
-        self._kill_process()
-
-        # Shutdown executors
-        if self._executor:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+        # Shutdown executors (graceful wait on final cleanup)
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(wait=True, cancel_futures=True)
+            except Exception:
+                logger.debug("RuntimeBridge executor shutdown failed")
             self._executor = None
-        if self._workflow_executor:
-            self._workflow_executor.shutdown(wait=False, cancel_futures=True)
+        if self._workflow_executor is not None:
+            try:
+                self._workflow_executor.shutdown(wait=True, cancel_futures=True)
+            except Exception:
+                logger.debug("RuntimeBridge subwf executor shutdown failed")
             self._workflow_executor = None
 
+        self._shutdown_done = True
         logger.info("RuntimeBridge stopped")
+
+    def cleanup(self) -> None:
+        """Alias for stop(); ensures all resources including thread pools
+        are released. Safe to call multiple times.
+        """
+        self.stop()
+
+    # ------------------------------------------------------------------
+    # Budget reservation for sub-workflows
+    # ------------------------------------------------------------------
+
+    def _reserve_subflow_budget(
+        self,
+        amount: int,
+        ratio: float = 0.2,
+        *,
+        max_concurrent_subflows: int = 2,
+    ) -> int:
+        """Try to reserve budget for a sub-workflow.
+
+        The reservation is capped at the smaller of:
+          * ``ratio * budget_total``  (the configured sub-workflow share)
+          * ``remaining / max_concurrent_subflows``  (fair share of what's left)
+
+        The operation is atomic: if sufficient headroom exists, ``amount``
+        (clamped to the caps above) is added to ``self._budget_reserved``
+        and ``budget.reserved`` in the shared parent state.
+
+        Parameters
+        ----------
+        amount:
+            Desired amount (usually the pre-computed subflow budget).
+        ratio:
+            Fraction of ``budget_total`` a single sub-workflow may consume
+            (default 20%).
+        max_concurrent_subflows:
+            Expected maximum number of concurrent sub-workflows (default 2).
+
+        Returns
+        -------
+        int
+            The actually reserved amount on success, or ``0`` if the parent
+            budget is too small to accommodate *any* reservation (caller
+            should treat ``0`` as "budget denied, do not spawn").
+        """
+        if amount <= 0:
+            return 0
+
+        # Lazy initialization: ensures _budget_lock / _budget_reserved exist
+        # even if _reserve_subflow_budget is reached before a full __init__
+        # (e.g. tests that exercise _handle_workflow_call on a partial bridge).
+        if not hasattr(self, "_budget_lock"):
+            self._budget_lock = threading.Lock()
+            self._budget_reserved = 0
+        if not hasattr(self, "_budget_used"):
+            self._budget_used = 0
+
+        with self._budget_lock:
+            # remaining = total - used - reserved (shared view). Subtracting
+            # ``used`` is essential: otherwise a bridge with many completed
+            # agent() calls would still claim the full ``budget_total`` for
+            # sub-workflow reservations, over-counting headroom.
+            remaining = (
+                self._budget_total - self._budget_used - self._budget_reserved
+            )
+            if remaining <= 0:
+                logger.debug(
+                    "[RuntimeBridge] Sub-flow budget denied: used=%d, "
+                    "reserved=%d, total=%d",
+                    self._budget_used,
+                    self._budget_reserved,
+                    self._budget_total,
+                )
+                return 0
+
+            # Cap 1: ratio of the total budget
+            cap_ratio = int(self._budget_total * ratio)
+            # Cap 2: fair share of what's actually left
+            cap_fair = max(1, remaining // max_concurrent_subflows)
+            allowed = min(amount, cap_ratio, cap_fair, remaining)
+
+            if allowed <= 0:
+                return 0
+
+            self._budget_reserved += allowed
+            logger.debug(
+                "[RuntimeBridge] Sub-flow budget reserved: %d (requested=%d, "
+                "cap_ratio=%d, cap_fair=%d, total=%d, used=%d, remaining_after=%d)",
+                allowed,
+                amount,
+                cap_ratio,
+                cap_fair,
+                self._budget_total,
+                self._budget_used,
+                self._budget_total - self._budget_used - self._budget_reserved,
+            )
+            return allowed
+
+    def _release_subflow_budget(self, amount: int) -> None:
+        """Release a previously reserved amount back to the parent pool.
+
+        ``amount`` is the value returned by ``_reserve_subflow_budget``.
+        The decrement is clamped to avoid negative ``_budget_reserved``.
+        """
+        if amount <= 0:
+            return
+        # Lazy init guard (mirrors _reserve_subflow_budget).
+        if not hasattr(self, "_budget_lock"):
+            self._budget_lock = threading.Lock()
+            self._budget_reserved = 0
+        with self._budget_lock:
+            self._budget_reserved = max(0, self._budget_reserved - amount)
+            logger.debug(
+                "[RuntimeBridge] Sub-flow budget released: %d, remaining_reserved=%d",
+                amount,
+                self._budget_reserved,
+            )
+
+    def _report_agent_used(self, amount: int) -> None:
+        """Record ``amount`` tokens consumed on this bridge by an agent() call.
+
+        The JS side reports ``response_data._budget_used`` on successful
+        agent calls; we keep this on the parent bridge so
+        ``_reserve_subflow_budget`` can subtract ``used`` alongside
+        ``reserved`` from ``budget_total``. This prevents a parent from
+        spawning sub-workflows after its own agent calls have exhausted
+        the budget.
+        """
+        if amount <= 0:
+            return
+        if not hasattr(self, "_budget_lock"):
+            self._budget_lock = threading.Lock()
+            self._budget_reserved = 0
+        if not hasattr(self, "_budget_used"):
+            self._budget_used = 0
+        with self._budget_lock:
+            self._budget_used += amount
+            logger.debug(
+                "[RuntimeBridge] Agent used=%d, total_used=%d, total=%d",
+                amount,
+                self._budget_used,
+                self._budget_total,
+            )
 
     def is_alive(self) -> bool:
         """Check if the Node.js subprocess is still running."""
@@ -458,14 +650,53 @@ class RuntimeBridge:
             )
             return
 
-        # Backpressure: reject if response queue is overwhelmed
+        # Backpressure layer 1: reject if inbound JS→Python queue is full.
+        # This preserves the historical MAX_QUEUE_SIZE ceiling used by
+        # regression tests and prevents a runaway JS parallel() from
+        # saturating the bridge loop.
         with self._msg_condition:
-            queue_depth = len(self._msg_queue)
-        if queue_depth >= MAX_QUEUE_SIZE:
+            inbound_depth = len(self._msg_queue)
+        if inbound_depth >= MAX_QUEUE_SIZE:
+            logger.warning(
+                "[RuntimeBridge] backpressure rejecting agent_call: "
+                "inbound queue full (%d >= %d)",
+                inbound_depth,
+                MAX_QUEUE_SIZE,
+            )
             self._send_error_response(
                 request_id,
                 code=-32000,
-                message="Queue backpressure: too many pending messages, retry later",
+                message=(
+                    "Queue backpressure: too many pending messages, "
+                    "retry later"
+                ),
+            )
+            return
+
+        # Backpressure layer 2: reject if the executor pool is overwhelmed.
+        # ``_active_futures`` tracks submitted-but-in-flight futures. The pool's
+        # own queue length is bounded by ``_max_concurrent * 2`` so transient bursts
+        # still succeed while sustained floods are throttled.
+        with self._futures_lock:
+            active_count = len(self._active_futures)
+        pending_response_pressure = active_count
+        # Cap at 2x the pool size so a transient burst does not reject
+        # valid work, but a sustained flood is throttled.
+        pressure_cap = max(2, self._max_concurrent * 2)
+        if pending_response_pressure >= pressure_cap:
+            logger.warning(
+                "[RuntimeBridge] backpressure rejecting agent_call "
+                "(active=%d, cap=%d)",
+                active_count,
+                pressure_cap,
+            )
+            self._send_error_response(
+                request_id,
+                code=-32000,
+                message=(
+                    "Queue backpressure: too many pending agent calls, "
+                    "retry later"
+                ),
             )
             return
 
@@ -488,6 +719,12 @@ class RuntimeBridge:
                 response_data["_budget_used"] = result.token_usage
                 response_data["token_usage"] = result.token_usage
                 response_data["duration_s"] = result.duration_s
+
+                # Report token_usage back to the parent bridge so
+                # ``_reserve_subflow_budget`` can cap sub-workflow
+                # reservations against remaining headroom.
+                if result.token_usage and result.token_usage > 0:
+                    self._report_agent_used(result.token_usage)
 
                 self._send_response(request_id, response_data)
 
@@ -524,75 +761,124 @@ class RuntimeBridge:
             )
             return
 
-        script_path = params.get("script_path", "")
-
-        # Resolve template name to script_path if not provided directly
-        if not script_path:
-            name = params.get("name", "")
-            if name:
-                from .templates import resolve_template_path
-                script_path = resolve_template_path(self._cwd, name)
-            if not script_path:
-                self._send_error_response(
-                    request_id,
-                    code=-32602,
-                    message="workflow_call requires 'script_path' or resolvable 'name' parameter",
-                )
-                return
-
-        # Resolve script path relative to cwd
-        import os
-        if not os.path.isabs(script_path):
-            script_path = os.path.join(self._cwd, script_path)
-
-        # Path traversal protection: ensure resolved path stays within one of
-        # three trusted roots: project cwd, global templates, or builtin templates
-        cwd_realpath = os.path.realpath(self._cwd)
-        script_realpath = os.path.realpath(script_path)
-
-        # 1. Project directory (implicitly trusted)
-        path_allowed = (
-            script_realpath.startswith(cwd_realpath + os.sep)
-            or script_realpath == cwd_realpath
-        )
-
-        # 2. Check trusted template roots (global + builtin)
-        if not path_allowed:
-            from .constants import TRUSTED_TEMPLATE_ROOTS
-            from .templates import _BUILTIN_TEMPLATES_DIR
-
-            # Collect all trusted roots: global from constants + builtin from templates
-            trusted_roots: list[str] = []
-            for root in TRUSTED_TEMPLATE_ROOTS:
-                trusted_roots.append(os.path.realpath(os.path.expanduser(root)))
-            # Add builtin templates directory
-            trusted_roots.append(os.path.realpath(str(_BUILTIN_TEMPLATES_DIR)))
-
-            for root in trusted_roots:
-                if script_realpath.startswith(root + os.sep) or script_realpath == root:
-                    path_allowed = True
-                    break
-
-        if not path_allowed:
+        # SECURITY: Reject raw script_path from the runtime entirely. All
+        # sub-workflow resolution MUST go through validate_template_name +
+        # resolve_template_path so that user, project, global (allowlisted) global,
+        # and built-in scopes are enforced uniformly. Accepting script_path would
+        # bypasses those checks and could allow path traversal / scope bypasses.
+        if params.get("script_path"):
             self._send_error_response(
                 request_id,
                 code=-32602,
-                message="Sub-workflow script path escapes the project directory",
+                message=(
+                    "Sub-workflow invocation by raw script_path is forbidden. "
+                    "Use workflow('<template_name') instead."
+                ),
             )
             return
 
-        if not os.path.isfile(script_path):
+        name = params.get("name", "")
+        if not name or not isinstance(name, str) or not name.strip():
             self._send_error_response(
                 request_id,
                 code=-32602,
-                message=f"Sub-workflow script not found: {script_path}",
+                message="workflow() requires a 'name' argument",
+            )
+            return
+
+        from .templates import (
+            validate_template_name,
+            resolve_template_path,
+        )
+
+        # 名称合法性校验（拒绝 '/' '\\' '..' 与绝对路径形式)
+        name = name.strip()
+        ok, err = validate_template_name(name)
+        if not ok:
+            self._send_error_response(
+                request_id,
+                code=-32602,
+                message=f"Invalid sub-workflow name: {err}",
+            )
+            return
+
+        # 统一解析：user > project > (allowlisted) global > builtin
+        # resolve_template_path 在 global 查找时内部会校验 WORKFLOW_GLOBAL_TEMPLATE_ALLOWLIST。
+        resolved = resolve_template_path(
+            self._cwd,
+            name,
+            user_id=self._initiator_user_id,
+        )
+        if not resolved:
+            self._send_error_response(
+                request_id,
+                code=-32602,
+                message=f"Sub-workflow template not found: {name}",
+            )
+            return
+
+        script_path = resolved
+
+        # --- Sub-workflow tool-allowlist preflight --------------------------
+        # Read the template's meta block and ensure every tool it declares is
+        # present in the parent's allowed_tools. Failing here (before any
+        # sub-process is spawned) keeps the failure cheap and gives handlers a
+        # structured payload to surface in the confirmation card.
+        sub_meta_tools: list[str] = []
+        sub_description: str | None = None
+        try:
+            with open(script_path, "r", encoding="utf-8") as f:
+                sub_content = f.read()
+        except OSError as exc:
+            self._send_error_response(
+                request_id,
+                code=-32003,
+                message=f"Failed to read sub-workflow template '{name}': {exc}",
+            )
+            return
+
+        try:
+            from .script_gen import extract_meta_from_script
+
+            parsed = extract_meta_from_script(sub_content) or {}
+            sub_meta_tools = list(parsed.get("tools", []) or [])
+            sub_description = parsed.get("description")
+        except Exception as exc:  # noqa: BLE001  — fail-safe, not a security issue
+            logger.warning(
+                "[RuntimeBridge] Failed to parse sub-workflow meta for %s: %s",
+                name,
+                exc,
+            )
+            parsed = {}
+            sub_meta_tools = []
+
+        missing_tools = sorted(
+            {t for t in sub_meta_tools if t not in set(self._allowed_tools or [])}
+        )
+        if missing_tools:
+            self._send_error_response(
+                request_id,
+                code=-32004,
+                message=(
+                    f"Sub-workflow '{name}' requires tools not present in "
+                    f"the parent allowlist: missing={missing_tools}; "
+                    f"allowed={sorted(self._allowed_tools or [])}"
+                ),
+                structured={
+                    "kind": "missing_tools",
+                    "name": name,
+                    "description": sub_description,
+                    "missing_tools": missing_tools,
+                    "allowed_tools": sorted(self._allowed_tools or []),
+                    "script_path": script_path,
+                },
             )
             return
 
         # Extract args to pass to sub-workflow
         sub_args = params.get("args", {})
 
-        # Calculate isolated sub-workflow budget (ratio of parent budget)
+        # Calculate desired sub-workflow budget (ratio of parent budget)
         # Import settings lazily to avoid circular imports
         try:
             from src.config import get_settings
@@ -600,7 +886,41 @@ class RuntimeBridge:
             subflow_ratio = getattr(settings, "workflow_subflow_budget_ratio", 0.2)
         except Exception:
             subflow_ratio = 0.2
-        sub_budget = int(self._budget_total * subflow_ratio) if self._budget_total > 0 else 0
+
+        desired_sub_budget = (
+            int(self._budget_total * subflow_ratio) if self._budget_total > 0 else 0
+        )
+
+        # Atomically reserve headroom from the parent bridge. Fail closed if
+        # no budget is left: the JS side asked to spawn a sub-workflow, but
+        # the parent has already consumed its budget via agent() calls or
+        # previous sub-workflows. We return a JSON-RPC budget error instead
+        # of silently running a budget=0 sub-bridge.
+        reserved = self._reserve_subflow_budget(
+            desired_sub_budget,
+            ratio=subflow_ratio,
+        )
+        if reserved <= 0:
+            logger.warning(
+                "[RuntimeBridge] Sub-flow budget denied for %s "
+                "(total=%d, used=%d, reserved_pool=%d)",
+                name,
+                self._budget_total,
+                getattr(self, "_budget_used", 0),
+                self._budget_reserved,
+            )
+            self._send_error_response(
+                request_id,
+                code=-32002,
+                message=(
+                    "Sub-workflow budget denied: parent workflow has "
+                    "insufficient remaining headroom."
+                ),
+            )
+            return
+
+        # Sub-workflow receives *exactly* what was reserved.
+        sub_budget = reserved
 
         def _execute_sub_workflow() -> None:
             try:
@@ -620,24 +940,63 @@ class RuntimeBridge:
                     allowed_tools=self._allowed_tools,
                     nesting_depth=self._nesting_depth + 1,
                     args=sub_args,
+                    initiator_user_id=self._initiator_user_id,
                 )
                 # Link parent-child for cascade cancellation
                 sub_bridge._parent = self
                 with self._children_lock:
                     self._children.append(sub_bridge)
 
+                # Track sub-bridge consumption outside the try/finally so
+                # it is guaranteed to be defined for cleanup. Defaults to 0
+                # if sub_bridge.start/run/stop raises before we can read it.
+                sub_budget_used = 0
                 try:
                     sub_bridge.start()
                     result = sub_bridge.run()
                     sub_bridge.stop()
-                    self._send_response(request_id, {"data": result})
+
+                    # Read the sub-bridge's actual token consumption so the
+                    # parent bridge can account for it in _budget_used.
+                    # Without this, sub-workflow tokens were "free" from the
+                    # parent's ledger and subsequent sub-workflow reservations
+                    # still claimed the full budget_total.
+                    sub_used = getattr(sub_bridge, "_budget_used", 0)
+                    if isinstance(sub_used, int):
+                        sub_budget_used = sub_used
+
+                    # Build response payload mirroring the agent_call contract
+                    # (data + _budget_used metadata) so JS-side tracking is
+                    # consistent between agent() and workflow() calls.
+                    response_data: dict[str, Any] = {"data": result}
+                    response_data["_budget_used"] = sub_budget_used
+                    response_data["token_usage"] = sub_budget_used
+
+                    # Forward sub-bridge consumption to the parent's own
+                    # budget ledger so subsequent sub-workflow reservations are
+                    # capped against remaining headroom (total - used - reserved).
+                    if sub_budget_used > 0:
+                        self._report_agent_used(sub_budget_used)
+
+                    self._send_response(request_id, response_data)
                 finally:
-                    # Clean up child reference
+                    # Release only the *unused* portion of the reservation.
+                    # The consumed portion is already accounted for in
+                    # _budget_used above; releasing it again would
+                    # double-count against remaining headroom.
+                    unused = reserved - sub_budget_used
+                    if unused > 0:
+                        self._release_subflow_budget(unused)
+                    # If sub_budget_used >= reserved, the entire reservation
+                    # has been consumed and nothing should be released back.
+                    # _release_subflow_budget(0) is a safe no-op.
                     with self._children_lock:
                         if sub_bridge in self._children:
                             self._children.remove(sub_bridge)
             except Exception as exc:
                 logger.exception("Sub-workflow call failed for request %s", request_id)
+                # Note: parent-side budget reservation is released by the
+                # inner `finally` block above — no double-release here.
                 self._send_error_response(
                     request_id,
                     code=-32603,
@@ -684,14 +1043,30 @@ class RuntimeBridge:
         })
 
     def _send_error_response(
-        self, request_id: Any, code: int, message: str
+        self,
+        request_id: Any,
+        code: int,
+        message: str,
+        structured: dict[str, Any] | None = None,
     ) -> None:
-        """Send a JSON-RPC error response."""
-        self._send({
+        """Send a JSON-RPC error response.
+
+        Args:
+            request_id: JSON-RPC request id.
+            code: Numeric error code.
+            message: Human-readable message.
+            structured: Optional machine-readable payload surfaced in the
+                ``data`` field so callers (handlers, tests) can branch on
+                specific failure kinds (e.g. missing tools in sub-workflows).
+        """
+        payload: dict[str, Any] = {
             "jsonrpc": "2.0",
             "id": request_id,
             "error": {"code": code, "message": message},
-        })
+        }
+        if structured:
+            payload["error"]["data"] = structured
+        self._send(payload)
 
     def _send_cancel(self) -> None:
         """Send cancel notification to the JS runtime."""
@@ -709,6 +1084,12 @@ class RuntimeBridge:
         """Remove a completed future from the active set (done callback)."""
         with self._futures_lock:
             self._active_futures.discard(future)
+
+    @property
+    def in_flight_count(self) -> int:
+        """Count of submitted-but-not-yet-completed futures (thread-safe)."""
+        with self._futures_lock:
+            return len(self._active_futures)
 
     # ------------------------------------------------------------------
     # Internal: Message queue helpers

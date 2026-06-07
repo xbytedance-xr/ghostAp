@@ -1,0 +1,8 @@
+{
+  "name": "ghostap-workflow-runtime",
+  "version": "1.0.0",
+  "description": "Orchestration runtime for GhostAP Workflow engine",
+  "type": "module",
+  "main": "runtime.js",
+  "engines": { "node": ">=18.0.0" }
+}

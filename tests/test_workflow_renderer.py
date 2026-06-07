@@ -21,9 +21,12 @@ from src.workflow_engine.models import (
 )
 from src.workflow_engine.renderer import (
     WorkflowProgressRenderer,
+    _AGENT_OUTPUT_FORBIDDEN_MARKERS,
+    _card_text_for_agent_output,
     _column_set,
     _format_duration,
     _format_tokens,
+    _md_element,
     _pct,
     render_completion_card,
     render_script_preview,
@@ -138,10 +141,10 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         renderer = WorkflowProgressRenderer(project)
         status = renderer.render_compact_status()
 
-        self.assertIn("WF:", status)
+        self.assertIn("任务:", status)
         self.assertIn("test-workflow", status)
-        self.assertIn("Phase", status)
-        self.assertIn("agents", status)
+        self.assertIn("阶段", status)
+        self.assertIn("代理", status)
 
     def test_pagination_large_agent_list(self):
         """With >20 agents, pagination notice should appear."""
@@ -149,10 +152,14 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         renderer = WorkflowProgressRenderer(project)
         card = renderer.render_progress_card()
 
-        # Should contain pagination notice like "*... +N agents*"
+        # Look for pagination/overflow notice in any top-level markdown element.
+        # The renderer now emits "共 N 条已完成/缓存（已折叠）" for hidden done/cached agents.
         md_elements = [e for e in card["elements"] if e.get("tag") == "markdown"]
         md_texts = [e["content"] for e in md_elements]
-        has_pagination = any("agents" in t and "..." in t for t in md_texts)
+        has_pagination = any(
+            ("代理" in t and "..." in t) or ("条已完成/缓存" in t)
+            for t in md_texts
+        )
         self.assertTrue(has_pagination, "Expected pagination notice for 25 agents")
 
     def test_phase_section_uses_collapsible_panels(self):
@@ -332,6 +339,63 @@ class TestConfirmCardStructure(unittest.TestCase):
             )) or (e.get("tag") == "markdown" and "默认模板" in e.get("content", ""))
         ]
         self.assertGreater(len(warning_elements), 0, "Expected a note/markdown element with fallback warning")
+    def test_confirm_card_budget_has_own_row_on_mobile(self) -> None:
+        """Budget must be rendered in its own full-width row, not squeezed
+        next to phase/tool counts, so the long label stays readable on
+        narrow mobile screens."""
+        import json
+
+        card = self._build_card(requirement="long-running audit task")
+        raw = json.dumps(card, ensure_ascii=False)
+
+        # Locate the three-column stats block that existed before this
+        # round of mobile polish. It must NOT survive.
+        self.assertNotIn(
+            "阶段数</font>\\n</markdown>\\n</column>\\n</column_set>\\n</",
+            raw,
+            "budget must no longer share a column_set row with phase/tool counts",
+        )
+
+        # A dedicated column_set must render the budget label as a full-width
+        # row. We conservatively check that the budget markdown block sits
+        # in its own single-column column_set.
+        column_sets = [
+            node for node in self._walk_elements(self._get_elements(card))
+            if node.get("tag") == "column_set"
+        ]
+        budget_rows = [
+            cs for cs in column_sets
+            if len(cs.get("columns", [])) == 1
+            and "预算</font>" in json.dumps(cs, ensure_ascii=False)
+        ]
+        self.assertTrue(
+            budget_rows,
+            "expected a full-width column_set for the budget row",
+        )
+
+    def test_confirm_card_phase_tool_row_uses_two_columns(self) -> None:
+        """Phase and tool counts should share a two-column (bisect) row so
+        the screen space is used efficiently."""
+        card = self._build_card(requirement="mobile layout audit")
+        two_column_rows = [
+            node for node in self._walk_elements(self._get_elements(card))
+            if node.get("tag") == "column_set" and len(node.get("columns", [])) == 2
+        ]
+        self.assertTrue(
+            two_column_rows,
+            "expected at least one two-column stats row for phases/tools",
+        )
+
+    @staticmethod
+    def _walk_elements(elements):
+        for node in elements:
+            yield node
+            for key in ("columns", "elements"):
+                nested = node.get(key)
+                if isinstance(nested, list):
+                    yield from TestConfirmCardStructure._walk_elements(nested)
+
+
 
 
 class TestRenderScriptPreview(unittest.TestCase):
@@ -461,7 +525,7 @@ class TestRenderCompletionCard(unittest.TestCase):
             return content
 
         all_content = " ".join(extract_markdown(card["elements"]))
-        self.assertIn("agents", all_content)
+        self.assertIn("代理", all_content)
         self.assertIn("Token", all_content)
 
     def test_elements_contain_phase_summary(self):
@@ -487,6 +551,235 @@ class TestRenderCompletionCard(unittest.TestCase):
             e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown"
         )
         self.assertIn("Runtime timeout", all_content)
+
+
+class TestAgentOutputDefensiveCheck(unittest.TestCase):
+    """Test the AC4 defensive gate that trips when a sentinel appears in card text."""
+
+    SENTINEL = "AC4_SENTINEL_OUTPUT_XYZ"
+
+    def _make_project(self, **kwargs):
+        defaults = {
+            "name": "audit",
+            "status": WorkflowStatus.RUNNING,
+            "started_at": time.time() - 60,
+            "budget": BudgetState(used=100_000, total=1_000_000),
+        }
+        defaults.update(kwargs)
+        return WorkflowProject(**defaults)
+
+    # ------------------------------------------------------------------
+    # _card_text_for_agent_output unit behaviour
+    # ------------------------------------------------------------------
+
+    def test_empty_markers_is_noop(self):
+        """An empty marker tuple must never raise, even if elements exist."""
+        elements = [_md_element("plain content")]
+        # Should not raise.
+        _card_text_for_agent_output(elements, ())
+
+    def test_raises_on_content_field_match(self):
+        elements = [_md_element(f"prefix {self.SENTINEL} suffix")]
+        with self.assertRaises(RuntimeError) as ctx:
+            _card_text_for_agent_output(elements, (self.SENTINEL,))
+        self.assertIn("card leaked agent output", str(ctx.exception))
+
+    def test_raises_on_text_field_match(self):
+        elements = [{"tag": "note", "elements": [{"tag": "plain_text", "text": self.SENTINEL}]}]
+        with self.assertRaises(RuntimeError):
+            _card_text_for_agent_output(elements, (self.SENTINEL,))
+
+    def test_no_raise_without_match(self):
+        elements = [
+            _md_element("safe line 1"),
+            {"tag": "column_set", "columns": [{"tag": "column", "elements": [_md_element("safe line 2")]}]},
+        ]
+        # Should not raise.
+        _card_text_for_agent_output(elements, (self.SENTINEL,))
+
+    def test_marker_constant_starts_empty(self):
+        # Production default is an empty tuple so the gate is a no-op.
+        self.assertEqual(_AGENT_OUTPUT_FORBIDDEN_MARKERS, ())
+
+    # ------------------------------------------------------------------
+    # Integration: monkey-patch the module-level constant and verify
+    # render_progress_card / render_completion_card trip the gate.
+    # ------------------------------------------------------------------
+
+    def test_progress_card_trips_gate_on_leaked_result(self):
+        import src.workflow_engine.renderer as renderer_mod
+
+        original = getattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS")
+        try:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", (self.SENTINEL,))
+            # Inject the sentinel into an agent label so it leaks into the
+            # rendered phase section text, simulating an accidental
+            # agent-output leak.
+            project = self._make_project()
+            phase = PhaseProgress(
+                title="Analysis",
+                started_at=time.time() - 60,
+            )
+            phase.agents.append(AgentProgress(
+                label=f"leaked-{self.SENTINEL}-label",
+                tool="coco",
+                status=AgentStatus.DONE,
+                duration_s=5.0,
+                token_usage=1000,
+            ))
+            project.phases.append(phase)
+            project.metrics.total_agents = 1
+            project.metrics.completed_agents = 1
+            renderer = WorkflowProgressRenderer(project)
+            with self.assertRaises(RuntimeError) as ctx:
+                renderer.render_progress_card()
+            self.assertIn("card leaked agent output", str(ctx.exception))
+        finally:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", original)
+
+    def test_progress_card_clean_project_passes(self):
+        import src.workflow_engine.renderer as renderer_mod
+
+        original = getattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS")
+        try:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", (self.SENTINEL,))
+            project = self._make_project(
+                requirement="normal requirement",
+                result="normal result",
+            )
+            renderer = WorkflowProgressRenderer(project)
+            card = renderer.render_progress_card()
+            self.assertIn("elements", card)
+            self.assertIsInstance(card["elements"], list)
+        finally:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", original)
+
+    def test_completion_card_trips_gate_on_leaked_result(self):
+        import src.workflow_engine.renderer as renderer_mod
+
+        original = getattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS")
+        try:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", (self.SENTINEL,))
+            project = self._make_project(
+                status=WorkflowStatus.COMPLETED,
+                result=f"leaked {self.SENTINEL} here",
+            )
+            with self.assertRaises(RuntimeError) as ctx:
+                render_completion_card(project)
+            self.assertIn("card leaked agent output", str(ctx.exception))
+        finally:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", original)
+
+    def test_completion_card_clean_project_passes(self):
+        import src.workflow_engine.renderer as renderer_mod
+
+        original = getattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS")
+        try:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", (self.SENTINEL,))
+            project = self._make_project(
+                status=WorkflowStatus.COMPLETED,
+                requirement="audit the repo",
+                result="found no issues",
+            )
+            card = render_completion_card(project)
+            self.assertIn("elements", card)
+            self.assertIsInstance(card["elements"], list)
+        finally:
+            setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", original)
+
+class TestMiddleEllipsisLabelSafety(unittest.TestCase):
+    """WorkflowProgressRenderer must keep long phase/agent labels readable
+    on mobile by emitting a middle-ellipsis form rather than raw text that
+    would overflow the card width."""
+
+    LONG_PHASE = (
+        "payment-gateway: migrate-checkout-flow-and-verify-3ds2-compliance-phase"
+    )
+    LONG_AGENT = (
+        "agent:generate-migration-script-for-checkout-payment-methods-upgrade"
+    )
+
+    def _make_project_with_long_labels(self):
+        from src.workflow_engine.models import (
+            AgentProgress,
+            PhaseProgress,
+            WorkflowProject,
+            WorkflowStatus,
+        )
+
+        project = WorkflowProject(
+            workflow_id="w1", status=WorkflowStatus.RUNNING, name="audit",
+        )
+        project.phases = [
+            PhaseProgress(
+                index=1,
+                title=self.LONG_PHASE,
+                started_at=1_700_000_000.0,
+                agents=[
+                    AgentProgress(
+                        label=self.LONG_AGENT,
+                        tool="coco",
+                        status=AgentStatus.RUNNING,
+                        started_at=1_700_000_000.0,
+                    ),
+                ],
+            ),
+        ]
+        return project
+
+    def test_progress_summary_truncates_long_labels(self) -> None:
+        from src.workflow_engine.renderer import WorkflowProgressRenderer
+
+        project = self._make_project_with_long_labels()
+        renderer = WorkflowProgressRenderer(project)
+        summary = renderer._render_summary_section()
+        self.assertIsNotNone(summary)
+        content = _markdown_content(summary) or ""
+        # Middle ellipsis must appear: no raw 60+ char title on the card.
+        self.assertIn("…", content)
+        # Head of each label must still be visible so the operator can
+        # disambiguate phases/agents.
+        self.assertIn("payment-gateway", content)
+        self.assertIn("agent:generate", content)
+
+    def test_progress_card_truncates_phase_and_agent_labels(self) -> None:
+        import json as _json
+
+        from src.workflow_engine.renderer import WorkflowProgressRenderer
+
+        project = self._make_project_with_long_labels()
+        renderer = WorkflowProgressRenderer(project)
+        card = renderer.render_progress_card()
+        raw = _json.dumps(card, ensure_ascii=False)
+
+        # The raw title must NOT appear verbatim — it would otherwise spill
+        # off a mobile card.
+        self.assertNotIn(self.LONG_PHASE, raw)
+        self.assertNotIn(self.LONG_AGENT, raw)
+        # But a truncated form (head + …) should remain readable.
+        self.assertIn("payment-gateway", raw)
+        self.assertIn("agent:generate", raw)
+        self.assertIn("…", raw)
+
+
+def _markdown_content(element) -> str | None:
+    """Best-effort extract of the markdown text inside a render element."""
+    if not isinstance(element, dict):
+        return None
+    if element.get("tag") == "markdown":
+        return element.get("content", "")
+    for value in element.values():
+        if isinstance(value, list):
+            pieces = [_markdown_content(item) for item in value]
+            joined = "\n".join(p for p in pieces if p)
+            if joined:
+                return joined
+        if isinstance(value, dict):
+            inner = _markdown_content(value)
+            if inner:
+                return inner
+    return None
+
 
 
 if __name__ == "__main__":

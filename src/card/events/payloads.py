@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict
 
 # ---------------------------------------------------------------------------
 # Lifecycle payload TypedDicts
@@ -296,3 +296,271 @@ class TaskListUpdatedPayload(TypedDict):
     """Payload for TASK_LIST_UPDATED event."""
     tasks: list[TaskSnapshotPayload]
     current_task_id: str
+
+
+# ---------------------------------------------------------------------------
+# Workflow engine payload TypedDicts
+# ---------------------------------------------------------------------------
+
+class WorkflowProgressPayload(TypedDict):
+    """Payload for WORKFLOW_PROGRESS event — full card JSON from renderer.
+
+    ``card`` is required; callers must always supply the rendered card JSON
+    so downstream consumers can read payload["card"] without defensive fallbacks.
+    ``compact_status`` is optional and carries a short human-readable summary.
+    ``budget_consumed`` / ``budget_remaining`` are optional and carry the
+    cumulative token consumption and the remaining headroom (both in tokens).
+    """
+    card: dict  # Feishu card JSON with header + elements
+    compact_status: NotRequired[str]
+    budget_consumed: NotRequired[int]  # tokens used so far across all agent() calls
+    budget_remaining: NotRequired[int]  # tokens still available (total - consumed)
+
+
+class WorkflowPhasePayload(TypedDict):
+    """Payload for WORKFLOW_PHASE event."""
+    title: str
+
+
+class WorkflowAgentStartedPayload(TypedDict):
+    """Payload for WORKFLOW_AGENT_STARTED event."""
+    label: str
+    tool: str
+    phase: str
+
+
+class WorkflowAgentDonePayload(TypedDict):
+    """Payload for WORKFLOW_AGENT_DONE event."""
+    label: str
+    token_usage: NotRequired[int]
+    duration_s: NotRequired[float]
+    cached: NotRequired[bool]
+
+
+class WorkflowAgentFailedPayload(TypedDict):
+    """Payload for WORKFLOW_AGENT_FAILED event."""
+    label: str
+    error: str
+
+
+class WorkflowLogPayload(TypedDict):
+    """Payload for WORKFLOW_LOG event."""
+    message: str
+
+
+class WorkflowPhaseItem(TypedDict):
+    """Structured phase item for WorkflowConfirmPayload.phases."""
+    title: str
+    detail: NotRequired[str]
+
+
+class WorkflowRefItem(TypedDict, total=False):
+    """Structured sub-workflow reference for WorkflowConfirmPayload.workflow_refs.
+
+    Normalized contract: ``{ name, description?, args?, failure_policy? }``.
+    Legacy string refs are supported for backward compatibility but should be
+    converted to dict at boundaries. ``script_path`` is *not* accepted at
+    runtime — the Python bridge resolves templates by name only so refs
+    always go through validate_template_name + resolve_template_path.
+
+    Fields:
+      name (str, required): Template identifier. Matches a built-in name,
+          a user template, a project template, or a global allowlisted
+          template name (without the .js extension).
+      description (str, optional): Human-readable description surfaced in
+          the confirmation card and in injected comments.
+      args (dict, optional): Arguments forwarded to the sub-workflow as
+          ``workflow(name, args)``. Must be JSON-serializable.
+      failure_policy (str, optional): One of ``"skip"`` (default — catch
+          and continue) or ``"fail_fast"`` (let the exception propagate to
+          the parent script).
+    """
+
+    name: str
+    description: NotRequired[str]
+    args: NotRequired[dict[str, Any]]
+    failure_policy: NotRequired[str]
+    # Legacy path/hash fields are preserved here to gracefully parse older card
+    # payloads that still embed them. They are intentionally typed as NotRequired
+    # and callers must not rely on them for sub-workflow resolution.
+    path: NotRequired[str]
+    hash: NotRequired[str]
+
+
+class WorkflowRefItemLegacy(TypedDict, total=False):
+    """Legacy sub-workflow reference payload fields — kept as a distinct
+    type for reading older payloads without polluting the canonical schema.
+    """
+
+    name: str
+    path: str
+    hash: str
+
+
+class WorkflowConfirmPayload(TypedDict, total=True):
+    """Payload for WORKFLOW_CONFIRM event — preview before execution.
+
+    Security-critical: initiator_user_id and engine_session_key are required
+    to prevent cross-user confirmation hijacking.
+    """
+    script_name: str
+    description: str
+    phases: list["WorkflowPhaseItem"]
+    tools: list[str]
+    budget_total: int
+    requirement: str
+    initiator_user_id: str
+    engine_session_key: str
+    project_id: NotRequired[str]
+    chat_id: NotRequired[str]
+    is_fallback: NotRequired[bool]
+    workflow_refs: NotRequired[list["WorkflowRefItem"]]
+    dependency_graph: NotRequired[dict]  # {phase: [dep_phases]}
+    phase_tool_mapping: NotRequired[dict]  # {phase: [tools]}
+    script_preview: NotRequired[str]  # truncated script for user review
+
+
+# ---------------------------------------------------------------------------
+# Workflow button callback payload TypedDicts
+#
+# These describe the ``value`` dict attached to every Feishu button on a
+# workflow confirm card. Handlers MUST validate incoming callback payloads
+# against these schemas; any unexpected field should be ignored to prevent
+# injection of forged fields (e.g. ``value.confirmed``).
+# ---------------------------------------------------------------------------
+
+
+class _WorkflowBaseButtonValueRequired(TypedDict):
+    """Fields required on every workflow button at the type level.
+
+    Separating required fields into their own TypedDict gives us type-level
+    enforcement of action/chat_id/project_id/engine_session_key — omitting
+    any of them will now surface as a type-checking error, not just a
+    runtime warning. Downstream button values inherit both the required
+    fields and the optional root_id via ``_WorkflowBaseButtonValue`` below.
+    """
+
+    action: str
+    chat_id: str
+    project_id: str
+    engine_session_key: str
+
+
+class _WorkflowBaseButtonValueOptional(TypedDict, total=False):
+    """Fields that may or may not appear on a workflow button.
+
+    ``root_id`` carries the stable filesystem root associated with the
+    pending engine. It is populated when the originating button is aware
+    of the root path (e.g. agent-selection cards initialized before any
+    project context is available); otherwise it is omitted.
+    """
+
+    root_id: str
+
+
+class _WorkflowBaseButtonValue(
+    _WorkflowBaseButtonValueRequired,
+    _WorkflowBaseButtonValueOptional,
+):
+    """Combined TypedDict for workflow button callback values.
+
+    Inherits the required fields (action/chat_id/project_id/engine_session_key)
+    from :class:`_WorkflowBaseButtonValueRequired` and the optional
+    ``root_id`` from :class:`_WorkflowBaseButtonValueOptional`. This
+    mirrors the runtime expectation: every callback must identify the
+    originating chat, project, and engine session, while root_id is
+    filled in only when the caller knows the filesystem root.
+    """
+
+    pass
+
+
+class WorkflowSelectToolButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_SELECT_TOOL`` button payload."""
+
+    tool_name: str
+
+
+class WorkflowSelectBudgetButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_SELECT_BUDGET`` button payload."""
+
+    budget_tokens: int
+
+
+class WorkflowAgentSelectButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_SELECT_AGENT`` button payload.
+
+    Inherits required fields (action/chat_id/project_id/engine_session_key)
+    from ``_WorkflowBaseButtonValue`` so security-critical fields are
+    enforced at the type level — matching the sibling
+    ``WorkflowSelectToolButtonValue`` / ``WorkflowSelectBudgetButtonValue``
+    contracts.
+    """
+
+    agent_type: str
+
+
+class WorkflowGenericButtonValue(_WorkflowBaseButtonValue):
+    """Shared confirm/cancel/regen/back-to-tools payload shape.
+
+    Matches buttons: CONFIRM_START, CANCEL, REGENERATE_SCRIPT,
+    APPLY_BUDGET_REGENERATE, FILL_MISSING_TOOLS, BACK_TO_TOOLS.
+    """
+
+    pass
+
+
+class WorkflowConfirmCardValue(TypedDict, total=False):
+    """Union type annotation for a workflow button ``value`` dict.
+
+    Fields mirror ``_WORKFLOW_BUTTON_FIELDS`` below so the button parser and
+    the TypedDict contract cannot drift. Adding a new field here requires
+    adding the same key to ``_WORKFLOW_BUTTON_FIELDS`` — otherwise the
+    filter helper will strip it.
+    """
+
+    action: str
+    chat_id: str
+    project_id: str
+    engine_session_key: str
+    root_id: str
+    tool_name: str
+    budget_tokens: int
+    agent_type: str
+    role_id: str
+    initiator_user_id: str
+    ref_index: int
+    template_name: str
+
+
+# ``_WORKFLOW_BUTTON_FIELDS`` is the single source of truth for allowed
+# button payload keys. It mirrors :class:`WorkflowConfirmCardValue` 1:1 — any
+# new field must appear here and in the TypedDict. This set is consumed by
+# :func:`filter_workflow_button_value` to drop unknown payload keys.
+_WORKFLOW_BUTTON_FIELDS: set[str] = {
+    "action",
+    "chat_id",
+    "project_id",
+    "engine_session_key",
+    "root_id",
+    "tool_name",
+    "budget_tokens",
+    "agent_type",
+    "role_id",
+    "initiator_user_id",
+    "ref_index",
+    "template_name",
+}
+
+
+def filter_workflow_button_value(value: dict[str, Any]) -> dict[str, Any]:
+    """Return a button-value dict stripped of any field not in the schema.
+
+    Safety: a Feishu callback can carry arbitrary keys injected into the
+    button payload by a compromised client. We strip unknown fields at the
+    handler boundary so downstream code cannot read forged fields such as
+    ``"confirmed"``, ``"admin"``, or ``"override_budget"``.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if k in _WORKFLOW_BUTTON_FIELDS}

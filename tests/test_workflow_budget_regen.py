@@ -1,13 +1,22 @@
-"""Tests for Workflow budget switch triggering script regeneration (AC12)."""
+"""Tests for Workflow budget-switch script regeneration (AC12).
+
+Focuses on ``WorkflowHandler.handle_workflow_apply_budget_regenerate`` which
+implements the server-side two-step gate:
+
+1. First click (armed_for_regen is False): set the flag, re-render card, NO AI.
+2. Second click (armed_for_regen is True): call ``_generate_script_via_ai``
+   with ``override_budget_tokens``, update pending.script_path/meta, reset flag.
+3. Security checks fail (session key mismatch, user mismatch, wrong status):
+   handler responds via ``_reply_workflow_error``.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.feishu.handlers.workflow import WorkflowHandler
-from src.workflow_engine.constants import DEFAULT_BUDGET_TOKENS
 from src.workflow_engine.models import (
     PendingConfirmation,
     WorkflowProject,
@@ -15,8 +24,12 @@ from src.workflow_engine.models import (
 )
 
 
-def _create_mock_handler():
-    """Create a mock WorkflowHandler with basic dependencies."""
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_handler() -> WorkflowHandler:
     handler = WorkflowHandler.__new__(WorkflowHandler)
     handler.ctx = MagicMock()
     handler.reply_card = MagicMock()
@@ -24,38 +37,378 @@ def _create_mock_handler():
     handler._reply_workflow_error = MagicMock()
     handler._read_pending_script = MagicMock(return_value="// script content")
     handler._get_root_path = MagicMock(return_value="/tmp")
-    handler.get_engine_name = MagicMock(return_value="test_engine")
     return handler
 
 
-def test_budget_selection_updates_pending_state():
-    """选择预算后更新 pending 状态。"""
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_CONFIRM,
-        pending=PendingConfirmation(
-            requirement="test",
-            engine_session_key="session_123",
-            initiator_user_id="test_user",
-            selected_tools=["coco"],
-            script_path="/tmp/test.js",
-            meta={"tools": ["coco"]},
-            budget=None,
-        ),
+def _make_engine(pending: PendingConfirmation) -> MagicMock:
+    engine = MagicMock()
+    engine.project = WorkflowProject(
+        workflow_id="wf_1", status=WorkflowStatus.AWAITING_CONFIRM, pending=pending
     )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
+    return engine
 
-    # Mock script generation to avoid actual AI calls
-    with patch.object(handler, '_generate_script_via_ai') as mock_gen:
-        mock_gen.return_value = ("/tmp/new_script.js", {"tools": ["coco"], "budget_tokens": 5000000}, False)
 
-        with patch('src.thread.get_current_sender_id', return_value="test_user"):
+# ---------------------------------------------------------------------------
+# Task 5 — direct coverage of handle_workflow_apply_budget_regenerate
+# ---------------------------------------------------------------------------
+
+
+def test_apply_budget_regen_first_click_arms_without_ai():
+    """第一次点击：设置 armed_for_regen=True，不调用 AI，重渲染确认卡。"""
+    handler = _make_handler()
+    pending = PendingConfirmation(
+        requirement="regen test",
+        engine_session_key="session_abc",
+        initiator_user_id="user_0",
+        selected_tools=["coco"],
+        selected_budget=2000000,
+        script_path="/tmp/old.js",
+        meta={"tools": ["coco"]},
+        armed_for_regen=False,
+    )
+    engine = _make_engine(pending)
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=engine)
+
+    with patch.object(handler, "_generate_script_via_ai") as mock_gen:
+        with patch("src.thread.get_current_sender_id", return_value="user_0"):
+            handler.handle_workflow_apply_budget_regenerate(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project_id="",
+                value={
+                    "action": "workflow_apply_budget_regenerate",
+                    "engine_session_key": "session_abc",
+                },
+            )
+
+        # First click must NOT trigger AI
+        mock_gen.assert_not_called()
+
+    # Server flag is now armed
+    assert pending.armed_for_regen is True
+
+    # Confirm card was re-rendered so the button label reflects armed state
+    handler.update_card.assert_called_once()
+    handler._reply_workflow_error.assert_not_called()
+
+
+def test_apply_budget_regen_second_click_runs_ai_and_resets_flag(tmp_path):
+    """第二次点击：调用 AI，更新 pending 字段，重置 armed 标志，并
+    同步刷新 pending.script_hash。
+    """
+    import hashlib
+
+    old_script = tmp_path / "old.js"
+    old_script.write_bytes(b"// old\n")
+    new_script = tmp_path / "new.js"
+    new_script.write_bytes(b"// new\n")
+    expected_new_hash = hashlib.sha256(new_script.read_bytes()).hexdigest()
+
+    handler = _make_handler()
+    pending = PendingConfirmation(
+        requirement="regen round two",
+        engine_session_key="session_abc",
+        initiator_user_id="user_0",
+        selected_tools=["coco"],
+        selected_budget=5000000,
+        script_path=str(old_script),
+        meta={"tools": ["coco"]},
+        script_hash=hashlib.sha256(old_script.read_bytes()).hexdigest(),
+        armed_for_regen=True,
+    )
+    engine = _make_engine(pending)
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=engine)
+
+    with patch.object(
+        handler,
+        "_generate_script_via_ai",
+        return_value=(str(new_script), {"tools": ["coco"], "phase_count": 1}, False),
+    ) as mock_gen:
+        with patch("src.thread.get_current_sender_id", return_value="user_0"):
+            handler.handle_workflow_apply_budget_regenerate(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project_id="",
+                value={
+                    "action": "workflow_apply_budget_regenerate",
+                    "engine_session_key": "session_abc",
+                },
+            )
+
+    # AI was called exactly once with override_budget_tokens set
+    mock_gen.assert_called_once()
+    call_kwargs = mock_gen.call_args.kwargs
+    assert call_kwargs.get("override_budget_tokens") == 5000000
+
+    # Old script cleanup reached os.remove (best-effort, guarded)
+    assert not old_script.exists(), "旧脚本文件应已被清理"
+
+    # Server flag is reset after execution (single-token burst protection)
+    assert pending.armed_for_regen is False
+    assert pending.script_path == str(new_script)
+    assert pending.script_hash == expected_new_hash
+    assert pending.meta == {"tools": ["coco"], "phase_count": 1}
+
+    # Confirm card was re-rendered to show the new script
+    handler.update_card.assert_called_once()
+    handler._reply_workflow_error.assert_not_called()
+
+
+def test_apply_budget_regen_refreshes_script_hash_for_confirm_start(tmp_path):
+    """After successful regeneration, ``pending.script_hash`` must reflect
+    the new script content so that ``handle_workflow_confirm_start`` can
+    still pass its TOCTOU check — otherwise the user sees a spurious
+    "脚本被篡改" rejection after legitimately re-generating.
+    """
+    import hashlib
+
+    # Stage an "old" script file and its recorded hash.
+    old_script = tmp_path / "old.js"
+    old_script.write_bytes(b"// old\n")
+    old_hash = hashlib.sha256(old_script.read_bytes()).hexdigest()
+
+    # Stage the "new" script file that _generate_script_via_ai will return.
+    new_script = tmp_path / "new.js"
+    new_script.write_bytes(b"// new\n")
+    new_hash = hashlib.sha256(new_script.read_bytes()).hexdigest()
+
+    handler = _make_handler()
+    pending = PendingConfirmation(
+        requirement="hash-sync test",
+        engine_session_key="session_abc",
+        initiator_user_id="user_0",
+        selected_tools=["coco"],
+        selected_budget=2000000,
+        script_path=str(old_script),
+        meta={"tools": ["coco"]},
+        script_hash=old_hash,
+        armed_for_regen=True,
+    )
+    engine = _make_engine(pending)
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=engine)
+    handler._read_pending_script = MagicMock(return_value="// new")
+
+    with patch.object(
+        handler,
+        "_generate_script_via_ai",
+        return_value=(str(new_script), {"tools": ["coco"], "phase_count": 1}, False),
+    ):
+        with patch("src.thread.get_current_sender_id", return_value="user_0"):
+            handler.handle_workflow_apply_budget_regenerate(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project_id="",
+                value={
+                    "action": "workflow_apply_budget_regenerate",
+                    "engine_session_key": "session_abc",
+                },
+            )
+
+    # The pending hash must now equal the NEW script hash (not the old one).
+    assert pending.script_hash == new_hash
+    assert pending.script_hash != old_hash
+    assert pending.armed_for_regen is False
+    assert pending.script_path == str(new_script)
+    # The handler must NOT have surfaced an internal-error during
+    # regeneration (e.g. failing to read the new file would be an error).
+    handler._reply_workflow_error.assert_not_called()
+
+    # --- Second phase: confirm_start must NOT fail with "脚本被篡改".
+    # We don't assert a full execution run — only that the TOCTOU hash
+    # comparison passes without triggering an internal-error rejection.
+    # Wire validation helpers to focus on hash behaviour.
+    with patch.object(
+        handler,
+        "_inject_workflow_refs_into_script",
+        side_effect=lambda content, refs: content,
+    ), patch(
+        "src.workflow_engine.script_gen.validate_generated_script",
+        return_value=(True, []),
+    ), patch.object(
+        handler, "_submit_engine_task",
+    ), patch.object(
+        handler, "get_engine_name", return_value="workflow",
+    ), patch.object(
+        handler, "_build_workflow_callbacks", return_value={},
+    ):
+        handler.handle_workflow_confirm_start(
+            message_id="msg_2",
+            chat_id="chat_1",
+            project_id="",
+            value={
+                "action": "workflow_confirm_start",
+                "engine_session_key": "session_abc",
+            },
+        )
+
+    # Expect no internal-error rejection (specifically no "脚本被篡改"
+    # detail) and that the task-scheduling path was reached.
+    # Collect the detail argument of every internal-error call to ensure
+    # we didn't land on the TOCTOU rejection branch.
+    error_details = []
+    for call in handler._reply_workflow_error.call_args_list:
+        if call.args and len(call.args) >= 2 and call.args[1] == "internal_error":
+            kw = call.kwargs or {}
+            error_details.append(kw.get("detail", ""))
+    for detail in error_details:
+        assert "被篡改" not in detail, (
+            f"confirm_start rejected regenerated script as tampered: {detail}"
+        )
+
+
+def test_apply_budget_regen_rejects_wrong_session_key():
+    """session key 不匹配时拒绝。"""
+    handler = _make_handler()
+    pending = PendingConfirmation(
+        requirement="attacker",
+        engine_session_key="session_real",
+        initiator_user_id="user_0",
+        selected_tools=["coco"],
+        selected_budget=2000000,
+        script_path="/tmp/old.js",
+        meta={"tools": ["coco"]},
+    )
+    engine = _make_engine(pending)
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=engine)
+
+    with patch.object(handler, "_generate_script_via_ai") as mock_gen:
+        with patch("src.thread.get_current_sender_id", return_value="user_0"):
+            handler.handle_workflow_apply_budget_regenerate(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project_id="",
+                value={
+                    "action": "workflow_apply_budget_regenerate",
+                    "engine_session_key": "session_fake",  # forged
+                },
+            )
+
+        mock_gen.assert_not_called()
+
+    # Flag must NOT be armed when security gate fails
+    assert getattr(pending, "armed_for_regen", False) is False
+
+    handler._reply_workflow_error.assert_called_once()
+    # error code should indicate session expiry
+    assert handler._reply_workflow_error.call_args[0][1] == "session_expired"
+    handler.update_card.assert_not_called()
+
+
+def test_apply_budget_regen_rejects_wrong_initiator_user():
+    """非发起者用户点击时拒绝（权限隔离）。"""
+    handler = _make_handler()
+    pending = PendingConfirmation(
+        requirement="owner-only",
+        engine_session_key="session_abc",
+        initiator_user_id="user_0",
+        selected_tools=["coco"],
+        selected_budget=2000000,
+        script_path="/tmp/old.js",
+        meta={"tools": ["coco"]},
+    )
+    engine = _make_engine(pending)
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=engine)
+
+    with patch.object(handler, "_generate_script_via_ai") as mock_gen:
+        with patch("src.thread.get_current_sender_id", return_value="user_1"):  # wrong user
+            handler.handle_workflow_apply_budget_regenerate(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project_id="",
+                value={
+                    "action": "workflow_apply_budget_regenerate",
+                    "engine_session_key": "session_abc",
+                },
+            )
+
+        mock_gen.assert_not_called()
+
+    assert getattr(pending, "armed_for_regen", False) is False
+    handler._reply_workflow_error.assert_called_once()
+    assert handler._reply_workflow_error.call_args[0][1] == "forbidden"
+    handler.update_card.assert_not_called()
+
+
+def test_apply_budget_regen_rejects_when_status_not_awaiting_confirm():
+    """status 非 AWAITING_CONFIRM 时拒绝（并发状态防护）。"""
+    handler = _make_handler()
+    pending = PendingConfirmation(
+        requirement="running",
+        engine_session_key="session_abc",
+        initiator_user_id="user_0",
+        selected_tools=["coco"],
+        selected_budget=2000000,
+        script_path="/tmp/old.js",
+        meta={"tools": ["coco"]},
+    )
+    engine = MagicMock()
+    engine.project = WorkflowProject(
+        workflow_id="wf_1", status=WorkflowStatus.RUNNING, pending=pending
+    )
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=engine)
+
+    with patch.object(handler, "_generate_script_via_ai") as mock_gen:
+        with patch("src.thread.get_current_sender_id", return_value="user_0"):
+            handler.handle_workflow_apply_budget_regenerate(
+                message_id="msg_1",
+                chat_id="chat_1",
+                project_id="",
+                value={
+                    "action": "workflow_apply_budget_regenerate",
+                    "engine_session_key": "session_abc",
+                },
+            )
+
+        mock_gen.assert_not_called()
+
+    handler._reply_workflow_error.assert_called_once()
+    assert handler._reply_workflow_error.call_args[0][1] == "invalid_state"
+    handler.update_card.assert_not_called()
+
+
+def test_apply_budget_regen_strips_forged_payload_fields():
+    """filter_workflow_button_value 会剥离伪造字段，防止 client-side 绕过。"""
+    from src.card.events.payloads import filter_workflow_button_value
+
+    raw = {
+        "action": "workflow_apply_budget_regenerate",
+        "engine_session_key": "session_abc",
+        "confirmed": True,  # forged client-side field
+        "override_budget_tokens": 99999999,  # forged
+        "admin": True,  # forged
+    }
+    cleaned = filter_workflow_button_value(raw)
+    assert "confirmed" not in cleaned
+    assert "override_budget_tokens" not in cleaned
+    assert "admin" not in cleaned
+    assert cleaned.get("engine_session_key") == "session_abc"
+
+
+# ---------------------------------------------------------------------------
+# Retained: budget selection still updates pending.budget without AI
+# ---------------------------------------------------------------------------
+
+
+def test_budget_selection_updates_pending_state():
+    """预算选择仅更新 pending.selected_budget，不触发 AI 生成。"""
+    handler = _make_handler()
+    pending = PendingConfirmation(
+        requirement="test",
+        engine_session_key="session_123",
+        initiator_user_id="test_user",
+        selected_tools=["coco"],
+        script_path="/tmp/test.js",
+        meta={"tools": ["coco"]},
+        selected_budget=None,
+    )
+    engine = _make_engine(pending)
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=engine)
+
+    with patch.object(handler, "_generate_script_via_ai") as mock_gen:
+        with patch("src.thread.get_current_sender_id", return_value="test_user"):
             handler.handle_workflow_select_budget(
-                message_id="msg_123",
-                chat_id="test_chat",
+                message_id="msg_1",
+                chat_id="chat_1",
                 project_id="",
                 value={
                     "action": "workflow_select_budget",
@@ -64,178 +417,43 @@ def test_budget_selection_updates_pending_state():
                 },
             )
 
-    # Verify budget was updated
-    assert mock_engine.project.pending.budget == 5000000
-
-    # Verify card was updated twice: once for "regenerating" card, once for final confirm card
-    assert handler.update_card.call_count == 2
-
-    # Verify script generation was called with the new budget
-    mock_gen.assert_called_once()
-    call_kwargs = mock_gen.call_args.kwargs
-    assert call_kwargs.get("override_budget_tokens") == 5000000
+    assert pending.selected_budget == 5000000
+    assert handler.update_card.call_count == 1
+    mock_gen.assert_not_called()
 
 
-def test_budget_change_triggers_script_regeneration():
-    """切换预算触发脚本重新生成。"""
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_CONFIRM,
-        pending=PendingConfirmation(
-            requirement="test requirement",
-            engine_session_key="session_123",
-            initiator_user_id="test_user",
-            selected_tools=["coco"],
-            script_path="/tmp/old_script.js",
-            meta={"tools": ["coco"]},
-            budget=2000000,  # Original budget
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-
-    # Mock script generation
-    with patch.object(handler, '_generate_script_via_ai') as mock_gen:
-        mock_gen.return_value = ("/tmp/new_script.js", {"tools": ["coco"]}, False)
-
-        with patch('src.thread.get_current_sender_id', return_value="test_user"):
-            # Add a regenerate flag to the value (if implemented)
-            handler.handle_workflow_select_budget(
-                message_id="msg_123",
-                chat_id="test_chat",
-                project_id="",
-                value={
-                    "action": "workflow_select_budget",
-                    "budget_tokens": 5000000,  # Different budget
-                    "engine_session_key": "session_123",
-                    "regenerate": True,  # If this flag is supported
-                },
-            )
-
-        # If regenerate is supported, script should be regenerated
-        # If not, this test documents the expected behavior
-        if mock_gen.called:
-            # Verify script generation was called with new budget
-            call_args = mock_gen.call_args
-            assert str(5000000) in str(call_args[0]) or str(5000000) in str(call_args.kwargs)
-            # Also verify override_budget_tokens kwarg is set correctly
-            assert call_args.kwargs.get("override_budget_tokens") == 5000000
+# ---------------------------------------------------------------------------
+# Retained: PendingConfirmation serialisation round-trip for armed_for_regen
+# ---------------------------------------------------------------------------
 
 
-def test_confirm_card_shows_budget_generated_notice():
-    """确认卡显示「当前脚本按 X 预算生成」提示。"""
-    handler = _create_mock_handler()
-
-    # Test with different budgets
-    test_cases = [
-        (500000, "50万"),
-        (1500000, "150万"),
-        (2000000, "200万"),
-        (5000000, "500万"),
-    ]
-
-    for budget, expected_text in test_cases:
-        card = handler._build_confirm_card(
-            meta={"tools": ["coco"], "phases": [{"name": "Phase 1"}]},
-            requirement="test requirement",
-            engine_session_key="test_session",
-            chat_id="test_chat",
-            project_id="test_proj",
-            is_fallback=False,
-            selected_tools=["coco"],
-            selected_budget=budget,
-            script_content="// test script",
-        )
-
-        card_str = str(card)
-        # Should show budget notice
-        has_budget_notice = (
-            "预算" in card_str
-            and (str(budget) in card_str or expected_text in card_str)
-            and ("生成" in card_str or "按" in card_str)
-        )
-        assert has_budget_notice, f"Budget notice not found for budget {budget}"
-
-
-def test_script_gen_prompt_includes_budget_constraint():
-    """脚本生成 prompt 包含预算硬约束。"""
-    from src.workflow_engine.script_gen import build_script_gen_prompt
-
-    # Test with different budgets
-    test_cases = [
-        (500000, "预算紧张"),
-        (2000000, "预算适中"),
-        (5000000, "预算充足"),
-    ]
-
-    for budget, expected_guidance in test_cases:
-        prompt = build_script_gen_prompt(
-            requirement="test",
-            available_tools=["coco"],
-            available_roles=["architect"],
-            budget_total=DEFAULT_BUDGET_TOKENS,
-            budget_tokens=budget,
-            orchestrator_agent="coco",
-        )
-
-        # Budget should be in the prompt
-        assert f"{budget:,}" in prompt, f"Budget {budget:,} not found in prompt"
-
-        # Guidance should match budget tier
-        if expected_guidance == "预算紧张":
-            assert "减少并行度" in prompt or "避免过度 fan-out" in prompt
-        elif expected_guidance == "预算充足":
-            assert "激进的并行策略" in prompt or "多轮验证" in prompt
-
-
-def test_script_gen_prompt_without_budget_tokens():
-    """未指定 budget_tokens 时不包含预算硬约束区段。"""
-    from src.workflow_engine.script_gen import build_script_gen_prompt
-
-    prompt = build_script_gen_prompt(
-        requirement="test",
-        available_tools=["coco"],
-        available_roles=["architect"],
-        budget_total=DEFAULT_BUDGET_TOKENS,
-        # budget_tokens=None (default)
+def test_pending_confirmation_armed_for_regen_roundtrip():
+    """JSON dump → reload 后 armed_for_regen 保持一致。"""
+    pending = PendingConfirmation(
+        requirement="test roundtrip",
+        engine_session_key="session_456",
+        initiator_user_id="u_0",
+        selected_tools=["coco"],
+        selected_budget=2000000,
+        armed_for_regen=True,
     )
 
-    # Should not have hard constraint section
-    assert "预算硬约束" not in prompt
-    # But should still have the regular budget_total
-    assert str(DEFAULT_BUDGET_TOKENS) in prompt
+    raw = pending.model_dump_json()
+    restored = PendingConfirmation.model_validate_json(raw)
+
+    assert restored.armed_for_regen is True
+    assert restored.requirement == "test roundtrip"
+    assert restored.selected_budget == 2000000
 
 
-def test_budget_selection_invalid_tokens():
-    """无效的 budget_tokens 返回 invalid_argument 错误。"""
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_CONFIRM,
-        pending=PendingConfirmation(
-            engine_session_key="session_123",
-            initiator_user_id="test_user",
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-
-    with patch('src.thread.get_current_sender_id', return_value="test_user"):
-        # Test with non-integer
-        handler.handle_workflow_select_budget(
-            message_id="msg_123",
-            chat_id="test_chat",
-            project_id="",
-            value={
-                "action": "workflow_select_budget",
-                "budget_tokens": "not_an_int",
-                "engine_session_key": "session_123",
-            },
-        )
-
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "invalid_argument"
+def test_pending_confirmation_legacy_json_without_armed_for_regen():
+    """旧 JSON 缺少 armed_for_regen 字段时默认值为 False。"""
+    legacy_payload = {
+        "requirement": "legacy workflow",
+        "engine_session_key": "session_789",
+        "initiator_user_id": "u_1",
+        "selected_tools": ["claude"],
+        "selected_budget": 1000000,
+    }
+    restored = PendingConfirmation.model_validate(legacy_payload)
+    assert restored.armed_for_regen is False

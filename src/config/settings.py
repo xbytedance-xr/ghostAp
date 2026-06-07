@@ -198,6 +198,28 @@ class Settings(BaseSettings):
     ttadk_preheat_on_startup: bool = True
     ttadk_preheat_on_first_use: bool = True
     ttadk_preheat_tools: str = "claude,coco,trae,opencode,codex"
+
+    # ------------------------------------------------------------------
+    # Workflow Engine
+    # ------------------------------------------------------------------
+
+    # Sub-workflow budget ratio: fraction of parent budget allocated to each sub-workflow.
+    # Prevents a single sub-workflow from consuming the entire parent budget.
+    # Range: 5% to 50% (enforced via Field validation).
+    workflow_subflow_budget_ratio: float = Field(
+        default=0.2,
+        ge=0.05,
+        le=0.5,
+        description="Fraction of parent budget allocated to each sub-workflow (0.05-0.5)",
+    )
+
+    # Subagent / workflow encouragement hint: when True (default), every
+    # agent() prompt template and every script-generation prompt template
+    # includes a trailing paragraph that encourages the model to delegate to
+    # subagents and invoke sub-workflows.  Set to False to suppress the hint
+    # (e.g. for short one-shot calls where the extra verbosity is not useful).
+    workflow_subagent_hint_enabled: bool = True
+
     ttadk_preheat_timeout: float = 2.5
 
     # TTADK model list fetch strategy knobs

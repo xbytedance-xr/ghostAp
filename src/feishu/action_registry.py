@@ -365,6 +365,14 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.WORKFLOW_SELECT_AGENT,
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_select_role(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_SELECT_ROLE,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_confirm_roles_and_generate(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_CONFIRM_ROLES_AND_GENERATE,
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_regenerate_script(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_REGENERATE_SCRIPT,
     )
@@ -387,6 +395,18 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
     client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_show_help(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_SHOW_HELP,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_view_workflow_ref(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_VIEW_WORKFLOW_REF,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_remove_workflow_ref(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REMOVE_WORKFLOW_REF,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_add_workflow_ref(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ADD_WORKFLOW_REF,
     )
 
     # ACP

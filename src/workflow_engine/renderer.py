@@ -6,6 +6,39 @@ import time
 from typing import Any
 
 from .errors import _strip_internal_details
+
+# ---------------------------------------------------------------------------
+# Internal: string helpers
+# ---------------------------------------------------------------------------
+
+# Keep phase/agent labels readable on narrow mobile screens without
+# truncating important context (e.g. a task identifier at the end of a
+# long title). A middle ellipsis keeps both the leading description and
+# the trailing identifier visible.
+_LABEL_TRUNCATION_LIMIT = 40
+_ELLIPSIS = "…"
+
+
+def _middle_ellipsis(text: str, limit: int = _LABEL_TRUNCATION_LIMIT) -> str:
+    """Return ``text`` with middle characters replaced by an ellipsis when
+    it exceeds ``limit`` characters. Preserves the head and tail so both
+    human-readable descriptions and trailing identifiers survive.
+
+    Examples::
+
+        _middle_ellipsis("code-review: verify payment-gateway auth flow")
+        # → "code-review: ver…t flow"  (when limit == 24)
+        _middle_ellipsis("short")  # → "short"
+    """
+    if not text:
+        return text
+    if len(text) <= limit:
+        return text
+    # Reserve room for the ellipsis itself.
+    available = max(limit - len(_ELLIPSIS), 4)
+    head = available // 2 + available % 2
+    tail = available // 2
+    return f"{text[:head]}{_ELLIPSIS}{text[-tail:]}"
 from .models import (
     AgentProgress,
     AgentStatus,
@@ -18,6 +51,11 @@ from .models import (
 # Constants
 # ---------------------------------------------------------------------------
 
+# Sentinel marker list used by lint-level defensive checks.
+# An empty tuple means "no markers configured → no checks applied". Tests can
+# monkey-patch this to inject sentinel values and verify the defensive gate.
+_AGENT_OUTPUT_FORBIDDEN_MARKERS: tuple[str, ...] = ()
+
 STATUS_ICONS: dict[AgentStatus, str] = {
     AgentStatus.PENDING: "\u23f3",
     AgentStatus.RUNNING: "\ud83d\udd04",
@@ -29,6 +67,9 @@ STATUS_ICONS: dict[AgentStatus, str] = {
 WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
     WorkflowStatus.IDLE: "\u23f3",
     WorkflowStatus.GENERATING_SCRIPT: "\ud83d\udd04",
+    WorkflowStatus.AWAITING_AGENT_SELECT: "\U0001f916",
+    WorkflowStatus.AWAITING_TOOL_SELECT: "\U0001f527",
+    WorkflowStatus.AWAITING_ROLE_SELECT: "\U0001f3ad",
     WorkflowStatus.AWAITING_CONFIRM: "\u23f3",
     WorkflowStatus.RUNNING: "\ud83d\udd04",
     WorkflowStatus.COMPLETED: "\u2705",
@@ -38,6 +79,46 @@ WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
 
 _PHASE_AGENT_DISPLAY_LIMIT = 20
 _PHASE_COMPLETED_TAIL = 5
+_CARD_MAX_BYTES = 28_000  # Feishu card payload limit with safety margin
+
+
+# ---------------------------------------------------------------------------
+# Defensive (lint-level) helpers — no-op under normal operation
+# ---------------------------------------------------------------------------
+
+
+def _card_text_for_agent_output(
+    elements: list[dict],
+    forbidden_markers: tuple[str, ...],
+) -> None:
+    """Scan ``elements`` recursively for forbidden marker strings.
+
+    Iterates through the element list and any nested ``dict``/``list`` values,
+    looking for ``text`` / ``content`` string fields that contain any of the
+    ``forbidden_markers``. If a match is found, raises
+    :class:`RuntimeError` with the message ``"card leaked agent output"``.
+
+    When ``forbidden_markers`` is empty, the function is a no-op — this is the
+    normal production configuration. Tests monkey-patch
+    ``_AGENT_OUTPUT_FORBIDDEN_MARKERS`` to inject sentinel strings and verify
+    the gate trips when agent output accidentally leaks into card text.
+    """
+    if not forbidden_markers:
+        return
+
+    stack: list[Any] = list(elements)
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if key in ("text", "content") and isinstance(value, str):
+                    for marker in forbidden_markers:
+                        if marker and marker in value:
+                            raise RuntimeError("card leaked agent output")
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(current)
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +143,16 @@ def _collapsible_panel(
     header: str | dict[str, Any],
     elements: list[dict[str, Any]],
     *,
-    collapsed: bool = True,
+    expanded: bool = False,
     template: str | None = None,
 ) -> dict[str, Any]:
-    """Wrap elements in a Feishu collapsible_panel."""
+    """Wrap elements in a Feishu collapsible_panel.
+
+    The ``expanded`` flag matches the Feishu schema and the convention used
+    by the rest of the codebase (see ``card/render/tools.py`` and
+    ``card/render/worktree.py``). When ``expanded=True`` the panel is shown
+    open on first render; when ``expanded=False`` it is collapsed by default.
+    """
     if isinstance(header, str):
         header_obj: dict[str, Any] = {
             "title": {"tag": "plain_text", "content": header},
@@ -78,7 +165,7 @@ def _collapsible_panel(
         "tag": "collapsible_panel",
         "header": header_obj,
         "elements": elements,
-        "collapsed": collapsed,
+        "expanded": expanded,
     }
 
 
@@ -214,6 +301,13 @@ class WorkflowProgressRenderer:
         elements.append(_hr_element())
         elements.append(self._render_metrics_footer())
 
+        # Defensive check: ensure no accidental agent-output sentinel leaks
+        # into rendered card text. Default markers tuple is empty → no-op.
+        _card_text_for_agent_output(elements, _AGENT_OUTPUT_FORBIDDEN_MARKERS)
+
+        # Enforce Feishu card payload size limit (30KB max, 28KB with margin).
+        elements = _enforce_card_size(elements)
+
         return {
             "header": self._render_header(),
             "elements": elements,
@@ -260,18 +354,19 @@ class WorkflowProgressRenderer:
 
         # Phase
         phase_title = latest_phase.title if latest_phase is not None else "(暂无阶段)"
+        phase_title = _middle_ellipsis(phase_title)
         phase_idx = (
             self._project.phases.index(latest_phase) + 1
             if latest_phase in self._project.phases
             else "—"
         )
-        lines.append(f"📌 **当前阶段:** Phase {phase_idx} · {phase_title}")
+        lines.append(f"📌 **当前阶段:** 阶段 {phase_idx} · {phase_title}")
 
         # Active agent
         if active_agent is not None:
-            agent_label = active_agent.label or "agent"
+            agent_label = _middle_ellipsis(active_agent.label or "agent")
             agent_status_icon = STATUS_ICONS.get(active_agent.status, "⏳")
-            lines.append(f"🤖 **当前 Agent:** {agent_status_icon} {agent_label}")
+            lines.append(f"🤖 **当前代理:** {agent_status_icon} {agent_label}")
             if active_agent.tool:
                 lines.append(f"🛠 **正在使用:** `{active_agent.tool}`")
             else:
@@ -297,7 +392,7 @@ class WorkflowProgressRenderer:
     def render_compact_status(self) -> str:
         """One-line text summary of workflow status.
 
-        Example: "WF: code-audit | Phase 2/3 | 7/12 agents Done | 450K tokens"
+        Example: "任务: code-audit | 阶段 2/3 | 7/12 代理 完成 | 450K tokens 消耗"
         """
         name = self._project.name or "workflow"
         total_phases = len(self._project.phases)
@@ -312,8 +407,8 @@ class WorkflowProgressRenderer:
         status_icon = WORKFLOW_STATUS_ICONS.get(self._project.status, "\u23f3")
 
         return (
-            f"WF: {name} | Phase {current_phase}/{total_phases} | "
-            f"{completed}/{total} agents {status_icon} | {tokens} tokens"
+            f"任务: {name} | 阶段 {current_phase}/{total_phases} | "
+            f"{completed}/{total} 代理 {status_icon} | {tokens} tokens 消耗"
         )
 
     # ------------------------------------------------------------------
@@ -363,9 +458,9 @@ class WorkflowProgressRenderer:
             if a.status in (AgentStatus.DONE, AgentStatus.CACHED)
         )
 
-        # Phase header — row 1: title; row 2: completion count + duration
+        # Phase header — row 1: title (middle-ellipsis); row 2: completion count + duration
         phase_status = self._get_phase_status_icon(phase)
-        elements.append(_md_element(f"**{phase_status} Phase {idx + 1}: {phase.title}**"))
+        elements.append(_md_element(f"**{phase_status} 阶段 {idx + 1}: {_middle_ellipsis(phase.title)}**"))
 
         if phase.started_at:
             elapsed = (phase.finished_at or time.time()) - phase.started_at
@@ -418,15 +513,15 @@ class WorkflowProgressRenderer:
             "PENDING": ("待执行", "grey"),
         }
 
-        # Render status groups as collapsible panels (RUNNING expanded, others collapsed)
+        # Render status groups as collapsible panels (RUNNING/FAILED expanded, rest collapsed)
         display_order = [
-            ("RUNNING", False),
-            ("FAILED", False),
-            ("DONE", True),
-            ("CACHED", True),
-            ("PENDING", True),
+            ("RUNNING", True),
+            ("FAILED", True),
+            ("DONE", False),
+            ("CACHED", False),
+            ("PENDING", False),
         ]
-        for key, collapsed in display_order:
+        for key, expanded in display_order:
             group = buckets[key]
             if not group:
                 continue
@@ -434,7 +529,7 @@ class WorkflowProgressRenderer:
             lines: list[str] = []
             for agent in group:
                 tool_badge = f"`{agent.tool}`" if agent.tool else ""
-                display_label = agent.label or "agent"
+                display_label = _middle_ellipsis(agent.label or "agent")
                 if agent.status == AgentStatus.RUNNING:
                     lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} 执行中…")
                 elif agent.error:
@@ -451,7 +546,7 @@ class WorkflowProgressRenderer:
             panel = _collapsible_panel(
                 header_obj,
                 [_md_element("\n".join(lines))],
-                collapsed=collapsed,
+                expanded=expanded,
             )
             elements.append(panel)
 
@@ -464,7 +559,7 @@ class WorkflowProgressRenderer:
 
         if not apply_pagination and len(agents) > _PHASE_AGENT_DISPLAY_LIMIT:
             hidden = len(agents) - _PHASE_AGENT_DISPLAY_LIMIT
-            elements.append(_md_element(f"... 另有 {hidden} 个 agents"))
+            elements.append(_md_element(f"... 另有 {hidden} 个代理"))
 
         return elements
 
@@ -495,24 +590,24 @@ class WorkflowProgressRenderer:
         return _md_element("\n".join(lines))
 
     def _render_metrics_footer(self) -> dict[str, Any]:
-        """Render metrics footer as a 2-column stretch layout: Agents/Time · Cached/Failed."""
+        """Render metrics footer as a 2-column stretch layout: Agents/耗时 · 缓存/失败。"""
         metrics = self._project.metrics
         elapsed = time.time() - self._start_time
         elapsed_str = _format_duration(elapsed)
 
-        # Left column: Agents + Time
+        # Left column: Agents + 耗时
         left_content = [
-            f"**Agents:** {metrics.completed_agents}/{metrics.total_agents}",
-            f"**Time:** {elapsed_str}",
+            f"**代理:** {metrics.completed_agents}/{metrics.total_agents}",
+            f"**耗时:** {elapsed_str}",
         ]
-        # Right column: Cached + Failed
+        # Right column: 缓存 + 失败
         right_content = []
         if metrics.cached_agents > 0:
-            right_content.append(f"**Cached:** {metrics.cached_agents}")
+            right_content.append(f"**缓存:** {metrics.cached_agents}")
         if metrics.failed_agents > 0:
-            right_content.append(f"**Failed:** {metrics.failed_agents}")
+            right_content.append(f"**失败:** {metrics.failed_agents}")
         if not right_content:
-            right_content.append("**Cached:** 0")
+            right_content.append("**缓存:** 0")
 
         return _column_set(
             [
@@ -699,7 +794,7 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
                 if a.status in (AgentStatus.DONE, AgentStatus.CACHED)
             )
             phase_lines.append(
-                f"{phase_icon} Phase {idx}: **{phase.title}** — {done_count}/{len(phase.agents)} agents"
+                f"{phase_icon} 阶段 {idx}: **{_middle_ellipsis(phase.title)}** — {done_count}/{len(phase.agents)} 代理"
             )
         elements.append(_md_element("\n".join(phase_lines)))
 
@@ -717,6 +812,10 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
         safe_project_err = _strip_internal_details(project.error[:200])
         elements.append(_md_element(f"\u274c **错误**: {safe_project_err}"))
 
+    # Defensive check: ensure no accidental agent-output sentinel leaks
+    # into rendered card text. Default markers tuple is empty → no-op.
+    _card_text_for_agent_output(elements, _AGENT_OUTPUT_FORBIDDEN_MARKERS)
+
     return {
         "header": {
             "title": {"tag": "plain_text", "content": f"{icon} {name} — {title_suffix}"},
@@ -724,3 +823,50 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
         },
         "elements": elements,
     }
+
+
+# ---------------------------------------------------------------------------
+# Card size enforcement
+# ---------------------------------------------------------------------------
+
+
+def _enforce_card_size(elements: list[dict]) -> list[dict]:
+    """Truncate card elements if they would exceed Feishu's 30KB payload limit.
+
+    Progressive truncation strategy:
+    1. Truncate any long text content (> 200 chars) in markdown elements
+    2. Remove trailing elements until under the limit
+
+    Returns the (possibly trimmed) element list.
+    """
+    import json as _json
+
+    serialized = _json.dumps(elements, ensure_ascii=False)
+    # Use surrogateescape to handle emoji surrogates gracefully
+    byte_len = len(serialized.encode("utf-8", errors="surrogatepass"))
+    if byte_len <= _CARD_MAX_BYTES:
+        return elements
+
+    # Strategy 1: Truncate long markdown text content
+    for elem in elements:
+        if isinstance(elem, dict) and elem.get("tag") == "markdown":
+            content = elem.get("content", "")
+            if isinstance(content, str) and len(content) > 200:
+                elem["content"] = content[:197] + "..."
+
+    # Re-check after text truncation
+    serialized = _json.dumps(elements, ensure_ascii=False)
+    byte_len = len(serialized.encode("utf-8", errors="surrogatepass"))
+    if byte_len <= _CARD_MAX_BYTES:
+        return elements
+
+    # Strategy 2: Remove elements from the end (before metrics/budget footer)
+    # until we're under the limit, keeping at least 3 elements (summary, progress, footer)
+    while len(elements) > 3:
+        serialized = _json.dumps(elements, ensure_ascii=False)
+        byte_len = len(serialized.encode("utf-8", errors="surrogatepass"))
+        if byte_len <= _CARD_MAX_BYTES:
+            break
+        elements.pop(-2)  # Remove second-to-last (keep footer)
+
+    return elements

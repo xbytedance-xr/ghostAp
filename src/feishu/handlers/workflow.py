@@ -77,6 +77,7 @@ class WorkflowHandler(BaseEngineHandler):
         elif command in ("/wf_history", "/workflow_history"):
             self._handle_wf_history(message_id, chat_id, project)
         elif command in ("/wf", "/workflow"):
+            # /wf <需求> — 主编排 Agent 入口，四步路径：主编排 Agent → 工具 → 角色 → 脚本确认 → 执行
             arg = cmd.args
             if arg:
                 self.start_workflow(message_id, chat_id, arg, project)
@@ -323,15 +324,16 @@ class WorkflowHandler(BaseEngineHandler):
         root_path = self._get_root_path(chat_id, project)
 
         # Check Node.js availability before showing anything (fail-fast UX).
+        # Use the authoritative constant-text helper so that error messages
+        # here, engine.py, and bridge.py all agree on the required version.
         from ...workflow_engine.bridge import RuntimeBridge
-        from ...workflow_engine.constants import NODE_MIN_VERSION
+        from ...workflow_engine.engine import _node_version_required_text
 
         if not RuntimeBridge.check_node_available():
-            major = NODE_MIN_VERSION[0] if NODE_MIN_VERSION else 20
             self._reply_workflow_error(
                 message_id,
                 "invalid_argument",
-                detail=f"Workflow 模式需要 Node.js >= {major}。请安装 Node.js 并确保 `node` 在 PATH 中。",
+                detail=_node_version_required_text(),
             )
             return
 
@@ -454,14 +456,13 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Check Node.js availability
         from ...workflow_engine.bridge import RuntimeBridge
-        from ...workflow_engine.constants import NODE_MIN_VERSION
+        from ...workflow_engine.engine import _node_version_required_text
 
         if not RuntimeBridge.check_node_available():
-            major = NODE_MIN_VERSION[0] if NODE_MIN_VERSION else 20
             self._reply_workflow_error(
                 message_id,
                 "invalid_argument",
-                detail=f"Workflow 模式需要 Node.js >= {major}。请安装 Node.js 并确保 `node` 在 PATH 中。",
+                detail=_node_version_required_text(),
             )
             return
 
@@ -588,7 +589,14 @@ class WorkflowHandler(BaseEngineHandler):
             # other placeholders. Do a simple literal replace instead.
             body = raw_body.replace("{detail}", safe_detail)
         elif raw_body:
-            body = raw_body
+            # Template does not define a {detail} placeholder; still surface
+            # a sanitized user-facing hint when one is available so the user
+            # sees "脚本被篡改/验证失败"这类可操作信息 rather than a
+            # generic "服务内部错误".
+            if safe_detail:
+                body = raw_body.rstrip() + "\n\n🔎 细节：" + safe_detail
+            else:
+                body = raw_body
         else:
             body = safe_detail or "操作失败，请稍后重试。"
 
@@ -1323,6 +1331,16 @@ class WorkflowHandler(BaseEngineHandler):
             script_tools = set((meta or {}).get("tools", []))
             allowed_tools = set(sel_tools or [])
             tools_mismatch = bool(script_tools - allowed_tools)
+            # Compute a SHA-256 of the script content right after writing so
+            # the confirm-time TOCTOU check can detect on-disk tampering.
+            script_hash = None
+            if script_path:
+                try:
+                    with open(script_path, "rb") as f:
+                        import hashlib
+                        script_hash = hashlib.sha256(f.read()).hexdigest()
+                except OSError:
+                    script_hash = None
             engine.project.pending = PendingConfirmation(
                 script_path=script_path,
                 requirement=requirement,
@@ -1338,6 +1356,7 @@ class WorkflowHandler(BaseEngineHandler):
                 is_template_hint=preserved_template_hint,
                 # Keep role-selection preferences across re-generations
                 selected_roles=preserved_selected_roles,
+                script_hash=script_hash,
             )
 
         # Build and send confirmation card
@@ -1644,6 +1663,12 @@ class WorkflowHandler(BaseEngineHandler):
             })
 
         if role_buttons:
+            # Render roles as a single column of full-width buttons on
+            # narrow screens so that Chinese role names are not truncated.
+            # On desktop the renderer will still pack them reasonably;
+            # mobile_force_vertical=True guarantees the Feishu mobile card
+            # displays them as one button per line, preserving label
+            # legibility.
             elements.extend(build_responsive_button_row(role_buttons, mobile_force_vertical=True))
 
         # Footer: confirm roles + cancel
@@ -1978,23 +2003,60 @@ class WorkflowHandler(BaseEngineHandler):
                 if getattr(_pending, "selected_budget", None) is not None
                 else _pending.budget
             )
-        meta = engine.project.pending.meta if engine.project.pending else None
+        expected_script_hash = (
+            engine.project.pending.script_hash
+            if engine.project and engine.project.pending
+            else None
+        )
+        pending_meta = engine.project.pending.meta if engine.project.pending else None
 
         if not script_path:
             self._reply_workflow_error(message_id, "invalid_state", detail="无法获取待执行脚本，请重新发送 `/wf`")
             return
 
-        # Validate script path exists (defense-in-depth)
-        import os
-        if not os.path.isfile(script_path):
-            self._reply_workflow_error(message_id, "internal_error", detail=f"脚本文件不存在 ({script_path})，请重新发送 `/wf` 生成")
+        # --- TOCTOU hardening (check-then-re-read-verify) ---
+        # Re-read script content fresh from disk at confirm-time and
+        # re-run the full validation chain. This defends against scripts
+        # being tampered with after the confirmation card was shown but
+        # before the user hit "confirm".
+        try:
+            with open(script_path, "rb") as f:
+                script_bytes = f.read()
+        except OSError:
+            self._reply_workflow_error(
+                message_id, "internal_error", detail=f"脚本文件读取失败 ({script_path})，请重新发送 `/wf` 生成"
+            )
+            return
+        script_text = script_bytes.decode("utf-8", errors="strict")
+        import hashlib
+        current_script_hash = hashlib.sha256(script_bytes).hexdigest()
+        if expected_script_hash and current_script_hash != expected_script_hash:
+            self._reply_workflow_error(
+                message_id,
+                "internal_error",
+                detail="脚本内容与生成时不一致，疑似被篡改。请重新发送 `/wf` 生成。",
+            )
             return
 
-        # Validate tool consistency: script tools must be subset of allowed tools
-        script_tools = set((meta or {}).get("tools", []))
-        allowed_tools = set(selected_tools)
-        if script_tools and allowed_tools:
-            unmatched = script_tools - allowed_tools
+        # Structural + security validation (mirrors the generation path).
+        from ...workflow_engine.script_gen import extract_meta_from_script, validate_generated_script
+
+        is_valid, validation_errors = validate_generated_script(script_text)
+        if not is_valid:
+            self._reply_workflow_error(
+                message_id,
+                "internal_error",
+                detail="脚本验证失败：" + "; ".join(validation_errors[:3]),
+            )
+            return
+        fresh_meta = extract_meta_from_script(script_text) or {}
+
+        # Tool consistency check — use the freshly-parsed meta, not the
+        # one cached in pending.
+        fresh_script_tools = set(fresh_meta.get("tools", []))
+        allowed_tools = set(selected_tools or [])
+        if fresh_script_tools and allowed_tools:
+            unmatched = fresh_script_tools - allowed_tools
             if unmatched:
                 self._reply_workflow_error(
                     message_id,
@@ -2006,6 +2068,51 @@ class WorkflowHandler(BaseEngineHandler):
                     ),
                 )
                 return
+
+        # --- Workflow-refs deferred injection ---
+        # Sub-workflow references live in pending.meta.workflow_refs.
+        # Injecting them here (at confirm time) guarantees we only run
+        # references the user actually approved on the confirmation card.
+        refs_for_injection = []
+        if pending_meta:
+            candidate_refs = pending_meta.get("workflow_refs", []) or []
+            if isinstance(candidate_refs, list):
+                refs_for_injection = [r for r in candidate_refs if isinstance(r, dict)]
+        if refs_for_injection:
+            script_text = self._inject_workflow_refs_into_script(
+                script_text, refs_for_injection
+            )
+            # Revalidate after injection so a broken ref payload cannot
+            # silently bypass the dangerous-pattern / structural checks.
+            is_valid, validation_errors = validate_generated_script(script_text)
+            if not is_valid:
+                joined = "; ".join(validation_errors)[:500]
+                self._reply_workflow_error(
+                    message_id,
+                    "invalid_argument",
+                    detail=f"workflow refs 注入后脚本未通过校验: {joined}",
+                )
+                return
+
+        # --- Immutable copy for execution ---
+        # Copy the verified content into a fresh /tmp file for each
+        # confirmation. Using mkstemp guarantees uniqueness across
+        # concurrent sessions and test suites; we additionally append the
+        # script hash so accidental inspection can trace the source.
+        import tempfile
+        temp_fd, immutable_script_path = tempfile.mkstemp(
+            prefix="ghostap-confirmed-",
+            suffix=f"-{current_script_hash}.js",
+        )
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                f.write(script_text)
+        except OSError as exc:
+            self._reply_workflow_error(
+                message_id, "internal_error",
+                detail=f"无法创建执行用临时脚本副本: {exc}",
+            )
+            return
 
         # Clear pending state and set running
         engine.project.start_execution()
@@ -2026,7 +2133,7 @@ class WorkflowHandler(BaseEngineHandler):
                     budget_kwargs["budget_tokens"] = selected_budget
                 engine.execute_workflow(
                     requirement=requirement,
-                    script_path=script_path,
+                    script_path=immutable_script_path,
                     callbacks=callbacks,
                     selected_tools=selected_tools or None,
                     initiator_user_id=stored_initiator or None,
@@ -2600,6 +2707,32 @@ class WorkflowHandler(BaseEngineHandler):
             pending.script_path = script_path
             pending.meta = meta
             pending.is_fallback = is_fallback
+
+            # Recompute and persist the SHA-256 of the freshly-generated
+            # script content so ``handle_workflow_confirm_start``'s TOCTOU
+            # check succeeds against the new file — otherwise the hash
+            # would still reflect the previous script and the user would
+            # be locked out by a spurious "脚本被篡改" rejection.
+            try:
+                with open(script_path, "rb") as f:
+                    new_bytes = f.read()
+                import hashlib
+                pending.script_hash = hashlib.sha256(new_bytes).hexdigest()
+            except OSError:
+                # Failure to read the file we just wrote is unexpected —
+                # surface a dedicated error rather than silently leaving
+                # the stale hash in place.
+                logger.exception(
+                    "Failed to read freshly-regenerated script at %s; "
+                    "script_hash not refreshed",
+                    script_path,
+                )
+                self._reply_workflow_error(
+                    message_id,
+                    "internal_error",
+                    detail="重新生成的脚本无法读取，请再次尝试重新生成。",
+                )
+                return
         except Exception:
             logger.exception("Failed to regenerate script with new budget")
             self._reply_workflow_error(
@@ -2890,23 +3023,49 @@ class WorkflowHandler(BaseEngineHandler):
             ref_path = ""
 
         # Try to resolve a script body for display.
+        # Priority: explicit ref_path → template resolution by name.
+        # ``load_template`` returns the script content string, not a path;
+        # use ``resolve_template_path`` when we only need to locate a file
+        # and already have a name.
         script_body = ""
         resolved_path: Optional[str] = None
         sender_id = current_user or ""
+
         if ref_path and os.path.isfile(ref_path):
             resolved_path = ref_path
-        else:
             try:
-                resolved_path = load_template(root_path, ref_name, user_id=sender_id)
-            except Exception:
-                resolved_path = None
-
-        if resolved_path:
-            try:
-                with open(resolved_path, "r", encoding="utf-8") as f:
+                with open(ref_path, "r", encoding="utf-8") as f:
                     script_body = f.read()
             except OSError:
                 script_body = ""
+        else:
+            # No explicit path — attempt to resolve via the template registry.
+            # Try content first; fall back to path-only resolution so preview
+            # cards for refs with only a ``name`` field still surface content.
+            from ...workflow_engine.templates import resolve_template_path
+
+            try:
+                script_body_from_name = load_template(
+                    root_path, ref_name, user_id=sender_id
+                )
+            except Exception:
+                script_body_from_name = None
+
+            if script_body_from_name:
+                script_body = script_body_from_name
+                resolved_path = resolve_template_path(
+                    root_path, ref_name, user_id=sender_id
+                )
+            else:
+                resolved_path = resolve_template_path(
+                    root_path, ref_name, user_id=sender_id
+                )
+                if resolved_path:
+                    try:
+                        with open(resolved_path, "r", encoding="utf-8") as f:
+                            script_body = f.read()
+                    except OSError:
+                        script_body = ""
 
         meta_extract: Optional[dict[str, Any]] = None
         if script_body:
@@ -2928,6 +3087,25 @@ class WorkflowHandler(BaseEngineHandler):
             meta_tools = (meta_extract or {}).get("tools")
             if meta_tools:
                 preview_lines.append("工具: " + ", ".join(f"`{t}`" for t in meta_tools))
+
+        # --- Preflight: sub-workflow tools vs parent allowlist ----------------
+        # Compare the ref's declared tools against the pending confirmation's
+        # selected_tools (the parent allowlist). Highlight any missing tools on
+        # the preview card so users can decide whether to adjust tool selection
+        # or remove the ref before confirming.
+        parent_tools: set[str] = set()
+        if engine.project.pending and engine.project.pending.selected_tools:
+            parent_tools = set(engine.project.pending.selected_tools)
+        ref_tools: set[str] = set(
+            (meta_extract or {}).get("tools", []) or []
+        )
+        missing = sorted(ref_tools - parent_tools)
+        if missing:
+            preview_lines.append(
+                "\n⚠️ **工具缺失警告**：此子 Workflow 声明的以下工具不在主 Workflow 的允许工具列表中："
+                + ", ".join(f"`{m}`" for m in missing)
+                + "。执行时会被拒绝并报错；请在主 Workflow 工具选择中添加这些工具，或移除此引用。"
+            )
 
         preview_text = "\n".join(preview_lines)
 
@@ -3193,9 +3371,16 @@ class WorkflowHandler(BaseEngineHandler):
         root_path: str,
         sender_id: str,
     ) -> None:
-        """Append a template reference to ``meta.workflow_refs`` and patch
-        the pending script with a ``workflow(template_name, {})`` call so
-        it actually executes the referenced workflow at runtime.
+        """Append a template reference to ``meta.workflow_refs`` and re-render
+        the confirm card so the new reference is visible to the user.
+
+        The script body is **not** patched here. Instead, the pending
+        confirmation flow (``handle_workflow_confirm_start``) injects the
+        corresponding ``workflow(template_name, {})`` call into the verified
+        script content just before execution. This guarantees that only refs
+        approved on the confirmation card at the moment of confirmation ever
+        run, which prevents stale / tampered injections from leaking into the
+        executed script (see ``_inject_workflow_refs_into_script``).
 
         Safety: template names are validated through
         ``validate_template_name``, restricted to those returned by
@@ -3237,18 +3422,29 @@ class WorkflowHandler(BaseEngineHandler):
             )
             return
 
-        # 3) Resolve to an absolute path; used below for the ref meta only.
+        # 3) Resolve to an absolute path to confirm the template is loadable.
+        # This is the final gate — a name that passes validate_template_name
+        # and discover_templates but fails resolve_template_path signals a
+        # broken disk state; we reject rather than attach an empty ref.
         resolved_path = resolve_template_path(root_path, template_name, user_id=sender_id)
+        if not resolved_path:
+            logger.warning(
+                "Template '%s' could not be resolved during add-workflow-ref",
+                template_name,
+            )
+            self._reply_workflow_error(
+                message_id, "invalid_argument", detail=f"模板无法加载: {template_name}"
+            )
+            return
 
         description = ""
-        if resolved_path:
-            try:
-                with open(resolved_path, "r", encoding="utf-8") as f:
-                    ref_script = f.read()
-                extracted = extract_meta_from_script(ref_script) or {}
-                description = extracted.get("description", "") or ""
-            except Exception:
-                description = ""
+        try:
+            with open(resolved_path, "r", encoding="utf-8") as f:
+                ref_script = f.read()
+            extracted = extract_meta_from_script(ref_script) or {}
+            description = extracted.get("description", "") or ""
+        except Exception:
+            description = ""
 
         current_meta = engine.project.pending.meta or {}
         workflow_refs = list(current_meta.get("workflow_refs", []) or [])
@@ -3261,36 +3457,17 @@ class WorkflowHandler(BaseEngineHandler):
                 already_present = True
                 break
 
+        # Contract: ref carries `{name, description?, args?, failure_policy?}`
+        # matching WorkflowRefItem. `path` / `hash` are intentionally not stored
+        # — execution-side code resolves names through the templates module at
+        # execution time, so a stored path cannot be forged or become stale.
         if not already_present:
-            workflow_refs.append({
-                "name": template_name,
-                "path": resolved_path or "",
-                "description": description,
-            })
-
-        # 4) Patch the pending script to include a ``workflow(template_name, {})``
-        #    call so the reference actually drives runtime behaviour.
-        script_path = getattr(engine.project.pending, "script_path", None)
-        existing_script = ""
-        if script_path:
-            try:
-                with open(script_path, "r", encoding="utf-8") as f:
-                    existing_script = f.read()
-            except OSError as exc:
-                logger.warning("Cannot read pending script for ref patch: %s", exc)
-                existing_script = ""
-
-        if existing_script and f'workflow("{template_name}"' not in existing_script:
-            patch = (
-                f"\n// 🔗 Sub-workflow reference: {template_name}\n"
-                f"try {{ await workflow('{template_name}', {{}}); }} "
-                f"catch (e) {{ console.log('sub-workflow {template_name} skipped:', e); }}\n"
-            )
-            try:
-                with open(script_path, "a", encoding="utf-8") as f:
-                    f.write(patch)
-            except OSError as exc:
-                logger.warning("Cannot patch pending script with ref: %s", exc)
+            ref_entry: dict[str, Any] = {"name": template_name}
+            if description:
+                ref_entry["description"] = description
+            ref_entry["args"] = {}
+            ref_entry["failure_policy"] = "skip"
+            workflow_refs.append(ref_entry)
 
         new_meta = dict(current_meta)
         new_meta["workflow_refs"] = workflow_refs
@@ -3401,9 +3578,15 @@ class WorkflowHandler(BaseEngineHandler):
 
     def show_workflow_help(self, message_id: str) -> None:
         """Show workflow mode help and usage guide."""
+        # Pull the authoritative Node-version text so the full help keeps the
+        # same contract as engine.run_workflow() and the card-entry messages.
+        from ...workflow_engine.engine import _node_version_required_text
+
         help_text = (
             "**🔄 Workflow 模式帮助**\n\n"
             "Workflow 模式通过 AI 编排脚本自动拆解复杂任务为多阶段、多智能体协同执行。\n\n"
+            "**前置要求**:\n"
+            f"• {_node_version_required_text()}\n\n"
             "**命令列表**:\n"
             "• `/wf <需求描述>` — AI 生成编排脚本并执行\n"
             "• `/wf <模板名> [key=value ...]` — 使用内置/保存的模板\n"
@@ -3422,9 +3605,11 @@ class WorkflowHandler(BaseEngineHandler):
             "5. 自动执行 → 多阶段并行执行，实时进度卡片更新\n\n"
             "**特性**:\n"
             "• 多工具并行调度（coco/claude/aiden/codex/traex）\n"
+            "• **每个工具 Agent 可自主继续拆分 subagent 并行工作**，显著提升复杂任务收敛速度\n"
             "• Journal 缓存避免重复执行\n"
             "• Token 预算控制与实时消耗监控\n"
-            "• 子任务自动拆分与依赖编排"
+            "• 子任务自动拆分与依赖编排\n"
+            "• 可引用并组合多个已保存 Workflow（workflow refs）"
         )
         self.reply_text(message_id, help_text)
 
@@ -3581,7 +3766,17 @@ class WorkflowHandler(BaseEngineHandler):
             scope_label = "全局级" if global_scope else "项目级"
             self.reply_text(message_id, f"✅ 模板 `{name}` 已保存（{scope_label}）\n\n使用: `/wf {name}`")
         except (OSError, ValueError) as exc:
-            self.reply_text(message_id, f"保存失败: {exc}")
+            # Sanitize: OSError may contain local path fragments like
+            # ``/data00/...`` or ``Permission denied: /home/...`` which
+            # leak host-internal paths into user-facing messages. We
+            # keep the sanitized message for the user and log the raw
+            # exception on the server side.
+            logger.error("wf_save failed for name=%s: %s", name, exc)
+            self._reply_workflow_error(
+                message_id,
+                "internal_error",
+                detail=_strip_internal_details(f"保存失败: {exc}"),
+            )
 
     def _handle_wf_list(
         self, message_id: str, chat_id: str, project: Optional["ProjectContext"]
@@ -3987,6 +4182,55 @@ class WorkflowHandler(BaseEngineHandler):
         return content
 
     @staticmethod
+    def _find_function_close_brace(script_content: str, open_idx: int) -> int | None:
+        """Return the index of the matching ``}`` for the function body starting at ``open_idx``.
+
+        String literals (``'...'``, ``\"...\"``, ```...` ``) and comments
+        (``// ...``, ``/* ... */``) are skipped so braces inside them do not
+        affect the depth counter. Backslash escapes are respected inside
+        string literals. Returns ``None`` if the end of file is reached
+        without finding the closing brace at depth 0.
+        """
+        depth = 1  # caller already located the opening `{`
+        i = open_idx + 1
+        n = len(script_content)
+        while i < n:
+            ch = script_content[i]
+            if ch == "/" and i + 1 < n:
+                nxt = script_content[i + 1]
+                if nxt == "/":
+                    # Line comment: skip to end-of-line.
+                    j = script_content.find("\n", i + 2)
+                    i = n if j == -1 else j
+                    continue
+                if nxt == "*":
+                    # Block comment: skip to closing */.
+                    j = script_content.find("*/", i + 2)
+                    i = n if j == -1 else j + 2
+                    continue
+            if ch in ("'", '"', "`"):
+                quote = ch
+                j = i + 1
+                while j < n:
+                    c = script_content[j]
+                    if c == "\\" and j + 1 < n:
+                        j += 2
+                        continue
+                    if c == quote:
+                        break
+                    j += 1
+                i = j + 1
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return i
+            i += 1
+        return None
+
+    @staticmethod
     def _read_pending_script(engine: Any) -> str:
         """Read script content from pending.script_path for confirm card preview."""
         path = engine.project.pending.script_path if (engine.project and engine.project.pending) else None
@@ -3997,6 +4241,185 @@ class WorkflowHandler(BaseEngineHandler):
                 return f.read()
         except OSError:
             return ""
+
+    @staticmethod
+    def _inject_workflow_refs_into_script(script_content: str, refs: list[dict]) -> str:
+        """Inject sub-workflow references into the script body.
+
+        Each ref dict may contain:
+
+        - ``name`` (required, string): the template name to invoke.
+        - ``args`` (optional, dict): keyword arguments forwarded to the
+          sub-workflow call. Defaults to an empty object.
+        - ``failure_policy`` (optional, string): ``"fail_fast"`` raises on
+          error; ``"skip"`` (default) logs and continues. Any unrecognised
+          value is treated as ``"skip"``.
+        - ``description`` (optional, string): free-form text surfaced in the
+          injected comment so editors can trace why a ref exists.
+
+        Order of operations:
+
+        1. If ``// <<WORKFLOW_REFS_BEGIN>>`` / ``// <<WORKFLOW_REFS_END>>`` markers
+           exist in ``script_content``, the block between them is replaced with
+           the generated workflow-ref calls (honoring the author's placement).
+        2. Otherwise, refs are injected just before the last ``}`` closing the
+           ``export default async function [NAME](...)`` body.  Both anonymous
+           and named default functions are supported, matching the template
+           style used by the built-in ``code-audit`` and similar templates.
+        3. String/comment literal boundaries are respected when searching for
+           the function's closing brace: a ``}`` inside ``'...'``, ``\"...\"``,
+           ```...` ``, or a ``// ...`` / ``/* ... */`` comment does not count
+           toward brace depth.
+        4. If a ref name is already invoked by name anywhere in the script
+           (via ``workflow('name'`` or ``workflow("name"``) we skip generating
+           a duplicate call for it.
+
+        Args:
+            script_content: The raw JavaScript script content.
+            refs: A list of reference dicts. Only refs with a non-empty
+                ``name`` are processed.
+
+        Returns:
+            The updated script content with refs injected.
+        """
+        if not refs:
+            return script_content
+
+        import json as _json
+        import re as _re
+
+        # Build the list of refs to inject, de-duplicated, and skip any that
+        # already have a matching ``workflow('...'`` call in the script.
+        refs_to_inject: list[dict] = []
+        seen: set[str] = set()
+        for ref in refs:
+            if not isinstance(ref, dict):
+                continue
+            name = ref.get("name")
+            if not name or not isinstance(name, str):
+                continue
+            if name in seen:
+                continue
+            if _re.search(
+                r"\bworkflow\s*\(\s*[\"']" + _re.escape(name) + r"[\"']",
+                script_content,
+            ):
+                # Already present — skip to avoid duplication.
+                seen.add(name)
+                continue
+            seen.add(name)
+            refs_to_inject.append(ref)
+
+        if not refs_to_inject:
+            return script_content
+
+        generated_lines = []
+        for ref in refs_to_inject:
+            name = ref["name"]
+            args_obj = ref.get("args") or {}
+            try:
+                args_json = _json.dumps(args_obj, ensure_ascii=False)
+            except (TypeError, ValueError):
+                args_json = "{}"
+            policy = (ref.get("failure_policy") or "skip").lower()
+            desc = ref.get("description") or ""
+            safe_desc = desc.replace("\n", " ").replace("\r", " ")
+
+            if policy == "fail_fast":
+                call = f"  await workflow('{name}', {args_json});"
+                header = (
+                    f"  // ref: {name}{(' -- ' + safe_desc) if safe_desc else ''}"
+                    f"  (failure_policy=fail_fast)"
+                )
+            else:
+                call = (
+                    f"  try {{ await workflow('{name}', {args_json}); }} "
+                    f"catch (e) {{ console.log('sub-workflow {name} skipped:', e); }}"
+                )
+                header = (
+                    f"  // ref: {name}{(' -- ' + safe_desc) if safe_desc else ''}"
+                )
+            generated_lines.append(header)
+            generated_lines.append(call)
+
+        block = "\n".join(generated_lines) + "\n"
+
+        # Strategy 1: replace marker block if present.
+        marker_start = "// <<WORKFLOW_REFS_BEGIN>>"
+        marker_end = "// <<WORKFLOW_REFS_END>>"
+        idx_s = script_content.find(marker_start)
+        if idx_s != -1:
+            idx_e = script_content.find(marker_end, idx_s + len(marker_start))
+            if idx_e != -1:
+                return (
+                    script_content[:idx_s]
+                    + marker_start
+                    + "\n"
+                    + block
+                    + marker_end
+                    + script_content[idx_e + len(marker_end):]
+                )
+
+        # Strategy 2: find the default export function body (supporting both
+        # ``export default async function (args)`` and
+        # ``export default async function main(args = {})``) and inject just
+        # before its final ``}``.  Brace depth is counted outside of strings
+        # and comments; parameter-list braces (e.g. ``args = {}``) are
+        # skipped by locating the parameter-list closing ``)`` first.
+        default_match = _re.search(
+            r"export\s+default\s+(?:async\s+)?function\s*(?:[A-Za-z_$][\w$]*)?\s*\(",
+            script_content,
+        )
+        if default_match:
+            # 1. Locate the matching ``)`` for the parameter list so braces
+            #    inside default values (``args = {}``) are not mistaken for
+            #    the function body opening brace.
+            paren_open = default_match.end() - 1  # points at the opening `(`
+            paren_depth = 1
+            paren_i = paren_open + 1
+            paren_n = len(script_content)
+            close_paren = -1
+            while paren_i < paren_n:
+                c = script_content[paren_i]
+                if c in ("'", '"', "`"):
+                    q = c
+                    j = paren_i + 1
+                    while j < paren_n:
+                        if script_content[j] == "\\" and j + 1 < paren_n:
+                            j += 2
+                            continue
+                        if script_content[j] == q:
+                            break
+                        j += 1
+                    paren_i = j + 1
+                    continue
+                if c == "(":
+                    paren_depth += 1
+                elif c == ")":
+                    paren_depth -= 1
+                    if paren_depth == 0:
+                        close_paren = paren_i
+                        break
+                paren_i += 1
+            if close_paren != -1:
+                # 2. Now locate the opening ``{`` of the function body,
+                #    allowing for ``=>`` style or simply ``{`` after ``)``.
+                body_open = script_content.find("{", close_paren + 1)
+                if body_open != -1:
+                    insert_at = WorkflowHandler._find_function_close_brace(
+                        script_content, body_open,
+                    )
+                    if insert_at is not None:
+                        return (
+                            script_content[:insert_at].rstrip()
+                            + "\n"
+                            + block
+                            + "  "  # preserve closing-brace indentation
+                            + script_content[insert_at:].lstrip("\n")
+                        )
+
+        # Fallback: append at end.
+        return script_content.rstrip() + "\n\n" + block
 
     @staticmethod
     def _write_fallback_script(script_path: str, requirement: str) -> str:
@@ -4091,10 +4514,12 @@ class WorkflowHandler(BaseEngineHandler):
             "content": f"**需求**\n> {req_trim}\n\n**Token 预算**：{budget:,} tokens（约 {budget_short}）",
         })
 
-        # --- 3. Stats: phases / tools / budget (first screen) ---
+        # --- 3. Stats: phases / tools (one-line pair) + budget (own row) ---
+        # Budget labels are the longest in this block, so it gets its own
+        # full-width row to avoid squeezing on narrow screens.
         elements.append({
             "tag": "column_set",
-            "flex_mode": "none",
+            "flex_mode": "bisect",
             "background_style": "default",
             "columns": [
                 {
@@ -4113,6 +4538,13 @@ class WorkflowHandler(BaseEngineHandler):
                         {"tag": "markdown", "content": f"**{tool_count}**\n<font color='grey'>工具数</font>"},
                     ],
                 },
+            ],
+        })
+        elements.append({
+            "tag": "column_set",
+            "flex_mode": "none",
+            "background_style": "default",
+            "columns": [
                 {
                     "tag": "column",
                     "width": "weighted",
@@ -4222,6 +4654,101 @@ class WorkflowHandler(BaseEngineHandler):
 
         elements.extend(build_responsive_button_row(primary_buttons, mobile_force_vertical=True))
 
+        # --- 5b. Sub-workflow references (first screen, independent block) ---
+        # Shown on the confirm card's first screen so users can inspect and
+        # edit sub-workflow refs without opening the advanced panel.
+        # The actual ``workflow('name', {})`` call is injected at confirm time
+        # via ``_inject_workflow_refs_into_script`` — no patch is written to
+        # the script on disk here.
+        from ...card.actions.dispatch import (
+            WORKFLOW_VIEW_WORKFLOW_REF,
+            WORKFLOW_REMOVE_WORKFLOW_REF,
+            WORKFLOW_ADD_WORKFLOW_REF,
+        )
+
+        ref_count = len(workflow_refs) if isinstance(workflow_refs, list) else 0
+        elements.append({
+            "tag": "markdown",
+            "content": f"**🔗 子 Workflow 引用（{ref_count}）**",
+        })
+
+        if not workflow_refs:
+            # Empty state chip so the "add" entry point is still obvious.
+            elements.append({
+                "tag": "note",
+                "elements": [{
+                    "tag": "plain_text",
+                    "content": "暂无子 Workflow 引用。点击下方按钮可添加。",
+                }],
+            })
+        else:
+            for idx, ref in enumerate(workflow_refs):
+                if isinstance(ref, dict):
+                    ref_name = ref.get("name", "unknown")
+                    ref_desc = ref.get("description", "")
+                else:
+                    ref_name = str(ref)
+                    ref_desc = ""
+
+                chip_lines = [f"`{ref_name}`"]
+                if ref_desc:
+                    chip_lines.append(f"  <font color='grey' size='10'>{ref_desc[:80]}</font>")
+                elements.append({
+                    "tag": "markdown",
+                    "content": "\n".join(chip_lines),
+                })
+
+                ref_buttons: list[dict] = []
+                view_value = {
+                    "action": WORKFLOW_VIEW_WORKFLOW_REF,
+                    "ref_index": idx,
+                    "chat_id": chat_id,
+                    "project_id": project_id,
+                    "engine_session_key": engine_session_key,
+                }
+                ref_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "👁 预览"},
+                    "type": "default",
+                    "value": view_value,
+                    "behaviors": [{"type": "callback", "value": view_value}],
+                })
+                remove_value = {
+                    "action": WORKFLOW_REMOVE_WORKFLOW_REF,
+                    "ref_index": idx,
+                    "chat_id": chat_id,
+                    "project_id": project_id,
+                    "engine_session_key": engine_session_key,
+                }
+                ref_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "🗑 移除"},
+                    "type": "default",
+                    "value": remove_value,
+                    "behaviors": [{"type": "callback", "value": remove_value}],
+                    "confirm": {
+                        "title": {"tag": "plain_text", "content": "移除子 Workflow 引用？"},
+                        "text": {"tag": "plain_text", "content": f"确定移除「{ref_name}」？"},
+                    },
+                })
+                elements.extend(build_responsive_button_row(ref_buttons, mobile_force_vertical=True))
+
+        # "Add reference" main button — primary entry point.
+        add_value = {
+            "action": WORKFLOW_ADD_WORKFLOW_REF,
+            "chat_id": chat_id,
+            "project_id": project_id,
+            "engine_session_key": engine_session_key,
+        }
+        add_button = [{
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "➕ 添加子 Workflow 引用"},
+            "type": "default",
+            "value": add_value,
+            "behaviors": [{"type": "callback", "value": add_value}],
+        }]
+        elements.extend(build_responsive_button_row(add_button, mobile_force_vertical=True))
+
         # --- 6. Phases panel (top-level collapsible) ---
         if phases:
             phase_elements = []
@@ -4268,88 +4795,12 @@ class WorkflowHandler(BaseEngineHandler):
                     "elements": [{"tag": "markdown", "content": preview}],
                 })
 
-        # --- 8. Collapsible: Advanced options (sub-workflows / tools / budget / regen) ---
+        # --- 8. Collapsible: Advanced options (tools / budget / regen) ---
         # Everything below here is truly secondary; users open this only for
         # deeper inspection before confirming.
         advanced_elements: list[dict] = []
 
-        # 8a. Sub-workflow refs (interactive: preview / remove; plus add)
-        from ...card.actions.dispatch import (
-            WORKFLOW_VIEW_WORKFLOW_REF,
-            WORKFLOW_REMOVE_WORKFLOW_REF,
-            WORKFLOW_ADD_WORKFLOW_REF,
-        )
-
-        refs_header = f"🔗 **子 Workflow 引用**（{len(workflow_refs)}）"
-        if workflow_refs:
-            for idx, ref in enumerate(workflow_refs):
-                if isinstance(ref, dict):
-                    ref_name = ref.get("name", "unknown")
-                    ref_path = ref.get("path", ref.get("script_path", ""))
-                else:
-                    ref_name = str(ref)
-                    ref_path = ""
-
-                ref_header_line = f"• `{ref_name}`"
-                if ref_path:
-                    ref_header_line += f"  <font color='grey' size='10'>{ref_path}</font>"
-                advanced_elements.append({"tag": "markdown", "content": ref_header_line})
-
-                ref_buttons: list[dict] = []
-                view_value = {
-                    "action": WORKFLOW_VIEW_WORKFLOW_REF,
-                    "ref_index": idx,
-                    "chat_id": chat_id,
-                    "project_id": project_id,
-                    "engine_session_key": engine_session_key,
-                }
-                ref_buttons.append({
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "👁 预览"},
-                    "type": "default",
-                    "value": view_value,
-                    "behaviors": [{"type": "callback", "value": view_value}],
-                })
-                remove_value = {
-                    "action": WORKFLOW_REMOVE_WORKFLOW_REF,
-                    "ref_index": idx,
-                    "chat_id": chat_id,
-                    "project_id": project_id,
-                    "engine_session_key": engine_session_key,
-                }
-                ref_buttons.append({
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "🗑 移除"},
-                    "type": "default",
-                    "value": remove_value,
-                    "behaviors": [{"type": "callback", "value": remove_value}],
-                    "confirm": {
-                        "title": {"tag": "plain_text", "content": "移除子 Workflow 引用？"},
-                        "text": {"tag": "plain_text", "content": f"确定移除「{ref_name}」？"},
-                    },
-                })
-                advanced_elements.extend(build_responsive_button_row(ref_buttons, mobile_force_vertical=True))
-
-        add_value = {
-            "action": WORKFLOW_ADD_WORKFLOW_REF,
-            "chat_id": chat_id,
-            "project_id": project_id,
-            "engine_session_key": engine_session_key,
-        }
-        add_button = [{
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "➕ 添加子 Workflow 引用"},
-            "type": "default",
-            "value": add_value,
-            "behaviors": [{"type": "callback", "value": add_value}],
-        }]
-        advanced_elements.append({
-            "tag": "markdown",
-            "content": refs_header,
-        })
-        advanced_elements.extend(build_responsive_button_row(add_button, mobile_force_vertical=True))
-
-        # 8b. Tools detail + interactive toggle
+        # 8a. Tools detail + interactive toggle
         tool_descriptions = get_available_tools()
         recommended_order = ["coco", "claude", "codex", "aiden", "gemini", "traex", "ttadk"]
         tier1_tools = [t for t in recommended_order if t in allowed_tools]

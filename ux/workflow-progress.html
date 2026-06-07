@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workflow 进度卡片 Preview</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      background: #f5f6f7; color: #1f2329;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      display: flex; justify-content: center; padding: 40px 20px;
+    }
+    .card {
+      width: min(100%, 440px);
+      background: #fff; border-radius: 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08); overflow: hidden;
+    }
+    .header {
+      background: #3370ff; color: #fff; padding: 14px 20px;
+      font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px;
+    }
+    .header .badge {
+      margin-left: auto; background: rgba(255,255,255,0.2); padding: 2px 8px;
+      border-radius: 10px; font-size: 11px; font-weight: 400;
+    }
+    .body { padding: 16px 20px; }
+    .budget-bar-wrap { margin-bottom: 14px; }
+    .budget-label { display: flex; justify-content: space-between; font-size: 12px; color: #646a73; margin-bottom: 4px; }
+    .budget-bar { height: 6px; background: #e8eaed; border-radius: 3px; overflow: hidden; }
+    .budget-bar-fill { height: 100%; background: #3370ff; border-radius: 3px; transition: width .3s; }
+    .budget-bar-fill.warn { background: #ff9800; }
+    .budget-bar-fill.danger { background: #f54a45; }
+    .phase { margin-bottom: 12px; }
+    .phase-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 6px;
+      font-size: 13px; font-weight: 500;
+    }
+    .phase-icon { font-size: 14px; }
+    .phase-status { margin-left: auto; font-size: 11px; color: #8f959e; }
+    .agent-row {
+      display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+      margin: 3px 0; border-radius: 4px; font-size: 12px; background: #f9fafb;
+    }
+    .agent-row .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+    }
+    .dot-done { background: #34c724; }
+    .dot-running { background: #3370ff; animation: blink 1.2s infinite; }
+    .dot-pending { background: #d0d5dd; }
+    .dot-failed { background: #f54a45; }
+    @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+    .agent-row .tool { color: #8f959e; margin-left: auto; }
+    .agent-row .dur { color: #8f959e; font-size: 11px; }
+    .metrics {
+      display: flex; gap: 16px; padding-top: 10px; border-top: 1px solid #eee;
+      margin-top: 12px; font-size: 12px; color: #646a73;
+    }
+    .metrics span { display: flex; align-items: center; gap: 4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="header">
+      <span>⚡ Workflow 执行中</span>
+      <span class="badge">2/3 阶段</span>
+    </div>
+    <div class="body">
+      <!-- Budget bar -->
+      <div class="budget-bar-wrap">
+        <div class="budget-label">
+          <span>Token 预算</span>
+          <span>320K / 1M (32%)</span>
+        </div>
+        <div class="budget-bar">
+          <div class="budget-bar-fill" style="width: 32%"></div>
+        </div>
+      </div>
+
+      <!-- Phase 1: Done -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-icon">✅</span>
+          <span>Phase 1: 代码分析</span>
+          <span class="phase-status">45s</span>
+        </div>
+        <div class="agent-row">
+          <span class="dot dot-done"></span>
+          <span>analyze_structure</span>
+          <span class="tool">coco</span>
+          <span class="dur">12s</span>
+        </div>
+        <div class="agent-row">
+          <span class="dot dot-done"></span>
+          <span>find_patterns</span>
+          <span class="tool">claude</span>
+          <span class="dur">33s</span>
+        </div>
+      </div>
+
+      <!-- Phase 2: Running -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-icon">🔄</span>
+          <span>Phase 2: 实现</span>
+          <span class="phase-status">running...</span>
+        </div>
+        <div class="agent-row">
+          <span class="dot dot-done"></span>
+          <span>write_auth_module</span>
+          <span class="tool">coco</span>
+          <span class="dur">28s</span>
+        </div>
+        <div class="agent-row">
+          <span class="dot dot-running"></span>
+          <span>write_oauth_handler</span>
+          <span class="tool">claude</span>
+          <span class="dur">15s...</span>
+        </div>
+        <div class="agent-row">
+          <span class="dot dot-pending"></span>
+          <span>integrate_routes</span>
+          <span class="tool">coco</span>
+          <span class="dur">—</span>
+        </div>
+      </div>
+
+      <!-- Phase 3: Pending -->
+      <div class="phase">
+        <div class="phase-header">
+          <span class="phase-icon">⏳</span>
+          <span>Phase 3: 测试</span>
+          <span class="phase-status">pending</span>
+        </div>
+      </div>
+
+      <!-- Metrics -->
+      <div class="metrics">
+        <span>🤖 Agent: 4/6</span>
+        <span>⏱️ 1m23s</span>
+        <span>📊 320K Token</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

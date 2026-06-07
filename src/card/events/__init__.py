@@ -29,6 +29,13 @@ from src.card.events.payloads import (
     ToolModelChangedPayload,
     ToolStartedPayload,
     WarningPayload,
+    WorkflowAgentDonePayload,
+    WorkflowAgentFailedPayload,
+    WorkflowAgentStartedPayload,
+    WorkflowConfirmPayload,
+    WorkflowLogPayload,
+    WorkflowPhasePayload,
+    WorkflowProgressPayload,
     WorktreeCleanupPayload,
     WorktreeConfirmPayload,
     WorktreeMergePayload,
@@ -37,6 +44,15 @@ from src.card.events.payloads import (
     WorktreeUnitPayload,
 )
 from src.card.events.types import CardEventType
+from src.card.events.workflow import (
+    workflow_agent_done,
+    workflow_agent_failed,
+    workflow_agent_started,
+    workflow_confirm,
+    workflow_log,
+    workflow_phase,
+    workflow_progress,
+)
 from src.card.events.worktree import (
     worktree_cleanup,
     worktree_completed_no_change,
@@ -57,6 +73,14 @@ __all__ = [
     "worktree_merge",
     "worktree_progress",
     "worktree_tool_select",
+    # Workflow factories
+    "workflow_agent_done",
+    "workflow_agent_failed",
+    "workflow_agent_started",
+    "workflow_confirm",
+    "workflow_log",
+    "workflow_phase",
+    "workflow_progress",
     # Payloads
     "BlockedPayload",
     "CompletedPayload",
@@ -86,4 +110,11 @@ __all__ = [
     "WorktreeProgressPayload",
     "WorktreeToolSelectPayload",
     "WorktreeUnitPayload",
+    "WorkflowConfirmPayload",
+    "WorkflowAgentDonePayload",
+    "WorkflowAgentFailedPayload",
+    "WorkflowAgentStartedPayload",
+    "WorkflowLogPayload",
+    "WorkflowPhasePayload",
+    "WorkflowProgressPayload",
 ]

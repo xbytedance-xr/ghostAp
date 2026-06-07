@@ -43,6 +43,7 @@ class TestWorkflowBudgetSelectHandler(unittest.TestCase):
         handler = WorkflowHandler.__new__(WorkflowHandler)
         handler.ctx = MagicMock()
         handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
         handler.update_card = MagicMock(return_value=True)
         handler.get_working_dir = MagicMock(return_value="/tmp/project")
         handler._get_root_path = MagicMock(return_value="/tmp/project")
@@ -74,22 +75,20 @@ class TestWorkflowBudgetSelectHandler(unittest.TestCase):
         engine = self._make_engine_awaiting()
         handler.ctx.workflow_engine_manager.get.return_value = engine
 
-        # Mock script generation to avoid actual AI calls
+        # Budget selection is selection-only: updates pending.budget and re-renders
+        # the confirm card, but does NOT re-invoke the AI. Regeneration is gated
+        # on the explicit "apply budget and regenerate" button.
         with patch.object(handler, '_generate_script_via_ai') as mock_gen:
-            mock_gen.return_value = ("/tmp/new_script.js", {"tools": ["coco"], "budget_tokens": 5_000_000}, False)
-
             handler.handle_workflow_select_budget(
                 "msg_1", "chat_1", "proj_1",
                 {"action": "workflow_select_budget", "budget_tokens": 5_000_000, "engine_session_key": "key1"},
             )
 
         self.assertEqual(engine.project.pending.budget if engine.project.pending else None, 5_000_000)
-        # update_card called twice: once for "regenerating" card, once for final confirm card
-        self.assertEqual(handler.update_card.call_count, 2)
-        # Verify script generation was called with the new budget
-        mock_gen.assert_called_once()
-        call_kwargs = mock_gen.call_args.kwargs
-        self.assertEqual(call_kwargs.get("override_budget_tokens"), 5_000_000)
+        # Selection-only flow: one card re-render to reflect the new budget choice
+        self.assertEqual(handler.update_card.call_count, 1)
+        # Script generation must NOT be called on plain selection
+        mock_gen.assert_not_called()
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
     def test_minimum_budget_option(self, mock_sender):
@@ -99,22 +98,16 @@ class TestWorkflowBudgetSelectHandler(unittest.TestCase):
 
         min_budget = BUDGET_OPTIONS[0][1]  # 500_000
 
-        # Mock script generation to avoid actual AI calls
+        # Selection-only: no AI call
         with patch.object(handler, '_generate_script_via_ai') as mock_gen:
-            mock_gen.return_value = ("/tmp/new_script.js", {"tools": ["coco"], "budget_tokens": min_budget}, False)
-
             handler.handle_workflow_select_budget(
                 "msg_1", "chat_1", "proj_1",
                 {"action": "workflow_select_budget", "budget_tokens": min_budget, "engine_session_key": "key1"},
             )
 
         self.assertEqual(engine.project.pending.budget if engine.project.pending else None, min_budget)
-        # update_card called twice: once for "regenerating" card, once for final confirm card
-        self.assertEqual(handler.update_card.call_count, 2)
-        # Verify script generation was called with the new budget
-        mock_gen.assert_called_once()
-        call_kwargs = mock_gen.call_args.kwargs
-        self.assertEqual(call_kwargs.get("override_budget_tokens"), min_budget)
+        self.assertEqual(handler.update_card.call_count, 1)
+        mock_gen.assert_not_called()
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
     def test_maximum_budget_option(self, mock_sender):
@@ -124,22 +117,16 @@ class TestWorkflowBudgetSelectHandler(unittest.TestCase):
 
         max_budget = BUDGET_OPTIONS[-1][1]  # 5_000_000
 
-        # Mock script generation to avoid actual AI calls
+        # Selection-only: no AI call
         with patch.object(handler, '_generate_script_via_ai') as mock_gen:
-            mock_gen.return_value = ("/tmp/new_script.js", {"tools": ["coco"], "budget_tokens": max_budget}, False)
-
             handler.handle_workflow_select_budget(
                 "msg_1", "chat_1", "proj_1",
                 {"action": "workflow_select_budget", "budget_tokens": max_budget, "engine_session_key": "key1"},
             )
 
         self.assertEqual(engine.project.pending.budget if engine.project.pending else None, max_budget)
-        # update_card called twice: once for "regenerating" card, once for final confirm card
-        self.assertEqual(handler.update_card.call_count, 2)
-        # Verify script generation was called with the new budget
-        mock_gen.assert_called_once()
-        call_kwargs = mock_gen.call_args.kwargs
-        self.assertEqual(call_kwargs.get("override_budget_tokens"), max_budget)
+        self.assertEqual(handler.update_card.call_count, 1)
+        mock_gen.assert_not_called()
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
     def test_wrong_session_key_silent_reject(self, mock_sender):
@@ -248,6 +235,125 @@ class TestWorkflowBudgetSelectHandler(unittest.TestCase):
         )
 
         handler.update_card.assert_not_called()
+
+    # --- Tiered budget validation tests (post-Task 5 tightening) ---
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_valid_tier_500k_accepted(self, mock_sender):
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": 500_000, "engine_session_key": "key1"},
+        )
+
+        self.assertEqual(engine.project.pending.selected_budget, 500_000)
+        self.assertEqual(engine.project.pending.budget, 500_000)
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_valid_tier_1_5m_accepted(self, mock_sender):
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": 1_500_000, "engine_session_key": "key1"},
+        )
+
+        self.assertEqual(engine.project.pending.selected_budget, 1_500_000)
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_valid_tier_2m_accepted(self, mock_sender):
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": 2_000_000, "engine_session_key": "key1"},
+        )
+
+        self.assertEqual(engine.project.pending.selected_budget, 2_000_000)
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_valid_tier_5m_accepted(self, mock_sender):
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": 5_000_000, "engine_session_key": "key1"},
+        )
+
+        self.assertEqual(engine.project.pending.selected_budget, 5_000_000)
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_invalid_arbitrary_value_rejected(self, mock_sender):
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": 1_234_567, "engine_session_key": "key1"},
+        )
+
+        # Must not write the invalid value to pending state
+        self.assertIsNone(engine.project.pending.selected_budget)
+        self.assertIsNone(engine.project.pending.budget)
+        handler.update_card.assert_not_called()
+        # Must send an error card via reply_card
+        handler.reply_card.assert_called()
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_invalid_out_of_range_rejected(self, mock_sender):
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": 99_999_999, "engine_session_key": "key1"},
+        )
+
+        self.assertIsNone(engine.project.pending.selected_budget)
+        self.assertIsNone(engine.project.pending.budget)
+        handler.reply_card.assert_called()
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_invalid_string_rejected_not_cast(self, mock_sender):
+        """A string that looks numeric must NOT be silently cast."""
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": "2000000", "engine_session_key": "key1"},
+        )
+
+        self.assertIsNone(engine.project.pending.selected_budget)
+        self.assertIsNone(engine.project.pending.budget)
+        handler.update_card.assert_not_called()
+        handler.reply_card.assert_called()
+
+    @patch("src.thread.get_current_sender_id", return_value="user_001")
+    def test_invalid_float_rejected(self, mock_sender):
+        handler = self._make_handler()
+        engine = self._make_engine_awaiting()
+        handler.ctx.workflow_engine_manager.get.return_value = engine
+
+        handler.handle_workflow_select_budget(
+            "msg_1", "chat_1", "proj_1",
+            {"action": "workflow_select_budget", "budget_tokens": 2_000_000.5, "engine_session_key": "key1"},
+        )
+
+        self.assertIsNone(engine.project.pending.selected_budget)
+        handler.reply_card.assert_called()
 
 
 if __name__ == "__main__":

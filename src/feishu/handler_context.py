@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from ..spec_engine import SpecEngineManager, SpecReporter
     from ..tasking import TaskScheduler
     from ..thread import ThreadContextManager
+    from ..workflow_engine.manager import WorkflowEngineManager
     from .image_handler import FeishuImageHandler
 
 
@@ -89,6 +90,7 @@ class HandlerContext:
     handlers: dict[str, Any] = field(default_factory=dict)
 
     # Lock managers (multi-chat isolation)
+    workflow_engine_manager: Optional["WorkflowEngineManager"] = None
     repo_lock_manager: Optional["RepoLockManager"] = None
     chat_lock_manager: Optional["ChatLockManager"] = None
 

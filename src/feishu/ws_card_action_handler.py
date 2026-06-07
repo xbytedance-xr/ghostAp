@@ -21,6 +21,11 @@ def _extract_behavior_value(behavior: Any) -> Any:
         return behavior.get("value")
     return getattr(behavior, "value", None)
 
+# NOTE: This set must remain in sync with the action registrations in
+# ``src/feishu/action_registry.py`` and the ``WORKFLOW_*`` constants defined in
+# ``src/card/actions/dispatch.py``.  Every newly registered workflow action must
+# also be added here so ``CardActionInspector.is_system_action`` recognises it
+# and routes it through the normal card-action pipeline.
 SYSTEM_CARD_ACTIONS = {
     "show_status",
     "switch_project",
@@ -84,8 +89,17 @@ SYSTEM_CARD_ACTIONS = {
     "workflow_cancel",
     "workflow_select_tool",
     "workflow_select_budget",
+    "workflow_select_agent",
+    "workflow_select_role",
+    "workflow_confirm_roles_and_generate",
     "workflow_confirm_tools",
     "workflow_regenerate_script",
+    "workflow_apply_budget_regenerate",
+    "workflow_fill_missing_tools",
+    "workflow_back_to_tools",
+    "workflow_view_workflow_ref",
+    "workflow_remove_workflow_ref",
+    "workflow_add_workflow_ref",
     "show_workflow_menu",
     "workflow_list_templates",
     "workflow_show_help",

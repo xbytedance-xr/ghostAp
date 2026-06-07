@@ -27,6 +27,7 @@ class WorkflowStatus(str, Enum):
     GENERATING_SCRIPT = "generating_script"
     AWAITING_AGENT_SELECT = "awaiting_agent_select"  # User selecting orchestrator agent
     AWAITING_TOOL_SELECT = "awaiting_tool_select"  # User selecting tools before script generation
+    AWAITING_ROLE_SELECT = "awaiting_role_select"  # User selecting roles before script generation
     AWAITING_CONFIRM = "awaiting_confirm"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -148,6 +149,7 @@ class BudgetState(BaseModel):
     total: int = DEFAULT_BUDGET_TOKENS
     used: int = 0
     reserved: int = 0  # Tokens reserved by in-flight agent calls
+    exceeded: bool = False  # Set once consumption crosses total (sticky)
 
     @property
     def remaining(self) -> int:
@@ -190,10 +192,22 @@ class PendingConfirmation(BaseModel):
     initiator_user_id: Optional[str] = None
     engine_session_key: Optional[str] = None
     selected_tools: Optional[list[str]] = None
-    budget: Optional[int] = None
+    # Roles selected by the user during the workflow startup flow. When
+    # present, the script-generation prompt only mentions these roles so
+    # the orchestrator agent does not suggest persona the user did not
+    # opt-in to. When None, a curated default set is used (backwards
+    # compatible with pre-role-selection workflows).
+    selected_roles: Optional[list[str]] = None
+    # `selected_budget 是唯一可执行预算的权威字段（tokens）。
+    # `budget` 和 `budget_tokens` 保留作为向后兼容的只读字段，仅用于反序列化旧的兼容。
+    selected_budget: Optional[int] = None
+    budget: Optional[int] = None  # Deprecated: use selected_budget for new callers
+    budget_tokens: Optional[int] = None  # Deprecated: use selected_budget for new callers
     tools_mismatch: bool = False
     orchestrator_agent: Optional[str] = None  # Selected orchestrator agent
-    budget_tokens: Optional[int] = None  # Hard budget constraint in tokens
+    is_template_hint: Optional[str] = None  # Set when launched via `/wf <template>` so downstream handlers can initialize default tool selection from template meta.tools
+    armed_for_regen: bool = False  # Whether a budget change has armed this pending state for script regeneration
+    script_hash: Optional[str] = None  # SHA-256 of the script content at generation time — used for TOCTOU checks at confirm-time so tampered scripts are rejected before execution.
 
 
 # ---------------------------------------------------------------------------
@@ -227,14 +241,26 @@ class WorkflowProject(BaseModel):
     def start_execution(self) -> None:
         """Transition from pending confirmation to execution.
 
-        Migrates initiator_user_id and selected_tools from pending to runtime
-        fields, then clears the pending state.
+        Migrates initiator_user_id, selected_tools and selected_budget from
+        pending to runtime fields, then clears the pending state. Callers
+        that set pending.selected_budget can rely on budget.total being
+        honoured at execution start.
         """
         if self.pending:
             if self.pending.initiator_user_id is not None:
                 self.initiator_user_id = self.pending.initiator_user_id
             if self.pending.selected_tools is not None:
                 self.selected_tools = self.pending.selected_tools
+            # Priority: selected_budget > budget (legacy) > budget_tokens (legacy)
+            effective_budget: Optional[int] = None
+            if getattr(self.pending, "selected_budget", None) is not None:
+                effective_budget = self.pending.selected_budget
+            elif self.pending.budget is not None:
+                effective_budget = self.pending.budget
+            elif self.pending.budget_tokens is not None:
+                effective_budget = self.pending.budget_tokens
+            if effective_budget is not None:
+                self.budget.total = effective_budget
             self.pending = None
 
     def to_dict(self) -> dict[str, Any]:
