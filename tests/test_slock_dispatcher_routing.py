@@ -98,6 +98,7 @@ class TestSlockDoesNotStealProgrammingMode:
         client._is_deep_command.return_value = False
         client._is_spec_command.return_value = False
         client._is_slock_command.return_value = False
+        client._is_workflow_command.return_value = False
         client._is_slock_managed_chat.return_value = managed
         client._should_auto_activate_slock.return_value = should_activate
         client._is_exit_command.return_value = False
@@ -169,6 +170,7 @@ class TestSlockDoesNotStealProjectContext:
         client._is_deep_command.return_value = False
         client._is_spec_command.return_value = False
         client._is_slock_command.return_value = False
+        client._is_workflow_command.return_value = False
         client._is_slock_managed_chat.return_value = False
         client._should_auto_activate_slock.return_value = True
         client._is_exit_command.return_value = False
@@ -943,6 +945,7 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
         client._is_deep_command.return_value = False
         client._is_spec_command.return_value = False
         client._is_slock_command.return_value = False
+        client._is_workflow_command.return_value = False
         client._is_slock_managed_chat.return_value = False
         client._should_auto_activate_slock.return_value = True
         # Simulate activation denied
@@ -985,6 +988,7 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
         client._is_deep_command.return_value = False
         client._is_spec_command.return_value = False
         client._is_slock_command.return_value = False
+        client._is_workflow_command.return_value = False
         client._is_slock_managed_chat.return_value = False
         client._should_auto_activate_slock.return_value = True
         # Simulate activation denied
@@ -1023,6 +1027,7 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
         client._is_deep_command.return_value = False
         client._is_spec_command.return_value = False
         client._is_slock_command.return_value = False
+        client._is_workflow_command.return_value = False
         client._is_slock_managed_chat.return_value = False
         client._should_auto_activate_slock.return_value = True
         # Simulate activation denied with not_whitelisted reason
@@ -1067,6 +1072,7 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
         client._is_deep_command.return_value = False
         client._is_spec_command.return_value = False
         client._is_slock_command.return_value = False
+        client._is_workflow_command.return_value = False
         client._is_slock_managed_chat.return_value = False
         client._should_auto_activate_slock.return_value = True
         # Activation allowed
@@ -1104,6 +1110,7 @@ class TestAutoActivateDeniedDoesNotFallbackToShell:
             client._is_deep_command.return_value = False
             client._is_spec_command.return_value = False
             client._is_slock_command.return_value = False
+            client._is_workflow_command.return_value = False
             client._is_slock_managed_chat.return_value = False
             client._should_auto_activate_slock.return_value = True
             client._auto_activate_slock.return_value = (False, reason)

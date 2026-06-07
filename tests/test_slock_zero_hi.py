@@ -86,6 +86,7 @@ class TestZeroHumanInteraction:
         settings = MagicMock()
         settings.slock_agent_execution_timeout = 60
         settings.coco_execution_timeout = 30
+        settings.slock_freshness_gate_enabled = False
         mock_get_settings.return_value = settings
 
         # Configure the mock session to return a realistic agent response
@@ -137,6 +138,7 @@ class TestZeroHumanInteraction:
         engine._router.extract_skill_keywords.return_value = ["refactor"]
         engine._observer_queue = MagicMock()
         engine.settings = settings
+        engine._autonomous_resolver = None
         engine._get_cancel_event = MagicMock(return_value=threading.Event())
         engine._clear_cancel_event = MagicMock()
         engine.transition_agent = MagicMock()

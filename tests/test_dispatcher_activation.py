@@ -16,6 +16,7 @@ class TestSlockActivationRouting:
         # Default stubs so dispatcher does not trip on unrelated branches
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         self.client._get_effective_mode.return_value = ("SMART", False)
         self.client._is_slock_active.return_value = False
         self.client._is_exit_command.return_value = False
@@ -100,6 +101,7 @@ class TestSlockManagedChatRouting:
         self.client._is_deep_command.return_value = False
         self.client._is_spec_command.return_value = False
         self.client._is_slock_command.return_value = False
+        self.client._is_workflow_command.return_value = False
         # Return a mock enum-like object with .value for current_mode
         mock_mode = MagicMock()
         mock_mode.value = "SMART"

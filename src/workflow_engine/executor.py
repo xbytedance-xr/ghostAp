@@ -51,7 +51,7 @@ class AgentExecutor:
         # execute() calls.  ``budget_total`` may be 0 to signal "unlimited".
         self.budget_total: int = int(budget_total)
         self._budget_consumed: int = 0
-        self._budget_lock = threading.Lock()
+        self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self.on_budget_exceeded = on_budget_exceeded
         # Shared thread pool for session creation — avoids per-call pool overhead.
         # Size is capped by HARD_MAX_CONCURRENT to prevent runaway concurrency even
@@ -376,7 +376,7 @@ class AgentExecutor:
                 # Older Python may not accept ``cancel_futures`` keyword.
                 self._session_pool.shutdown(wait=wait)
             except Exception as e:
-                logger.debug("[AgentExecutor] session pool shutdown failed: %s", e)
+                logger.debug("[AgentExecutor] session pool shutdown failed: %s", repr(e))
             self._session_pool = None
 
     # ------------------------------------------------------------------

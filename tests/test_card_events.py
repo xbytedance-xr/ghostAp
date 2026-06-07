@@ -23,7 +23,7 @@ class TestValidatePayloadFlag:
 
 class TestCardEventCreation:
     def test_all_event_types_exist(self):
-        assert len(CardEventType) == 45
+        assert len(CardEventType) == 52
 
     def test_started_factory(self):
         e = CardEvent.started()

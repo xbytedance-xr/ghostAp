@@ -65,7 +65,7 @@ class WorkflowJournal:
         self._evictions: int = 0
 
         # Thread safety for mutations and LRU reordering
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Load existing index from disk if present
         self._load_index()
@@ -160,7 +160,7 @@ class WorkflowJournal:
                     encoding="utf-8",
                 )
             except OSError as exc:
-                logger.error("Failed to write journal entry %s: %s", filename, exc)
+                logger.error("Failed to write journal entry %s: %s", filename, repr(exc))
                 return
 
             # Update index
@@ -226,7 +226,7 @@ class WorkflowJournal:
             if isinstance(data, dict):
                 self._index = data
         except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Corrupted journal index at %s: %s", self._index_path, exc)
+            logger.warning("Corrupted journal index at %s: %s", self._index_path, repr(exc))
             self._index = {}
 
     def _flush_index(self) -> None:
@@ -237,4 +237,4 @@ class WorkflowJournal:
                 encoding="utf-8",
             )
         except OSError as exc:
-            logger.error("Failed to write journal index: %s", exc)
+            logger.error("Failed to write journal index: %s", repr(exc))

@@ -89,7 +89,7 @@ class WorkflowHistory:
 
     def __init__(self, root_path: str) -> None:
         self._path = Path(root_path) / _HISTORY_FILENAME
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def record(self, project: Any) -> None:
         """Append a completed/failed workflow run from a WorkflowProject model."""
@@ -127,7 +127,7 @@ class WorkflowHistory:
             if isinstance(data, list):
                 return [HistoryEntry.from_dict(d) for d in data]
         except (json.JSONDecodeError, OSError, TypeError) as exc:
-            logger.warning("Failed to load workflow history: %s", exc)
+            logger.warning("Failed to load workflow history: %s", repr(exc))
         return []
 
     def _save(self, entries: list[HistoryEntry]) -> None:
@@ -139,4 +139,4 @@ class WorkflowHistory:
                 encoding="utf-8",
             )
         except OSError as exc:
-            logger.error("Failed to save workflow history: %s", exc)
+            logger.error("Failed to save workflow history: %s", repr(exc))

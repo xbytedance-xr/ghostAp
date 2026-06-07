@@ -30,7 +30,7 @@ class WorkflowStateManager:
 
     def __init__(self, project: WorkflowProject) -> None:
         self._project = project
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         # O(1) lookup: agent label -> AgentProgress reference.
         # All inserts, lookups and removals happen under ``_lock`` so that the
         # map stays consistent with the project.phases[*].agents lists even

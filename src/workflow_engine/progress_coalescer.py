@@ -39,7 +39,7 @@ class ProgressCoalescer:
         self._debounce_s = debounce_s
 
         # Thread safety
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._latest_snapshot: Optional[dict[str, Any]] = None
         self._stop_event = threading.Event()
 

@@ -3411,7 +3411,7 @@ class WorkflowHandler(BaseEngineHandler):
         try:
             discoverable = {t.name for t in discover_templates(root_path, user_id=sender_id)}
         except Exception as exc:
-            logger.warning("Cannot enumerate templates for add-workflow-ref: %s", exc)
+            logger.warning("Cannot enumerate templates for add-workflow-ref: %s", repr(exc))
             self._reply_workflow_error(
                 message_id, "invalid_argument", detail="无法枚举可用模板"
             )
@@ -3771,7 +3771,7 @@ class WorkflowHandler(BaseEngineHandler):
             # leak host-internal paths into user-facing messages. We
             # keep the sanitized message for the user and log the raw
             # exception on the server side.
-            logger.error("wf_save failed for name=%s: %s", name, exc)
+            logger.error("wf_save failed for name=%s: %s", name, repr(exc))
             self._reply_workflow_error(
                 message_id,
                 "internal_error",

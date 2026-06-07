@@ -668,7 +668,7 @@ def extract_meta_from_script(script_content: str) -> Optional[dict[str, Any]]:
             return meta
         return None
     except json.JSONDecodeError as e:
-        logger.debug("JSON parse failed for extracted meta: %s", e)
+        logger.debug("JSON parse failed for extracted meta: %s", repr(e))
         # Strategy 2: Try a more aggressive cleanup
         json_str_v2 = _aggressive_json_cleanup(raw_meta)
         try:

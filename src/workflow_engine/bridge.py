@@ -89,7 +89,7 @@ class RuntimeBridge:
         self._process: Optional[subprocess.Popen] = None
 
         # Thread-safe stdin writes
-        self._write_lock = threading.Lock()
+        self._write_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Read loop thread
         self._reader_thread: Optional[threading.Thread] = None
@@ -109,12 +109,12 @@ class RuntimeBridge:
         # ``_active_futures``; the done-callback ``_discard_future`` removes
         # it. ``in_flight_count`` reports the size of that set.
         self._active_futures: set[Future] = set()
-        self._futures_lock = threading.Lock()
+        self._futures_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Parent reference and child tracking for cascade cancellation
         self._parent: Optional["RuntimeBridge"] = None
         self._children: list["RuntimeBridge"] = []
-        self._children_lock = threading.Lock()
+        self._children_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Budget reservation state for sub-workflow tracking
         # reserved = tokens currently reserved by in-flight sub-workflows
@@ -122,7 +122,7 @@ class RuntimeBridge:
         # bridge (reported by the JS runtime via response_data._budget_used).
         self._budget_reserved: int = 0
         self._budget_used: int = 0
-        self._budget_lock = threading.Lock()
+        self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Shutdown flag to make stop() / cleanup() idempotent
         self._shutdown_done = False
@@ -168,7 +168,7 @@ class RuntimeBridge:
             return True
 
         except (subprocess.TimeoutExpired, OSError) as exc:
-            logger.warning("Failed to check Node.js version: %s", exc)
+            logger.warning("Failed to check Node.js version: %s", repr(exc))
             return False
 
     def start(self) -> None:
@@ -427,7 +427,7 @@ class RuntimeBridge:
         # even if _reserve_subflow_budget is reached before a full __init__
         # (e.g. tests that exercise _handle_workflow_call on a partial bridge).
         if not hasattr(self, "_budget_lock"):
-            self._budget_lock = threading.Lock()
+            self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
             self._budget_reserved = 0
         if not hasattr(self, "_budget_used"):
             self._budget_used = 0
@@ -483,7 +483,7 @@ class RuntimeBridge:
             return
         # Lazy init guard (mirrors _reserve_subflow_budget).
         if not hasattr(self, "_budget_lock"):
-            self._budget_lock = threading.Lock()
+            self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
             self._budget_reserved = 0
         with self._budget_lock:
             self._budget_reserved = max(0, self._budget_reserved - amount)
@@ -506,7 +506,7 @@ class RuntimeBridge:
         if amount <= 0:
             return
         if not hasattr(self, "_budget_lock"):
-            self._budget_lock = threading.Lock()
+            self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
             self._budget_reserved = 0
         if not hasattr(self, "_budget_used"):
             self._budget_used = 0
@@ -1032,7 +1032,7 @@ class RuntimeBridge:
                 self._process.stdin.write(line)
                 self._process.stdin.flush()
             except (OSError, BrokenPipeError) as exc:
-                logger.debug("Failed to write to stdin: %s", exc)
+                logger.debug("Failed to write to stdin: %s", repr(exc))
 
     def _send_response(self, request_id: Any, result: Any) -> None:
         """Send a JSON-RPC success response."""

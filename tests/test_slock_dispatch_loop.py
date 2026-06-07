@@ -107,6 +107,7 @@ class TestTimeoutDetection:
             engine._card_send_fn = MagicMock()
             engine._router = MagicMock()
             engine._task_queue = TaskQueue(max_size=8)
+            engine._task_mgr = MagicMock()
             # Initialize _lock since we bypassed __init__
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
@@ -154,6 +155,7 @@ class TestTimeoutDetection:
             engine._card_send_fn = MagicMock()
             engine._router = MagicMock()
             engine._task_queue = TaskQueue(max_size=8)
+            engine._task_mgr = MagicMock()
             from src.utils.lock_order import LockLevel, ordered_rlock
             engine._lock = ordered_rlock(LockLevel.ENGINE_INSTANCE, name="test._lock")
 
@@ -568,6 +570,7 @@ class TestBootstrapRaceConditions:
             engine = SlockEngine.__new__(SlockEngine)
             engine._channel = MagicMock()
             engine._task_queue = TaskQueue(max_size=8)
+            engine._task_mgr = MagicMock()
             engine._bootstrap_ready = threading.Event()
             engine._bootstrap_ready.set()
             engine._send_timeout_card = MagicMock()

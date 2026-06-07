@@ -981,7 +981,7 @@ class SlockEngine(BaseEngine):
             try:
                 executor.submit(self._execute_agent, agent, message, callbacks)
             except Exception as exc:
-                logger.warning("Fan-out: failed to submit to %s: %s", agent.name, exc)
+                logger.warning("Fan-out: failed to submit to %s: %s", agent.name, repr(exc))
 
     def _send_timeout_card(self, task: "QueuedTask", waited_seconds: float) -> None:
         """Send a timeout notification card for a task that waited too long."""
@@ -3499,6 +3499,8 @@ class SlockEngine(BaseEngine):
         if not hasattr(self, "_action_timers"):
             self._action_timers: dict[str, threading.Timer] = {}
         self._action_timers[action_id] = timer
+
+    def capture_dissolve_snapshot(self) -> TeamSnapshot:
         """Capture the active channel, role bindings, and task board for undo."""
         channel = self._channel
         channel_id = channel.channel_id if channel else self.chat_id

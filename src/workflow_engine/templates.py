@@ -101,7 +101,7 @@ def _template_info_from_file(file_path: Path, scope: str) -> TemplateInfo:
         if meta is not None:
             description = meta.description
     except (OSError, PermissionError) as exc:
-        logger.debug("Could not read template %s for meta: %s", file_path, exc)
+        logger.debug("Could not read template %s for meta: %s", file_path, repr(exc))
 
     return TemplateInfo(
         name=name,
@@ -147,7 +147,7 @@ def _write_owner(target_path: str, owner_id: str) -> None:
         owner_file.parent.mkdir(parents=True, exist_ok=True)
         owner_file.write_text(owner_id, encoding="utf-8")
     except OSError as exc:
-        logger.warning("Failed to write owner marker for %s: %s", target_path, exc)
+        logger.warning("Failed to write owner marker for %s: %s", target_path, repr(exc))
 
 
 def _remove_owner(target_path: str) -> None:
@@ -381,7 +381,7 @@ def discover_templates(root_path: str, *, user_id: str | None = None) -> list[Te
                     info = _template_info_from_file(f, scope="global")
                     templates[info.name] = info
         except PermissionError as exc:
-            logger.warning("Cannot read global templates dir: %s", exc)
+            logger.warning("Cannot read global templates dir: %s", repr(exc))
 
     # Project templates (medium-high priority)
     project_dir = _project_templates_dir(root_path)
@@ -392,7 +392,7 @@ def discover_templates(root_path: str, *, user_id: str | None = None) -> list[Te
                     info = _template_info_from_file(f, scope="project")
                     templates[info.name] = info
         except PermissionError as exc:
-            logger.warning("Cannot read project templates dir: %s", exc)
+            logger.warning("Cannot read project templates dir: %s", repr(exc))
 
     # User-level templates (highest priority — user-specific namespace)
     if user_id:
@@ -404,7 +404,7 @@ def discover_templates(root_path: str, *, user_id: str | None = None) -> list[Te
                         info = _template_info_from_file(f, scope="user")
                         templates[info.name] = info
             except PermissionError as exc:
-                logger.warning("Cannot read user templates dir: %s", exc)
+                logger.warning("Cannot read user templates dir: %s", repr(exc))
 
     return sorted(templates.values(), key=lambda t: t.name)
 
@@ -450,7 +450,7 @@ def load_template(root_path: str, name: str, *, user_id: str | None = None) -> O
     try:
         available = {t.name for t in discover_templates(root_path, user_id=user_id)}
     except OSError as exc:
-        logger.warning("Cannot enumerate templates: %s", exc)
+        logger.warning("Cannot enumerate templates: %s", repr(exc))
         return None
     if name not in available:
         logger.warning("Template '%s' is not discoverable at user_id=%s", name, user_id)
@@ -466,7 +466,7 @@ def load_template(root_path: str, name: str, *, user_id: str | None = None) -> O
         with open(resolved, "r", encoding="utf-8") as f:
             return f.read()
     except (OSError, PermissionError) as exc:
-        logger.error("Failed to read template '%s': %s", name, exc)
+        logger.error("Failed to read template '%s': %s", name, repr(exc))
         return None
 
 
@@ -664,7 +664,7 @@ def delete_template(
             logger.info("Deleted template '%s' (%s scope) from %s", name, scope, target_file)
             return True
         except OSError as exc:
-            logger.error("Failed to delete template %s: %s", target_file, exc)
+            logger.error("Failed to delete template %s: %s", target_file, repr(exc))
             return False
 
     return False
@@ -710,13 +710,13 @@ def parse_template_meta(script_content: str) -> Optional[WorkflowMeta]:
     try:
         data = json.loads(raw_json)
     except (json.JSONDecodeError, ValueError) as exc:
-        logger.debug("Failed to parse meta JSON: %s", exc)
+        logger.debug("Failed to parse meta JSON: %s", repr(exc))
         return None
 
     try:
         return WorkflowMeta.model_validate(data)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("Failed to validate WorkflowMeta: %s", exc)
+        logger.debug("Failed to validate WorkflowMeta: %s", repr(exc))
         return None
 
 

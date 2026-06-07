@@ -1677,7 +1677,7 @@ class DiscussionManager:
                     )
                     return True
                 except Exception as exc:
-                    logger.warning("Failed to trigger divergence discussion: %s", exc)
+                    logger.warning("Failed to trigger divergence discussion: %s", repr(exc))
 
         return False
 
@@ -2033,7 +2033,7 @@ class DiscussionManager:
                             task_id,
                         )
                     except Exception as exc:
-                        logger.warning("Failed to apply APPROVE verdict: %s", exc)
+                        logger.warning("Failed to apply APPROVE verdict: %s", repr(exc))
         elif verdict == "reject":
             # Determine rejector from discussion participants
             rejector_role = ""
@@ -2052,7 +2052,7 @@ class DiscussionManager:
                         task_id, rejector_role,
                     )
                 except Exception as exc:
-                    logger.warning("Failed to apply REJECT verdict: %s", exc)
+                    logger.warning("Failed to apply REJECT verdict: %s", repr(exc))
 
     @staticmethod
     def _extract_verdict_from_conclusion(conclusion: str) -> str:

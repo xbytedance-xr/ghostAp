@@ -218,7 +218,7 @@ class WorkflowEngine(BaseEngine):
             if script_meta is not None and script_meta.max_concurrent:
                 max_concurrent = int(script_meta.max_concurrent)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("Failed to parse workflow script meta: %s", exc)
+            logger.debug("Failed to parse workflow script meta: %s", repr(exc))
             script_meta = None
             max_concurrent = DEFAULT_MAX_CONCURRENT
 

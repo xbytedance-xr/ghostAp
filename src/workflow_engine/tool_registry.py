@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _CACHE_TTL_S: float = 300.0  # 5-minute cache
-_cache_lock = threading.Lock()
+_cache_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _cached_tools: dict[str, str] | None = None
 _cached_at: float = 0.0
 
@@ -94,7 +94,7 @@ def _discover_tools() -> dict[str, str]:
     try:
         result.update(_discover_acp_tools())
     except Exception as e:
-        logger.debug("ACP tool discovery failed, using fallback: %s", e)
+        logger.debug("ACP tool discovery failed, using fallback: %s", repr(e))
         # Add ACP fallbacks
         for name in ("coco", "claude", "aiden", "codex", "gemini", "traex"):
             if name not in result:
@@ -104,7 +104,7 @@ def _discover_tools() -> dict[str, str]:
     try:
         result.update(_discover_ttadk_tools())
     except Exception as e:
-        logger.debug("TTADK tool discovery failed: %s", e)
+        logger.debug("TTADK tool discovery failed: %s", repr(e))
         if "ttadk" not in result:
             result["ttadk"] = _FALLBACK_DESCRIPTIONS.get("ttadk", "TTADK")
 

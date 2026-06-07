@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,6 +25,8 @@ class _RegistryCaptureClient:
         self.handlers: dict[str, object] = {}
         self.replies: list[tuple[str, str]] = []
         self.enter_ttadk_calls: list[tuple] = []
+        self._project_manager = MagicMock()
+        self._project_manager.get_active_project.return_value = None
 
     def _register_action(self, handler, *, exact=None, prefix=None):
         if exact:

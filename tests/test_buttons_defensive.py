@@ -11,6 +11,17 @@ from __future__ import annotations
 import pytest
 
 import src.card.render.buttons as buttons_module
+from src.card.actions.dispatch import (
+    WORKFLOW_CANCEL,
+    WORKFLOW_CONFIRM_TOOLS,
+    WORKFLOW_CONFIRM_START,
+    WORKFLOW_SELECT_TOOL,
+    WORKFLOW_SELECT_BUDGET,
+    WORKFLOW_REGENERATE_SCRIPT,
+    SHOW_WORKFLOW_MENU,
+    WORKFLOW_LIST_TEMPLATES,
+    WORKFLOW_SHOW_HELP,
+)
 from src.card.render.buttons import (
     _DESTRUCTIVE_ACTIONS,
     _STOP_INTENTS,
@@ -30,7 +41,15 @@ class TestConfirmTitleMapValidation:
         a RuntimeWarning should be emitted (validation logic test)."""
         # Simulate the validation logic with a bad _CONFIRM_TITLE_MAP
         bad_map = {**buttons_module._CONFIRM_TITLE_MAP, "bogus.invalid.key": "card_btn_confirm_stop_title"}
-        valid_keys = {m.value for m in ButtonIntent} | set(INTENT_TO_ACTION_ID.values())
+        valid_keys = (
+            {m.value for m in ButtonIntent}
+            | set(INTENT_TO_ACTION_ID.values())
+            | {
+                WORKFLOW_CANCEL, WORKFLOW_CONFIRM_TOOLS, WORKFLOW_CONFIRM_START,
+                WORKFLOW_SELECT_TOOL, WORKFLOW_SELECT_BUDGET, WORKFLOW_REGENERATE_SCRIPT,
+                SHOW_WORKFLOW_MENU, WORKFLOW_LIST_TEMPLATES, WORKFLOW_SHOW_HELP,
+            }
+        )
         invalid_keys = set(bad_map.keys()) - valid_keys
         assert invalid_keys == {"bogus.invalid.key"}, (
             f"Expected bogus key to be invalid, got: {invalid_keys}"
@@ -38,7 +57,15 @@ class TestConfirmTitleMapValidation:
 
     def test_current_map_has_no_invalid_keys(self):
         """Verify that the actual _CONFIRM_TITLE_MAP has no invalid keys at import time."""
-        valid_keys = {m.value for m in ButtonIntent} | set(INTENT_TO_ACTION_ID.values())
+        valid_keys = (
+            {m.value for m in ButtonIntent}
+            | set(INTENT_TO_ACTION_ID.values())
+            | {
+                WORKFLOW_CANCEL, WORKFLOW_CONFIRM_TOOLS, WORKFLOW_CONFIRM_START,
+                WORKFLOW_SELECT_TOOL, WORKFLOW_SELECT_BUDGET, WORKFLOW_REGENERATE_SCRIPT,
+                SHOW_WORKFLOW_MENU, WORKFLOW_LIST_TEMPLATES, WORKFLOW_SHOW_HELP,
+            }
+        )
         invalid_keys = set(buttons_module._CONFIRM_TITLE_MAP.keys()) - valid_keys
         assert not invalid_keys, (
             f"_CONFIRM_TITLE_MAP contains invalid keys: {sorted(invalid_keys)}"
@@ -78,6 +105,7 @@ class TestIsStopIntent:
             "intent.deep.stop",
             "intent.spec.stop",
             "intent.worktree.cancel",
+            WORKFLOW_CANCEL,
         }
         assert _STOP_INTENTS == expected, (
             f"_STOP_INTENTS changed! Expected {expected}, got {_STOP_INTENTS}"
@@ -130,6 +158,7 @@ class TestDestructiveConfirm:
         expected = frozenset({
             ENGINE_STOP, DEEP_STOP, SPEC_STOP,
             WORKTREE_CLEANUP, WORKTREE_MERGE, WORKTREE_CANCEL,
+            WORKFLOW_CANCEL,
             APPROVE_ACTION,
         })
         assert _DESTRUCTIVE_ACTIONS == expected

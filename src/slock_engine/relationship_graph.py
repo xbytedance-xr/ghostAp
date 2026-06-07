@@ -57,7 +57,7 @@ class RelationshipGraph:
 
     def __init__(self, storage_path: str) -> None:
         self._path = storage_path
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._edges: dict[tuple[str, str], RelationshipEdge] = {}
         self._dirty = False
         self._load()
@@ -76,7 +76,7 @@ class RelationshipGraph:
                 key = (edge.agent_a, edge.agent_b)
                 self._edges[key] = edge
         except Exception as e:
-            logger.warning("Failed to load relationship graph: %s", e)
+            logger.warning("Failed to load relationship graph: %s", repr(e))
 
     def _persist(self) -> None:
         if not self._dirty:
@@ -90,7 +90,7 @@ class RelationshipGraph:
             os.replace(tmp, self._path)
             self._dirty = False
         except Exception as e:
-            logger.warning("Failed to persist relationship graph: %s", e)
+            logger.warning("Failed to persist relationship graph: %s", repr(e))
 
     def record_interaction(
         self, agent_a: str, agent_b: str, *, quality: float, context: str = ""

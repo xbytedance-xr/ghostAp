@@ -62,4 +62,4 @@ class WorkflowEngineManager(BaseEngineManager["WorkflowEngine"]):
             try:
                 engine.cleanup()
             except Exception as e:
-                logger.debug("Cleanup failed for %s: %s", key, e)
+                logger.debug("Cleanup failed for %s: %s", key, repr(e))

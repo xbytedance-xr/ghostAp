@@ -138,7 +138,7 @@ class TestCreateRoleWithParams:
         assert agent.name == "Reviewer"
         assert agent.agent_type == "gemini"
         assert agent.model_name == ""  # default
-        assert agent.emoji == "🤖"  # default
+        assert agent.emoji == "👨‍💻"  # pick_unique_emoji assigns coder pool first entry
 
     def test_create_role_ttadk_uses_cli_bridge_agent_type(self):
         """`--tool ttadk` must create a TTADK CLI-bridge agent, not bare ACP ttadk."""
@@ -518,7 +518,7 @@ class TestRoleInfoDetails:
 
         agent = engine.registry.register.call_args[0][0]
         assert agent.name == "Guide"
-        assert agent.emoji == "🧭"
+        assert agent.emoji == "✍️"  # pick_unique_emoji overrides template emoji
         assert agent.role == "writer"
         assert agent.agent_type == "coco"
         assert agent.system_prompt == "You guide new team members."

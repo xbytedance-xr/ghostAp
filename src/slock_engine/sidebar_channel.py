@@ -57,7 +57,7 @@ class SidebarChannel:
     """
 
     def __init__(self, max_pending_per_agent: int = 5) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         # recipient_id -> deque of pending messages
         self._inbox: dict[str, deque[SidebarMessage]] = {}
         self._max_pending = max_pending_per_agent
