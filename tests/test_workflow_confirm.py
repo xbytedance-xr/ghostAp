@@ -284,49 +284,21 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         # Default orchestrator agent should be set
         self.assertEqual(engine.project.pending.orchestrator_agent if engine.project.pending else None, "coco")
 
-        # Step 1b: Select agent to proceed to tool selection
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_select_agent(
-            "msg_1b", "chat_1",
-            "proj_1",
-            {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_1"}
-        )
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
-        # Agent selection should have sent tool selection card
-        self.assertEqual(handler.send_card_to_chat.call_count, 2)
-        # Get the new session key after tool selection state is initialized
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
-
-        # Mock AI generation result for confirm_tools step
+        # Mock AI generation result for confirm step
         mock_gen.return_value = (
             "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
             {"name": "test-wf", "description": "Test", "phases": [], "tools": ["coco"]},
             False,
         )
 
-        # Step 2: confirm tool selection transitions to role selection (step 3)
-        handler.handle_workflow_confirm_tools(
-            "msg_2", "chat_1", "proj_1",
-            {"action": "workflow_confirm_tools", "engine_session_key": session_key}
-        )
-
-        # 4-step flow: agent select (1) + tool select (1) = 2 so far.
-        # confirm_tools shows role-selection card via update_card (no extra send_card_to_chat).
-        self.assertEqual(handler.send_card_to_chat.call_count, 2)
-        handler.update_card.assert_called_once()
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
-
-        # Step 3: confirm role selection proceeds to script generation / AWAITING_CONFIRM
-        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key_3)
+        # Step 2: confirm from combined card goes directly to script generation
+        handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_confirm_roles_and_generate(
-            "msg_3", "chat_1", "proj_1",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+            "msg_2", "chat_1", "proj_1",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
         )
 
-        # Engine project should now be AWAITING_CONFIRM (step 4)
+        # Engine project should now be AWAITING_CONFIRM
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         self.assertIsNotNone(engine.project.pending.script_path if engine.project.pending else None)
         self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "do code review")
@@ -442,50 +414,36 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         ctx.workflow_engine_manager.get.return_value = engine
         ctx.workflow_engine_manager.get_or_create.return_value = engine
 
-        # Step 1: start_workflow shows agent selection card
+        # Step 1: start_workflow shows combined selection card
         handler.start_workflow("msg_1", "chat_1", "complex task", project)
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
 
-        # Step 1b: Select agent to proceed to tool selection
+        # Step 1b: Select agent — stays on combined card (AWAITING_AGENT_SELECT)
         handler._get_root_path = MagicMock(return_value="/tmp/project")
         handler.handle_workflow_select_agent(
             "msg_1b", "chat_1",
             "proj_1",
             {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_1"}
         )
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
-        # Get the new session key after tool selection state is initialized
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
+        self.assertEqual(engine.project.pending.orchestrator_agent, "coco")
 
-        # Step 2: confirm tool selection transitions to role selection
+        # Step 2: confirm from combined card goes directly to script generation
         mock_gen.return_value = (
             "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
             None,  # No meta from fallback
             True,  # is_fallback=True
         )
 
-        handler.handle_workflow_confirm_tools(
-            "msg_2", "chat_1", "proj_1",
-            {"action": "workflow_confirm_tools", "engine_session_key": session_key}
-        )
-
-        # After confirm_tools, status is AWAITING_ROLE_SELECT (not yet AWAITING_CONFIRM)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
-        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key_3)
-
-        # Step 3: confirm roles - this is where script generation actually happens
         handler.handle_workflow_confirm_roles_and_generate(
-            "msg_3", "chat_1", "proj_1",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+            "msg_2", "chat_1", "proj_1",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
         )
 
         # Should show confirm card with fallback flag
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         self.assertTrue(engine.project.pending.is_fallback if engine.project.pending else False)
-        # update_card should have been called at least once (role select) and then again for confirm
         self.assertGreaterEqual(handler.update_card.call_count, 1)
 
 
@@ -828,20 +786,7 @@ export default async function() {
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(session_key)
 
-        # Step 1b: Select agent to proceed to tool selection
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_select_agent(
-            "msg_e2e_1b", "chat_e2e",
-            "proj_e2e",
-            {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_e2e"}
-        )
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
-        # Get the new session key after tool selection state is initialized
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
-
-        # Step 2: confirm tool selection transitions to role selection (step 3)
+        # Step 2: confirm from combined card goes to script generation
         mock_gen.return_value = (
             script_path,
             {
@@ -857,20 +802,10 @@ export default async function() {
             False,  # not fallback
         )
 
-        handler.handle_workflow_confirm_tools(
-            "msg_e2e_2", "chat_e2e", "proj_e2e",
-            {"action": "workflow_confirm_tools", "engine_session_key": session_key}
-        )
-
-        # After confirm_tools, state should be AWAITING_ROLE_SELECT (step 3)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
-        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key_3)
-
-        # Step 3: confirm roles - this actually produces the confirm card
+        handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_confirm_roles_and_generate(
-            "msg_e2e_3", "chat_e2e", "proj_e2e",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+            "msg_e2e_2", "chat_e2e", "proj_e2e",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
         )
         os.unlink(script_path)
 
@@ -983,21 +918,7 @@ export default async function() {
         tool_select_session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(tool_select_session_key)
 
-        # Step 1b: Select agent to proceed to tool selection
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-        handler.handle_workflow_select_agent(
-            "msg_1b", "chat_e2e2",
-            "proj_e2e2",
-            {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": tool_select_session_key, "project_id": "proj_e2e2"}
-        )
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
-        # Get the new session key after tool selection state is initialized
-        tool_select_session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(tool_select_session_key)
-
-        # Step 2: confirm tool selection transitions to role selection (step 3)
-        # Write a valid script to a real temp file so the confirm-time
-        # TOCTOU re-read succeeds.
+        # Step 2: confirm from combined card goes to script generation
         e2e_script = (
             "export const meta = {\n"
             "  name: 'wf',\n"
@@ -1018,24 +939,13 @@ export default async function() {
             False,
         )
 
-        handler.handle_workflow_confirm_tools(
-            "msg_2", "chat_e2e2", "proj_e2e2",
-            {"action": "workflow_confirm_tools", "engine_session_key": tool_select_session_key},
-        )
-
-        # After confirm_tools, engine is at AWAITING_ROLE_SELECT
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
-        role_session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(role_session_key)
-
-        # Step 3: confirm roles — this actually produces AWAITING_CONFIRM
+        handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_confirm_roles_and_generate(
-            "msg_3", "chat_e2e2", "proj_e2e2",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": role_session_key},
+            "msg_2", "chat_e2e2", "proj_e2e2",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": tool_select_session_key},
         )
 
-        # Now simulate the user pressing confirm button
-        # The engine should be in AWAITING_CONFIRM with a session key
+        # Engine should be in AWAITING_CONFIRM
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
         self.assertIsNotNone(session_key)
@@ -1118,39 +1028,17 @@ class TestWorkflowFallbackPath(unittest.TestCase):
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
 
-        # Step 1b: Select agent to proceed to tool selection
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-        handler.handle_workflow_select_agent(
-            "msg_fb_1b", "chat_fb",
-            "proj_fb",
-            {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_fb"}
-        )
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
-        # Get the new session key after tool selection state is initialized
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
-
-        # Step 2: confirm tool selection transitions to role selection (step 3)
+        # Step 2: confirm from combined card goes to script generation
         mock_gen.return_value = (
             "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
             None,  # No meta (fallback generated simple script)
             True,  # is_fallback=True
         )
 
-        handler.handle_workflow_confirm_tools(
-            "msg_fb_2", "chat_fb", "proj_fb",
-            {"action": "workflow_confirm_tools", "engine_session_key": session_key}
-        )
-
-        # After confirm_tools, engine is AWAITING_ROLE_SELECT
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
-        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key_3)
-
-        # Step 3: confirm roles - produces script + confirm card
+        handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_confirm_roles_and_generate(
-            "msg_fb_3", "chat_fb", "proj_fb",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+            "msg_fb_2", "chat_fb", "proj_fb",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
         )
 
         # Engine should be in AWAITING_CONFIRM with fallback flag
@@ -1211,38 +1099,17 @@ class TestWorkflowFallbackPath(unittest.TestCase):
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
 
-        # Step 1b: Select agent to proceed to tool selection
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-        handler.handle_workflow_select_agent(
-            "msg_fb2_1b", "chat_fb2",
-            "proj_fb2",
-            {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_fb2"}
-        )
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_TOOL_SELECT)
-        # Get the new session key after tool selection state is initialized
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
-
-        # Step 2: confirm tool selection transitions to role selection
+        # Step 2: confirm from combined card goes to script generation
         mock_gen.return_value = (
             "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
             None,
             True,
         )
 
-        handler.handle_workflow_confirm_tools(
-            "msg_fb2_2", "chat_fb2", "proj_fb2",
-            {"action": "workflow_confirm_tools", "engine_session_key": session_key}
-        )
-
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
-        session_key_3 = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key_3)
-
-        # Step 3: confirm roles to reach AWAITING_CONFIRM and confirm card
+        handler._resolve_project_from_id = MagicMock(return_value=project)
         handler.handle_workflow_confirm_roles_and_generate(
-            "msg_fb2_3", "chat_fb2", "proj_fb2",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key_3}
+            "msg_fb2_2", "chat_fb2", "proj_fb2",
+            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
         )
 
         # Find the last confirm card - look for confirm_start action
@@ -1340,8 +1207,8 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
         self.assertIsNone(engine.project.pending.meta if engine.project.pending else None)
         # Default orchestrator agent should be set
         self.assertEqual(engine.project.pending.orchestrator_agent if engine.project.pending else None, "coco")
-        # selected_tools should NOT be set yet (set after agent selection)
-        self.assertIsNone(engine.project.pending.selected_tools if engine.project.pending else None)
+        # selected_tools should be set to defaults in combined card
+        self.assertIsNotNone(engine.project.pending.selected_tools if engine.project.pending else None)
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
@@ -1366,25 +1233,16 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
 
         handler.start_workflow("msg_1", "chat_1", "do code review", project)
 
-        # After start_workflow: orchestrator_agent should be set, but selected_tools not yet
+        # After start_workflow: orchestrator_agent and selected_tools are set in combined card
         self.assertEqual(engine.project.pending.orchestrator_agent if engine.project.pending else None, "coco")
-        self.assertIsNone(engine.project.pending.selected_tools if engine.project.pending else None)
+        self.assertIsNotNone(engine.project.pending.selected_tools if engine.project.pending else None)
         # Requirement should be stored
         self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "do code review")
         # Session key should be set
         self.assertIsNotNone(engine.project.pending.engine_session_key if engine.project.pending else None)
         session_key = engine.project.pending.engine_session_key if engine.project.pending else None
 
-        # Step 1b: Select agent to proceed to tool selection (this sets selected_tools)
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_select_agent(
-            "msg_1b", "chat_1",
-            "proj_1",
-            {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_1"}
-        )
-
-        # After agent selection: pending.selected_tools should be set with default selection
+        # In the combined card flow, selected_tools is already set after start_workflow
         self.assertIsNotNone(engine.project.pending.selected_tools if engine.project.pending else None)
         self.assertIsInstance(engine.project.pending.selected_tools if engine.project.pending else None, list)
         self.assertGreater(len(engine.project.pending.selected_tools if engine.project.pending else []), 0)
@@ -1432,14 +1290,7 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
             {"action": "workflow_confirm_tools", "engine_session_key": "valid_session_key"}
         )
 
-        # After confirm_tools, engine should be in AWAITING_ROLE_SELECT (step 3)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_ROLE_SELECT)
-        # Script should NOT be generated yet (happens after role confirmation)
-        # After role confirmation, script generation happens
-        handler.handle_workflow_confirm_roles_and_generate(
-            "msg_2", "chat_1", "proj_1",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": "valid_session_key"}
-        )
+        # After confirm_tools, engine should be in AWAITING_CONFIRM (script generated directly)
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         self.assertIsNotNone(engine.project.pending.script_path if engine.project.pending else None)
         self.assertIsNotNone(engine.project.pending.meta if engine.project.pending else None)

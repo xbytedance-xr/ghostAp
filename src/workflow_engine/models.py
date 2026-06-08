@@ -185,6 +185,7 @@ class WorkflowMetrics(BaseModel):
 class PendingConfirmation(BaseModel):
     """State for a workflow awaiting user confirmation before execution."""
 
+    created_at: float = Field(default_factory=time.time)
     script_path: Optional[str] = None
     requirement: Optional[str] = None
     meta: Optional[dict[str, Any]] = None

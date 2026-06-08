@@ -104,8 +104,9 @@ class WorkflowEngine(BaseEngine):
     ):
         super().__init__(chat_id, root_path, agent_type, engine_name, model_name)
 
-        # Workflow-specific state
-        self._project: Optional[WorkflowProject] = None
+        # Workflow-specific state — initialized to IDLE so handler code
+        # can set pending state before execute_workflow() is called.
+        self._project: Optional[WorkflowProject] = WorkflowProject()
         self._bridge: Optional[RuntimeBridge] = None
         self._journal: Optional[WorkflowJournal] = None
         self._executor: Optional[AgentExecutor] = None

@@ -953,10 +953,10 @@ UI_TEXT = {
         "completed": "green",         # Successfully completed
     },
     # --- Workflow stepper labels (4-step orchestration flow: agent → tools → roles → confirm) ---
-    "workflow_stepper_step_agent": "① 选择主编排 Agent",
+    "workflow_stepper_step_agent": "① 选择 Agent / 工具 / 角色",
     "workflow_stepper_step_tool": "② 选择工具 / 预算",
     "workflow_stepper_step_role": "③ 选择角色",
-    "workflow_stepper_step_confirm": "④ 确认并执行",
+    "workflow_stepper_step_confirm": "② 确认并执行",
     "workflow_stepper_current_label": "当前步骤：{current} / {total}",
     # --- Workflow confirm dialogs ---
     "workflow_btn_confirm_cancel_title": "确认取消 Workflow？",

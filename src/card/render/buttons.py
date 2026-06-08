@@ -352,7 +352,6 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
             "flex_mode": "none",
             "background_style": "default",
             "horizontal_spacing": horizontal_spacing,
-            "vertical_spacing": vertical_spacing,
             "columns": [column],
         }
 
@@ -413,7 +412,6 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
                 "flex_mode": "none",
                 "background_style": "default",
                 "horizontal_spacing": horizontal_spacing,
-                "vertical_spacing": vertical_spacing,
                 "columns": [
                     {
                         "tag": "column",
@@ -457,7 +455,6 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
             "flex_mode": "bisect" if len(pair) == 2 else "none",
             "background_style": "default",
             "horizontal_spacing": horizontal_spacing,
-            "vertical_spacing": vertical_spacing,
             "columns": [
                 {
                     "tag": "column",
@@ -532,7 +529,6 @@ def build_responsive_button_row(
                     "flex_mode": "none",
                     "background_style": "default",
                     "horizontal_spacing": horizontal_spacing,
-                    "vertical_spacing": vertical_spacing,
                     "columns": [
                         {
                             "tag": "column",
@@ -570,7 +566,6 @@ def build_responsive_button_row(
                 "flex_mode": "none",
                 "background_style": "default",
                 "horizontal_spacing": horizontal_spacing,
-                "vertical_spacing": vertical_spacing,
                 "columns": [
                     {
                         "tag": "column",
@@ -611,7 +606,6 @@ def build_responsive_button_row(
             "flex_mode": "bisect" if len(pair) == 2 else "none",
             "background_style": "default",
             "horizontal_spacing": horizontal_spacing,
-            "vertical_spacing": vertical_spacing,
             "columns": [
                 {
                     "tag": "column",

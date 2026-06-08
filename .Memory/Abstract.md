@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-06-08
+- **Workflow 2-Step Combined Card** — 4步编排流程(agent→tools→roles→confirm)简化为2步(combined selection→confirm)，修复 vertical_spacing card 错误/engine.project 空初始化/stale 状态阻塞；全量 workflow 回归 667 passed → [详细记录](2026-06-08.md)
 ## 2026-06-05
 - **AC18 behaviors-only payload 测试** — 新增 5 个单元测试覆盖 Schema 2.0 纯 behaviors 模式（无 legacy `action.value`），验证 object 和 Mapping 两种形式的 behavior 解析、dedup_fingerprint、ws_client 集成及边缘情况；15 passed → [详细记录](2026-06-05.md)
 ## 2026-06-04

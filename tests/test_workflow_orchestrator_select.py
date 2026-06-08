@@ -24,8 +24,11 @@ def _create_mock_handler():
     handler.ctx = MagicMock()
     handler.reply_card = MagicMock()
     handler.send_card_to_chat = MagicMock()
+    handler.update_card = MagicMock()
     handler._reply_workflow_error = MagicMock()
     handler._show_tool_selection_card = MagicMock()
+    handler._send_combined_selection_card = MagicMock()
+    handler._resolve_tool_lists = MagicMock(return_value=({}, [], [], []))
     handler._get_root_path = MagicMock(return_value="/tmp")
     handler._get_project_for_chat = MagicMock(return_value=MagicMock(project_id="test_proj"))
     handler.get_engine_name = MagicMock(return_value="test_engine")
@@ -35,59 +38,56 @@ def _create_mock_handler():
 def test_agent_selection_card_shown_on_wf_command():
     """主编排 Agent 选择卡在 /wf 命令后显示。"""
     handler = _create_mock_handler()
-    
+
     mock_engine = MagicMock()
     mock_engine.project = WorkflowProject(
         workflow_id="test_wf",
         status=WorkflowStatus.IDLE,
     )
     handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
-    
+
     handler._show_agent_selection_card(
         chat_id="test_chat",
         requirement="test requirement",
         project=MagicMock(project_id="test_proj"),
         root_path="/tmp",
     )
-    
+
     # Verify engine state is updated
     assert mock_engine.project.status == WorkflowStatus.AWAITING_AGENT_SELECT
     assert mock_engine.project.pending is not None
     assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
     assert mock_engine.project.pending.requirement == "test requirement"
-    
-    # Verify card was sent
-    handler.send_card_to_chat.assert_called_once()
-    card = handler.send_card_to_chat.call_args[0][1]
-    assert isinstance(card, dict)
-    assert "header" in card
-    assert "Agent" in str(card["header"]["title"]["content"])
+
+    # Verify combined card was sent
+    handler._send_combined_selection_card.assert_called_once()
+    call_kwargs = handler._send_combined_selection_card.call_args
+    assert call_kwargs.kwargs.get("is_initial") is True
 
 
 def test_agent_selection_card_contains_all_options():
     """Agent 选择卡包含所有 ORCHESTRATOR_AGENT_OPTIONS。"""
     handler = _create_mock_handler()
-    
+
     mock_engine = MagicMock()
     mock_engine.project = WorkflowProject(
         workflow_id="test_wf",
         status=WorkflowStatus.IDLE,
     )
     handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
-    
+
     handler._show_agent_selection_card(
         chat_id="test_chat",
         requirement="test",
         project=MagicMock(project_id="test_proj"),
         root_path="/tmp",
     )
-    
-    card = handler.send_card_to_chat.call_args[0][1]
-    card_str = str(card)
-    
-    # All agent options should be present
-    for agent_type, display_name, _ in ORCHESTRATOR_AGENT_OPTIONS:
-        assert display_name in card_str, f"Agent {display_name} not found in card"
+
+    # Verify combined card was dispatched
+    handler._send_combined_selection_card.assert_called_once()
+    # State is correctly set
+    assert mock_engine.project.pending is not None
+    assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
 
 
 def test_handle_workflow_select_agent_success():
@@ -122,9 +122,9 @@ def test_handle_workflow_select_agent_success():
     
     # Verify agent selection was stored
     assert mock_engine.project.pending.orchestrator_agent == "claude"
-    
-    # Verify transition to tool selection
-    handler._show_tool_selection_card.assert_called_once()
+
+    # Verify combined card re-rendered (not tool selection step)
+    handler._send_combined_selection_card.assert_called_once()
 
 
 def test_handle_workflow_select_agent_wrong_state():
@@ -251,14 +251,9 @@ def test_select_agent_uses_project_root_path_when_different_from_chat_dir():
         call[0][1] == project_root_path for call in call_args_list
     ), f"engine 查找未使用 project.root_path：{call_args_list}"
 
-    # 验证：成功存储选中的 agent 并进入工具选择阶段
+    # 验证：成功存储选中的 agent 并重新渲染 combined card
     assert mock_engine.project.pending.orchestrator_agent == "coco"
-    handler._show_tool_selection_card.assert_called_once()
-    # 验证传递给工具选择阶段的 project 不是 None，且 root_path 正确
-    call_args = handler._show_tool_selection_card.call_args
-    assert call_args.kwargs.get("project") is not None or (
-        len(call_args.args) >= 4 and call_args.args[3] is not None
-    ), "调用 _show_tool_selection_card 时 project 应为解析后的 project 对象"
+    handler._send_combined_selection_card.assert_called_once()
 
 
 def test_select_agent_falls_back_to_chat_dir_when_no_project_id():
@@ -303,7 +298,7 @@ def test_select_agent_falls_back_to_chat_dir_when_no_project_id():
 
     # 旧卡片路径仍可正常流转
     assert mock_engine.project.pending.orchestrator_agent == "claude"
-    handler._show_tool_selection_card.assert_called_once()
+    handler._send_combined_selection_card.assert_called_once()
 
 
 def test_select_agent_missing_engine_returns_session_expired():

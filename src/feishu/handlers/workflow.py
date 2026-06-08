@@ -108,15 +108,13 @@ class WorkflowHandler(BaseEngineHandler):
     def _get_engine_name_prefix(self) -> str:
         return "Workflow"
 
-    def _build_workflow_stepper(self, current: int, total: int = 4) -> dict[str, Any]:
-        """Build a stepper element for the four-step orchestration flow
-        (agent → tools → roles → confirm/execution)."""
+    def _build_workflow_stepper(self, current: int, total: int = 2) -> dict[str, Any]:
+        """Build a stepper element for the two-step orchestration flow
+        (select → confirm/execution)."""
         from ...card.ui_text import UI_TEXT
 
         steps = [
             UI_TEXT["workflow_stepper_step_agent"],
-            UI_TEXT["workflow_stepper_step_tool"],
-            UI_TEXT["workflow_stepper_step_role"],
             UI_TEXT["workflow_stepper_step_confirm"],
         ]
         clamped = max(1, min(total, current))
@@ -346,18 +344,32 @@ class WorkflowHandler(BaseEngineHandler):
                 detail="当前项目已有 Workflow 任务在执行中。发送 `/wf_status` 查看进度，或 `/stop_wf` 停止任务。",
             )
             return
+        import time as _time
         from ...workflow_engine.models import WorkflowStatus
+
+        _STALE_THRESHOLD_S = 30 * 60
         if existing and existing.project and existing.project.status in {
             WorkflowStatus.AWAITING_CONFIRM,
             WorkflowStatus.AWAITING_TOOL_SELECT,
             WorkflowStatus.AWAITING_AGENT_SELECT,
+            WorkflowStatus.AWAITING_ROLE_SELECT,
         }:
-            self._reply_workflow_error(
-                message_id,
-                "invalid_state",
-                detail="已有 Workflow 等待操作。请先完成或取消当前流程后再开始新任务。",
-            )
-            return
+            pending = existing.project.pending
+            created_at = getattr(pending, "created_at", 0) if pending else 0
+            if _time.time() - created_at > _STALE_THRESHOLD_S:
+                logger.info(
+                    "[Workflow] Auto-resetting stale pending state (status=%s, age=%.0fs) in menu handler",
+                    existing.project.status.value, _time.time() - created_at,
+                )
+                existing.project.status = WorkflowStatus.IDLE
+                existing.project.pending = None
+            else:
+                self._reply_workflow_error(
+                    message_id,
+                    "invalid_state",
+                    detail="已有 Workflow 等待操作。请先完成或取消当前流程后再开始新任务。",
+                )
+                return
 
         # Check if requirement is already provided
         has_requirement = bool(value and isinstance(value, dict) and (value.get("requirement") or "").strip())
@@ -440,19 +452,36 @@ class WorkflowHandler(BaseEngineHandler):
             )
             return
 
-        # Also block if awaiting confirmation, tool selection, or agent selection
+        # Auto-reset stale pending state (>30 min) so user can start fresh;
+        # recent pending states are blocked so users don't accidentally discard
+        # an in-progress selection flow.
+        import time as _time
         from ...workflow_engine.models import WorkflowStatus
-        if existing and existing.project and existing.project.status in {
+
+        _STALE_THRESHOLD_S = 30 * 60
+        _AWAITING_STATES = {
             WorkflowStatus.AWAITING_CONFIRM,
             WorkflowStatus.AWAITING_TOOL_SELECT,
             WorkflowStatus.AWAITING_AGENT_SELECT,
-        }:
-            self._reply_workflow_error(
-                message_id,
-                "invalid_state",
-                detail="已有 Workflow 等待操作。请先完成或取消当前流程后再开始新任务。",
-            )
-            return
+            WorkflowStatus.AWAITING_ROLE_SELECT,
+        }
+        if existing and existing.project and existing.project.status in _AWAITING_STATES:
+            pending = existing.project.pending
+            created_at = getattr(pending, "created_at", 0) if pending else 0
+            if _time.time() - created_at > _STALE_THRESHOLD_S:
+                logger.info(
+                    "[Workflow] Auto-resetting stale pending state (status=%s, age=%.0fs) for %s",
+                    existing.project.status.value, _time.time() - created_at, root_path,
+                )
+                existing.project.status = WorkflowStatus.IDLE
+                existing.project.pending = None
+            else:
+                self._reply_workflow_error(
+                    message_id,
+                    "invalid_state",
+                    detail="已有 Workflow 等待操作。请先完成或取消当前流程后再开始新任务。",
+                )
+                return
 
         # Check Node.js availability
         from ...workflow_engine.bridge import RuntimeBridge
@@ -677,55 +706,51 @@ class WorkflowHandler(BaseEngineHandler):
             root_path,
             engine_name=engine_name,
         )
-        if engine.project:
-            # --- Template-aware default tool selection ---
-            # When launched via `/wf <template_name>` we prefer the
-            # template's meta.tools (intersected with currently
-            # available tools). The user can still add/remove tools
-            # before confirming execution.
-            existing_pending = engine.project.pending
-            existing_orchestrator = existing_pending.orchestrator_agent if existing_pending else None
-            template_hint = existing_pending.is_template_hint if existing_pending else None
-            template_tools: list[str] = []
-            if template_hint:
-                try:
-                    from ...workflow_engine.templates import load_template
-                    from ...workflow_engine.script_gen import extract_meta_from_script
+        if not engine.project:
+            from ...workflow_engine.models import WorkflowProject
+            engine._project = WorkflowProject()
 
-                    template_content = load_template(
-                        root_path, template_hint,
-                        user_id=get_current_sender_id() or None,
-                    )
-                    if template_content:
-                        template_meta = extract_meta_from_script(template_content)
-                        candidate_tools = list((template_meta or {}).get("tools", []))
-                        template_tools = [t for t in candidate_tools if t in all_tools]
-                except Exception:
-                    template_tools = []
-            if template_tools:
-                # Keep template-preferred tools first, then append the
-                # usual default selection without duplicates.
-                combined: list[str] = []
-                for t in list(template_tools) + list(default_selected):
-                    if t not in combined:
-                        combined.append(t)
-                effective_default = combined
-            else:
-                effective_default = list(default_selected)
+        existing_pending = engine.project.pending
+        existing_orchestrator = existing_pending.orchestrator_agent if existing_pending else None
+        template_hint = existing_pending.is_template_hint if existing_pending else None
+        template_tools: list[str] = []
+        if template_hint:
+            try:
+                from ...workflow_engine.templates import load_template
+                from ...workflow_engine.script_gen import extract_meta_from_script
 
-            engine.project.status = WorkflowStatus.AWAITING_TOOL_SELECT
-            engine.project.pending = PendingConfirmation(
-                requirement=requirement,
-                initiator_user_id=get_current_sender_id() or "",
-                engine_session_key=uuid.uuid4().hex,
-                selected_tools=effective_default,
-                script_path=None,
-                meta=None,
-                orchestrator_agent=existing_orchestrator,
-                is_template_hint=template_hint,
-                selected_budget=DEFAULT_BUDGET_TOKENS,
-                budget=DEFAULT_BUDGET_TOKENS,
-            )
+                template_content = load_template(
+                    root_path, template_hint,
+                    user_id=get_current_sender_id() or None,
+                )
+                if template_content:
+                    template_meta = extract_meta_from_script(template_content)
+                    candidate_tools = list((template_meta or {}).get("tools", []))
+                    template_tools = [t for t in candidate_tools if t in all_tools]
+            except Exception:
+                template_tools = []
+        if template_tools:
+            combined: list[str] = []
+            for t in list(template_tools) + list(default_selected):
+                if t not in combined:
+                    combined.append(t)
+            effective_default = combined
+        else:
+            effective_default = list(default_selected)
+
+        engine.project.status = WorkflowStatus.AWAITING_TOOL_SELECT
+        engine.project.pending = PendingConfirmation(
+            requirement=requirement,
+            initiator_user_id=get_current_sender_id() or "",
+            engine_session_key=uuid.uuid4().hex,
+            selected_tools=effective_default,
+            script_path=None,
+            meta=None,
+            orchestrator_agent=existing_orchestrator,
+            is_template_hint=template_hint,
+            selected_budget=DEFAULT_BUDGET_TOKENS,
+            budget=DEFAULT_BUDGET_TOKENS,
+        )
 
         project_id = project.project_id if project else ""
         session_key = engine.project.pending.engine_session_key if engine.project and engine.project.pending else ""
@@ -840,7 +865,6 @@ class WorkflowHandler(BaseEngineHandler):
                         "content": f"🔧 更多工具 ({len(other_tools)})",
                     },
                 },
-                "vertical_spacing": "8px",
                 "elements": [
                     {"tag": "markdown", "content": other_display},
                     *build_responsive_button_row(other_buttons, mobile_force_vertical=True),
@@ -894,7 +918,6 @@ class WorkflowHandler(BaseEngineHandler):
                     "content": f"💰 预算档位：{current_budget_label}",
                 },
             },
-            "vertical_spacing": "8px",
             "elements": [
                 {
                     "tag": "markdown",
@@ -956,19 +979,33 @@ class WorkflowHandler(BaseEngineHandler):
         project: Optional["ProjectContext"],
         root_path: str,
     ) -> None:
-        """Show the orchestrator agent selection card before tool selection."""
+        """Show combined selection card (agent + tools + roles + budget).
+
+        Merges what was previously 3 separate steps into one card.  The user
+        picks an orchestrator agent, toggles tools, toggles roles, picks a
+        budget, then hits the single "Confirm and Generate" CTA.
+        """
         from ...card import CardBuilder
-        from ...card.actions.dispatch import WORKFLOW_SELECT_AGENT, WORKFLOW_CANCEL
+        from ...card.actions.dispatch import (
+            WORKFLOW_CANCEL,
+            WORKFLOW_CONFIRM_ROLES_AND_GENERATE,
+            WORKFLOW_SELECT_AGENT,
+            WORKFLOW_SELECT_BUDGET,
+            WORKFLOW_SELECT_ROLE,
+            WORKFLOW_SELECT_TOOL,
+        )
         from ...card.render.buttons import build_responsive_button_row
         from ...card.ui_text import UI_TEXT
         from ...thread import get_current_sender_id
         from ...workflow_engine.constants import (
+            BUDGET_OPTIONS,
+            DEFAULT_BUDGET_TOKENS,
             DEFAULT_ORCHESTRATOR_AGENT,
             ORCHESTRATOR_AGENT_OPTIONS,
         )
         from ...workflow_engine.models import PendingConfirmation, WorkflowStatus
+        from ...workflow_engine.roles import get_all_role_ids, get_role_display_name
 
-        # Initialize pending state
         engine_name = self.get_engine_name(
             chat_id, project_id=(project.project_id if project else None)
         )
@@ -979,175 +1016,314 @@ class WorkflowHandler(BaseEngineHandler):
         )
 
         session_key = uuid.uuid4().hex
-        # Preserve is_template_hint across step transitions so the
-        # downstream tool-selection stage can initialize default
-        # selected_tools from the template meta.tools when applicable.
         previous_hint: Optional[str] = None
         if engine.project and engine.project.pending:
             previous_hint = getattr(engine.project.pending, "is_template_hint", None)
-        if engine.project:
-            engine.project.status = WorkflowStatus.AWAITING_AGENT_SELECT
-            engine.project.pending = PendingConfirmation(
-                requirement=requirement,
-                initiator_user_id=get_current_sender_id() or "",
-                engine_session_key=session_key,
-                orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
-                is_template_hint=previous_hint,
-            )
+
+        # Resolve tools
+        all_tools, recommended_tools, other_tools, default_selected = self._resolve_tool_lists()
+
+        # Template-aware tool defaults
+        effective_default = list(default_selected)
+        if previous_hint:
+            try:
+                from ...workflow_engine.templates import load_template
+                from ...workflow_engine.script_gen import extract_meta_from_script
+
+                template_content = load_template(
+                    root_path, previous_hint,
+                    user_id=get_current_sender_id() or None,
+                )
+                if template_content:
+                    template_meta = extract_meta_from_script(template_content)
+                    candidate_tools = list((template_meta or {}).get("tools", []))
+                    template_tools = [t for t in candidate_tools if t in all_tools]
+                    if template_tools:
+                        combined: list[str] = []
+                        for t in list(template_tools) + list(default_selected):
+                            if t not in combined:
+                                combined.append(t)
+                        effective_default = combined
+            except Exception:
+                pass
+
+        # Default roles
+        default_roles = [
+            "architect",
+            "security_auditor",
+            "correctness_auditor",
+            "adversarial_verifier",
+            "code_quality_reviewer",
+            "bug_hunter",
+            "migration_validator",
+            "compatibility_reviewer",
+        ]
+
+        if not engine.project:
+            from ...workflow_engine.models import WorkflowProject
+            engine._project = WorkflowProject()
+
+        engine.project.status = WorkflowStatus.AWAITING_AGENT_SELECT
+        engine.project.pending = PendingConfirmation(
+            requirement=requirement,
+            initiator_user_id=get_current_sender_id() or "",
+            engine_session_key=session_key,
+            orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
+            is_template_hint=previous_hint,
+            selected_tools=effective_default,
+            selected_budget=DEFAULT_BUDGET_TOKENS,
+            budget=DEFAULT_BUDGET_TOKENS,
+            selected_roles=default_roles,
+        )
 
         project_id = project.project_id if project else ""
+        self._send_combined_selection_card(
+            engine=engine,
+            chat_id=chat_id,
+            project_id=project_id,
+            session_key=session_key,
+            requirement=requirement,
+            all_tools=all_tools,
+            recommended_tools=recommended_tools,
+            other_tools=other_tools,
+            is_initial=True,
+        )
 
-        # Build agent selection card — recommended agent on top with full
-        # details; other agents collapsed to single-line entries with their
-        # own short descriptors. Each agent still has its own CTA so the
-        # selection flow remains a single tap.
-        # Mapping agent_type -> (summary, subagent_affinity, scenarios)
-        agent_meta: dict[str, tuple[str, str, str]] = {
-            "coco": ("全栈编程 · 默认推荐", "擅长 subagent 调度 / 并行执行", "日常开发 · 多工具编排 · 快速原型"),
-            "claude": ("深度推理 · 复杂任务", "支持 subagent · 推理链更强", "长脚本生成 · 复杂决策 · 长程规划"),
-            "aiden": ("代码审查 · 架构设计", "subagent 用于分段审查", "代码审计 · 重构方案 · 架构评估"),
-            "codex": ("OpenAI 自主编程", "可启用 subagent 扩展", "标准 Python/TS 开发 · 工具桥接"),
-            "gemini": ("多模态推理", "subagent 可处理图像/文本混合", "包含图像或文档上下文的任务"),
-            "traex": ("高并发推理 · 轻量", "高吞吐 subagent", "短平快任务 · 并行 fan-out"),
-        }
+    def _send_combined_selection_card(
+        self,
+        engine: Any,
+        chat_id: str,
+        project_id: str,
+        session_key: str,
+        requirement: str,
+        all_tools: dict[str, str],
+        recommended_tools: list[str],
+        other_tools: list[str],
+        *,
+        is_initial: bool = False,
+        update_message_id: str | None = None,
+    ) -> None:
+        """Build and send/update the combined selection card."""
+        from ...card import CardBuilder
+        from ...card.actions.dispatch import (
+            WORKFLOW_CANCEL,
+            WORKFLOW_CONFIRM_ROLES_AND_GENERATE,
+            WORKFLOW_SELECT_AGENT,
+            WORKFLOW_SELECT_BUDGET,
+            WORKFLOW_SELECT_ROLE,
+            WORKFLOW_SELECT_TOOL,
+        )
+        from ...card.render.buttons import build_responsive_button_row
+        from ...card.ui_text import UI_TEXT
+        from ...workflow_engine.constants import (
+            BUDGET_OPTIONS,
+            DEFAULT_BUDGET_TOKENS,
+            DEFAULT_ORCHESTRATOR_AGENT,
+            ORCHESTRATOR_AGENT_OPTIONS,
+        )
+        from ...workflow_engine.roles import get_all_role_ids, get_role_display_name
+
+        pending = engine.project.pending if engine.project else None
+        current_agent = pending.orchestrator_agent if pending else DEFAULT_ORCHESTRATOR_AGENT
+        active_tools = set(pending.selected_tools or []) if pending else set()
+        current_budget = pending.selected_budget if pending else DEFAULT_BUDGET_TOKENS
+        selected_roles = list(pending.selected_roles or []) if pending else []
 
         elements: list[dict] = []
 
-        # --- Stepper (vertical layout; current = 1) ---
+        # Stepper
         elements.append(self._build_workflow_stepper(current=1))
 
-        # Requirement — must be present before we ever reach this card.
-        req_display = requirement.strip() or '（任务描述缺失，请重新发送 "/wf <你的需求>"）'
+        # Requirement
+        req_display = requirement.strip() or '（任务描述缺失）'
         elements.append({
             "tag": "markdown",
             "content": f"**需求**：{req_display[:200]}",
         })
+
+        # ── Section 1: Agent selection ──
+        elements.append({"tag": "hr"})
+
+        agent_display_map = {opt[0]: opt[1] for opt in ORCHESTRATOR_AGENT_OPTIONS}
+        current_agent_name = agent_display_map.get(current_agent, current_agent)
         elements.append({
             "tag": "markdown",
-            "content": "**请选择主编排 Agent**（点击下方任一 Agent 即进入下一步）：",
+            "content": f"**主编排 Agent**：`{current_agent_name}`（点击切换）",
         })
-
-        # --- Split: recommended agent on top, rest collapsed ---
-        recommended_type = DEFAULT_ORCHESTRATOR_AGENT
-        other_options = [(t, name, short) for (t, name, short) in ORCHESTRATOR_AGENT_OPTIONS if t != recommended_type]
-
-        def _agent_btn_value(agent_type: str) -> dict[str, Any]:
-            return {
+        agent_buttons = []
+        for agent_type, display_name, _short in ORCHESTRATOR_AGENT_OPTIONS:
+            is_selected = agent_type == current_agent
+            btn_value = {
                 "action": WORKFLOW_SELECT_AGENT,
                 "agent_type": agent_type,
                 "engine_session_key": session_key,
                 "project_id": project_id,
                 "chat_id": chat_id,
-                "root_id": root_path,
+                "root_id": engine.root_path,
             }
-
-        # Recommended agent — full mini-card + prominent CTA.
-        for agent_type, display_name, _short_desc in ORCHESTRATOR_AGENT_OPTIONS:
-            if agent_type != recommended_type:
-                continue
-            summary, subagent_affinity, scenarios = agent_meta.get(
-                agent_type,
-                ("通用 Agent", "可调度 subagent", "一般任务"),
-            )
-            elements.append({
-                "tag": "markdown",
-                "content": (
-                    f"★ **{display_name}**（默认推荐）\n"
-                    f"> **定位**: {summary}\n"
-                    f"> **Subagent 能力**: {subagent_affinity}\n"
-                    f"> **适用场景**: {scenarios}"
-                ),
-            })
-            btn_value = _agent_btn_value(agent_type)
-            cta = {
+            agent_buttons.append({
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": f"使用 {display_name}"},
-                "type": "primary",
+                "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{display_name}"},
+                "type": "primary" if is_selected else "default",
                 "value": btn_value,
                 "behaviors": [{"type": "callback", "value": btn_value}],
-            }
-            elements.extend(build_responsive_button_row([cta], mobile_force_vertical=True))
-
-        # Other agents — collapsed list. Each entry is a single line with
-        # the name, a short position tag, and an inline button to pick it.
-        if other_options:
-            elements.append({
-                "tag": "markdown",
-                "content": "**其他 Agent**（点击按钮选择）：",
             })
+        elements.extend(build_responsive_button_row(agent_buttons, mobile_force_vertical=True))
 
-            # Show top 3 others with brief one-line cards to keep the card
-            # short on mobile; the rest are surfaced through a single note
-            # with names so users do not miss them.
-            short_map: dict[str, str] = {
-                "claude": "深度推理 / 复杂任务",
-                "aiden": "代码审查 / 架构",
-                "codex": "OpenAI / 标准编程",
-                "gemini": "多模态 / 文档+图像",
-                "traex": "高并发 / 轻量",
-            }
-            shown = other_options[:3]
-            remaining = other_options[3:]
-
-            for agent_type, display_name, _short in shown:
-                tag_line = short_map.get(agent_type, "通用 Agent")
-                elements.append({
-                    "tag": "markdown",
-                    "content": f"• **{display_name}** — {tag_line}",
-                })
-                btn_value = _agent_btn_value(agent_type)
-                cta = {
+        # ── Section 2: Tool selection ──
+        elements.append({"tag": "hr"})
+        elements.append({
+            "tag": "markdown",
+            "content": f"**工具**（已选 {len(active_tools)} 个，点击切换）：",
+        })
+        if recommended_tools:
+            rec_buttons = []
+            for t in recommended_tools:
+                is_selected = t in active_tools
+                btn_value = {
+                    "action": WORKFLOW_SELECT_TOOL,
+                    "tool_name": t,
+                    "chat_id": chat_id,
+                    "project_id": project_id,
+                    "engine_session_key": session_key,
+                }
+                rec_buttons.append({
                     "tag": "button",
-                    "text": {"tag": "plain_text", "content": f"选择 {display_name}"},
-                    "type": "default",
+                    "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{t}"},
+                    "type": "primary" if is_selected else "default",
                     "value": btn_value,
                     "behaviors": [{"type": "callback", "value": btn_value}],
-                }
-                elements.extend(build_responsive_button_row([cta], mobile_force_vertical=True))
-
-            if remaining:
-                rest_names = "，".join(name for (_, name, _) in remaining)
-                remaining_btns = []
-                for agent_type, display_name, _short in remaining:
-                    btn_value = _agent_btn_value(agent_type)
-                    remaining_btns.append({
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": f"选择 {display_name}"},
-                        "type": "default",
-                        "value": btn_value,
-                        "behaviors": [{"type": "callback", "value": btn_value}],
-                    })
-                elements.append({
-                    "tag": "markdown",
-                    "content": f"更多（{rest_names}）：",
                 })
-                elements.extend(build_responsive_button_row(remaining_btns, mobile_force_vertical=True))
+            elements.extend(build_responsive_button_row(rec_buttons, mobile_force_vertical=True))
 
-        # --- Cancel at bottom (visually separated from agent CTAs) ---
+        if other_tools:
+            other_buttons = []
+            for t in other_tools:
+                is_selected = t in active_tools
+                btn_value = {
+                    "action": WORKFLOW_SELECT_TOOL,
+                    "tool_name": t,
+                    "chat_id": chat_id,
+                    "project_id": project_id,
+                    "engine_session_key": session_key,
+                }
+                other_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{t}"},
+                    "type": "primary" if is_selected else "default",
+                    "value": btn_value,
+                    "behaviors": [{"type": "callback", "value": btn_value}],
+                })
+            elements.append({
+                "tag": "collapsible_panel",
+                "expanded": False,
+                "header": {"title": {"tag": "plain_text", "content": f"更多工具 ({len(other_tools)})"}},
+                "elements": build_responsive_button_row(other_buttons, mobile_force_vertical=True),
+            })
+
+        # ── Section 3: Role selection (collapsed) ──
+        all_role_ids = get_all_role_ids() or selected_roles
+        role_buttons = []
+        for role_id in all_role_ids:
+            is_selected = role_id in selected_roles
+            display = get_role_display_name(role_id) or role_id
+            btn_value = {
+                "action": WORKFLOW_SELECT_ROLE,
+                "role_id": role_id,
+                "chat_id": chat_id,
+                "project_id": project_id,
+                "engine_session_key": session_key,
+            }
+            role_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": f"{'✓ ' if is_selected else '○ '}{display}"},
+                "type": "primary" if is_selected else "default",
+                "value": btn_value,
+                "behaviors": [{"type": "callback", "value": btn_value}],
+            })
+        if role_buttons:
+            elements.append({
+                "tag": "collapsible_panel",
+                "expanded": False,
+                "header": {"title": {"tag": "plain_text", "content": f"角色 ({len(selected_roles)}/{len(all_role_ids)} 已选)"}},
+                "elements": build_responsive_button_row(role_buttons, mobile_force_vertical=True),
+            })
+
+        # ── Section 4: Budget (collapsed) ──
+        current_budget_label = next(
+            (label for label, tokens in BUDGET_OPTIONS if tokens == current_budget),
+            f"{current_budget} tokens",
+        )
+        budget_buttons = []
+        for label, budget_tokens in BUDGET_OPTIONS:
+            is_active = budget_tokens == current_budget
+            value = {
+                "action": WORKFLOW_SELECT_BUDGET,
+                "budget_tokens": budget_tokens,
+                "chat_id": chat_id,
+                "project_id": project_id,
+                "engine_session_key": session_key,
+            }
+            budget_buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": ("[✓] " if is_active else "[  ] ") + label},
+                "type": "primary" if is_active else "default",
+                "value": value,
+                "behaviors": [{"type": "callback", "value": value}],
+            })
+        elements.append({
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {"title": {"tag": "plain_text", "content": f"预算：{current_budget_label}"}},
+            "elements": build_responsive_button_row(budget_buttons, mobile_force_vertical=True),
+        })
+
+        # ── Action buttons ──
+        elements.append({"tag": "hr"})
         cancel_value = {
             "action": WORKFLOW_CANCEL,
             "engine_session_key": session_key,
             "project_id": project_id,
             "chat_id": chat_id,
-            "root_id": root_path,
         }
-        cancel = {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "取消"},
-            "type": "default",
-            "value": cancel_value,
-            "behaviors": [{"type": "callback", "value": cancel_value}],
+        confirm_value = {
+            "action": WORKFLOW_CONFIRM_ROLES_AND_GENERATE,
+            "chat_id": chat_id,
+            "project_id": project_id,
+            "engine_session_key": session_key,
         }
-        elements.append({"tag": "hr"})
-        elements.extend(build_responsive_button_row([cancel], mobile_force_vertical=True))
+        action_buttons = [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "取消"},
+                "type": "default",
+                "value": cancel_value,
+                "behaviors": [{"type": "callback", "value": cancel_value}],
+                "confirm": {
+                    "title": {"tag": "plain_text", "content": UI_TEXT["workflow_btn_confirm_cancel_title"]},
+                    "text": {"tag": "plain_text", "content": UI_TEXT["workflow_btn_confirm_cancel_body"]},
+                },
+            },
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "确认并生成脚本 →"},
+                "type": "primary",
+                "value": confirm_value,
+                "behaviors": [{"type": "callback", "value": confirm_value}],
+            },
+        ]
+        elements.extend(build_responsive_button_row(action_buttons, mobile_force_vertical=True))
 
         card = CardBuilder._wrap_card(
-            header_title="Workflow — 选择主编排 Agent",
+            header_title="Workflow — 配置编排",
             header_template=UI_TEXT["workflow_header_colors"].get("agent_select", "blue"),
             elements=elements,
         )
 
-        self.send_card_to_chat(chat_id, card)
+        if update_message_id:
+            self.update_card(update_message_id, card)
+        else:
+            self.send_card_to_chat(chat_id, card)
 
     def _show_tool_selection_card(
         self,
@@ -1513,9 +1689,22 @@ class WorkflowHandler(BaseEngineHandler):
             engine.project.pending = PendingConfirmation()
         engine.project.pending.orchestrator_agent = agent_type
 
-        # Proceed to tool selection
+        # Re-render the combined selection card with the updated agent
         requirement = engine.project.pending.requirement if engine.project.pending else ""
-        self._show_tool_selection_card(message_id, chat_id, requirement, project, root_path)
+        all_tools, recommended_tools, other_tools, _default = self._resolve_tool_lists()
+        session_key = engine.project.pending.engine_session_key if engine.project.pending else ""
+        project_id_str = project.project_id if project else ""
+        self._send_combined_selection_card(
+            engine=engine,
+            chat_id=chat_id,
+            project_id=project_id_str,
+            session_key=session_key,
+            requirement=requirement,
+            all_tools=all_tools,
+            recommended_tools=recommended_tools,
+            other_tools=other_tools,
+            update_message_id=message_id,
+        )
 
     def handle_workflow_confirm_tools(
         self,
@@ -1572,19 +1761,16 @@ class WorkflowHandler(BaseEngineHandler):
             self._reply_workflow_error(message_id, "invalid_argument", detail="请至少选择一个工具")
             return
 
-        # Transition to the role-selection card (step 3: role selection
-        # before script generation so the user can narrow down which
-        # personas to include in the orchestration. The script generation
-        # step only suggests roles the user did not opt-in to.
-        engine.project.status = WorkflowStatus.AWAITING_ROLE_SELECT
-        role_card = self._build_role_selection_card(
-            engine=engine,
-            requirement=requirement,
+        # Go directly to script generation (roles are already set from the
+        # combined selection card).
+        self._generate_and_show_confirm_card(
+            message_id=message_id,
             chat_id=chat_id,
-            project_id=project_id,
-            engine_session_key=stored_session_key,
+            requirement=requirement,
+            project=project,
+            root_path=root_path,
+            selected_tools=selected_tools,
         )
-        self.update_card(message_id, role_card)
 
     def _build_role_selection_card(
         self,
@@ -1736,7 +1922,7 @@ class WorkflowHandler(BaseEngineHandler):
         from ...workflow_engine.models import WorkflowStatus
         from ...workflow_engine.roles import get_all_role_ids
 
-        if engine.project.status != WorkflowStatus.AWAITING_ROLE_SELECT:
+        if engine.project.status not in (WorkflowStatus.AWAITING_ROLE_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT):
             self._reply_workflow_error(message_id, "invalid_state")
             return
 
@@ -1788,15 +1974,19 @@ class WorkflowHandler(BaseEngineHandler):
             current.add(role_id)
         engine.project.pending.selected_roles = sorted(current)
 
-        # Re-render so the toggle is reflected immediately
-        role_card = self._build_role_selection_card(
+        # Re-render combined card so the toggle is reflected immediately
+        all_tools, recommended_tools, other_tools, _ = self._resolve_tool_lists()
+        self._send_combined_selection_card(
             engine=engine,
-            requirement=engine.project.pending.requirement or "",
             chat_id=chat_id,
             project_id=project_id,
-            engine_session_key=stored_session_key,
+            session_key=stored_session_key,
+            requirement=engine.project.pending.requirement or "",
+            all_tools=all_tools,
+            recommended_tools=recommended_tools,
+            other_tools=other_tools,
+            update_message_id=message_id,
         )
-        self.update_card(message_id, role_card)
 
     def handle_workflow_confirm_roles_and_generate(
         self,
@@ -1826,7 +2016,7 @@ class WorkflowHandler(BaseEngineHandler):
         from ...workflow_engine.models import WorkflowStatus
         from ...thread import get_current_sender_id
 
-        if engine.project.status != WorkflowStatus.AWAITING_ROLE_SELECT:
+        if engine.project.status not in (WorkflowStatus.AWAITING_ROLE_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT):
             self._reply_workflow_error(message_id, "invalid_state")
             return
 
@@ -2357,7 +2547,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         from ...workflow_engine.models import PendingConfirmation, WorkflowStatus
 
-        valid_statuses = (WorkflowStatus.AWAITING_CONFIRM, WorkflowStatus.AWAITING_TOOL_SELECT)
+        valid_statuses = (WorkflowStatus.AWAITING_CONFIRM, WorkflowStatus.AWAITING_TOOL_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT)
         if engine.project.status not in valid_statuses:
             self._reply_workflow_error(message_id, "invalid_state")
             return
@@ -2420,23 +2610,19 @@ class WorkflowHandler(BaseEngineHandler):
             return  # No change — don't re-render
 
         # Re-render based on current state
-        if engine.project.status == WorkflowStatus.AWAITING_TOOL_SELECT:
-            # In-place update via update_card — state is already mutated, just rebuild card
-            # Using _build_tool_selection_card directly (not _show_tool_selection_card)
-            # avoids re-initializing pending.selected_tools and preserves user selection
-            all_tools, recommended_tools, other_tools, default_selected = self._resolve_tool_lists()
-            card = self._build_tool_selection_card(
+        if engine.project.status in (WorkflowStatus.AWAITING_TOOL_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT):
+            all_tools, recommended_tools, other_tools, _default = self._resolve_tool_lists()
+            self._send_combined_selection_card(
                 engine=engine,
-                requirement=engine.project.pending.requirement or "",
                 chat_id=chat_id,
                 project_id=project_id,
                 session_key=stored_session_key,
+                requirement=engine.project.pending.requirement or "",
                 all_tools=all_tools,
                 recommended_tools=recommended_tools,
                 other_tools=other_tools,
-                default_selected=default_selected,
+                update_message_id=message_id,
             )
-            self.update_card(message_id, card)
         else:
             # AWAITING_CONFIRM: mark tools as dirty and re-render confirm card
             script_tools = set((engine.project.pending.meta or {}).get("tools", []))
@@ -2498,6 +2684,7 @@ class WorkflowHandler(BaseEngineHandler):
         if engine.project.status not in {
             WorkflowStatus.AWAITING_CONFIRM,
             WorkflowStatus.AWAITING_TOOL_SELECT,
+            WorkflowStatus.AWAITING_AGENT_SELECT,
         }:
             self._reply_workflow_error(message_id, "invalid_state")
             return
@@ -2538,23 +2725,19 @@ class WorkflowHandler(BaseEngineHandler):
         engine.project.pending.budget = budget_tokens
 
         # Route the re-render to the appropriate card based on current stage
-        if engine.project.status == WorkflowStatus.AWAITING_TOOL_SELECT:
-            # Tool selection stage — refresh tool selection card, keep
-            # recommended/other tools so the selectable tool buttons remain
-            # visible after a budget re-selection.
+        if engine.project.status in (WorkflowStatus.AWAITING_TOOL_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT):
             all_tools, recommended_tools, other_tools, _ = self._resolve_tool_lists()
-            card = self._build_tool_selection_card(
+            self._send_combined_selection_card(
                 engine=engine,
-                requirement=engine.project.pending.requirement or "",
                 chat_id=chat_id,
                 project_id=project_id,
                 session_key=engine.project.pending.engine_session_key or "",
+                requirement=engine.project.pending.requirement or "",
                 all_tools=all_tools,
                 recommended_tools=recommended_tools,
                 other_tools=other_tools,
-                default_selected=list(engine.project.pending.selected_tools or []),
+                update_message_id=message_id,
             )
-            self.update_card(message_id, card)
             return
 
         _script_content = self._read_pending_script(engine)
@@ -3482,27 +3665,26 @@ class WorkflowHandler(BaseEngineHandler):
         project_id: str,
         engine: Any,
     ) -> None:
-        """Re-render the confirm card (or tool card, depending on state)."""
+        """Re-render the confirm card (or combined/tool card, depending on state)."""
         from ...workflow_engine.models import WorkflowStatus
 
         if not engine.project.pending:
             return
 
         status = engine.project.status
-        if status == WorkflowStatus.AWAITING_TOOL_SELECT:
-            all_tools, recommended_tools, other_tools, default_selected = self._resolve_tool_lists()
-            card = self._build_tool_selection_card(
+        if status in (WorkflowStatus.AWAITING_TOOL_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT):
+            all_tools, recommended_tools, other_tools, _ = self._resolve_tool_lists()
+            self._send_combined_selection_card(
                 engine=engine,
-                requirement=engine.project.pending.requirement or "",
                 chat_id=chat_id,
                 project_id=project_id,
                 session_key=engine.project.pending.engine_session_key or "",
+                requirement=engine.project.pending.requirement or "",
                 all_tools=all_tools,
                 recommended_tools=recommended_tools,
                 other_tools=other_tools,
-                default_selected=default_selected,
+                update_message_id=message_id,
             )
-            self.update_card(message_id, card)
             return
 
         # Default path: re-render the confirm card (covers AWAITING_CONFIRM /
@@ -4791,7 +4973,6 @@ class WorkflowHandler(BaseEngineHandler):
                         "title": {"tag": "plain_text", "content": "📜 编排脚本预览"},
                         "template": "grey",
                     },
-                    "vertical_spacing": "8px",
                     "elements": [{"tag": "markdown", "content": preview}],
                 })
 
