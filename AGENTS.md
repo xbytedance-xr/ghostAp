@@ -171,3 +171,102 @@ handler -> session -> render
   emitted structure and add a regression test around the builder or renderer.
 - For restart/startup issues, inspect `logs.log` and `[RESTART]` markers before
   changing app code; separate script latency from Python cold start.
+
+## Workflow Mode (`/wf`)
+
+The `WorkflowHandler` owns the `/wf` command, which lets users describe a
+multi-step task in natural language and have an orchestrator agent generate
+and execute a Node.js workflow script. The flow is:
+
+1. **Send a requirement** — `/wf <need-to-add-cli-parsing>` or `/wf` followed
+   by free-form text. The requirement surfaces in all subsequent cards.
+2. **Step 1 — Orchestrator agent selection** — pick a tool + model combo that
+   will drive script generation. The combined card lets you expand a tool to
+   reveal its model panel, or click "+ 添加 <tool>" directly to use its
+   default model. Multi-selection is not needed here: the orchestrator is a
+   single chosen agent.
+3. **Step 2 — Review agent selection** — same combined card. You may pick one
+   or more tool + model combos to act as independent reviewers, or click the
+   **Auto** shortcut to skip independent review and have the orchestrator
+   self-review. Skipping is useful for low-risk changes and avoids the cost
+   of extra agent calls.
+4. **Script generation & confirmation** — once both steps are non-empty (or
+   Auto toggled on step 2), the engine builds a JS workflow via
+   `src/workflow_engine/script_gen.py`, validates the output (meta export,
+   balanced brackets, at least one `agent()`/`workflow()` call, no forbidden
+   `require('fs'|child_process|net|...)` escapes), and shows a confirmation
+   card listing phases, tools, and a short preview before execution.
+5. **Execution & progress** — after user confirmation, the JS runtime runs
+   the script, streaming phase and per-agent progress through
+   `WorkflowProgressRenderer`.
+
+Error handling:
+
+- Empty selection on either step surfaces an inline error in the card; the
+  user picks at least one tool / model and retries.
+- Scripts that fail validation are rejected with a structured error list
+  (missing meta, unsafe patterns, etc.) — the user regenerates from the
+  confirmation card.
+- Running workflows block new `/wf` invocations and must be stopped with
+  `/stop_wf` or the cancel button on the progress card.
+
+Command quick reference:
+
+| Command            | Purpose                                          |
+| ------------------ | ------------------------------------------------ |
+| `/wf <desc>`       | Start a new workflow from a requirement          |
+| `/wf <template>`   | (Optional) launch from a saved template name     |
+| `/stop_wf`         | Abort the currently running workflow             |
+| `/wf_status`       | Show active workflow progress and selected tools |
+| `/wf_help`         | In-chat help text                                |
+
+### Detailed Usage Guide
+
+#### Two-Step Selection Flow
+The workflow uses a combined card interface for both orchestrator and review
+selection steps:
+
+- **Orchestrator Step (Step 1)**: Select exactly one tool + model combination
+  that will generate the workflow script. Use the stepper indicator at the top
+  to track progress (current=1).
+
+- **Review Step (Step 2)**: Select one or more tool + model combinations to
+  review the generated script, or use the **Auto** button to skip independent
+  review. The stepper indicator shows current=2.
+
+#### Combined Card Features
+- **Tool + Model Inline Expansion**: Click on any tool to expand and view its
+  available models inline without navigating to a separate card.
+- **Stepper Indicator**: Shows current step (1/2) and overall progress.
+- **Auto Option**: In review step, skips independent review and uses the
+  orchestrator agent for self-review.
+- **Remove/Clear Buttons**: Remove individual selections or clear all selections
+  with a single click.
+- **Empty Selection Validation**: Prevents proceeding with empty selections by
+  showing inline error messages.
+
+#### Skipping Review
+Use the **Auto** button in the review step to skip independent review when:
+- Making low-risk changes (e.g., minor bug fixes, documentation updates)
+- Working in a rapid prototyping mode
+- Trusting the orchestrator agent's self-review capabilities
+
+#### Script Generation & Confirmation
+- **Dynamic Role Assignment**: Roles (Orchestrator/Reviewer) are dynamically
+  inferred from the task description by the LLM, not statically selected by
+  the user.
+- **Script Preview**: The confirmation card shows a preview of the generated
+  workflow script with key details:
+  - Orchestrator tool/model
+  - Reviewer tools/models (or "Auto" if review was skipped)
+  - Phase breakdown
+  - Estimated token usage
+- **Execution Control**: Confirm to execute the script, or regenerate if changes
+  are needed.
+
+#### Agent() Call Execution
+When the workflow runs `agent()` calls:
+- Each agent call uses the selected tool/model combination
+- Review agents provide feedback on the orchestrator's work
+- The final output combines all agent results into a cohesive deliverable
+- Progress is streamed in real-time through the workflow progress card
