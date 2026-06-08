@@ -1,6 +1,7 @@
 from src.engine_base import ReviewPerspective
 from src.spec_engine.review_artifacts import ReviewArtifacts
 from src.spec_engine.review_roles import (
+    COMPLETION_CONTROL_ROLE_ID,
     ReviewRoleSpec,
     batch_roles_by_dependencies,
     build_adaptive_role_plan,
@@ -36,6 +37,9 @@ def test_programming_tasks_keep_fixed_review_roles_and_add_relevant_dynamic_role
     fixed_ids = [p.value for p in ReviewPerspective]
     assert [role.role_id for role in plan.roles[:5]] == fixed_ids
     assert all(role.blocking for role in plan.roles[:5])
+    assert plan.roles[5].role_id == COMPLETION_CONTROL_ROLE_ID
+    assert plan.roles[5].category == "completion_control"
+    assert plan.roles[5].blocking is True
     assert any(role.role_id == "security_reviewer" for role in plan.roles)
     assert len(plan.roles) <= 8
 
@@ -51,6 +55,7 @@ def test_writing_tasks_generate_editorial_roles_without_software_defaults():
     assert "fact_checker" in role_ids
     assert "visual_designer" in role_ids
     assert "architect" not in role_ids
+    assert COMPLETION_CONTROL_ROLE_ID in role_ids
 
 
 def test_research_tasks_generate_source_verification_roles():
@@ -63,6 +68,7 @@ def test_research_tasks_generate_source_verification_roles():
     assert "source_verifier" in role_ids
     assert "methodology_reviewer" in role_ids
     assert "opposing_view_reviewer" in role_ids
+    assert COMPLETION_CONTROL_ROLE_ID in role_ids
 
 
 def test_dynamic_role_caps_apply_after_fixed_programming_roles():
@@ -76,12 +82,33 @@ def test_dynamic_role_caps_apply_after_fixed_programming_roles():
         artifacts,
         dynamic_roles_enabled=True,
         dynamic_roles_max=2,
-        total_roles_max=6,
+        total_roles_max=7,
     )
 
-    assert len(plan.roles) == 6
+    assert len(plan.roles) == 7
     assert len([role for role in plan.roles if role.category == "software"]) == 5
-    assert len([role for role in plan.roles if role.category != "software"]) == 1
+    assert len([role for role in plan.roles if role.category == "completion_control"]) == 1
+    assert len([role for role in plan.roles if role.category not in {"software", "completion_control"}]) == 1
+
+
+def test_completion_control_role_is_not_dropped_by_low_total_role_cap():
+    artifacts = _artifacts(
+        "实现移动端支付 API、权限校验、隐私合规、性能优化和文档",
+        diff="diff --git a/src/mobile/pay.py b/src/mobile/pay.py\n+secret='x'\n",
+        files=["src/mobile/pay.py", "docs/api.md"],
+    )
+
+    plan = build_adaptive_role_plan(
+        artifacts,
+        dynamic_roles_enabled=True,
+        dynamic_roles_max=3,
+        total_roles_max=5,
+    )
+
+    role_ids = [role.role_id for role in plan.roles]
+    assert role_ids[:5] == [p.value for p in ReviewPerspective]
+    assert role_ids[5] == COMPLETION_CONTROL_ROLE_ID
+    assert all(role.role_id != "security_reviewer" for role in plan.roles)
 
 
 def test_dependency_batches_are_parallel_by_default_and_layered_when_needed():

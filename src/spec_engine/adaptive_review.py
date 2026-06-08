@@ -44,6 +44,18 @@ def build_role_review_prompt(role: ReviewRoleSpec, artifacts: ReviewArtifacts) -
         tail = diff[-8_000:]
         skipped = len(diff) - 16_000
         diff = f"{head}\n\n...[truncated {skipped} chars]...\n\n{tail}"
+    phase_sections: list[str] = []
+    if artifacts.spec_output:
+        phase_sections.append(f"## Spec 输出\n{artifacts.spec_output}")
+    if artifacts.plan_output:
+        phase_sections.append(f"## Plan 输出\n{artifacts.plan_output}")
+    if artifacts.tasks_output:
+        phase_sections.append(f"## Task 输出\n{artifacts.tasks_output}")
+    if artifacts.build_output:
+        phase_sections.append(f"## Build 输出\n{artifacts.build_output}")
+    phase_outputs = "\n\n".join(phase_sections)
+    if phase_outputs:
+        phase_outputs = f"\n\n{phase_outputs}"
     return f"""你是 {role.display_name}。
 
 ## 任务目标
@@ -63,6 +75,7 @@ def build_role_review_prompt(role: ReviewRoleSpec, artifacts: ReviewArtifacts) -
 
 ## 涉及文件
 {files}
+{phase_outputs}
 
 ## Diff
 ```diff

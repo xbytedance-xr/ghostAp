@@ -19,6 +19,8 @@ from src.spec_engine.review_artifacts import ReviewArtifacts
 
 logger = logging.getLogger(__name__)
 
+COMPLETION_CONTROL_ROLE_ID = "completion_control"
+
 
 @dataclass(frozen=True)
 class ReviewRoleSpec:
@@ -105,6 +107,39 @@ def fixed_programming_roles() -> list[ReviewRoleSpec]:
             )
         )
     return roles
+
+
+def completion_control_role() -> ReviewRoleSpec:
+    """Independent evaluator for goal direction and completion readiness."""
+
+    return ReviewRoleSpec(
+        role_id=COMPLETION_CONTROL_ROLE_ID,
+        display_name="完成度与方向把控",
+        category="completion_control",
+        mission=(
+            "独立评估当前 Spec 循环是否仍贴合用户原始方向，以及是否已经达到可停止的完成度；"
+            "如果目标偏移、验收证据不足、完成度被高估或仍需继续迭代，必须给出阻断建议。"
+        ),
+        review_focus=[
+            "用户原始目标与当前产物方向的一致性",
+            "验收标准、计划、构建结果和审查结论之间的完成度证据",
+            "是否存在为了尽快结束而高估完成度的风险",
+            "下一轮应继续、收窄范围、修正方向还是可以停止",
+        ],
+        must_check=[
+            "当前实现是否直接回应用户最初提出的问题和边界",
+            "所有验收标准是否有真实产物或测试证据支撑，而不只是声明完成",
+            "其他角色的 PASS 是否足以支持停止，是否遗漏方向偏差或完成度缺口",
+            "如需继续迭代，给出最小且明确的方向修正或完成度补齐动作",
+        ],
+        evidence_policy=(
+            "blocking suggestions must cite the original requirement plus concrete spec, plan, build, diff, "
+            "test, or acceptance-criteria evidence; do not block on preference-only concerns"
+        ),
+        blocking=True,
+        max_suggestions=5,
+        base_perspective=ReviewPerspective.PRODUCT,
+    )
 
 
 def detect_task_kind(artifacts: ReviewArtifacts) -> str:
@@ -248,6 +283,21 @@ def _generic_roles() -> list[ReviewRoleSpec]:
     ]
 
 
+def _with_completion_control_role(
+    roles: list[ReviewRoleSpec],
+    *,
+    total_roles_max: int,
+    reserve_slot: bool,
+) -> list[ReviewRoleSpec]:
+    """Ensure completion control is always present without crowding out fixed roles."""
+
+    control = completion_control_role()
+    without_control = [role for role in roles if role.role_id != COMPLETION_CONTROL_ROLE_ID]
+    if reserve_slot:
+        return without_control[:max(0, total_roles_max - 1)] + [control]
+    return without_control + [control]
+
+
 def build_adaptive_role_plan(
     artifacts: ReviewArtifacts,
     *,
@@ -263,19 +313,24 @@ def build_adaptive_role_plan(
 
     if task_kind == "programming":
         roles = fixed_programming_roles()
+        roles.append(completion_control_role())
         if dynamic_roles_enabled:
             slots = max(0, min(dynamic_roles_max, total_roles_max - len(roles)))
             roles.extend(_programming_dynamic_roles(artifacts)[:slots])
     elif task_kind == "writing":
         roles = _writing_roles()
+        roles = _with_completion_control_role(roles, total_roles_max=total_roles_max, reserve_slot=True)
     elif task_kind == "research":
         roles = _research_roles()
+        roles = _with_completion_control_role(roles, total_roles_max=total_roles_max, reserve_slot=True)
     elif task_kind == "design":
         roles = _design_roles()
+        roles = _with_completion_control_role(roles, total_roles_max=total_roles_max, reserve_slot=True)
     else:
         roles = _generic_roles()
+        roles = _with_completion_control_role(roles, total_roles_max=total_roles_max, reserve_slot=True)
 
-    return RolePlan(task_kind=task_kind, roles=roles[:total_roles_max])
+    return RolePlan(task_kind=task_kind, roles=roles)
 
 
 def batch_roles_by_dependencies(roles: list[ReviewRoleSpec]) -> list[list[ReviewRoleSpec]]:

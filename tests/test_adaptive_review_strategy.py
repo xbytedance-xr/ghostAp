@@ -5,7 +5,7 @@ import types
 
 from src.spec_engine.review import ReviewCircuitState
 from src.spec_engine.review_artifacts import ReviewArtifacts
-from src.spec_engine.review_roles import ReviewRoleSpec
+from src.spec_engine.review_roles import COMPLETION_CONTROL_ROLE_ID, ReviewRoleSpec
 from src.spec_engine.review_strategy import (
     AdaptiveRoleReviewStrategy,
     MultiPerspectiveStrategy,
@@ -82,6 +82,8 @@ def test_adaptive_strategy_uses_artifacts_and_records_hashes():
     assert result.role_plan_hash
     assert result.blocking_suggestion_hash == ""
     assert any("src/auth.py" in prompt for prompt in seen_prompts)
+    assert any("完成度与方向把控" in prompt for prompt in seen_prompts)
+    assert any(review.role_id == COMPLETION_CONTROL_ROLE_ID for review in result.reviews)
     assert any(review.role_id for review in result.reviews)
 
 
@@ -140,6 +142,13 @@ def test_adaptive_strategy_falls_back_to_fixed_roles_when_planner_fails(monkeypa
     result = AdaptiveRoleReviewStrategy().run(_ctx(prompt_runner_factory=_factory(runner)))
 
     assert result.all_passed is True
-    assert len(result.reviews) == 5
-    assert {review.role_id for review in result.reviews} == {"architect", "product", "user", "tester", "designer"}
+    assert len(result.reviews) == 6
+    assert {review.role_id for review in result.reviews} == {
+        "architect",
+        "product",
+        "user",
+        "tester",
+        "designer",
+        COMPLETION_CONTROL_ROLE_ID,
+    }
     assert prompts

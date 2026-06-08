@@ -30,7 +30,7 @@ from .adaptive_review import PromptRunner, run_adaptive_role_review_pipeline
 from .review import ReviewCircuitState, ReviewPipelineConfig, conduct_review
 from .review_agents import ReviewAgentBinding, assign_review_agents, normalize_review_agents
 from .review_artifacts import ReviewArtifacts
-from .review_roles import ReviewRoleSpec, build_adaptive_role_plan, fixed_programming_roles
+from .review_roles import ReviewRoleSpec, build_adaptive_role_plan, completion_control_role, fixed_programming_roles
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,9 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
             role_plan_hash = role_plan.blocking_role_hash()
         except Exception as e:
             logger.warning("[ReviewStrategy:adaptive_roles] role planning failed, using fixed programming roles: %s", repr(e))
-            roles = list(ctx.role_plan_override or fixed_programming_roles())
+            fallback_roles = fixed_programming_roles()
+            fallback_roles.append(completion_control_role())
+            roles = list(ctx.role_plan_override or fallback_roles)
             role_plan_hash = self._hash_roles(roles)
         if ctx.role_plan_override:
             role_plan_hash = self._hash_roles(roles)

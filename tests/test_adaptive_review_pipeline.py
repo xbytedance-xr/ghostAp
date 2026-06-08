@@ -6,7 +6,7 @@ from src.engine_base import ReviewPerspective
 from src.spec_engine.adaptive_review import parse_role_review_output, run_adaptive_role_review_pipeline
 from src.spec_engine.review_aggregation import aggregate_role_outcomes
 from src.spec_engine.review_artifacts import ReviewArtifacts
-from src.spec_engine.review_roles import ReviewRoleSpec
+from src.spec_engine.review_roles import ReviewRoleSpec, completion_control_role
 
 
 def _role(role_id: str, *, depends_on: list[str] | None = None) -> ReviewRoleSpec:
@@ -223,3 +223,88 @@ def test_aggregator_deduplicates_same_recommendation_from_multiple_roles():
 
     assert len(aggregated.blocking_suggestions) == 1
     assert aggregated.blocking_suggestions[0].role_ids == ["a", "b"]
+
+
+def test_completion_control_blocks_direction_drift_with_artifact_evidence():
+    role = completion_control_role()
+
+    def factory(role):
+        def runner(prompt, on_event, timeout):
+            assert "当前 Spec 循环是否仍贴合用户原始方向" in prompt
+            assert "验收标准、计划、构建结果和审查结论之间的完成度证据" in prompt
+            return _json(
+                role.role_id,
+                verdict="FAIL",
+                suggestions=[
+                    {
+                        "severity": "major",
+                        "confidence": "high",
+                        "evidence": "requirement asks Feishu card guard; diff only changes README",
+                        "recommendation": "继续下一轮，回到用户要求的卡片 guard 实现和回归测试",
+                        "target": "src/card/",
+                    }
+                ],
+            )
+        return runner
+
+    result = run_adaptive_role_review_pipeline(
+        ReviewArtifacts(
+            cycle_number=1,
+            requirement="修复 Feishu card guard 的完成度偏差",
+            cwd="/repo",
+            spec_output='{"acceptance_criteria":["卡片 guard 覆盖 schema 错误"]}',
+            plan_output='{"steps":["修改 card guard","补回归测试"]}',
+            tasks_output="1. 修改 guard\n2. 补测试",
+            build_output="只更新 README，未运行测试",
+            diff_patch="diff --git a/README.md b/README.md\n+docs only",
+        ),
+        [role],
+        prompt_runner_factory=factory,
+        max_parallel=1,
+        timeout=5,
+    )
+
+    assert result.all_passed is False
+    assert result.reviews[0].role_id == "completion_control"
+    assert result.reviews[0].role_display_name == "完成度与方向把控"
+    assert result.reviews[0].blocking is True
+    assert result.blocking_suggestion_hash
+    assert "继续下一轮" in result.reviews[0].suggestions[0]
+
+
+def test_role_review_prompt_includes_phase_outputs_for_completion_judgment():
+    role = completion_control_role()
+    seen_prompts: list[str] = []
+
+    def factory(role):
+        def runner(prompt, on_event, timeout):
+            seen_prompts.append(prompt)
+            return _json(role.role_id)
+        return runner
+
+    run_adaptive_role_review_pipeline(
+        ReviewArtifacts(
+            cycle_number=1,
+            requirement="修复完成度判断",
+            cwd="/repo",
+            spec_output="SPEC: 用户方向是修复 completion guard",
+            plan_output="PLAN: 修改 review role planner",
+            tasks_output="TASKS: 1. 添加独立角色",
+            build_output="BUILD: tests passed",
+            diff_patch="diff --git a/src/spec_engine/review_roles.py b/src/spec_engine/review_roles.py\n+role",
+        ),
+        [role],
+        prompt_runner_factory=factory,
+        max_parallel=1,
+        timeout=5,
+    )
+
+    prompt = seen_prompts[0]
+    assert "## Spec 输出" in prompt
+    assert "SPEC: 用户方向是修复 completion guard" in prompt
+    assert "## Plan 输出" in prompt
+    assert "PLAN: 修改 review role planner" in prompt
+    assert "## Task 输出" in prompt
+    assert "TASKS: 1. 添加独立角色" in prompt
+    assert "## Build 输出" in prompt
+    assert "BUILD: tests passed" in prompt
