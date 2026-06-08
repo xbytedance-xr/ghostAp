@@ -252,7 +252,7 @@ class BaseHandler:
     def reply_card(
         self,
         message_id: str,
-        card_content: str,
+        card_content,
         *,
         reply_in_thread: Optional[bool] = None,
     ) -> Optional[str]:
@@ -260,7 +260,7 @@ class BaseHandler:
 
         Args:
             message_id: The Feishu message ID to reply to.
-            card_content: Card JSON string (CardKit v2 format with ``body.elements``
+            card_content: Card JSON string or dict (CardKit v2 format with ``body.elements``
                 array). Will be normalized and have ref-note injected automatically.
             reply_in_thread: Whether to reply in thread. If None, uses
                 ``settings.default_reply_mode`` to determine.
@@ -293,12 +293,12 @@ class BaseHandler:
             logger.error("reply_card 异常: %s", e, exc_info=True)
             return None
 
-    def update_card(self, message_id: str, card_content: str) -> bool:
+    def update_card(self, message_id: str, card_content) -> bool:
         """Update an existing card message in-place.
 
         Args:
             message_id: The message_id of the card to update.
-            card_content: New card JSON string (CardKit v2 format).
+            card_content: Card JSON string or dict (CardKit v2 format).
 
         Returns:
             True on success, False on failure.
@@ -307,7 +307,8 @@ class BaseHandler:
             No exceptions raised; errors are logged and False is returned.
         """
         try:
-            response = self.im_client.patch_message(message_id, card_content)
+            content_str = self._normalize_interactive_card_content(card_content)
+            response = self.im_client.patch_message(message_id, content_str)
             return bool(response and response.success())
         except Exception as e:
             logger.error("update_card 异常: %s", e, exc_info=True)
@@ -316,7 +317,7 @@ class BaseHandler:
     def send_card_to_chat(
         self,
         chat_id: str,
-        card_content: str,
+        card_content,
         *,
         origin_message_id: Optional[str] = None,
         request_id: Optional[str] = None,
@@ -325,7 +326,7 @@ class BaseHandler:
 
         Args:
             chat_id: The Feishu chat_id to send the card to.
-            card_content: Card JSON string (CardKit v2 format with ``body.elements``
+            card_content: Card JSON string or dict (CardKit v2 format with ``body.elements``
                 array). Will have ref-note injected automatically.
             origin_message_id: Optional original message_id for response linking.
             request_id: Optional request_id for ref-note generation.
@@ -381,36 +382,40 @@ class BaseHandler:
     # Ref-note injection (shared by reply_text / reply_card / send_card_to_chat)
     # ------------------------------------------------------------------
     @staticmethod
-    def _normalize_interactive_card_content(content_str: str) -> str:
-        """Normalize outgoing interactive card JSON to Feishu-accepted shape."""
-        if not isinstance(content_str, str):
-            return content_str
-        try:
-            card = json.loads(content_str)
-        except Exception:
-            return content_str
+    def _normalize_interactive_card_content(content_str) -> str:
+        """Normalize outgoing interactive card JSON to Feishu-accepted shape.
+
+        Accepts both str (JSON) and dict inputs. Always returns a JSON string.
+        """
+        if isinstance(content_str, dict):
+            card = content_str
+        elif isinstance(content_str, str):
+            try:
+                card = json.loads(content_str)
+            except Exception:
+                return content_str
+        else:
+            return json.dumps(content_str, ensure_ascii=False) if content_str is not None else ""
 
         if not isinstance(card, dict):
-            return content_str
+            return json.dumps(card, ensure_ascii=False) if card is not None else ""
         if str(card.get("schema") or "").strip() != "2.0":
-            return content_str
+            return json.dumps(card, ensure_ascii=False)
 
         root_elements = card.get("elements")
-        if not isinstance(root_elements, list):
-            return content_str
+        if isinstance(root_elements, list):
+            body = card.get("body")
+            if not isinstance(body, dict):
+                body = {}
+                card["body"] = body
+            if not isinstance(body.get("elements"), list):
+                body["elements"] = root_elements
+            card.pop("elements", None)
 
-        body = card.get("body")
-        if not isinstance(body, dict):
-            body = {}
-            card["body"] = body
-        if not isinstance(body.get("elements"), list):
-            body["elements"] = root_elements
-
-        card.pop("elements", None)
         return json.dumps(card, ensure_ascii=False)
 
     @staticmethod
-    def _inject_ref_note(content_str: str, msg_type: str, ref_note: str) -> str:
+    def _inject_ref_note(content_str, msg_type: str, ref_note: str) -> str:
         """Best-effort inject ref_note into interactive/post content. Returns modified content_str."""
         if msg_type == "interactive":
             content_str = BaseHandler._normalize_interactive_card_content(content_str)
