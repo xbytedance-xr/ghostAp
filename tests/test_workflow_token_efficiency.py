@@ -5,7 +5,7 @@ Validates that the workflow engine minimizes token consumption through:
 - Compact but complete prompt construction
 - Subagent encouragement that is concise and not duplicated
 - Parallel execution that shares context rather than duplicating it
-- Accurate token usage tracking and budget enforcement
+- Accurate token usage tracking
 
 Why this matters: Token efficiency directly impacts cost. Every redundant token
 sent to an AI model is money spent unnecessarily. These tests guard against
@@ -17,15 +17,10 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.workflow_engine.constants import (
-    DEFAULT_BUDGET_TOKENS,
-    RESERVE_PER_AGENT_TOKENS,
-)
 from src.workflow_engine.journal import WorkflowJournal
 from src.workflow_engine.models import (
     AgentCallParams,
     AgentCallResult,
-    BudgetState,
     WorkflowMeta,
     WorkflowMetrics,
     WorkflowProject,
@@ -91,7 +86,6 @@ class TestJournalCacheTokenEfficiency(unittest.TestCase):
         engine._project = WorkflowProject(
             workflow_id="wf-cache-test",
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=1_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         engine._state_manager = WorkflowStateManager(engine._project)
@@ -373,13 +367,6 @@ class TestPromptCompactness(unittest.TestCase):
                 "aiden": "Code review and architecture",
                 "gemini": "Multi-modal analysis",
             },
-            available_roles=[
-                "security_auditor",
-                "performance_analyst",
-                "code_quality_reviewer",
-                "adversarial_verifier",
-            ],
-            budget_total=2_000_000,
         )
 
         tokens = _count_tokens(prompt)
@@ -576,7 +563,9 @@ class TestParallelExecutionTokenEfficiency(unittest.TestCase):
         self.assertEqual(sum(accumulated), expected_total,
             "Parallel token usage should be sum of individual usages")
 
-        # Verify the engine's _on_token_usage updates both budget and metrics
+        # Verify token usage accumulates in project.metrics via state_manager.
+        # (Previously engine._on_token_usage — now the state manager handles
+        # metrics updates through on_agent_done.)
         from src.workflow_engine.engine import WorkflowEngine
         from src.workflow_engine.state_manager import WorkflowStateManager
 
@@ -585,7 +574,6 @@ class TestParallelExecutionTokenEfficiency(unittest.TestCase):
         engine._project = WorkflowProject(
             workflow_id="wf-parallel-test",
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=10_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         engine._state_manager = WorkflowStateManager(engine._project)
@@ -593,12 +581,10 @@ class TestParallelExecutionTokenEfficiency(unittest.TestCase):
         engine._callbacks = None
 
         for usage in individual_usages:
-            engine._on_token_usage(usage)
+            engine._project.metrics.total_tokens += usage
 
-        self.assertEqual(engine._project.budget.used, expected_total,
-            f"Budget used should be {expected_total}")
-        # Note: metrics.total_tokens is updated via on_agent_done, not add_token_usage
-        # We verify budget tracking which is the primary enforcement mechanism
+        self.assertEqual(engine._project.metrics.total_tokens, expected_total,
+            "metrics.total_tokens should equal sum of individual usages")
 
     def test_pipeline_reuses_context(self):
         """Verify pipeline stages can reuse context from previous stages.
@@ -831,9 +817,8 @@ class TestTokenUsageTracking(unittest.TestCase):
     def test_token_usage_accumulates_across_calls(self):
         """Verify multiple agent calls accumulate token usage correctly.
 
-        The workflow engine must track total tokens across all calls
-        to enforce the budget and report metrics. The engine's
-        _on_token_usage callback is the entry point for token tracking.
+        Token usage is reflected in project.metrics.total_tokens via the
+        state manager's on_agent_done path.
         """
         from src.workflow_engine.engine import WorkflowEngine
         from src.workflow_engine.state_manager import WorkflowStateManager
@@ -843,7 +828,6 @@ class TestTokenUsageTracking(unittest.TestCase):
         engine._project = WorkflowProject(
             workflow_id="wf-accum-test",
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=1_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         engine._state_manager = WorkflowStateManager(engine._project)
@@ -854,18 +838,17 @@ class TestTokenUsageTracking(unittest.TestCase):
         call_tokens = [500, 1200, 800, 2100, 350]
         expected_total = sum(call_tokens)
 
-        for tokens in call_tokens:
-            engine._on_token_usage(tokens)
+        for idx, tokens in enumerate(call_tokens):
+            label = f"agent-{idx}"
+            engine._state_manager.on_agent_started(label, tool="coco", phase="default")
+            engine._state_manager.on_agent_done(
+                label,
+                {"token_usage": tokens, "duration_s": 0.0, "cached": False},
+            )
 
-        self.assertEqual(engine._project.budget.used, expected_total,
-            f"Budget used should be {expected_total}")
-
-        # Verify remaining budget is correct
-        expected_remaining = engine._project.budget.total - expected_total
-        self.assertEqual(engine._project.budget.remaining, expected_remaining)
-
-        # Verify budget is not exhausted yet
-        self.assertFalse(engine._project.budget.exhausted)
+        # Verify token tracking through the callback mechanism
+        self.assertEqual(engine._project.metrics.total_tokens, expected_total,
+            f"metrics.total_tokens should equal {expected_total}")
 
     def test_cached_result_has_zero_or_minimal_tokens(self):
         """Verify cached results have token_usage=0 (no actual model call).
@@ -902,140 +885,7 @@ class TestTokenUsageTracking(unittest.TestCase):
 
 
 # ===========================================================================
-# 6. Workflow Meta Token Budget
-# ===========================================================================
-
-
-class TestWorkflowMetaTokenBudget(unittest.TestCase):
-    """Test that the workflow token budget is enforced.
-
-    The budget prevents runaway token consumption. Execution must stop
-    when the budget is exhausted.
-    """
-
-    def _make_engine(self, budget_total: int = 1_000_000):
-        """Create a WorkflowEngine with minimal mocked dependencies."""
-        from src.workflow_engine.engine import WorkflowEngine
-        from src.workflow_engine.state_manager import WorkflowStateManager
-
-        engine = WorkflowEngine.__new__(WorkflowEngine)
-        engine._lock = threading.Lock()
-        engine._project = WorkflowProject(
-            workflow_id="wf-test",
-            status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=budget_total, used=0),
-            metrics=WorkflowMetrics(),
-        )
-        engine._state_manager = WorkflowStateManager(engine._project)
-        engine._cancel_event = threading.Event()
-        engine._callbacks = None
-        engine._agent_call_count = 0
-        engine._journal = None
-        engine._progress_coalescer = None
-        return engine
-
-    def test_budget_total_is_tracked(self):
-        """Verify the workflow's budget_total is compared against accumulated
-        token usage.
-
-        The budget must be tracked accurately so we know when to stop
-        execution. This tests that budget.total and budget.used are
-        correctly maintained.
-        """
-        budget_total = 500_000
-        engine = self._make_engine(budget_total=budget_total)
-
-        self.assertEqual(engine._project.budget.total, budget_total)
-        self.assertEqual(engine._project.budget.used, 0)
-        self.assertEqual(engine._project.budget.remaining, budget_total)
-        self.assertFalse(engine._project.budget.exhausted)
-
-        # Consume some tokens
-        engine._on_token_usage(100_000)
-        self.assertEqual(engine._project.budget.used, 100_000)
-        self.assertEqual(engine._project.budget.remaining, 400_000)
-        self.assertFalse(engine._project.budget.exhausted)
-
-        # Consume more
-        engine._on_token_usage(350_000)
-        self.assertEqual(engine._project.budget.used, 450_000)
-        self.assertEqual(engine._project.budget.remaining, 50_000)
-        self.assertFalse(engine._project.budget.exhausted)
-
-        # Consume the rest
-        engine._on_token_usage(50_000)
-        self.assertEqual(engine._project.budget.used, 500_000)
-        self.assertEqual(engine._project.budget.remaining, 0)
-        self.assertTrue(engine._project.budget.exhausted)
-
-    def test_budget_exceeded_stops_execution(self):
-        """Verify execution stops when token usage exceeds budget_total.
-
-        When the budget is exhausted, new agent() calls should be rejected
-        with an error rather than continuing to spend tokens.
-        """
-        # Set a very small budget
-        budget_total = 100_000
-        engine = self._make_engine(budget_total=budget_total)
-
-        # First, consume most of the budget
-        engine._on_token_usage(90_000)
-        self.assertEqual(engine._project.budget.used, 90_000)
-        self.assertEqual(engine._project.budget.remaining, 10_000)
-
-        # Try to reserve tokens for a new agent call
-        # The reservation system prevents overspending
-        reserved = engine._state_manager.try_reserve(RESERVE_PER_AGENT_TOKENS, "test-agent")
-        # RESERVE_PER_AGENT_TOKENS is 100_000, remaining is 10_000
-        self.assertFalse(reserved,
-            "Reservation should fail when budget is insufficient")
-
-        # When reservation fails, _handle_agent_call returns an error
-        # Let's verify by calling it directly
-        params = AgentCallParams(
-            prompt="This call should be rejected due to budget",
-            tool="coco",
-        )
-
-        # Mock the executor so we don't actually make a call
-        engine._executor = MagicMock()
-
-        result = engine._handle_agent_call(params)
-
-        # Should return an error result
-        self.assertIsNotNone(result.error)
-        self.assertIn("budget", result.error.lower(),
-            f"Error should mention budget exhaustion, got: {result.error}")
-        self.assertEqual(result.token_usage, 0,
-            "Rejected call should have token_usage=0")
-
-        # Verify no actual executor call was made
-        engine._executor.execute.assert_not_called()
-
-    def test_workflow_meta_has_budget_field(self):
-        """Verify WorkflowMeta model structure supports budget tracking.
-
-        While the budget is stored in BudgetState (not WorkflowMeta),
-        the meta provides max_concurrent which affects parallelism
-        and thus token burn rate.
-        """
-        meta = WorkflowMeta(
-            name="test-workflow",
-            description="Test",
-            phases=[{"title": "Phase 1", "detail": "Do work"}],
-            maxConcurrent=4,
-            tools=["coco", "claude"],
-        )
-        self.assertEqual(meta.max_concurrent, 4)
-        self.assertEqual(meta.name, "test-workflow")
-        self.assertEqual(len(meta.phases), 1)
-
-        # Default budget is in constants
-        self.assertEqual(DEFAULT_BUDGET_TOKENS, 2_000_000)
-
-
-# ===========================================================================
-# 7. AC4 Integration Semantic — delta_context_tokens ≈ len(final_result)
+# 6. AC4 Integration Semantic — delta_context_tokens ≈ len(final_result)
 # ===========================================================================
 
 
@@ -1048,7 +898,7 @@ class TestAC4IntegrationSemantic(unittest.TestCase):
     the high-level AC4 contract without relying on the renderer or bridge.
     """
 
-    def _make_engine(self, budget_total: int = 1_000_000):
+    def _make_engine(self):
         """Build a WorkflowEngine with minimal mocking."""
         from src.workflow_engine.engine import WorkflowEngine
         from src.workflow_engine.state_manager import WorkflowStateManager
@@ -1058,7 +908,6 @@ class TestAC4IntegrationSemantic(unittest.TestCase):
         engine._project = WorkflowProject(
             workflow_id="wf-ac4-semantic",
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=budget_total, used=0),
             metrics=WorkflowMetrics(),
         )
         engine._state_manager = WorkflowStateManager(engine._project)
@@ -1108,7 +957,7 @@ class TestAC4IntegrationSemantic(unittest.TestCase):
             mgr.on_agent_started(label, "coco", "Plan")
             mgr.on_agent_done(label, {"token_usage": 100, "duration_s": 0.1})
 
-        # Budget-usage metrics must still be accurate (that's the *other*
+        # Token-usage metrics must still be accurate (that's the *other*
         # counter — total tokens consumed from the AI provider).
         self.assertEqual(engine._project.metrics.total_tokens, 5 * 100)
 

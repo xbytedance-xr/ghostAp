@@ -12,11 +12,9 @@ from typing import Any, Callable, Optional
 from ..engine_base import BaseEngine, EngineRunState
 from .bridge import RuntimeBridge
 from .constants import (
-    DEFAULT_BUDGET_TOKENS,
     DEFAULT_MAX_CONCURRENT,
     MAX_TOTAL_AGENTS,
     NODE_MIN_VERSION,
-    RESERVE_PER_AGENT_TOKENS,
     STATE_FILENAME,
 )
 from .errors import _strip_internal_details
@@ -26,7 +24,6 @@ from .journal import WorkflowJournal
 from .models import (
     AgentCallParams,
     AgentCallResult,
-    BudgetState,
     WorkflowMetrics,
     WorkflowProject,
     WorkflowStatus,
@@ -179,7 +176,6 @@ class WorkflowEngine(BaseEngine):
         script_path: str,
         callbacks: Optional[WorkflowEngineCallbacks] = None,
         *,
-        budget_tokens: int = DEFAULT_BUDGET_TOKENS,
         selected_tools: Optional[list[str]] = None,
         initiator_user_id: Optional[str] = None,
     ) -> WorkflowProject:
@@ -189,7 +185,6 @@ class WorkflowEngine(BaseEngine):
             requirement: The user's original requirement text.
             script_path: Absolute path to the .js workflow script.
             callbacks: Optional event callbacks for progress/completion.
-            budget_tokens: Token budget ceiling for this run.
             selected_tools: Optional tool whitelist; agents may only use these tools.
 
         Returns:
@@ -231,7 +226,6 @@ class WorkflowEngine(BaseEngine):
             requirement=requirement,
             script_path=script_path,
             meta=script_meta,
-            budget=BudgetState(total=budget_tokens, used=0),
             metrics=WorkflowMetrics(),
             started_at=time.time(),
             selected_tools=selected_tools,
@@ -247,10 +241,7 @@ class WorkflowEngine(BaseEngine):
         self._executor = AgentExecutor(
             cwd=self.root_path,
             cancel_event=self._cancel_event,
-            on_token_usage=self._on_token_usage,
             max_workers=max_concurrent,
-            budget_total=budget_tokens,
-            on_budget_exceeded=self._on_budget_exceeded,
         )
         self._state_manager = WorkflowStateManager(project)
         self._renderer_wf = WorkflowProgressRenderer(project)
@@ -271,7 +262,6 @@ class WorkflowEngine(BaseEngine):
                 script_path=script_path,
                 cwd=self.root_path,
                 max_concurrent=max_concurrent,
-                budget_total=budget_tokens,
                 on_agent_call=self._handle_agent_call,
                 on_phase=self._handle_phase,
                 on_log=self._handle_log,
@@ -295,10 +285,9 @@ class WorkflowEngine(BaseEngine):
             self._state_manager.on_workflow_done(result_text)
 
             logger.info(
-                "[WorkflowEngine:%s] Completed — agents=%d, tokens=%d, duration=%.1fs",
+                "[WorkflowEngine:%s] Completed — agents=%d, duration=%.1fs",
                 workflow_id,
                 project.metrics.completed_agents,
-                project.budget.used,
                 time.time() - (project.started_at or 0),
             )
 
@@ -411,11 +400,10 @@ class WorkflowEngine(BaseEngine):
 
         Flow:
             1. Safety fuse check (MAX_TOTAL_AGENTS)
-            2. Budget exhaustion check
-            3. Journal cache lookup
-            4. Execute via AgentExecutor (creates one-shot session)
-            5. Store result in journal
-            6. Fire progress callbacks
+            2. Journal cache lookup
+            3. Execute via AgentExecutor (creates one-shot session)
+            4. Store result in journal
+            5. Fire progress callbacks
         """
         with self._lock:
             self._agent_call_count += 1
@@ -428,121 +416,94 @@ class WorkflowEngine(BaseEngine):
             logger.warning("[WorkflowEngine] %s", error_msg)
             return AgentCallResult(error=error_msg, tool=params.tool, model=params.model)
 
-        # Atomic budget reservation + agent state update (eliminates TOCTOU race)
-        # Both operations happen under the same lock in try_reserve().
-        # The ``try/finally`` below ensures settle() always runs so reserved
-        # tokens are released on tool-rejection, cache-hit, exception, and
-        # normal execution paths alike.
-        reserved = False
+        # Register agent in state manager
         if self._state_manager:
-            reserved = self._state_manager.try_reserve(
-                RESERVE_PER_AGENT_TOKENS,
+            self._state_manager.on_agent_started(
                 label,
                 tool=params.tool,
                 phase=params.phase or "default",
             )
-            if not reserved:
-                error_msg = "Token budget exhausted"
-                logger.warning("[WorkflowEngine] %s", error_msg)
-                return AgentCallResult(error=error_msg, tool=params.tool, model=params.model)
 
-        # Result is declared outside the try/finally so the finally block can
-        # settle with its final token usage (0 for cache hits, real value for
-        # real executions).
-        result: AgentCallResult | None = None
         cache_key = WorkflowJournal.compute_key(params.prompt, params.tool, params.model)
 
-        try:
-            # Tool whitelist enforcement
-            project = self._project
-            if project and project.selected_tools and params.tool:
-                if params.tool not in project.selected_tools:
-                    error_msg = (
-                        f"Tool '{params.tool}' not in allowed list: {project.selected_tools}"
-                    )
-                    logger.warning("[WorkflowEngine] %s", error_msg)
-                    # Rollback: agent was already added to state in try_reserve
-                    if self._state_manager:
-                        self._state_manager.on_agent_failed(label, error_msg)
-                    return AgentCallResult(
-                        error=error_msg, tool=params.tool, model=params.model
-                    )
+        # Tool whitelist enforcement
+        project = self._project
+        if project and project.selected_tools and params.tool:
+            if params.tool not in project.selected_tools:
+                error_msg = (
+                    f"Tool '{params.tool}' not in allowed list: {project.selected_tools}"
+                )
+                logger.warning("[WorkflowEngine] %s", error_msg)
+                if self._state_manager:
+                    self._state_manager.on_agent_failed(label, error_msg)
+                return AgentCallResult(
+                    error=error_msg, tool=params.tool, model=params.model
+                )
 
-            # Fire agent start callbacks (state already updated atomically above)
-            if self._callbacks and self._callbacks.on_agent_start:
-                self._callbacks.on_agent_start(label, params.tool)
-            self._fire_progress()
+        # Fire agent start callbacks
+        if self._callbacks and self._callbacks.on_agent_start:
+            self._callbacks.on_agent_start(label, params.tool)
+        self._fire_progress()
 
-            # Journal cache lookup
-            if self._journal:
-                cached = self._journal.get_cached(cache_key)
-                if cached is not None:
-                    logger.debug("[WorkflowEngine] Cache hit for %s", label)
-                    cached_result = AgentCallResult(
-                        output=cached.output,
-                        parsed=cached.parsed,
-                        token_usage=0,  # No tokens consumed on cache hit
-                        duration_s=0.0,
-                        cached=True,
-                        tool=params.tool,
-                        model=params.model,
-                    )
-                    if self._state_manager:
-                        self._state_manager.on_agent_done(label, {
-                            "token_usage": 0,
-                            "duration_s": 0.0,
-                            "cached": True,
-                        })
-                    self._fire_progress()
-                    result = cached_result
-                    return cached_result
-
-            # Execute via AgentExecutor
-            result = self._executor.execute(params)
-
-            # Store in journal (only on success)
-            if result.error is None and self._journal:
-                self._journal.store(cache_key, result)
-
-            # Update state
-            if self._state_manager:
-                if result.error:
-                    self._state_manager.on_agent_failed(label, result.error)
-                else:
+        # Journal cache lookup
+        if self._journal:
+            cached = self._journal.get_cached(cache_key)
+            if cached is not None:
+                logger.debug("[WorkflowEngine] Cache hit for %s", label)
+                cached_result = AgentCallResult(
+                    output=cached.output,
+                    parsed=cached.parsed,
+                    token_usage=0,  # No tokens consumed on cache hit
+                    duration_s=0.0,
+                    cached=True,
+                    tool=params.tool,
+                    model=params.model,
+                )
+                if self._state_manager:
                     self._state_manager.on_agent_done(label, {
-                        "token_usage": result.token_usage,
-                        "duration_s": result.duration_s,
-                        "cached": False,
+                        "token_usage": 0,
+                        "duration_s": 0.0,
+                        "cached": True,
                     })
+                self._fire_progress()
+                return cached_result
 
-            # Fire agent done callback — AC4: only meta info, no output body.
-            if self._callbacks and self._callbacks.on_agent_done:
-                # Hand-rolled payload: deliberately excludes output/parsed
-                # so callers cannot leak intermediate results into the main
-                # agent context.
-                payload = {
-                    "label": label,
-                    "tool": params.tool,
-                    "model": result.model if result else None,
-                    "token_usage": result.token_usage if result else 0,
-                    "duration_s": result.duration_s if result else 0.0,
-                    "cached": bool(result.cached) if result else False,
-                    "error": result.error if result else None,
-                }
-                self._callbacks.on_agent_done(label, payload)
+        # Execute via AgentExecutor
+        result = self._executor.execute(params)
 
-            self._fire_progress()
-            return result
-        finally:
-            # Settle the budget reservation: cache hits return 0 tokens, tool
-            # rejections and exceptions are settled with 0, real executions
-            # with the actual token_usage. settle() only releases reserved
-            # headroom; real usage is tracked incrementally by the executor.
-            if reserved and self._state_manager:
-                actual_tokens = 0
-                if result is not None:
-                    actual_tokens = int(result.token_usage or 0)
-                self._state_manager.settle(label, actual_tokens)
+        # Store in journal (only on success)
+        if result.error is None and self._journal:
+            self._journal.store(cache_key, result)
+
+        # Update state
+        if self._state_manager:
+            if result.error:
+                self._state_manager.on_agent_failed(label, result.error)
+            else:
+                self._state_manager.on_agent_done(label, {
+                    "token_usage": result.token_usage,
+                    "duration_s": result.duration_s,
+                    "cached": False,
+                })
+
+        # Fire agent done callback — AC4: only meta info, no output body.
+        if self._callbacks and self._callbacks.on_agent_done:
+            # Hand-rolled payload: deliberately excludes output/parsed
+            # so callers cannot leak intermediate results into the main
+            # agent context.
+            payload = {
+                "label": label,
+                "tool": params.tool,
+                "model": result.model if result else None,
+                "token_usage": result.token_usage if result else 0,
+                "duration_s": result.duration_s if result else 0.0,
+                "cached": bool(result.cached) if result else False,
+                "error": result.error if result else None,
+            }
+            self._callbacks.on_agent_done(label, payload)
+
+        self._fire_progress()
+        return result
 
     def _handle_phase(self, title: str) -> None:
         """Handle a phase() notification from the JS runtime."""
@@ -566,30 +527,6 @@ class WorkflowEngine(BaseEngine):
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
-
-    def _on_budget_exceeded(self, consumed: int, total: int) -> None:
-        """Budget exhaustion callback from AgentExecutor.
-
-        Logs the overrun, sets the project budget-exceeded flag and fires a final
-        progress refresh so the card can prompt the user.  The budget-exceeded
-        state is picked up downstream by rendering/UI to give the operator a chance to
-        top-up or terminate.
-        """
-        logger.warning(
-            "[WorkflowEngine] Budget exceeded — consumed=%d total=%d",
-            consumed, total,
-        )
-        if self._state_manager:
-            self._state_manager.mark_budget_exceeded(consumed)
-        self._fire_progress()
-
-    def _on_token_usage(self, tokens: int) -> None:
-        """Callback from AgentExecutor when tokens are consumed.
-
-        Thread-safe: called from ThreadPoolExecutor workers concurrently.
-        """
-        if self._state_manager:
-            self._state_manager.add_token_usage(tokens)
 
     def _fire_progress(self) -> None:
         """Fire progress callback via coalescer (non-blocking, debounced)."""

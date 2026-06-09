@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.spec_engine.review_agents import ReviewAgentBinding
 from src.workflow_engine.models import (
     PendingConfirmation,
     WorkflowProject,
@@ -11,6 +12,22 @@ from src.workflow_engine.models import (
 
 def test_pending_confirmation_creation():
     """AC15: PendingConfirmation 子模型可正常创建。"""
+    orchestrator_binding = ReviewAgentBinding(
+        provider="cli",
+        tool_name="coco",
+        display_name="Coco",
+        agent_type="coco",
+        model_name="claude-3-5-sonnet",
+        model_display_name="Claude 3.5 Sonnet",
+    )
+    review_binding = ReviewAgentBinding(
+        provider="cli",
+        tool_name="claude",
+        display_name="Claude",
+        agent_type="claude",
+        model_name="claude-3-opus",
+        model_display_name="Claude 3 Opus",
+    )
     pending = PendingConfirmation(
         script_path="/tmp/test.js",
         requirement="test requirement",
@@ -19,21 +36,22 @@ def test_pending_confirmation_creation():
         initiator_user_id="user_123",
         engine_session_key="session_456",
         selected_tools=["coco", "claude"],
-        budget=2_000_000,
         tools_mismatch=False,
-        orchestrator_agent="coco",
-        budget_tokens=2_000_000,
+        orchestrator_binding=orchestrator_binding,
+        review_agents=[review_binding],
     )
-    
+
     assert pending.script_path == "/tmp/test.js"
     assert pending.requirement == "test requirement"
     assert pending.meta == {"tools": ["coco", "claude"]}
     assert pending.initiator_user_id == "user_123"
     assert pending.engine_session_key == "session_456"
     assert pending.selected_tools == ["coco", "claude"]
-    assert pending.budget == 2_000_000
-    assert pending.orchestrator_agent == "coco"
-    assert pending.budget_tokens == 2_000_000
+    assert pending.orchestrator_binding is not None
+    assert pending.orchestrator_binding.tool_name == "coco"
+    assert pending.review_agents is not None
+    assert len(pending.review_agents) == 1
+    assert pending.review_agents[0].tool_name == "claude"
 
 
 def test_workflow_project_with_pending():
@@ -106,6 +124,14 @@ def test_start_execution_with_none_pending():
 
 def test_serialization_roundtrip():
     """AC15: 序列化/反序列化正常工作。"""
+    orchestrator_binding = ReviewAgentBinding(
+        provider="cli",
+        tool_name="claude",
+        display_name="Claude",
+        agent_type="claude",
+        model_name="claude-3-opus",
+        model_display_name="Claude 3 Opus",
+    )
     project = WorkflowProject(
         workflow_id="proj_123",
         status=WorkflowStatus.AWAITING_CONFIRM,
@@ -113,22 +139,22 @@ def test_serialization_roundtrip():
             requirement="test requirement",
             initiator_user_id="user_123",
             selected_tools=["coco", "claude"],
-            budget=2_000_000,
-            orchestrator_agent="claude",
+            orchestrator_binding=orchestrator_binding,
         ),
     )
-    
+
     # Serialize
     data = project.to_dict()
     assert "pending" in data
     assert data["pending"]["requirement"] == "test requirement"
-    assert data["pending"]["orchestrator_agent"] == "claude"
-    
+    assert data["pending"]["orchestrator_binding"]["tool_name"] == "claude"
+
     # Deserialize
     restored = WorkflowProject.from_dict(data)
     assert restored.pending is not None
     assert restored.pending.requirement == "test requirement"
-    assert restored.pending.orchestrator_agent == "claude"
+    assert restored.pending.orchestrator_binding is not None
+    assert restored.pending.orchestrator_binding.tool_name == "claude"
     assert restored.pending.selected_tools == ["coco", "claude"]
 
 
@@ -144,12 +170,11 @@ def test_legacy_format_migration():
         "pending_initiator_user_id": "user_legacy",
         "pending_engine_session_key": "session_legacy",
         "pending_selected_tools": ["coco"],
-        "pending_budget": 1_000_000,
         "pending_tools_mismatch": False,
     }
-    
+
     restored = WorkflowProject.from_dict(legacy_data)
-    
+
     # Legacy fields should be migrated to pending sub-model
     assert restored.pending is not None
     assert restored.pending.script_path == "/tmp/legacy.js"
@@ -158,7 +183,6 @@ def test_legacy_format_migration():
     assert restored.pending.initiator_user_id == "user_legacy"
     assert restored.pending.engine_session_key == "session_legacy"
     assert restored.pending.selected_tools == ["coco"]
-    assert restored.pending.budget == 1_000_000
-    
+
     # Legacy flat fields should not exist as direct attributes
     assert not hasattr(restored, "pending_script_path")

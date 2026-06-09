@@ -952,11 +952,10 @@ UI_TEXT = {
         "error": "red",               # Error state
         "completed": "green",         # Successfully completed
     },
-    # --- Workflow stepper labels (4-step orchestration flow: agent → tools → roles → confirm) ---
-    "workflow_stepper_step_agent": "① 选择 Agent / 工具 / 角色",
-    "workflow_stepper_step_tool": "② 选择工具 / 预算",
-    "workflow_stepper_step_role": "③ 选择角色",
-    "workflow_stepper_step_confirm": "② 确认并执行",
+    # --- Workflow stepper labels (3-step orchestration flow: main agent → review agents → confirm) ---
+    "workflow_stepper_step_main_agent": "① 选择主 Agent",
+    "workflow_stepper_step_review_agents": "② 选择评审 Agent",
+    "workflow_stepper_step_confirm": "③ 确认并执行",
     "workflow_stepper_current_label": "当前步骤：{current} / {total}",
     # --- Workflow confirm dialogs ---
     "workflow_btn_confirm_cancel_title": "确认取消 Workflow？",
@@ -973,22 +972,22 @@ UI_TEXT = {
     "workflow_error_forbidden_title": "无操作权限",
     "workflow_error_forbidden_body": "只有 Workflow 发起者或管理员可以执行此操作。\n\n💡 如需操作请联系发起者或管理员",
     "workflow_error_internal_error_title": "服务内部错误",
-    "workflow_error_internal_error_body": "Workflow 执行过程中发生内部错误。{detail}\n\n💡 请稍后重试，或点击「重新生成编排」基于当前工具/角色选择重新生成脚本后再次确认；如持续出现请联系管理员",
+    "workflow_error_internal_error_body": "Workflow 执行过程中发生内部错误。{detail}\n\n💡 请稍后重试，或点击「重新生成编排」基于当前工具选择重新生成脚本后再次确认；如持续出现请联系管理员",
     # --- Workflow entry help ---
     "workflow_entry_title": "⚡ Workflow · 多 Agent 编排执行",
     "workflow_entry_body": (
         "**Workflow 可以做什么？**\n"
         "• 自动将复杂需求拆解为多 Agent 并行/流水线任务\n"
         "• 支持 `agent()` / `parallel()` / `pipeline()` / `phase()` 编排原语\n"
-        "• 内置预算控制与超时保护，防止 token 超限\n"
+        "• 内置超时保护\n"
         "• 支持模板保存与复用，常用流程一键启动\n"
         "• **每个工具 Agent 可自主继续拆分 subagent 并行工作，大幅提升复杂任务收敛速度**\n\n"
         "✅ 主编排 Agent 入口：`/wf` 即 Workflow 主编排 Agent 入口，无需先进入 `/coco` 等普通编程态\n"
-        "📋 流程：主编排 Agent → 工具 → 角色 → 脚本确认 → 执行\n\n"
+        "📋 流程：主编排 Agent(工具+模型) → 评审 Agent(工具+模型) → 脚本确认 → 执行\n\n"
         "**前置要求**\n"
         "• Workflow 在 Node.js ≥ 20 的沙盒内执行编排脚本；请确保 `node --version` ≥ 20\n\n"
         "**快速开始**\n"
-        "• 点击下方「开始编排任务」输入需求，直接进入四步编排流程\n"
+        "• 点击下方「开始编排任务」输入需求，直接进入两步编排流程\n"
         "• 也可在聊天中发送 `/wf <需求描述>` 立即开始\n"
         "• `/wf <模板名> [参数]` — 使用内置/保存的模板\n"
         "• `/wf_status` — 查看当前进度\n"

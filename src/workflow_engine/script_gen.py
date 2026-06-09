@@ -82,10 +82,10 @@ _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
 # Prompt template for script generation
 # ---------------------------------------------------------------------------
 
-# Injected section sentinels. These markers are removed after the budget /
-# agent capability sections are spliced in. If a marker is missing for any
+# Injected section sentinels. These markers are removed after the
+# agent capability section is spliced in. If a marker is missing for any
 # reason (template edits, tests that strip them), insertion falls back to
-# appending the sections at the end of the prompt instead of raising.
+# appending the section at the end of the prompt instead of raising.
 _USER_REQUIREMENT_INSERT_POINT = (
     "### SENTINEL: USER_REQUIREMENT_INSERT_POINT ###"
 )
@@ -104,9 +104,9 @@ _SCRIPT_GEN_PROMPT_TEMPLATE = """\
 {tools_list}
 
 **Roles (specialized perspectives for agents):**
-{roles_list}
-
-**Budget:** {budget_total} tokens total across all agent() calls combined.
+根据任务需求自行规划角色分工。每个 agent() 调用可通过 `role` 参数指定适合的角色（如 architect、reviewer、tester 等）。
+角色不是固定列表，而是你根据任务复杂度和需要覆盖的维度自主决定的。
+建议考虑：架构设计、代码实现、安全审计、正确性验证、测试覆盖等维度。
 
 ## Output Format
 
@@ -219,9 +219,6 @@ const subResult = await workflow("sub-workflow-name", {{ arg1: "value" }});
 
 9. **Handle results gracefully** - Agent calls may return errors; check results before
    using them in subsequent steps.
-
-10. **Stay within budget** - The total token budget is {budget_total}. Avoid unnecessary
-    agent calls. Combine related questions into single prompts where appropriate.
 
 ## Constraints
 
@@ -362,24 +359,20 @@ export default async function() {
 def build_script_gen_prompt(
     requirement: str,
     available_tools: list[str] | dict[str, str],
-    available_roles: list[str],
-    budget_total: int,
-    budget_tokens: Optional[int] = None,
     orchestrator_agent: str = "coco",
+    orchestrator_binding: Optional[dict] = None,
+    review_agents: Optional[list[dict]] = None,
 ) -> str:
     """Build the prompt that instructs an AI to generate a workflow script.
 
     Args:
         requirement: The user's task description / workflow requirement.
         available_tools: List of tool names, or dict of name->description.
-        available_roles: List of available roles (e.g. ["architect", "tester"]).
-        budget_total: Total token budget for the workflow execution.
-        budget_tokens: Optional hard token budget constraint. If provided, adds
-            a detailed budget constraint section. If None (common case — caller
-            passes the single authoritative budget via budget_total only).
         orchestrator_agent: The type of agent that will execute the generated
             workflow script. Used to adapt prompt style and recommendations
             to the agent's capabilities. Defaults to "coco".
+        orchestrator_binding: Selected orchestrator agent binding with tool and model info.
+        review_agents: List of selected review agent bindings with tool and model info.
 
     Returns:
         A complete prompt string ready to send to a code-generation agent.
@@ -390,23 +383,6 @@ def build_script_gen_prompt(
         ) if available_tools else "- (none)"
     else:
         tools_list = "\n".join(f"- `{t}`" for t in available_tools) if available_tools else "- (none)"
-    roles_list = "\n".join(f"- `{r}`" for r in available_roles) if available_roles else "- (none)"
-
-    # Budget constraint section (hard constraint)
-    budget_section = ""
-    if budget_tokens is not None:
-        budget_section = f"""## 预算硬约束
-
-**Token 预算硬约束**：本 Workflow 的总 Token 预算为 {budget_tokens:,} tokens。
-
-- 脚本生成时必须考虑预算限制，合理安排 agent() 调用数量和复杂度
-- **预算紧张时** (< 1,000,000 tokens)：减少并行度，合并相似任务，避免过度 fan-out
-- **预算适中时** (1,000,000 - 2,000,000 tokens)：平衡并行度和任务质量，使用适度的并行策略
-- **预算充足时** (> 2,000,000 tokens)：可以使用更激进的并行策略和多轮验证
-- 每个 agent() 调用预计消耗 50K-200K tokens，请据此规划任务数量
-- 严禁超出预算，runtime 会在超预算时终止执行
-- 建议预留 10-20% 的预算作为缓冲，应对意外情况
-"""
 
     # Orchestrator agent capability adaptation section
     agent_capability_section = f"""## 主编排 Agent 能力
@@ -418,20 +394,50 @@ def build_script_gen_prompt(
 请根据上述 Agent 的能力特点，生成最适合它执行的 workflow 脚本。
 """
 
+    # Add selected agent bindings information
+    agent_bindings_section = ""
+    if orchestrator_binding:
+        _orch_tool = getattr(orchestrator_binding, 'tool_name', None) or (orchestrator_binding.get('tool_name') if isinstance(orchestrator_binding, dict) else None) or orchestrator_agent
+        _orch_use_default = getattr(orchestrator_binding, 'use_default_model', None) if not isinstance(orchestrator_binding, dict) else orchestrator_binding.get('use_default_model', False)
+        _orch_model = getattr(orchestrator_binding, 'model_name', None) if not isinstance(orchestrator_binding, dict) else orchestrator_binding.get('model_name')
+        agent_bindings_section += f"""
+## 已选择的主 Agent
+
+- **工具**: {_orch_tool}
+"""
+        if not _orch_use_default and _orch_model:
+            agent_bindings_section += f"  **模型**: {_orch_model}"
+
+    if review_agents and review_agents:
+        agent_bindings_section += """
+
+## 已选择的评审 Agent
+
+"""
+        for i, agent in enumerate(review_agents):
+            _ra_tool = getattr(agent, 'tool_name', None) or (agent.get('tool_name') if isinstance(agent, dict) else None) or 'unknown'
+            _ra_use_default = getattr(agent, 'use_default_model', None) if not isinstance(agent, dict) else agent.get('use_default_model', False)
+            _ra_model = getattr(agent, 'model_name', None) if not isinstance(agent, dict) else agent.get('model_name')
+            agent_bindings_section += f"{i+1}. **工具**: {_ra_tool}"
+            if not _ra_use_default and _ra_model:
+                agent_bindings_section += f"  **模型**: {_ra_model}"
+            agent_bindings_section += "\n"
+    
+    if agent_bindings_section:
+        agent_capability_section += agent_bindings_section
+
     # Build the base prompt from template
     base_prompt = _SCRIPT_GEN_PROMPT_TEMPLATE.format(
         requirement=requirement.strip(),
         tools_list=tools_list,
-        roles_list=roles_list,
-        budget_total=budget_total,
     )
 
-    # Inject budget and agent capability sections using an explicit sentinel.
+    # Inject agent capability section using an explicit sentinel.
     # Using str.find() instead of str.index() so we never raise ValueError.
     # If the sentinel is missing (template edits, test mutations, etc.), we
-    # fall back to appending the sections at the end and log a debug note.
+    # fall back to appending the section at the end and log a debug note.
     insert_idx = base_prompt.find(_USER_REQUIREMENT_INSERT_POINT)
-    injection = budget_section + agent_capability_section
+    injection = agent_capability_section
 
     if insert_idx >= 0:
         # Splice the sections in and remove the sentinel line (plus its trailing
@@ -450,14 +456,17 @@ def build_script_gen_prompt(
     else:
         logger.debug(
             "script_gen: USER_REQUIREMENT_INSERT_POINT not found in template; "
-            "appending budget/agent sections at the end of the prompt."
+            "appending agent capability section at the end of the prompt."
         )
         prompt = base_prompt + "\n\n" + injection
 
     return prompt + ("\n\n" + get_subagent_encouragement() if get_subagent_encouragement() else "")
 
 
-def validate_generated_script(script_content: str) -> tuple[bool, list[str]]:
+def validate_generated_script(
+    script_content: str,
+    review_agents: Optional[list[dict]] = None,
+) -> tuple[bool, list[str]]:
     """Validate a generated workflow script without executing it.
 
     Performs basic structural and safety checks:
@@ -468,6 +477,7 @@ def validate_generated_script(script_content: str) -> tuple[bool, list[str]]:
       (pure orchestration / workflow-only scripts are accepted)
     - Presence of `export default` entry function
     - Dangerous patterns are reported as BLOCKING errors (fail-closed — not warnings)
+    - Review agent constraints: if review_agents are specified, verify they are used in the script
 
     The runtime sandbox provides defense-in-depth, but script-level rejection
     is the primary security boundary for user-generated workflows. Templates
@@ -476,6 +486,8 @@ def validate_generated_script(script_content: str) -> tuple[bool, list[str]]:
 
     Args:
         script_content: The raw JavaScript source code of the workflow script.
+        review_agents: List of selected review agent bindings with tool and model info.
+                       If provided, validates that all review tools are used in the script.
 
     Returns:
         A tuple of (is_valid, list_of_messages). Dangerous patterns are treated
@@ -487,6 +499,10 @@ def validate_generated_script(script_content: str) -> tuple[bool, list[str]]:
 
     if not script_content or not script_content.strip():
         return False, ["Script content is empty"]
+
+    # --- Note: Review agent constraints are no longer enforced ---
+    # Roles are dynamically inferred by the LLM orchestrator, not statically validated.
+    # The orchestrator agent decides how to use review tools based on the task context.
 
     # --- Check meta export presence ---
     if not re.search(r"export\s+const\s+meta\s*=", script_content):

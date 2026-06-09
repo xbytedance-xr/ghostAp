@@ -31,7 +31,6 @@ from src.workflow_engine.models import (
     AgentCallParams,
     AgentCallResult,
     AgentStatus,
-    BudgetState,
     PhaseProgress,
     WorkflowMeta,
     WorkflowMetrics,
@@ -302,9 +301,8 @@ class TestFanOutPattern(unittest.TestCase):
             self.assertEqual(expected, actual)
 
         # Verify token usage was accumulated in metrics
-        # (budget.used is updated via add_token_usage callback from executor,
-        # which isn't triggered in mocks; metrics.total_tokens is set from
-        # on_agent_done which uses the result.token_usage directly)
+        # (metrics.total_tokens is set from on_agent_done which uses the
+        # result.token_usage directly)
         expected_tokens = sum(r.token_usage for r in mock_results)
         self.assertEqual(project.metrics.total_tokens, expected_tokens)
 
@@ -884,7 +882,6 @@ class TestFanOutWithPhase(unittest.TestCase):
             status=WorkflowStatus.RUNNING,
             requirement="Test phase wrapping",
             script_path="/tmp/phase_test.js",
-            budget=BudgetState(total=100000, used=0),
             metrics=WorkflowMetrics(),
         )
         mgr = WorkflowStateManager(project)
@@ -959,7 +956,6 @@ class TestFanOutWithPhase(unittest.TestCase):
             status=WorkflowStatus.RUNNING,
             requirement="Multi-phase fan-out test",
             script_path="/tmp/multiphase.js",
-            budget=BudgetState(total=500000, used=0),
             metrics=WorkflowMetrics(),
         )
         mgr = WorkflowStateManager(project)
@@ -1016,9 +1012,7 @@ class TestFanOutWithPhase(unittest.TestCase):
         self.assertEqual(project.metrics.phases_completed, 4)
         self.assertEqual(project.metrics.total_tokens, total_tokens)
 
-        # Verify budget tracking (metrics.total_tokens is set from on_agent_done;
-        # budget.used is set via add_token_usage callback from executor which
-        # isn't triggered in this direct state_manager test)
+        # Verify token tracking (metrics.total_tokens is set from on_agent_done)
         self.assertEqual(project.metrics.total_tokens, total_tokens)
 
         # Verify final status
@@ -1226,9 +1220,8 @@ class TestIntegrationPattern(unittest.TestCase):
         self.assertEqual(agent_calls[2].tool, "aiden")
 
         # Verify token usage is accumulated correctly in metrics
-        # (budget.used is updated via add_token_usage callback from executor,
-        # which isn't triggered in mocks; metrics.total_tokens is set from
-        # on_agent_done which uses the result.token_usage directly)
+        # (metrics.total_tokens is set from on_agent_done which uses
+        # the result.token_usage directly)
         expected_tokens = (
             worker_results["security-review"].token_usage +
             worker_results["quality-review"].token_usage +
@@ -1338,9 +1331,9 @@ class TestIntegrationPattern(unittest.TestCase):
         self.assertIn("aiden", results[2]["error"] or "")
 
         # Verify metrics: 3 total (2 successful + 1 tool-rejected)
-        # With atomic budget reservation (try_reserve), the agent state is updated
-        # BEFORE the tool whitelist check. When the tool check fails, on_agent_failed
-        # is called for rollback, marking it as FAILED.
+        # The agent state is updated BEFORE the tool whitelist check.
+        # When the tool check fails, on_agent_failed is called for rollback,
+        # marking it as FAILED.
         # completed_agents counts all finished agents (success + failure),
         # failed_agents counts only the failed subset.
         self.assertEqual(project.metrics.total_agents, 3)

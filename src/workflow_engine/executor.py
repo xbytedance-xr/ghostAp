@@ -39,20 +39,15 @@ class AgentExecutor:
         cancel_event: threading.Event,
         on_token_usage: Optional[Callable[[int], None]] = None,
         max_workers: int = DEFAULT_MAX_CONCURRENT,
-        budget_total: int = 0,
-        on_budget_exceeded: Optional[
-            Callable[[int, int], None]
-        ] = None,  # (consumed, total)
+        # Deprecated: kept for backwards compatibility
+        budget_total: Optional[int] = None,
+        on_budget_exceeded: Optional[Callable[[], None]] = None,
     ) -> None:
         self.cwd = cwd
         self.cancel_event = cancel_event
         self.on_token_usage = on_token_usage
-        # Budget tracking: accumulates actual token consumption across all
-        # execute() calls.  ``budget_total`` may be 0 to signal "unlimited".
-        self.budget_total: int = int(budget_total)
-        self._budget_consumed: int = 0
-        self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self.on_budget_exceeded = on_budget_exceeded
+        # Deprecated parameters - kept for backwards compatibility but ignored
+        del budget_total, on_budget_exceeded
         # Shared thread pool for session creation — avoids per-call pool overhead.
         # Size is capped by HARD_MAX_CONCURRENT to prevent runaway concurrency even
         # when callers pass an explicit value.
@@ -61,45 +56,6 @@ class AgentExecutor:
             max_workers=pool_size, thread_name_prefix="wf_session"
         )
         self._shutdown_done = False
-
-    # ------------------------------------------------------------------
-    # Budget introspection
-    # ------------------------------------------------------------------
-
-    @property
-    def budget_consumed(self) -> int:
-        """Cumulative tokens consumed so far."""
-        with self._budget_lock:
-            return self._budget_consumed
-
-    @property
-    def budget_remaining(self) -> int:
-        """Remaining tokens (total - consumed; clamped to 0)."""
-        with self._budget_lock:
-            return max(0, self.budget_total - self._budget_consumed)
-
-    def _accumulate_tokens(self, tokens: int) -> None:
-        """Thread-safe accumulator and periodic budget-exceeded check.
-
-        Fires the ``on_budget_exceeded`` callback the first time we cross
-        ``budget_total``; subsequent crossings are ignored to avoid
-        spamming the caller with halts.
-        """
-        if tokens <= 0:
-            return
-        exceeded = False
-        with self._budget_lock:
-            self._budget_consumed += tokens
-            if (
-                self.budget_total > 0
-                and self._budget_consumed > self.budget_total
-            ):
-                exceeded = True
-        if exceeded and self.on_budget_exceeded:
-            try:
-                self.on_budget_exceeded(self._budget_consumed, self.budget_total)
-            except Exception:
-                logger.debug("[AgentExecutor] on_budget_exceeded callback failed")
 
     # ------------------------------------------------------------------
     # Public API
@@ -206,8 +162,6 @@ class AgentExecutor:
                 if token_usage > 0 and self.on_token_usage:
                     self.on_token_usage(token_usage)
                 total_token_usage += token_usage
-                if token_usage > 0:
-                    self._accumulate_tokens(token_usage)
 
                 # Cancel check after prompt completion
                 if self.cancel_event.is_set():
@@ -258,8 +212,6 @@ class AgentExecutor:
                         total_token_usage += retry_tokens
                         if retry_tokens > 0 and self.on_token_usage:
                             self.on_token_usage(retry_tokens)
-                        if retry_tokens > 0:
-                            self._accumulate_tokens(retry_tokens)
 
                         output_text = retry_text
                         valid, parsed = self._validate_schema(

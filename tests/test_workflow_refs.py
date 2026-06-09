@@ -47,7 +47,6 @@ def _make_handler_with_pending(
         initiator_user_id="sender-123",
         engine_session_key="session_abc",
         selected_tools=["coco"],
-        selected_budget=8000,
     )
 
     engine = MagicMock()
@@ -90,7 +89,6 @@ def test_confirm_card_renders_workflow_ref_buttons(_mock_sender, tmp_path):
         project_id=project_id,
         is_fallback=False,
         selected_tools=engine.project.pending.selected_tools,
-        selected_budget=engine.project.pending.selected_budget,
         script_content="",
     )
 

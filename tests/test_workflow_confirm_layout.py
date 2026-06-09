@@ -11,7 +11,6 @@ import unittest
 from unittest.mock import patch
 
 from src.card.actions.dispatch import (
-    WORKFLOW_APPLY_BUDGET_REGENERATE,
     WORKFLOW_CANCEL,
     WORKFLOW_CONFIRM_START,
     WORKFLOW_FILL_MISSING_TOOLS,
@@ -107,7 +106,6 @@ def _build_confirm_card_via_handler(
     project_id: str = "proj_123",
     is_fallback: bool = False,
     selected_tools: list[str] | None = None,
-    selected_budget: int | None = None,
     script_content: str = "",
 ) -> dict:
     """Build a confirm card by calling ``_build_confirm_card`` directly."""
@@ -124,7 +122,6 @@ def _build_confirm_card_via_handler(
         project_id=project_id,
         is_fallback=is_fallback,
         selected_tools=selected_tools,
-        selected_budget=selected_budget,
         script_content=script_content,
     )
 
@@ -209,7 +206,6 @@ class TestConfirmCardLayout(unittest.TestCase):
             WORKFLOW_CONFIRM_START,
             WORKFLOW_CANCEL,
             WORKFLOW_REGENERATE_SCRIPT,
-            WORKFLOW_APPLY_BUDGET_REGENERATE,
             WORKFLOW_FILL_MISSING_TOOLS,
             WORKFLOW_BACK_TO_TOOLS,
         }
@@ -228,22 +224,20 @@ class TestConfirmCardLayout(unittest.TestCase):
         self.assertIn(WORKFLOW_CONFIRM_START, outside_panel)
         self.assertIn(WORKFLOW_CANCEL, outside_panel)
 
-        # Regenerate / apply-budget-regenerate should stay in the panel
-        # (they are optional, non-blocking actions).
+        # Regenerate should stay in the panel
+        # (it is an optional, non-blocking action).
         self.assertIn(WORKFLOW_REGENERATE_SCRIPT, panel_actions)
-        self.assertIn(WORKFLOW_APPLY_BUDGET_REGENERATE, panel_actions)
 
-    def test_regenerate_and_apply_budget_live_in_collapsible_panel(self):
+    def test_regenerate_lives_in_collapsible_panel(self):
         card = self._make_card_with_mismatch(mismatch=True)
         panel_actions = _get_panel_actions(card)
 
-        for expected in (WORKFLOW_REGENERATE_SCRIPT, WORKFLOW_APPLY_BUDGET_REGENERATE):
-            self.assertIn(
-                expected,
-                panel_actions,
-                f"{expected} should be inside a collapsible '更多操作' panel, "
-                f"but wasn't found. Panel actions: {sorted(panel_actions)}",
-            )
+        self.assertIn(
+            WORKFLOW_REGENERATE_SCRIPT,
+            panel_actions,
+            f"{WORKFLOW_REGENERATE_SCRIPT} should be inside a collapsible '更多操作' panel, "
+            f"but wasn't found. Panel actions: {sorted(panel_actions)}",
+        )
 
     def test_collapsible_panel_has_more_actions_title(self):
         card = self._make_card_with_mismatch(mismatch=True)

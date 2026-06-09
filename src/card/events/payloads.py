@@ -308,13 +308,19 @@ class WorkflowProgressPayload(TypedDict):
     ``card`` is required; callers must always supply the rendered card JSON
     so downstream consumers can read payload["card"] without defensive fallbacks.
     ``compact_status`` is optional and carries a short human-readable summary.
-    ``budget_consumed`` / ``budget_remaining`` are optional and carry the
-    cumulative token consumption and the remaining headroom (both in tokens).
+
+    Deprecated fields (budget_consumed, budget_remaining): These are kept only for
+    backwards compatibility with older clients. New code should not use these fields
+    as budget control has been removed from Workflow mode. These fields will be
+    removed in a future version.
     """
     card: dict  # Feishu card JSON with header + elements
     compact_status: NotRequired[str]
-    budget_consumed: NotRequired[int]  # tokens used so far across all agent() calls
-    budget_remaining: NotRequired[int]  # tokens still available (total - consumed)
+    # Deprecated: budget control has been removed. Kept for backwards compatibility.
+    # These fields should always return 0, not None, to avoid client errors.
+    # Will be removed in v2.0.
+    budget_consumed: NotRequired[int]
+    budget_remaining: NotRequired[int]
 
 
 class WorkflowPhasePayload(TypedDict):
@@ -397,8 +403,8 @@ class WorkflowRefItemLegacy(TypedDict, total=False):
     hash: str
 
 
-class WorkflowConfirmPayload(TypedDict, total=True):
-    """Payload for WORKFLOW_CONFIRM event — preview before execution.
+class WorkflowConfirmPayloadRequired(TypedDict):
+    """Required fields for WORKFLOW_CONFIRM event.
 
     Security-critical: initiator_user_id and engine_session_key are required
     to prevent cross-user confirmation hijacking.
@@ -407,17 +413,33 @@ class WorkflowConfirmPayload(TypedDict, total=True):
     description: str
     phases: list["WorkflowPhaseItem"]
     tools: list[str]
-    budget_total: int
     requirement: str
     initiator_user_id: str
     engine_session_key: str
-    project_id: NotRequired[str]
-    chat_id: NotRequired[str]
-    is_fallback: NotRequired[bool]
-    workflow_refs: NotRequired[list["WorkflowRefItem"]]
-    dependency_graph: NotRequired[dict]  # {phase: [dep_phases]}
-    phase_tool_mapping: NotRequired[dict]  # {phase: [tools]}
-    script_preview: NotRequired[str]  # truncated script for user review
+
+
+class WorkflowConfirmPayloadOptional(TypedDict, total=False):
+    """Optional fields for WORKFLOW_CONFIRM event."""
+    project_id: str
+    chat_id: str
+    is_fallback: bool
+    workflow_refs: list["WorkflowRefItem"]
+    dependency_graph: dict  # {phase: [dep_phases]}
+    phase_tool_mapping: dict  # {phase: [tools]}
+    script_preview: str  # truncated script for user review
+    # Deprecated: budget control has been removed. Kept for backwards compatibility.
+    # Should always return 0, not None. Will be removed in v2.0.
+    budget_total: int
+
+
+class WorkflowConfirmPayload(WorkflowConfirmPayloadRequired, WorkflowConfirmPayloadOptional):
+    """Payload for WORKFLOW_CONFIRM event — preview before execution.
+
+    Security-critical: initiator_user_id and engine_session_key are required
+    to prevent cross-user confirmation hijacking.
+    """
+
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -481,30 +503,11 @@ class WorkflowSelectToolButtonValue(_WorkflowBaseButtonValue):
     tool_name: str
 
 
-class WorkflowSelectBudgetButtonValue(_WorkflowBaseButtonValue):
-    """``WORKFLOW_SELECT_BUDGET`` button payload."""
-
-    budget_tokens: int
-
-
-class WorkflowAgentSelectButtonValue(_WorkflowBaseButtonValue):
-    """``WORKFLOW_SELECT_AGENT`` button payload.
-
-    Inherits required fields (action/chat_id/project_id/engine_session_key)
-    from ``_WorkflowBaseButtonValue`` so security-critical fields are
-    enforced at the type level — matching the sibling
-    ``WorkflowSelectToolButtonValue`` / ``WorkflowSelectBudgetButtonValue``
-    contracts.
-    """
-
-    agent_type: str
-
-
 class WorkflowGenericButtonValue(_WorkflowBaseButtonValue):
     """Shared confirm/cancel/regen/back-to-tools payload shape.
 
     Matches buttons: CONFIRM_START, CANCEL, REGENERATE_SCRIPT,
-    APPLY_BUDGET_REGENERATE, FILL_MISSING_TOOLS, BACK_TO_TOOLS.
+    FILL_MISSING_TOOLS, BACK_TO_TOOLS.
     """
 
     pass
@@ -525,12 +528,82 @@ class WorkflowConfirmCardValue(TypedDict, total=False):
     engine_session_key: str
     root_id: str
     tool_name: str
-    budget_tokens: int
-    agent_type: str
     role_id: str
     initiator_user_id: str
     ref_index: int
     template_name: str
+    # Orchestrator combined card fields (tool+model selection, remove/clear)
+    provider: str
+    display_name: str
+    supports_model: bool
+    model_name: str
+    name: str
+    use_default_model: bool
+    _option: str
+    selection_key: str
+
+
+# ---------------------------------------------------------------------------
+# Specialised per-action workflow button TypedDicts
+#
+# These narrow :class:`WorkflowConfirmCardValue` down to the fields relevant
+# for a single button action. They give callers precise typing for callback
+# payloads without requiring the broad ``WorkflowConfirmCardValue`` every-
+# where. Keep each subset consistent with the fields actually attached by
+# the matching button builder in :mod:`src.card.render.buttons`.
+# ---------------------------------------------------------------------------
+
+
+class WorkflowOrchestratorSelectToolButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_ORCHESTRATOR_SELECT_TOOL`` button payload."""
+
+    tool_name: str
+    provider: str
+    display_name: str
+    supports_model: bool
+    selection_key: str
+
+
+class WorkflowOrchestratorSelectModelButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_ORCHESTRATOR_SELECT_MODEL`` button payload."""
+
+    model_name: str
+    name: str
+    use_default_model: bool
+    _option: str
+    selection_key: str
+
+
+class WorkflowOrchestratorRemoveButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_ORCHESTRATOR_REMOVE`` button payload."""
+
+    selection_key: str
+
+
+class WorkflowReviewSelectToolButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_REVIEW_SELECT_TOOL`` button payload."""
+
+    tool_name: str
+    provider: str
+    display_name: str
+    supports_model: bool
+    selection_key: str
+
+
+class WorkflowReviewSelectModelButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_REVIEW_SELECT_MODEL`` button payload."""
+
+    model_name: str
+    name: str
+    use_default_model: bool
+    _option: str
+    selection_key: str
+
+
+class WorkflowReviewRemoveButtonValue(_WorkflowBaseButtonValue):
+    """``WORKFLOW_REVIEW_REMOVE`` button payload."""
+
+    selection_key: str
 
 
 # ``_WORKFLOW_BUTTON_FIELDS`` is the single source of truth for allowed
@@ -544,12 +617,19 @@ _WORKFLOW_BUTTON_FIELDS: set[str] = {
     "engine_session_key",
     "root_id",
     "tool_name",
-    "budget_tokens",
-    "agent_type",
     "role_id",
     "initiator_user_id",
     "ref_index",
     "template_name",
+    # Orchestrator combined card fields (tool+model selection, remove/clear)
+    "provider",
+    "display_name",
+    "supports_model",
+    "model_name",
+    "name",
+    "use_default_model",
+    "_option",
+    "selection_key",
 }
 
 

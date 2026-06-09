@@ -30,16 +30,12 @@ from .types import CardEventType
 def workflow_progress(
     card: dict[str, Any],
     compact_status: str = "",
-    budget_consumed: int | None = None,
-    budget_remaining: int | None = None,
 ) -> CardEvent:
     """Workflow progress update with full card render data.
 
     Payload:
         card: Feishu card JSON dict with header + elements (required).
         compact_status: One-line text summary (optional).
-        budget_consumed: Tokens used across all agent() calls so far (optional).
-        budget_remaining: Tokens still available before hitting budget_total (optional).
     Triggered when: Any agent starts/completes or phase changes.
     """
     if not isinstance(card, dict):
@@ -49,10 +45,6 @@ def workflow_progress(
     payload: WorkflowProgressPayload = {"card": card}
     if compact_status:
         payload["compact_status"] = compact_status
-    if budget_consumed is not None:
-        payload["budget_consumed"] = budget_consumed
-    if budget_remaining is not None:
-        payload["budget_remaining"] = budget_remaining
     return CardEvent(type=CardEventType.WORKFLOW_PROGRESS, payload=payload)
 
 
@@ -141,7 +133,6 @@ def workflow_confirm(
     description: str,
     phases: list[dict],
     tools: list[str],
-    budget_total: int,
     requirement: str,
     initiator_user_id: str,
     engine_session_key: str,
@@ -161,7 +152,6 @@ def workflow_confirm(
         description: Description from meta.description.
         phases: List of {title, detail} dicts.
         tools: Recommended tools list.
-        budget_total: Token budget for execution.
         requirement: Original user requirement.
         initiator_user_id: User who initiated (security binding).
         engine_session_key: Unique session key for callback validation.
@@ -184,7 +174,6 @@ def workflow_confirm(
         "description": description,
         "phases": phases,
         "tools": tools,
-        "budget_total": budget_total,
         "requirement": requirement,
         "initiator_user_id": initiator_user_id,
         "engine_session_key": engine_session_key,

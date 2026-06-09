@@ -93,12 +93,25 @@ def _remove_acp_mocks() -> None:
     _original_modules.clear()
 
 
-# Install mocks before importing anything from src
-_install_acp_mocks()
+# ---------------------------------------------------------------------------
+# Mock the external `acp` package so tests can run without it installed.
+# We use a fixture to ensure proper cleanup after tests.
+# ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _acp_mock_fixture():
+    """Install acp mocks before tests and restore original modules after."""
+    _install_acp_mocks()
+    try:
+        yield
+    finally:
+        _remove_acp_mocks()
+
+
+# Import after defining the fixture to ensure proper test isolation
 try:
-    from src.slock_engine.engine import SlockEngine  # noqa: E402
-    from src.slock_engine.models import (  # noqa: E402
+    from src.slock_engine.engine import SlockEngine
+    from src.slock_engine.models import (
         AgentIdentity,
         AgentStatus,
         SlockChannel,

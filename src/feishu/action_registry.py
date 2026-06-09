@@ -357,28 +357,53 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.WORKFLOW_SELECT_TOOL,
     )
     client._register_action(
-        lambda mid, cid, pid, val: client._handle_workflow_select_budget(mid, cid, pid, val),
-        exact=action_ids.WORKFLOW_SELECT_BUDGET,
-    )
-    client._register_action(
-        lambda mid, cid, pid, val: client._handle_workflow_select_agent(mid, cid, pid, val),
-        exact=action_ids.WORKFLOW_SELECT_AGENT,
-    )
-    client._register_action(
-        lambda mid, cid, pid, val: client._handle_workflow_select_role(mid, cid, pid, val),
-        exact=action_ids.WORKFLOW_SELECT_ROLE,
-    )
-    client._register_action(
-        lambda mid, cid, pid, val: client._handle_workflow_confirm_roles_and_generate(mid, cid, pid, val),
-        exact=action_ids.WORKFLOW_CONFIRM_ROLES_AND_GENERATE,
-    )
-    client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_regenerate_script(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_REGENERATE_SCRIPT,
     )
+    # Workflow two-step selection flow
     client._register_action(
-        lambda mid, cid, pid, val: client._handle_workflow_apply_budget_regenerate(mid, cid, pid, val),
-        exact=action_ids.WORKFLOW_APPLY_BUDGET_REGENERATE,
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_select_tool(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_SELECT_TOOL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_select_model(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_SELECT_MODEL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_remove(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_REMOVE,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_clear(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_CLEAR,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_finish(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_FINISH,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_select_tool(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_SELECT_TOOL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_select_model(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_SELECT_MODEL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_finish(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_FINISH,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_remove(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_REMOVE,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_clear(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_CLEAR,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_toggle_auto(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_TOGGLE_AUTO,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_fill_missing_tools(mid, cid, pid, val),

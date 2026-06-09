@@ -28,8 +28,6 @@ def _make_executor(cwd: str = "/tmp") -> AgentExecutor:
         cancel_event=threading.Event(),
         on_token_usage=None,
         max_workers=1,
-        budget_total=0,
-        on_budget_exceeded=None,
     )
 
 
@@ -83,8 +81,6 @@ class ScriptGenPromptInjectionTests(unittest.TestCase):
         prompt = build_script_gen_prompt(
             requirement="implement a feature",
             available_tools=["coco", "claude"],
-            available_roles=["security_auditor"],
-            budget_total=2_000_000,
             orchestrator_agent="coco",
         )
         self.assertIn(
@@ -101,8 +97,6 @@ class ScriptGenPromptInjectionTests(unittest.TestCase):
             prompt = build_script_gen_prompt(
                 requirement="do Y",
                 available_tools=["coco"],
-                available_roles=[],
-                budget_total=1_000_000,
                 orchestrator_agent="coco",
             )
         self.assertNotIn(SUBAGENT_ENCOURAGEMENT, prompt)

@@ -62,8 +62,8 @@ class TestControllerInitialization:
         ctrl = SelectionFlowController()
         assert ctrl.step == 1
 
-    def test_init_step_must_be_1_or_2(self):
-        for bad in [0, 3, "1", None]:
+    def test_init_step_must_be_1_or_2_or_3(self):
+        for bad in [0, 4, "1", None]:
             with pytest.raises((ValueError, TypeError)):
                 SelectionFlowController(step=bad)
 
@@ -90,11 +90,13 @@ class TestStepNavigation:
         assert ctrl.step == 2
         ctrl.set_step(1)
         assert ctrl.step == 1
+        ctrl.set_step(3)
+        assert ctrl.step == 3
 
     def test_set_step_invalid_raises(self):
         ctrl = _basic_controller()
         with pytest.raises(ValueError):
-            ctrl.set_step(3)
+            ctrl.set_step(4)
 
     def test_finish_step_from_1_advances_to_2(self):
         ctrl = _basic_controller(step=1)
@@ -109,14 +111,14 @@ class TestStepNavigation:
         assert len(snapshot) == 1
         assert next(iter(snapshot.values()))["tool_name"] == "coco"
 
-    def test_finish_step_from_2_loops_back(self):
+    def test_finish_step_from_2_advances_to_3(self):
         ctrl = _basic_controller(step=2)
         ctrl.add_or_update_selection(
             {"tool_name": "claude", "model_name": "opus"},
             is_review=True,
         )
         next_step, snapshot = ctrl.finish_step()
-        assert next_step == 1  # defensive loop-back
+        assert next_step == 3  # Now advances to step 3 instead of looping back
         assert len(snapshot) == 1
         assert next(iter(snapshot.values()))["tool_name"] == "claude"
 
@@ -373,8 +375,10 @@ class TestOrchestratorCombinedCard:
         )
         assert isinstance(card, dict)
         assert "header" in card
-        assert "elements" in card
-        assert isinstance(card["elements"], list)
+        # Card is wrapped by CardBuilder._wrap_card, so elements are under 'body'
+        assert "body" in card
+        assert "elements" in card["body"]
+        assert isinstance(card["body"]["elements"], list)
 
     def test_card_contains_select_tool_action(self):
         ctrl = _basic_controller()
@@ -542,3 +546,55 @@ class TestSelectionItem:
             use_default_model=True,
         )
         assert "默认模型" in item.label()
+
+
+# ---------------------------------------------------------------------------
+# Cancel button validation
+# ---------------------------------------------------------------------------
+
+
+class TestCancelButtonValidation:
+    """Tests for cancel button presence and correctness in selection cards."""
+
+    def test_orchestrator_card_has_cancel_button(self):
+        """Orchestrator selection card must contain cancel button."""
+        ctrl = _basic_controller()
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "coco"}],
+            session_key="sess_abc",
+            chat_id="chat_1",
+            project_id="proj_1",
+        )
+        cancel_actions = _find_actions(card, "workflow_cancel")
+        assert cancel_actions, "orchestrator card should have cancel button"
+
+    def test_review_card_has_cancel_button(self):
+        """Review selection card must contain cancel button."""
+        ctrl = _basic_controller()
+        card = ctrl.build_review_combined_card(
+            available_tools=[{"tool_name": "claude"}],
+            session_key="sess_abc",
+            chat_id="chat_1",
+            project_id="proj_1",
+        )
+        cancel_actions = _find_actions(card, "workflow_cancel")
+        assert cancel_actions, "review card should have cancel button"
+
+    def test_cancel_button_has_correct_payload(self):
+        """Cancel button must contain correct session_key, chat_id, and project_id."""
+        ctrl = _basic_controller()
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "coco"}],
+            session_key="sess_123",
+            chat_id="chat_456",
+            project_id="proj_789",
+        )
+        cancel_actions = _find_actions(card, "workflow_cancel")
+        # There may be multiple cancel buttons (one in header, one in footer)
+        assert len(cancel_actions) >= 1
+        
+        # Check the first cancel button payload
+        payload = cancel_actions[0]
+        assert payload.get("chat_id") == "chat_456"
+        assert payload.get("project_id") == "proj_789"
+        assert payload.get("engine_session_key") == "sess_123"

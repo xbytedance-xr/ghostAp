@@ -4,7 +4,6 @@ Validates:
 - on_phase_changed creates a PhaseProgress entry
 - on_agent_started / on_agent_done / on_agent_failed update metrics atomically
 - on_workflow_done / on_workflow_failed set terminal states
-- add_token_usage increments budget.used under lock
 - snapshot() returns the same project reference safely
 - Concurrent mutations don't race
 """
@@ -15,7 +14,6 @@ import unittest
 
 from src.workflow_engine.models import (
     AgentStatus,
-    BudgetState,
     PhaseProgress,
     WorkflowProject,
     WorkflowStatus,
@@ -187,46 +185,11 @@ class TestOnWorkflowFailed(unittest.TestCase):
     def test_sets_failed_status(self):
         project = WorkflowProject(status=WorkflowStatus.RUNNING)
         mgr = WorkflowStateManager(project)
-        mgr.on_workflow_failed("budget exhausted")
+        mgr.on_workflow_failed("execution failed")
 
         self.assertEqual(project.status, WorkflowStatus.FAILED)
-        self.assertEqual(project.error, "budget exhausted")
+        self.assertEqual(project.error, "execution failed")
         self.assertIsNotNone(project.finished_at)
-
-
-class TestAddTokenUsage(unittest.TestCase):
-    """Test add_token_usage behavior."""
-
-    def test_increments_budget_used(self):
-        project = WorkflowProject(budget=BudgetState(total=1_000_000, used=0))
-        mgr = WorkflowStateManager(project)
-        mgr.add_token_usage(5000)
-
-        self.assertEqual(project.budget.used, 5000)
-
-    def test_concurrent_token_updates(self):
-        project = WorkflowProject(budget=BudgetState(total=10_000_000, used=0))
-        mgr = WorkflowStateManager(project)
-
-        n_threads = 8
-        updates_per_thread = 100
-        tokens_per_update = 100
-
-        barrier = threading.Barrier(n_threads)
-
-        def worker():
-            barrier.wait()
-            for _ in range(updates_per_thread):
-                mgr.add_token_usage(tokens_per_update)
-
-        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        expected = n_threads * updates_per_thread * tokens_per_update
-        self.assertEqual(project.budget.used, expected)
 
 
 class TestSnapshot(unittest.TestCase):
@@ -294,14 +257,6 @@ class TestLabelToAgentMap(unittest.TestCase):
         mgr.on_agent_done("ghost", {"token_usage": 0})
         mgr.on_agent_failed("ghost", "none")
         self.assertNotIn("ghost", mgr._label_to_agent)
-
-    def test_try_reserve_inserts_in_map(self):
-        mgr = self._mgr()
-        mgr.on_phase_changed("p1")
-        self.assertTrue(mgr.try_reserve(100, "r1", tool="coco", phase="p1"))
-        self.assertIn("r1", mgr._label_to_agent)
-        agent_in_list = mgr.project.phases[-1].agents[-1]
-        self.assertIs(mgr._label_to_agent["r1"], agent_in_list)
 
     def test_map_size_matches_total_agents(self):
         mgr = self._mgr()

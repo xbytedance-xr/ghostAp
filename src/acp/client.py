@@ -371,6 +371,8 @@ def _extract_update_source_id(update: Any) -> str | None:
     ``_meta``. Keep that identity so concurrent streams do not share one card
     text block.
     """
+    # 注意：不要包含"id"，因为这通常是每个块的唯一标识符，而不是源标识符
+    # 我们需要保留源标识符，以便将来自同一源的连续块合并到同一个文本块中
     candidates = ("source_id", "source", "agent_id", "task_id", "tool_call_id")
 
     def _from_obj(obj: Any) -> str | None:
@@ -380,6 +382,9 @@ def _extract_update_source_id(update: Any) -> str | None:
                 return str(value)
         meta = getattr(obj, "_meta", None) or getattr(obj, "field_meta", None)
         if isinstance(meta, dict):
+            # 明确排除"id"字段，确保不会将块ID误用作源ID
+            if "id" in meta:
+                logger.debug(f"Ignoring generic chunk id as source: {meta['id']}")
             for key in candidates:
                 value = meta.get(key)
                 if value:
@@ -464,6 +469,9 @@ class GhostAPClient(Client):
                     source_id=_extract_update_source_id(update),
                 )
             )
+        # Handle other content types if needed
+        else:
+            logger.debug(f"Unhandled content type in message chunk: {type(content)}")
 
     def _handle_thought_chunk(self, update: AgentThoughtChunk) -> None:
         content = update.content
@@ -475,6 +483,9 @@ class GhostAPClient(Client):
                     source_id=_extract_update_source_id(update),
                 )
             )
+        # Handle other content types if needed
+        else:
+            logger.debug(f"Unhandled content type in thought chunk: {type(content)}")
 
     def _handle_tool_call_start(self, update: ToolCallStart) -> None:
         tool_info = _parse_tool_call(update)

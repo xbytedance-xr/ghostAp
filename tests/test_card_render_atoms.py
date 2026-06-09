@@ -276,18 +276,23 @@ class TestInvalidateAtomHandlers:
         """After invalidate, _block_kind_handlers is None and rebuilds on next access."""
         import src.card.render.atoms as atoms_mod
 
-        # Ensure cache is populated first
+        # First, ensure cache is populated by calling flatten_to_atoms
         blocks = (ContentBlock(kind="text", block_id="x", content="hi"),)
         flatten_to_atoms(blocks, RenderBudget())
-        assert atoms_mod._block_kind_handlers is not None
+        
+        # Verify cache is populated after first call
+        assert atoms_mod._block_kind_handlers is not None, \
+            "Cache should be populated after calling flatten_to_atoms"
 
-        # Invalidate
+        # Invalidate the cache
         invalidate_atom_handlers()
-        assert atoms_mod._block_kind_handlers is None
+        assert atoms_mod._block_kind_handlers is None, \
+            "Cache should be None after invalidate"
 
-        # Next call rebuilds
+        # Next call should rebuild the cache
         flatten_to_atoms(blocks, RenderBudget())
-        assert atoms_mod._block_kind_handlers is not None
+        assert atoms_mod._block_kind_handlers is not None, \
+            "Cache should be repopulated after calling flatten_to_atoms again"
 
 
 class TestAtomKindHandlers:

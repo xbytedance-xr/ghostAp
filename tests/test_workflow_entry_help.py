@@ -2,7 +2,7 @@
 
 Validates that:
 - ``show_workflow_help`` mentions key commands (``/wf``, ``/wf_help``, ``/stop_wf``)
-- ``show_workflow_help`` describes the current three-step flow (Agent → Tools → Budget → Confirm → Execute)
+- ``show_workflow_help`` describes the current 3-step flow (①主编排Agent选择 → ②评审Agent选择 → ③确认并执行)
 - ``handle_workflow_command`` with an unknown subcommand produces an error message
   that points to ``/wf_help`` and lists major commands
 - ``handle_show_workflow_menu`` (entry-card "开始" button) now launches the
@@ -48,8 +48,8 @@ class TestWorkflowHelpText(unittest.TestCase):
         args, _kwargs = handler.reply_text.call_args
         text = args[1]
         self.assertIn("执行流程", text)
-        # Assert new-style descriptions are present (Agent → Tools → Budget → Confirm → Execute).
-        for keyword in ("Agent", "工具", "预算", "确认", "执行"):
+        # Assert new-style descriptions are present (Orchestrator Agent → Review Agent → Confirm → Execute).
+        for keyword in ("Agent", "工具", "确认", "执行"):
             self.assertIn(keyword, text, f"execution flow missing keyword {keyword!r}")
 
 
@@ -230,9 +230,10 @@ class TestWorkflowEntryCardBodyKeywords(unittest.TestCase):
 
         body = UI_TEXT["workflow_entry_body"]
         self.assertIn("主编排 Agent", body, "entry card must mention '主编排 Agent'")
-        self.assertIn("工具", body, "entry card must mention '工具' (step 2)")
-        self.assertIn("角色", body, "entry card must mention '角色' (step 3)")
-        self.assertIn("脚本确认", body, "entry card must mention '脚本确认' (step 4)")
+        self.assertIn("工具", body, "entry card must mention '工具'")
+        self.assertIn("模型", body, "entry card must mention '模型'")
+        self.assertIn("评审 Agent", body, "entry card must mention '评审 Agent'")
+        self.assertIn("脚本确认", body, "entry card must mention '脚本确认'")
         self.assertIn("执行", body, "entry card must mention '执行'")
         self.assertIn("/wf", body, "entry card must reference the /wf command")
 

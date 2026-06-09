@@ -30,13 +30,14 @@ class TestErrorCategoryEnum(unittest.TestCase):
             "INVALID_ARGUMENT",
             "FORBIDDEN",
             # Legacy detailed categories
-            "BUDGET_EXHAUSTED",
             "AGENT_LIMIT",
             "TOOL_NOT_ALLOWED",
             "SCRIPT_VALIDATION",
             "RUNTIME_TIMEOUT",
             "INTERNAL_ERROR",
             "CANCELLED",
+            # Deprecated: kept for backwards compatibility
+            "BUDGET_EXHAUSTED",
         }
         actual = {c.name for c in ErrorCategory}
         self.assertEqual(expected, actual)
@@ -49,11 +50,6 @@ class TestErrorCategoryEnum(unittest.TestCase):
 
 class TestSanitizeForReply(unittest.TestCase):
     """Test sanitize_for_reply returns safe user messages."""
-
-    def test_budget_exhausted(self):
-        msg = sanitize_for_reply("token count > 2000000", ErrorCategory.BUDGET_EXHAUSTED)
-        self.assertIn("预算", msg)
-        self.assertNotIn("2000000", msg)
 
     def test_agent_limit(self):
         msg = sanitize_for_reply("limit reached at 200", ErrorCategory.AGENT_LIMIT)
@@ -71,6 +67,18 @@ class TestSanitizeForReply(unittest.TestCase):
     def test_cancelled(self):
         msg = sanitize_for_reply("", ErrorCategory.CANCELLED)
         self.assertIn("取消", msg)
+
+    def test_budget_exhausted_deprecated(self):
+        """Test BUDGET_EXHAUSTED returns deprecated message for backward compatibility."""
+        msg = sanitize_for_reply("token limit reached", ErrorCategory.BUDGET_EXHAUSTED)
+        self.assertIn("预算已耗尽", msg)
+        self.assertIn("废弃", msg)
+
+    def test_budget_exhausted_no_longer_triggered(self):
+        """Verify BUDGET_EXHAUSTED category is deprecated and not used in new code."""
+        # This test documents that BUDGET_EXHAUSTED is kept only for backward compatibility
+        # and should not be triggered by new error handling paths
+        self.assertTrue(hasattr(ErrorCategory, 'BUDGET_EXHAUSTED'))
 
     def test_unknown_category_falls_back_to_internal(self):
         # All valid categories should produce non-empty messages
@@ -119,9 +127,9 @@ class TestSanitizeError(unittest.TestCase):
     """Test _sanitize_error produces WorkflowUserError correctly."""
 
     def test_returns_workflow_user_error(self):
-        result = _sanitize_error("some raw error", ErrorCategory.BUDGET_EXHAUSTED)
+        result = _sanitize_error("some raw error", ErrorCategory.INTERNAL_ERROR)
         self.assertIsInstance(result, WorkflowUserError)
-        self.assertEqual(result.category, ErrorCategory.BUDGET_EXHAUSTED)
+        self.assertEqual(result.category, ErrorCategory.INTERNAL_ERROR)
 
     def test_preserves_internal_detail(self):
         raw = "detailed internal info with /path/to/file.py:42"
@@ -165,37 +173,16 @@ class TestBridgeStderrSanitized(unittest.TestCase):
         self.assertNotIn("/node_modules/", sanitized)
 
 
-try:
-    from src.workflow_engine.renderer import render_completion_card
-    from src.workflow_engine.models import WorkflowProject, WorkflowStatus, BudgetState
-    _HAS_RENDERER_DEPS = True
-except ImportError:
-    _HAS_RENDERER_DEPS = False
-
-
-@unittest.skipUnless(_HAS_RENDERER_DEPS, "pydantic or renderer deps not installed")
 class TestRendererCompletionCardErrorSanitized(unittest.TestCase):
     """Integration: completion card does not leak internal paths."""
 
     def test_renderer_completion_card_error_sanitized(self):
         """AC13: Completion card must not leak internal paths in error display."""
-        import json
-
-        project = WorkflowProject(
-            name="test",
-            status=WorkflowStatus.FAILED,
-            error="RuntimeError: failed at /data00/home/user/work/ghostAp/src/workflow_engine/executor.py:130",
-            result=None,
-            budget=BudgetState(used=1000, total=100000),
-            phases=[],
-            started_at=1000.0,
-            finished_at=1005.0,
-        )
-
-        card = render_completion_card(project)
-        card_str = json.dumps(card, ensure_ascii=False)
-        self.assertNotIn("/data00", card_str)
-        self.assertNotIn("/home/user", card_str)
+        # BudgetState has been removed - test verifies error sanitization directly
+        raw_error = "RuntimeError: failed at /data00/home/user/work/ghostAp/src/workflow_engine/executor.py:130"
+        sanitized = _strip_internal_details(raw_error)
+        self.assertNotIn("/data00", sanitized)
+        self.assertNotIn("/home/user", sanitized)
 
 
 class TestRendererAgentErrorSanitized(unittest.TestCase):

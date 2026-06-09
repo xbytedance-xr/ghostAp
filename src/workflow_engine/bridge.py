@@ -58,7 +58,6 @@ class RuntimeBridge:
         script_path: str,
         cwd: str,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
-        budget_total: int = 0,
         on_agent_call: Optional[Callable[[AgentCallParams], AgentCallResult]] = None,
         on_phase: Optional[Callable[[str], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
@@ -71,7 +70,6 @@ class RuntimeBridge:
         self._script_path = script_path
         self._cwd = cwd
         self._max_concurrent = min(max_concurrent, HARD_MAX_CONCURRENT)
-        self._budget_total = budget_total
         self._on_agent_call = on_agent_call
         self._on_phase = on_phase
         self._on_log = on_log
@@ -115,14 +113,6 @@ class RuntimeBridge:
         self._parent: Optional["RuntimeBridge"] = None
         self._children: list["RuntimeBridge"] = []
         self._children_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-
-        # Budget reservation state for sub-workflow tracking
-        # reserved = tokens currently reserved by in-flight sub-workflows
-        # used = tokens already consumed by completed agent() calls on this
-        # bridge (reported by the JS runtime via response_data._budget_used).
-        self._budget_reserved: int = 0
-        self._budget_used: int = 0
-        self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Shutdown flag to make stop() / cleanup() idempotent
         self._shutdown_done = False
@@ -246,14 +236,13 @@ class RuntimeBridge:
                 f"stderr: {stderr_content}"
             )
 
-        # Send init with budget, workflow args, and max_concurrent so the
+        # Send init with workflow args and max_concurrent so the
         # JS-side parallel() primitive can bound concurrency to match the
         # Python ThreadPoolExecutor size.
         self._send({
             "jsonrpc": "2.0",
             "method": "init",
             "params": {
-                "budget_total": self._budget_total,
                 "args": self._args,
                 "max_concurrent": self._max_concurrent,
             },
@@ -381,143 +370,6 @@ class RuntimeBridge:
         are released. Safe to call multiple times.
         """
         self.stop()
-
-    # ------------------------------------------------------------------
-    # Budget reservation for sub-workflows
-    # ------------------------------------------------------------------
-
-    def _reserve_subflow_budget(
-        self,
-        amount: int,
-        ratio: float = 0.2,
-        *,
-        max_concurrent_subflows: int = 2,
-    ) -> int:
-        """Try to reserve budget for a sub-workflow.
-
-        The reservation is capped at the smaller of:
-          * ``ratio * budget_total``  (the configured sub-workflow share)
-          * ``remaining / max_concurrent_subflows``  (fair share of what's left)
-
-        The operation is atomic: if sufficient headroom exists, ``amount``
-        (clamped to the caps above) is added to ``self._budget_reserved``
-        and ``budget.reserved`` in the shared parent state.
-
-        Parameters
-        ----------
-        amount:
-            Desired amount (usually the pre-computed subflow budget).
-        ratio:
-            Fraction of ``budget_total`` a single sub-workflow may consume
-            (default 20%).
-        max_concurrent_subflows:
-            Expected maximum number of concurrent sub-workflows (default 2).
-
-        Returns
-        -------
-        int
-            The actually reserved amount on success, or ``0`` if the parent
-            budget is too small to accommodate *any* reservation (caller
-            should treat ``0`` as "budget denied, do not spawn").
-        """
-        if amount <= 0:
-            return 0
-
-        # Lazy initialization: ensures _budget_lock / _budget_reserved exist
-        # even if _reserve_subflow_budget is reached before a full __init__
-        # (e.g. tests that exercise _handle_workflow_call on a partial bridge).
-        if not hasattr(self, "_budget_lock"):
-            self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-            self._budget_reserved = 0
-        if not hasattr(self, "_budget_used"):
-            self._budget_used = 0
-
-        with self._budget_lock:
-            # remaining = total - used - reserved (shared view). Subtracting
-            # ``used`` is essential: otherwise a bridge with many completed
-            # agent() calls would still claim the full ``budget_total`` for
-            # sub-workflow reservations, over-counting headroom.
-            remaining = (
-                self._budget_total - self._budget_used - self._budget_reserved
-            )
-            if remaining <= 0:
-                logger.debug(
-                    "[RuntimeBridge] Sub-flow budget denied: used=%d, "
-                    "reserved=%d, total=%d",
-                    self._budget_used,
-                    self._budget_reserved,
-                    self._budget_total,
-                )
-                return 0
-
-            # Cap 1: ratio of the total budget
-            cap_ratio = int(self._budget_total * ratio)
-            # Cap 2: fair share of what's actually left
-            cap_fair = max(1, remaining // max_concurrent_subflows)
-            allowed = min(amount, cap_ratio, cap_fair, remaining)
-
-            if allowed <= 0:
-                return 0
-
-            self._budget_reserved += allowed
-            logger.debug(
-                "[RuntimeBridge] Sub-flow budget reserved: %d (requested=%d, "
-                "cap_ratio=%d, cap_fair=%d, total=%d, used=%d, remaining_after=%d)",
-                allowed,
-                amount,
-                cap_ratio,
-                cap_fair,
-                self._budget_total,
-                self._budget_used,
-                self._budget_total - self._budget_used - self._budget_reserved,
-            )
-            return allowed
-
-    def _release_subflow_budget(self, amount: int) -> None:
-        """Release a previously reserved amount back to the parent pool.
-
-        ``amount`` is the value returned by ``_reserve_subflow_budget``.
-        The decrement is clamped to avoid negative ``_budget_reserved``.
-        """
-        if amount <= 0:
-            return
-        # Lazy init guard (mirrors _reserve_subflow_budget).
-        if not hasattr(self, "_budget_lock"):
-            self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-            self._budget_reserved = 0
-        with self._budget_lock:
-            self._budget_reserved = max(0, self._budget_reserved - amount)
-            logger.debug(
-                "[RuntimeBridge] Sub-flow budget released: %d, remaining_reserved=%d",
-                amount,
-                self._budget_reserved,
-            )
-
-    def _report_agent_used(self, amount: int) -> None:
-        """Record ``amount`` tokens consumed on this bridge by an agent() call.
-
-        The JS side reports ``response_data._budget_used`` on successful
-        agent calls; we keep this on the parent bridge so
-        ``_reserve_subflow_budget`` can subtract ``used`` alongside
-        ``reserved`` from ``budget_total``. This prevents a parent from
-        spawning sub-workflows after its own agent calls have exhausted
-        the budget.
-        """
-        if amount <= 0:
-            return
-        if not hasattr(self, "_budget_lock"):
-            self._budget_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-            self._budget_reserved = 0
-        if not hasattr(self, "_budget_used"):
-            self._budget_used = 0
-        with self._budget_lock:
-            self._budget_used += amount
-            logger.debug(
-                "[RuntimeBridge] Agent used=%d, total_used=%d, total=%d",
-                amount,
-                self._budget_used,
-                self._budget_total,
-            )
 
     def is_alive(self) -> bool:
         """Check if the Node.js subprocess is still running."""
@@ -715,16 +567,8 @@ class RuntimeBridge:
                 if result.error:
                     response_data["error"] = result.error
 
-                # Include budget metadata for JS-side tracking
-                response_data["_budget_used"] = result.token_usage
                 response_data["token_usage"] = result.token_usage
                 response_data["duration_s"] = result.duration_s
-
-                # Report token_usage back to the parent bridge so
-                # ``_reserve_subflow_budget`` can cap sub-workflow
-                # reservations against remaining headroom.
-                if result.token_usage and result.token_usage > 0:
-                    self._report_agent_used(result.token_usage)
 
                 self._send_response(request_id, response_data)
 
@@ -864,63 +708,18 @@ class RuntimeBridge:
                     f"the parent allowlist: missing={missing_tools}; "
                     f"allowed={sorted(self._allowed_tools or [])}"
                 ),
-                structured={
-                    "kind": "missing_tools",
-                    "name": name,
-                    "description": sub_description,
-                    "missing_tools": missing_tools,
-                    "allowed_tools": sorted(self._allowed_tools or []),
-                    "script_path": script_path,
-                },
+            structured={
+                "kind": "missing_tools",
+                "name": name,
+                "description": sub_description,
+                "missing_tools": missing_tools,
+                "allowed_tools": sorted(self._allowed_tools or []),
+            },
             )
             return
 
         # Extract args to pass to sub-workflow
         sub_args = params.get("args", {})
-
-        # Calculate desired sub-workflow budget (ratio of parent budget)
-        # Import settings lazily to avoid circular imports
-        try:
-            from src.config import get_settings
-            settings = get_settings()
-            subflow_ratio = getattr(settings, "workflow_subflow_budget_ratio", 0.2)
-        except Exception:
-            subflow_ratio = 0.2
-
-        desired_sub_budget = (
-            int(self._budget_total * subflow_ratio) if self._budget_total > 0 else 0
-        )
-
-        # Atomically reserve headroom from the parent bridge. Fail closed if
-        # no budget is left: the JS side asked to spawn a sub-workflow, but
-        # the parent has already consumed its budget via agent() calls or
-        # previous sub-workflows. We return a JSON-RPC budget error instead
-        # of silently running a budget=0 sub-bridge.
-        reserved = self._reserve_subflow_budget(
-            desired_sub_budget,
-            ratio=subflow_ratio,
-        )
-        if reserved <= 0:
-            logger.warning(
-                "[RuntimeBridge] Sub-flow budget denied for %s "
-                "(total=%d, used=%d, reserved_pool=%d)",
-                name,
-                self._budget_total,
-                getattr(self, "_budget_used", 0),
-                self._budget_reserved,
-            )
-            self._send_error_response(
-                request_id,
-                code=-32002,
-                message=(
-                    "Sub-workflow budget denied: parent workflow has "
-                    "insufficient remaining headroom."
-                ),
-            )
-            return
-
-        # Sub-workflow receives *exactly* what was reserved.
-        sub_budget = reserved
 
         def _execute_sub_workflow() -> None:
             try:
@@ -932,7 +731,6 @@ class RuntimeBridge:
                     script_path=script_path,
                     cwd=self._cwd,
                     max_concurrent=self._max_concurrent,
-                    budget_total=sub_budget,
                     on_agent_call=self._on_agent_call,
                     on_phase=self._on_phase,
                     on_log=self._on_log,
@@ -947,56 +745,19 @@ class RuntimeBridge:
                 with self._children_lock:
                     self._children.append(sub_bridge)
 
-                # Track sub-bridge consumption outside the try/finally so
-                # it is guaranteed to be defined for cleanup. Defaults to 0
-                # if sub_bridge.start/run/stop raises before we can read it.
-                sub_budget_used = 0
                 try:
                     sub_bridge.start()
                     result = sub_bridge.run()
                     sub_bridge.stop()
 
-                    # Read the sub-bridge's actual token consumption so the
-                    # parent bridge can account for it in _budget_used.
-                    # Without this, sub-workflow tokens were "free" from the
-                    # parent's ledger and subsequent sub-workflow reservations
-                    # still claimed the full budget_total.
-                    sub_used = getattr(sub_bridge, "_budget_used", 0)
-                    if isinstance(sub_used, int):
-                        sub_budget_used = sub_used
-
-                    # Build response payload mirroring the agent_call contract
-                    # (data + _budget_used metadata) so JS-side tracking is
-                    # consistent between agent() and workflow() calls.
                     response_data: dict[str, Any] = {"data": result}
-                    response_data["_budget_used"] = sub_budget_used
-                    response_data["token_usage"] = sub_budget_used
-
-                    # Forward sub-bridge consumption to the parent's own
-                    # budget ledger so subsequent sub-workflow reservations are
-                    # capped against remaining headroom (total - used - reserved).
-                    if sub_budget_used > 0:
-                        self._report_agent_used(sub_budget_used)
-
                     self._send_response(request_id, response_data)
                 finally:
-                    # Release only the *unused* portion of the reservation.
-                    # The consumed portion is already accounted for in
-                    # _budget_used above; releasing it again would
-                    # double-count against remaining headroom.
-                    unused = reserved - sub_budget_used
-                    if unused > 0:
-                        self._release_subflow_budget(unused)
-                    # If sub_budget_used >= reserved, the entire reservation
-                    # has been consumed and nothing should be released back.
-                    # _release_subflow_budget(0) is a safe no-op.
                     with self._children_lock:
                         if sub_bridge in self._children:
                             self._children.remove(sub_bridge)
             except Exception as exc:
                 logger.exception("Sub-workflow call failed for request %s", request_id)
-                # Note: parent-side budget reservation is released by the
-                # inner `finally` block above — no double-release here.
                 self._send_error_response(
                     request_id,
                     code=-32603,

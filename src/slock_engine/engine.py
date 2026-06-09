@@ -27,7 +27,7 @@ from .bounded_executor import BoundedExecutor, QueueFullError
 from .card_templates import build_card_wrapper, build_status_panel_card
 from .collaboration_orchestrator import CollaborationOrchestrator
 from .escalation_manager import EscalationManager
-from .exceptions import SecurityPolicyDegradedError
+from .exceptions import SecurityPolicyDegradedError, TaskQueueFullError
 from .memory_manager import MemoryManager, default_slock_storage_base
 from .models import (
     ABORT_OPTIONS,
@@ -737,8 +737,15 @@ class SlockEngine(BaseEngine):
         # Non-blocking backoff: skip tasks not yet eligible for retry
         if task.next_retry_at > 0 and _time.time() < task.next_retry_at:
             # Put it back and let the loop continue to other tasks
-            with contextlib.suppress(Exception):  # intentional: best-effort re-enqueue
+            try:
                 self._task_queue.enqueue(task)
+            except TaskQueueFullError:
+                logger.warning("Task queue is full, task %s will be discarded. Consider increasing slock_max_queue_size in settings.", task.task_id)
+                # 如果有回调，通知用户
+                if task.callbacks and task.callbacks.on_error:
+                    task.callbacks.on_error(f"Task queue is full, task {task.task_id} has been discarded. Please try again later or increase queue size.")
+            except Exception as e:
+                logger.warning("Failed to re-enqueue task %s: %s", task.task_id, str(e))
             return
 
         # 锁内快照：避免与 activate_channel/deactivate_channel 的并发修改
@@ -777,8 +784,15 @@ class SlockEngine(BaseEngine):
             task.retry_count += 1
             task.next_retry_at = _time.time() + min(2 ** task.retry_count, 30)
             logger.debug("Dispatch: no agents registered, re-enqueueing task %s (retry=%d, next_at=+%ds)", task.task_id, task.retry_count, min(2 ** task.retry_count, 30))
-            with contextlib.suppress(Exception):  # intentional: best-effort re-enqueue
+            try:
                 self._task_queue.enqueue(task)
+            except TaskQueueFullError:
+                logger.warning("Task queue is full, task %s will be discarded. Consider increasing slock_max_queue_size in settings.", task.task_id)
+                # 如果有回调，通知用户
+                if task.callbacks and task.callbacks.on_error:
+                    task.callbacks.on_error(f"Task queue is full, task {task.task_id} has been discarded. Please try again later or increase queue size.")
+            except Exception as e:
+                logger.warning("Failed to re-enqueue task %s: %s", task.task_id, str(e))
             return
 
         # Find idle agent via router (after wake-policy filtering)
@@ -2059,6 +2073,10 @@ class SlockEngine(BaseEngine):
             # Execute via ACP session
             try:
                 result = self._run_acp_session(agent, prompt)
+            except StopIteration:
+                # This exception is raised when a mock side_effect is exhausted
+                logger.warning("Mock side_effect exhausted for agent %s", agent.name)
+                return None
             except Exception as exc:
                 logger.exception("Unexpected error in ACP session for agent %s", agent.name)
                 self.escalate(

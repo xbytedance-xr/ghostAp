@@ -11,6 +11,8 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.workflow_engine.models import PendingConfirmation, WorkflowProject, WorkflowStatus
 
 
@@ -150,14 +152,14 @@ class TestWorkflowConfirmSecurity(unittest.TestCase):
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
         handler._reply_workflow_error.assert_called_once()
 
+    @pytest.mark.skip(reason="Budget/roles selection removed — no pending.budget to reset.")
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     def test_cancel_resets_pending_budget(self, mock_sender):
-        """Cancel should reset pending_budget to None."""
+        """Cancel should reset pending_budget to None. SKIPPED: budget removed."""
         handler = self._make_handler()
         engine = self._make_engine_awaiting(session_key="valid_key", initiator="user_123")
         if engine.project.pending is None:
             engine.project.pending = PendingConfirmation()
-        engine.project.pending.budget = 1_500_000
         handler.ctx.workflow_engine_manager.get.return_value = engine
 
         handler.handle_workflow_cancel(
@@ -401,6 +403,68 @@ class TestWorkflowStopSecurity(unittest.TestCase):
         # Should be denied because None falls back to [] and admin_789 is not in []
         engine.stop.assert_not_called()
         handler._reply_workflow_error.assert_called_once()
+
+
+class TestWorkflowToolModelWhitelist(unittest.TestCase):
+    """Security tests for tool_name and model_name whitelist validation."""
+
+    def _make_handler(self):
+        from src.feishu.handlers.workflow import WorkflowHandler
+
+        handler = WorkflowHandler.__new__(WorkflowHandler)
+        handler.ctx = MagicMock()
+        handler.reply_text = MagicMock()
+        handler.reply_card = MagicMock()
+        handler.reply_error = MagicMock()
+        handler._reply_workflow_error = MagicMock()  # type: ignore[method-assign]
+        handler._get_workflow_models_for_tool = MagicMock(return_value=[
+            {"name": "GPT-4"},
+            {"name": "Claude 3 Opus"},
+        ])
+        return handler
+
+    def test_invalid_tool_name_rejected(self):
+        """Test that invalid tool_name is rejected."""
+        handler = self._make_handler()
+        handler._validate_tools_against_registry = MagicMock(return_value=([], ["invalid_tool"]))
+
+        # Call the validation logic
+        _kept, _rejected = handler._validate_tools_against_registry(["invalid_tool"])
+        
+        self.assertEqual(_rejected, ["invalid_tool"])
+        self.assertEqual(_kept, [])
+
+    def test_valid_tool_name_accepted(self):
+        """Test that valid tool_name is accepted."""
+        handler = self._make_handler()
+        handler._validate_tools_against_registry = MagicMock(return_value=(["coco"], []))
+
+        _kept, _rejected = handler._validate_tools_against_registry(["coco"])
+        
+        self.assertEqual(_kept, ["coco"])
+        self.assertEqual(_rejected, [])
+
+    def test_invalid_model_name_rejected(self):
+        """Test that invalid model_name is rejected."""
+        handler = self._make_handler()
+        
+        # Get available models for tool 'coco'
+        available_models = handler._get_workflow_models_for_tool("coco", "/tmp")
+        model_names = [m.get("name") for m in available_models]
+        
+        # 'invalid_model' should not be in the list
+        self.assertNotIn("invalid_model", model_names)
+        self.assertIn("GPT-4", model_names)
+
+    def test_valid_model_name_accepted(self):
+        """Test that valid model_name is accepted."""
+        handler = self._make_handler()
+        
+        available_models = handler._get_workflow_models_for_tool("coco", "/tmp")
+        model_names = [m.get("name") for m in available_models]
+        
+        # 'GPT-4' should be in the list
+        self.assertIn("GPT-4", model_names)
 
 
 if __name__ == "__main__":

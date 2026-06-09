@@ -34,8 +34,10 @@ from src.card.events.payloads import (
     WorkflowAgentStartedPayload,
     WorkflowConfirmPayload,
     WorkflowLogPayload,
+    WorkflowPhaseItem,
     WorkflowPhasePayload,
     WorkflowProgressPayload,
+    WorkflowRefItem,
     WorktreeCleanupPayload,
     WorktreeConfirmPayload,
     WorktreeMergePayload,
@@ -116,5 +118,7 @@ __all__ = [
     "WorkflowAgentStartedPayload",
     "WorkflowLogPayload",
     "WorkflowPhasePayload",
+    "WorkflowPhaseItem",
     "WorkflowProgressPayload",
+    "WorkflowRefItem",
 ]

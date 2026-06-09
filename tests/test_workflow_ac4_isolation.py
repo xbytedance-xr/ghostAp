@@ -25,7 +25,6 @@ from unittest.mock import MagicMock
 from src.workflow_engine.models import (
     AgentCallParams,
     AgentCallResult,
-    BudgetState,
     WorkflowMetrics,
     WorkflowProject,
     WorkflowStatus,
@@ -52,7 +51,6 @@ class TestAC4AgentDonePayloadStripped(unittest.TestCase):
         engine._project = WorkflowProject(
             workflow_id="wf-ac4-test",
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=1_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         engine._state_manager = WorkflowStateManager(engine._project)
@@ -206,7 +204,7 @@ class TestAC4DeltaContextTokensOnlyFinalResult(unittest.TestCase):
             )
 
         self.assertEqual(mgr.delta_context_tokens, 0)
-        # Budget tokens are tracked elsewhere (totals must still be correct).
+        # Token totals are tracked in metrics (must still be correct).
         self.assertEqual(project.metrics.total_tokens, 100 + 200 + 300 + 400)
 
     def test_add_context_tokens_clamps_negative_to_zero(self):
@@ -249,7 +247,6 @@ class TestAC4ProgressCardNoLeakage(unittest.TestCase):
     def _make_project_with_sentinal_agent_output(self, sentinel: str) -> WorkflowProject:
         project = WorkflowProject(
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=1_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         mgr = WorkflowStateManager(project)
@@ -270,7 +267,6 @@ class TestAC4ProgressCardNoLeakage(unittest.TestCase):
 
         project = WorkflowProject(
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=1_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         mgr = WorkflowStateManager(project)
@@ -301,7 +297,6 @@ class TestAC4ProgressCardNoLeakage(unittest.TestCase):
         project = WorkflowProject(
             status=WorkflowStatus.FAILED,
             result="OK",
-            budget=BudgetState(total=1_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         # project.error is only rendered for FAILED workflows.
@@ -324,7 +319,6 @@ class TestAC4ProgressCardNoLeakage(unittest.TestCase):
 
         project = WorkflowProject(
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=1_000_000, used=0),
             metrics=WorkflowMetrics(),
         )
         mgr = WorkflowStateManager(project)

@@ -69,28 +69,36 @@ SHOW_WORKTREE_MERGE_ENTRY = "show_worktree_merge_entry"  # Show merge entry card
 # ---------------------------------------------------------------------------
 # Design decision: Workflow card interactions are handled directly by the
 # WorkflowHandler (src/feishu/handlers/workflow.py) rather than through the
-# CardSession event pipeline. This is intentional — Workflow's confirmation,
-# tool selection, and budget selection cards are built and updated by the
-# handler layer without a build_workflow_action_registry() factory. The
-# rationale is that Workflow's execution model (isolated JS runtime + bridge)
-# differs from Worktree/Spec's CardSession-driven lifecycle, and adding a
-# registry would require a CardSession instance that doesn't naturally fit
-# the workflow's fire-and-forget execution pattern.
+# CardSession event pipeline. This is intentional — Workflow's confirmation
+# and tool selection cards are built and updated by the handler layer without
+# a build_workflow_action_registry() factory. The rationale is that Workflow's
+# execution model (isolated JS runtime + bridge) differs from Worktree/Spec's
+# CardSession-driven lifecycle, and adding a registry would require a
+# CardSession instance that doesn't naturally fit the workflow's fire-and-forget
+# execution pattern.
 WORKFLOW_CONFIRM_TOOLS = "workflow_confirm_tools"  # Confirm tool selection and generate script
 WORKFLOW_CONFIRM_START = "workflow_confirm_start"  # Confirm generated script and start execution
 WORKFLOW_CANCEL = "workflow_cancel"  # Cancel workflow before execution starts
 WORKFLOW_SELECT_TOOL = "workflow_select_tool"  # Toggle tool selection for workflow execution
-WORKFLOW_SELECT_BUDGET = "workflow_select_budget"  # Select budget tier for workflow execution
-WORKFLOW_SELECT_AGENT = "workflow_select_agent"  # Select orchestrator agent for workflow script generation
-WORKFLOW_SELECT_ROLE = "workflow_select_role"  # Toggle a role in the role selection card
-WORKFLOW_CONFIRM_ROLES_AND_GENERATE = "workflow_confirm_roles_and_generate"  # Finalize role selection and proceed to script generation
 WORKFLOW_REGENERATE_SCRIPT = "workflow_regenerate_script"  # Regenerate script with current tool selection
-WORKFLOW_APPLY_BUDGET_REGENERATE = "workflow_apply_budget_regenerate"  # Apply selected budget and trigger re-gen
 WORKFLOW_FILL_MISSING_TOOLS = "workflow_fill_missing_tools"  # Auto-add tools the script needs but user hasn't selected
 WORKFLOW_BACK_TO_TOOLS = "workflow_back_to_tools"  # Return to tool selection screen
 WORKFLOW_VIEW_WORKFLOW_REF = "workflow_view_workflow_ref"  # View details of a workflow reference
 WORKFLOW_REMOVE_WORKFLOW_REF = "workflow_remove_workflow_ref"  # Remove a workflow reference
 WORKFLOW_ADD_WORKFLOW_REF = "workflow_add_workflow_ref"  # Add a workflow reference
+# Workflow orchestrator selection (two-step flow, combined card)
+WORKFLOW_ORCHESTRATOR_SELECT_TOOL = "workflow_orchestrator_select_tool"
+WORKFLOW_ORCHESTRATOR_SELECT_MODEL = "workflow_orchestrator_select_model"
+WORKFLOW_ORCHESTRATOR_REMOVE = "workflow_orchestrator_remove"
+WORKFLOW_ORCHESTRATOR_CLEAR = "workflow_orchestrator_clear"
+WORKFLOW_ORCHESTRATOR_FINISH = "workflow_orchestrator_finish"
+# Workflow review agent selection
+WORKFLOW_REVIEW_SELECT_TOOL = "workflow_review_select_tool"
+WORKFLOW_REVIEW_SELECT_MODEL = "workflow_review_select_model"
+WORKFLOW_REVIEW_FINISH = "workflow_review_finish"
+WORKFLOW_REVIEW_REMOVE = "workflow_review_remove"
+WORKFLOW_REVIEW_CLEAR = "workflow_review_clear"
+WORKFLOW_REVIEW_TOGGLE_AUTO = "workflow_review_toggle_auto"
 SHOW_WORKFLOW_MENU = "show_workflow_menu"  # Show workflow menu / start workflow flow
 WORKFLOW_LIST_TEMPLATES = "workflow_list_templates"  # List available workflow templates
 WORKFLOW_SHOW_HELP = "workflow_show_help"  # Show workflow help

@@ -69,7 +69,6 @@ WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
     WorkflowStatus.GENERATING_SCRIPT: "\ud83d\udd04",
     WorkflowStatus.AWAITING_AGENT_SELECT: "\U0001f916",
     WorkflowStatus.AWAITING_TOOL_SELECT: "\U0001f527",
-    WorkflowStatus.AWAITING_ROLE_SELECT: "\U0001f3ad",
     WorkflowStatus.AWAITING_CONFIRM: "\u23f3",
     WorkflowStatus.RUNNING: "\ud83d\udd04",
     WorkflowStatus.COMPLETED: "\u2705",
@@ -274,7 +273,7 @@ class WorkflowProgressRenderer:
           1. Current execution summary (active phase / agent / tool / last-change time).
           2. Overall progress bar.
           3. Phase tree (collapsed-style detail).
-          4. Budget section.
+          4. Token usage section.
           5. Metrics footer.
         """
         elements: list[dict[str, Any]] = []
@@ -293,9 +292,9 @@ class WorkflowProgressRenderer:
         for idx, phase in enumerate(self._project.phases):
             elements.extend(self._render_phase_section(idx, phase))
 
-        # -- Budget section --
+        # -- Token usage section (informational, no budget limit) --
         elements.append(_hr_element())
-        elements.append(self._render_budget_section())
+        elements.append(self._render_token_usage_section())
 
         # -- Metrics footer --
         elements.append(_hr_element())
@@ -402,7 +401,7 @@ class WorkflowProgressRenderer:
         completed = metrics.completed_agents
         total = metrics.total_agents
 
-        tokens = _format_tokens(self._project.budget.used)
+        tokens = _format_tokens(metrics.total_tokens if hasattr(metrics, 'total_tokens') else 0)
 
         status_icon = WORKFLOW_STATUS_ICONS.get(self._project.status, "\u23f3")
 
@@ -563,31 +562,12 @@ class WorkflowProgressRenderer:
 
         return elements
 
-    def _render_budget_section(self) -> dict[str, Any]:
-        """Render token budget as compact "预算 X/Y · Z%" line + bar."""
-        budget = self._project.budget
-        used_str = _format_tokens(budget.used)
-        total_str = _format_tokens(budget.total)
-        total = max(budget.total, 1)
-        ratio = budget.used / total
-        pct = _pct(budget.used, total)
-        bar = _unicode_progress_bar(ratio)
-
-        pct_value = min(ratio * 100, 100)
-        if pct_value > 80:
-            warning = " 🔴"
-        elif pct_value >= 50:
-            warning = " ⚠️"
-        else:
-            warning = ""
-
-        lines = [f"预算 {used_str}/{total_str} · {pct}{warning}", bar]
-        if getattr(budget, "exceeded", False):
-            overage = _format_tokens(budget.used - budget.total)
-            lines.append(
-                f"已超出预算 {overage}，请追加预算或终止执行。"
-            )
-        return _md_element("\n".join(lines))
+    def _render_token_usage_section(self) -> dict[str, Any]:
+        """Render token consumption as compact informational line (no budget limit)."""
+        metrics = self._project.metrics
+        total_tokens = metrics.total_tokens if hasattr(metrics, 'total_tokens') else 0
+        used_str = _format_tokens(total_tokens)
+        return _md_element(f"Token 消耗: {used_str}")
 
     def _render_metrics_footer(self) -> dict[str, Any]:
         """Render metrics footer as a 2-column stretch layout: Agents/耗时 · 缓存/失败。"""
@@ -714,7 +694,6 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
     """
     status = project.status
     metrics = project.metrics
-    budget = project.budget
 
     # Header color
     if status == WorkflowStatus.COMPLETED:
@@ -772,7 +751,7 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
     # Row 1: 总耗时 + 总 Token 消耗
     elements.append(_column_set([
         _stat_column(_format_duration(elapsed), "总耗时"),
-        _stat_column(_format_tokens(budget.used), "总 Token 消耗"),
+        _stat_column(_format_tokens(metrics.total_tokens if hasattr(metrics, 'total_tokens') else 0), "总 Token 消耗"),
     ], flex_mode="stretch"))
 
     # Row 2: 完成阶段数 + 成功率

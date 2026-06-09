@@ -33,14 +33,6 @@ let requestId = 0;
 const pendingRequests = new Map(); // id -> { resolve, reject }
 let cancelled = false;
 
-const budget = {
-  total: 0,
-  used: 0,
-  remaining() {
-    return this.total - this.used;
-  },
-};
-
 // Concurrency cap for parallel(). Matches the Python ThreadPoolExecutor
 // size so both sides of the bridge agree on the upper bound. A falsy
 // or non-positive value disables the cap (unbounded).
@@ -49,13 +41,6 @@ let maxConcurrent = 0;
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
-
-class BudgetExhaustedError extends Error {
-  constructor() {
-    super('Budget exhausted: no remaining tokens available');
-    this.name = 'BudgetExhaustedError';
-  }
-}
 
 class CancelledError extends Error {
   constructor() {
@@ -153,13 +138,6 @@ function handleMessage(line) {
         pendingRequests.clear();
         break;
 
-      case 'budget_update':
-        if (msg.params) {
-          if (msg.params.total != null) budget.total = msg.params.total;
-          if (msg.params.used != null) budget.used = msg.params.used;
-        }
-        break;
-
       case 'init':
         // Handled separately in main() via initPromise
         if (initResolve) {
@@ -250,7 +228,6 @@ function matchesSchema(value, schema) {
 
 async function agent(promptOrOpts, opts = {}) {
   if (cancelled) throw new CancelledError();
-  if (budget.remaining() <= 0) throw new BudgetExhaustedError();
 
   // Support both agent("prompt", {opts}) and agent({prompt, ...opts})
   let prompt;
@@ -282,23 +259,6 @@ async function agent(promptOrOpts, opts = {}) {
     } catch (err) {
       if (err instanceof CancelledError) throw err;
       return { error: err.message };
-    }
-
-    // Update budget from response metadata (accumulate per-call usage)
-    if (result && typeof result === 'object') {
-      if (result._budget_used != null) {
-        budget.used += result._budget_used;
-        delete result._budget_used;
-      }
-      if (result._budget_total != null) {
-        budget.total = result._budget_total;
-        delete result._budget_total;
-      }
-    }
-
-    // Check budget after call
-    if (budget.remaining() <= 0) {
-      throw new BudgetExhaustedError();
     }
 
     // Schema validation with retry
@@ -463,7 +423,6 @@ function log(msg) {
 
 async function workflow(nameOrOpts, args = {}) {
   if (cancelled) throw new CancelledError();
-  if (budget.remaining() <= 0) throw new BudgetExhaustedError();
 
   // NOTE: Only `name` (template identifier) is accepted. Direct script_path
   // is rejected on the Python side for security — all sub-workflow resolution
@@ -497,21 +456,6 @@ async function workflow(nameOrOpts, args = {}) {
     throw new JsonRpcError({ code: -32000, message: err.message });
   }
 
-  // Extract budget metadata from the successful response the same way
-  // agent() does, so `budget.used` reflects sub-workflow token consumption.
-  if (result && typeof result === 'object') {
-    if (result._budget_used != null) {
-      budget.used += Number(result._budget_used) || 0;
-      delete result._budget_used;
-    }
-    if (result._budget_total != null) {
-      budget.total = Number(result._budget_total) || 0;
-      delete result._budget_total;
-    }
-  }
-
-  if (budget.remaining() <= 0) throw new BudgetExhaustedError();
-
   if (typeof result === 'object' && result !== null && 'data' in result) {
     return result.data;
   }
@@ -529,8 +473,6 @@ function installGlobals() {
   globalThis.phase = phase;
   globalThis.log = log;
   globalThis.workflow = workflow;
-  globalThis.budget = budget;
-  globalThis.BudgetExhaustedError = BudgetExhaustedError;
 }
 
 // Wrap every function we hand into the vm sandbox so that attacker code
@@ -566,7 +508,6 @@ async function main() {
 
   // Wait for init from Python host
   const initParams = await waitForInit();
-  budget.total = initParams.budget_total || 0;
   maxConcurrent = Number(initParams.max_concurrent) || 0;
   if (maxConcurrent < 0) maxConcurrent = 0;
   const workflowArgs = initParams.args || {};
@@ -596,8 +537,6 @@ async function main() {
     phase: sandboxWrapHostFn(phase),
     log: sandboxWrapHostFn(log),
     workflow: sandboxWrapHostFn(workflow),
-    budget,
-    BudgetExhaustedError,
     CancelledError,
     workflowArgs,
     // Safe standard built-ins
@@ -650,7 +589,6 @@ async function main() {
                     'Object.freeze(String.prototype);' +
                     'Object.freeze(Number.prototype);' +
                     'Object.freeze(Boolean.prototype);' +
-                    'Object.freeze(Error.prototype);' +
                     'Object.freeze(Promise.prototype);', context, {
       filename: 'sandbox-harden.js',
     });
@@ -709,7 +647,7 @@ async function main() {
 
     sendNotification('done', { result: result ?? null });
   } catch (err) {
-    if (err instanceof BudgetExhaustedError || err instanceof CancelledError) {
+    if (err instanceof CancelledError) {
       sendNotification('error', {
         message: sanitizePath(err.message),
         stack: '',

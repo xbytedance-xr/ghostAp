@@ -11,7 +11,7 @@ import os
 import unittest
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, mock_open
 
 from src.card.actions.dispatch import WORKFLOW_CANCEL, WORKFLOW_CONFIRM_START
 from src.card.events.types import CardEventType
@@ -19,6 +19,169 @@ from src.card.events.workflow import workflow_confirm
 from src.feishu.ws_card_action_handler import SYSTEM_CARD_ACTIONS
 from src.workflow_engine.models import PendingConfirmation, WorkflowProject, WorkflowStatus
 from src.workflow_engine.script_gen import validate_generated_script
+from src.spec_engine.review_agents import ReviewAgentBinding
+
+
+class TestWorkflowConfirmWithAgentBindings(unittest.TestCase):
+    """Test workflow confirmation with agent bindings including tool and model info."""
+
+    def setUp(self):
+        from src.feishu.handlers.workflow import WorkflowHandler
+        
+        self.handler = WorkflowHandler.__new__(WorkflowHandler)
+        self.handler.ctx = MagicMock()
+        self.handler.ctx.workflow_engine_manager = MagicMock()
+        self.handler.reply_card = MagicMock()
+        self.handler.send_card_to_chat = MagicMock()
+        self.handler._reply_workflow_error = MagicMock()
+        self.handler._generate_and_show_confirm_card = MagicMock()
+        self.handler._resolve_tool_lists = MagicMock(return_value=({}, [], [], []))
+        self.handler._get_root_path = MagicMock(return_value="/tmp")
+        self.handler._get_project_for_chat = MagicMock(return_value=MagicMock(project_id="test_proj"))
+        self.handler.get_engine_name = MagicMock(return_value="test_engine")
+
+    def test_confirm_passes_agent_bindings_to_engine(self):
+        """确认操作将 Agent 绑定信息传递给执行引擎。"""
+        from src.workflow_engine.engine import WorkflowEngine
+        
+        # Create a mock engine
+        mock_engine = MagicMock(spec=WorkflowEngine)
+        self.handler.ctx.workflow_engine_manager.get.return_value = mock_engine
+        
+        # Create pending confirmation with agent bindings
+        pending = PendingConfirmation(
+            requirement="test workflow with agent bindings",
+            orchestrator_binding=ReviewAgentBinding(
+                provider="cli",
+                tool_name="coco",
+                display_name="Coco",
+                agent_type="coco",
+                model_name="gpt-4",
+                use_default_model=False
+            ),
+            review_agents=[
+                ReviewAgentBinding(
+                    provider="cli",
+                    tool_name="claude",
+                    display_name="Claude",
+                    agent_type="claude",
+                    model_name="claude-3-sonnet",
+                    use_default_model=False
+                )
+            ],
+            selected_tools=["coco", "claude"],
+            engine_session_key="session_abc",
+            initiator_user_id="user_001",
+            script_path="/tmp/test_script.js",
+            script_hash="test_hash"
+        )
+        
+        mock_engine.project = WorkflowProject(
+            status=WorkflowStatus.AWAITING_CONFIRM,
+            pending=pending
+        )
+        
+        # Mock the execute_workflow method
+        mock_engine.execute_workflow = MagicMock()
+        
+        # Mock file operations
+        mock_script_content = b"""
+export const meta = {
+    name: "test-workflow",
+    description: "Test workflow with agent bindings",
+    tools: ["coco", "claude"]
+};
+
+export default async function run() {
+    const result = await agent({
+        tool: "coco",
+        model: "gpt-4",
+        prompt: "Hello world"
+    });
+    return result;
+}
+"""
+        with patch("builtins.open", mock_open(read_data=mock_script_content)):
+            with patch("os.path.exists", return_value=True):
+                with patch("src.thread.get_current_sender_id", return_value="user_001"):
+                    with patch("hashlib.sha256") as mock_sha256:
+                        # Mock hash calculation
+                        mock_sha256.return_value.hexdigest.return_value = "test_hash"
+                        # Mock project resolution
+                        mock_project = MagicMock()
+                        mock_project.root_path = "/tmp"
+                        mock_project.project_id = "proj_789"
+                        with patch.object(self.handler, "_resolve_project_from_id", return_value=mock_project):
+                            # Mock get_working_dir
+                            with patch.object(self.handler, "get_working_dir", return_value="/tmp"):
+                                # Mock _build_workflow_callbacks
+                                with patch.object(self.handler, "_build_workflow_callbacks", return_value={}):
+                                    # Mock tempfile.mkstemp
+                                    with patch("tempfile.mkstemp", return_value=(1, "/tmp/immutable_script.js")):
+                                        # Mock os.fdopen
+                                        with patch("os.fdopen", mock_open()) as mock_file:
+                                            # Mock os.remove to avoid cleanup errors
+                                            with patch("os.remove"):
+                                                # Mock lock_helper
+                                                self.handler.lock_helper = MagicMock()
+                                                # Make handle_lock_conflict execute the function directly
+                                                self.handler.lock_helper.handle_lock_conflict = lambda func, *args, **kwargs: func()
+                                                
+                                                # Call confirm handler
+                                                self.handler.handle_workflow_confirm_start(
+                                                    "msg_123",
+                                                    "chat_456",
+                                                    "proj_789",
+                                                    {"engine_session_key": "session_abc"}
+                                                )
+        
+        # Verify _reply_workflow_error was NOT called (no errors occurred)
+        self.assertEqual(self.handler._reply_workflow_error.call_count, 0)
+        
+        # Verify that pending state was cleared (start_execution was called)
+        self.assertIsNone(mock_engine.project.pending,
+                         "Pending state should have been cleared after start_execution")
+        
+        # Verify that initiator_user_id was migrated from pending
+        self.assertEqual(mock_engine.project.initiator_user_id, "user_001",
+                       "initiator_user_id should have been migrated from pending")
+        
+        print("Test completed: Confirm handler executed without errors and migrated pending state")
+
+    def test_script_gen_includes_agent_bindings_in_prompt(self):
+        """脚本生成提示中包含 Agent 绑定信息。"""
+        from src.workflow_engine.script_gen import build_script_gen_prompt
+        
+        # Test with agent bindings
+        orchestrator_binding = {
+            "tool_name": "coco",
+            "model_name": "gpt-4",
+            "use_default_model": False
+        }
+        
+        review_agents = [
+            {
+                "tool_name": "claude",
+                "model_name": "claude-3-sonnet",
+                "use_default_model": False
+            }
+        ]
+        
+        prompt = build_script_gen_prompt(
+            requirement="test workflow with agent bindings",
+            available_tools=["coco", "claude"],
+            orchestrator_agent="coco",
+            orchestrator_binding=orchestrator_binding,
+            review_agents=review_agents,
+        )
+        
+        # Verify the prompt includes agent and model info
+        self.assertIn("已选择的主 Agent", prompt)
+        self.assertIn("coco", prompt)
+        self.assertIn("gpt-4", prompt)
+        self.assertIn("已选择的评审 Agent", prompt)
+        self.assertIn("claude", prompt)
+        self.assertIn("claude-3-sonnet", prompt)
 
 
 class TestWorkflowConfirmConstants(unittest.TestCase):
@@ -60,7 +223,6 @@ class TestWorkflowConfirmFactory(unittest.TestCase):
             description="Test workflow description",
             phases=[{"title": "Phase 1", "detail": "Do something"}],
             tools=["coco", "claude"],
-            budget_total=2_000_000,
             requirement="test requirement",
             initiator_user_id="user_001",
             engine_session_key="abc123",
@@ -70,7 +232,6 @@ class TestWorkflowConfirmFactory(unittest.TestCase):
         self.assertEqual(event.type, CardEventType.WORKFLOW_CONFIRM)
         self.assertEqual(event.payload["script_name"], "test-workflow")
         self.assertEqual(event.payload["tools"], ["coco", "claude"])
-        self.assertEqual(event.payload["budget_total"], 2_000_000)
         self.assertEqual(event.payload["project_id"], "proj_123")
         self.assertEqual(event.payload["initiator_user_id"], "user_001")
         self.assertEqual(event.payload["engine_session_key"], "abc123")
@@ -81,7 +242,6 @@ class TestWorkflowConfirmFactory(unittest.TestCase):
             description="",
             phases=[],
             tools=["coco"],
-            budget_total=2_000_000,
             requirement="req",
             initiator_user_id="user_001",
             engine_session_key="key123",
@@ -136,7 +296,6 @@ class TestWorkflowProjectPendingFields(unittest.TestCase):
             "pending_initiator_user_id": "user_legacy",
             "pending_engine_session_key": "key_legacy",
             "pending_selected_tools": ["coco"],
-            "pending_budget": 1000000,
             "pending_tools_mismatch": False,
         }
         restored = WorkflowProject.from_dict(legacy_data)
@@ -169,10 +328,8 @@ class TestWorkflowProjectPendingFields(unittest.TestCase):
         """Test that new PendingConfirmation fields work correctly."""
         pc = PendingConfirmation(
             orchestrator_agent="super-orchestrator",
-            budget_tokens=10000000,
         )
         self.assertEqual(pc.orchestrator_agent, "super-orchestrator")
-        self.assertEqual(pc.budget_tokens, 10000000)
 
 
 class TestValidateGeneratedScriptRegression(unittest.TestCase):
@@ -248,60 +405,6 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         handler._submit_engine_task = MagicMock()
 
         return handler, ctx
-
-    @patch("src.thread.get_current_sender_id", return_value="user_123")
-    @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")
-    @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
-    @patch("src.workflow_engine.templates.discover_templates", return_value=[])
-    def test_start_workflow_sets_awaiting_confirm(
-        self, mock_templates, mock_node, mock_gen, mock_sender
-    ):
-        handler, ctx = self._make_handler()
-
-        # Mock project
-        project = MagicMock()
-        project.root_path = "/tmp/project"
-        project.project_id = "proj_1"
-        project.project_name = "test"
-        handler._ensure_project = MagicMock(return_value=project)
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-
-        # Mock engine with project
-        engine = MagicMock()
-        engine.is_running = False
-        engine.project = WorkflowProject()
-        ctx.workflow_engine_manager.get.return_value = engine
-        ctx.workflow_engine_manager.get_or_create.return_value = engine
-
-        # Step 1: start_workflow shows agent selection card (AWAITING_AGENT_SELECT)
-        handler.start_workflow("msg_1", "chat_1", "do code review", project)
-
-        # Should have sent agent selection card
-        self.assertEqual(handler.send_card_to_chat.call_count, 1)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
-        # Default orchestrator agent should be set
-        self.assertEqual(engine.project.pending.orchestrator_agent if engine.project.pending else None, "coco")
-
-        # Mock AI generation result for confirm step
-        mock_gen.return_value = (
-            "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
-            {"name": "test-wf", "description": "Test", "phases": [], "tools": ["coco"]},
-            False,
-        )
-
-        # Step 2: confirm from combined card goes directly to script generation
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_confirm_roles_and_generate(
-            "msg_2", "chat_1", "proj_1",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
-        )
-
-        # Engine project should now be AWAITING_CONFIRM
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-        self.assertIsNotNone(engine.project.pending.script_path if engine.project.pending else None)
-        self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "do code review")
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     def test_confirm_start_triggers_execution(self, mock_sender):
@@ -391,61 +494,6 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         self.assertIsNone(engine.project.pending)
         # Card should be updated
         handler.update_card.assert_called_once()
-
-    @patch("src.thread.get_current_sender_id", return_value="user_123")
-    @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")
-    @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
-    @patch("src.workflow_engine.templates.discover_templates", return_value=[])
-    def test_fallback_still_shows_confirm_card(
-        self, mock_templates, mock_node, mock_gen, mock_sender
-    ):
-        handler, ctx = self._make_handler()
-
-        project = MagicMock()
-        project.root_path = "/tmp/project"
-        project.project_id = "proj_1"
-        project.project_name = "test"
-        handler._ensure_project = MagicMock(return_value=project)
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-
-        engine = MagicMock()
-        engine.is_running = False
-        engine.project = WorkflowProject()
-        ctx.workflow_engine_manager.get.return_value = engine
-        ctx.workflow_engine_manager.get_or_create.return_value = engine
-
-        # Step 1: start_workflow shows combined selection card
-        handler.start_workflow("msg_1", "chat_1", "complex task", project)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-
-        # Step 1b: Select agent — stays on combined card (AWAITING_AGENT_SELECT)
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-        handler.handle_workflow_select_agent(
-            "msg_1b", "chat_1",
-            "proj_1",
-            {"action": "workflow_select_agent", "agent_type": "coco", "engine_session_key": session_key, "project_id": "proj_1"}
-        )
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        self.assertEqual(engine.project.pending.orchestrator_agent, "coco")
-
-        # Step 2: confirm from combined card goes directly to script generation
-        mock_gen.return_value = (
-            "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
-            None,  # No meta from fallback
-            True,  # is_fallback=True
-        )
-
-        handler.handle_workflow_confirm_roles_and_generate(
-            "msg_2", "chat_1", "proj_1",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
-        )
-
-        # Should show confirm card with fallback flag
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-        self.assertTrue(engine.project.pending.is_fallback if engine.project.pending else False)
-        self.assertGreaterEqual(handler.update_card.call_count, 1)
-
 
     @patch("src.thread.get_current_sender_id", return_value="user_BBB")
     def test_confirm_rejected_for_non_initiator(self, mock_sender):
@@ -678,7 +726,6 @@ class TestConfirmCardContent(unittest.TestCase):
             "description": "desc",
             "phases": [],
             "tools": ["coco"],
-            "budget_total": 2_000_000,
             "requirement": "req",
             "initiator_user_id": "u1",
             "engine_session_key": "k1",
@@ -692,7 +739,6 @@ class TestConfirmCardContent(unittest.TestCase):
             "description": "desc",
             "phases": [],
             "tools": ["coco"],
-            "budget_total": 2_000_000,
             "requirement": "req",
             "initiator_user_id": "u1",
             "engine_session_key": "k1",
@@ -730,248 +776,6 @@ class TestWorkflowE2EConfirmFlow(unittest.TestCase):
         body = card.get("body", card)
         return body.get("elements", card.get("elements", []))
 
-    @patch("src.thread.get_current_sender_id", return_value="user_e2e")
-    @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")
-    @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
-    @patch("src.workflow_engine.templates.discover_templates", return_value=[])
-    def test_e2e_confirm_card_structure(self, mock_templates, mock_node, mock_gen, mock_sender):
-        """Full E2E: start_workflow → tool select → confirm card contains script preview, tools, buttons."""
-        import tempfile
-
-        handler, ctx = self._make_handler()
-
-        project = MagicMock()
-        project.root_path = "/tmp/project"
-        project.project_id = "proj_e2e"
-        project.project_name = "login-refactor"
-        handler._ensure_project = MagicMock(return_value=project)
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-
-        engine = MagicMock()
-        engine.is_running = False
-        engine.project = WorkflowProject()
-        ctx.workflow_engine_manager.get.return_value = engine
-        ctx.workflow_engine_manager.get_or_create.return_value = engine
-
-        # Simulate successful AI script generation with phases and tools
-        test_script = '''export const meta = {
-  name: "login-refactor",
-  description: "重构登录模块",
-  phases: [
-    { title: "分析现有代码", detail: "分析登录模块结构" },
-    { title: "实施重构", detail: "执行代码重构" },
-    { title: "验证", detail: "运行测试验证" }
-  ],
-  tools: ["coco", "claude"]
-};
-
-export default async function() {
-  await phase("分析现有代码");
-  const analysis = await agent("分析登录模块代码结构", { tool: "coco" });
-  await phase("实施重构");
-  const refactor = await agent("根据分析结果重构登录模块", { tool: "claude" });
-  await phase("验证");
-  const verify = await agent("运行测试确认重构无回归", { tool: "coco" });
-  return verify;
-}'''
-        # Write script to a real temp file so start_workflow can read it
-        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
-        tmp.write(test_script)
-        tmp.close()
-        script_path = tmp.name
-
-        # Step 1: start_workflow shows agent selection card
-        handler.start_workflow("msg_e2e", "chat_e2e", "重构登录模块", project)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
-
-        # Step 2: confirm from combined card goes to script generation
-        mock_gen.return_value = (
-            script_path,
-            {
-                "name": "login-refactor",
-                "description": "重构登录模块",
-                "phases": [
-                    {"title": "分析现有代码", "detail": "分析登录模块结构"},
-                    {"title": "实施重构", "detail": "执行代码重构"},
-                    {"title": "验证", "detail": "运行测试验证"},
-                ],
-                "tools": ["coco", "claude"],
-            },
-            False,  # not fallback
-        )
-
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_confirm_roles_and_generate(
-            "msg_e2e_2", "chat_e2e", "proj_e2e",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
-        )
-        os.unlink(script_path)
-
-        # Verify engine state
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-        self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "重构登录模块")
-        self.assertIsNotNone(engine.project.pending.engine_session_key if engine.project.pending else None)
-        self.assertFalse(engine.project.pending.is_fallback if engine.project.pending else False)
-
-        # Verify confirm card was sent (update_card called at least twice: role select + confirm)
-        self.assertGreaterEqual(handler.update_card.call_count, 1)
-        # Use the final update_card call (the one with the confirm card that has the script)
-        # Look at the last update_card call for a card that has the script preview
-        last_card = None
-        for call in handler.update_card.call_args_list:
-            candidate = call[0][1] if len(call[0]) > 1 else None
-            if candidate and isinstance(candidate, dict):
-                text = str(candidate)
-                if "```javascript" in text or "confirm_start" in text:
-                    last_card = candidate
-        if last_card is None:
-            # Fallback: use the last update_card call
-            last_call = handler.update_card.call_args_list[-1]
-            last_card = last_call[0][1]
-        card = last_card
-
-        # Extract all card content
-        elements = self._get_elements(card)
-        all_md = " ".join(
-            el.get("content", "") for el in elements if el.get("tag") == "markdown"
-        )
-        # Also extract markdown inside collapsible_panel elements
-        for el in elements:
-            if el.get("tag") == "collapsible_panel":
-                for inner in el.get("elements", []):
-                    if inner.get("tag") == "markdown":
-                        all_md += " " + inner.get("content", "")
-        # Collect all action button values
-        all_actions = []
-        for el in elements:
-            if el.get("tag") == "action":
-                for action in el.get("actions", []):
-                    all_actions.append(action)
-            # Also check column_set patterns (Schema 2.0 compliant)
-            if el.get("tag") == "column_set":
-                for col in el.get("columns", []):
-                    for col_el in col.get("elements", []):
-                        if col_el.get("tag") == "action":
-                            for action in col_el.get("actions", []):
-                                all_actions.append(action)
-                        # Schema 2.0: buttons directly inside columns
-                        if col_el.get("tag") == "button":
-                            all_actions.append(col_el)
-
-        # AC1 check: requirement is displayed
-        self.assertIn("重构登录模块", all_md)
-
-        # AC1 check: script preview with javascript code fence
-        self.assertIn("```javascript", all_md)
-
-        # AC1 check: phases are shown
-        self.assertIn("分析现有代码", all_md)
-        self.assertIn("实施重构", all_md)
-        self.assertIn("验证", all_md)
-
-        # AC1 check: confirm and cancel buttons present
-        action_values = []
-        for a in all_actions:
-            val = a.get("value", {})
-            if isinstance(val, dict):
-                action_values.append(val.get("action", ""))
-            elif isinstance(val, str):
-                import json
-                try:
-                    parsed = json.loads(val)
-                    action_values.append(parsed.get("action", ""))
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-        self.assertIn("workflow_confirm_start", action_values)
-        self.assertIn("workflow_cancel", action_values)
-
-    @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")
-    @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
-    @patch("src.workflow_engine.templates.discover_templates", return_value=[])
-    @patch("src.thread.get_current_sender_id", return_value="user_e2e")
-    def test_e2e_confirm_then_execute(self, mock_sender, mock_templates, mock_node, mock_gen):
-        """Full E2E: start → tool select → confirm button → engine.execute_workflow is called."""
-        import hashlib
-        import tempfile
-
-        handler, ctx = self._make_handler()
-
-        project = MagicMock()
-        project.root_path = "/tmp/project"
-        project.project_id = "proj_e2e2"
-        project.project_name = "test"
-        handler._ensure_project = MagicMock(return_value=project)
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-
-        engine = MagicMock()
-        engine.is_running = False
-        engine.project = WorkflowProject()
-        ctx.workflow_engine_manager.get.return_value = engine
-        ctx.workflow_engine_manager.get_or_create.return_value = engine
-
-        # Step 1: start_workflow shows agent selection card
-        handler.start_workflow("msg_1", "chat_e2e2", "重构登录模块", project)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        tool_select_session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(tool_select_session_key)
-
-        # Step 2: confirm from combined card goes to script generation
-        e2e_script = (
-            "export const meta = {\n"
-            "  name: 'wf',\n"
-            "  description: 'test',\n"
-            "  tools: ['coco'],\n"
-            "};\n"
-            "\n"
-            "export default async function() {\n"
-            "  await agent('do work');\n"
-            "}\n"
-        )
-        e2e_tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
-        e2e_tmp.write(e2e_script)
-        e2e_tmp.close()
-        mock_gen.return_value = (
-            e2e_tmp.name,
-            {"name": "wf", "description": "test", "phases": [], "tools": ["coco"]},
-            False,
-        )
-
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_confirm_roles_and_generate(
-            "msg_2", "chat_e2e2", "proj_e2e2",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": tool_select_session_key},
-        )
-
-        # Engine should be in AWAITING_CONFIRM
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-        self.assertIsNotNone(session_key)
-
-        # Ensure pending.script_hash is populated so the TOCTOU guard passes
-        if engine.project.pending and engine.project.pending.script_hash is None:
-            engine.project.pending.script_hash = hashlib.sha256(e2e_script.encode("utf-8")).hexdigest()
-
-        handler._get_root_path = MagicMock(return_value="/tmp/project")
-
-        handler.handle_workflow_confirm_start(
-            "msg_card_e2e", "chat_e2e2", "proj_e2e2",
-            {"action": "workflow_confirm_start", "engine_session_key": session_key},
-        )
-
-        try:
-            os.unlink(e2e_tmp.name)
-        except OSError:
-            pass
-
-        # Should have submitted the engine task
-        handler._submit_engine_task.assert_called_once()
-        # Pending state cleared
-        self.assertIsNone(engine.project.pending)
-
-
 class TestWorkflowFallbackPath(unittest.TestCase):
     """Test that AI script generation failure shows fallback confirm card."""
 
@@ -1001,150 +805,6 @@ class TestWorkflowFallbackPath(unittest.TestCase):
     def _get_elements(self, card: dict) -> list:
         body = card.get("body", card)
         return body.get("elements", card.get("elements", []))
-
-    @patch("src.thread.get_current_sender_id", return_value="user_123")
-    @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")
-    @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
-    @patch("src.workflow_engine.templates.discover_templates", return_value=[])
-    def test_fallback_card_shows_warning(self, mock_templates, mock_node, mock_gen, mock_sender):
-        """When AI gen fails, fallback card shows warning and is_fallback=True."""
-        handler, ctx = self._make_handler()
-
-        project = MagicMock()
-        project.root_path = "/tmp/project"
-        project.project_id = "proj_fb"
-        project.project_name = "test"
-        handler._ensure_project = MagicMock(return_value=project)
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-
-        engine = MagicMock()
-        engine.is_running = False
-        engine.project = WorkflowProject()
-        ctx.workflow_engine_manager.get.return_value = engine
-        ctx.workflow_engine_manager.get_or_create.return_value = engine
-
-        # Step 1: start_workflow shows agent selection card
-        handler.start_workflow("msg_fb", "chat_fb", "复杂重构任务", project)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-
-        # Step 2: confirm from combined card goes to script generation
-        mock_gen.return_value = (
-            "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
-            None,  # No meta (fallback generated simple script)
-            True,  # is_fallback=True
-        )
-
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_confirm_roles_and_generate(
-            "msg_fb_2", "chat_fb", "proj_fb",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
-        )
-
-        # Engine should be in AWAITING_CONFIRM with fallback flag
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
-        self.assertTrue(engine.project.pending.is_fallback if engine.project.pending else False)
-        self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "复杂重构任务")
-
-        # Verify confirm card shows fallback warning - use last card with script content
-        last_card = None
-        for call in handler.update_card.call_args_list:
-            candidate = call[0][1] if len(call[0]) > 1 else None
-            if candidate and isinstance(candidate, dict):
-                text = str(candidate)
-                if "confirm_start" in text or "javascript" in text:
-                    last_card = candidate
-        if last_card is None:
-            last_card = handler.update_card.call_args_list[-1][0][1]
-        card = last_card
-        elements = self._get_elements(card)
-        # Collect all text content from markdown AND note elements
-        all_text = ""
-        for el in elements:
-            if el.get("tag") == "markdown":
-                all_text += " " + el.get("content", "")
-            elif el.get("tag") == "note":
-                for sub in el.get("elements", []):
-                    all_text += " " + sub.get("content", "")
-
-        # Should contain fallback warning indicator
-        self.assertTrue(
-            "默认模板" in all_text or "fallback" in all_text.lower() or "失败" in all_text,
-            f"Fallback warning not found in card content: {all_text[:200]}",
-        )
-
-    @patch("src.thread.get_current_sender_id", return_value="user_123")
-    @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")
-    @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
-    @patch("src.workflow_engine.templates.discover_templates", return_value=[])
-    def test_fallback_card_still_has_confirm_button(self, mock_templates, mock_node, mock_gen, mock_sender):
-        """Even on fallback, confirm/cancel buttons should be present."""
-        handler, ctx = self._make_handler()
-
-        project = MagicMock()
-        project.root_path = "/tmp/project"
-        project.project_id = "proj_fb2"
-        project.project_name = "test"
-        handler._ensure_project = MagicMock(return_value=project)
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-
-        engine = MagicMock()
-        engine.is_running = False
-        engine.project = WorkflowProject()
-        ctx.workflow_engine_manager.get.return_value = engine
-        ctx.workflow_engine_manager.get_or_create.return_value = engine
-
-        # Step 1: start_workflow shows agent selection card
-        handler.start_workflow("msg_fb2", "chat_fb2", "任务描述", project)
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-
-        # Step 2: confirm from combined card goes to script generation
-        mock_gen.return_value = (
-            "/tmp/project/.ghostap/workflow_scripts/generated_workflow.js",
-            None,
-            True,
-        )
-
-        handler._resolve_project_from_id = MagicMock(return_value=project)
-        handler.handle_workflow_confirm_roles_and_generate(
-            "msg_fb2_2", "chat_fb2", "proj_fb2",
-            {"action": "workflow_confirm_roles_and_generate", "engine_session_key": session_key}
-        )
-
-        # Find the last confirm card - look for confirm_start action
-        last_card = None
-        for call in handler.update_card.call_args_list:
-            candidate = call[0][1] if len(call[0]) > 1 else None
-            if candidate and isinstance(candidate, dict):
-                text = str(candidate)
-                if "confirm_start" in text:
-                    last_card = candidate
-        if last_card is None:
-            last_card = handler.update_card.call_args_list[-1][0][1]
-        card = last_card
-        elements = self._get_elements(card)
-
-        # Find action buttons (check both legacy action containers and Schema 2.0 column_set)
-        action_values = []
-        for el in elements:
-            if el.get("tag") == "action":
-                for action in el.get("actions", []):
-                    val = action.get("value", {})
-                    if isinstance(val, dict):
-                        action_values.append(val.get("action", ""))
-            # Schema 2.0: buttons inside column_set columns
-            if el.get("tag") == "column_set":
-                for col in el.get("columns", []):
-                    for col_el in col.get("elements", []):
-                        if col_el.get("tag") == "button":
-                            val = col_el.get("value", {})
-                            if isinstance(val, dict):
-                                action_values.append(val.get("action", ""))
-
-        self.assertIn("workflow_confirm_start", action_values)
-        self.assertIn("workflow_cancel", action_values)
-
 
 class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
     """Tests for the tool-selection-first workflow (AC2)."""
@@ -1179,7 +839,12 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
     def test_start_workflow_shows_tool_selection_card(
         self, mock_templates, mock_node, mock_sender
     ):
-        """Verify start_workflow() shows a tool selection card (not confirm card directly)."""
+        """Verify start_workflow() shows an orchestrator agent selection card (step 1 of 2-step flow).
+
+        In the new two-step selection flow, start_workflow() shows the orchestrator
+        tool selection card. It does NOT pre-set orchestrator_agent or selected_tools —
+        those are chosen by the user via subsequent selection steps.
+        """
         handler, ctx = self._make_handler()
 
         project = MagicMock()
@@ -1196,27 +861,33 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
 
         handler.start_workflow("msg_1", "chat_1", "do code review", project)
 
-        # Should send an agent selection card (not generate script yet, not tool selection yet)
+        # Should send a card (orchestrator agent selection)
         handler.send_card_to_chat.assert_called_once()
         # update_card should NOT be called (no generating -> confirm transition)
         handler.update_card.assert_not_called()
 
-        # Engine project should be AWAITING_AGENT_SELECT, not AWAITING_TOOL_SELECT or AWAITING_CONFIRM
+        # Engine project should be AWAITING_AGENT_SELECT (step 1 of the new 2-step flow)
         self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
-        self.assertIsNone(engine.project.pending.script_path if engine.project.pending else None)
-        self.assertIsNone(engine.project.pending.meta if engine.project.pending else None)
-        # Default orchestrator agent should be set
-        self.assertEqual(engine.project.pending.orchestrator_agent if engine.project.pending else None, "coco")
-        # selected_tools should be set to defaults in combined card
-        self.assertIsNotNone(engine.project.pending.selected_tools if engine.project.pending else None)
+        self.assertIsNotNone(engine.project.pending)
+        self.assertIsNone(engine.project.pending.script_path)
+        self.assertIsNone(engine.project.pending.meta)
+        # orchestrator_agent is NOT preset — user picks via selection controller
+        self.assertIsNone(engine.project.pending.orchestrator_agent)
+        # selected_tools is NOT preset in the new 2-step flow
+        # (it may be empty list or None depending on the exact implementation)
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     @patch("src.workflow_engine.bridge.RuntimeBridge.check_node_available", return_value=True)
     @patch("src.workflow_engine.templates.discover_templates", return_value=[])
-    def test_start_workflow_sets_pending_selected_tools(
+    def test_start_workflow_sets_pending_requirement(
         self, mock_templates, mock_node, mock_sender
     ):
-        """Verify default selected tools are stored in pending.selected_tools."""
+        """Verify start_workflow() stores requirement and session key (2-step selection flow).
+
+        In the new two-step selection flow, start_workflow() sets up the pending state
+        with requirement and session_key, but defers orchestrator_agent and selected_tools
+        to the selection steps handled by WorktreeSelectionController.
+        """
         handler, ctx = self._make_handler()
 
         project = MagicMock()
@@ -1233,21 +904,14 @@ class TestWorkflowToolSelectionFirstFlow(unittest.TestCase):
 
         handler.start_workflow("msg_1", "chat_1", "do code review", project)
 
-        # After start_workflow: orchestrator_agent and selected_tools are set in combined card
-        self.assertEqual(engine.project.pending.orchestrator_agent if engine.project.pending else None, "coco")
-        self.assertIsNotNone(engine.project.pending.selected_tools if engine.project.pending else None)
         # Requirement should be stored
         self.assertEqual(engine.project.pending.requirement if engine.project.pending else None, "do code review")
         # Session key should be set
         self.assertIsNotNone(engine.project.pending.engine_session_key if engine.project.pending else None)
-        session_key = engine.project.pending.engine_session_key if engine.project.pending else None
-
-        # In the combined card flow, selected_tools is already set after start_workflow
-        self.assertIsNotNone(engine.project.pending.selected_tools if engine.project.pending else None)
-        self.assertIsInstance(engine.project.pending.selected_tools if engine.project.pending else None, list)
-        self.assertGreater(len(engine.project.pending.selected_tools if engine.project.pending else []), 0)
-        # Should contain at least "coco" as default
-        self.assertIn("coco", engine.project.pending.selected_tools if engine.project.pending else [])
+        # Status should be AWAITING_AGENT_SELECT (user is choosing orchestrator)
+        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_AGENT_SELECT)
+        # orchestrator_agent is NOT preset in 2-step flow
+        self.assertIsNone(engine.project.pending.orchestrator_agent if engine.project.pending else "")
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     @patch("src.feishu.handlers.workflow.WorkflowHandler._generate_script_via_ai")

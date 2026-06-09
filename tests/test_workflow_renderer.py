@@ -14,7 +14,6 @@ import unittest
 from src.workflow_engine.models import (
     AgentProgress,
     AgentStatus,
-    BudgetState,
     PhaseProgress,
     WorkflowProject,
     WorkflowStatus,
@@ -84,7 +83,6 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         project = WorkflowProject(
             name="test-workflow",
             status=WorkflowStatus.RUNNING,
-            budget=BudgetState(total=2_000_000, used=500_000),
             started_at=time.time() - 60,
         )
         phase = PhaseProgress(
@@ -125,16 +123,6 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         md_elements = [e for e in card["elements"] if e.get("tag") == "markdown"]
         self.assertGreater(len(md_elements), 0, "Expected at least one markdown in card")
 
-    def test_budget_section_uses_markdown(self):
-        """Budget section should be a markdown element with token display."""
-        project = self._make_project()
-        renderer = WorkflowProgressRenderer(project)
-        budget = renderer._render_budget_section()
-
-        self.assertEqual(budget["tag"], "markdown")
-        self.assertIn("预算", budget["content"])
-        self.assertIn("/", budget["content"])
-        self.assertIn("%", budget["content"])
 
     def test_render_compact_status_format(self):
         project = self._make_project()
@@ -314,16 +302,6 @@ class TestConfirmCardStructure(unittest.TestCase):
         self.assertIn("workflow_confirm_start", button_actions)
         self.assertIn("workflow_cancel", button_actions)
 
-    def test_confirm_card_shows_budget(self):
-        """Card should contain a markdown element with Token budget info."""
-        card = self._build_card()
-        elements = self._get_elements(card)
-
-        budget_md = [
-            e for e in elements
-            if e.get("tag") == "markdown" and "Token 预算" in e.get("content", "")
-        ]
-        self.assertGreater(len(budget_md), 0, "Expected a markdown element with Token budget")
 
     def test_confirm_card_fallback_shows_warning(self):
         """Card should show fallback warning when is_fallback=True."""
@@ -339,39 +317,6 @@ class TestConfirmCardStructure(unittest.TestCase):
             )) or (e.get("tag") == "markdown" and "默认模板" in e.get("content", ""))
         ]
         self.assertGreater(len(warning_elements), 0, "Expected a note/markdown element with fallback warning")
-    def test_confirm_card_budget_has_own_row_on_mobile(self) -> None:
-        """Budget must be rendered in its own full-width row, not squeezed
-        next to phase/tool counts, so the long label stays readable on
-        narrow mobile screens."""
-        import json
-
-        card = self._build_card(requirement="long-running audit task")
-        raw = json.dumps(card, ensure_ascii=False)
-
-        # Locate the three-column stats block that existed before this
-        # round of mobile polish. It must NOT survive.
-        self.assertNotIn(
-            "阶段数</font>\\n</markdown>\\n</column>\\n</column_set>\\n</",
-            raw,
-            "budget must no longer share a column_set row with phase/tool counts",
-        )
-
-        # A dedicated column_set must render the budget label as a full-width
-        # row. We conservatively check that the budget markdown block sits
-        # in its own single-column column_set.
-        column_sets = [
-            node for node in self._walk_elements(self._get_elements(card))
-            if node.get("tag") == "column_set"
-        ]
-        budget_rows = [
-            cs for cs in column_sets
-            if len(cs.get("columns", [])) == 1
-            and "预算</font>" in json.dumps(cs, ensure_ascii=False)
-        ]
-        self.assertTrue(
-            budget_rows,
-            "expected a full-width column_set for the budget row",
-        )
 
     def test_confirm_card_phase_tool_row_uses_two_columns(self) -> None:
         """Phase and tool counts should share a two-column (bisect) row so
@@ -469,7 +414,6 @@ class TestRenderCompletionCard(unittest.TestCase):
             "status": status,
             "started_at": time.time() - 120,
             "finished_at": time.time(),
-            "budget": BudgetState(used=300_000, total=1_500_000),
             "phases": [
                 PhaseProgress(
                     title="Analysis",
@@ -563,7 +507,6 @@ class TestAgentOutputDefensiveCheck(unittest.TestCase):
             "name": "audit",
             "status": WorkflowStatus.RUNNING,
             "started_at": time.time() - 60,
-            "budget": BudgetState(used=100_000, total=1_000_000),
         }
         defaults.update(kwargs)
         return WorkflowProject(**defaults)

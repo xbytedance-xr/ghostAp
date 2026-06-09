@@ -185,178 +185,27 @@ def test_tool_select_missing_tool_name_returns_invalid_argument(mock_sender):
 
 
 # ---------------------------------------------------------------------------
-# Budget selection callback error tests
+# Budget selection removal verification
 # ---------------------------------------------------------------------------
 
-def test_budget_select_missing_engine_returns_session_expired():
-    """AC19: 预算选择回调 missing engine 返回 session_expired 错误。"""
-    handler = _create_mock_handler()
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=None)
 
-    handler.handle_workflow_select_budget(
-        message_id="msg_123",
-        chat_id="chat_123",
-        project_id="",
-        value={"action": "workflow_select_budget", "budget_tokens": 2000000},
-    )
-
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "session_expired"
-
-
-def test_budget_select_wrong_state_returns_invalid_state():
-    """AC19: 预算选择回调 wrong state 返回 invalid_state 错误。"""
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.RUNNING,  # Wrong state - should be AWAITING_CONFIRM
-        pending=None,
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-
-    handler.handle_workflow_select_budget(
-        message_id="msg_123",
-        chat_id="chat_123",
-        project_id="",
-        value={"action": "workflow_select_budget", "budget_tokens": 2000000},
-    )
-
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "invalid_state"
-
-
-def test_budget_select_invalid_tokens_returns_invalid_argument():
-    """AC19: 预算选择回调 invalid budget_tokens 返回 invalid_argument 错误。"""
-    from src.workflow_engine.models import PendingConfirmation
-
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_CONFIRM,
-        pending=PendingConfirmation(
-            engine_session_key="test_session",
-            initiator_user_id="test_user",
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-
-    # Patch get_current_sender to return the initiator
-    with patch("src.thread.get_current_sender_id", return_value="test_user"):
-        # Test with non-integer
-        handler.handle_workflow_select_budget(
-            message_id="msg_123",
-            chat_id="chat_123",
-            project_id="",
-            value={"action": "workflow_select_budget", "budget_tokens": "not_an_int", "engine_session_key": "test_session"},
-        )
-
-        handler._reply_workflow_error.assert_called_once()
-        call_args = handler._reply_workflow_error.call_args
-        assert call_args[0][1] == "invalid_argument"
-
-        # Reset mock
-        handler._reply_workflow_error.reset_mock()
-
-        # Test with negative value
-        handler.handle_workflow_select_budget(
-            message_id="msg_123",
-            chat_id="chat_123",
-            project_id="",
-            value={"action": "workflow_select_budget", "budget_tokens": -100, "engine_session_key": "test_session"},
-        )
-
-        handler._reply_workflow_error.assert_called_once()
-        call_args = handler._reply_workflow_error.call_args
-        assert call_args[0][1] == "invalid_argument"
-
-        # Reset mock
-        handler._reply_workflow_error.reset_mock()
-
-        # Test with zero
-        handler.handle_workflow_select_budget(
-            message_id="msg_123",
-            chat_id="chat_123",
-            project_id="",
-            value={"action": "workflow_select_budget", "budget_tokens": 0, "engine_session_key": "test_session"},
-        )
-
-        handler._reply_workflow_error.assert_called_once()
-        call_args = handler._reply_workflow_error.call_args
-        assert call_args[0][1] == "invalid_argument"
-
-
-@patch("src.thread.get_current_sender_id", return_value="user_123")
-def test_budget_select_session_key_mismatch_returns_session_expired(mock_sender):
-    """AC19: 预算选择回调 session key 不匹配返回 session_expired 错误。"""
-    from src.workflow_engine.models import PendingConfirmation
-
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_CONFIRM,
-        pending=PendingConfirmation(
-            engine_session_key="correct_key",
-            initiator_user_id="user_123",
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-
-    handler.handle_workflow_select_budget(
-        message_id="msg_123",
-        chat_id="chat_123",
-        project_id="",
-        value={
-            "action": "workflow_select_budget",
-            "budget_tokens": 2000000,
-            "engine_session_key": "wrong_key",
-        },
-    )
-
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "session_expired"
-
-
-@patch("src.thread.get_current_sender_id", return_value="user_456")
-def test_budget_select_wrong_initiator_returns_forbidden(mock_sender):
-    """AC19: 预算选择回调非发起者返回 forbidden 错误。"""
-    from src.workflow_engine.models import PendingConfirmation
-
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_CONFIRM,
-        pending=PendingConfirmation(
-            engine_session_key="valid_key",
-            initiator_user_id="user_123",  # Different from current user
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-
-    handler.handle_workflow_select_budget(
-        message_id="msg_123",
-        chat_id="chat_123",
-        project_id="",
-        value={
-            "action": "workflow_select_budget",
-            "budget_tokens": 2000000,
-            "engine_session_key": "valid_key",
-        },
-    )
-
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "forbidden"
+def test_budget_selection_removed():
+    """Verify budget selection feature has been removed.
+    
+    Budget selection has been removed in favor of 2-step orchestrator+review selection.
+    This test documents that budget-related actions should no longer be registered.
+    """
+    from src.card.actions.dispatch import build_common_action_registry, build_worktree_action_registry
+    
+    common_registry = build_common_action_registry()
+    worktree_registry = build_worktree_action_registry()
+    
+    # Combine all action IDs
+    all_actions = set(common_registry.keys()) | set(worktree_registry.keys())
+    
+    # Verify no budget-related actions are registered
+    budget_actions = [a for a in all_actions if "budget" in a.lower()]
+    assert len(budget_actions) == 0, f"Found unexpected budget actions: {budget_actions}"
 
 
 # ---------------------------------------------------------------------------

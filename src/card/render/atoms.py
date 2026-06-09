@@ -380,8 +380,11 @@ _ATOM_HANDLER_DISPATCH: dict[str, Callable[[ContentBlock], RenderAtom]] = {
     "separator": _block_to_separator_atom,
 }
 
+import threading
+
 # Module-level lazy cache for block kind handlers (avoids @functools.cache semantics)
 _block_kind_handlers: dict[str, Callable[[ContentBlock], RenderAtom]] | None = None
+_handlers_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def _get_block_kind_handlers() -> dict[str, Callable[[ContentBlock], RenderAtom]]:
@@ -391,30 +394,32 @@ def _get_block_kind_handlers() -> dict[str, Callable[[ContentBlock], RenderAtom]
     import-time coupling that could lead to circular imports.
     """
     global _block_kind_handlers
-    if _block_kind_handlers is None:
-        from src.card.state.block_registry import BLOCK_KIND_TO_ATOM
+    with _handlers_lock:
+        if _block_kind_handlers is None:
+            from src.card.state.block_registry import BLOCK_KIND_TO_ATOM
 
-        handlers = {
-            **_ATOM_HANDLER_DISPATCH,
-            **{kind: _block_to_worktree_atom
-               for kind, atom in BLOCK_KIND_TO_ATOM.items()
-               if atom == "worktree_panel"},
-        }
+            handlers = {
+                **_ATOM_HANDLER_DISPATCH,
+                **{kind: _block_to_worktree_atom
+                   for kind, atom in BLOCK_KIND_TO_ATOM.items()
+                   if atom == "worktree_panel"},
+            }
 
-        # Startup assertion: all registered block kinds must have a handler
-        # (tool_call is excluded — it has dedicated lookahead grouping logic)
-        missing = set(BLOCK_KIND_TO_ATOM.keys()) - set(handlers.keys()) - {"tool_call"}
-        if missing:
-            raise RuntimeError(
-                f"BLOCK_KIND_TO_ATOM contains kinds with no handler registered: {missing}. "
-                f"Add handlers in _ATOM_HANDLER_DISPATCH or worktree_panel merge."
-            )
+            # Startup assertion: all registered block kinds must have a handler
+            # (tool_call is excluded — it has dedicated lookahead grouping logic)
+            missing = set(BLOCK_KIND_TO_ATOM.keys()) - set(handlers.keys()) - {"tool_call"}
+            if missing:
+                raise RuntimeError(
+                    f"BLOCK_KIND_TO_ATOM contains kinds with no handler registered: {missing}. "
+                    f"Add handlers in _ATOM_HANDLER_DISPATCH or worktree_panel merge."
+                )
 
-        _block_kind_handlers = handlers
+            _block_kind_handlers = handlers
     return _block_kind_handlers
 
 
 def invalidate_atom_handlers() -> None:
     """Reset the cached handler mapping. Intended for testing/hot-reload scenarios."""
     global _block_kind_handlers
-    _block_kind_handlers = None
+    with _handlers_lock:
+        _block_kind_handlers = None

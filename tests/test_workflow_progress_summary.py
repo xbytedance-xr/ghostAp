@@ -5,7 +5,6 @@ from __future__ import annotations
 from src.workflow_engine.models import (
     AgentProgress,
     AgentStatus,
-    BudgetState,
     PhaseProgress,
     WorkflowProject,
     WorkflowStatus,
@@ -168,7 +167,6 @@ def _make_completion_project(status) -> WorkflowProject:
     return WorkflowProject(
         name="audit",
         status=status,
-        budget=BudgetState(used=100_000, total=1_000_000),
         started_at=1_700_000_000.0,
         finished_at=1_700_000_060.0,
         phases=[

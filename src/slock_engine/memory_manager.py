@@ -292,7 +292,15 @@ class MemoryManager:
         mtime = os.path.getmtime(path)
         cached = self._memory_cache.get(agent_id)
         if cached is not None and cached[0] == mtime:
-            return cached[1]
+            # Return a copy to prevent callers from modifying the cached object
+            cached_mem = cached[1]
+            return SlockMemory(
+                role=cached_mem.role,
+                key_knowledge=cached_mem.key_knowledge,
+                active_context=cached_mem.active_context,
+                archived_context=cached_mem.archived_context,
+                _version=cached_mem._version,
+            )
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
         memory = SlockMemory.from_markdown(content)
@@ -325,8 +333,17 @@ class MemoryManager:
 
     def _write_agent_memory_unlocked(self, agent_id: str, memory: SlockMemory) -> None:
         with self._agent_file_lock(agent_id):
+            # Refresh from disk to get latest version before any operations
             current_version = self._refresh_write_count(agent_id)
-            current = self._read_agent_memory_unlocked(agent_id)
+            # Bypass cache to ensure we get the latest from disk
+            path = self._agent_memory_path(agent_id)
+            if not os.path.exists(path):
+                current = SlockMemory()
+            else:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                current = SlockMemory.from_markdown(content)
+            
             if memory._version and memory._version < current_version:
                 memory = self._merge_agent_memory(current, memory)
             next_version = current_version + 1
@@ -343,6 +360,9 @@ class MemoryManager:
                 f.write(str(next_version))
             os.replace(version_path + ".tmp", version_path)
             self._write_counts[agent_id] = next_version
+            # Update cache with the new state
+            mtime = os.path.getmtime(path)
+            self._memory_cache[agent_id] = (mtime, memory)
 
     def _merge_agent_memory(self, current: SlockMemory, incoming: SlockMemory) -> SlockMemory:
         """Merge stale incoming writes with current disk state."""
@@ -367,7 +387,7 @@ class MemoryManager:
                 delta = incoming.active_context
             active_context = current.active_context
             if delta:
-                active_context = f"{current.active_context}\n\n## Recent Updates\n{delta}".strip()
+                active_context = f"{current.active_context}\n{delta}".strip()
         else:
             active_context = current.active_context or incoming.active_context
         archived_context = merge_lines(current.archived_context, incoming.archived_context)

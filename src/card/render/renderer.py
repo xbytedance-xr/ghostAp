@@ -307,20 +307,21 @@ def compute_structure_signature(state: CardState) -> str:
                 f"{item.get('status') or ''}:"
                 f"{item.get('label') or item.get('name') or ''}"
             )
+    
     if state.metadata.bridge_phrase:
         parts.append(f"bridge:{state.metadata.bridge_phrase}")
     if state.footer.status is not None:
         parts.append(f"footer:{state.footer.status}")
-    parts.append(f"buttons:{len(state.buttons)}")
+    # Add buttons to structure signature since button changes should trigger full updates
+    for button in state.buttons:
+        parts.append(f"button:{button.action_id}:{button.type}:{'disabled' if button.disabled else 'enabled'}")
     if state.engine_ext and state.engine_ext.phase_info:
         parts.append(f"phase:{state.engine_ext.phase_info}")
-    raw = "|".join(parts)
-
+    
+    parts_key = "|".join(parts)
     sv = state.structural_version
-    if sv > 0:
-        return _compute_sig_cached(sv, raw)
-    # For initial version (sv=0), compute without caching
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+    
+    return _compute_sig_cached(sv, parts_key)
 
 
 def compute_content_hash(state: CardState) -> str:

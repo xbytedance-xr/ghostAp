@@ -36,9 +36,6 @@ class WorkflowStateManager:
         # map stays consistent with the project.phases[*].agents lists even
         # under heavy parallel event delivery.
         self._label_to_agent: Dict[str, AgentProgress] = {}
-        # Tracks the exact amount reserved per agent label so settle() releases
-        # the correct amount even if the reservation constant changes.
-        self._reservations: Dict[str, int] = {}
         # AC4: 主 context 增量 token 计数。仅由 engine 在明确需要向主 chat
         # 注入文本的路径上累加（目前唯一合法路径是 workflow 完成时的
         # project.result）。中间结果不得通过其他路径增加此计数器。
@@ -141,11 +138,6 @@ class WorkflowStateManager:
             self._project.error = error
             self._project.finished_at = time.time()
 
-    def add_token_usage(self, tokens: int) -> None:
-        """Increment budget.used atomically."""
-        with self._lock:
-            self._project.budget.used += tokens
-
     def add_context_tokens(self, tokens: int) -> None:
         """Increment the main-context token counter (AC4 isolation).
 
@@ -163,82 +155,6 @@ class WorkflowStateManager:
         """Observed main-context token delta for the current workflow run."""
         with self._lock:
             return self._delta_context_tokens
-
-    def mark_budget_exceeded(self, consumed: int) -> None:
-        """Sticky flag indicating the budget has been crossed.
-
-        Callers use this to halt / prompt the user about topping up.
-        The flag is idempotent: setting it multiple times is safe.
-        """
-        with self._lock:
-            self._project.budget.exceeded = True
-            # Ensure ``used`` at least reflects what the accumulator knows.
-            self._project.budget.used = max(self._project.budget.used, consumed)
-
-    def try_reserve(
-        self,
-        estimated: int,
-        label: str,
-        *,
-        tool: str = "",
-        phase: str = "default",
-    ) -> bool:
-        """Atomically reserve *estimated* tokens AND update agent state.
-
-        This is a single-lock atomic operation that eliminates the TOCTOU
-        race between budget check and state update. Both operations happen
-        under the same ``_lock``, ensuring no concurrent call can slip
-        through between the check and the state mutation.
-
-        Args:
-            estimated: Number of tokens to reserve.
-            label: Agent label for on_agent_started state update.
-            tool: Tool name for on_agent_started.
-            phase: Phase name for on_agent_started.
-
-        Returns:
-            True if reservation succeeded (sufficient headroom),
-            False if the budget would be exhausted.
-        """
-        with self._lock:
-            budget = self._project.budget
-            # 1. Budget check (atomic with reservation)
-            if budget.used + budget.reserved + estimated > budget.total:
-                return False
-            budget.reserved += estimated
-            self._reservations[label] = estimated
-
-            # 2. State update (same lock — no race window)
-            target_phase = self._find_or_create_phase(phase)
-            from .models import AgentProgress, AgentStatus
-            agent = AgentProgress(
-                label=label,
-                tool=tool,
-                status=AgentStatus.RUNNING,
-            )
-            target_phase.agents.append(agent)
-            # Atomically populate the fast-lookup map in the same lock (see
-            # on_agent_started for rationale).
-            self._label_to_agent[label] = agent
-            self._project.metrics.total_agents += 1
-            return True
-
-    def settle(self, label: str, actual: int) -> None:
-        """Settle a reservation: release the exact amount that was reserved.
-
-        Actual token usage is tracked incrementally via add_token_usage()
-        during execution (called from AgentExecutor's on_token_usage callback),
-        so this method only releases the reservation headroom. The `actual`
-        parameter is accepted for API completeness but not used for accounting.
-
-        Must be called after every successful try_reserve(), regardless of
-        whether the agent call succeeded.
-        """
-        with self._lock:
-            budget = self._project.budget
-            # Release the exact amount reserved for this label
-            reserved_amount = self._reservations.pop(label, 0)
-            budget.reserved = max(0, budget.reserved - reserved_amount)
 
     # ------------------------------------------------------------------
     # Public: snapshot for read-only consumption

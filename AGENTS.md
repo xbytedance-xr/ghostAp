@@ -1,20 +1,14 @@
 # AGENTS.md
 
-This is the compact harness guide for AI coding agents working in GhostAP.
-Keep it short: this file is startup context, not project documentation. Add a
-rule here only when it prevents a known failure or points agents to the right
-tooling faster.
+这是 GhostAP 中 AI 编码代理的简明指南。保持简洁：此文件是启动上下文，而非项目文档。只有在规则能防止已知失败或帮助代理更快找到正确工具时才添加规则。
 
-## Project In One Paragraph
+## 项目概述
 
-GhostAP is a Feishu/Lark bot service for safe remote shell execution and
-AI-assisted development over outbound WebSocket connections. Users can run shell
-commands, manage projects, and drive programming tools such as Coco, Claude,
-Aiden, Codex, Gemini, and TTADK through chat.
+GhostAP 是一个飞书/Lark 机器人服务，用于通过出站 WebSocket 连接进行安全的远程 shell 执行和 AI 辅助开发。用户可以通过聊天运行 shell 命令、管理项目，并驱动 Coco、Claude、Aiden、Codex、Gemini 和 TTADK 等编程工具。
 
-## Commands
+## 命令
 
-Use `uv` only; never use pip/conda in this repo.
+仅使用 `uv`；本仓库中绝不使用 pip/conda。
 
 ```bash
 uv sync --group dev
@@ -24,249 +18,187 @@ uv run python -m pytest tests/ -q
 uv run python -m pytest tests/test_acp_client.py -q
 ```
 
-For focused changes, run the narrowest relevant test first, then broaden if the
-change touches shared routing, card rendering, locks, config, or session code.
+进行针对性修改时，先运行最相关的测试，然后在修改涉及共享路由、卡片渲染、锁、配置或会话代码时扩大测试范围。
 
-## Working Rules
+## 工作规则
 
-- Read `.Memory/Abstract.md` before changing behavior; it is the project-local
-  index of recent decisions and pitfalls.
-- Check existing patterns with `rg` before editing an established module.
-- Keep changes scoped. Do not refactor unrelated code while fixing a local issue.
-- All feature and bug-fix changes need tests. Prefer targeted regression tests
-  for the touched contract.
-- Secrets and environment-specific values come from `.env` via `src/config/`.
-  Never hardcode credentials or tokens.
-- Tests, probes, and temporary helpers belong under `tests/`, `scripts/`, `ux/`,
-  or `/tmp`; keep the repo root clean.
-- After completing a meaningful task, update `.Memory/{YYYY-MM-DD}.md` with
-  detailed entries: what changed, why, validation, and any follow-up risk.
-  Also append a one-line summary (~20 chars) to `.Memory/Abstract.md` with the
-  date reference so readers can locate the full record in the day file.
-- Medium/Low audit findings go to `.Memory/Backlog.md`; High correctness or
-  security findings should be fixed immediately. Remove backlog items when fixed.
-- Commit messages must follow `docs/commit-message-guidelines.md`.
+- 修改行为前阅读 `.Memory/Abstract.md`；这是项目本地的近期决策和陷阱索引。
+- 在编辑已建立的模块前，使用 `rg` 检查现有模式。
+- 保持修改范围明确。修复局部问题时不要重构无关代码。
+- 所有功能和 bug 修复都需要测试。对于涉及的合约，优先使用针对性回归测试。
+- 机密和环境特定值通过 `src/config/` 从 `.env` 获取。切勿硬编码凭据或令牌。
+- 测试、探测和临时辅助工具应放在 `tests/`、`scripts/`、`ux/` 或 `/tmp` 下；保持仓库根目录整洁。
+- 完成有意义的任务后，用详细条目更新 `.Memory/{YYYY-MM-DD}.md`：更改内容、原因、验证和任何后续风险。同时在 `.Memory/Abstract.md` 中添加一行摘要（约20个字符）和日期引用，以便读者在每日文件中找到完整记录。
+- 中/低审计发现放入 `.Memory/Backlog.md`；高正确性或安全性发现应立即修复。修复后移除待办项。
+- 提交消息必须遵循 `docs/commit-message-guidelines.md`。
 
-## Harness Principles
+## 指南原则
 
-Use this file like a harness, not a wiki:
+将此文件用作指南，而非维基百科：
 
-- Put durable rules here; put history and evidence in `.Memory/`.
-- Prefer specific failure-derived rules over generic advice.
-- If a rule can be enforced by tests, hooks, or typed APIs, enforce it there and
-  keep only the short pointer here.
-- Delete stale rules when the codebase or tooling no longer needs them.
-- Treat Coco/Claude/Aiden/Codex/Gemini/TTADK as tool backends behind GhostAP's
-  programming abstractions. Avoid adding backend-specific branches unless the
-  transport or capability really differs.
-- Bot admin bootstrap is intentionally one-way: `/setadmin` is accepted from
-  anyone only while `ADMIN_USER_IDS` is empty; afterward only the configured
-  admin may replace the single admin in `.env`.
-- Worktree mode should produce directly usable code without manual conflict
-  repair. Merge conflicts created by WT output are resolved automatically in
-  favor of the WT branch, and the card must disclose that impact so users can
-  decide whether to start an extra repair task.
+- 将持久规则放在这里；将历史和证据放在 `.Memory/` 中。
+- 优先选择特定的失败衍生规则而非通用建议。
+- 如果规则可以通过测试、钩子或类型化 API 强制执行，就在那里强制执行，并在此处只保留简短指针。
+- 当代码库或工具不再需要时，删除过时规则。
+- 将 Coco/Claude/Aiden/Codex/Gemini/TTADK 视为 GhostAP 编程抽象背后的工具后端。除非传输或功能确实不同，否则避免添加后端特定分支。
+- 机器人管理员引导是单向的：仅当 `ADMIN_USER_IDS` 为空时接受任何人的 `/setadmin`；之后只有配置的管理员可以替换 `.env` 中的单个管理员。
+- Worktree 模式应生成直接可用的代码，无需手动解决冲突。WT 输出创建的合并冲突自动以 WT 分支为准解决，卡片必须披露此影响，以便用户决定是否启动额外的修复任务。
 
-## Architecture Pointers
+## 架构指针
 
-Start from these modules instead of reading the whole tree:
+从这些模块开始，而不是阅读整个树：
 
-- `src/feishu/ws_client.py` and `src/feishu/dispatcher.py`: WebSocket ingress,
-  message routing, and interaction-mode dispatch.
-- `src/feishu/handlers/`: command handlers. Use `BaseHandler` messaging helpers:
-  `reply_text`, `reply_card`, `update_card`, `send_card_to_chat`,
-  `send_text_to_chat`.
-- `src/mode/`: `InteractionMode` and per-chat/project mode state.
-- `src/acp/`: ACP sessions, providers, diagnostics, and model/tool discovery for
-  ACP-capable programming tools.
-- `src/ttadk/`: TTADK tool/model selection and startup strategy. `ttadk_*`
-  agent types are CLI-bridge only; do not start ACP directly for them.
-- `src/deep_engine/`, `src/spec_engine/`, `src/worktree_engine/`,
-  `src/workflow_engine/`: long-running execution strategies.
-  - `src/workflow_engine/`: JS-orchestrated multi-agent parallel execution.
-    Key modules: `commands.py` (SSOT command set), `engine.py` (bridge + runtime),
-    `executor.py` (per-agent-call session), `tool_registry.py` (dynamic discovery),
-    `script_gen.py` (prompt template + validation), `renderer.py` (Feishu card).
-    Requires Node.js >= `NODE_MIN_VERSION` (defined in `src/workflow_engine/constants.py`);
-    all user-facing "Node too old" messages derive from that constant.
-- `src/card/`: Feishu card builders, render pipeline, session orchestration, and
-  delivery.
-- `src/project/`, `src/project_chat/`, `src/thread/`: project context, project
-  chat bindings, and thread context.
-- `src/chat_lock.py`, `src/repo_lock.py`, `src/utils/lock_order.py`: chat/repo
-  locking and lock-order enforcement.
-- `src/config/`: pydantic settings package and config validation.
-- `src/slock_engine/activation_guard.py`: permission check and rate limiting guard for
-  passive auto-activation.
-- `src/slock_engine/autonomous_resolver.py`: autonomous resolver for uncertain intents.
-- `src/slock_engine/role_bootstrap.py`: automatic role creation bootstrap when creating
-  new slock groups.
-- `src/slock_engine/task_classifier.py`: message classifier (task/chat/uncertain).
-- `src/slock_engine/task_queue.py`: task queue management.
-- `src/slock_engine/safe_error.py`: safe error message utility (re-export from
-  `src/utils/errors`).
+- `src/feishu/ws_client.py` 和 `src/feishu/dispatcher.py`：WebSocket 入口、消息路由和交互模式调度。
+- `src/feishu/handlers/`：命令处理器。使用 `BaseHandler` 消息辅助函数：`reply_text`、`reply_card`、`update_card`、`send_card_to_chat`、`send_text_to_chat`。
+- `src/mode/`：`InteractionMode` 和每聊天/项目模式状态。
+- `src/acp/`：ACP 会话、提供者、诊断和支持 ACP 的编程工具的模型/工具发现。
+- `src/ttadk/`：TTADK 工具/模型选择和启动策略。`ttadk_*` 代理类型仅支持 CLI 桥接；不要直接为它们启动 ACP。
+- `src/deep_engine/`、`src/spec_engine/`、`src/worktree_engine/`、`src/workflow_engine/`：长时间运行的执行策略。
+  - `src/workflow_engine/`：JS 编排的多代理并行执行。关键模块：`commands.py`（SSOT 命令集）、`engine.py`（桥接 + 运行时）、`executor.py`（每代理调用会话）、`tool_registry.py`（动态发现）、`script_gen.py`（提示模板 + 验证）、`renderer.py`（飞书卡片）。需要 Node.js >= `NODE_MIN_VERSION`（在 `src/workflow_engine/constants.py` 中定义）；所有面向用户的"Node 版本过旧"消息都源自此常量。
+- `src/card/`：飞书卡片构建器、渲染管道、会话编排和交付。
+- `src/project/`、`src/project_chat/`、`src/thread/`：项目上下文、项目聊天绑定和线程上下文。
+- `src/chat_lock.py`、`src/repo_lock.py`、`src/utils/lock_order.py`：聊天/仓库锁定和锁定顺序强制执行。
+- `src/config/`：pydantic 设置包和配置验证。
+- `src/slock_engine/activation_guard.py`：被动自动激活的权限检查和速率限制保护。
+- `src/slock_engine/autonomous_resolver.py`：不确定意图的自主解析器。
+- `src/slock_engine/role_bootstrap.py`：创建新 slock 组时自动创建角色引导。
+- `src/slock_engine/task_classifier.py`：消息分类器（任务/聊天/不确定）。
+- `src/slock_engine/task_queue.py`：任务队列管理。
+- `src/slock_engine/safe_error.py`：安全错误消息工具（从 `src/utils/errors` 重导出）。
 
-## Strategy And Transport
+## 策略与传输
 
-GhostAP has two independent axes:
+GhostAP 有两个独立的维度：
 
-- Execution strategies: Normal programming, Deep, Spec, Worktree, and Workflow.
-- Tool transport: ACP direct mode, shell CLI bridge mode, and TTADK CLI bridge.
+- 执行策略：普通编程、Deep、Spec、Worktree 和 Workflow。
+- 工具传输：ACP 直接模式、shell CLI 桥接模式和 TTADK CLI 桥接。
 
-Keep these axes separate. A new programming feature should usually work across
-Coco, Claude, Aiden, Codex, Gemini, and TTADK unless the user explicitly scopes
-it down or the backend cannot support it.
+保持这些维度分离。新的编程功能通常应在 Coco、Claude、Aiden、Codex、Gemini 和 TTADK 上工作，除非用户明确限定范围或后端不支持。
 
-State scoping is also a product contract:
+状态范围也是产品合约：
 
-- SMART is the default chat/project state and may route simple intents or
-  shell-like commands directly.
-- Normal tool entries such as `/coco`, `/codex`, `/aiden`, `/claude`, `/gemini`,
-  and `/ttadk` set a persistent chat+project programming state until `/exit`.
-- Deep, Spec, Worktree, and Workflow are engine strategies scoped to the Feishu
-  topic/root thread; they must not replace chat+project programming state.
-- Shell-like text in SMART must remain shell execution, including commands such
-  as `./restart.sh rr`, instead of being stolen by project-chat free text
-  programming routing.
+- SMART 是默认聊天/项目状态，可直接路由简单意图或类 shell 命令。
+- 普通工具入口如 `/coco`、`/codex`、`/aiden`、`/claude`、`/gemini` 和 `/ttadk` 设置持久聊天+项目编程状态，直到 `/exit`。
+- Deep、Spec、Worktree 和 Workflow 是作用于飞书话题/根线程的引擎策略；它们不得替换聊天+项目编程状态。
+- SMART 中的类 shell 文本必须保持 shell 执行，包括 `./restart.sh rr` 等命令，而不是被项目聊天自由文本编程路由窃取。
 
-## Card And UI Rules
+## 卡片与 UI 规则
 
-- Programming cards follow one task per card. Show the overall task list and the
-  current active task at the top.
-- Subagents get separate task cards and keep updating their own messages.
-- When a card exceeds limits, create a continuation card and preserve the
-  previous card content.
-- Avoid empty tool/detail blocks.
-- For UI design changes, create or update an HTML preview under `ux/` before
-  implementation, then align production code to the reviewed preview.
-- Respect card layering: handlers use session/protocol APIs; session orchestrates
-  render and delivery; render stays pure; delivery does not import session.
+- 编程卡片遵循每张卡片一个任务。在顶部显示总体任务列表和当前活动任务。
+- 子代理获得单独的任务卡片并持续更新自己的消息。
+- 当卡片超过限制时，创建续接卡片并保留先前卡片内容。
+- 避免空工具/详情块。
+- 对于 UI 设计更改，在实现前在 `ux/` 下创建或更新 HTML 预览，然后使生产代码与已审查的预览对齐。
+- 尊重卡片分层：处理器使用会话/协议 API；会话编排渲染和交付；渲染保持纯净；交付不导入会话。
 
-## Import Boundaries
+## 导入边界
 
-The card pipeline has a strict one-way dependency direction:
+卡片管道有严格的单向依赖方向：
 
 ```text
 handler -> session -> render
                   -> delivery
 ```
 
-- `render` must not import `delivery`.
-- `delivery` must not import `session`.
-- Handlers should depend on protocols and facades, not concrete renderer internals.
-- Shared cross-layer types belong in `src/card/protocols.py` or
-  `src/card/events/`.
-- Use `TYPE_CHECKING` or local lazy imports only when they preserve this direction.
+- `render` 不得导入 `delivery`。
+- `delivery` 不得导入 `session`。
+- 处理器应依赖协议和外观，而非具体渲染器内部。
+- 跨层共享类型应放在 `src/card/protocols.py` 或 `src/card/events/` 中。
+- 仅在保持此方向时使用 `TYPE_CHECKING` 或局部延迟导入。
 
-## Current Gotchas
+## 当前注意事项
 
-- `CardBuilder.build_engine_card()` is removed. Static cards use
-  `build_info_card()`; engine/progress cards go through the `CardSession`
-  pipeline.
-- Spec persists context through `SpecManager.persist_result`; Deep uses
-  `ContextPersistenceHook`; Worktree persists through its reporter path.
-- `ACPSessionManager` owns session-key parsing and locking. Do not hand-parse
-  session keys in business code.
-- Feishu card JSON is strict. If a schema error appears in `logs.log`, fix the
-  emitted structure and add a regression test around the builder or renderer.
-- For restart/startup issues, inspect `logs.log` and `[RESTART]` markers before
-  changing app code; separate script latency from Python cold start.
+- `CardBuilder.build_engine_card()` 已移除。静态卡片使用 `build_info_card()`；引擎/进度卡片通过 `CardSession` 管道。
+- Spec 通过 `SpecManager.persist_result` 持久化上下文；Deep 使用 `ContextPersistenceHook`；Worktree 通过其报告路径持久化。
+- `ACPSessionManager` 负责会话密钥解析和锁定。不要在业务代码中手动解析会话密钥。
+- 飞书卡片 JSON 严格。如果 `logs.log` 中出现模式错误，修复发出的结构并在构建器或渲染器周围添加回归测试。
+- 对于重启/启动问题，在更改应用代码前检查 `logs.log` 和 `[RESTART]` 标记；将脚本延迟与 Python 冷启动分开。
 
-## Workflow Mode (`/wf`)
+## Workflow 模式 (`/wf`)
 
-The `WorkflowHandler` owns the `/wf` command, which lets users describe a
-multi-step task in natural language and have an orchestrator agent generate
-and execute a Node.js workflow script. The flow is:
+`WorkflowHandler` 负责 `/wf` 命令，允许用户用自然语言描述多步骤任务，由编排 Agent 生成并执行 Node.js 工作流脚本。**三步流程**如下：
 
-1. **Send a requirement** — `/wf <need-to-add-cli-parsing>` or `/wf` followed
-   by free-form text. The requirement surfaces in all subsequent cards.
-2. **Step 1 — Orchestrator agent selection** — pick a tool + model combo that
-   will drive script generation. The combined card lets you expand a tool to
-   reveal its model panel, or click "+ 添加 <tool>" directly to use its
-   default model. Multi-selection is not needed here: the orchestrator is a
-   single chosen agent.
-3. **Step 2 — Review agent selection** — same combined card. You may pick one
-   or more tool + model combos to act as independent reviewers, or click the
-   **Auto** shortcut to skip independent review and have the orchestrator
-   self-review. Skipping is useful for low-risk changes and avoids the cost
-   of extra agent calls.
-4. **Script generation & confirmation** — once both steps are non-empty (or
-   Auto toggled on step 2), the engine builds a JS workflow via
-   `src/workflow_engine/script_gen.py`, validates the output (meta export,
-   balanced brackets, at least one `agent()`/`workflow()` call, no forbidden
-   `require('fs'|child_process|net|...)` escapes), and shows a confirmation
-   card listing phases, tools, and a short preview before execution.
-5. **Execution & progress** — after user confirmation, the JS runtime runs
-   the script, streaming phase and per-agent progress through
-   `WorkflowProgressRenderer`.
+1. **① 选择主编排Agent** — 选择一个工具+模型组合来驱动脚本生成。组合卡片允许展开工具查看其模型面板，或直接点击 "+ 添加 <工具>" 使用默认模型。此处不需要多选：编排器是单个选择的 Agent。
+2. **② 选择评审Agent** — 使用相同的组合卡片界面。可以选择一个或多个工具+模型组合作为独立评审者，或点击 **Auto** 快捷按钮跳过独立评审，由编排器进行自我评审。跳过评审适用于低风险变更，可避免额外的 Agent 调用成本。
+3. **③ 确认并执行** — 当两步都非空（或步骤2启用了Auto）后，引擎通过 `src/workflow_engine/script_gen.py` 构建 JS 工作流，验证输出（元数据导出、括号平衡、至少一个 `agent()`/`workflow()` 调用、无禁止的 `require('fs'|child_process|net|...)` 逃逸），显示确认卡片列出阶段、工具和简短预览，用户确认后执行脚本。进度通过 `WorkflowProgressRenderer` 流式传输。
 
-Error handling:
+错误处理：
+- 任一步骤为空选择时，卡片中会显示内联错误；用户需要选择至少一个工具/模型并重试。
+- 验证失败的脚本会被拒绝，并返回结构化错误列表（缺少元数据、不安全模式等）—— 用户从确认卡片重新生成。
+- 运行中的工作流会阻止新的 `/wf` 调用，必须使用 `/stop_wf` 或进度卡片上的取消按钮停止。
 
-- Empty selection on either step surfaces an inline error in the card; the
-  user picks at least one tool / model and retries.
-- Scripts that fail validation are rejected with a structured error list
-  (missing meta, unsafe patterns, etc.) — the user regenerates from the
-  confirmation card.
-- Running workflows block new `/wf` invocations and must be stopped with
-  `/stop_wf` or the cancel button on the progress card.
+### 快速开始
 
-Command quick reference:
+#### 命令速查
 
-| Command            | Purpose                                          |
-| ------------------ | ------------------------------------------------ |
-| `/wf <desc>`       | Start a new workflow from a requirement          |
-| `/wf <template>`   | (Optional) launch from a saved template name     |
-| `/stop_wf`         | Abort the currently running workflow             |
-| `/wf_status`       | Show active workflow progress and selected tools |
-| `/wf_help`         | In-chat help text                                |
+| 命令 | 用途 |
+| --- | --- |
+| `/wf <需求描述>` | 从需求描述启动新工作流 |
+| `/wf <模板名称>` | （可选）从保存的模板名称启动 |
+| `/stop_wf` | 中止当前运行的工作流 |
+| `/wf_status` | 显示活动工作流进度和已选工具 |
+| `/wf_help` | 聊天内帮助文本 |
 
-### Detailed Usage Guide
+#### 交互流程
 
-#### Two-Step Selection Flow
-The workflow uses a combined card interface for both orchestrator and review
-selection steps:
+1. **输入命令**：在飞书聊天中输入 `/wf <您的需求>`，例如 `/wf 帮我创建一个用户登录页面`
+2. **选择主编排Agent**：在弹出的卡片中选择一个工具+模型组合作为编排器
+3. **选择评审Agent**：选择一个或多个评审工具+模型组合，或点击 **Auto** 按钮跳过评审
+4. **确认执行**：查看生成的脚本预览后点击确认按钮开始执行
+5. **查看进度**：实时查看工作流执行进度
 
-- **Orchestrator Step (Step 1)**: Select exactly one tool + model combination
-  that will generate the workflow script. Use the stepper indicator at the top
-  to track progress (current=1).
+#### 取消/回退操作
 
-- **Review Step (Step 2)**: Select one or more tool + model combinations to
-  review the generated script, or use the **Auto** button to skip independent
-  review. The stepper indicator shows current=2.
+- 在确认阶段点击 **取消** 按钮取消工作流
+- 在执行阶段使用 `/stop_wf` 命令或点击进度卡片上的取消按钮停止工作流
+- 如果遇到错误，卡片会显示错误提示和处理建议
 
-#### Combined Card Features
-- **Tool + Model Inline Expansion**: Click on any tool to expand and view its
-  available models inline without navigating to a separate card.
-- **Stepper Indicator**: Shows current step (1/2) and overall progress.
-- **Auto Option**: In review step, skips independent review and uses the
-  orchestrator agent for self-review.
-- **Remove/Clear Buttons**: Remove individual selections or clear all selections
-  with a single click.
-- **Empty Selection Validation**: Prevents proceeding with empty selections by
-  showing inline error messages.
+#### 三步工作流流程
 
-#### Skipping Review
-Use the **Auto** button in the review step to skip independent review when:
-- Making low-risk changes (e.g., minor bug fixes, documentation updates)
-- Working in a rapid prototyping mode
-- Trusting the orchestrator agent's self-review capabilities
+工作流使用组合卡片界面完成完整的三步流程：
 
-#### Script Generation & Confirmation
-- **Dynamic Role Assignment**: Roles (Orchestrator/Reviewer) are dynamically
-  inferred from the task description by the LLM, not statically selected by
-  the user.
-- **Script Preview**: The confirmation card shows a preview of the generated
-  workflow script with key details:
-  - Orchestrator tool/model
-  - Reviewer tools/models (or "Auto" if review was skipped)
-  - Phase breakdown
-  - Estimated token usage
-- **Execution Control**: Confirm to execute the script, or regenerate if changes
-  are needed.
+1. **① 编排器步骤（步骤1）**：选择恰好一个工具+模型组合来生成工作流脚本。使用顶部的步骤指示器跟踪进度（当前=1/3）。
 
-#### Agent() Call Execution
-When the workflow runs `agent()` calls:
-- Each agent call uses the selected tool/model combination
-- Review agents provide feedback on the orchestrator's work
-- The final output combines all agent results into a cohesive deliverable
-- Progress is streamed in real-time through the workflow progress card
+2. **② 评审步骤（步骤2）**：选择一个或多个工具+模型组合来评审生成的脚本，或使用 **Auto** 按钮跳过独立评审。步骤指示器显示当前=2/3。
+
+3. **③ 确认步骤（步骤3）**：查看生成的工作流脚本并确认执行。步骤指示器显示当前=3/3。
+
+#### 组合卡片功能
+- **工具+模型内联展开**：点击任意工具可内联展开并查看其可用模型，无需导航到单独卡片。
+- **步骤指示器**：显示当前步骤（1/3、2/3 或 3/3）和整体进度。
+- **Auto 选项**：在评审步骤中，跳过独立评审并使用编排器 Agent 进行自我评审。
+- **移除/清除按钮**：单击即可移除单个选择或清除所有选择。
+- **空选择验证**：通过显示内联错误消息防止空选择继续。
+
+#### 跳过评审
+
+在评审步骤中使用 **Auto** 按钮跳过独立评审的场景：
+- 进行低风险变更（例如，小的 bug 修复、文档更新）
+- 处于快速原型开发模式
+- 信任编排器 Agent 的自我评审能力
+
+**风险提示**：
+- 跳过独立评审可能会遗漏潜在问题
+- 建议在生产环境或高风险变更时启用独立评审
+- Auto 模式下，角色由 LLM 动态分配
+
+**重新启用评审**：
+- 如果在步骤2选择了 Auto，可以返回到步骤2重新选择评审工具
+- 在确认卡片上可以看到评审状态（Auto 或具体评审工具）
+- 如果需要，可以点击"重新选择"按钮返回工具选择界面
+
+#### 脚本生成与确认
+- **动态角色分配**：角色（编排器/评审者）由 LLM 从任务描述中动态推断，而非由用户静态选择。
+- **脚本预览**：确认卡片显示生成的工作流脚本预览，包含关键细节：
+  - 编排器工具/模型
+  - 评审工具/模型（如果跳过评审则显示 "Auto"）
+  - 阶段分解
+- **执行控制**：确认执行脚本，或在需要更改时重新生成。
+
+#### Agent() 调用执行
+
+当工作流运行 `agent()` 调用时：
+- 每个 Agent 调用使用选定的工具/模型组合
+- 评审 Agent 对编排器的工作提供反馈
+- 最终输出将所有 Agent 结果合并为一个连贯的交付物
+- 进度通过工作流进度卡片实时流式传输

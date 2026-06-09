@@ -59,11 +59,7 @@ Output JSON:
     const totalBatches = Math.ceil(targets.length / batchSize);
     log(`Processing batch ${batchNum}/${totalBatches} (${batch.length} files)`);
 
-    // Check budget before each batch
-    if (budget.remaining() < budget.total * 0.1) {
-      log("Budget running low — stopping after current batch");
-      break;
-    }
+    // No budget/token gate — processing continues until all batches are done.
 
     const batchResults = await parallel(
       batch.map((file, idx) => ({

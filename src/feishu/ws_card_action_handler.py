@@ -88,13 +88,8 @@ SYSTEM_CARD_ACTIONS = {
     "workflow_confirm_start",
     "workflow_cancel",
     "workflow_select_tool",
-    "workflow_select_budget",
-    "workflow_select_agent",
-    "workflow_select_role",
-    "workflow_confirm_roles_and_generate",
     "workflow_confirm_tools",
     "workflow_regenerate_script",
-    "workflow_apply_budget_regenerate",
     "workflow_fill_missing_tools",
     "workflow_back_to_tools",
     "workflow_view_workflow_ref",
@@ -103,6 +98,19 @@ SYSTEM_CARD_ACTIONS = {
     "show_workflow_menu",
     "workflow_list_templates",
     "workflow_show_help",
+    # Workflow orchestrator selection (Step 1 of 2-step flow, combined card)
+    "workflow_orchestrator_select_tool",
+    "workflow_orchestrator_select_model",
+    "workflow_orchestrator_remove",
+    "workflow_orchestrator_clear",
+    "workflow_orchestrator_finish",
+    # Workflow review agent selection (Step 2 of 2-step flow)
+    "workflow_review_select_tool",
+    "workflow_review_select_model",
+    "workflow_review_finish",
+    "workflow_review_remove",
+    "workflow_review_clear",
+    "workflow_review_toggle_auto",
 }
 
 

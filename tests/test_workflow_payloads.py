@@ -384,8 +384,12 @@ class TestWorkflowButtonValueFilter(unittest.TestCase):
             "project_id": "proj_001",
             "engine_session_key": "sess-xyz",
             "tool_name": "coco",
-            "budget_tokens": 200000,
-            "agent_type": "coco",
+            "provider": "workflow",
+            "display_name": "coco",
+            "supports_model": True,
+            "model_name": "claude-3-5",
+            "use_default_model": False,
+            "selection_key": "sel-123",
         }
         filtered = filter_workflow_button_value(value)
         self.assertEqual(filtered, value)
@@ -446,8 +450,12 @@ class TestWorkflowButtonValueFilter(unittest.TestCase):
             "project_id": "proj_001",
             "engine_session_key": "sess-xyz",
             "tool_name": "coco",
-            "budget_tokens": 100000,
-            "agent_type": "claude",
+            "provider": "workflow",
+            "display_name": "coco",
+            "supports_model": True,
+            "model_name": "claude-3-5",
+            "use_default_model": False,
+            "selection_key": "sel-123",
         }
         out = filter_workflow_button_value(typed)
         self.assertEqual(set(out.keys()), set(typed.keys()))

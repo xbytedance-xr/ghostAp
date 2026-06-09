@@ -9,6 +9,8 @@ Validates:
 import unittest
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.workflow_engine.roles import SUBAGENT_ENCOURAGEMENT_PROMPT
 from src.workflow_engine.script_gen import (
     SUBAGENT_ENCOURAGEMENT,
@@ -205,8 +207,6 @@ class TestBuildScriptGenPromptInjection(unittest.TestCase):
         prompt = build_script_gen_prompt(
             requirement="Test requirement",
             available_tools=["coco", "claude"],
-            available_roles=["architect", "tester"],
-            budget_total=10000,
         )
         self.assertTrue(prompt.endswith(SUBAGENT_ENCOURAGEMENT))
 
@@ -214,8 +214,6 @@ class TestBuildScriptGenPromptInjection(unittest.TestCase):
         prompt = build_script_gen_prompt(
             requirement="My unique test requirement xyz123",
             available_tools=["coco"],
-            available_roles=[],
-            budget_total=5000,
         )
         self.assertIn("My unique test requirement xyz123", prompt)
 
@@ -223,8 +221,6 @@ class TestBuildScriptGenPromptInjection(unittest.TestCase):
         prompt = build_script_gen_prompt(
             requirement="Test",
             available_tools=["coco", "claude", "aiden"],
-            available_roles=[],
-            budget_total=5000,
         )
         self.assertIn("`coco`", prompt)
         self.assertIn("`claude`", prompt)
@@ -234,27 +230,20 @@ class TestBuildScriptGenPromptInjection(unittest.TestCase):
         prompt = build_script_gen_prompt(
             requirement="Test",
             available_tools=[],
-            available_roles=["architect", "security_auditor"],
-            budget_total=5000,
         )
-        self.assertIn("`architect`", prompt)
-        self.assertIn("`security_auditor`", prompt)
+        self.assertIn("architect", prompt.lower())
 
     def test_prompt_contains_budget(self):
         prompt = build_script_gen_prompt(
             requirement="Test",
             available_tools=[],
-            available_roles=[],
-            budget_total=12345,
         )
-        self.assertIn("12345", prompt)
+        self.assertNotIn("预算", prompt)
 
     def test_encouragement_appears_exactly_once(self):
         prompt = build_script_gen_prompt(
             requirement="Test",
             available_tools=["coco"],
-            available_roles=[],
-            budget_total=5000,
         )
         count = prompt.count(SUBAGENT_ENCOURAGEMENT)
         self.assertEqual(count, 1, f"Expected encouragement once, found {count} times")
@@ -277,17 +266,19 @@ class TestGenerateSimpleScriptEncouragement(unittest.TestCase):
         self.assertIn("agent(", script)
 
 
+@pytest.mark.skip(reason="Budget/roles selection removed; build_script_gen_prompt no longer accepts budget tokens or static roles.")
 class TestBudgetConstraintAndAgentCapability(unittest.TestCase):
-    """Test budget hard constraint and orchestrator agent capability adaptation."""
+    """Test budget hard constraint and orchestrator agent capability adaptation.
+
+    SKIPPED — budget/roles selection has been removed; script generation now
+    uses dynamic roles and no budget hard constraints.
+    """
 
     def test_budget_section_included_when_budget_tokens_provided(self):
         """Budget constraint section should appear when budget_tokens is provided."""
         prompt = build_script_gen_prompt(
             requirement="Test requirement",
             available_tools=["coco"],
-            available_roles=["architect"],
-            budget_total=2_000_000,
-            budget_tokens=2_000_000,
         )
         self.assertIn("## 预算硬约束", prompt)
         self.assertIn("Token 预算硬约束", prompt)
@@ -331,6 +322,42 @@ class TestBudgetConstraintAndAgentCapability(unittest.TestCase):
         )
         self.assertIn("## 主编排 Agent 能力", prompt)
         self.assertIn("coco", prompt)
+
+    def test_prompt_contains_both_sections_in_correct_order(self):
+        """Both sections should appear in the prompt in the correct order."""
+        prompt = build_script_gen_prompt(
+            requirement="Test requirement",
+            available_tools=["coco"],
+            available_roles=["architect"],
+            budget_total=2_000_000,
+            budget_tokens=2_000_000,
+            orchestrator_agent="claude",
+        )
+        # Budget section should come before agent capability section
+        budget_pos = prompt.index("## 预算硬约束")
+        agent_pos = prompt.index("## 主编排 Agent 能力")
+        self.assertLess(budget_pos, agent_pos)
+        # Both should come before user requirement
+        req_pos = prompt.index("## User Requirement")
+        self.assertLess(agent_pos, req_pos)
+
+    def test_backward_compatibility_without_new_params(self):
+        """Existing calls without new params should still work (defaults)."""
+        prompt = build_script_gen_prompt(
+            requirement="Test requirement",
+            available_tools=["coco"],
+            available_roles=["architect"],
+            budget_total=2_000_000,
+        )
+        # Should still contain agent capability section with default "coco"
+        self.assertIn("## 主编排 Agent 能力", prompt)
+        self.assertIn("coco", prompt)
+        # Should NOT contain budget section (budget_tokens defaults to None)
+        self.assertNotIn("## 预算硬约束", prompt)
+
+
+class TestAgentCapabilityNotes(unittest.TestCase):
+    """Test _get_agent_capability_note returns correct notes for each agent type."""
 
     def test_agent_capability_coco(self):
         """Coco agent should have subagent and parallel orchestration notes."""
@@ -383,38 +410,6 @@ class TestBudgetConstraintAndAgentCapability(unittest.TestCase):
         self.assertNotEqual(note_coco, note_claude)
         self.assertNotEqual(note_coco, note_aiden)
         self.assertNotEqual(note_claude, note_aiden)
-
-    def test_prompt_contains_both_sections_in_correct_order(self):
-        """Both sections should appear in the prompt in the correct order."""
-        prompt = build_script_gen_prompt(
-            requirement="Test requirement",
-            available_tools=["coco"],
-            available_roles=["architect"],
-            budget_total=2_000_000,
-            budget_tokens=2_000_000,
-            orchestrator_agent="claude",
-        )
-        # Budget section should come before agent capability section
-        budget_pos = prompt.index("## 预算硬约束")
-        agent_pos = prompt.index("## 主编排 Agent 能力")
-        self.assertLess(budget_pos, agent_pos)
-        # Both should come before user requirement
-        req_pos = prompt.index("## User Requirement")
-        self.assertLess(agent_pos, req_pos)
-
-    def test_backward_compatibility_without_new_params(self):
-        """Existing calls without new params should still work (defaults)."""
-        prompt = build_script_gen_prompt(
-            requirement="Test requirement",
-            available_tools=["coco"],
-            available_roles=["architect"],
-            budget_total=2_000_000,
-        )
-        # Should still contain agent capability section with default "coco"
-        self.assertIn("## 主编排 Agent 能力", prompt)
-        self.assertIn("coco", prompt)
-        # Should NOT contain budget section (budget_tokens defaults to None)
-        self.assertNotIn("## 预算硬约束", prompt)
 
 
 if __name__ == "__main__":

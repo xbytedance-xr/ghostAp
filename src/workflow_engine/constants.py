@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 # --- Timeouts ---
 AGENT_CALL_TIMEOUT_S: int = 300  # Per agent() call timeout (seconds)
 WORKFLOW_TOTAL_TIMEOUT_S: int = 1800  # Total workflow execution timeout (30 min)
@@ -13,40 +11,6 @@ SESSION_CREATE_TIMEOUT_S: int = 100
 DEFAULT_MAX_CONCURRENT: int = 10  # Default parallel agent slots
 HARD_MAX_CONCURRENT: int = 16  # Absolute ceiling regardless of config
 MAX_TOTAL_AGENTS: int = 200  # Max agent() calls per workflow run (safety fuse)
-
-# --- Budget ---
-DEFAULT_BUDGET_TOKENS: int = 2_000_000  # Default total token budget
-BUDGET_WARNING_THRESHOLD: float = 0.1  # Warn at 10% remaining
-RESERVE_PER_AGENT_TOKENS: int = 100_000  # Reservation per agent() call
-BUDGET_OPTIONS: list[tuple[str, int]] = [
-    ("50万", 500_000),
-    ("150万", 1_500_000),
-    ("200万", 2_000_000),
-    ("500万", 5_000_000),
-]
-BUDGET_OPTIONS_VALUES: set[int] = {value for _, value in BUDGET_OPTIONS}
-
-
-def is_valid_budget(value: Any) -> bool:
-    """Return True if *value* is an int (or int-like) tier from BUDGET_OPTIONS.
-
-    Validates against the tiered budget options defined in :data:`BUDGET_OPTIONS`
-    (50万, 150万, 200万, 500万). Non-int inputs, out-of-range values, floats
-    with fractional parts, and any unhashable / unsupported types are rejected
-    gracefully — the function never raises.
-    """
-    try:
-        if isinstance(value, bool):
-            return False
-        if isinstance(value, int):
-            return value in BUDGET_OPTIONS_VALUES
-        if isinstance(value, float):
-            if not value.is_integer():
-                return False
-            return int(value) in BUDGET_OPTIONS_VALUES
-    except Exception:
-        return False
-    return False
 
 # --- Nesting ---
 MAX_NESTING_DEPTH: int = 3  # Max sub-workflow nesting (parent→child→grandchild)

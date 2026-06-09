@@ -386,7 +386,6 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
             script_path="test.js",
             cwd="/tmp",
             max_concurrent=4,
-            budget_total=1_000_000,
             on_agent_call=lambda params: None,
         )
         bridge._send = fake_send
@@ -395,7 +394,6 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
             "jsonrpc": "2.0",
             "method": "init",
             "params": {
-                "budget_total": bridge._budget_total,
                 "args": bridge._args,
                 "max_concurrent": bridge._max_concurrent,
             },
@@ -404,7 +402,6 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
         msg = captured[0]
         self.assertEqual(msg["method"], "init")
         self.assertEqual(msg["params"]["max_concurrent"], 4)
-        self.assertEqual(msg["params"]["budget_total"], 1_000_000)
 
     def test_max_concurrent_capped_at_hard_limit(self):
         """Bridge honours HARD_MAX_CONCURRENT as a safety ceiling."""
@@ -427,7 +424,6 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
             script_path="test.js",
             cwd="/tmp",
             max_concurrent=4,
-            budget_total=1_000_000,
             on_agent_call=lambda params: None,
         )
         bridge._send = fake_send
@@ -436,7 +432,6 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
             "jsonrpc": "2.0",
             "method": "init",
             "params": {
-                "budget_total": bridge._budget_total,
                 "args": bridge._args,
                 "max_concurrent": bridge._max_concurrent,
             },
@@ -530,7 +525,6 @@ class TestRuntimeParallelConcurrency(unittest.TestCase):
                                 "jsonrpc": "2.0",
                                 "method": "init",
                                 "params": {
-                                    "budget_total": 1_000_000,
                                     "args": {},
                                     "max_concurrent": max_concurrent,
                                 },
@@ -612,7 +606,7 @@ class TestRuntimeParallelConcurrency(unittest.TestCase):
             "phases: [{title: 't', detail: 't'}], maxConcurrent: 4};\n"
             "export async function run(args) {\n"
             "  const items = ['5.0', '5.0', '5.0', '5.0'];\n"
-            "  const results = await parallel(items.map(p => ({prompt: p})));\n"
+            "  const results = await parallel(items.map(p => () => agent(p)));\n"
             "  return { done: results.length };\n"
             "}\n"
         )
@@ -634,7 +628,7 @@ class TestRuntimeParallelConcurrency(unittest.TestCase):
             "phases: [{title: 't', detail: 't'}], maxConcurrent: 2};\n"
             "export async function run(args) {\n"
             "  const items = ['2.0', '2.0', '2.0', '2.0'];\n"
-            "  const results = await parallel(items.map(p => ({prompt: p})));\n"
+            "  const results = await parallel(items.map(p => () => agent(p)));\n"
             "  return { done: results.length };\n"
             "}\n"
         )
@@ -810,8 +804,7 @@ class TestPipelineSemantics(unittest.TestCase):
         prompt = build_script_gen_prompt(
             requirement="analyze files",
             available_tools=["coco"],
-            available_roles=["analyst"],
-            budget_total=1_000_000,
+            orchestrator_agent="coco",
         )
         # Pin to the JS-primitive usage of pipeline in the prompt code fence
         # (avoid matching incidental mentions like "复杂 pipeline 组合" in
@@ -874,8 +867,7 @@ class TestPipelineSemantics(unittest.TestCase):
         prompt = build_script_gen_prompt(
             requirement="analyze files",
             available_tools=["coco"],
-            available_roles=["analyst"],
-            budget_total=1_000_000,
+            orchestrator_agent="coco",
         )
         lower = prompt.lower()
         self.assertTrue(

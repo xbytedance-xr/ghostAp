@@ -35,147 +35,40 @@ def _create_mock_handler():
     return handler
 
 
-def test_agent_selection_card_shown_on_wf_command():
-    """主编排 Agent 选择卡在 /wf 命令后显示。"""
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.IDLE,
-    )
-    handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
-
-    handler._show_agent_selection_card(
-        chat_id="test_chat",
-        requirement="test requirement",
-        project=MagicMock(project_id="test_proj"),
-        root_path="/tmp",
-    )
-
-    # Verify engine state is updated
-    assert mock_engine.project.status == WorkflowStatus.AWAITING_AGENT_SELECT
-    assert mock_engine.project.pending is not None
-    assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
-    assert mock_engine.project.pending.requirement == "test requirement"
-
-    # Verify combined card was sent
-    handler._send_combined_selection_card.assert_called_once()
-    call_kwargs = handler._send_combined_selection_card.call_args
-    assert call_kwargs.kwargs.get("is_initial") is True
-
-
-def test_agent_selection_card_contains_all_options():
-    """Agent 选择卡包含所有 ORCHESTRATOR_AGENT_OPTIONS。"""
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.IDLE,
-    )
-    handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
-
-    handler._show_agent_selection_card(
-        chat_id="test_chat",
-        requirement="test",
-        project=MagicMock(project_id="test_proj"),
-        root_path="/tmp",
-    )
-
-    # Verify combined card was dispatched
-    handler._send_combined_selection_card.assert_called_once()
-    # State is correctly set
-    assert mock_engine.project.pending is not None
-    assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
-
-
-def test_handle_workflow_select_agent_success():
-    """选择 Agent 成功后进入工具选择阶段。"""
-    handler = _create_mock_handler()
-    
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_AGENT_SELECT,
-        pending=PendingConfirmation(
-            requirement="test requirement",
-            engine_session_key="session_123",
-            initiator_user_id="test_user",
-            orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-    
-    with patch('src.thread.get_current_sender_id', return_value="test_user"):
-        handler.handle_workflow_select_agent(
-            message_id="msg_123",
-            chat_id="test_chat",
-            project_id="test_proj",
-            value={
-                "action": "workflow_select_agent",
-                "agent_type": "claude",
-                "engine_session_key": "session_123",
-                "project_id": "test_proj",
-            },
-        )
-    
-    # Verify agent selection was stored
-    assert mock_engine.project.pending.orchestrator_agent == "claude"
-
-    # Verify combined card re-rendered (not tool selection step)
-    handler._send_combined_selection_card.assert_called_once()
-
-
-def test_handle_workflow_select_agent_wrong_state():
-    """错误状态下选择 Agent 返回 invalid_state 错误。"""
-    handler = _create_mock_handler()
-    
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.RUNNING,  # Wrong state
-        pending=PendingConfirmation(
-            engine_session_key="session_123",
-            initiator_user_id="test_user",
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-    
-    with patch('src.thread.get_current_sender_id', return_value="test_user"):
-        handler.handle_workflow_select_agent(
-            message_id="msg_123",
-            chat_id="test_chat",
-            project_id=None,
-            value={
-                "action": "workflow_select_agent",
-                "agent_type": "claude",
-                "engine_session_key": "session_123",
-            },
-        )
-    
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "invalid_state"
-
-
-def test_script_gen_uses_selected_agent():
-    """脚本生成使用用户选择的 Agent 类型。"""
+def test_script_gen_uses_selected_agent_and_model():
+    """脚本生成使用用户选择的 Agent 类型和模型。"""
     from src.workflow_engine.script_gen import build_script_gen_prompt
     
     # Test with different orchestrator agents
     for agent_type, _, _ in ORCHESTRATOR_AGENT_OPTIONS:
+        # Test with default model
         prompt = build_script_gen_prompt(
             requirement="test",
             available_tools=["coco", "claude"],
-            available_roles=["architect"],
-            budget_total=2000000,
-            budget_tokens=2000000,
             orchestrator_agent=agent_type,
         )
         
         # The agent type should appear in the prompt
         assert agent_type in prompt, f"Agent type {agent_type} not found in prompt"
+        
+        # Test with specific model
+        orchestrator_binding = {
+            "tool_name": agent_type,
+            "model_name": "gpt-4",
+            "use_default_model": False
+        }
+        
+        prompt_with_model = build_script_gen_prompt(
+            requirement="test",
+            available_tools=["coco", "claude"],
+            orchestrator_agent=agent_type,
+            orchestrator_binding=orchestrator_binding,
+        )
+        
+        # The agent type and model should appear in the prompt
+        assert agent_type in prompt_with_model
+        assert "gpt-4" in prompt_with_model
+        assert "已选择的主 Agent" in prompt_with_model
 
 
 def test_script_gen_default_agent():
@@ -185,190 +78,11 @@ def test_script_gen_default_agent():
     prompt = build_script_gen_prompt(
         requirement="test",
         available_tools=["coco"],
-        available_roles=["architect"],
-        budget_total=2000000,
-        # 不指定 budget_tokens 和 orchestrator_agent
+        # 不指定 orchestrator_agent
     )
     
     # Should use default agent
     assert DEFAULT_ORCHESTRATOR_AGENT in prompt
-
-
-def test_select_agent_uses_project_root_path_when_different_from_chat_dir():
-    """project.root_path != chat.working_dir 场景下，主 Agent 选择回调能找到 pending engine。"""
-    handler = _create_mock_handler()
-
-    # chat 工作目录是 /tmp/chat_workspace，但 project 的 root_path 是 /path/to/project
-    chat_working_dir = "/tmp/chat_workspace"
-    project_root_path = "/path/to/project"
-
-    mock_project = MagicMock()
-    mock_project.project_id = "bound_project"
-    mock_project.root_path = project_root_path
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_AGENT_SELECT,
-        pending=PendingConfirmation(
-            requirement="test requirement",
-            engine_session_key="session_456",
-            initiator_user_id="user_1",
-            orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
-        ),
-    )
-
-    # manager.get 必须根据传入的 root_path 返回不同结果：
-    # - 使用 chat_working_dir 时 -> None（找不到）
-    # - 使用 project_root_path 时 -> mock_engine（正确找到）
-    def _manager_get_side_effect(chat_id: str, root_path: str):
-        if root_path == project_root_path:
-            return mock_engine
-        return None
-
-    handler.ctx.workflow_engine_manager.get = MagicMock(side_effect=_manager_get_side_effect)
-    handler._get_root_path = MagicMock(return_value=chat_working_dir)
-
-    # _resolve_project_from_id 通过 ctx.project_manager.get_project_for_chat 实现
-    handler.ctx.project_manager.get_project_for_chat = MagicMock(return_value=mock_project)
-
-    with patch("src.thread.get_current_sender_id", return_value="user_1"):
-        handler.handle_workflow_select_agent(
-            message_id="msg_456",
-            chat_id="test_chat",
-            project_id="bound_project",
-            value={
-                "action": "workflow_select_agent",
-                "agent_type": "coco",
-                "engine_session_key": "session_456",
-                "project_id": "bound_project",
-            },
-        )
-
-    # 验证：必须用 project_root_path 去查找 engine（若用 chat 工作目录则会返回 session_expired）
-    call_args_list = handler.ctx.workflow_engine_manager.get.call_args_list
-    assert any(
-        call[0][1] == project_root_path for call in call_args_list
-    ), f"engine 查找未使用 project.root_path：{call_args_list}"
-
-    # 验证：成功存储选中的 agent 并重新渲染 combined card
-    assert mock_engine.project.pending.orchestrator_agent == "coco"
-    handler._send_combined_selection_card.assert_called_once()
-
-
-def test_select_agent_falls_back_to_chat_dir_when_no_project_id():
-    """当按钮 value 中没有 project_id（旧卡片兼容）时，应回退到 chat 工作目录。"""
-    handler = _create_mock_handler()
-
-    chat_working_dir = "/tmp/chat_workspace"
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_AGENT_SELECT,
-        pending=PendingConfirmation(
-            requirement="test requirement",
-            engine_session_key="session_789",
-            initiator_user_id="user_2",
-            orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
-        ),
-    )
-
-    # 没有 project_id 时：只在 chat 工作目录能找到 engine
-    def _manager_get_side_effect(chat_id: str, root_path: str):
-        if root_path == chat_working_dir:
-            return mock_engine
-        return None
-
-    handler.ctx.workflow_engine_manager.get = MagicMock(side_effect=_manager_get_side_effect)
-    handler._get_root_path = MagicMock(return_value=chat_working_dir)
-
-    with patch("src.thread.get_current_sender_id", return_value="user_2"):
-        handler.handle_workflow_select_agent(
-            message_id="msg_789",
-            chat_id="test_chat",
-            project_id=None,
-            value={
-                "action": "workflow_select_agent",
-                "agent_type": "claude",
-                "engine_session_key": "session_789",
-                # 故意不提供 project_id（旧卡片）
-            },
-        )
-
-    # 旧卡片路径仍可正常流转
-    assert mock_engine.project.pending.orchestrator_agent == "claude"
-    handler._send_combined_selection_card.assert_called_once()
-
-
-def test_select_agent_missing_engine_returns_session_expired():
-    """若找不到任何 pending engine，应返回 session_expired，不得抛出异常。"""
-    handler = _create_mock_handler()
-
-    # manager.get 在任何路径都找不到 engine
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=None)
-
-    with patch("src.thread.get_current_sender_id", return_value="user_3"):
-        handler.handle_workflow_select_agent(
-            message_id="msg_expired",
-            chat_id="test_chat",
-            project_id="bound_project",
-            value={
-                "action": "workflow_select_agent",
-                "agent_type": "claude",
-                "engine_session_key": "session_xxx",
-                "project_id": "bound_project",
-            },
-        )
-
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "session_expired"
-
-
-def test_handle_workflow_select_agent_forged_agent_type():
-    """伪造回调中使用非法 agent_type 时应返回 invalid_argument，且不创建 session / 不进入工具选择。"""
-    handler = _create_mock_handler()
-
-    mock_engine = MagicMock()
-    mock_engine.project = WorkflowProject(
-        workflow_id="test_wf",
-        status=WorkflowStatus.AWAITING_AGENT_SELECT,
-        pending=PendingConfirmation(
-            requirement="test requirement",
-            engine_session_key="session_forge",
-            initiator_user_id="test_user",
-            orchestrator_agent=DEFAULT_ORCHESTRATOR_AGENT,
-        ),
-    )
-    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
-
-    with patch("src.thread.get_current_sender_id", return_value="test_user"):
-        handler.handle_workflow_select_agent(
-            message_id="msg_forged",
-            chat_id="test_chat",
-            project_id="test_proj",
-            value={
-                "action": "workflow_select_agent",
-                "agent_type": "FAKE_XXX",
-                "engine_session_key": "session_forge",
-                "project_id": "test_proj",
-            },
-        )
-
-    # 必须返回 invalid_argument 类别错误
-    handler._reply_workflow_error.assert_called_once()
-    call_args = handler._reply_workflow_error.call_args
-    assert call_args[0][1] == "invalid_argument", f"expected invalid_argument, got {call_args[0][1]}"
-    detail = call_args.kwargs.get("detail", "") or (
-        call_args[0][2] if len(call_args[0]) > 2 else ""
-    )
-    assert "FAKE_XXX" in str(detail), f"detail 应包含非法 agent_type，实际: {detail}"
-
-    # 不得修改 pending state，不得进入工具选择流程
-    assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
-    assert mock_engine.project.status == WorkflowStatus.AWAITING_AGENT_SELECT
-    handler._show_tool_selection_card.assert_not_called()
 
 
 def _build_handler_for_regen():
@@ -409,7 +123,6 @@ def test_regenerate_script_preserves_orchestrator_agent():
             selected_tools=["coco"],
             tools_mismatch=False,
             orchestrator_agent="claude",  # 用户之前选择的 agent
-            selected_budget=1500000,
         ),
     )
     handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
@@ -451,7 +164,6 @@ def test_regenerate_script_preserves_orchestrator_agent():
     )
     # 同时 pending 里也必须保留 claude
     assert mock_engine.project.pending.orchestrator_agent == "claude"
-    assert mock_engine.project.pending.selected_budget == 1500000
     handler._reply_workflow_error.assert_not_called()
 
 
@@ -469,7 +181,6 @@ def test_generate_and_show_confirm_card_preserves_orchestrator_agent():
             engine_session_key="session_xyz",
             selected_tools=["coco"],
             orchestrator_agent="claude",
-            selected_budget=500000,
         ),
     )
     handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
@@ -495,7 +206,6 @@ def test_generate_and_show_confirm_card_preserves_orchestrator_agent():
     assert mock_engine.project.pending.orchestrator_agent == "claude", (
         "_generate_and_show_confirm_card 未保留 orchestrator_agent"
     )
-    assert mock_engine.project.pending.selected_budget == 500000
 
 
 def test_generate_and_show_confirm_card_defaults_orchestrator_when_missing():
@@ -527,3 +237,478 @@ def test_generate_and_show_confirm_card_defaults_orchestrator_when_missing():
 
     assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
 
+
+# ---------------------------------------------------------------------------
+# 联合卡片 (combined card) 与 orchestrator 选择相关测试
+# ---------------------------------------------------------------------------
+
+
+def _flatten_actions_from_card(card: dict) -> list[dict]:
+    """从卡片 dict 中递归提取所有 action 按钮（含 value）。"""
+    elements = card.get("elements", [])
+    if not elements and "body" in card and isinstance(card["body"], dict):
+        elements = card["body"].get("elements", [])
+    result: list[dict] = []
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            if obj.get("tag") == "action":
+                for act in obj.get("actions", []):
+                    if isinstance(act, dict) and "value" in act:
+                        result.append(act)
+            elif obj.get("tag") == "button":
+                if "value" in obj:
+                    result.append(obj)
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(elements)
+    _walk(card)
+    return result
+
+
+class _FakeProject:
+    """一个简单的 project 对象，提供 selection snapshot 存储槽，供 SelectionFlowController 使用。"""
+
+    def __init__(self):
+        self.project_id = "proj_1"
+        self.id = "proj_1"
+        self.root_path = "/tmp/test_proj"
+        self._wf_selection_snapshot: dict | None = None
+        self._wf_selection_controller = None
+
+
+def _build_orchestrator_handler_with_project():
+    """构造一个带真实 project + mock engine 的 WorkflowHandler，适用于联合卡片相关测试。
+
+    使用新的 SelectionFlowController 路径：controller 直接实例化或通过
+    ``_get_selection_controller`` 获得，state 存储在 project 的
+    ``_wf_selection_snapshot`` 上。
+    """
+    from src.workflow_engine.selection_flow import SelectionFlowController
+
+    handler = WorkflowHandler.__new__(WorkflowHandler)
+    handler.ctx = MagicMock()
+    handler.reply_text = MagicMock()
+    handler.reply_card = MagicMock()
+    handler.send_card_to_chat = MagicMock()
+    handler.update_card = MagicMock()
+    handler._reply_workflow_error = MagicMock()
+    handler._get_root_path = MagicMock(return_value="/tmp/test_proj")
+    handler.get_engine_name = MagicMock(return_value="test_engine")
+    handler._resolve_tool_lists = MagicMock(return_value=({"coco": "AI编程助手"}, ["coco"], [], []))
+    handler._get_workflow_models_for_tool = MagicMock(return_value=[
+        {"name": "gpt-4", "display_name": "GPT-4"},
+        {"name": "claude-3-opus", "display_name": "Claude 3 Opus"},
+    ])
+    handler._dispatch_workflow_review_tool_select = MagicMock()
+
+    mock_project = _FakeProject()
+
+    mock_engine = MagicMock()
+    mock_engine.project = WorkflowProject(
+        workflow_id="wf_1",
+        status=WorkflowStatus.AWAITING_AGENT_SELECT,
+        pending=PendingConfirmation(
+            requirement="build a feature",
+            initiator_user_id="user_1",
+            engine_session_key="sess_abc",
+            selected_tools=[],
+        ),
+    )
+    handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
+    handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
+
+    handler._resolve_project_from_id = MagicMock(return_value=mock_project)
+    handler.ctx.project_manager.get_project_for_chat = MagicMock(return_value=mock_project)
+
+    return handler, mock_project, mock_engine
+
+
+# ---------------------------------------------------------------------------
+# controller 级别的卡片正确性测试（使用 SelectionFlowController 直接构建）
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_combined_card_initial():
+    """SelectionFlowController.build_orchestrator_combined_card 生成的卡片必须包含
+    header、elements、工具选择按钮以及底部 finish 动作按钮。"""
+    from src.card.actions.dispatch import (
+        WORKFLOW_ORCHESTRATOR_FINISH,
+        WORKFLOW_ORCHESTRATOR_SELECT_TOOL,
+    )
+    from src.workflow_engine.selection_flow import SelectionFlowController
+
+    ctrl = SelectionFlowController(step=1)
+    card = ctrl.build_orchestrator_combined_card(
+        available_tools=[{"tool_name": "coco", "display_name": "Coco", "description": "AI编程助手"}],
+        requirement="build a feature",
+        session_key="sess_abc",
+    )
+
+    assert isinstance(card, dict)
+    assert "header" in card
+    # Card is wrapped by CardBuilder._wrap_card, so elements are under 'body'
+    assert "body" in card
+    assert "elements" in card["body"]
+
+    actions = _flatten_actions_from_card(card)
+    action_values = [a.get("value", {}).get("action", "") for a in actions]
+
+    assert WORKFLOW_ORCHESTRATOR_SELECT_TOOL in action_values, (
+        f"未在卡片中找到 orchestrator select tool 按钮；实际 actions: {action_values}"
+    )
+    # orchestrator 卡片在空选择时也应包含 finish 按钮（validate 失败显示错误信息，按钮仍存在）
+    assert WORKFLOW_ORCHESTRATOR_FINISH in action_values, (
+        f"卡片未包含 finish 按钮；实际 actions: {action_values}"
+    )
+
+    # 工具按钮 payload 中应含有 tool_name 字段
+    tool_btn = next(
+        (a for a in actions if a.get("value", {}).get("action") == WORKFLOW_ORCHESTRATOR_SELECT_TOOL),
+        None,
+    )
+    assert tool_btn is not None
+    assert tool_btn.get("value", {}).get("tool_name") == "coco"
+
+
+def test_orchestrator_combined_card_has_inline_model_panel_when_expanded():
+    """toggle_tool_expand('coco') 后，build_orchestrator_combined_card 必须包含
+    WORKFLOW_ORCHESTRATOR_SELECT_MODEL 按钮（至少一个默认模型 + 一个具体模型）。"""
+    from src.card.actions.dispatch import WORKFLOW_ORCHESTRATOR_SELECT_MODEL
+    from src.workflow_engine.selection_flow import SelectionFlowController
+
+    ctrl = SelectionFlowController(step=1)
+    ctrl.toggle_tool_expand("coco", is_review=False)
+    card = ctrl.build_orchestrator_combined_card(
+        available_tools=[{"tool_name": "coco", "display_name": "Coco"}],
+        available_models=[
+            {"name": "gpt-4", "display_name": "GPT-4"},
+            {"name": "claude-3-opus", "display_name": "Claude 3 Opus"},
+        ],
+        requirement="build a feature",
+        session_key="sess_abc",
+    )
+
+    actions = _flatten_actions_from_card(card)
+    model_actions = [
+        a for a in actions
+        if a.get("value", {}).get("action") == WORKFLOW_ORCHESTRATOR_SELECT_MODEL
+    ]
+    assert len(model_actions) >= 2, (
+        f"展开后应当包含默认模型 + 至少一个具体模型按钮；实际共 {len(model_actions)} 个；"
+        f"所有 actions: {[a.get('value', {}).get('action') for a in actions]}"
+    )
+
+    has_default = any(bool(a.get("value", {}).get("use_default_model")) for a in model_actions)
+    has_specific = any(a.get("value", {}).get("model_name") == "gpt-4" for a in model_actions)
+    assert has_default, "未找到 use_default_model=True 的按钮"
+    assert has_specific, "未找到 model_name=gpt-4 的具体模型按钮"
+
+
+def test_handle_orchestrator_select_tool_expands_model_panel():
+    """调用 handle_workflow_orchestrator_select_tool 时应原地刷新卡片（update_card 被调用）。"""
+    handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
+
+    value = {
+        "action": "workflow_orchestrator_select_tool",
+        "tool_name": "coco",
+        "provider": "workflow",
+        "display_name": "Coco",
+        "supports_model": True,
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_select_tool(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=value,
+        )
+
+    # update_card 应该被调用，表示原地刷新卡片
+    handler.update_card.assert_called()
+    # 不应该报任何错误
+    handler._reply_workflow_error.assert_not_called()
+
+    # 二次检查：状态仍为 AWAITING_AGENT_SELECT（还没有进入下一步）
+    assert mock_engine.project.status == WorkflowStatus.AWAITING_AGENT_SELECT
+
+
+def test_handle_orchestrator_remove_and_clear():
+    """调用 handle_workflow_orchestrator_remove 以及 handle_workflow_orchestrator_clear 都应该触发 update_card。
+
+    使用新的 SelectionFlowController：预先写入一个 selection item 并将其 snapshot
+    持久化到 project._wf_selection_snapshot，随后走 handler 路径验证 update_card 被调用。
+    """
+    handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
+
+    # 构造一个选中的 item（使用新的 SelectionFlowController）
+    from src.workflow_engine.selection_flow import SelectionFlowController
+
+    ctrl = SelectionFlowController(step=1)
+    selection_key = ctrl.add_or_update_selection(
+        {"tool_name": "coco", "display_name": "Coco", "model_name": "gpt-4"},
+        is_review=False,
+    )
+    # 把 selection 状态持久化到 project，这样 handler._get_selection_controller 能读到
+    mock_project._wf_selection_snapshot = ctrl.snapshot()
+    assert len(ctrl.orchestrator_selections) == 1, "测试前应有一个选中项"
+
+    # --- 1) 调用 remove：根据 selection_key 移除
+    remove_value = {
+        "action": "workflow_orchestrator_remove",
+        "selection_key": selection_key,
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_remove(
+            message_id="msg_remove",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=remove_value,
+        )
+    handler.update_card.assert_called()
+    handler._reply_workflow_error.assert_not_called()
+    handler.update_card.reset_mock()
+
+    # remove 后，snapshot 中 orchestrator_selections 应该为空
+    restored = SelectionFlowController()
+    restored.restore(mock_project._wf_selection_snapshot)
+    assert len(restored.orchestrator_selections) == 0
+
+    # --- 2) 再添加一个 item，随后 clear
+    ctrl2 = SelectionFlowController(step=1)
+    ctrl2.add_or_update_selection(
+        {"tool_name": "claude", "display_name": "Claude", "model_name": "sonnet"},
+        is_review=False,
+    )
+    mock_project._wf_selection_snapshot = ctrl2.snapshot()
+
+    clear_value = {
+        "action": "workflow_orchestrator_clear",
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_clear(
+            message_id="msg_clear",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=clear_value,
+        )
+    handler.update_card.assert_called()
+    handler._reply_workflow_error.assert_not_called()
+
+    # clear 后，snapshot 中 orchestrator_selections 应该为空
+    restored2 = SelectionFlowController()
+    restored2.restore(mock_project._wf_selection_snapshot)
+    assert len(restored2.orchestrator_selections) == 0
+
+
+def test_handle_orchestrator_finish_writes_binding():
+    """handle_workflow_orchestrator_finish 应将 selected_items 写入 pending.orchestrator_binding
+    并将状态转至 AWAITING_TOOL_SELECT。
+
+    使用新的 SelectionFlowController：预先写入一个 tool + model 选择，再调用 handler。
+    """
+    handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
+
+    from src.workflow_engine.selection_flow import SelectionFlowController
+
+    ctrl = SelectionFlowController(step=1)
+    ctrl.add_or_update_selection(
+        {"tool_name": "coco", "display_name": "Coco", "model_name": "gpt-4"},
+        is_review=False,
+    )
+    mock_project._wf_selection_snapshot = ctrl.snapshot()
+
+    # 调用 finish
+    finish_value = {
+        "action": "workflow_orchestrator_finish",
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_finish(
+            message_id="msg_finish",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=finish_value,
+        )
+
+    # orchestrator_binding 应包含 tool_name=coco
+    binding = mock_engine.project.pending.orchestrator_binding
+    assert binding is not None, "orchestrator_binding 未写入"
+    assert binding.tool_name == "coco", (
+        f"orchestrator_binding.tool_name 期望 coco，实际 {binding.tool_name}"
+    )
+    # model_name 也应被保留
+    assert binding.model_name == "gpt-4"
+    # 向后兼容：orchestrator_agent 应该被同步设置
+    assert mock_engine.project.pending.orchestrator_agent == "coco"
+    # 状态应转移到 AWAITING_TOOL_SELECT
+    assert mock_engine.project.status == WorkflowStatus.AWAITING_TOOL_SELECT
+    # 不应报错
+    handler._reply_workflow_error.assert_not_called()
+
+
+def test_payload_filter_preserves_new_fields():
+    """filter_workflow_button_value 应保留 tool_name/provider/supports_model/model_name/name/use_default_model/_option/selection_key。"""
+    from src.card.events.payloads import filter_workflow_button_value
+
+    payload = {
+        "action": "workflow_orchestrator_select_tool",
+        "tool_name": "coco",
+        "provider": "workflow",
+        "supports_model": True,
+        "model_name": "gpt-4",
+        "name": "gpt-4",
+        "use_default_model": False,
+        "_option": "default",
+        "selection_key": "sel_xyz",
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+        # 非法字段（模拟被注入的伪造 key）
+        "admin_override": True,
+        "confirmed": "yes",
+    }
+
+    filtered = filter_workflow_button_value(payload)
+
+    # 新增字段必须被保留
+    for key in ["tool_name", "provider", "supports_model", "model_name",
+                "name", "use_default_model", "_option", "selection_key"]:
+        assert key in filtered, f"字段 {key} 未被 filter_workflow_button_value 保留"
+
+    # 合法的基本字段也要被保留
+    for key in ["action", "chat_id", "project_id", "engine_session_key"]:
+        assert key in filtered, f"基础字段 {key} 未被保留"
+
+    # 非法字段必须被剔除
+    assert "admin_override" not in filtered
+    assert "confirmed" not in filtered
+
+    # 值也要被正确保留
+    assert filtered["tool_name"] == "coco"
+    assert filtered["model_name"] == "gpt-4"
+    assert filtered["selection_key"] == "sel_xyz"
+    assert filtered["supports_model"] is True
+
+
+def test_invalid_tool_name_rejected_in_select_model():
+    """测试在 handle_workflow_orchestrator_select_model 中无效的 tool_name 被拒绝。"""
+    handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
+    
+    # 添加 MagicMock 用于 _send_combined_selection_card
+    handler._send_combined_selection_card = MagicMock()
+    
+    # 设置验证返回拒绝结果
+    handler._validate_tools_against_registry = MagicMock(return_value=([], ["invalid_tool"]))
+    
+    value = {
+        "action": "workflow_orchestrator_select_model",
+        "tool_name": "invalid_tool",
+        "display_name": "Invalid Tool",
+        "model_name": "gpt-4",
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+    
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_select_model(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=value,
+        )
+    
+    # 应该调用错误回复，而不是更新卡片
+    handler._reply_workflow_error.assert_called_once()
+    handler._send_combined_selection_card.assert_not_called()
+
+
+def test_valid_tool_name_accepted_in_select_model():
+    """测试有效的 tool_name 在 handle_workflow_orchestrator_select_model 中被接受。"""
+    handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
+    
+    # 添加 MagicMock 用于 _send_combined_selection_card
+    handler._send_combined_selection_card = MagicMock()
+    
+    # 设置验证返回接受结果
+    handler._validate_tools_against_registry = MagicMock(return_value=(["coco"], []))
+    handler._get_workflow_models_for_tool = MagicMock(return_value=[
+        {"name": "gpt-4"},
+        {"name": "Claude 3 Opus"},
+    ])
+    
+    value = {
+        "action": "workflow_orchestrator_select_model",
+        "tool_name": "coco",
+        "display_name": "Coco",
+        "model_name": "gpt-4",
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+    
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_select_model(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=value,
+        )
+    
+    # 应该调用更新卡片，而不是错误回复
+    handler._send_combined_selection_card.assert_called_once()
+    handler._reply_workflow_error.assert_not_called()
+
+
+def test_invalid_model_name_rejected():
+    """测试无效的 model_name 被拒绝。"""
+    handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
+    
+    # 添加 MagicMock 用于 _send_combined_selection_card
+    handler._send_combined_selection_card = MagicMock()
+    
+    # 设置验证返回接受工具，但模型不在列表中
+    handler._validate_tools_against_registry = MagicMock(return_value=(["coco"], []))
+    handler._get_workflow_models_for_tool = MagicMock(return_value=[
+        {"name": "gpt-4"},
+        {"name": "Claude 3 Opus"},
+    ])
+    
+    value = {
+        "action": "workflow_orchestrator_select_model",
+        "tool_name": "coco",
+        "display_name": "Coco",
+        "model_name": "invalid_model",  # 无效模型
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+    
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_select_model(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=value,
+        )
+    
+    # 应该调用错误回复
+    handler._reply_workflow_error.assert_called_once()
+    handler._send_combined_selection_card.assert_not_called()

@@ -16,13 +16,15 @@ class ErrorCategory(Enum):
     FORBIDDEN = "forbidden"
 
     # Legacy detailed categories (mapped to unified categories)
-    BUDGET_EXHAUSTED = "budget_exhausted"
     AGENT_LIMIT = "agent_limit"
     TOOL_NOT_ALLOWED = "tool_not_allowed"
     SCRIPT_VALIDATION = "script_validation"
     RUNTIME_TIMEOUT = "runtime_timeout"
     INTERNAL_ERROR = "internal_error"
     CANCELLED = "cancelled"
+
+    # Deprecated: kept for backwards compatibility
+    BUDGET_EXHAUSTED = "budget_exhausted"
 
 
 @dataclass
@@ -53,9 +55,6 @@ _USER_MESSAGES: dict[ErrorCategory, str] = {
         "只有 Workflow 发起者或管理员可以执行此操作。\n\n💡 如需操作请联系发起者或管理员"
     ),
     # Legacy detailed categories
-    ErrorCategory.BUDGET_EXHAUSTED: (
-        "工作流已超出 Token 预算限制，请调整预算设置后重试。"
-    ),
     ErrorCategory.AGENT_LIMIT: (
         "已达到最大 Agent 步数限制，建议拆分为更小的子任务。"
     ),
@@ -74,18 +73,22 @@ _USER_MESSAGES: dict[ErrorCategory, str] = {
     ErrorCategory.CANCELLED: (
         "工作流已被用户取消。"
     ),
+    # Deprecated: kept for backwards compatibility
+    ErrorCategory.BUDGET_EXHAUSTED: (
+        "Token 预算已耗尽，此功能已废弃，请联系管理员。"
+    ),
 }
 
 
 # Mapping from legacy detailed categories to unified surface categories
 _LEGACY_TO_UNIFIED: dict[ErrorCategory, ErrorCategory] = {
-    ErrorCategory.BUDGET_EXHAUSTED: ErrorCategory.INVALID_STATE,
     ErrorCategory.AGENT_LIMIT: ErrorCategory.INVALID_STATE,
     ErrorCategory.TOOL_NOT_ALLOWED: ErrorCategory.FORBIDDEN,
     ErrorCategory.SCRIPT_VALIDATION: ErrorCategory.INVALID_ARGUMENT,
     ErrorCategory.RUNTIME_TIMEOUT: ErrorCategory.INVALID_STATE,
     ErrorCategory.INTERNAL_ERROR: ErrorCategory.INVALID_STATE,
     ErrorCategory.CANCELLED: ErrorCategory.INVALID_STATE,
+    ErrorCategory.BUDGET_EXHAUSTED: ErrorCategory.INVALID_STATE,  # deprecated
 }
 
 
@@ -213,8 +216,6 @@ _PERMANENT_ERROR_KEYWORDS: tuple[str, ...] = (
 # Category detection rules: (category, keyword_list, match_all)
 # Rules are checked in order; first match wins.
 _CATEGORY_RULES: list[tuple[ErrorCategory, tuple[str, ...], bool]] = [
-    (ErrorCategory.BUDGET_EXHAUSTED, ("budget", "exhausted"), True),
-    (ErrorCategory.BUDGET_EXHAUSTED, ("budget exhausted",), False),
     (ErrorCategory.AGENT_LIMIT, ("limit exceeded",), False),
     (ErrorCategory.AGENT_LIMIT, ("max agents",), False),
     (ErrorCategory.AGENT_LIMIT, ("agent limit",), False),
@@ -247,8 +248,6 @@ def categorize_error(error_message: str) -> ErrorCategory:
 
     Examples
     --------
-    >>> categorize_error("token budget exhausted")
-    ErrorCategory.BUDGET_EXHAUSTED
     >>> categorize_error("agent limit exceeded")
     ErrorCategory.AGENT_LIMIT
     >>> categorize_error("tool shell not in allowed list")

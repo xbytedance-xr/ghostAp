@@ -46,8 +46,6 @@ class WorkflowEngineManager(BaseEngineManager["WorkflowEngine"]):
             "status": project.status.value if project else "idle",
             "name": project.name if project else None,
             "metrics": project.metrics.model_dump() if project else None,
-            "budget_used": project.budget.used if project else 0,
-            "budget_total": project.budget.total if project else 0,
         }
 
     def remove(self, chat_id: str, root_path: str) -> None:

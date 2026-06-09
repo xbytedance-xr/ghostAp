@@ -87,10 +87,14 @@ def test_all_workflow_constants_are_registered_in_system_actions() -> None:
 
 
 def test_four_new_workflow_entries_are_present() -> None:
-    """Explicit check for the four recently added workflow actions."""
+    """Explicit check for recently added workflow actions (orchestrator+review selection)."""
     expected = {
-        "workflow_select_agent",
-        "workflow_apply_budget_regenerate",
+        "workflow_orchestrator_select_tool",
+        "workflow_orchestrator_select_model",
+        "workflow_review_select_tool",
+        "workflow_review_select_model",
+        "workflow_orchestrator_finish",
+        "workflow_review_finish",
         "workflow_fill_missing_tools",
         "workflow_back_to_tools",
     }
@@ -241,22 +245,17 @@ class TestScriptGenPromptMarkerFallback:
     def test_prompt_contains_budget_and_agent_sections_when_sentinel_present(
         self,
     ) -> None:
-        """Baseline: with the sentinel intact, budget + agent sections are injected."""
+        """Baseline: with the sentinel intact, agent capability section is injected."""
         prompt = script_gen.build_script_gen_prompt(
             requirement="Build a parser",
             available_tools=["coco", "claude"],
-            available_roles=["architect"],
-            budget_total=500_000,
-            budget_tokens=1_500_000,
+            orchestrator_agent="coco",
         )
 
         assert isinstance(prompt, str)
         assert prompt.strip()
         assert "## User Requirement" in prompt
         user_req_idx = prompt.find("## User Requirement")
-        assert "预算硬约束" in prompt[:user_req_idx], (
-            "Budget section should be injected *before* the ## User Requirement heading."
-        )
         assert "主编排 Agent 能力" in prompt[:user_req_idx]
         assert "SENTINEL" not in prompt
         assert "USER_REQUIREMENT_INSERT_POINT" not in prompt
@@ -274,40 +273,36 @@ class TestScriptGenPromptMarkerFallback:
                 "# Custom Header\n\n"
                 "## User Requirement\n\n{requirement}\n\n"
                 "## Available Resources\n\n{tools_list}\n\n"
-                "{budget_total}\n\n"
                 "## Output Format\n\nGenerate a script.\n"
             )
 
             prompt = script_gen.build_script_gen_prompt(
                 requirement="Do X",
                 available_tools=["coco"],
-                available_roles=[],
-                budget_total=100_000,
-                budget_tokens=100_000,
+                orchestrator_agent="claude",
             )
 
             assert isinstance(prompt, str)
             assert prompt.strip()
-            assert "预算硬约束" in prompt
             assert "主编排 Agent 能力" in prompt
             assert "ValueError" not in prompt
         finally:
             script_gen._SCRIPT_GEN_PROMPT_TEMPLATE = original_template
 
     def test_prompt_without_budget_tokens_still_injects_agent_section(self) -> None:
-        """When budget_tokens is None, only the agent capability section is injected.
+        """With new API: budget is removed; only orchestrator agent section is injected.
 
-        Verifies the injection path handles empty budget sections correctly,
-        i.e. does not leave a dangling heading.
+        Verifies the injection path works without budget concepts —
+        the prompt builder now only has requirement + available_tools +
+        orchestrator_agent parameters.
         """
         prompt = script_gen.build_script_gen_prompt(
             requirement="Analyze logs",
             available_tools=["coco"],
-            available_roles=["sre"],
-            budget_total=200_000,
+            orchestrator_agent="claude",
         )
 
         assert isinstance(prompt, str)
         assert prompt.strip()
         assert "主编排 Agent 能力" in prompt
-        assert "预算硬约束" not in prompt
+        assert "预算" not in prompt

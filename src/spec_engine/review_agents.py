@@ -24,6 +24,7 @@ class ReviewAgentBinding:
     model_name: str | None = None
     model_display_name: str | None = None
     selection_key: str = ""
+    use_default_model: bool = True
 
     @property
     def display_label(self) -> str:
@@ -59,6 +60,7 @@ class ReviewAgentBinding:
             "model_name": self.model_name,
             "model_display_name": self.model_display_name,
             "selection_key": self.selection_key,
+            "use_default_model": self.use_default_model,
         }
 
     @classmethod
@@ -77,6 +79,7 @@ class ReviewAgentBinding:
             model_name=str(data.get("model_name") or "").strip() or None,
             model_display_name=str(data.get("model_display_name") or "").strip() or None,
             selection_key=str(data.get("selection_key") or "").strip(),
+            use_default_model=data.get("use_default_model", True),
         )
 
 

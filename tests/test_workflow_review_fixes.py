@@ -2,10 +2,9 @@
 
 Covers:
 - MAX_NESTING_DEPTH increased to 3 (constants)
-- BUDGET_OPTIONS includes 200万 tier (constants)
 - TOOL_DESCRIPTIONS dict defined (constants)
 - initiator_user_id validation in stop_workflow()
-- project_id routing in cancel/select_tool/select_budget handlers
+- project_id routing in cancel/select_tool handlers
 - TOOL_DESCRIPTIONS shown in confirm card
 - Path traversal protection in bridge.py
 """
@@ -15,7 +14,6 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from src.workflow_engine.constants import (
-    BUDGET_OPTIONS,
     MAX_NESTING_DEPTH,
     TOOL_DESCRIPTIONS,
 )
@@ -33,17 +31,6 @@ class TestConstantsReviewFixes(unittest.TestCase):
     def test_max_nesting_depth_is_3(self):
         self.assertEqual(MAX_NESTING_DEPTH, 3)
 
-    def test_budget_options_has_200wan(self):
-        labels = [label for label, _ in BUDGET_OPTIONS]
-        self.assertIn("200万", labels)
-
-    def test_budget_options_200wan_value(self):
-        for label, value in BUDGET_OPTIONS:
-            if label == "200万":
-                self.assertEqual(value, 2_000_000)
-                return
-        self.fail("200万 not found in BUDGET_OPTIONS")
-
     def test_tool_descriptions_keys(self):
         # TOOL_DESCRIPTIONS (deprecated) now includes all known tools including gemini/ttadk
         expected_tools = {"coco", "aiden", "codex", "claude", "traex", "gemini", "ttadk"}
@@ -53,6 +40,54 @@ class TestConstantsReviewFixes(unittest.TestCase):
         for tool, desc in TOOL_DESCRIPTIONS.items():
             self.assertTrue(len(desc) > 0, f"{tool} has empty description")
 
+
+# ---------------------------------------------------------------------------
+# Review agent selection tests
+# ---------------------------------------------------------------------------
+
+
+def test_script_gen_includes_review_agents():
+    """脚本生成包含评审 Agent 的工具和模型信息。"""
+    from src.workflow_engine.script_gen import build_script_gen_prompt
+    
+    # Test with review agents
+    orchestrator_binding = {
+        "tool_name": "coco",
+        "model_name": "gpt-4",
+        "use_default_model": False
+    }
+    
+    review_agents = [
+        {
+            "tool_name": "claude",
+            "model_name": "claude-3-sonnet",
+            "use_default_model": False
+        },
+        {
+            "tool_name": "aiden",
+            "use_default_model": True
+        }
+    ]
+    
+    prompt = build_script_gen_prompt(
+        requirement="test workflow with review agents",
+        available_tools=["coco", "claude", "aiden"],
+        orchestrator_agent="coco",
+        orchestrator_binding=orchestrator_binding,
+        review_agents=review_agents,
+    )
+    
+    # Check that orchestrator agent info is included
+    assert "已选择的主 Agent" in prompt
+    assert "coco" in prompt
+    assert "gpt-4" in prompt
+    
+    # Check that review agents info is included
+    assert "已选择的评审 Agent" in prompt
+    assert "claude" in prompt
+    assert "claude-3-sonnet" in prompt
+    assert "aiden" in prompt
+    assert "默认模型" in prompt or "use_default_model" not in prompt
 
 # ---------------------------------------------------------------------------
 # stop_workflow auth tests
@@ -115,9 +150,7 @@ class TestStopWorkflowAuth(unittest.TestCase):
 
         engine.stop.assert_not_called()
         handler._reply_workflow_error.assert_called_once()
-
-    @patch("src.thread.get_current_sender_id", return_value="user_123")
-    def test_no_running_engine_replies_not_found(self, _):
+    def test_no_running_engine_replies_not_found(self):
         handler = self._make_handler()
         engine = MagicMock()
         engine.is_running = False
@@ -134,7 +167,7 @@ class TestStopWorkflowAuth(unittest.TestCase):
 
 
 class TestProjectIdRouting(unittest.TestCase):
-    """Test that cancel/select_tool/select_budget use project_id for routing."""
+    """Test that cancel/select_tool use project_id for routing."""
 
     def _make_handler(self):
         from src.feishu.handlers.workflow import WorkflowHandler
@@ -199,27 +232,6 @@ class TestProjectIdRouting(unittest.TestCase):
 
         handler._resolve_project_from_id.assert_called_once_with("proj_xyz", "chat_1")
 
-    @patch("src.thread.get_current_sender_id", return_value="user_001")
-    def test_select_budget_uses_project_id_routing(self, _):
-        handler = self._make_handler()
-        engine = self._make_engine_awaiting()
-        handler.ctx.workflow_engine_manager.get.return_value = engine
-
-        mock_project = MagicMock()
-        mock_project.root_path = "/home/user/proj_xyz"
-        handler._resolve_project_from_id = MagicMock(return_value=mock_project)
-        handler._get_root_path = MagicMock(return_value="/home/user/proj_xyz")
-        handler._read_pending_script = MagicMock(return_value="")
-        handler._build_confirm_card = MagicMock(return_value={})
-
-        handler.handle_workflow_select_budget(
-            "msg_1", "chat_1", "proj_xyz",
-            {"engine_session_key": "key1", "budget_tokens": 2_000_000},
-        )
-
-        handler._resolve_project_from_id.assert_called_once_with("proj_xyz", "chat_1")
-
-
 # ---------------------------------------------------------------------------
 # Confirm card TOOL_DESCRIPTIONS tests
 # ---------------------------------------------------------------------------
@@ -262,24 +274,6 @@ class TestConfirmCardToolDescriptions(unittest.TestCase):
         # Also verify script planned tools section is present
         self.assertIn("脚本计划使用", card_str)
 
-    def test_confirm_card_has_budget_200wan_option(self):
-        handler = self._make_handler()
-        card = handler._build_confirm_card(
-            meta={"name": "test-wf", "description": "Test", "phases": [], "tools": ["coco"]},
-            requirement="Test requirement",
-            engine_session_key="key1",
-            chat_id="chat_1",
-            project_id="proj_1",
-        )
-
-        import json
-        card_str = json.dumps(card, ensure_ascii=False)
-
-        # Check that 200万 budget option exists
-        self.assertIn("200万", card_str)
-        self.assertIn("2000000", card_str)
-
-
 # ---------------------------------------------------------------------------
 # Path traversal protection tests
 # ---------------------------------------------------------------------------
@@ -295,7 +289,6 @@ class TestBridgePathTraversal(unittest.TestCase):
         bridge._cwd = cwd
         bridge._nesting_depth = 0
         bridge._max_concurrent = 4
-        bridge._budget_total = 500000
         bridge._on_agent_call = MagicMock()
         bridge._on_phase = MagicMock()
         bridge._on_log = MagicMock()
@@ -381,7 +374,6 @@ class TestNestingDepthLimit(unittest.TestCase):
         bridge._futures_lock = MagicMock()
         bridge._active_futures = set()
         bridge._max_concurrent = 4
-        bridge._budget_total = 500000
         bridge._on_agent_call = MagicMock()
         bridge._on_phase = MagicMock()
         bridge._on_log = MagicMock()

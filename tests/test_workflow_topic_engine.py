@@ -135,11 +135,11 @@ class TestAGENTSMDScopeStatement(unittest.TestCase):
         """
         content = self._read_agents_md()
         # The scope statement should list all four topic engines
-        self.assertIn("Deep, Spec, Worktree, and Workflow", content,
+        self.assertIn("Deep、Spec、Worktree 和 Workflow", content,
             "AGENTS.md must list Workflow alongside Deep, Spec, Worktree in the scope statement")
-        self.assertIn("engine strategies scoped to the Feishu", content,
+        self.assertIn("作用于飞书话题/根线程的引擎策略", content,
             "AGENTS.md must state that these are topic-scoped engine strategies")
-        self.assertIn("topic/root thread", content,
+        self.assertIn("话题/根线程", content,
             "AGENTS.md must mention topic/root thread scoping")
 
     def test_agents_md_states_no_state_replacement(self):
@@ -150,7 +150,7 @@ class TestAGENTSMDScopeStatement(unittest.TestCase):
         If this fails, the documentation no longer reflects the isolation guarantee.
         """
         content = self._read_agents_md()
-        self.assertIn("must not replace chat+project programming state", content,
+        self.assertIn("不得替换聊天+项目编程状态", content,
             "AGENTS.md must explicitly state that topic engines must not replace chat+project programming state")
 
 

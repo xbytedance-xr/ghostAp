@@ -536,23 +536,6 @@ class TestErrorCategorization(unittest.TestCase):
     handling of different error types.
     """
 
-    def test_budget_exhausted_category(self):
-        """Verify budget/exhausted errors are categorized as BUDGET_EXHAUSTED.
-
-        Budget errors should trigger budget-specific messaging and
-        potentially offer budget increase options.
-        """
-        test_cases = [
-            "Token budget exhausted: used 2000000 of 2000000",
-            "Budget exhausted, no remaining tokens",
-            "Error: budget is exhausted for this workflow",
-        ]
-        for msg in test_cases:
-            with self.subTest(msg=msg):
-                self.assertEqual(
-                    categorize_error(msg), ErrorCategory.BUDGET_EXHAUSTED
-                )
-
     def test_agent_limit_category(self):
         """Verify limit exceeded errors are categorized as AGENT_LIMIT.
 
@@ -686,7 +669,6 @@ class TestErrorSanitization(unittest.TestCase):
 
         # Test each category preserves appropriate user info
         test_cases = [
-            (ErrorCategory.BUDGET_EXHAUSTED, "预算"),
             (ErrorCategory.AGENT_LIMIT, "Agent"),
             (ErrorCategory.TOOL_NOT_ALLOWED, "工具"),
             (ErrorCategory.RUNTIME_TIMEOUT, "超时"),

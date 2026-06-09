@@ -10,6 +10,8 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.workflow_engine.models import PendingConfirmation, WorkflowProject, WorkflowStatus
 
 
@@ -190,7 +192,7 @@ class TestHandlerInvalidPayloadRoutesToUnifiedError(unittest.TestCase):
         handler, _ = _handler_with_mocks(project)
         handler._reply_workflow_error = MagicMock()  # type: ignore[method-assign]
         handler.reply_text = MagicMock()  # type: ignore[method-assign]
-        with patch("src.thread.manager.get_current_sender_id", return_value="attacker_user"), \
+        with patch("src.thread.get_current_sender_id", return_value="attacker_user"), \
              patch.object(WorkflowHandler, "_validate_tools_against_registry",
                           return_value=(["coco"], ["unknown_tool_name"])):
             WorkflowHandler.handle_workflow_select_tool(
@@ -201,20 +203,7 @@ class TestHandlerInvalidPayloadRoutesToUnifiedError(unittest.TestCase):
         handler.reply_text.assert_not_called()  # type: ignore[attr-defined]
 
     def test_handle_workflow_apply_budget_regenerate_wrong_user(self) -> None:
-        from src.feishu.handlers.workflow import WorkflowHandler
-
-        project = _make_project(WorkflowStatus.AWAITING_CONFIRM, session_key="s",
-                                initiator_user_id="owner_user")
-        handler, _ = _handler_with_mocks(project)
-        handler._reply_workflow_error = MagicMock()  # type: ignore[method-assign]
-        handler.reply_text = MagicMock()  # type: ignore[method-assign]
-        with patch("src.thread.manager.get_current_sender_id", return_value="attacker_user"):
-            WorkflowHandler.handle_workflow_apply_budget_regenerate(
-                handler, "msg-id", "c-1", "p-1",
-                {"engine_session_key": "s", "budget_tokens": 10000, "confirmed": True},
-            )
-        handler._reply_workflow_error.assert_called()  # type: ignore[attr-defined]
-        handler.reply_text.assert_not_called()  # type: ignore[attr-defined]
+        pytest.skip("budget regenerate removed in favor of 2-step orchestrator+review selection")
 
     def test_handle_workflow_fill_missing_tools_wrong_user(self) -> None:
         from src.feishu.handlers.workflow import WorkflowHandler
@@ -224,7 +213,7 @@ class TestHandlerInvalidPayloadRoutesToUnifiedError(unittest.TestCase):
         handler, _ = _handler_with_mocks(project)
         handler._reply_workflow_error = MagicMock()  # type: ignore[method-assign]
         handler.reply_text = MagicMock()  # type: ignore[method-assign]
-        with patch("src.thread.manager.get_current_sender_id", return_value="attacker_user"):
+        with patch("src.thread.get_current_sender_id", return_value="attacker_user"):
             WorkflowHandler.handle_workflow_fill_missing_tools(
                 handler, "msg-id", "c-1", "p-1",
                 {"engine_session_key": "s"},
@@ -240,7 +229,7 @@ class TestHandlerInvalidPayloadRoutesToUnifiedError(unittest.TestCase):
         handler, _ = _handler_with_mocks(project)
         handler._reply_workflow_error = MagicMock()  # type: ignore[method-assign]
         handler.reply_text = MagicMock()  # type: ignore[method-assign]
-        with patch("src.thread.manager.get_current_sender_id", return_value="attacker_user"):
+        with patch("src.thread.get_current_sender_id", return_value="attacker_user"):
             WorkflowHandler.handle_workflow_back_to_tools(
                 handler, "msg-id", "c-1", "p-1",
                 {"engine_session_key": "s"},
