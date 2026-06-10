@@ -92,9 +92,22 @@ def test_claude_provider():
     provider = ClaudeProvider()
     assert provider.name == "claude"
 
+    # Claude provider now propagates model_name to the underlying CLI via
+    # `--model <id>` (model_style="model_long"). Previously this was silently
+    # dropped, which also broke the 1M-context [1m] suffix path.
     cmd, args = provider.get_serve_command(model_name="test-model")
     assert cmd == "claude"
-    assert args == ["acp", "serve"]
+    assert args == ["acp", "serve", "--model", "test-model"]
+
+    # No model_name → no flag injected (idempotent for legacy callers).
+    cmd_bare, args_bare = provider.get_serve_command()
+    assert cmd_bare == "claude"
+    assert args_bare == ["acp", "serve"]
+
+    # `[1m]` suffix is preserved verbatim so Claude Code CLI can opt into
+    # the 1M-context beta.
+    _, args_1m = provider.get_serve_command(model_name="claude-opus-4-8[1m]")
+    assert args_1m == ["acp", "serve", "--model", "claude-opus-4-8[1m]"]
 
 
 def test_registry_rejects_empty_provider_name():

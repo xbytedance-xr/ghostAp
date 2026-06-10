@@ -840,11 +840,16 @@ class ACPModelOption:
     """ACP 模型选择 UI 选项模型。
 
     同样只承载展示/选择语义，不参与 ACP 协议结构体定义。
+
+    `supports_1m` 标识"该候选项是 Anthropic 1M context 变体"，仅 claude
+    provider 探测时由 :func:`src.acp.helper.probe_acp_models` 注入；其它 provider
+    保持默认 False，向后兼容（dataclass 字段加在末尾且有默认值）。
     """
 
     name: str
     description: str = ""
     is_default: bool = False
+    supports_1m: bool = False
 
 
 @dataclass(frozen=True)

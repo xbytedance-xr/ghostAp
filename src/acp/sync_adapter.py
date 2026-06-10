@@ -1454,6 +1454,7 @@ class SyncACPSession:
             cmd, args = resolve_agent_spec(agent_type, model_name=model_name, ttadk_use_pty=bool(ttadk_use_pty))
             self._agent_cmd = cmd
             self._agent_args = agent_args or args
+        self._model_name = (model_name or "").strip() or None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._acp_session: Optional[ACPSession] = None
@@ -1571,6 +1572,27 @@ class SyncACPSession:
                 )
         except (OSError, ValueError, KeyError) as e:
             logger.debug("[ACP:%s] build_ttadk_subprocess_env failed, using default env: %s", self._agent_type, str(e))
+            env_override = None
+
+        # Anthropic 1M-context beta: when the user picked a `[1m]`-suffixed
+        # claude model, set ANTHROPIC_BETAS as a defensive fallback in case
+        # the wrapper drops the `--model <id>[1m]` suffix.  Safe no-op for
+        # all other tools / models.
+        #
+        # IMPORTANT: ACPSession.start() calls build_clean_env(base=env_override)
+        # which REPLACES os.environ entirely when base is provided (it does not
+        # merge). So if we hand it a single-key {'ANTHROPIC_BETAS': ...} dict,
+        # the spawned Claude subprocess loses HOME, USER, ANTHROPIC_API_KEY,
+        # OAuth tokens cached under ~/.claude, locale, proxies, etc — which can
+        # silently flip the user onto a different identity / billing context.
+        # Therefore, when env_override is None and we still need to inject
+        # betas, seed it with a real os.environ copy (via build_clean_env).
+        from ..utils.env import apply_anthropic_betas, build_clean_env
+        from .claude_capabilities import is_1m_variant
+        if env_override is None and is_1m_variant((self._model_name or "").strip()):
+            env_override = build_clean_env()
+        env_override = apply_anthropic_betas(dict(env_override or {}), self._model_name)
+        if not env_override:
             env_override = None
 
         self._acp_session = ACPSession(

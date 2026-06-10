@@ -1256,36 +1256,85 @@ class SystemBuilder:
     ) -> tuple[str, str]:
         """Build the final frame after an ACP model has been selected."""
         model_label = model_name or UI_TEXT["system_acp_default_model_option"]
-        elements = [
+
+        # Detect Anthropic 1M-context [1m] variant — its higher billing tier
+        # warrants a prominent warning, especially because the choice is
+        # persisted to ProjectContext and silently auto-restored on every
+        # subsequent /claude entry, project open, daemon restart, or session
+        # resume. Without this banner, a one-time experimental click can
+        # become a hidden default that doubles base-rate billing past 200K
+        # tokens of context.
+        is_1m = False
+        try:
+            if isinstance(model_name, str) and model_name.strip():
+                from src.acp.claude_capabilities import is_1m_variant
+                is_1m = is_1m_variant(model_name.strip())
+        except Exception:  # pragma: no cover — UI must never crash on detection
+            is_1m = False
+
+        elements: list[dict] = []
+        if is_1m:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": UI_TEXT["system_acp_1m_warning_banner"].format(model=model_label),
+                    "text_align": "left",
+                }
+            )
+            elements.append({"tag": "hr"})
+
+        elements.append(
             {
                 "tag": "markdown",
                 "content": UI_TEXT["system_acp_programming_ready_body"].format(
                     tool=tool_name,
                     model=model_label,
                 ),
-            },
-            {"tag": "hr"},
-        ]
-        elements.extend(
-            build_responsive_layout(
-                [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": UI_TEXT["system_acp_switch_model_btn"]},
-                        "type": "default",
-                        "value": {
-                            "action": "refresh_acp_models",
-                            "tool_name": tool_name,
-                            "project_id": project_id,
-                            "thread_root_id": thread_root_id,
-                        },
-                    }
-                ]
-            )
+            }
         )
+        elements.append({"tag": "hr"})
+
+        action_buttons: list[dict] = [
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": UI_TEXT["system_acp_switch_model_btn"]},
+                "type": "default",
+                "value": {
+                    "action": "refresh_acp_models",
+                    "tool_name": tool_name,
+                    "project_id": project_id,
+                    "thread_root_id": thread_root_id,
+                },
+            }
+        ]
+        if is_1m:
+            # One-click escape hatch back to the standard (non-1M) model id.
+            standard_model = (model_name or "").strip()
+            if standard_model.endswith("[1m]"):
+                standard_model = standard_model[: -len("[1m]")]
+            action_buttons.insert(
+                0,
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": UI_TEXT["system_acp_1m_switch_standard_btn"],
+                    },
+                    "type": "danger",
+                    "value": {
+                        "action": "select_acp_model",
+                        "tool_name": tool_name,
+                        "model_name": standard_model,
+                        "project_id": project_id,
+                        "thread_root_id": thread_root_id,
+                    },
+                },
+            )
+        elements.extend(build_responsive_layout(action_buttons))
+
         card = CoreBuilder._wrap_card(
             UI_TEXT["system_acp_programming_ready_title"].format(tool=tool_name),
-            "green",
+            "red" if is_1m else "green",
             elements,
         )
         return "interactive", json.dumps(card, ensure_ascii=False)

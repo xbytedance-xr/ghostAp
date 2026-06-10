@@ -294,7 +294,10 @@ def _ensure_providers() -> dict[str, GenericACPProvider]:
                 tool_name="claude",
                 serve_args=["acp", "serve"],
                 availability_checker=_make_resolve_checker("claude"),
-                model_style=None,
+                # Claude Code CLI honours `--model <id>` (and the `[1m]` suffix
+                # for 1M-context beta). Previously model_style=None silently
+                # dropped the user's selection on the floor.
+                model_style="model_long",
             ),
             _ProviderConfig(
                 tool_name="aiden",

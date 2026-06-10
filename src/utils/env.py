@@ -109,6 +109,47 @@ def _ensure_npm_global_in_path(env: dict[str, str]) -> dict[str, str]:
     return env
 
 
+def apply_anthropic_betas(env: dict[str, str], model_name: Optional[str]) -> dict[str, str]:
+    """Merge ``ANTHROPIC_BETAS`` flags implied by *model_name* into *env*.
+
+    Currently this is the 1M-context beta: when *model_name* carries the
+    ``[1m]`` suffix that Claude Code CLI uses, ensure
+    ``context-1m-2025-08-07`` is present in ``env['ANTHROPIC_BETAS']``
+    (existing values are preserved and de-duplicated).
+
+    Mutates *env* in place and returns it, mirroring
+    :func:`_ensure_npm_global_in_path`.
+    """
+    name = (model_name or "").strip()
+    if not name:
+        return env
+
+    # Late import keeps this leaf module free of intra-package cycles.
+    from src.acp.claude_capabilities import CONTEXT_1M_BETA, is_1m_variant
+
+    if not is_1m_variant(name):
+        return env
+
+    existing = (env.get("ANTHROPIC_BETAS") or "").strip()
+    if not existing:
+        env["ANTHROPIC_BETAS"] = CONTEXT_1M_BETA
+        return env
+
+    # De-dup while preserving original ordering.
+    parts: list[str] = []
+    seen: set[str] = set()
+    for raw in existing.split(","):
+        token = raw.strip()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        parts.append(token)
+    if CONTEXT_1M_BETA not in seen:
+        parts.append(CONTEXT_1M_BETA)
+    env["ANTHROPIC_BETAS"] = ",".join(parts)
+    return env
+
+
 def build_clean_env(base: Optional[dict[str, str]] = None) -> dict[str, str]:
     """Return a copy of *base* (default: ``os.environ``) with guard keys removed.
 

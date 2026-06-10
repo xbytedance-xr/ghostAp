@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-06-10
+- **Claude 1M Context 支持** — ACP claude provider probe 注入 `<model>[1m]` 候选项 + `--model` 透传 + ANTHROPIC_BETAS 兜底；UI 红色警告+一键切回；修复 sync_adapter env_override 替换语义 critical bug；229 相关测试 passed → [详细记录](2026-06-10.md)
 ## 2026-06-08
 - **Spec 完成度角色** — adaptive 多角色审查新增独立 `completion_control` blocking 角色，专门把控用户方向与完成度证据，prompt 注入 Spec/Plan/Task/Build 阶段输出；相关回归 64 passed → [详细记录](2026-06-08.md)
 - **Workflow 2-Step Combined Card** — 4步编排流程(agent→tools→roles→confirm)简化为2步(combined selection→confirm)，修复 vertical_spacing card 错误/engine.project 空初始化/stale 状态阻塞；全量 workflow 回归 667 passed → [详细记录](2026-06-08.md)

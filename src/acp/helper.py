@@ -424,6 +424,46 @@ class SessionKeyCodec:
             return s, None, None
 
 
+def _inject_claude_1m_variants(items: list[ACPModelOption]) -> list[ACPModelOption]:
+    """For each Anthropic model that supports the 1M-context beta, append a
+    sibling ``ACPModelOption`` carrying the ``[1m]`` suffix.
+
+    The original entry is preserved verbatim.  Variants inherit the original
+    ``description`` (rendered behind a 🚀 emoji + 1M tag) and never claim
+    ``is_default=True`` — selecting them must be an explicit user choice
+    because >200K tokens are billed at the higher tier.
+    """
+    from .claude_capabilities import (
+        is_1m_variant,
+        model_supports_1m,
+        with_1m_suffix,
+    )
+
+    seen = {opt.name for opt in items}
+    extras: list[ACPModelOption] = []
+    for opt in list(items):
+        if is_1m_variant(opt.name):
+            continue
+        if not model_supports_1m(opt.name):
+            continue
+        variant_name = with_1m_suffix(opt.name)
+        if variant_name in seen:
+            continue
+        seen.add(variant_name)
+        base_desc = (opt.description or opt.name).strip()
+        extras.append(
+            ACPModelOption(
+                name=variant_name,
+                description=f"🚀 1M 上下文（{base_desc}，>200K tokens 计费上调）",
+                is_default=False,
+                supports_1m=True,
+            )
+        )
+    if extras:
+        items.extend(extras)
+    return items
+
+
 async def probe_acp_models(
     tool_name: str, cwd: Optional[str], current_model: Optional[str] = None
 ) -> list[ACPModelOption]:
@@ -481,6 +521,9 @@ async def probe_acp_models(
 
             if not items:
                 items = _extract_models_from_config_options(resp, target_default)
+
+            if tool_name == "claude":
+                items = _inject_claude_1m_variants(items)
 
             return items
     except Exception as e:

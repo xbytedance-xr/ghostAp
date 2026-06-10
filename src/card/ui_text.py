@@ -194,6 +194,8 @@ UI_TEXT = {
     "system_acp_programming_ready_title": "✅ {tool} 编程模式已就绪",
     "system_acp_programming_ready_body": "`{tool}` 已使用 `{model}` 进入编程模式。\n\n现在可以直接在当前会话发送需求。",
     "system_acp_switch_model_btn": "切换模型",
+    "system_acp_1m_warning_banner": "⚠️ **1M 上下文模式已启用**：使用 `{model}`，**超过 200K tokens 后按 2× 基础费率计费**。该选择会随项目持久保存，重启/重连后自动恢复。如非必要，请切换回标准上下文版本。",
+    "system_acp_1m_switch_standard_btn": "切回标准上下文",
     "system_acp_specify_model_prompt": "请指定模型名称，例如：{example}",
     "system_model_usage_example": "\n• `/model list` — 查看可用模型\n• `/model <name>` — 切换到指定模型",
     "system_worktree_no_selection_error": "请至少选择一个工具-模型组合",
