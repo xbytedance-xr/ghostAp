@@ -126,12 +126,15 @@ class TestRotateSession:
 
     def test_rotate_session_calls_rotator_rotate(self):
         proc, deps = _make_processor()
+        # Ensure enough events have been dispatched to allow rotation
+        proc._events_since_rotation = 5
         proc._rotate_session(1)
         deps["rotator"].rotate.assert_called_once()
 
     def test_rotate_session_uses_delivered_message_id(self):
         proc, deps = _make_processor()
         deps["rotator"].current.delivered_message_id = "msg_old"
+        proc._events_since_rotation = 5
         proc._rotate_session(1)
         # The lambda passed to rotate should call renderer.create_session
         factory_fn = deps["rotator"].rotate.call_args[0][0]
@@ -141,14 +144,22 @@ class TestRotateSession:
         call_args = deps["renderer"].create_session.call_args
         assert call_args[0][1] == "msg_old"
 
-    def test_rotate_session_falls_back_to_original_message_id(self):
+    def test_rotate_session_skipped_when_not_delivered(self):
         proc, deps = _make_processor()
         deps["rotator"].current.delivered_message_id = None
-        proc._rotate_session(1)
-        factory_fn = deps["rotator"].rotate.call_args[0][0]
-        factory_fn()
-        call_args = deps["renderer"].create_session.call_args
-        assert call_args[0][1] == "msg_1"
+        proc._events_since_rotation = 5
+        result = proc._rotate_session(1)
+        # Should skip rotation when session has no delivered card
+        assert result is False
+        deps["rotator"].rotate.assert_not_called()
+
+    def test_rotate_session_skipped_when_too_few_events(self):
+        proc, deps = _make_processor()
+        deps["rotator"].current.delivered_message_id = "msg_old"
+        proc._events_since_rotation = 1  # below threshold of 3
+        result = proc._rotate_session(2)
+        assert result is False
+        deps["rotator"].rotate.assert_not_called()
 
 
 class TestOnPhaseEventThrottle:

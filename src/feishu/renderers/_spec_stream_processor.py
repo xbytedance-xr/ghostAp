@@ -93,6 +93,13 @@ class SpecStreamProcessor(BaseStreamProcessor):
 
         # Immutable dependencies
         self._reporter = reporter
+        # Capture the initial session's session_started_at into the metadata
+        # template so that subsequent _rotate_session() calls propagate the
+        # total start time rather than resetting to the current cycle's start.
+        if metadata.session_started_at is None:
+            from dataclasses import replace as _dc_replace
+            initial_started = rotator.current.session_started_at
+            metadata = _dc_replace(metadata, session_started_at=initial_started)
         self._metadata = metadata
         self._hooks = hooks
         self._budget = budget
@@ -105,6 +112,8 @@ class SpecStreamProcessor(BaseStreamProcessor):
         self._footer_status: Optional[str] = None
         self._last_phase_content: str = ""
         self._current_cycle: int = 0
+        # Rotation guard: minimum dispatched events before allowing rotation
+        self._events_since_rotation: int = 0
         # Build phase tool tracking
         self._build_tool_count: int = 0
         self._build_file_set: set[str] = set()
@@ -140,8 +149,31 @@ class SpecStreamProcessor(BaseStreamProcessor):
     # Private helpers (previously nested closures)
     # ------------------------------------------------------------------
 
-    def _rotate_session(self, cycle_num: int) -> None:
-        """Atomically rotate to a new session (cycle boundary)."""
+    # Minimum events before allowing a card rotation (prevents ultra-short cards)
+    _MIN_EVENTS_BEFORE_ROTATION: int = 3
+
+    def _rotate_session(self, cycle_num: int) -> bool:
+        """Conditionally rotate to a new session at cycle boundary.
+
+        Skips rotation if the current session hasn't accumulated enough content
+        (prevents very short cards being sent). In that case, just continues on
+        the same session with a cycle_started event as visual separator.
+
+        Returns True if rotation was performed, False if skipped.
+        """
+        current_session = self._rotator.current
+        # Skip rotation if:
+        # 1. Session hasn't been delivered to Feishu yet (card doesn't exist), OR
+        # 2. Too few events have been dispatched since last rotation
+        if not current_session.delivered_message_id or self._events_since_rotation < self._MIN_EVENTS_BEFORE_ROTATION:
+            logger.debug(
+                "SpecStreamProcessor: skipping rotation for cycle %d "
+                "(delivered=%s, events_since=%d)",
+                cycle_num, bool(current_session.delivered_message_id),
+                self._events_since_rotation,
+            )
+            return False
+
         cont_meta = self._renderer.build_unit_metadata(
             self._metadata,
             unit_id=str(cycle_num),
@@ -165,6 +197,8 @@ class SpecStreamProcessor(BaseStreamProcessor):
             lambda: renderer.create_session(chat_id, old_msg_id, cont_meta, hooks=hooks, budget=budget)
         )
         self._stream_bridge.bind(self._rotator)
+        self._events_since_rotation = 0
+        return True
 
     def _get_engine_and_state(self) -> _EngineContext:
         """Return structured engine context."""
@@ -184,12 +218,14 @@ class SpecStreamProcessor(BaseStreamProcessor):
         self._dispatch_started_once()
         content = self._reporter.format_analyzing_start(requirement)
         self._rotator.dispatch(CardEvent.text_delta("_main", content))
+        self._events_since_rotation += 1
 
     def on_analyzing_done(self, spec_project: SpecProject) -> None:
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
         self._dispatch_started_once()
         content = self._reporter.format_analyzing_done(spec_project)
         self._rotator.dispatch(CardEvent.text_delta("_main", content))
+        self._events_since_rotation += 1
 
     def on_cycle_start(self, current: int, max_cycles: int) -> None:
         self._max_cycles = max_cycles
@@ -197,12 +233,14 @@ class SpecStreamProcessor(BaseStreamProcessor):
         self._renderer.update_ui_state(self._spec_project_id, view_mode="status", view_context={})
         self._renderer.notify_cycle_change(current_cycle=current, perspective=None)
         self._orchestrator.reset()
-        self._rotate_session(current)
-        self._rotator.dispatch(CardEvent.started())
+        rotated = self._rotate_session(current)
+        if rotated:
+            self._rotator.dispatch(CardEvent.started())
 
         _, spec_project, state, _ = self._get_engine_and_state()
 
         self._rotator.dispatch(CardEvent.cycle_started(current, max_cycles))
+        self._events_since_rotation += 1
 
         if spec_project:
             criteria_section = self._reporter.format_criteria_section(spec_project)
@@ -326,6 +364,7 @@ class SpecStreamProcessor(BaseStreamProcessor):
         self._rotator.dispatch(
             CardEvent.phase_started(cycle_num, phase_name, subtitle=subtitle, content=content)
         )
+        self._events_since_rotation += 1
 
         if phase == SpecPhase.BUILD:
             # Build phase: use tool panels, no text content needed
@@ -442,6 +481,7 @@ class SpecStreamProcessor(BaseStreamProcessor):
             status_content,
             subtitle=subtitle,
         ))
+        self._events_since_rotation += 1
 
         if phase == SpecPhase.BUILD:
             # Build phase: tool panels already rendered, just show summary

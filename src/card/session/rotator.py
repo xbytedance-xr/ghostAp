@@ -182,7 +182,14 @@ class SessionRotator:
             self._rotation_count += 1
             rotation_seq = self._rotation_count
 
-        # Phase 4: Mark old card as archived (outside lock)
+        # Phase 4: Drain old session's delivery pipeline before archiving.
+        # This ensures the old card's last content update completes before the
+        # ARCHIVED event is dispatched, preventing "old card still updating" UX.
+        _drain = getattr(old_session, "wait_delivery_idle", None)
+        if _drain is not None:
+            _drain(timeout=2.0)
+
+        # Phase 5: Mark old card as archived (outside lock)
         new_msg_id = getattr(new_session, "delivered_message_id", "") or ""
 
         nav_summary, fallback_notice = format_navigation_link(

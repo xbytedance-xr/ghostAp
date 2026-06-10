@@ -161,7 +161,7 @@ class CardSession:
         self._stop_escalation_delay: float = 30.0
         self._pending_card_split: tuple[str, str, str | None] | None = None
         self.on_card_split_completed: Callable[..., None] | None = None
-        self._delivery_gate = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._delivery_gate = threading.Condition(threading.Lock())  # leaf lock: never held while acquiring a LockLevel lock
         self._delivery_in_flight = False
         self._delivery_in_flight_terminal = False
         self._delivery_pending: tuple[list, bool, CardEvent] | None = None
@@ -558,7 +558,7 @@ class CardSession:
 
     def _ensure_delivery_coalescing_state(self) -> None:
         if not hasattr(self, "_delivery_gate"):
-            self._delivery_gate = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+            self._delivery_gate = threading.Condition(threading.Lock())  # leaf lock: never held while acquiring a LockLevel lock
         if not hasattr(self, "_delivery_in_flight"):
             self._delivery_in_flight = False
         if not hasattr(self, "_delivery_in_flight_terminal"):
@@ -584,6 +584,23 @@ class CardSession:
         finally:
             CardSession._submit_pending_delivery_if_any(self)
 
+    def wait_delivery_idle(self, timeout: float = 2.0) -> bool:
+        """Block until no in-flight delivery remains for this session.
+
+        Returns True if idle was reached, False on timeout.
+        Used by SessionRotator to drain old session before archiving.
+        """
+        if self._sync_delivery:
+            return True
+        deadline = time.monotonic() + timeout
+        with self._delivery_gate:
+            while self._delivery_in_flight or self._delivery_pending is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._delivery_gate.wait(timeout=remaining)
+        return True
+
     def _submit_pending_delivery_if_any(self) -> None:
         with self._delivery_gate:
             closed_event = getattr(self, "_closed", None)
@@ -591,11 +608,13 @@ class CardSession:
                 self._delivery_pending = None
                 self._delivery_in_flight = False
                 self._delivery_in_flight_terminal = False
+                self._delivery_gate.notify_all()
                 return
             pending = self._delivery_pending
             if pending is None:
                 self._delivery_in_flight = False
                 self._delivery_in_flight_terminal = False
+                self._delivery_gate.notify_all()
                 return
             self._delivery_pending = None
             self._delivery_in_flight_terminal = pending[1]
