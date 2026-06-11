@@ -942,6 +942,9 @@ UI_TEXT = {
     "spec_cycle_label": "第 {cycle_num} 轮",
     "spec_build_progress": "🔨 {tool_count} 次工具调用",
     "spec_build_progress_files": " · {file_count} 文件",
+    "spec_build_heartbeat_thinking": " · 思考中 ({seconds}s)",
+    "spec_build_heartbeat_tool_running": " · 执行中 ({seconds}s)",
+    "spec_build_heartbeat_idle": "🔨 正在编码 · 思考中 ({seconds}s)",
     "spec_build_done": "🔨 **构建完成**  {summary}",
     "spec_build_done_plain": "🔨 **构建完成**",
     # Workflow header colors by phase

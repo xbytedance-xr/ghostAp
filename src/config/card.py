@@ -40,6 +40,11 @@ class CardSessionConfig(BaseModel):
         gt=0,
         description="Live ticker 帧切换间隔（秒），对应 v2 设计中绿点动画节奏",
     )
+    build_heartbeat_interval: float = Field(
+        default=5.0,
+        gt=0,
+        description="Spec BUILD 阶段心跳间隔（秒），定期刷新 footer 进度文本",
+    )
     task_level_cards_enabled: bool = Field(
         default=False,
         description="启用后多步任务使用独立飞书卡片展示每个子任务；默认关闭以避免飞书消息刷屏",

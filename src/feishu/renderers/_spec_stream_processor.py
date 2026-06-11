@@ -14,6 +14,7 @@ from ...acp import ACPEventType
 from ...card.events import CardEvent, card_event_from_acp
 from ...card.orchestrator import TaskOrchestrator
 from ...card.render.budget import RenderBudget
+from ...card.render.build_heartbeat import BuildHeartbeat
 from ...card.render.throttle import StreamThrottle
 from ...card.state.models import CardMetadata
 from ...card.stream_bridge import ACPStreamBridge
@@ -119,6 +120,7 @@ class SpecStreamProcessor(BaseStreamProcessor):
         self._build_file_set: set[str] = set()
         self._build_tool_ids: set[str] = set()
         self._build_started_tool_ids: set[str] = set()
+        self._build_heartbeat: BuildHeartbeat | None = None
 
         # TaskOrchestrator for optional task-level cards within a Spec cycle's Build phase
         def _task_session_creator(task_id: str):
@@ -372,6 +374,7 @@ class SpecStreamProcessor(BaseStreamProcessor):
             self._build_file_set = set()
             self._build_tool_ids = set()
             self._build_started_tool_ids = set()
+            self._start_build_heartbeat()
 
     def on_phase_event(self, cycle_num: int, phase: SpecPhase, event) -> None:
         """Real-time ACP event processing."""
@@ -384,6 +387,11 @@ class SpecStreamProcessor(BaseStreamProcessor):
             self._footer_status = "tool_running"
         elif event.event_type == ACPEventType.TEXT_CHUNK:
             self._footer_status = None
+
+        # Reset heartbeat timer on every BUILD event
+        if phase == SpecPhase.BUILD and self._build_heartbeat is not None:
+            activity = "tool_running" if self._footer_status == "tool_running" else "thinking"
+            self._build_heartbeat.reset(activity)
 
         # SPEC/PLAN/TASK are structured artifact phases whose model output is
         # intentionally JSON-like for parsing. Streaming those chunks verbatim
@@ -468,7 +476,48 @@ class SpecStreamProcessor(BaseStreamProcessor):
             if "/" in first_line and len(first_line) < 200:
                 self._build_file_set.add(first_line)
 
+    # ------------------------------------------------------------------
+    # Build heartbeat — periodic footer progress refresh
+    # ------------------------------------------------------------------
+
+    def _start_build_heartbeat(self) -> None:
+        self._stop_build_heartbeat()
+        from ...config import get_settings
+        interval = get_settings().card.build_heartbeat_interval
+        self._build_heartbeat = BuildHeartbeat(
+            session_id=self._rotator.session_id,
+            on_tick=self._on_build_heartbeat_tick,
+            interval=interval,
+        )
+        self._build_heartbeat.start()
+
+    def _stop_build_heartbeat(self) -> None:
+        hb = self._build_heartbeat
+        self._build_heartbeat = None
+        if hb is not None:
+            hb.stop()
+
+    def _on_build_heartbeat_tick(self, elapsed: float, activity: str) -> None:
+        """Called by heartbeat timer — dispatch a progress_updated event."""
+        seconds = int(elapsed)
+        if seconds < 3:
+            return
+
+        if self._build_tool_count > 0:
+            progress_text = UI_TEXT["spec_build_progress"].format(tool_count=self._build_tool_count)
+            if self._build_file_set:
+                progress_text += UI_TEXT["spec_build_progress_files"].format(file_count=len(self._build_file_set))
+            suffix_key = f"spec_build_heartbeat_{activity}"
+            progress_text += UI_TEXT.get(suffix_key, UI_TEXT["spec_build_heartbeat_thinking"]).format(seconds=seconds)
+        else:
+            progress_text = UI_TEXT["spec_build_heartbeat_idle"].format(seconds=seconds)
+
+        self._rotator.dispatch(CardEvent.progress_updated(
+            current=self._build_tool_count, total=0, label=progress_text
+        ))
+
     def on_phase_done(self, cycle_num: int, phase: SpecPhase, output: str) -> None:
+        self._stop_build_heartbeat()
         _, spec_project, state, max_c = self._get_engine_and_state()
         self._footer_status = None
         self._stream_bridge.close_open_blocks()
