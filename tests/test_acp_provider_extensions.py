@@ -201,3 +201,57 @@ def test_resolve_agent_spec_uses_registered_traex_provider(mock_run):
 
     assert cmd == "traex"
     assert args == ["acp", "serve", "-c", 'model="gpt-5"']
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_resolves_config_name_to_slug(mock_run, tmp_path):
+    """Traex provider translates config_name → slug to avoid metadata lookup failure."""
+    import json
+
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout='Usage: traecli acp serve [OPTIONS]\n  -c, --config <key=value>\n',
+        stderr="",
+    )
+
+    cache_data = {
+        "models": [
+            {"slug": "Test-O-New-Thinking", "config_name": "c_o_new_thinking"},
+            {"slug": "GPT-5.5", "config_name": "gpt-5.5"},
+        ]
+    }
+    cache_file = tmp_path / "models_cache.json"
+    cache_file.write_text(json.dumps(cache_data))
+
+    provider = TraexProvider()
+    # Clear cached slug map so it re-reads
+    provider._load_slug_map.cache_clear()
+
+    with patch("pathlib.Path.home", return_value=tmp_path.parent):
+        # Arrange: put cache at <home>/.trae/cli/models_cache.json
+        trae_dir = tmp_path.parent / ".trae" / "cli"
+        trae_dir.mkdir(parents=True, exist_ok=True)
+        (trae_dir / "models_cache.json").write_text(json.dumps(cache_data))
+
+        provider._load_slug_map.cache_clear()
+        cmd, args = provider.get_serve_command("c_o_new_thinking")
+
+    assert cmd == "traex"
+    assert args == ["acp", "serve", "-c", 'model="Test-O-New-Thinking"']
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_passes_through_unknown_model(mock_run):
+    """Models not in slug map are passed through unchanged."""
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout='Usage: traecli acp serve [OPTIONS]\n  -c, --config <key=value>\n',
+        stderr="",
+    )
+
+    provider = TraexProvider()
+    provider._load_slug_map.cache_clear()
+
+    cmd, args = provider.get_serve_command("some-unknown-model")
+    assert cmd == "traex"
+    assert args == ["acp", "serve", "-c", 'model="some-unknown-model"']

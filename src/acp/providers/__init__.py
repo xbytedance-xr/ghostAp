@@ -176,6 +176,49 @@ class GenericACPProvider:
         return None
 
 
+class TraexACPProvider(GenericACPProvider):
+    """Traex ACP provider with config_name → slug resolution.
+
+    Traex's ACP config_options returns model values as config_name (e.g.
+    "c_o_new_thinking") but its CLI metadata lookup uses slug format (e.g.
+    "Test-O-New-Thinking"). This provider translates before passing -c model=.
+    """
+
+    @functools.lru_cache(maxsize=1)  # noqa: B019
+    def _load_slug_map(self) -> dict[str, str]:
+        """Build config_name → slug map from ~/.trae/cli/models_cache.json."""
+        try:
+            from pathlib import Path
+
+            cache_path = Path.home() / ".trae" / "cli" / "models_cache.json"
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            mapping: dict[str, str] = {}
+            for m in data.get("models") or []:
+                slug = str(m.get("slug") or "").strip()
+                config_name = str(m.get("config_name") or "").strip()
+                if slug and config_name and config_name != slug:
+                    mapping[config_name] = slug
+            return mapping
+        except Exception:
+            return {}
+
+    def _resolve_slug(self, model_name: Optional[str]) -> Optional[str]:
+        """Resolve config_name to slug if a mapping exists."""
+        m = (model_name or "").strip()
+        if not m:
+            return model_name
+        slug_map = self._load_slug_map()
+        return slug_map.get(m, m)
+
+    def get_serve_command(self, model_name: Optional[str] = None) -> tuple[str, list[str]]:
+        resolved = self._resolve_slug(model_name)
+        args = list(self._config.serve_args)
+        args = _apply_model_args(
+            args, resolved, self._config.model_style, self._config.help_blob_loader
+        )
+        return self._config.tool_name, args
+
+
 class CodexACPProvider(GenericACPProvider):
     """Codex ACP provider with an npx fallback for CLIs without `acp serve`."""
 
@@ -335,6 +378,8 @@ def _ensure_providers() -> dict[str, GenericACPProvider]:
         for cfg in configs:
             if cfg.tool_name == "codex":
                 p = CodexACPProvider(cfg)
+            elif cfg.tool_name == "traex":
+                p = TraexACPProvider(cfg)
             else:
                 p = GenericACPProvider(cfg)
             result[cfg.tool_name] = p
