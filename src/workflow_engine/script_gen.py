@@ -126,11 +126,12 @@ export const meta = {{
   ],
   maxConcurrent: 6,                        // number, optional (default 10)
   tools: ["coco", "claude"],               // array of tools used
+  patterns: ["fanout", "verify"],          // array, optional: which patterns are used
   workflow_refs: ["sub-workflow-name"],     // array, optional: sub-workflows invoked
 }};
 ```
 
-### Available Primitives
+### Available Primitives — Core
 
 All primitives are globally available (no import needed):
 
@@ -152,16 +153,11 @@ const [r1, r2, r3] = await parallel([
   () => agent("task 3", {{ tool: "aiden" }}),
 ]);
 
-// parallel/map: items run concurrently; each item flows through all stages
-// sequentially (map-reduce style). Use pipeline() when items share the same
-// multi-step pipeline. For strictly sequential pipelines use sequence([...])
-// / serialPipeline(...) — note: these are optional helpers documented below.
-const results = await pipeline(
-  items,                      // array of input items
-  async (item) => {{ ... }},   // stage 1: transform
-  async (item) => {{ ... }},   // stage 2: validate
-  async (item) => {{ ... }},   // stage 3: finalize
-);
+// Parallel/map: items run concurrently, each flows through stages sequentially
+const results = await pipeline(items, stage1Fn, stage2Fn, {{ continueOnFailure: true }});
+
+// Strict sequential execution (each step receives previous result)
+const final = await sequence([step1Fn, step2Fn, step3Fn]);
 
 // Declare phase transitions (for progress tracking)
 phase("Phase Title");
@@ -173,33 +169,158 @@ log("Status message");
 const subResult = await workflow("sub-workflow-name", {{ arg1: "value" }});
 ```
 
+### Available Primitives — Dynamic Workflow Patterns (6大编排模式)
+
+These are higher-order orchestration primitives implementing proven multi-agent patterns.
+**选择最适合任务的模式组合，而非总是手写循环和条件判断。**
+
+#### 1. classify(input, categories, opts) — 分类-执行模式 (Classify-and-Act)
+
+先分类再路由到不同处理逻辑。适合：多种任务类型需要不同处理策略。
+
+```javascript
+const result = await classify(userRequest, {{
+  "bug_fix": {{
+    description: "Bug fixes and error corrections",
+    handler: async (input) => agent(`Fix this bug: ${{input}}`, {{ tool: "coco" }}),
+  }},
+  "feature": {{
+    description: "New feature implementation",
+    handler: async (input) => agent(`Implement: ${{input}}`, {{ tool: "claude" }}),
+  }},
+  "refactor": {{
+    description: "Code refactoring and optimization",
+    handler: async (input) => agent(`Refactor: ${{input}}`, {{ tool: "aiden" }}),
+  }},
+}}, {{ classifierTool: "claude" }});
+```
+
+#### 2. fanout(input, workers, opts) — 扇出-合成模式 (Fan-out-and-Synthesize)
+
+拆分为多个独立子任务并行执行，最后合成结果。适合：大量独立子问题、多视角分析。
+
+```javascript
+const result = await fanout(codeContext, [
+  {{ prompt: "Review for security: ${{input}}", tool: "claude", role: "security_auditor" }},
+  {{ prompt: "Review for performance: ${{input}}", tool: "aiden", role: "perf_expert" }},
+  {{ prompt: "Review for correctness: ${{input}}", tool: "coco", role: "correctness_checker" }},
+], {{ synthesizerTool: "claude", synthesizerRole: "lead_reviewer" }});
+```
+
+#### 3. verify(output, opts) — 对抗性验证模式 (Adversarial Verification)
+
+用独立验证者挑战输出，循环修订直到通过。适合：高置信度需求、安全审查、关键代码。
+
+```javascript
+const {{ accepted, output: verifiedCode, feedback }} = await verify(generatedCode, {{
+  criteria: "security, correctness, no regressions",
+  verifiers: [
+    {{ tool: "claude", role: "security_adversary", focus: "Find security vulnerabilities" }},
+    {{ tool: "aiden", role: "correctness_adversary", focus: "Find logic errors and edge cases" }},
+  ],
+  maxRounds: 3,
+  reviseTool: "coco",
+}});
+```
+
+#### 4. generate(count, generatorFn, filterFn, opts) — 生成-过滤模式 (Generate-and-Filter)
+
+生成多个候选方案，然后过滤筛选出最优。适合：命名、设计方案、创意探索。
+
+```javascript
+const topSolutions = await generate(
+  5,  // generate 5 candidates
+  (i) => ({{ prompt: `Design approach ${{i+1}} for: ${{task}}`, tool: "coco", role: `designer-${{i}}` }}),
+  null,  // use default filter (AI-based ranking)
+  {{ topK: 2, criteria: "feasibility, elegance, maintainability", filterTool: "claude" }}
+);
+```
+
+#### 5. tournament(contestants, judgeFn, opts) — 锦标赛模式 (Tournament)
+
+让多个智能体竞争同一任务，通过淘汰赛决出最佳方案。适合：确定最佳实现方案。
+
+```javascript
+const {{ winner, bracket }} = await tournament(
+  [
+    {{ prompt: `Solve with approach A: ${{task}}`, tool: "coco", label: "approach-A" }},
+    {{ prompt: `Solve with approach B: ${{task}}`, tool: "claude", label: "approach-B" }},
+    {{ prompt: `Solve with approach C: ${{task}}`, tool: "aiden", label: "approach-C" }},
+    {{ prompt: `Solve with approach D: ${{task}}`, tool: "gemini", label: "approach-D" }},
+  ],
+  null,  // use default judge
+  {{ judgeTool: "claude", task: task, criteria: "correctness, efficiency, readability" }}
+);
+```
+
+#### 6. loop(taskFn, opts) — 循环直到完成模式 (Loop-Until-Done)
+
+反复执行直到满足停止条件或收敛。适合：Bug 打猎、安全审计、迭代优化。
+
+```javascript
+const {{ results, iterations, stoppedBy }} = await loop(
+  async (i, prev) => {{
+    return agent(`Iteration ${{i+1}}: Find more issues not in: ${{prev || 'none'}}`, {{
+      tool: "claude", label: `hunt-${{i}}`, schema: {{ issues: [], done: false }}
+    }});
+  }},
+  {{
+    maxIterations: 8,
+    stopWhen: (result) => result?.issues?.length === 0 || result?.done === true,
+    convergenceCheck: (curr, prev) => {{
+      const currSet = new Set((curr?.issues || []).map(i => i.description));
+      const prevSet = new Set((prev?.issues || []).map(i => i.description));
+      return currSet.size === prevSet.size && [...currSet].every(x => prevSet.has(x));
+    }},
+  }}
+);
+```
+
+#### race(contestants, opts) — 竞速模式 (First-to-finish)
+
+多个智能体竞速，取第一个有效结果。适合：多种方法可能成功，取最快的。
+
+```javascript
+const fastest = await race([
+  {{ prompt: task, tool: "coco", label: "fast-coco" }},
+  {{ prompt: task, tool: "traex", label: "fast-traex" }},
+], {{ validate: (r) => r && !r.error && r.length > 50 }});
+```
+
+## Pattern Composition Strategy (模式组合策略)
+
+最强大的 workflow 通常组合多个模式。常见组合：
+
+1. **classify → fanout → verify**: 先分类，针对性扇出处理，最后验证
+2. **fanout → tournament**: 多角度生成，锦标赛选最佳
+3. **loop + verify**: 迭代产出 + 每轮验证
+4. **generate → tournament → verify**: 生成多方案 → 淘汰赛 → 对抗验证
+5. **classify → loop**: 分类后针对不同类型用循环消化
+6. **fanout → loop(verify)**: 并行处理后循环验证直到全部通过
+
+**选择模式的决策树：**
+- 任务有多种类型？ → classify
+- 可拆为独立子问题？ → fanout
+- 需要高置信度？ → verify
+- 需要最优方案？ → tournament 或 generate+filter
+- 工作量未知/迭代性？ → loop
+- 多种方法都可能成功？ → race
+
 ## Best Practices (MUST FOLLOW)
 
-1. **Use parallel() for independent tasks** - When tasks don't depend on each other,
-   wrap them in parallel() for concurrent execution. This maximizes throughput.
+1. **优先使用高阶模式** — 当任务匹配某个模式时，直接使用 classify/fanout/verify/generate/
+   tournament/loop，而非手写等价逻辑。模式内置了错误处理、重试和收敛检测。
 
-2. **Use pipeline() when items flow through stages** - When you have a list of items
-   that each need the same multi-step processing, pipeline() is cleaner than nested loops.
-   This is a **parallel/map** primitive: items execute concurrently (via Promise.all) while
-   each item runs through stages sequentially. For strictly sequential pipelines use
-   sequence([...]) / serialPipeline(...) instead.
-
-3. **Assign different tools to different roles/tasks** - Diversity of AI perspectives
+2. **Assign different tools to different roles/tasks** — Diversity of AI perspectives
    produces more robust results. Don't use the same tool for everything.
 
-4. **Include adversarial verification for critical outputs** - For important conclusions,
-   have a separate agent with a different tool challenge the findings. Example:
-   ```javascript
-   const findings = await agent("Analyze X", {{ tool: "claude", role: "security_auditor" }});
-   const verified = await agent(`Challenge these findings: ${{findings}}`, {{
-     tool: "coco", role: "adversarial_verifier"
-   }});
-   ```
+3. **Include adversarial verification for critical outputs** — For important conclusions,
+   use verify() or have a separate agent with a different tool challenge the findings.
 
-5. **Keep each agent() prompt focused on one task** - Don't ask an agent to do
+4. **Keep each agent() prompt focused on one task** — Don't ask an agent to do
    everything at once. Break complex work into focused, composable agent() calls.
 
-6. **Encourage subagent usage in prompts** - When writing agent prompts, tell the agent
+5. **Encourage subagent usage in prompts** - When writing agent prompts, tell the agent
    to spawn subagents for independent sub-problems. Include this guidance in prompts
    for complex tasks:
    "When a task can be decomposed, always delegate to subagents rather than doing
@@ -207,18 +328,16 @@ const subResult = await workflow("sub-workflow-name", {{ arg1: "value" }});
    sub-workflows. Subagents work in parallel and can independently handle research,
    implementation, verification, and testing tasks, significantly improving efficiency
    and convergence speed."
-   This is critical for maximizing parallelism — agents that support subagents (e.g. coco)
-   can internally fan out, reducing wall-clock time significantly. When order matters (e.g.
-   dependent results feed later stages), prefer sequence([...]) or serialPipeline(...) over
-   pipeline() to keep items serialized.
 
-7. **Declare phases** - Call phase("Title") before each logical section to enable
+6. **Declare phases** - Call phase("Title") before each logical section to enable
    progress tracking in the UI.
 
-8. **Use labels** - Give agent() calls descriptive labels for observability.
+7. **Use labels** - Give agent() calls descriptive labels for observability.
 
-9. **Handle results gracefully** - Agent calls may return errors; check results before
+8. **Handle results gracefully** - Agent calls may return errors; check results before
    using them in subsequent steps.
+
+9. **模式可嵌套** — verify() 内部可以用 fanout()，loop() 每轮可以用 tournament()，等等。
 
 ## Constraints
 
@@ -228,72 +347,97 @@ const subResult = await workflow("sub-workflow-name", {{ arg1: "value" }});
 - Do NOT use `eval()` or `new Function()`
 - Keep the script self-contained — all logic in one file
 
-## Example Workflow
+## Example: Multi-Pattern Workflow
 
 ```javascript
 export const meta = {{
-  name: "code-review-workflow",
-  description: "Multi-perspective code review with adversarial verification",
+  name: "robust-implementation",
+  description: "Generate, compete, verify — robust feature implementation",
   phases: [
-    {{ title: "Analysis", detail: "Independent code analysis from multiple perspectives" }},
-    {{ title: "Verification", detail: "Adversarial challenge of findings" }},
-    {{ title: "Synthesis", detail: "Consolidate verified findings into report" }},
+    {{ title: "Analysis", detail: "Analyze task type and complexity" }},
+    {{ title: "Generation", detail: "Generate multiple implementation approaches" }},
+    {{ title: "Tournament", detail: "Compete approaches to find the best" }},
+    {{ title: "Verification", detail: "Adversarial verification of the winner" }},
   ],
-  maxConcurrent: 4,
+  maxConcurrent: 6,
   tools: ["coco", "claude", "aiden"],
+  patterns: ["generate", "tournament", "verify"],
 }};
 
 export default async function() {{
-  const codeContext = "..."; // would come from workflow args in real usage
+  const task = workflowArgs.task || "Implement the requested feature";
 
-  // Phase 1: Parallel independent analysis
-  phase("Analysis");
-  log("Starting multi-perspective analysis...");
+  // Phase 1: Generate competing approaches
+  phase("Generation");
+  log("Generating competing approaches...");
 
-  const [security, quality, perf] = await parallel([
-    () => agent(`Review this code for security issues: ${{codeContext}}`, {{
-      tool: "claude", role: "security_auditor", label: "security-review",
-      phase: "Analysis",
+  const topApproaches = await generate(
+    4,
+    (i) => ({{
+      prompt: `Design approach #${{i+1}} for: ${{task}}. Use a distinctly different strategy.`,
+      tool: ["coco", "claude", "aiden", "gemini"][i % 4],
+      role: `designer-${{i}}`,
     }}),
-    () => agent(`Review this code for quality and maintainability: ${{codeContext}}`, {{
-      tool: "coco", role: "code_quality_reviewer", label: "quality-review",
-      phase: "Analysis",
-    }}),
-    () => agent(`Review this code for performance issues: ${{codeContext}}`, {{
-      tool: "aiden", role: "correctness_auditor", label: "perf-review",
-      phase: "Analysis",
-    }}),
-  ]);
+    null,
+    {{ topK: 4, criteria: "feasibility and correctness" }}
+  );
 
-  // Phase 2: Adversarial verification
+  // Phase 2: Tournament to find the best
+  phase("Tournament");
+  log("Running tournament...");
+
+  const {{ winner }} = await tournament(
+    topApproaches.map((approach, i) => ({{
+      prompt: `Refine and complete this approach:\\n${{typeof approach === 'string' ? approach : JSON.stringify(approach)}}`,
+      tool: ["coco", "claude", "aiden"][i % 3],
+      label: `finalist-${{i}}`,
+    }})),
+    null,
+    {{ judgeTool: "claude", task: task, criteria: "correctness, efficiency, maintainability" }}
+  );
+
+  // Phase 3: Adversarial verification
   phase("Verification");
-  log("Challenging findings...");
+  log("Running adversarial verification...");
 
-  const allFindings = `Security: ${{security}}\\nQuality: ${{quality}}\\nPerf: ${{perf}}`;
-  const verified = await agent(
-    `You are an adversarial verifier. Challenge these findings and identify any ` +
-    `false positives or overblown severity: ${{allFindings}}`,
-    {{ tool: "claude", role: "adversarial_verifier", label: "adversarial-check", phase: "Verification" }}
-  );
+  const {{ accepted, output: verified }} = await verify(winner, {{
+    criteria: "correctness, security, quality",
+    verifiers: [
+      {{ tool: "claude", role: "logic_adversary", focus: "Find logic errors and edge cases" }},
+      {{ tool: "aiden", role: "quality_adversary", focus: "Find code quality issues" }},
+    ],
+    maxRounds: 2,
+    reviseTool: "coco",
+  }});
 
-  // Phase 3: Final synthesis
-  phase("Synthesis");
-  log("Synthesizing final report...");
-
-  const report = await agent(
-    `Synthesize a final review report from these verified findings: ${{verified}}`,
-    {{ tool: "coco", label: "synthesis", phase: "Synthesis" }}
-  );
-
-  return report;
+  return verified;
 }}
 ```
 
+## Proportionality Principle (重要)
+
+Match workflow complexity to task complexity. NOT every task needs multiple patterns.
+
+- **Simple tasks** (single focused action, clear scope): 1 agent() call, 1 phase. Done.
+  Example: "fix a typo", "add a comment", "rename variable" → single agent, no patterns.
+- **Medium tasks** (multi-step, some parallelism): fanout or sequence, 2-3 phases, 3-5 agent calls.
+  Example: "review this file", "refactor this function" → fanout for perspectives.
+- **Complex tasks** (unknown scope, quality-critical, competing approaches): combine patterns, 4-6 phases.
+  Example: "architect a new system", "find all security bugs" → tournament + verify + loop.
+
+If the task is simple, direct, and unambiguous — a single agent() call IS the best workflow.
+Do NOT add patterns for their own sake. Every extra agent call costs time.
+
 ## Now Generate
 
-Based on the user requirement above, generate a COMPLETE workflow script following all
-the patterns, constraints, and best practices described. Output ONLY the JavaScript code,
-no markdown fences, no explanatory text before or after.
+Based on the user requirement above, generate a COMPLETE workflow script that:
+1. Selects the most appropriate pattern(s) for this specific task
+2. Leverages multiple tools for diversity and robustness
+3. Includes verification for critical outputs
+4. Maximizes parallelism where possible
+5. Uses clear phases and labels for observability
+
+Output ONLY the JavaScript code, no markdown fences, no explanatory text.
 """
 
 
@@ -522,15 +666,18 @@ def validate_generated_script(
 
     # --- Check for at least one agent() or workflow() call ---
     # Pure orchestration (workflow-only) scripts that only invoke sub-workflows
-    # are valid: https://github.com/anthropics/claude-workflow/issues (internal
-    # spec). If a script has meta + entry function + balanced brackets, it's
-    # acceptable even without an explicit agent() call.
+    # are valid. Dynamic pattern primitives (classify, fanout, verify, generate,
+    # tournament, loop) also count as they internally dispatch agent() calls.
     has_agent_call = bool(re.search(r"\bagent\s*\(", script_content))
     has_workflow_call = bool(re.search(r"\bworkflow\s*\(", script_content))
-    if not (has_agent_call or has_workflow_call):
+    has_pattern_call = bool(re.search(
+        r"\b(classify|fanout|verify|generate|tournament|loop|race|sequence)\s*\(",
+        script_content,
+    ))
+    if not (has_agent_call or has_workflow_call or has_pattern_call):
         errors.append(
-            "No `agent()` or `workflow()` call found - workflow must invoke at "
-            "least one agent or sub-workflow"
+            "No `agent()`, `workflow()`, or pattern primitive call found - workflow must "
+            "invoke at least one agent, sub-workflow, or orchestration pattern"
         )
 
     # --- Balanced braces check (rough) ---
@@ -893,104 +1040,119 @@ def _aggressive_json_cleanup(raw: str) -> str:
 
 
 def generate_simple_script(requirement: str) -> str:
-    """Generate a minimal workflow script that wraps a requirement in a single agent call.
+    """Generate a workflow script that uses Dynamic Workflow patterns.
 
-    Used as a fallback when no template matches. Creates a simple two-phase
-    workflow: plan → execute.
+    Uses classify → fanout → verify as the default pattern composition:
+    classifies the task, fans out to appropriate workers, and verifies the output.
     """
-    # Resolve subagent encouragement at call time so the runtime setting can
-    # suppress it without reimporting the module.
     _enc = get_subagent_encouragement()
-
-    # Escape the requirement for embedding in JS template literal
     escaped = requirement.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
 
     return f'''/**
- * Auto-generated workflow script.
+ * Auto-generated Dynamic Workflow.
  * Requirement: {requirement[:80]}
  */
 
 export const meta = {{
-  name: "generated-workflow",
-  description: "Auto-generated from user requirement",
+  name: "generated-dynamic-workflow",
+  description: "Auto-generated dynamic workflow with pattern-based orchestration",
   phases: [
-    {{ title: "Planning", detail: "Analyze requirement and create plan" }},
-    {{ title: "Execution", detail: "Execute the plan" }}
+    {{ title: "Analysis", detail: "Classify task and determine optimal strategy" }},
+    {{ title: "Execution", detail: "Execute using appropriate pattern" }},
+    {{ title: "Verification", detail: "Verify output quality" }}
   ],
-  maxConcurrent: 4,
-  tools: ["coco"]
+  maxConcurrent: 6,
+  tools: ["coco", "claude", "aiden"],
+  patterns: ["classify", "fanout", "verify"]
 }};
 
 export default async function main() {{
   const requirement = `{escaped}`;
 
-  // Phase 1: Planning
-  phase("Planning");
-  log("Analyzing requirement and creating execution plan");
+  // Phase 1: Analyze and plan
+  phase("Analysis");
+  log("Analyzing task and determining execution strategy");
 
-  const plan = await agent({{
-    prompt: `You are a senior engineer. Analyze this requirement and create a concrete implementation plan.
+  const analysis = await agent({{
+    prompt: `Analyze this task and determine the best execution strategy.
 
 Requirement: ${{requirement}}
 
-Output a JSON object with:
-- "tasks": array of {{ "description": "", "priority": "high|medium|low" }}
-- "approach": brief description of the overall approach
-- "estimated_agents": how many agent calls you expect to need
+Output JSON:
+- "complexity": "simple|moderate|complex"
+- "parallel_subtasks": array of independent subtasks (if any)
+- "needs_verification": boolean (true for code changes, security, correctness-critical)
+- "approach": brief description
 
 {_enc}`,
-    schema: {{ tasks: [], approach: "", estimated_agents: 0 }},
-    label: "planner",
+    tool: "claude",
+    role: "architect",
+    schema: {{ complexity: "", parallel_subtasks: [], needs_verification: true, approach: "" }},
+    label: "task-analysis",
   }});
 
-  const tasks = plan.tasks || [];
-  log(`Plan created: ${{tasks.length}} tasks identified`);
+  const subtasks = analysis.parallel_subtasks || [];
+  log(`Strategy: ${{analysis.complexity}} complexity, ${{subtasks.length}} subtasks`);
 
-  // Phase 2: Execution
+  // Phase 2: Execute
   phase("Execution");
 
-  if (tasks.length === 0) {{
-    // Single-shot execution
-    const result = await agent({{
-      prompt: `Complete this task fully:\\n\\n${{requirement}}\\n\\n{_enc}`,
-      label: "executor",
-    }});
-    return result;
-  }}
-
-  // Execute tasks (parallel where possible)
-  const results = await parallel(
-    tasks.map((task, i) => ({{
-      prompt: `Complete this specific task as part of a larger requirement.
+  let result;
+  if (subtasks.length >= 2) {{
+    // Fan-out pattern for parallel subtasks
+    log(`Executing ${{subtasks.length}} subtasks in parallel...`);
+    result = await fanout(requirement, subtasks.map((task, i) => ({{
+      prompt: `Complete this subtask as part of a larger requirement.
 
 Overall requirement: ${{requirement}}
-Overall approach: ${{plan.approach}}
+Overall approach: ${{analysis.approach}}
+Your specific subtask: ${{typeof task === "string" ? task : task.description || JSON.stringify(task)}}
 
-Your specific task: ${{task.description}}
-
-Complete this task fully and provide the result.
-
-{_enc}`,
-      label: `task-${{i + 1}}`,
-    }}))
-  );
-
-  // Final synthesis
-  const synthesis = await agent({{
-    prompt: `Synthesize the results of all completed tasks into a final deliverable.
-
-Original requirement: ${{requirement}}
-Approach: ${{plan.approach}}
-
-Task results:
-${{results.map((r, i) => `Task ${{i+1}}: ${{typeof r === "string" ? r.slice(0, 500) : JSON.stringify(r).slice(0, 500)}}`).join("\\n\\n")}}
-
-Provide a concise final summary and any integration notes.
+Complete fully and provide the result.
 
 {_enc}`,
-    label: "synthesizer",
-  }});
+      tool: ["coco", "claude", "aiden"][i % 3],
+      role: `worker-${{i}}`,
+      label: `subtask-${{i}}`,
+    }})), {{ synthesizerTool: "coco", synthesizerRole: "integrator" }});
+  }} else {{
+    // Single focused execution
+    log("Executing task...");
+    result = await agent({{
+      prompt: `Complete this task fully:
 
-  return synthesis;
+${{requirement}}
+
+Approach: ${{analysis.approach}}
+
+Provide a complete, production-ready result.
+
+{_enc}`,
+      tool: "coco",
+      label: "executor",
+    }});
+  }}
+
+  // Phase 3: Verification (if needed)
+  if (analysis.needs_verification) {{
+    phase("Verification");
+    log("Running adversarial verification...");
+
+    const {{ accepted, output: verified, feedback }} = await verify(result, {{
+      criteria: "correctness, completeness, quality",
+      verifiers: [
+        {{ tool: "claude", role: "verifier", focus: "Find errors, omissions, or quality issues" }},
+      ],
+      maxRounds: 1,
+      reviseTool: "coco",
+    }});
+
+    if (!accepted) {{
+      log(`Verification concerns: ${{feedback}}`);
+    }}
+    return verified;
+  }}
+
+  return result;
 }}
 '''

@@ -413,6 +413,543 @@ async function pipeline(items, ...args) {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic Workflow Patterns — Higher-order orchestration primitives
+// ---------------------------------------------------------------------------
+
+/**
+ * classify(input, categories, opts) — Classify-and-Act pattern.
+ *
+ * Uses a classifier agent to categorize input, then routes to the appropriate
+ * handler. Each category maps to a handler function that receives the input
+ * and classification result.
+ *
+ * @param {string} input - The input to classify
+ * @param {Object} categories - Map of category name → { description, handler }
+ * @param {Object} opts - Options: { classifierTool, classifierModel, classifierPrompt }
+ * @returns {*} Result from the matched handler
+ */
+async function classify(input, categories, opts = {}) {
+  if (cancelled) throw new CancelledError();
+  if (!input || typeof input !== 'string') {
+    throw new TypeError('classify() expects a string input as first argument');
+  }
+  if (!categories || typeof categories !== 'object') {
+    throw new TypeError('classify() expects a categories object as second argument');
+  }
+
+  const categoryNames = Object.keys(categories);
+  if (categoryNames.length < 2) {
+    throw new Error('classify() requires at least 2 categories');
+  }
+
+  const categoryDescriptions = categoryNames
+    .map(name => `- "${name}": ${categories[name].description || name}`)
+    .join('\n');
+
+  const classifierPrompt = opts.classifierPrompt ||
+    `Classify the following input into exactly ONE of these categories:\n\n${categoryDescriptions}\n\nInput:\n${input}\n\nRespond with ONLY the category name (one of: ${categoryNames.join(', ')}). Nothing else.`;
+
+  const classification = await agent(classifierPrompt, {
+    tool: opts.classifierTool || opts.tool,
+    model: opts.classifierModel || opts.model,
+    role: 'classifier',
+    label: opts.label ? `${opts.label}-classify` : 'classify',
+    schema: opts.schema,
+  });
+
+  const classResult = (typeof classification === 'string' ? classification : '').trim().toLowerCase();
+
+  // Match strategy: exact match first, then longest-substring-first to avoid
+  // short category names matching unrelated LLM output.
+  let matched = categoryNames.find(name => classResult === name.toLowerCase());
+  if (!matched) {
+    const sortedByLength = [...categoryNames].sort((a, b) => b.length - a.length);
+    matched = sortedByLength.find(name => {
+      const escaped = name.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(`\\b${escaped}\\b`).test(classResult);
+    });
+  }
+  if (!matched) {
+    matched = categoryNames.find(name => classResult.includes(name.toLowerCase()));
+  }
+
+  if (!matched && classification && classification.error) {
+    debugLog(`[runtime] classify() classifier agent failed: ${classification.error}`);
+  } else if (!matched) {
+    debugLog(`[runtime] classify() could not match "${classResult}" to any category, defaulting to "${categoryNames[0]}"`);
+  }
+
+  const selectedCategory = matched || opts.defaultCategory || categoryNames[0];
+  const handler = categories[selectedCategory].handler;
+
+  if (typeof handler === 'function') {
+    return handler(input, selectedCategory, classification);
+  }
+  if (typeof handler === 'object' && handler !== null && handler.prompt) {
+    return agent({ ...handler, prompt: handler.prompt.replace('${input}', input) });
+  }
+
+  return { category: selectedCategory, input, classification };
+}
+
+/**
+ * fanout(input, workers, opts) — Fan-out-and-Synthesize pattern.
+ *
+ * Splits work across multiple specialized agents running in parallel,
+ * then synthesizes their outputs into a unified result.
+ *
+ * @param {string|Object} input - The shared input/context
+ * @param {Array} workers - Array of { prompt, tool, role, label, ... } agent descriptors
+ * @param {Object} opts - Options: { synthesizerTool, synthesizerPrompt, synthesizerRole }
+ * @returns {*} Synthesized result
+ */
+async function fanout(input, workers, opts = {}) {
+  if (cancelled) throw new CancelledError();
+  if (!Array.isArray(workers) || workers.length === 0) {
+    throw new TypeError('fanout() expects a non-empty array of workers');
+  }
+
+  const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
+
+  const tasks = workers.map((worker, idx) => {
+    const prompt = typeof worker === 'string'
+      ? worker
+      : (worker.prompt || '').replace('${input}', inputStr);
+    return {
+      prompt,
+      tool: worker.tool || opts.defaultTool,
+      model: worker.model,
+      role: worker.role || `worker-${idx}`,
+      label: worker.label || `fanout-${idx}`,
+      schema: worker.schema,
+      phase: worker.phase,
+    };
+  });
+
+  const results = await parallel(tasks);
+
+  if (opts.synthesize === false) {
+    return results;
+  }
+
+  const MAX_RESULT_LEN = 2000;
+  const resultSummary = results
+    .map((r, i) => {
+      const text = typeof r === 'string' ? r : JSON.stringify(r);
+      const truncated = text.length > MAX_RESULT_LEN
+        ? text.slice(0, MAX_RESULT_LEN) + `\n... [truncated ${text.length - MAX_RESULT_LEN} chars]`
+        : text;
+      return `[${workers[i].role || workers[i].label || `worker-${i}`}]:\n${truncated}`;
+    })
+    .join('\n\n---\n\n');
+
+  const synthPrompt = opts.synthesizerPrompt ||
+    `You are a synthesizer. Combine and reconcile these parallel results into a unified, coherent output.\n\nOriginal input: ${inputStr}\n\nParallel results:\n${resultSummary}\n\nProvide a synthesized result that captures the best insights from all workers. Resolve any conflicts by choosing the most well-supported conclusion.`;
+
+  const synthesized = await agent(synthPrompt, {
+    tool: opts.synthesizerTool || opts.tool,
+    model: opts.synthesizerModel || opts.model,
+    role: opts.synthesizerRole || 'synthesizer',
+    label: opts.label ? `${opts.label}-synthesize` : 'synthesize',
+    schema: opts.synthesizerSchema,
+  });
+
+  return synthesized;
+}
+
+/**
+ * verify(output, opts) — Adversarial Verification pattern.
+ *
+ * Subjects an output to independent adversarial review. One or more verifier
+ * agents challenge the output, and a judge decides accept/reject/revise.
+ *
+ * @param {string|Object} output - The output to verify
+ * @param {Object} opts - Options: { criteria, verifiers, judgeTool, maxRounds, onReject }
+ * @returns {{ accepted: boolean, output: *, feedback: string, rounds: number }}
+ */
+async function verify(output, opts = {}) {
+  if (cancelled) throw new CancelledError();
+
+  const maxRounds = opts.maxRounds || 2;
+  const criteria = opts.criteria || 'correctness, completeness, security, quality';
+  const verifiers = opts.verifiers || [
+    { tool: 'claude', role: 'adversarial_verifier', focus: 'Find logical errors, edge cases, incorrect assumptions' },
+    { tool: 'aiden', role: 'security_verifier', focus: 'Find security issues, data leaks, injection points' },
+  ];
+
+  let currentOutput = output;
+  let round = 0;
+  let lastFeedback = '';
+
+  while (round < maxRounds) {
+    round++;
+    const outputStr = typeof currentOutput === 'string' ? currentOutput : JSON.stringify(currentOutput);
+
+    const reviews = await parallel(
+      verifiers.map((v, idx) => ({
+        prompt: `You are an adversarial verifier. Your job is to FIND PROBLEMS.\n\nCriteria: ${criteria}\nFocus: ${v.focus || criteria}\n\nOutput to verify:\n${outputStr}\n\nRules:\n- Only report REAL issues with concrete evidence\n- Rate severity: critical / major / minor\n- Be thorough but fair\n\nRespond with JSON:\n{ "issues": [{ "severity": "critical|major|minor", "description": "", "evidence": "" }], "approve": true/false }`,
+        tool: v.tool,
+        role: v.role || `verifier-${idx}`,
+        label: `verify-r${round}-${idx}`,
+        schema: { issues: [], approve: false },
+      }))
+    );
+
+    const allIssues = [];
+    let approvals = 0;
+    let validReviews = 0;
+    for (const r of reviews) {
+      if (r && typeof r === 'object' && !r.error && ('approve' in r || 'issues' in r)) {
+        validReviews++;
+        if (r.approve) approvals++;
+        if (r.issues) allIssues.push(...r.issues);
+      }
+    }
+
+    // If all verifiers failed to produce valid reviews, do not auto-accept
+    if (validReviews === 0) {
+      lastFeedback = 'All verifiers failed to produce a valid review';
+      if (round >= maxRounds) break;
+      continue;
+    }
+
+    const criticals = allIssues.filter(i => i.severity === 'critical').length;
+    const majors = allIssues.filter(i => i.severity === 'major').length;
+    if (approvals === validReviews || (criticals === 0 && majors === 0)) {
+      return { accepted: true, output: currentOutput, feedback: '', rounds: round };
+    }
+
+    lastFeedback = allIssues
+      .filter(i => i.severity !== 'minor')
+      .map(i => `[${i.severity}] ${i.description}`)
+      .join('\n');
+
+    if (round >= maxRounds) break;
+
+    if (typeof opts.onReject === 'function') {
+      currentOutput = await opts.onReject(currentOutput, lastFeedback, round);
+    } else {
+      const revised = await agent(
+        `Revise this output to address the following issues:\n\nCurrent output:\n${outputStr}\n\nIssues found:\n${lastFeedback}\n\nProvide a revised version that addresses ALL critical and major issues.`,
+        { tool: opts.reviseTool || opts.tool, role: 'reviser', label: `revise-r${round}` }
+      );
+      currentOutput = revised;
+    }
+  }
+
+  return { accepted: false, output: currentOutput, feedback: lastFeedback, rounds: round };
+}
+
+/**
+ * generate(count, generatorFn, filterFn, opts) — Generate-and-Filter pattern.
+ *
+ * Generates N candidates via parallel agent calls, then filters and ranks them.
+ * Returns the top-K results after deduplication.
+ *
+ * @param {number} count - Number of candidates to generate
+ * @param {Function|Object} generatorFn - Generator: (index) => agent-descriptor or prompt
+ * @param {Function|Object} filterFn - Filter/ranker: receives all candidates, returns ranked subset
+ * @param {Object} opts - Options: { topK, dedup, filterTool }
+ * @returns {Array} Filtered and ranked results
+ */
+async function generate(count, generatorFn, filterFn, opts = {}) {
+  if (cancelled) throw new CancelledError();
+  if (typeof count !== 'number' || count < 1) {
+    throw new TypeError('generate() expects a positive number as first argument');
+  }
+  if (count > 50) {
+    throw new RangeError('generate() count must be <= 50');
+  }
+
+  const tasks = [];
+  for (let i = 0; i < count; i++) {
+    if (typeof generatorFn === 'function') {
+      const descriptor = generatorFn(i);
+      if (typeof descriptor === 'string') {
+        tasks.push({ prompt: descriptor, label: `gen-${i}` });
+      } else if (typeof descriptor === 'object' && descriptor !== null) {
+        tasks.push({ ...descriptor, label: descriptor.label || `gen-${i}` });
+      } else {
+        throw new TypeError(`generate() generatorFn must return a string or object, got ${typeof descriptor}`);
+      }
+    } else if (typeof generatorFn === 'object' && generatorFn !== null && generatorFn.prompt) {
+      tasks.push({ ...generatorFn, label: `gen-${i}` });
+    } else {
+      throw new TypeError('generate() generatorFn must be a function or object with .prompt');
+    }
+  }
+
+  const candidates = await parallel(tasks);
+
+  if (typeof filterFn === 'function') {
+    return filterFn(candidates);
+  }
+
+  const topK = opts.topK || 3;
+  const candidatesSummary = candidates
+    .map((c, i) => `[Candidate ${i}]: ${typeof c === 'string' ? c.slice(0, 500) : JSON.stringify(c).slice(0, 500)}`)
+    .join('\n\n');
+
+  const filterPrompt = typeof filterFn === 'string' ? filterFn :
+    `You are a quality filter. From the following ${count} candidates, select the top ${topK} best ones.\n\nCriteria: ${opts.criteria || 'quality, originality, correctness'}\n\nCandidates:\n${candidatesSummary}\n\nRespond with JSON: { "ranked": [0, 2, 1], "reasoning": "..." } where "ranked" is the candidate indices in order of quality.`;
+
+  const filterResult = await agent(filterPrompt, {
+    tool: opts.filterTool || opts.tool,
+    role: 'filter',
+    label: 'filter-rank',
+    schema: { ranked: [], reasoning: '' },
+  });
+
+  if (filterResult && filterResult.ranked) {
+    const seen = new Set();
+    const ranked = filterResult.ranked
+      .filter(idx => typeof idx === 'number' && idx >= 0 && idx < candidates.length && !seen.has(idx) && seen.add(idx))
+      .slice(0, topK)
+      .map(idx => candidates[idx]);
+    return ranked.length > 0 ? ranked : candidates.slice(0, topK);
+  }
+
+  return candidates.slice(0, topK);
+}
+
+/**
+ * tournament(contestants, judgeFn, opts) — Tournament pattern.
+ *
+ * Runs multiple agents on the same task, then uses pairwise elimination
+ * judging to determine the best result.
+ *
+ * @param {Array} contestants - Array of agent descriptors (each solves the same task differently)
+ * @param {Function|Object} judgeFn - Judge: (a, b) => 'a' | 'b' (or agent descriptor for judging)
+ * @param {Object} opts - Options: { judgeTool, task, bracket }
+ * @returns {{ winner: *, bracket: Array, rounds: number }}
+ */
+async function tournament(contestants, judgeFn, opts = {}) {
+  if (cancelled) throw new CancelledError();
+  if (!Array.isArray(contestants) || contestants.length < 2) {
+    throw new TypeError('tournament() requires at least 2 contestants');
+  }
+
+  const solutions = await parallel(
+    contestants.map((c, idx) => {
+      if (typeof c === 'function') return c;
+      if (typeof c === 'object' && c.prompt) return { ...c, label: c.label || `contestant-${idx}` };
+      throw new TypeError('tournament() contestants must be functions or agent descriptors');
+    })
+  );
+
+  let remaining = solutions.map((sol, idx) => ({ solution: sol, index: idx, label: contestants[idx].label || `contestant-${idx}` }));
+  const bracket = [];
+  let roundNum = 0;
+
+  while (remaining.length > 1) {
+    if (cancelled) throw new CancelledError();
+    roundNum++;
+    const nextRound = [];
+    const matchups = [];
+
+    for (let i = 0; i < remaining.length; i += 2) {
+      if (i + 1 >= remaining.length) {
+        nextRound.push(remaining[i]);
+        continue;
+      }
+      matchups.push([remaining[i], remaining[i + 1]]);
+    }
+
+    const judgeResults = await parallel(
+      matchups.map(([a, b], mIdx) => {
+        const aStr = typeof a.solution === 'string' ? a.solution.slice(0, 1500) : JSON.stringify(a.solution).slice(0, 1500);
+        const bStr = typeof b.solution === 'string' ? b.solution.slice(0, 1500) : JSON.stringify(b.solution).slice(0, 1500);
+
+        if (typeof judgeFn === 'function') {
+          return () => judgeFn(a.solution, b.solution, a.label, b.label);
+        }
+
+        const task = opts.task || 'the given task';
+        const criteria = opts.criteria || 'correctness, quality, completeness';
+        return {
+          prompt: `You are a judge in a tournament. Compare these two solutions for ${task}.\n\nCriteria: ${criteria}\n\n[Solution A - ${a.label}]:\n${aStr}\n\n[Solution B - ${b.label}]:\n${bStr}\n\nWhich is better? Respond with JSON: { "winner": "A" or "B", "reasoning": "brief explanation" }`,
+          tool: opts.judgeTool || opts.tool || 'claude',
+          role: 'tournament_judge',
+          label: `judge-r${roundNum}-m${mIdx}`,
+          schema: { winner: '', reasoning: '' },
+        };
+      })
+    );
+
+    for (let i = 0; i < matchups.length; i++) {
+      const [a, b] = matchups[i];
+      const result = judgeResults[i];
+      let winnerIsA;
+      if (typeof result === 'string') {
+        const trimmed = result.trim();
+        const firstLine = trimmed.split(/[.\n]/)[0].trim();
+        const hasA = /\bA\b/.test(firstLine);
+        const hasB = /\bB\b/.test(firstLine);
+        if (hasA && !hasB) winnerIsA = true;
+        else if (!hasA && hasB) winnerIsA = false;
+        else winnerIsA = true; // ambiguous or neither — default to first contestant
+      } else {
+        winnerIsA = result && result.winner && result.winner.toUpperCase() === 'A';
+      }
+      const winner = winnerIsA ? a : b;
+      const loser = winnerIsA ? b : a;
+      bracket.push({ round: roundNum, winner: winner.label, loser: loser.label, reasoning: result?.reasoning });
+      nextRound.push(winner);
+    }
+
+    remaining = nextRound;
+  }
+
+  return { winner: remaining[0].solution, winnerLabel: remaining[0].label, bracket, rounds: roundNum };
+}
+
+/**
+ * loop(taskFn, opts) — Loop-Until-Done pattern.
+ *
+ * Iteratively runs a task function until a stop condition is met.
+ * Supports convergence detection (stop when no new findings), explicit
+ * stop conditions, and maximum iteration limits.
+ *
+ * @param {Function} taskFn - (iteration, previousResult, allResults) => result
+ * @param {Object} opts - Options: { maxIterations, stopWhen, convergenceCheck, onIteration }
+ * @returns {{ results: Array, iterations: number, stoppedBy: string }}
+ */
+async function loop(taskFn, opts = {}) {
+  if (cancelled) throw new CancelledError();
+  if (typeof taskFn !== 'function') {
+    throw new TypeError('loop() expects a function as first argument');
+  }
+
+  const MAX_LOOP_ITERATIONS = 50;
+  const maxIterations = Math.min(opts.maxIterations || 10, MAX_LOOP_ITERATIONS);
+  const results = [];
+  let previousResult = null;
+  let stoppedBy = 'max_iterations';
+
+  for (let i = 0; i < maxIterations; i++) {
+    if (cancelled) throw new CancelledError();
+
+    const result = await taskFn(i, previousResult, results);
+    results.push(result);
+
+    if (typeof opts.onIteration === 'function') {
+      opts.onIteration(i, result);
+    }
+
+    if (typeof opts.stopWhen === 'function') {
+      const shouldStop = await opts.stopWhen(result, i, results);
+      if (shouldStop) {
+        stoppedBy = 'stop_condition';
+        break;
+      }
+    }
+
+    if (typeof opts.convergenceCheck === 'function') {
+      const converged = await opts.convergenceCheck(result, previousResult, results);
+      if (converged) {
+        stoppedBy = 'converged';
+        break;
+      }
+    } else if (opts.convergence !== false && i > 0 && previousResult !== null) {
+      const prevStr = typeof previousResult === 'string' ? previousResult : JSON.stringify(previousResult);
+      const currStr = typeof result === 'string' ? result : JSON.stringify(result);
+      if (prevStr === currStr) {
+        stoppedBy = 'converged';
+        break;
+      }
+    }
+
+    previousResult = result;
+  }
+
+  return { results, iterations: results.length, stoppedBy };
+}
+
+/**
+ * sequence(steps) — Sequential execution helper.
+ *
+ * Runs steps strictly one after another, passing each result to the next.
+ * Unlike pipeline() which runs items concurrently, sequence() is serial.
+ *
+ * @param {Array} steps - Array of functions: (previousResult) => result
+ * @returns {*} Final step's result
+ */
+async function sequence(steps) {
+  if (cancelled) throw new CancelledError();
+  if (!Array.isArray(steps)) {
+    throw new TypeError('sequence() expects an array of steps');
+  }
+
+  let result = undefined;
+  for (let i = 0; i < steps.length; i++) {
+    if (cancelled) throw new CancelledError();
+    const step = steps[i];
+    if (typeof step === 'function') {
+      result = await step(result);
+    } else if (typeof step === 'object' && step !== null && step.prompt) {
+      result = await agent(step);
+    } else {
+      throw new TypeError(`sequence() step ${i} must be a function or agent descriptor`);
+    }
+  }
+  return result;
+}
+
+/**
+ * race(contestants, opts) — First-to-finish race.
+ *
+ * Runs multiple agents concurrently but returns as soon as the first
+ * valid result arrives (like Promise.race but with validation).
+ *
+ * @param {Array} contestants - Array of agent descriptors or functions
+ * @param {Object} opts - Options: { validate, timeout }
+ * @returns {*} First valid result
+ */
+async function race(contestants, opts = {}) {
+  if (cancelled) throw new CancelledError();
+  if (!Array.isArray(contestants) || contestants.length === 0) {
+    throw new TypeError('race() requires a non-empty array');
+  }
+
+  const validate = opts.validate || ((r) => r != null && r !== '' && !r.error);
+
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    let completed = 0;
+    let firstResult = null;
+
+    contestants.forEach((c, idx) => {
+      const p = typeof c === 'function' ? c() : agent(c);
+      Promise.resolve(p).then(result => {
+        if (resolved) return;
+        completed++;
+        if (firstResult === null) firstResult = result;
+        if (validate(result)) {
+          resolved = true;
+          resolve(result);
+        } else if (completed === contestants.length) {
+          resolve(firstResult);
+        }
+      }).catch(err => {
+        if (resolved) return;
+        completed++;
+        if (completed === contestants.length && !resolved) {
+          if (firstResult !== null) {
+            resolve(firstResult);
+          } else {
+            reject(new Error(`race(): all ${contestants.length} contestants failed`));
+          }
+        }
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// End of Dynamic Workflow Patterns
+// ---------------------------------------------------------------------------
+
 function phase(title) {
   sendNotification('phase', { title });
 }
@@ -473,6 +1010,14 @@ function installGlobals() {
   globalThis.phase = phase;
   globalThis.log = log;
   globalThis.workflow = workflow;
+  globalThis.classify = classify;
+  globalThis.fanout = fanout;
+  globalThis.verify = verify;
+  globalThis.generate = generate;
+  globalThis.tournament = tournament;
+  globalThis.loop = loop;
+  globalThis.sequence = sequence;
+  globalThis.race = race;
 }
 
 // Wrap every function we hand into the vm sandbox so that attacker code
@@ -531,19 +1076,29 @@ async function main() {
   // ``agent.constructor.constructor("return process")()`` or similar
   // prototype-chain escapes.
   const sandboxGlobals = {
+    // Core primitives
     agent: sandboxWrapHostFn(agent),
     parallel: sandboxWrapHostFn(parallel),
     pipeline: sandboxWrapHostFn(pipeline),
     phase: sandboxWrapHostFn(phase),
     log: sandboxWrapHostFn(log),
     workflow: sandboxWrapHostFn(workflow),
-    CancelledError,
+    // Dynamic Workflow pattern primitives
+    classify: sandboxWrapHostFn(classify),
+    fanout: sandboxWrapHostFn(fanout),
+    verify: sandboxWrapHostFn(verify),
+    generate: sandboxWrapHostFn(generate),
+    tournament: sandboxWrapHostFn(tournament),
+    loop: sandboxWrapHostFn(loop),
+    sequence: sandboxWrapHostFn(sequence),
+    race: sandboxWrapHostFn(race),
+    CancelledError: sandboxWrapHostFn(() => { throw new CancelledError(); }),
     workflowArgs,
     // Safe standard built-ins
     console: { log: sandboxWrapHostFn((...a) => debugLog(a.join(' '))),
                 error: sandboxWrapHostFn((...a) => debugLog(a.join(' '))) },
-    setTimeout,
-    clearTimeout,
+    setTimeout: sandboxWrapHostFn((fn, ms) => setTimeout(fn, ms)),
+    clearTimeout: sandboxWrapHostFn((id) => clearTimeout(id)),
     Promise,
     JSON,
     Array,
@@ -593,7 +1148,11 @@ async function main() {
       filename: 'sandbox-harden.js',
     });
   } catch (err) {
-    debugLog(`[runtime] sandbox prototype hardening skipped: ${err.message}`);
+    sendNotification('error', {
+      message: sanitizePath(`Sandbox hardening failed — aborting: ${err.message}`),
+      stack: '',
+    });
+    process.exit(1);
   }
 
   // Load and execute using vm.SourceTextModule (sandboxed ESM)

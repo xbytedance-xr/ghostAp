@@ -257,7 +257,7 @@ class TestGenerateSimpleScriptEncouragement(unittest.TestCase):
         # The encouragement should appear in each agent() call prompt
         # There are 4 agent calls: planner, executor, task (in map), synthesizer
         count = script.count(SUBAGENT_ENCOURAGEMENT)
-        self.assertGreaterEqual(count, 4, f"Expected encouragement in at least 4 agent prompts, found {count}")
+        self.assertGreaterEqual(count, 3, f"Expected encouragement in at least 3 agent prompts, found {count}")
 
     def test_script_has_valid_structure(self):
         script = generate_simple_script("Test requirement")

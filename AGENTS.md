@@ -120,7 +120,28 @@ handler -> session -> render
 
 1. **① 选择主编排Agent** — 选择一个工具+模型组合来驱动脚本生成。组合卡片允许展开工具查看其模型面板，或直接点击 "+ 添加 <工具>" 使用默认模型。此处不需要多选：编排器是单个选择的 Agent。
 2. **② 选择评审Agent** — 使用相同的组合卡片界面。可以选择一个或多个工具+模型组合作为独立评审者，或点击 **Auto** 快捷按钮跳过独立评审，由编排器进行自我评审。跳过评审适用于低风险变更，可避免额外的 Agent 调用成本。
-3. **③ 确认并执行** — 当两步都非空（或步骤2启用了Auto）后，引擎通过 `src/workflow_engine/script_gen.py` 构建 JS 工作流，验证输出（元数据导出、括号平衡、至少一个 `agent()`/`workflow()` 调用、无禁止的 `require('fs'|child_process|net|...)` 逃逸），显示确认卡片列出阶段、工具和简短预览，用户确认后执行脚本。进度通过 `WorkflowProgressRenderer` 流式传输。
+3. **③ 确认并执行** — 当两步都非空（或步骤2启用了Auto）后，引擎通过 `src/workflow_engine/script_gen.py` 构建 JS 工作流，验证输出（元数据导出、括号平衡、至少一个 `agent()`/`workflow()`/模式原语调用、无禁止的 `require('fs'|child_process|net|...)` 逃逸），显示确认卡片列出阶段、工具和简短预览，用户确认后执行脚本。进度通过 `WorkflowProgressRenderer` 流式传输。
+
+### Dynamic Workflow 编排模式
+
+Workflow 引擎提供 6+2 个高阶编排原语，作为 JS 运行时全局函数（`src/workflow_engine/runtime/runtime.js`）：
+
+| 原语 | 模式 | 用途 |
+| --- | --- | --- |
+| `classify(input, categories, opts)` | Classify-and-Act | 先分类后路由到不同处理逻辑 |
+| `fanout(input, workers, opts)` | Fan-out-and-Synthesize | 拆分并行执行后合成 |
+| `verify(output, opts)` | Adversarial Verification | 对抗性验证+循环修订 |
+| `generate(count, generatorFn, filterFn, opts)` | Generate-and-Filter | 生成多方案后过滤排序 |
+| `tournament(contestants, judgeFn, opts)` | Tournament | 淘汰赛决出最佳方案 |
+| `loop(taskFn, opts)` | Loop-Until-Done | 循环执行直到收敛/停止条件 |
+| `sequence(steps)` | Sequential | 严格顺序执行（每步传递结果） |
+| `race(contestants, opts)` | First-to-Finish | 竞速取第一个有效结果 |
+
+**比例原则**：简单任务用 1 个 agent() 调用；中等任务用 fanout/sequence（3-5 calls）；复杂任务才组合多个模式。
+
+**安全约束**：`generate()` 上限 50；`loop()` 硬上限 50；`MAX_TOTAL_AGENTS`（200）由 Python 侧强制。所有原语通过 `sandboxWrapHostFn` 包装。
+
+**内置模板**（`src/workflow_engine/builtin_templates/`）：smart-router、tournament-solve、loop-hunt、generate-filter、adversarial-review、batch-migration、code-audit、refactor-pipeline、test-generation、doc-generation、performance-analysis。
 
 错误处理：
 - 任一步骤为空选择时，卡片中会显示内联错误；用户需要选择至少一个工具/模型并重试。
