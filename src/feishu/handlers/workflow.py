@@ -2208,12 +2208,28 @@ class WorkflowHandler(BaseEngineHandler):
         )
 
     def _get_workflow_models_for_tool(self, tool_name: str, root_path: str = "") -> list[dict]:
-        """Get available models for a workflow tool."""
+        """Get available models for a workflow tool.
+
+        Resolves the tool's real provider (acp/cli/ttadk) instead of passing a
+        bogus ``provider="workflow"``. The previous hardcoded value always fell
+        into the TTADK subprocess branch of ``get_models_for_tool`` and probed
+        ACP tools (traex/coco/...) via TTADK — which fails and returns ``[]``,
+        leaving the WF model panel empty.
+        """
         try:
             from ...worktree_engine.tool_discovery import WorktreeToolDiscovery
 
             discovery = WorktreeToolDiscovery()
-            models = discovery.get_models_for_tool(tool_name, provider="workflow", cwd=root_path)
+            provider = "ttadk"
+            try:
+                for entry in discovery.get_available_tools():
+                    if entry.get("tool_name") == tool_name:
+                        provider = entry.get("provider") or "ttadk"
+                        break
+            except Exception:
+                provider = "ttadk"
+
+            models = discovery.get_models_for_tool(tool_name, provider=provider, cwd=root_path)
             return [
                 {"name": m.get("name", ""), "display_name": m.get("display_name", m.get("name", "")), "description": m.get("description", "")}
                 for m in models if m.get("name")

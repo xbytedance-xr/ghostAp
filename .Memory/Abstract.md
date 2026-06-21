@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-06-17
+- **WF模型&模型串台修复** — `/wf` 模型列表为空（ACP工具被TTADK probe误抓）+ deep(coco)收到traex模型报 Internal error；修 workflow provider 解析 + engine_base 补 traex 身份分支；相关回归 204 passed → [详细记录](2026-06-17.md)
 ## 2026-06-10
 - **Claude 1M Context 支持** — ACP claude provider probe 注入 `<model>[1m]` 候选项 + `--model` 透传 + ANTHROPIC_BETAS 兜底；UI 红色警告+一键切回；修复 sync_adapter env_override 替换语义 critical bug；229 相关测试 passed → [详细记录](2026-06-10.md)
 ## 2026-06-08

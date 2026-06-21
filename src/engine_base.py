@@ -378,6 +378,8 @@ class BaseEngineManager(Generic[T]):
             mode = InteractionMode.CODEX
         elif normalized.startswith("gemini"):
             mode = InteractionMode.GEMINI
+        elif normalized.startswith("traex"):
+            mode = InteractionMode.TRAEX
         else:
             mode = InteractionMode.COCO
 
