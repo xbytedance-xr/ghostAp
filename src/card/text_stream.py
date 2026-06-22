@@ -59,7 +59,9 @@ def _should_collapse_boundary(left: str, right: str) -> bool:
             return False
         return True
 
-    return _looks_like_stream_fragment(left_line, right_line)
+    # No newline at boundary — chunks are contiguous token fragments.
+    # Return False so append_stream_text falls through to direct concatenation.
+    return False
 
 
 def _inside_fenced_code(text: str) -> bool:
