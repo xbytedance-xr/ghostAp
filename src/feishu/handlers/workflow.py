@@ -681,11 +681,11 @@ class WorkflowHandler(BaseEngineHandler):
         """
         from ...workflow_engine.tool_registry import get_available_tools
 
-        all_tools = get_available_tools() or {"coco": "全栈编程·支持 subagent"}
+        all_tools = get_available_tools(require_available=True)
         all_tool_names = list(all_tools.keys())
 
-        # Simple recommendation: prioritize coco, claude, codex for general tasks
-        recommended_order = ["coco", "claude", "codex", "aiden", "gemini", "traex", "ttadk"]
+        # Simple recommendation: prefer Traex as the default replacement path.
+        recommended_order = ["traex", "claude", "codex", "aiden", "gemini", "coco"]
         recommended_tools = [t for t in recommended_order if t in all_tool_names]
         other_tools = [t for t in all_tool_names if t not in recommended_tools]
 
@@ -989,6 +989,9 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Build tool list from available workflow tools
         all_tools, recommended_tools, other_tools, _default = self._resolve_tool_lists()
+        if not all_tools:
+            self.send_text_to_chat(chat_id, "当前环境未检测到可用的 Workflow 编程工具，请安装 Traex/Claude/Codex 等 CLI 后重试。")
+            return
 
         # Format tools for controller
         available_tools = []
@@ -1037,6 +1040,9 @@ class WorkflowHandler(BaseEngineHandler):
         get_available_tools() calls and race conditions between init and build.
         """
         all_tools, recommended_tools, other_tools, default_selected = self._resolve_tool_lists()
+        if not all_tools:
+            self.send_text_to_chat(chat_id, "当前环境未检测到可用的 Workflow 编程工具，请安装 Traex/Claude/Codex 等 CLI 后重试。")
+            return
 
         engine, project_id, session_key = self._init_tool_selection_state(
             chat_id=chat_id,
@@ -1443,7 +1449,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Security: validate tool_name against allowed list
         from ...workflow_engine.tool_registry import get_available_tools
-        available_tools = get_available_tools()
+        available_tools = get_available_tools(require_available=True)
         if tool_name not in available_tools:
             self._reply_workflow_error(message_id, "invalid_argument", detail=f"不支持的工具: {tool_name}")
             return
@@ -1823,7 +1829,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Security: validate tool_name against allowed list
         from ...workflow_engine.tool_registry import get_available_tools
-        available_tools = get_available_tools()
+        available_tools = get_available_tools(require_available=True)
         if tool_name not in available_tools:
             self._reply_workflow_error(message_id, "invalid_argument", detail=f"不支持的工具: {tool_name}")
             return
@@ -2220,24 +2226,24 @@ class WorkflowHandler(BaseEngineHandler):
     def _get_workflow_models_for_tool(self, tool_name: str, root_path: str = "") -> list[dict]:
         """Get available models for a workflow tool.
 
-        Resolves the tool's real provider (acp/cli/ttadk) instead of passing a
+        Resolves the tool's real provider (acp/cli) instead of passing a
         bogus ``provider="workflow"``. The previous hardcoded value always fell
-        into the TTADK subprocess branch of ``get_models_for_tool`` and probed
-        ACP tools (traex/coco/...) via TTADK — which fails and returns ``[]``,
+        into the wrong subprocess branch of ``get_models_for_tool`` and probed
+        ACP tools (traex/coco/...) through the wrong transport, returning ``[]``
         leaving the WF model panel empty.
         """
         try:
             from ...worktree_engine.tool_discovery import WorktreeToolDiscovery
 
             discovery = WorktreeToolDiscovery()
-            provider = "ttadk"
+            provider = "acp"
             try:
                 for entry in discovery.get_available_tools():
                     if entry.get("tool_name") == tool_name:
-                        provider = entry.get("provider") or "ttadk"
+                        provider = entry.get("provider") or "acp"
                         break
             except Exception:
-                provider = "ttadk"
+                provider = "acp"
 
             models = discovery.get_models_for_tool(tool_name, provider=provider, cwd=root_path)
             return [
@@ -2751,7 +2757,7 @@ class WorkflowHandler(BaseEngineHandler):
         try:
             from ...workflow_engine.tool_registry import get_available_tools
 
-            available = set(get_available_tools().keys())
+            available = set(get_available_tools(require_available=True).keys())
         except Exception:
             logger.exception("tool_registry.get_available_tools() failed; falling back to empty set")
             available = set()
@@ -4141,16 +4147,20 @@ class WorkflowHandler(BaseEngineHandler):
         # Resolve available tools via dynamic registry
         from ...workflow_engine.tool_registry import get_available_tools
 
-        available_tools = get_available_tools()
+        available_tools = get_available_tools(require_available=True)
         if not available_tools:
-            available_tools = {"coco": "全栈编程·支持 subagent"}
+            logger.warning("No executable workflow tools detected; using fallback script")
+            return self._write_fallback_script(script_path, requirement), None, True
 
         # Filter available tools to selected ones if provided
         if selected_tools:
             available_tools = {
                 k: v for k, v in available_tools.items()
                 if k in selected_tools
-            } or available_tools
+            }
+            if not available_tools:
+                logger.warning("Selected workflow tools are unavailable; using fallback script")
+                return self._write_fallback_script(script_path, requirement), None, True
 
         # Get orchestrator binding and review agents from pending state
         orchestrator_binding = None
@@ -4939,8 +4949,8 @@ class WorkflowHandler(BaseEngineHandler):
         advanced_elements: list[dict] = []
 
         # 8a. Tools detail + interactive toggle
-        tool_descriptions = get_available_tools()
-        recommended_order = ["coco", "claude", "codex", "aiden", "gemini", "traex", "ttadk"]
+        tool_descriptions = get_available_tools(require_available=True)
+        recommended_order = ["traex", "claude", "codex", "aiden", "gemini", "coco"]
         tier1_tools = [t for t in recommended_order if t in allowed_tools]
         tier2_tools = [t for t in sorted(allowed_tools) if t not in recommended_order]
 

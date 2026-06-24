@@ -1,13 +1,13 @@
 """Unified tool registry for Workflow Engine.
 
-Discovers available tools from ACP providers and TTADK at runtime,
+Discovers available tools from ACP providers at runtime,
 replacing the hardcoded TOOL_DESCRIPTIONS constant.
 
 Usage:
     from .tool_registry import get_available_tools
 
-    tools = get_available_tools()
-    # -> {"coco": "全栈编程·支持 subagent", "claude": "Anthropic 深度推理", ...}
+    tools = get_available_tools(require_available=True)
+    # -> {"traex": "高并发推理·轻量任务", "claude": "Anthropic 深度推理", ...}
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ _CACHE_TTL_S: float = 300.0  # 5-minute cache
 _cache_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _cached_tools: dict[str, str] | None = None
 _cached_at: float = 0.0
+_cached_selectable_tools: dict[str, str] | None = None
+_cached_selectable_at: float = 0.0
 
 # ---------------------------------------------------------------------------
 # Fallback descriptions (used when provider probing fails)
@@ -38,7 +40,6 @@ _FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "claude": "Anthropic 深度推理",
     "traex": "高并发推理·轻量任务",
     "gemini": "Google 多模态推理",
-    "ttadk": "TTADK CLI 桥接",
 }
 
 
@@ -47,15 +48,39 @@ _FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
-def get_available_tools(*, force_refresh: bool = False) -> dict[str, str]:
+def get_available_tools(
+    *,
+    force_refresh: bool = False,
+    require_available: bool = False,
+) -> dict[str, str]:
     """Return a dict of tool_name -> description for all available tools.
 
-    Merges ACP providers + TTADK tools. Results are cached for
-    _CACHE_TTL_S seconds to avoid repeated probing.
+    By default this returns known Workflow-capable ACP tools, including
+    fallback names for compatibility. ``require_available=True`` is for
+    user-facing selection cards: it probes provider availability and returns
+    only tools that can actually run in the current environment.
 
     Thread-safe. On failure, returns the fallback dict.
     """
-    global _cached_tools, _cached_at
+    global _cached_selectable_at, _cached_selectable_tools, _cached_tools, _cached_at
+
+    if require_available:
+        now = time.monotonic()
+        if not force_refresh and _cached_selectable_tools is not None and (now - _cached_selectable_at) < _CACHE_TTL_S:
+            return dict(_cached_selectable_tools)
+
+        with _cache_lock:
+            if (
+                not force_refresh
+                and _cached_selectable_tools is not None
+                and (time.monotonic() - _cached_selectable_at) < _CACHE_TTL_S
+            ):
+                return dict(_cached_selectable_tools)
+
+            tools = _discover_tools(require_available=True)
+            _cached_selectable_tools = tools
+            _cached_selectable_at = time.monotonic()
+            return dict(tools)
 
     now = time.monotonic()
     if not force_refresh and _cached_tools is not None and (now - _cached_at) < _CACHE_TTL_S:
@@ -66,7 +91,7 @@ def get_available_tools(*, force_refresh: bool = False) -> dict[str, str]:
         if not force_refresh and _cached_tools is not None and (time.monotonic() - _cached_at) < _CACHE_TTL_S:
             return dict(_cached_tools)
 
-        tools = _discover_tools()
+        tools = _discover_tools(require_available=False)
         _cached_tools = tools
         _cached_at = time.monotonic()
         return dict(tools)
@@ -74,10 +99,12 @@ def get_available_tools(*, force_refresh: bool = False) -> dict[str, str]:
 
 def invalidate_cache() -> None:
     """Force the next get_available_tools() call to re-discover."""
-    global _cached_tools, _cached_at
+    global _cached_selectable_at, _cached_selectable_tools, _cached_tools, _cached_at
     with _cache_lock:
         _cached_tools = None
         _cached_at = 0.0
+        _cached_selectable_tools = None
+        _cached_selectable_at = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -85,42 +112,41 @@ def invalidate_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _discover_tools() -> dict[str, str]:
-    """Merge ACP + TTADK tool lists into a unified dict."""
+def _discover_tools(*, require_available: bool = False) -> dict[str, str]:
+    """Discover Workflow tools.
+
+    ``require_available`` is intentionally strict: no fallback-only names are
+    added, so selection UIs cannot offer tools missing from the current host.
+    """
     result: dict[str, str] = {}
 
-    # Phase 1: ACP providers (lightweight — no subprocess)
+    # ACP providers. In selectable mode this runs provider availability probes
+    # such as ``which`` / ``--help`` checks through the shared registry cache.
     try:
-        result.update(_discover_acp_tools())
+        result.update(_discover_acp_tools(require_available=require_available))
     except Exception as e:
         logger.debug("ACP tool discovery failed, using fallback: %s", repr(e))
-        # Add ACP fallbacks
-        for name in ("coco", "claude", "aiden", "codex", "gemini", "traex"):
-            if name not in result:
-                result[name] = _FALLBACK_DESCRIPTIONS.get(name, name)
-
-    # Phase 2: TTADK tools (static defaults, no I/O)
-    try:
-        result.update(_discover_ttadk_tools())
-    except Exception as e:
-        logger.debug("TTADK tool discovery failed: %s", repr(e))
-        if "ttadk" not in result:
-            result["ttadk"] = _FALLBACK_DESCRIPTIONS.get("ttadk", "TTADK")
+        if not require_available:
+            for name in ("traex", "claude", "codex", "aiden", "gemini", "coco"):
+                if name not in result:
+                    result[name] = _FALLBACK_DESCRIPTIONS.get(name, name)
 
     # Ensure at least the fallback set is covered
-    for name, desc in _FALLBACK_DESCRIPTIONS.items():
-        if name not in result:
-            result[name] = desc
+    if not require_available:
+        for name, desc in _FALLBACK_DESCRIPTIONS.items():
+            if name not in result:
+                result[name] = desc
 
     return result
 
 
-def _discover_acp_tools() -> dict[str, str]:
-    """Discover tools from ACP providers (lazy-init, no subprocess probing)."""
+def _discover_acp_tools(*, require_available: bool = False) -> dict[str, str]:
+    """Discover tools from ACP providers."""
     tools: dict[str, str] = {}
 
     try:
         from ..acp.providers import get_providers
+        from ..acp.providers import tool_registry as acp_tool_registry
     except ImportError:
         logger.debug("Cannot import ACP providers module")
         return tools
@@ -144,38 +170,17 @@ def _discover_acp_tools() -> dict[str, str]:
         pass
 
     for name in providers:
+        if require_available and not acp_tool_registry.get_availability(
+            name,
+            allow_sync_probe=True,
+            trigger_async_probe=False,
+        ):
+            continue
         description = (
             desc_map.get(name)
             or _FALLBACK_DESCRIPTIONS.get(name)
             or name
         )
         tools[name] = description
-
-    return tools
-
-
-def _discover_ttadk_tools() -> dict[str, str]:
-    """Discover TTADK tools from static defaults (no subprocess)."""
-    tools: dict[str, str] = {}
-
-    try:
-        from ..ttadk.manager import DEFAULT_TOOLS, TOOL_DESCRIPTIONS
-    except ImportError:
-        logger.debug("Cannot import TTADK manager")
-        return tools
-
-    # Only include TTADK-exclusive tools (not already in ACP)
-    acp_names = {"coco", "claude", "aiden", "codex", "gemini", "traex"}
-
-    for tool in DEFAULT_TOOLS:
-        name = tool.name if hasattr(tool, "name") else str(tool)
-        if name in acp_names:
-            continue
-        desc = TOOL_DESCRIPTIONS.get(name, tool.description if hasattr(tool, "description") else name)
-        tools[name] = desc
-
-    # Always include ttadk as a composite entry
-    if "ttadk" not in tools:
-        tools["ttadk"] = _FALLBACK_DESCRIPTIONS.get("ttadk", "TTADK CLI 桥接")
 
     return tools

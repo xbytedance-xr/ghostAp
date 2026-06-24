@@ -24,7 +24,6 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "claude": "Anthropic 深度推理",
     "traex": "高并发推理·轻量任务",
     "gemini": "Google 多模态推理",
-    "ttadk": "TTADK CLI 桥接",
 }
 
 # --- Journal ---
@@ -125,7 +124,7 @@ ORCHESTRATOR_AGENT_OPTIONS: list[tuple[str, str, str]] = [
 ]
 
 # Default orchestrator agent
-DEFAULT_ORCHESTRATOR_AGENT: str = "coco"
+DEFAULT_ORCHESTRATOR_AGENT: str = "traex"
 
 # --- Engine state filenames ---
 STATE_FILENAME: str = ".workflow_engine_state.json"

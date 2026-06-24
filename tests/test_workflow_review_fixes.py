@@ -31,8 +31,8 @@ class TestConstantsReviewFixes(unittest.TestCase):
         self.assertEqual(MAX_NESTING_DEPTH, 3)
 
     def test_tool_descriptions_keys(self):
-        # TOOL_DESCRIPTIONS (deprecated) now includes all known tools including gemini/ttadk
-        expected_tools = {"coco", "aiden", "codex", "claude", "traex", "gemini", "ttadk"}
+        # TOOL_DESCRIPTIONS (deprecated) now includes all known ACP workflow tools.
+        expected_tools = {"coco", "aiden", "codex", "claude", "traex", "gemini"}
         self.assertEqual(set(TOOL_DESCRIPTIONS.keys()), expected_tools)
 
     def test_tool_descriptions_non_empty(self):

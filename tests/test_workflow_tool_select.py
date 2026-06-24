@@ -59,7 +59,8 @@ class TestWorkflowToolSelectHandler(unittest.TestCase):
         return engine
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
-    def test_toggle_removes_tool(self, mock_sender):
+    @patch("src.workflow_engine.tool_registry.get_available_tools", return_value={"coco": "Coco", "claude": "Claude"})
+    def test_toggle_removes_tool(self, mock_tools, mock_sender):
         handler = self._make_handler()
         engine = self._make_engine_awaiting(tools=["coco", "claude"])
         handler.ctx.workflow_engine_manager.get.return_value = engine
@@ -74,7 +75,8 @@ class TestWorkflowToolSelectHandler(unittest.TestCase):
         handler.update_card.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
-    def test_toggle_adds_tool(self, mock_sender):
+    @patch("src.workflow_engine.tool_registry.get_available_tools", return_value={"coco": "Coco", "claude": "Claude"})
+    def test_toggle_adds_tool(self, mock_tools, mock_sender):
         handler = self._make_handler()
         engine = self._make_engine_awaiting(tools=["coco"])
         handler.ctx.workflow_engine_manager.get.return_value = engine
@@ -88,7 +90,8 @@ class TestWorkflowToolSelectHandler(unittest.TestCase):
         self.assertIn("coco", engine.project.pending.selected_tools)
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
-    def test_cannot_deselect_last_tool(self, mock_sender):
+    @patch("src.workflow_engine.tool_registry.get_available_tools", return_value={"coco": "Coco"})
+    def test_cannot_deselect_last_tool(self, mock_tools, mock_sender):
         handler = self._make_handler()
         engine = self._make_engine_awaiting(tools=["coco"])
         handler.ctx.workflow_engine_manager.get.return_value = engine
@@ -102,7 +105,8 @@ class TestWorkflowToolSelectHandler(unittest.TestCase):
         self.assertIn("coco", engine.project.pending.selected_tools)
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
-    def test_initializes_from_meta_if_none(self, mock_sender):
+    @patch("src.workflow_engine.tool_registry.get_available_tools", return_value={"coco": "Coco", "claude": "Claude"})
+    def test_initializes_from_meta_if_none(self, mock_tools, mock_sender):
         handler = self._make_handler()
         engine = self._make_engine_awaiting(tools=None)  # Not yet initialized
         handler.ctx.workflow_engine_manager.get.return_value = engine
@@ -161,7 +165,8 @@ class TestWorkflowAwaitingToolSelectState(unittest.TestCase):
         return engine
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
-    def test_select_tool_in_awaiting_tool_select_state(self, mock_sender):
+    @patch("src.workflow_engine.tool_registry.get_available_tools", return_value={"coco": "Coco", "claude": "Claude"})
+    def test_select_tool_in_awaiting_tool_select_state(self, mock_tools, mock_sender):
         """Verify handle_workflow_select_tool works in AWAITING_TOOL_SELECT state."""
         handler = self._make_handler()
         engine = self._make_engine_awaiting_tool_select(tools=["coco", "claude"])
@@ -501,12 +506,12 @@ class TestWorkflowToolSelectionCardUI(unittest.TestCase):
             root_path="/tmp/project",
         )
 
-        # Default selection should be top 3 recommended tools: coco, claude, codex
+        # Default selection should be top 3 recommended available tools.
         self.assertIsNotNone(engine.project.pending.selected_tools)
-        self.assertIn("coco", engine.project.pending.selected_tools)
         self.assertIn("claude", engine.project.pending.selected_tools)
         self.assertIn("codex", engine.project.pending.selected_tools)
-        self.assertEqual(engine.project.pending.selected_tools[:3], ["coco", "claude", "codex"])
+        self.assertIn("aiden", engine.project.pending.selected_tools)
+        self.assertEqual(engine.project.pending.selected_tools[:3], ["claude", "codex", "aiden"])
 
 
 class TestWorkflowToolDiscoverySingleCall(unittest.TestCase):
@@ -589,16 +594,16 @@ class TestWorkflowToolDiscoverySingleCall(unittest.TestCase):
             assert isinstance(default, list)
 
             # Verify recommended tools are in priority order
-            assert recommended == ["coco", "claude", "aiden", "gemini"]
+            assert recommended == ["claude", "aiden", "gemini", "coco"]
 
             # Verify other tools are those not in recommended
             assert other == ["unknown_tool"]
 
             # Verify default selection is top 3 recommended
-            assert default == ["coco", "claude", "aiden"]
+            assert default == ["claude", "aiden", "gemini"]
 
             # Verify get_available_tools was called once
-            assert mock_get_tools.call_count == 1
+            mock_get_tools.assert_called_once_with(require_available=True)
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
     def test_init_and_build_use_same_tool_lists(self, mock_sender):

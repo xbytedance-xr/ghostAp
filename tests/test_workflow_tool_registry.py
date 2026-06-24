@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from src.workflow_engine.tool_registry import (
     _FALLBACK_DESCRIPTIONS,
+    _discover_acp_tools,
     get_available_tools,
     invalidate_cache,
 )
@@ -35,13 +36,10 @@ class TestGetAvailableTools(unittest.TestCase):
             self.assertTrue(len(desc) > 0, f"{name} has empty description")
 
     def test_fallback_on_import_error(self):
-        """When ACP/TTADK imports fail, returns fallback descriptions."""
+        """When ACP imports fail, returns fallback descriptions."""
         with patch(
             "src.workflow_engine.tool_registry._discover_acp_tools",
             side_effect=Exception("no acp"),
-        ), patch(
-            "src.workflow_engine.tool_registry._discover_ttadk_tools",
-            side_effect=Exception("no ttadk"),
         ):
             invalidate_cache()
             tools = get_available_tools(force_refresh=True)
@@ -60,7 +58,7 @@ class TestGetAvailableTools(unittest.TestCase):
         """force_refresh=True re-discovers even with warm cache."""
         call_count = [0]
 
-        def counting_discover():
+        def counting_discover(**_kwargs):
             call_count[0] += 1
             return dict(_FALLBACK_DESCRIPTIONS)
 
@@ -73,6 +71,32 @@ class TestGetAvailableTools(unittest.TestCase):
             get_available_tools(force_refresh=True)
             self.assertEqual(call_count[0], 2)
 
+    def test_require_available_does_not_add_fallback_tools(self):
+        """Selectable UI mode must not show tools that were only fallback names."""
+        with patch(
+            "src.workflow_engine.tool_registry._discover_acp_tools",
+            return_value={},
+        ):
+            invalidate_cache()
+            tools = get_available_tools(force_refresh=True, require_available=True)
+            self.assertEqual(tools, {})
+
+    def test_discover_acp_tools_filters_unavailable_providers(self):
+        """require_available=True keeps only providers passing runtime probes."""
+        with patch(
+            "src.acp.providers.get_providers",
+            return_value={"coco": object(), "codex": object()},
+        ), patch(
+            "src.acp.providers.tool_registry.get_availability",
+            side_effect=lambda name, **_: name == "coco",
+        ), patch(
+            "src.utils.text.get_acp_result_header_text",
+            return_value={"tool_desc_coco": "Coco OK", "tool_desc_codex": "Codex NO"},
+        ):
+            tools = _discover_acp_tools(require_available=True)
+
+        self.assertEqual(tools, {"coco": "Coco OK"})
+
 
 class TestInvalidateCache(unittest.TestCase):
     """Test cache invalidation."""
@@ -84,7 +108,7 @@ class TestInvalidateCache(unittest.TestCase):
 
         call_count = [0]
 
-        def counting_discover():
+        def counting_discover(**_kwargs):
             call_count[0] += 1
             return dict(_FALLBACK_DESCRIPTIONS)
 

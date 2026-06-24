@@ -1764,12 +1764,12 @@ class SlockHandler(BaseEngineHandler):
 
     # tool_type → default role inference mapping
     TOOL_TYPE_ROLE_MAP: dict[str, str] = {
+        "traex": "coder",
         "codex": "coder",
         "claude": "reviewer",
         "coco": "writer",
         "aiden": "coder",
         "gemini": "coder",
-        "ttadk": "custom",
     }
 
     # role → default personality traits (used when --traits not specified)
@@ -1783,12 +1783,12 @@ class SlockHandler(BaseEngineHandler):
         "custom": [],
     }
     TOOL_SELECT_OPTIONS: tuple[dict[str, str], ...] = (
-        {"name": "coco", "label": "Coco", "emoji": "🥥", "description": "默认协作工具"},
+        {"name": "traex", "label": "Traex", "emoji": "🚀", "description": "默认编程工具"},
+        {"name": "coco", "label": "Coco", "emoji": "🥥", "description": "协作工具"},
         {"name": "codex", "label": "Codex", "emoji": "🧠", "description": "代码实现"},
         {"name": "aiden", "label": "Aiden", "emoji": "🎯", "description": "AI 编程助手"},
         {"name": "claude", "label": "Claude", "emoji": "📝", "description": "评审与长文"},
         {"name": "gemini", "label": "Gemini", "emoji": "💎", "description": "多模态与代码"},
-        {"name": "ttadk", "label": "TTADK", "emoji": "🧩", "description": "CLI 桥接"},
     )
 
     def create_role(
@@ -1828,7 +1828,7 @@ class SlockHandler(BaseEngineHandler):
             self.show_new_role_tool_selection(message_id, role_name, project)
             return
 
-        tool_type = "coco"
+        tool_type = "traex"
         model_name = ""
         emoji = "🤖"
         system_prompt = ""
@@ -2024,9 +2024,24 @@ class SlockHandler(BaseEngineHandler):
     @staticmethod
     def _resolve_slock_runtime_agent_type(tool_type: str) -> str:
         """Map role creation tool choice to an executable agent session backend."""
-        if tool_type == "ttadk":
-            return "ttadk_coco"
         return tool_type
+
+    def _selectable_role_tool_options(self) -> list[dict[str, str]]:
+        """Return role-creation tools executable in the current environment."""
+        try:
+            from ...workflow_engine.tool_registry import get_available_tools
+
+            available = set(get_available_tools(require_available=True).keys())
+        except Exception:
+            logger.debug("failed to resolve selectable role tools", exc_info=True)
+            available = set()
+        if not available:
+            return []
+        return [
+            option
+            for option in self.TOOL_SELECT_OPTIONS
+            if str(option.get("name") or "") in available
+        ]
 
     def show_new_role_tool_selection(
         self,
@@ -2036,9 +2051,14 @@ class SlockHandler(BaseEngineHandler):
     ) -> None:
         """Show the first `/new-role` interactive step: choose a backing tool."""
 
+        tool_options = self._selectable_role_tool_options()
+        if not tool_options:
+            self.reply_text(message_id, "当前环境未检测到可用的 Slock 编程工具，请安装 Traex/Claude/Codex 等 CLI 后重试。")
+            return
+
         _, card_content = CardBuilder.build_slock_role_tool_select_card(
             role_name,
-            list(self.TOOL_SELECT_OPTIONS),
+            tool_options,
             project_id=(project.project_id if project else None),
         )
         self.reply_card(message_id, card_content)
@@ -2057,15 +2077,14 @@ class SlockHandler(BaseEngineHandler):
         if not role_name or not tool_name:
             self.reply_text(message_id, "请选择有效的 Slock 角色工具")
             return
+        if tool_name not in self.TOOL_TYPE_ROLE_MAP:
+            self.reply_text(message_id, f"请选择有效的 Slock 角色工具: `{tool_name}`")
+            return
 
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id)
         if not engine:
             self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
-            return
-
-        if tool_name == "ttadk":
-            self.create_role(message_id, chat_id, f"{shlex.quote(role_name)} --tool ttadk", project)
             return
 
         cwd = getattr(project, "root_path", None) or getattr(engine, "root_path", None) or self.get_working_dir(chat_id)

@@ -140,8 +140,8 @@ class TestCreateRoleWithParams:
         assert agent.model_name == ""  # default
         assert agent.emoji == "👨‍💻"  # pick_unique_emoji assigns coder pool first entry
 
-    def test_create_role_ttadk_uses_cli_bridge_agent_type(self):
-        """`--tool ttadk` must create a TTADK CLI-bridge agent, not bare ACP ttadk."""
+    def test_create_role_ttadk_is_rejected(self):
+        """TTADK is no longer a supported Slock role creation tool."""
         handler = self._make_handler()
         engine = self._make_engine()
 
@@ -151,9 +151,9 @@ class TestCreateRoleWithParams:
 
         handler.create_role("msg_1", "chat_test", "Bridge --tool ttadk")
 
-        agent = engine.registry.register.call_args[0][0]
-        assert agent.agent_type == "ttadk_coco"
-        assert agent.agent_id == "ttadk_coco:default:Bridge"
+        engine.registry.register.assert_not_called()
+        handler.reply_text.assert_called_once()
+        assert "ttadk" in handler.reply_text.call_args[0][1]
 
 
 class TestCreateRoleDefaults:
@@ -186,7 +186,18 @@ class TestCreateRoleDefaults:
         manager.get_activated_engine.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
-        handler.create_role("msg_1", "chat_test", "SimpleAgent")
+        with patch(
+            "src.workflow_engine.tool_registry.get_available_tools",
+            return_value={
+                "traex": "默认编程工具",
+                "coco": "默认协作工具",
+                "codex": "代码实现",
+                "aiden": "AI 编程助手",
+                "claude": "评审与长文",
+                "gemini": "多模态与代码",
+            },
+        ):
+            handler.create_role("msg_1", "chat_test", "SimpleAgent")
 
         engine.registry.register.assert_not_called()
         handler.reply_card.assert_called_once()
@@ -195,9 +206,30 @@ class TestCreateRoleDefaults:
         assert "选择工具" in card_text
         assert "SimpleAgent" in card_text
         values = _collect_card_values(card)
+        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "traex" for v in values)
         assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "coco" for v in values)
         assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "codex" for v in values)
-        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "ttadk" for v in values)
+        assert not any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "ttadk" for v in values)
+
+    def test_create_role_name_only_filters_unavailable_tools_from_card(self):
+        """The Slock tool picker only shows tools available in this environment."""
+        handler = self._make_handler()
+        engine = self._make_engine()
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        with patch(
+            "src.workflow_engine.tool_registry.get_available_tools",
+            return_value={"traex": "默认编程工具", "coco": "协作工具", "ttadk": "CLI 桥接"},
+        ):
+            handler.create_role("msg_1", "chat_test", "SimpleAgent")
+
+        card = json.loads(handler.reply_card.call_args[0][1])
+        values = _collect_card_values(card)
+        tool_names = {v.get("tool_name") for v in values if v.get("action") == "slock_new_role_select_tool"}
+        assert tool_names == {"traex", "coco"}
 
     def test_select_tool_shows_model_selection_card_with_slock_action(self):
         """Tool choice reuses ACP model discovery but keeps the Slock create-role action."""
@@ -231,8 +263,8 @@ class TestCreateRoleDefaults:
             for v in values
         )
 
-    def test_select_ttadk_tool_creates_default_cli_bridge_role_without_acp_models(self):
-        """TTADK is CLI-bridge only, so the Slock role flow must not fetch ACP models."""
+    def test_select_ttadk_tool_is_rejected_without_acp_models(self):
+        """Stale TTADK callbacks are rejected and do not fetch ACP models."""
         handler = self._make_handler()
         engine = self._make_engine()
 
@@ -240,18 +272,17 @@ class TestCreateRoleDefaults:
         manager.get_activated_engine.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
-        with patch("src.feishu.handlers.slock.fetch_acp_models", side_effect=AssertionError("ACP fetch used")):
+        with patch("src.feishu.handlers.slock.fetch_acp_models") as mock_fetch:
             handler.handle_new_role_select_tool(
                 "msg_1",
                 "chat_test",
                 {"role_name": "Bridge", "tool_name": "ttadk"},
             )
 
-        agent = engine.registry.register.call_args[0][0]
-        assert agent.name == "Bridge"
-        assert agent.agent_type == "ttadk_coco"
-        assert agent.model_name == ""
-        assert agent.agent_id == "ttadk_coco:default:Bridge"
+        mock_fetch.assert_not_called()
+        engine.registry.register.assert_not_called()
+        handler.reply_text.assert_called_once()
+        assert "ttadk" in handler.reply_text.call_args[0][1]
 
     def test_select_model_creates_role(self):
         """Model choice is the point where the role is actually created."""
