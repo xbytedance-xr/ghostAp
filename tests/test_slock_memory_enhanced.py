@@ -680,6 +680,7 @@ class TestMessageArchiveRotation:
         overwrites any pre-existing .old file.
         """
         import json as _json
+
         from src.slock_engine.memory_manager import MemoryManager
 
         mm = MemoryManager(base_path=str(tmp_path))

@@ -14,7 +14,6 @@ import json
 import threading
 import time
 
-
 # ===========================================================================
 # AC-R02: Chitchat hint card with force_process button
 # ===========================================================================

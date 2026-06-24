@@ -3,8 +3,6 @@
 
 import logging
 
-import pytest
-
 from src.slock_engine.exceptions import (
     ExecutorQueueFullError,
     TaskQueueFullError,

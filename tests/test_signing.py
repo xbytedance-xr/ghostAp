@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
-from collections import OrderedDict
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -16,14 +15,12 @@ import pytest
 
 from src.utils.signing import (
     VerifyResult,
-    _USED_NONCES,
     _compute_command_sig,
     _get_process_start_date,
     _get_signing_key,
     _is_v2_sig,
     _record_nonce,
     _verify_legacy_sha256_fallback,
-    _verify_v2_sig,
     sign_command,
     verify_command_sig,
 )

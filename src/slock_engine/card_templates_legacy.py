@@ -2340,7 +2340,7 @@ def build_command_panel_extended_card(*, channel_id: str = "", project_id: str =
     )
 
 
-def build_error_suggestion_card(
+def build_error_suggestion_card(  # noqa: F811
     user_input: str,
     suggestions: list[str],
     *,
@@ -2548,7 +2548,7 @@ def build_confirm_cancel_card(
     )
 
 
-def build_dissolve_confirm_card(
+def build_dissolve_confirm_card(  # noqa: F811
     team_name: str,
     *,
     channel_id: str = "",
@@ -2701,7 +2701,7 @@ def _build_agent_status_rows(agents_data: list[dict]) -> list[dict]:
         status = agent.get("status", "idle").lower()
         role = agent.get("role", "")
 
-        bg_color = _str_bg_color_map.get(status, "grey")
+        _str_bg_color_map.get(status, "grey")
         status_icon = _str_icon_map.get(status, "\u26aa")
         status_label = _STATUS_LABEL_ZH.get(status, status)
 
@@ -2804,7 +2804,7 @@ def build_council_result_card(
         agent_name = ans.get("agent_name", "?")
         score = ans.get("score", 0)
         rank = _rank_by_name.get(agent_name, idx)
-        ordinal = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"#{rank}")
+        {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"#{rank}")
         response_text = (ans.get("answer", "") or "\u65e0\u56de\u7b54")[:2000]
         agent_elements.append({
             "tag": "collapsible_panel",

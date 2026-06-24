@@ -196,7 +196,6 @@ class TestAC20DepthConfig:
         # Simulate nesting: root -> child -> grandchild
         root_id = "thread-root"
         child_id = "thread-child"
-        grandchild_id = "thread-grandchild"
 
         # Root starts at depth 0 (no parent), incrementing makes depth 1
         dm._increment_depth(root_id, parent_thread_id=None)
@@ -288,8 +287,8 @@ class TestAC21FinallyFlush:
         thread = _make_thread(token_budget=100000, max_rounds=2)
 
         # Mock internal methods to avoid real LLM calls
-        with patch.object(dm, "start_discussion", side_effect=lambda t, c: t) as mock_start, \
-             patch.object(dm, "execute_round", side_effect=lambda t: t) as mock_exec, \
+        with patch.object(dm, "start_discussion", side_effect=lambda t, c: t), \
+             patch.object(dm, "execute_round", side_effect=lambda t: t), \
              patch.object(dm, "check_convergence", return_value=False), \
              patch.object(dm, "check_budget", return_value=True), \
              patch.object(dm, "summarize_conclusion"), \
@@ -1008,7 +1007,6 @@ class TestTaskContextInjection:
         dm = DiscussionManager(engine=engine)
 
         # Capture the initial message before execute_round modifies anything
-        initial_content_captured = []
 
         with patch.object(dm, 'execute_round') as mock_execute:
             # Make first round converge - add new message instead of modifying existing

@@ -17,6 +17,7 @@ from __future__ import annotations
 import subprocess  # noqa: F401
 import uuid  # noqa: F401
 
+from .backend_resolver import is_cli_backend, is_ttadk_type, resolve_backend_kind, resolve_cwd
 from .claude_cli import ClaudeCLIConfig, SyncClaudeCLISession
 from .factory import (
     EphemeralReviewSession,
@@ -43,7 +44,6 @@ from .ttadk_cli import (
     _is_ttadk_preamble_line,
     _JSONTextExtractor,
 )
-from .backend_resolver import is_cli_backend, is_ttadk_type, resolve_backend_kind, resolve_cwd
 from .wrappers import ModelFailureAwareSession, RateLimitAwareSession
 
 __all__ = [

@@ -1,6 +1,5 @@
 """Tests for src/card/render/renderer.py — main render entry point."""
 
-import time
 
 from src.card.render.budget import RenderBudget
 from src.card.render.renderer import (

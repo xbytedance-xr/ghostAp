@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ..models import (
+    AgentIdentity,
+    AgentStatus,
+    SlockTask,
+)
 from .common import (
     STATUS_BG_STYLE_MAP,
     STATUS_ICON_MAP,
@@ -22,11 +27,6 @@ from .common import (
     build_responsive_layout,
     redact_sensitive,
     truncate_dynamic_label,
-)
-from ..models import (
-    AgentIdentity,
-    AgentStatus,
-    SlockTask,
 )
 
 

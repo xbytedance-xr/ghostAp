@@ -1,14 +1,13 @@
-from unittest.mock import MagicMock, patch
-
 import unittest
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.acp import ACPEvent, ACPEventType, ToolCallInfo
 from src.card.engine_snapshot import EngineSnapshot
 from src.deep_engine.models import DeepProject, DeepProjectStatus
-from src.feishu.renderers.deep_renderer import DeepRenderer
 from src.feishu.handlers.deep import DeepHandler
+from src.feishu.renderers.deep_renderer import DeepRenderer
 from src.project import ProjectContext
 
 

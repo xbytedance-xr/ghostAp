@@ -4,14 +4,15 @@ import logging
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from src.card.shared.truncation import check_and_truncate_payload as _check_and_truncate
 from src.card.render.throttle import StreamThrottle
+from src.card.shared.truncation import check_and_truncate_payload as _check_and_truncate
 from src.card.thresholds import THRESHOLDS
 
 if TYPE_CHECKING:
     from ...card.protocols import Dispatchable
     from ...card.render.budget import RenderBudget
     from ...card.session import CardSession
+    from ...card.session.rotator import SessionRotator
     from ..handlers.base import BaseHandler
 
 logger = logging.getLogger(__name__)

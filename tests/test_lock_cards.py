@@ -10,7 +10,6 @@ from src.card.builders.lock import (
     MAX_COMMAND_TEXT_LENGTH,
     _build_p2p_multi_url,
     _compute_command_sig,
-    _get_signing_key,
     build_chat_lock_card,
     build_lock_confirm_card,
     build_lock_success_card,

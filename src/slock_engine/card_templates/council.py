@@ -267,7 +267,7 @@ def build_council_result_card(
         agent_name = ans.get("agent_name", "?")
         score = ans.get("score", 0)
         rank = _rank_by_name.get(agent_name, idx)
-        ordinal = {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"#{rank}")
+        {1: "\U0001f947", 2: "\U0001f948", 3: "\U0001f949"}.get(rank, f"#{rank}")
         response_text = (ans.get("answer", "") or "\u65e0\u56de\u7b54")[:2000]
         agent_elements.append(
             build_collapsible_panel(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal
@@ -379,8 +380,6 @@ _ATOM_HANDLER_DISPATCH: dict[str, Callable[[ContentBlock], RenderAtom]] = {
     "spec_task": _block_to_spec_task_atom,
     "separator": _block_to_separator_atom,
 }
-
-import threading
 
 # Module-level lazy cache for block kind handlers (avoids @functools.cache semantics)
 _block_kind_handlers: dict[str, Callable[[ContentBlock], RenderAtom]] | None = None

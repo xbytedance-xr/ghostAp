@@ -569,8 +569,8 @@ class TestDiscussionCardMobile:
 
 class TestHubCardButtonTouchOptimization:
     def test_hub_card_buttons_medium_and_vertical(self):
-        from src.slock_engine.card_templates import build_command_hub_card
         from src.card.shared import _build_button_vertical
+        from src.slock_engine.card_templates import build_command_hub_card
 
         card = build_command_hub_card(channel_id="test-ch")
         # Collect all buttons recursively

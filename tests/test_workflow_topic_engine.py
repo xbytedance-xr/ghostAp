@@ -21,12 +21,11 @@ from __future__ import annotations
 import os
 import threading
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.workflow import WorkflowHandler
 from src.mode import InteractionMode, ModeManager
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -337,7 +336,7 @@ class TestWorkflowModeStateIsolation(unittest.TestCase):
         mock_thread_ctx.thread_root_id = "thread_456"
         mock_thread_ctx.project_id = self.project_id
 
-        with patch.object(self.mode_manager, "exit_to_smart") as mock_exit:
+        with patch.object(self.mode_manager, "exit_to_smart"):
             # For topic engines, exit should NOT call exit_to_smart on the mode manager
             # Instead, it should clear the topic binding
             # Let's verify the mode manager's state is unchanged

@@ -22,10 +22,10 @@ from src.acp.claude_capabilities import (
 from src.acp.helper import _inject_claude_1m_variants
 from src.acp.providers import (
     ClaudeProvider,
+    _apply_model_args,
     _reset_providers_for_testing,
     get_providers,
 )
-from src.acp.providers import _apply_model_args
 from src.ttadk.models import ACPModelOption
 from src.utils.env import apply_anthropic_betas
 

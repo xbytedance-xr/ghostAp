@@ -10,12 +10,8 @@ Covers:
 
 from __future__ import annotations
 
-import os
-import tempfile
 import time
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.slock_engine.card_templates.action_card import (
     ActionProposal,
@@ -25,9 +21,8 @@ from src.slock_engine.card_templates.action_card import (
     build_action_result_card,
 )
 from src.slock_engine.memory_manager import MemoryManager
-from src.slock_engine.models import AgentIdentity, AgentStatus, SkillProfile
+from src.slock_engine.models import AgentIdentity
 from src.slock_engine.task_router import TaskRouter
-
 
 # ---------------------------------------------------------------------------
 # Freshness Gate / Memory Manager
@@ -250,9 +245,8 @@ class TestOrchestratorDegradation:
 
     def test_attempt_self_advance_no_plan(self):
         from src.slock_engine.collaboration_orchestrator import CollaborationOrchestrator
-        from src.slock_engine.task_chain_manager import TaskChainManager
-
         from src.slock_engine.observer_queue import TaskStatusNotifier
+        from src.slock_engine.task_chain_manager import TaskChainManager
 
         notifier = TaskStatusNotifier()
         chain_mgr = TaskChainManager()
@@ -268,9 +262,8 @@ class TestOrchestratorDegradation:
 
     def test_attempt_self_advance_disabled(self):
         from src.slock_engine.collaboration_orchestrator import CollaborationOrchestrator
-        from src.slock_engine.task_chain_manager import TaskChainManager
-
         from src.slock_engine.observer_queue import TaskStatusNotifier
+        from src.slock_engine.task_chain_manager import TaskChainManager
 
         notifier = TaskStatusNotifier()
         chain_mgr = TaskChainManager()

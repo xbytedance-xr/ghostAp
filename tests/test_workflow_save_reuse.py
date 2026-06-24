@@ -17,13 +17,12 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 from src.workflow_engine.constants import WORKFLOW_TEMPLATES_DIR
 from src.workflow_engine.history import WorkflowHistory
 from src.workflow_engine.models import PendingConfirmation, WorkflowProject, WorkflowStatus
-from src.workflow_engine.script_gen import extract_meta_from_script, generate_simple_script
+from src.workflow_engine.script_gen import extract_meta_from_script
 from src.workflow_engine.templates import (
     TemplateInfo,
     discover_templates,
@@ -32,7 +31,6 @@ from src.workflow_engine.templates import (
     parse_template_meta,
     save_template,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: sample workflow script with meta block
@@ -910,8 +908,8 @@ class TestWorkflowReuse(unittest.TestCase):
             self._create_project_template(tmpdir, "param-template", SAMPLE_TEMPLATE_WITH_ARGS)
 
             # Test argument injection directly (bypassing agent/tool selection flow)
-            from src.workflow_engine.templates import load_template, inject_args
             from src.workflow_engine.script_gen import extract_meta_from_script
+            from src.workflow_engine.templates import inject_args, load_template
 
             # Load template and inject args manually to verify injection works
             template_content = load_template(tmpdir, "param-template")

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from src.feishu.handlers.workflow import WorkflowHandler
 from src.workflow_engine.constants import (
@@ -38,7 +37,7 @@ def _create_mock_handler():
 def test_script_gen_uses_selected_agent_and_model():
     """脚本生成使用用户选择的 Agent 类型和模型。"""
     from src.workflow_engine.script_gen import build_script_gen_prompt
-    
+
     # Test with different orchestrator agents
     for agent_type, _, _ in ORCHESTRATOR_AGENT_OPTIONS:
         # Test with default model
@@ -47,24 +46,24 @@ def test_script_gen_uses_selected_agent_and_model():
             available_tools=["coco", "claude"],
             orchestrator_agent=agent_type,
         )
-        
+
         # The agent type should appear in the prompt
         assert agent_type in prompt, f"Agent type {agent_type} not found in prompt"
-        
+
         # Test with specific model
         orchestrator_binding = {
             "tool_name": agent_type,
             "model_name": "gpt-4",
             "use_default_model": False
         }
-        
+
         prompt_with_model = build_script_gen_prompt(
             requirement="test",
             available_tools=["coco", "claude"],
             orchestrator_agent=agent_type,
             orchestrator_binding=orchestrator_binding,
         )
-        
+
         # The agent type and model should appear in the prompt
         assert agent_type in prompt_with_model
         assert "gpt-4" in prompt_with_model
@@ -74,13 +73,13 @@ def test_script_gen_uses_selected_agent_and_model():
 def test_script_gen_default_agent():
     """未指定 orchestrator_agent 时使用默认值。"""
     from src.workflow_engine.script_gen import build_script_gen_prompt
-    
+
     prompt = build_script_gen_prompt(
         requirement="test",
         available_tools=["coco"],
         # 不指定 orchestrator_agent
     )
-    
+
     # Should use default agent
     assert DEFAULT_ORCHESTRATOR_AGENT in prompt
 
@@ -135,7 +134,6 @@ def test_regenerate_script_preserves_orchestrator_agent():
             # resolved inside the function.
             captured_agent = {"value": None}
 
-            original_gen = handler._generate_script_via_ai
 
             def fake_gen(requirement, root_path, selected_tools, engine, **kwargs):
                 # Inspect what orchestrator agent the function actually resolves
@@ -238,6 +236,95 @@ def test_generate_and_show_confirm_card_defaults_orchestrator_when_missing():
     assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
 
 
+def test_generate_and_show_confirm_card_sends_new_confirm_card_when_update_fails():
+    """If replacing the loading card fails, send the confirm card as a new card."""
+    handler = _build_handler_for_regen()
+    handler.send_card_to_chat.side_effect = ["loading_msg", "new_confirm_msg"]
+    handler.update_card.return_value = False
+
+    mock_engine = MagicMock()
+    mock_engine.project = WorkflowProject(
+        workflow_id="test_wf",
+        status=WorkflowStatus.AWAITING_TOOL_SELECT,
+        pending=PendingConfirmation(
+            requirement="some requirement",
+            initiator_user_id="test_user",
+            engine_session_key="session_xyz",
+            selected_tools=["coco"],
+            orchestrator_agent="claude",
+        ),
+    )
+    handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
+
+    with patch("src.workflow_engine.templates.discover_templates", return_value=[]):
+        with patch("src.thread.get_current_sender_id", return_value="test_user"):
+            handler._generate_script_via_ai = MagicMock(
+                return_value=(
+                    "/tmp/test_proj/.ghostap/workflow_scripts/generated_workflow.js",
+                    {"tools": ["coco"]},
+                    False,
+                )
+            )
+
+            handler._generate_and_show_confirm_card(
+                message_id="msg",
+                chat_id="test_chat",
+                requirement="some requirement",
+                project=MagicMock(project_id="test_proj"),
+                root_path="/tmp/test_proj",
+                selected_tools=["coco"],
+            )
+
+    handler.update_card.assert_called_once_with("loading_msg", handler._build_confirm_card.return_value)
+    assert handler.send_card_to_chat.call_count == 2
+    handler.send_card_to_chat.assert_any_call("test_chat", handler._build_confirm_card.return_value)
+
+
+def test_generate_and_show_confirm_card_replaces_loading_card_on_template_validation_failure():
+    """Template validation errors must close the loading card instead of leaving it stuck."""
+    handler = _build_handler_for_regen()
+    handler.send_card_to_chat.return_value = "loading_msg"
+    handler.update_card.return_value = True
+
+    mock_engine = MagicMock()
+    mock_engine.project = WorkflowProject(
+        workflow_id="test_wf",
+        status=WorkflowStatus.AWAITING_TOOL_SELECT,
+        pending=PendingConfirmation(
+            requirement="bad-template",
+            initiator_user_id="test_user",
+            engine_session_key="session_xyz",
+            selected_tools=["coco"],
+            orchestrator_agent="claude",
+        ),
+    )
+    handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
+    handler.reply_error = MagicMock()
+
+    with patch(
+        "src.workflow_engine.templates.discover_templates",
+        return_value=[SimpleNamespace(name="bad-template")],
+    ):
+        with patch("src.workflow_engine.templates.load_template", return_value="not valid workflow js"):
+            with patch("src.thread.get_current_sender_id", return_value="test_user"):
+                handler._generate_and_show_confirm_card(
+                    message_id="msg",
+                    chat_id="test_chat",
+                    requirement="bad-template",
+                    project=MagicMock(project_id="test_proj"),
+                    root_path="/tmp/test_proj",
+                    selected_tools=["coco"],
+                )
+
+    handler.reply_error.assert_not_called()
+    handler.update_card.assert_called_once()
+    assert handler.update_card.call_args[0][0] == "loading_msg"
+    updated_card = handler.update_card.call_args[0][1]
+    assert "模板" in str(updated_card)
+    assert mock_engine.project.status == WorkflowStatus.IDLE
+    assert mock_engine.project.pending is None
+
+
 # ---------------------------------------------------------------------------
 # 联合卡片 (combined card) 与 orchestrator 选择相关测试
 # ---------------------------------------------------------------------------
@@ -288,7 +375,6 @@ def _build_orchestrator_handler_with_project():
     ``_get_selection_controller`` 获得，state 存储在 project 的
     ``_wf_selection_snapshot`` 上。
     """
-    from src.workflow_engine.selection_flow import SelectionFlowController
 
     handler = WorkflowHandler.__new__(WorkflowHandler)
     handler.ctx = MagicMock()
@@ -610,13 +696,13 @@ def test_payload_filter_preserves_new_fields():
 def test_invalid_tool_name_rejected_in_select_model():
     """测试在 handle_workflow_orchestrator_select_model 中无效的 tool_name 被拒绝。"""
     handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
-    
+
     # 添加 MagicMock 用于 _send_combined_selection_card
     handler._send_combined_selection_card = MagicMock()
-    
+
     # 设置验证返回拒绝结果
     handler._validate_tools_against_registry = MagicMock(return_value=([], ["invalid_tool"]))
-    
+
     value = {
         "action": "workflow_orchestrator_select_model",
         "tool_name": "invalid_tool",
@@ -626,7 +712,7 @@ def test_invalid_tool_name_rejected_in_select_model():
         "project_id": "proj_1",
         "engine_session_key": "sess_abc",
     }
-    
+
     with patch("src.thread.get_current_sender_id", return_value="user_1"):
         handler.handle_workflow_orchestrator_select_model(
             message_id="msg_1",
@@ -634,7 +720,7 @@ def test_invalid_tool_name_rejected_in_select_model():
             project_id="proj_1",
             value=value,
         )
-    
+
     # 应该调用错误回复，而不是更新卡片
     handler._reply_workflow_error.assert_called_once()
     handler._send_combined_selection_card.assert_not_called()
@@ -643,17 +729,17 @@ def test_invalid_tool_name_rejected_in_select_model():
 def test_valid_tool_name_accepted_in_select_model():
     """测试有效的 tool_name 在 handle_workflow_orchestrator_select_model 中被接受。"""
     handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
-    
+
     # 添加 MagicMock 用于 _send_combined_selection_card
     handler._send_combined_selection_card = MagicMock()
-    
+
     # 设置验证返回接受结果
     handler._validate_tools_against_registry = MagicMock(return_value=(["coco"], []))
     handler._get_workflow_models_for_tool = MagicMock(return_value=[
         {"name": "gpt-4"},
         {"name": "Claude 3 Opus"},
     ])
-    
+
     value = {
         "action": "workflow_orchestrator_select_model",
         "tool_name": "coco",
@@ -663,7 +749,7 @@ def test_valid_tool_name_accepted_in_select_model():
         "project_id": "proj_1",
         "engine_session_key": "sess_abc",
     }
-    
+
     with patch("src.thread.get_current_sender_id", return_value="user_1"):
         handler.handle_workflow_orchestrator_select_model(
             message_id="msg_1",
@@ -671,7 +757,7 @@ def test_valid_tool_name_accepted_in_select_model():
             project_id="proj_1",
             value=value,
         )
-    
+
     # 应该调用更新卡片，而不是错误回复
     handler._send_combined_selection_card.assert_called_once()
     handler._reply_workflow_error.assert_not_called()
@@ -680,17 +766,17 @@ def test_valid_tool_name_accepted_in_select_model():
 def test_invalid_model_name_rejected():
     """测试无效的 model_name 被拒绝。"""
     handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
-    
+
     # 添加 MagicMock 用于 _send_combined_selection_card
     handler._send_combined_selection_card = MagicMock()
-    
+
     # 设置验证返回接受工具，但模型不在列表中
     handler._validate_tools_against_registry = MagicMock(return_value=(["coco"], []))
     handler._get_workflow_models_for_tool = MagicMock(return_value=[
         {"name": "gpt-4"},
         {"name": "Claude 3 Opus"},
     ])
-    
+
     value = {
         "action": "workflow_orchestrator_select_model",
         "tool_name": "coco",
@@ -700,7 +786,7 @@ def test_invalid_model_name_rejected():
         "project_id": "proj_1",
         "engine_session_key": "sess_abc",
     }
-    
+
     with patch("src.thread.get_current_sender_id", return_value="user_1"):
         handler.handle_workflow_orchestrator_select_model(
             message_id="msg_1",
@@ -708,7 +794,7 @@ def test_invalid_model_name_rejected():
             project_id="proj_1",
             value=value,
         )
-    
+
     # 应该调用错误回复
     handler._reply_workflow_error.assert_called_once()
     handler._send_combined_selection_card.assert_not_called()

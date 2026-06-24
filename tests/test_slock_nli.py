@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.feishu.handlers.slock import SlockHandler
 from src.slock_engine.intent_router import IntentResult, IntentRouter
 from src.slock_engine.slash_commands import SlockCommandAction, is_slock_command
-from src.feishu.handlers.slock import SlockHandler
 
 
 def _run(coro):

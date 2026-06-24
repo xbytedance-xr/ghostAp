@@ -134,7 +134,7 @@ class TestNLITimeoutDegradation:
         mock_handler._intent_router.fast_classify.return_value = None
 
         # Mock the NLI loop call to raise TimeoutError
-        with patch("src.feishu.handlers.slock._get_nli_loop") as mock_loop:
+        with patch("src.feishu.handlers.slock._get_nli_loop"):
             import concurrent.futures
 
             mock_future = MagicMock()

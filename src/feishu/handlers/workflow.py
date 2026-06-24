@@ -15,6 +15,7 @@ from .engine_base import BaseEngineHandler
 
 if TYPE_CHECKING:
     from ...project import ProjectContext
+    from ...workflow_engine.selection_flow import SelectionFlowController
     from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
@@ -348,6 +349,7 @@ class WorkflowHandler(BaseEngineHandler):
             )
             return
         import time as _time
+
         from ...workflow_engine.models import WorkflowStatus
 
         _STALE_THRESHOLD_S = 30 * 60
@@ -459,6 +461,7 @@ class WorkflowHandler(BaseEngineHandler):
         # recent pending states are blocked so users don't accidentally discard
         # an in-progress selection flow.
         import time as _time
+
         from ...workflow_engine.models import WorkflowStatus
 
         _STALE_THRESHOLD_S = 30 * 60
@@ -533,8 +536,8 @@ class WorkflowHandler(BaseEngineHandler):
         # We detect whether `requirement` is a template name here so
         # downstream handlers can record it in pending state (e.g. to
         # initialize default tool selection from template meta.tools).
-        from ...workflow_engine.templates import discover_templates
         from ...thread import get_current_sender_id
+        from ...workflow_engine.templates import discover_templates
 
         sender_id = get_current_sender_id() or ""
         parts = requirement.strip().split(None, 1)
@@ -600,7 +603,6 @@ class WorkflowHandler(BaseEngineHandler):
         from ...card import CardBuilder
         from ...card.ui_text import UI_TEXT
         from ...workflow_engine.errors import (
-            ErrorCategory,
             _strip_internal_details,
         )
 
@@ -653,6 +655,22 @@ class WorkflowHandler(BaseEngineHandler):
         """Reply with a standardized error card."""
         card = self._build_error_card(category, detail=detail)
         self.reply_card(message_id, card)
+
+    def _replace_or_send_workflow_card(
+        self,
+        *,
+        card_message_id: str | None,
+        chat_id: str,
+        card: dict[str, Any],
+    ) -> None:
+        """Replace an existing workflow card, falling back to a new card.
+
+        Generation cards are chat-sent cards, so a failed patch would otherwise
+        leave the user looking at a stale "生成脚本中" card.
+        """
+        if card_message_id and self.update_card(card_message_id, card):
+            return
+        self.send_card_to_chat(chat_id, card)
 
     @staticmethod
     def _resolve_tool_lists() -> tuple[dict[str, str], list[str], list[str], list[str]]:
@@ -718,8 +736,8 @@ class WorkflowHandler(BaseEngineHandler):
         template_tools: list[str] = []
         if template_hint:
             try:
-                from ...workflow_engine.templates import load_template
                 from ...workflow_engine.script_gen import extract_meta_from_script
+                from ...workflow_engine.templates import load_template
 
                 template_content = load_template(
                     root_path, template_hint,
@@ -929,13 +947,6 @@ class WorkflowHandler(BaseEngineHandler):
         The user selects ONE orchestrator agent (tool+model combo), then
         proceeds to review agent selection.
         """
-        from ...card.actions.dispatch import (
-            WORKFLOW_CANCEL,
-            WORKFLOW_ORCHESTRATOR_FINISH,
-            WORKFLOW_ORCHESTRATOR_SELECT_TOOL,
-        )
-        from ...card.render.buttons import build_responsive_button_row
-        from ...card.ui_text import UI_TEXT
         from ...thread import get_current_sender_id
         from ...workflow_engine.models import PendingConfirmation, WorkflowStatus
         from ...workflow_engine.selection_flow import SelectionFlowController
@@ -978,7 +989,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Build tool list from available workflow tools
         all_tools, recommended_tools, other_tools, _default = self._resolve_tool_lists()
-        
+
         # Format tools for controller
         available_tools = []
         for tool_name in recommended_tools + other_tools:
@@ -1122,10 +1133,20 @@ class WorkflowHandler(BaseEngineHandler):
                 is_valid, errors = validate_generated_script(content)
                 if not is_valid:
                     logger.warning("Template '%s' failed validation: %s", template_name, errors)
-                    self.reply_error(
-                        message_id,
-                        f"模板 `{template_name}` 未通过安全校验:\n" + "\n".join(f"• {e}" for e in errors[:5]),
-                        title="模板校验失败",
+                    if engine.project:
+                        engine.project.status = WorkflowStatus.IDLE
+                        engine.project.pending = None
+                    error_card = self._build_error_card(
+                        "invalid_argument",
+                        detail=(
+                            f"模板 `{template_name}` 未通过安全校验:\n"
+                            + "\n".join(f"• {e}" for e in errors[:5])
+                        ),
+                    )
+                    self._replace_or_send_workflow_card(
+                        card_message_id=gen_msg_id,
+                        chat_id=chat_id,
+                        card=error_card,
                     )
                     return
 
@@ -1232,10 +1253,11 @@ class WorkflowHandler(BaseEngineHandler):
             orchestrator_binding=pending.orchestrator_binding if pending else None,
             review_agents=pending.review_agents if pending else None,
         )
-        if gen_msg_id:
-            self.update_card(gen_msg_id, confirm_card)
-        else:
-            self.send_card_to_chat(chat_id, confirm_card)
+        self._replace_or_send_workflow_card(
+            card_message_id=gen_msg_id,
+            chat_id=chat_id,
+            card=confirm_card,
+        )
 
     # ------------------------------------------------------------------
     # Stop workflow
@@ -1295,17 +1317,16 @@ class WorkflowHandler(BaseEngineHandler):
         The controller's current ``step`` is expected to already be set to
         1 (orchestrator) or 2 (review) by the caller.
         """
-        from ...workflow_engine.selection_flow import SelectionFlowController
 
         ctrl = self._get_selection_controller(project)
         available_tools = self._build_available_tools()
-        
+
         # Get available models for the pending tool
         available_models = None
         if ctrl.pending_tool_name:
             root_path = project.root_path if project else ""
             available_models = self._get_workflow_models_for_tool(ctrl.pending_tool_name, root_path)
-        
+
         project_id = project.project_id if project else ""
         if is_review:
             card = ctrl.build_review_combined_card(
@@ -1386,9 +1407,8 @@ class WorkflowHandler(BaseEngineHandler):
         sees the inline model panel (or the newly selected agent).
         """
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -1457,9 +1477,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Handle orchestrator model click — add selection and refresh card."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -1559,9 +1578,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Remove a selected orchestrator item and refresh the card."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -1621,9 +1639,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Clear all selected orchestrator items and refresh the card."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -1683,9 +1700,8 @@ class WorkflowHandler(BaseEngineHandler):
         project's pending state and shows the review-agent combined card.
         """
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -1737,7 +1753,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Save orchestrator selection to pending state
         from src.spec_engine.review_agents import ReviewAgentBinding
-        
+
         snapshot = ctrl.snapshot()
         orchestrator_items = list(snapshot.get("orchestrator_selections", {}).values())
         if orchestrator_items:
@@ -1771,9 +1787,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Handle review tool click — expand inline model panel."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -1841,9 +1856,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Handle review model click — add selection (multi) and refresh card."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -1942,9 +1956,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Remove a selected review item and refresh the card."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -2004,9 +2017,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Clear all selected review items and refresh the card."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -2061,9 +2073,8 @@ class WorkflowHandler(BaseEngineHandler):
     ) -> None:
         """Toggle auto mode on review step (skip explicit review selection)."""
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -2124,9 +2135,8 @@ class WorkflowHandler(BaseEngineHandler):
         ``_generate_and_show_confirm_card``.
         """
         from ...card.events.payloads import filter_workflow_button_value
-        from ...workflow_engine.models import WorkflowStatus
-        from ...workflow_engine.selection_flow import SelectionFlowController
         from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
 
         value = filter_workflow_button_value(value)
         project_id = value.get("project_id", "") or project_id or ""
@@ -2177,7 +2187,7 @@ class WorkflowHandler(BaseEngineHandler):
             return
 
         from src.spec_engine.review_agents import ReviewAgentBinding
-        
+
         # Save review selections
         snapshot = ctrl.snapshot()
         review_items = list(snapshot.get("review_selections", {}).values())
@@ -2632,7 +2642,7 @@ class WorkflowHandler(BaseEngineHandler):
         # against the current callback's sender.
         if button_session_key == "entry-cancel":
             from ...card import CardBuilder
-            from ...mode import InteractionMode, set_topic_mode
+            from ...mode import set_topic_mode
             from ...thread import get_current_sender_id
 
             stored_initiator = value.get("initiator_user_id", "")
@@ -2857,7 +2867,6 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Re-render based on current state
         if engine.project.status in (WorkflowStatus.AWAITING_TOOL_SELECT, WorkflowStatus.AWAITING_AGENT_SELECT):
-            from ...workflow_engine.selection_flow import SelectionFlowController
 
             ctrl = self._get_selection_controller(project)
             # Determine if we're in review step (AWAITING_TOOL_SELECT) or orchestrator step (AWAITING_AGENT_SELECT)
@@ -3264,12 +3273,12 @@ class WorkflowHandler(BaseEngineHandler):
             if preview:
                 elements.append({
                     "tag": "collapsible_panel",
-                    "header": {"title": {"tag": "plain_text", "content": "📜 脚本内容"}, "template": "grey"},
+                    "header": {"title": {"tag": "plain_text", "content": "📜 脚本内容"}},
+                    "border": {"color": "grey", "corner_radius": "8px"},
                     "expanded": False,
                     "elements": [{"tag": "markdown", "content": preview}],
                 })
 
-        from ...card import CardBuilder
         # Build a Feishu card directly (header + element list).
         # The builtin helpers on CardBuilder do not accept an `elements`
         # kwarg; we construct the minimal card dict by hand so this keeps
@@ -3492,7 +3501,6 @@ class WorkflowHandler(BaseEngineHandler):
                 }]
                 elements.extend(build_responsive_button_row(pick_button, mobile_force_vertical=True))
 
-        from ...card import CardBuilder
         card = {
             "config": {"wide_screen_mode": True},
             "header": {
@@ -3876,6 +3884,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         if not global_scope:
             from pathlib import Path as _Path
+
             from ...workflow_engine.templates import resolve_safe_template_path as _rsp
 
             _target_path, _ = _rsp(root_path, name, global_scope=False)
@@ -3904,6 +3913,8 @@ class WorkflowHandler(BaseEngineHandler):
             scope_label = "全局级" if global_scope else "项目级"
             self.reply_text(message_id, f"✅ 模板 `{name}` 已保存（{scope_label}）\n\n使用: `/wf {name}`")
         except (OSError, ValueError) as exc:
+            from ...workflow_engine.errors import _strip_internal_details
+
             # Sanitize: OSError may contain local path fragments like
             # ``/data00/...`` or ``Permission denied: /home/...`` which
             # leak host-internal paths into user-facing messages. We
@@ -4565,8 +4576,8 @@ class WorkflowHandler(BaseEngineHandler):
         from ...workflow_engine.tool_registry import get_available_tools
 
         # Extract meta info
-        script_name = (meta or {}).get("name", "generated-workflow")
-        description = (meta or {}).get("description", requirement[:100])
+        (meta or {}).get("name", "generated-workflow")
+        (meta or {}).get("description", requirement[:100])
         phases = (meta or {}).get("phases", [])
         tools = (meta or {}).get("tools", ["coco"])
         phase_tool_mapping: dict = (meta or {}).get("phase_tool_mapping", {})
@@ -4619,7 +4630,7 @@ class WorkflowHandler(BaseEngineHandler):
             estimated_nodes += len(selected_tools)
         estimated_nodes += 10  # budget buttons, action buttons, etc.
 
-        use_truncated_mode = estimated_nodes > RenderBudget.NODE_BUDGET * 0.8
+        estimated_nodes > RenderBudget.NODE_BUDGET * 0.8
 
         # Shared helpers
         phase_count = len(phases)
@@ -4702,7 +4713,7 @@ class WorkflowHandler(BaseEngineHandler):
         # --- 5. Primary CTA block — confirm start / cancel / mismatch fix ---
         # Visible on the first screen. Users do NOT need to open any
         # collapsible panel to unblock execution.
-        from ...card.actions.dispatch import WORKFLOW_CONFIRM_START, WORKFLOW_FILL_MISSING_TOOLS, WORKFLOW_BACK_TO_TOOLS
+        from ...card.actions.dispatch import WORKFLOW_BACK_TO_TOOLS, WORKFLOW_FILL_MISSING_TOOLS
 
         confirm_value = {
             "action": WORKFLOW_CONFIRM_START,
@@ -4789,9 +4800,9 @@ class WorkflowHandler(BaseEngineHandler):
         # via ``_inject_workflow_refs_into_script`` — no patch is written to
         # the script on disk here.
         from ...card.actions.dispatch import (
-            WORKFLOW_VIEW_WORKFLOW_REF,
-            WORKFLOW_REMOVE_WORKFLOW_REF,
             WORKFLOW_ADD_WORKFLOW_REF,
+            WORKFLOW_REMOVE_WORKFLOW_REF,
+            WORKFLOW_VIEW_WORKFLOW_REF,
         )
 
         ref_count = len(workflow_refs) if isinstance(workflow_refs, list) else 0
@@ -4895,8 +4906,8 @@ class WorkflowHandler(BaseEngineHandler):
                 "tag": "collapsible_panel",
                 "header": {
                     "title": {"tag": "plain_text", "content": f"📋 阶段列表 ({len(phases)})"},
-                    "template": "blue",
                 },
+                "border": {"color": "blue", "corner_radius": "8px"},
                 "expanded": False,
                 "elements": phase_elements,
             })
@@ -4917,8 +4928,8 @@ class WorkflowHandler(BaseEngineHandler):
                     "expanded": False,
                     "header": {
                         "title": {"tag": "plain_text", "content": "📜 编排脚本预览"},
-                        "template": "grey",
                     },
+                    "border": {"color": "grey", "corner_radius": "8px"},
                     "elements": [{"tag": "markdown", "content": preview}],
                 })
 
@@ -4994,8 +5005,8 @@ class WorkflowHandler(BaseEngineHandler):
                 "tag": "collapsible_panel",
                 "header": {
                     "title": {"tag": "plain_text", "content": f"🔧 更多工具 ({len(tier2_tools)})"},
-                    "template": "grey",
                 },
+                "border": {"color": "grey", "corner_radius": "8px"},
                 "expanded": False,
                 "elements": [
                     *tier2_elements,
@@ -5045,8 +5056,8 @@ class WorkflowHandler(BaseEngineHandler):
             "tag": "collapsible_panel",
             "header": {
                 "title": {"tag": "plain_text", "content": "⚙️ 查看详细信息 / 更多操作（阶段 / 工具 / 脚本）"},
-                "template": "grey",
             },
+            "border": {"color": "grey", "corner_radius": "8px"},
             "expanded": False,
             "elements": combined_panel_elements,
         })

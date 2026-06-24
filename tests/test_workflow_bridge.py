@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from src.workflow_engine.bridge import RuntimeBridge
 from src.workflow_engine.models import AgentCallParams, AgentCallResult

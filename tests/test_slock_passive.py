@@ -328,7 +328,7 @@ class TestParallelMessageDispatch:
 
     def test_three_messages_create_three_tasks(self):
         """AC-3: 3 concurrent messages create 3 independent tasks."""
-        handler = MagicMock()
+        MagicMock()
 
         engine = MagicMock()
         engine.channel = MagicMock()

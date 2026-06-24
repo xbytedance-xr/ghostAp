@@ -1,9 +1,7 @@
 """Tests for relationship_graph.py — inter-agent collaboration memory."""
-import json
-import os
-import tempfile
 import pytest
-from src.slock_engine.relationship_graph import RelationshipGraph, RelationshipEdge
+
+from src.slock_engine.relationship_graph import RelationshipEdge, RelationshipGraph
 
 
 @pytest.fixture

@@ -19,10 +19,9 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from src.workflow_engine.bridge import RuntimeBridge
 from src.workflow_engine.engine import WorkflowEngine, WorkflowEngineCallbacks
@@ -31,14 +30,11 @@ from src.workflow_engine.models import (
     AgentCallParams,
     AgentCallResult,
     AgentStatus,
-    PhaseProgress,
-    WorkflowMeta,
     WorkflowMetrics,
     WorkflowProject,
     WorkflowStatus,
 )
 from src.workflow_engine.state_manager import WorkflowStateManager
-
 
 # ---------------------------------------------------------------------------
 # Helpers

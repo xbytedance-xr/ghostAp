@@ -8,7 +8,6 @@ futures); tests must not be present in bridge.py.
 
 from __future__ import annotations
 
-import ast
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path

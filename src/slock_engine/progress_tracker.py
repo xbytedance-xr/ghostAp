@@ -37,7 +37,7 @@ class ProgressState:
 
 class ProgressTracker:
     """Rate-limited progress tracker with batched card updates.
-    
+
     Tracks progress states for tasks/plans and pushes card updates
     at most every `min_interval` seconds per entity.
     """
@@ -130,7 +130,7 @@ class ProgressTracker:
 
     def flush_dirty(self) -> int:
         """Push all dirty states that have exceeded the rate limit interval.
-        
+
         Returns the number of entities actually pushed.
         """
         now = time.monotonic()

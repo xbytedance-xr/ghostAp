@@ -138,7 +138,7 @@ def build_role_info_card(
         top_items = [line.strip() for line in knowledge_lines if line.strip()][:3]
         if top_items:
             memory_content = "\n".join(f"• {item}" for item in top_items)
-            remaining = len([l for l in knowledge_lines if l.strip()]) - len(top_items)
+            remaining = len([line for line in knowledge_lines if line.strip()]) - len(top_items)
             if remaining > 0:
                 memory_content += f"\n*...还有 {remaining} 条*"
             elements.append(

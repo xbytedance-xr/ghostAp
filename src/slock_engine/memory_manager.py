@@ -343,7 +343,7 @@ class MemoryManager:
                 with open(path, "r", encoding="utf-8") as f:
                     content = f.read()
                 current = SlockMemory.from_markdown(content)
-            
+
             if memory._version and memory._version < current_version:
                 memory = self._merge_agent_memory(current, memory)
             next_version = current_version + 1

@@ -6,11 +6,10 @@ without involving Feishu API or card rendering.
 
 from unittest.mock import MagicMock
 
-from src.worktree_engine.manager import WorktreeManager
-from src.worktree_engine.selection import WorktreeToolOption, format_selection_lines
-
 from src.project.context import ProjectContext
+from src.worktree_engine.manager import WorktreeManager
 from src.worktree_engine.models import WorktreeSelectionStage, WorktreeUnit
+from src.worktree_engine.selection import WorktreeToolOption, format_selection_lines
 from src.worktree_engine.selection_controller import WorktreeSelectionController
 
 

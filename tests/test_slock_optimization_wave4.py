@@ -65,7 +65,7 @@ class TestNoDuplicateConclusionWrites:
         dm.unbind_task = MagicMock()
 
         # Run discussion
-        result = dm.run_discussion(thread, "test context")
+        dm.run_discussion(thread, "test context")
 
         # Verify _persist_conclusion called exactly once
         assert dm._persist_conclusion.call_count == 1

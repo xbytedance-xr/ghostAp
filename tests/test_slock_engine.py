@@ -1154,11 +1154,18 @@ class TestSlockEngineParallelExecution:
             memory_base_path=base_path,
         )
 
+    def _stop_background_workers(self, engine: SlockEngine) -> None:
+        """Keep manual dispatch tests from racing activate_channel workers."""
+        engine.stop_dispatch_loop()
+        engine.stop_patrol_loop()
+        engine._task_mgr.stop_idle_scan()
+
     def test_execute_parallel_runs_multiple_tasks(self, tmp_path):
         """execute_parallel dispatches tasks to different agents concurrently."""
         engine = self._make_engine(tmp_path=tmp_path)
         ch = SlockChannel(channel_id="ch_par", name="Parallel", team_name="ParTeam")
         engine.activate_channel(ch)
+        self._stop_background_workers(engine)
 
         agent_a = AgentIdentity(agent_id="a1", name="AgentA", agent_type="coco", owner_group="ch_par")
         agent_b = AgentIdentity(agent_id="a2", name="AgentB", agent_type="coco", owner_group="ch_par")
@@ -1186,6 +1193,7 @@ class TestSlockEngineParallelExecution:
         engine = self._make_engine(tmp_path=tmp_path)
         ch = SlockChannel(channel_id="ch_fail", name="Fail", team_name="FailTeam")
         engine.activate_channel(ch)
+        self._stop_background_workers(engine)
 
         agent = AgentIdentity(agent_id="a1", name="AgentA", agent_type="coco", owner_group="ch_fail")
         engine.registry.register(agent)
@@ -1207,6 +1215,7 @@ class TestSlockEngineParallelExecution:
         engine = self._make_engine(tmp_path=tmp_path)
         ch = SlockChannel(channel_id="ch_dispatch", name="Dispatch", team_name="DispatchTeam")
         engine.activate_channel(ch)
+        self._stop_background_workers(engine)
 
         agent1 = AgentIdentity(agent_id="a1", name="Coder", agent_type="coco", owner_group="ch_dispatch")
         agent2 = AgentIdentity(agent_id="a2", name="Tester", agent_type="coco", owner_group="ch_dispatch")
@@ -1228,6 +1237,7 @@ class TestSlockEngineParallelExecution:
         engine = self._make_engine(tmp_path=tmp_path)
         ch = SlockChannel(channel_id="ch_limit", name="Limit", team_name="LimitTeam")
         engine.activate_channel(ch)
+        self._stop_background_workers(engine)
 
         # Register 3 agents so max_concurrent=2 is the binding constraint
         for i in range(3):

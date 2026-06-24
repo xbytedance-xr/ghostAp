@@ -336,9 +336,8 @@ class TaskBoardManager:
                 if predecessor_name:
                     relationship_graph = getattr(self._context, "_relationship_graph", None)
                     if relationship_graph is not None:
-                        predecessor_agent = None
                         try:
-                            predecessor_agent = self._context.resolve_agent_for_role(
+                            self._context.resolve_agent_for_role(
                                 "", ""
                             )  # unused — find by name instead
                         except Exception:
@@ -346,10 +345,9 @@ class TaskBoardManager:
                         # Resolve predecessor agent_id from name via registry
                         registry_get = self._registry_get
                         predecessor_id = ""
-                        channel_id = ""
                         channel = self._context.channel
                         if channel:
-                            channel_id = getattr(channel, "channel_id", "")
+                            getattr(channel, "channel_id", "")
                             # Search agents in channel for predecessor by name
                             for aid in getattr(channel, "agents", []):
                                 peer = registry_get(aid)

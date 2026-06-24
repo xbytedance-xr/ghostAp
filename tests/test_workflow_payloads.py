@@ -19,7 +19,6 @@ from src.card.events import (
     workflow_agent_done,
     workflow_agent_failed,
     workflow_agent_started,
-    workflow_confirm,
     workflow_log,
     workflow_phase,
     workflow_progress,
@@ -191,8 +190,9 @@ class TestWorkflowRefItemContract(unittest.TestCase):
 
     def test_workflow_ref_item_name_is_required(self):
         """Verify that `name` is required (cannot construct without it)."""
-        from src.card.events.payloads import WorkflowRefItem
         import typing
+
+        from src.card.events.payloads import WorkflowRefItem
 
         hints = typing.get_type_hints(WorkflowRefItem)
         # name should be in the hints

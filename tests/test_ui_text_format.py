@@ -9,8 +9,8 @@ import unittest
 
 import pytest
 
-from src.card.ui_text import UI_TEXT
 from src.card.render.footer import _format_idle_timeout
+from src.card.ui_text import UI_TEXT
 
 # Extract all format field names from a string
 _FORMAT_FIELD_RE = re.compile(r"\{(\w+)\}")

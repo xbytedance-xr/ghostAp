@@ -59,7 +59,7 @@ class SlockEngineContext(Protocol):
 @runtime_checkable
 class DiscussionEngineProtocol(Protocol):
     """Minimum interface that DiscussionManager requires from the engine.
-    
+
     Any object satisfying this structural protocol can be used as the
     engine parameter for DiscussionManager.__init__. This avoids circular
     imports and tight coupling to the concrete SlockEngine class.

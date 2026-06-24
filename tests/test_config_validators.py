@@ -1,6 +1,5 @@
 """Tests for config.py validators: boundary values and Literal type constraints."""
 
-from operator import attrgetter
 
 import pytest
 from pydantic import ValidationError

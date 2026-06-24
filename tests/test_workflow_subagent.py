@@ -91,7 +91,6 @@ class TestBridgeArgsPassthrough(unittest.TestCase):
     """Test RuntimeBridge args parameter and passthrough."""
 
     def test_bridge_stores_args(self):
-        import threading
 
         from src.workflow_engine.bridge import RuntimeBridge
 
@@ -103,7 +102,6 @@ class TestBridgeArgsPassthrough(unittest.TestCase):
         self.assertEqual(bridge._args, {"key": "value", "num": 42})
 
     def test_bridge_default_args_empty_dict(self):
-        import threading
 
         from src.workflow_engine.bridge import RuntimeBridge
 
@@ -114,7 +112,6 @@ class TestBridgeArgsPassthrough(unittest.TestCase):
         self.assertEqual(bridge._args, {})
 
     def test_bridge_none_args_becomes_empty_dict(self):
-        import threading
 
         from src.workflow_engine.bridge import RuntimeBridge
 
@@ -130,7 +127,6 @@ class TestBridgeBackpressure(unittest.TestCase):
     """Test queue backpressure in _handle_agent_call."""
 
     def _make_bridge(self):
-        import collections
         import threading
 
         from src.workflow_engine.bridge import RuntimeBridge
@@ -156,7 +152,6 @@ class TestBridgeBackpressure(unittest.TestCase):
             bridge._msg_queue.append({"test": True})
 
         # Track what gets sent
-        sent_messages = []
         bridge._send_error_response = MagicMock()
 
         bridge._handle_agent_call(

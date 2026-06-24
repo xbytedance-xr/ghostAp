@@ -65,12 +65,12 @@ def test_workflow_project_with_pending():
             selected_tools=["coco"],
         ),
     )
-    
+
     assert project.pending is not None
     assert project.pending.requirement == "test"
     assert project.pending.initiator_user_id == "user_123"
     assert project.pending.selected_tools == ["coco"]
-    
+
     # Runtime fields should be None until execution starts
     assert project.initiator_user_id is None
     assert project.selected_tools is None
@@ -88,20 +88,20 @@ def test_start_execution_migrates_fields():
             script_path="/tmp/test.js",
         ),
     )
-    
+
     # Before start
     assert project.initiator_user_id is None
     assert project.selected_tools is None
     assert project.pending is not None
-    
+
     # Start execution
     project.start_execution()
-    
+
     # After start: fields migrated
     assert project.initiator_user_id == "user_123"
     assert project.selected_tools == ["coco", "claude"]
     assert project.pending is None
-    
+
     # Script path and other pending-only fields are not migrated to runtime
     # (they are only needed during confirmation phase)
 
@@ -113,10 +113,10 @@ def test_start_execution_with_none_pending():
         status=WorkflowStatus.IDLE,
         pending=None,
     )
-    
+
     # Should not raise
     project.start_execution()
-    
+
     assert project.pending is None
     assert project.initiator_user_id is None
     assert project.selected_tools is None

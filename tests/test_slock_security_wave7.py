@@ -135,7 +135,6 @@ class TestAC18DissolveTTL:
         # Simulate the TTL check logic directly (same as handler code)
         target_chat_id = "chat-dissolve-test"
         token_entry = dissolve_tokens.get(target_chat_id)
-        provided_token = "token-abc"
         messages_sent = []
 
         def mock_send(chat_id, msg):

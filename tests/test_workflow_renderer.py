@@ -19,8 +19,8 @@ from src.workflow_engine.models import (
     WorkflowStatus,
 )
 from src.workflow_engine.renderer import (
-    WorkflowProgressRenderer,
     _AGENT_OUTPUT_FORBIDDEN_MARKERS,
+    WorkflowProgressRenderer,
     _card_text_for_agent_output,
     _column_set,
     _format_duration,
@@ -154,7 +154,7 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         """Phase rendering should use collapsible_panel grouped by agent status."""
         project = self._make_project()
         # Ensure at least one agent of each major status
-        phase = project.phases[0] if project.phases else None
+        project.phases[0] if project.phases else None
         renderer = WorkflowProgressRenderer(project)
         card = renderer.render_progress_card()
 
@@ -180,6 +180,37 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         project.status = WorkflowStatus.FAILED
         header = renderer._render_header()
         self.assertEqual(header["template"], "red")
+
+    def test_progress_card_collapsible_headers_do_not_use_template(self):
+        """Feishu Schema 2.0 rejects collapsible_panel.header.template."""
+        project = self._make_project()
+        renderer = WorkflowProgressRenderer(project)
+        card = renderer.render_progress_card()
+
+        violations = [
+            node
+            for node in self._walk_card_nodes(card.get("elements", []))
+            if node.get("tag") == "collapsible_panel"
+            and isinstance(node.get("header"), dict)
+            and "template" in node["header"]
+        ]
+
+        self.assertEqual(violations, [])
+
+    @staticmethod
+    def _walk_card_nodes(nodes):
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            yield node
+            nested = node.get("elements")
+            if isinstance(nested, list):
+                yield from TestWorkflowProgressRenderer._walk_card_nodes(nested)
+            columns = node.get("columns")
+            if isinstance(columns, list):
+                for column in columns:
+                    if isinstance(column, dict):
+                        yield from TestWorkflowProgressRenderer._walk_card_nodes(column.get("elements", []))
 
 
 class TestConfirmCardStructure(unittest.TestCase):
@@ -330,6 +361,27 @@ class TestConfirmCardStructure(unittest.TestCase):
             two_column_rows,
             "expected at least one two-column stats row for phases/tools",
         )
+
+    def test_confirm_card_collapsible_headers_do_not_use_template(self) -> None:
+        """Feishu Schema 2.0 rejects collapsible_panel.header.template."""
+        phases = [
+            {"title": "Analysis", "detail": "Analyze the target"},
+        ]
+        card = self._build_card(
+            meta=self._make_meta(phases=phases, tools=["coco"]),
+            selected_tools=["coco"],
+        )
+        elements = self._get_elements(card)
+
+        violations = [
+            node
+            for node in self._walk_elements(elements)
+            if node.get("tag") == "collapsible_panel"
+            and isinstance(node.get("header"), dict)
+            and "template" in node["header"]
+        ]
+
+        self.assertEqual(violations, [])
 
     @staticmethod
     def _walk_elements(elements):

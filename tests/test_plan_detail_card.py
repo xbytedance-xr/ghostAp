@@ -156,7 +156,7 @@ class TestBuildTaskOverviewCard:
         result = build_task_overview_card(plan, agents, channel_id="ch-001")
 
         assert isinstance(result, dict)
-        card_str = json.dumps(result, ensure_ascii=False)
+        json.dumps(result, ensure_ascii=False)
         # Should show completed status
         assert result["header"] is not None
 

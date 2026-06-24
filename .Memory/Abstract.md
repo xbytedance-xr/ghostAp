@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-06-24
+- **WF 生成卡片卡住** — 修复 `/wf` 选完模型后停在“生成脚本中”：移除 Workflow `collapsible_panel.header.template` 非法字段，颜色迁移到 `border.color`；生成卡 patch 失败时新发确认/错误卡，模板校验失败清 pending；Workflow 回归 695 passed → [详细记录](2026-06-24.md)
+- **全仓 lint 清零** — 清理 ruff 全仓 lint 债并修复 Slock 并发测试与后台 worker 争用 mock 的 flaky；全量 pytest 9411 passed，ruff/validate/diff-check 通过 → [详细记录](2026-06-24.md)
 ## 2026-06-17
 - **WF模型&模型串台修复** — `/wf` 模型列表为空（ACP工具被TTADK probe误抓）+ deep(coco)收到traex模型报 Internal error；修 workflow provider 解析 + engine_base 补 traex 身份分支；相关回归 204 passed → [详细记录](2026-06-17.md)
 ## 2026-06-10

@@ -3,7 +3,6 @@ import pytest
 
 from src.card.render.buttons import render_buttons
 from src.card.render.footer import render_footer
-from src.card.render.header import render_header
 from src.card.state.models import ButtonSpec, CardMetadata, CardState, FooterState, HeaderState, TextBlock
 
 
@@ -604,7 +603,7 @@ class TestCriteriaPanelIcon:
     def test_criteria_panel_has_icon_config(self):
         from src.card.render.atoms import RenderAtom
         from src.card.render.renderer import _render_criteria_panel
-        from src.card.state.models import CardMetadata, CardState
+        from src.card.state.models import CardState
 
         atom = RenderAtom(kind="criteria", content="- [x] Passes")
         state = CardState(metadata=CardMetadata(expand_ac=True))
@@ -665,7 +664,7 @@ class TestFooterBlockedReason:
     def test_blocked_reason_renders_in_footer(self):
 
         from src.card.render.footer import render_footer
-        from src.card.state.models import CardMetadata, CardState, EngineExtState, FooterState, HeaderState
+        from src.card.state.models import CardState, EngineExtState, FooterState
 
         meta = CardMetadata(engine_type="deep", mode_name="Deep", mode_emoji="🔍")
         state = CardState(

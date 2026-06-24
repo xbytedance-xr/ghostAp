@@ -36,7 +36,6 @@ from src.feishu.handlers.workflow import WorkflowHandler
 from src.feishu.ws_card_action_handler import SYSTEM_CARD_ACTIONS
 from src.workflow_engine import script_gen
 
-
 # Actions whose primary purpose is navigation / menu display rather than a
 # card-bound system action.  These are intentionally allowed to be absent from
 # ``SYSTEM_CARD_ACTIONS`` because they are handled by prefix / menu dispatch

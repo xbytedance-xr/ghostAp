@@ -23,7 +23,6 @@ from src.workflow_engine.selection_flow import (
     SelectionItem,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -592,7 +591,7 @@ class TestCancelButtonValidation:
         cancel_actions = _find_actions(card, "workflow_cancel")
         # There may be multiple cancel buttons (one in header, one in footer)
         assert len(cancel_actions) >= 1
-        
+
         # Check the first cancel button payload
         payload = cancel_actions[0]
         assert payload.get("chat_id") == "chat_456"

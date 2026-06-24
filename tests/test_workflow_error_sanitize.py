@@ -13,8 +13,8 @@ import unittest
 from src.workflow_engine.errors import (
     ErrorCategory,
     WorkflowUserError,
-    _strip_internal_details,
     _sanitize_error,
+    _strip_internal_details,
     sanitize_for_reply,
 )
 

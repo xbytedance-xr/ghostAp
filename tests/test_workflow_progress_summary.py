@@ -10,8 +10,8 @@ from src.workflow_engine.models import (
     WorkflowStatus,
 )
 from src.workflow_engine.renderer import (
-    WorkflowProgressRenderer,
     _PHASE_COMPLETED_TAIL,
+    WorkflowProgressRenderer,
     render_completion_card,
 )
 
@@ -219,8 +219,8 @@ def test_completion_card_stats_columns_centered_text() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_phase_collapsible_panel_headers_are_structured_with_colors() -> None:
-    """Collapsible panel headers must be dict objects with template (color)."""
+def test_phase_collapsible_panel_headers_are_structured_with_border_colors() -> None:
+    """Feishu accepts colors on panel border, not collapsible header.template."""
     agents: list[AgentProgress] = [
         _make_agent("r-0", AgentStatus.RUNNING),
         _make_agent("f-0", AgentStatus.FAILED, error="err"),
@@ -250,13 +250,15 @@ def test_phase_collapsible_panel_headers_are_structured_with_colors() -> None:
         assert isinstance(title, dict), f"Expected dict title, got {title}"
         assert title.get("tag") == "plain_text"
         content = str(title.get("content", ""))
-        assert header.get("template") is not None, f"Missing template in header: {header}"
+        assert "template" not in header, f"collapsible_panel.header.template is invalid: {header}"
+        border = panel.get("border")
+        assert isinstance(border, dict), f"Expected dict border, got {border}"
         # Match the prefix label to verify the color mapping
         for prefix, color in expected_colors.items():
             if content.startswith(prefix):
                 found_labels.add(prefix)
-                assert header["template"] == color, (
-                    f"Expected template '{color}' for {prefix!r}, got {header['template']}"
+                assert border.get("color") == color, (
+                    f"Expected border color '{color}' for {prefix!r}, got {border.get('color')}"
                 )
     for expected_prefix in expected_colors:
         assert expected_prefix in found_labels, f"Missing panel for {expected_prefix!r}"

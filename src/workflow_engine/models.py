@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import time
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
+
+from src.spec_engine.review_agents import ReviewAgentBinding
 
 from .constants import (
     AGENT_CALL_TIMEOUT_S,
     DEFAULT_MAX_CONCURRENT,
 )
-
-from src.spec_engine.review_agents import ReviewAgentBinding
-
 
 # ---------------------------------------------------------------------------
 # Enums

@@ -19,7 +19,6 @@ from src.workflow_engine.constants import (
 )
 from src.workflow_engine.models import WorkflowProject, WorkflowStatus
 
-
 # ---------------------------------------------------------------------------
 # Constants tests
 # ---------------------------------------------------------------------------
@@ -49,14 +48,14 @@ class TestConstantsReviewFixes(unittest.TestCase):
 def test_script_gen_includes_review_agents():
     """脚本生成包含评审 Agent 的工具和模型信息。"""
     from src.workflow_engine.script_gen import build_script_gen_prompt
-    
+
     # Test with review agents
     orchestrator_binding = {
         "tool_name": "coco",
         "model_name": "gpt-4",
         "use_default_model": False
     }
-    
+
     review_agents = [
         {
             "tool_name": "claude",
@@ -68,7 +67,7 @@ def test_script_gen_includes_review_agents():
             "use_default_model": True
         }
     ]
-    
+
     prompt = build_script_gen_prompt(
         requirement="test workflow with review agents",
         available_tools=["coco", "claude", "aiden"],
@@ -76,12 +75,12 @@ def test_script_gen_includes_review_agents():
         orchestrator_binding=orchestrator_binding,
         review_agents=review_agents,
     )
-    
+
     # Check that orchestrator agent info is included
     assert "已选择的主 Agent" in prompt
     assert "coco" in prompt
     assert "gpt-4" in prompt
-    
+
     # Check that review agents info is included
     assert "已选择的评审 Agent" in prompt
     assert "claude" in prompt

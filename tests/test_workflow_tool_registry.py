@@ -59,7 +59,6 @@ class TestGetAvailableTools(unittest.TestCase):
     def test_force_refresh(self):
         """force_refresh=True re-discovers even with warm cache."""
         call_count = [0]
-        original_discover = None
 
         def counting_discover():
             call_count[0] += 1

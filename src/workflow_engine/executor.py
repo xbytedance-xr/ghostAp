@@ -18,7 +18,7 @@ from .constants import (
     SCHEMA_RETRY_MAX,
     SESSION_CREATE_TIMEOUT_S,
 )
-from .errors import categorize_error, is_transient_error
+from .errors import is_transient_error
 from .models import AgentCallParams, AgentCallResult
 from .roles import get_subagent_encouragement_prompt
 
@@ -85,7 +85,7 @@ class AgentExecutor:
 
         for attempt in range(MAX_RETRIES + 1):
             session = None
-            attempt_start = time.monotonic()
+            time.monotonic()
 
             try:
                 # Early cancel check

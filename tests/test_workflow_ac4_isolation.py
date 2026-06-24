@@ -31,7 +31,6 @@ from src.workflow_engine.models import (
 )
 from src.workflow_engine.state_manager import WorkflowStateManager
 
-
 # ===========================================================================
 # 1. on_agent_done payload stripped of output/parsed
 # ===========================================================================
@@ -131,8 +130,9 @@ class TestAC4AgentDonePayloadStripped(unittest.TestCase):
 
         # Drive the cache path: attach a journal, store a result under the
         # key the engine will compute from params, then call _handle_agent_call.
-        from src.workflow_engine.journal import WorkflowJournal
         import tempfile
+
+        from src.workflow_engine.journal import WorkflowJournal
 
         engine._journal = WorkflowJournal(root_path=tempfile.mkdtemp(), run_id="ac4")
         params = AgentCallParams(
@@ -261,9 +261,9 @@ class TestAC4ProgressCardNoLeakage(unittest.TestCase):
         return project
 
     def test_progress_card_raises_on_sentinel(self):
-        from src.workflow_engine.renderer import WorkflowProgressRenderer
         import src.workflow_engine.renderer as renderer_module
         from src.workflow_engine.models import AgentStatus
+        from src.workflow_engine.renderer import WorkflowProgressRenderer
 
         project = WorkflowProject(
             status=WorkflowStatus.RUNNING,
@@ -291,8 +291,8 @@ class TestAC4ProgressCardNoLeakage(unittest.TestCase):
             renderer_module._AGENT_OUTPUT_FORBIDDEN_MARKERS = original
 
     def test_completion_card_raises_on_sentinel(self):
-        from src.workflow_engine.renderer import render_completion_card
         import src.workflow_engine.renderer as renderer_module
+        from src.workflow_engine.renderer import render_completion_card
 
         project = WorkflowProject(
             status=WorkflowStatus.FAILED,
@@ -314,8 +314,8 @@ class TestAC4ProgressCardNoLeakage(unittest.TestCase):
 
     def test_progress_card_without_sentinel_is_fine(self):
         """Cards without forbidden markers render without raising."""
-        from src.workflow_engine.renderer import WorkflowProgressRenderer
         import src.workflow_engine.renderer as renderer_module
+        from src.workflow_engine.renderer import WorkflowProgressRenderer
 
         project = WorkflowProject(
             status=WorkflowStatus.RUNNING,

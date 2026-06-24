@@ -311,8 +311,7 @@ class TestFastSizePrecheck:
 
         # Now call enforce — it should proceed past precheck
         # and attempt truncation/summarization
-        enforce_entered_inner = []
-        original_enforce = MemoryManager._enforce_l1_capacity.__wrapped__ if hasattr(
+        MemoryManager._enforce_l1_capacity.__wrapped__ if hasattr(
             MemoryManager._enforce_l1_capacity, "__wrapped__"
         ) else None
 
@@ -701,16 +700,16 @@ Old stuff
         assert result['archived_context'] == 'Old stuff'
 
         # 测试 4: 多余的空白
-        extra_whitespace_md = """#   Role   
+        extra_whitespace_md = """#   Role
 reviewer
 
-# Key   Knowledge   
+# Key   Knowledge
 - Review carefully
 
-# Active   Context   
+# Active   Context
 Reviewing PR
 
-# Archived   Context   
+# Archived   Context
 Old reviews
 """
         result = mm._parse_memory_sections(extra_whitespace_md)

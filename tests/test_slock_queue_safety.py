@@ -202,7 +202,7 @@ class TestMentionQueueFullIntegration:
 
         handler = self._make_handler()
         agent = self._make_agent()
-        engine = self._make_engine(agent)
+        self._make_engine(agent)
 
         # Pre-fill queue to maxlen
         handler._mention_pending_queue[agent.agent_id] = collections.deque(maxlen=8)

@@ -6,6 +6,13 @@ import time
 from typing import Any
 
 from .errors import _strip_internal_details
+from .models import (
+    AgentProgress,
+    AgentStatus,
+    PhaseProgress,
+    WorkflowProject,
+    WorkflowStatus,
+)
 
 # ---------------------------------------------------------------------------
 # Internal: string helpers
@@ -39,13 +46,6 @@ def _middle_ellipsis(text: str, limit: int = _LABEL_TRUNCATION_LIMIT) -> str:
     head = available // 2 + available % 2
     tail = available // 2
     return f"{text[:head]}{_ELLIPSIS}{text[-tail:]}"
-from .models import (
-    AgentProgress,
-    AgentStatus,
-    PhaseProgress,
-    WorkflowProject,
-    WorkflowStatus,
-)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -156,16 +156,18 @@ def _collapsible_panel(
         header_obj: dict[str, Any] = {
             "title": {"tag": "plain_text", "content": header},
         }
-        if template is not None:
-            header_obj["template"] = template
     else:
         header_obj = header
-    return {
+        header_obj.pop("template", None)
+    panel = {
         "tag": "collapsible_panel",
         "header": header_obj,
         "elements": elements,
         "expanded": expanded,
     }
+    if template is not None:
+        panel["border"] = {"color": template, "corner_radius": "8px"}
+    return panel
 
 
 def _column_set(columns: list[dict[str, Any]], *, flex_mode: str = "none") -> dict[str, Any]:
@@ -540,12 +542,12 @@ class WorkflowProgressRenderer:
                     lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur}")
             header_obj: dict[str, Any] = {
                 "title": {"tag": "plain_text", "content": f"{label} ({len(group)})"},
-                "template": color,
             }
             panel = _collapsible_panel(
                 header_obj,
                 [_md_element("\n".join(lines))],
                 expanded=expanded,
+                template=color,
             )
             elements.append(panel)
 

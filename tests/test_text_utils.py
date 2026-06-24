@@ -8,8 +8,6 @@ import pytest
 from src.utils.text import (
     append_duration_to_title,
     format_duration,
-    format_time_ago,
-    format_time_ago_from_bucket,
     generate_task_id,
     render_time_ago_cn,
     render_violation_report,

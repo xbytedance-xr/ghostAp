@@ -405,7 +405,7 @@ def failing_handler_session():
 @pytest.fixture(autouse=True)
 def _clear_all_lru_caches():
     """Clear all known module-level lru_caches before and after each test.
-    
+
     Some tests (like test_card_buttons.py::test_no_runtime_warning_on_import)
     delete modules from sys.modules, which can cause state leakage between tests.
     We need to clear caches both before and after each test to ensure isolation.
@@ -417,12 +417,12 @@ def _clear_all_lru_caches():
 
 def _clear_caches():
     """Helper function to clear all caches.
-    
+
     This is called both before and after each test to ensure proper isolation,
     especially when tests delete modules from sys.modules.
     """
     import sys
-    
+
     # sync_adapter caches
     try:
         from src.acp.sync_adapter import _probe_acp_serve_help, _supports_acp_serve

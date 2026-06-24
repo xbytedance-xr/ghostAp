@@ -10,8 +10,6 @@ Validates: Agent output formatted as Interactive Card with:
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from src.card.render.payload_truncator import count_markdown_table_blocks

@@ -58,7 +58,7 @@ class TestFormValueNestedRead:
             "_form_value": {"supplement_content": "从嵌套读取的补充信息"},
         }
 
-        result = handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
+        handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
 
         # Should have injected context (not returned error toast)
         engine.memory.update_agent_context.assert_called()
@@ -76,7 +76,7 @@ class TestFormValueNestedRead:
             # No _form_value key
         }
 
-        result = handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
+        handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
 
         engine.memory.update_agent_context.assert_called()
         call_args = engine.memory.update_agent_context.call_args[0]
@@ -93,7 +93,7 @@ class TestFormValueNestedRead:
             "supplement_content": "顶层被忽略",
         }
 
-        result = handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
+        handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
 
         engine.memory.update_agent_context.assert_called()
         call_args = engine.memory.update_agent_context.call_args[0]
@@ -162,7 +162,7 @@ class TestFormValueValidation:
             "_form_value": {"supplement_content": "B" * 2000},  # exactly at limit
         }
 
-        result = handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
+        handler.handle_card_action("om_msg", CHAT_ID, "slock_plan_supplement", value)
 
         # Should succeed (no error toast returned; context injected)
         engine.memory.update_agent_context.assert_called()

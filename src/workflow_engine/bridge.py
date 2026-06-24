@@ -631,8 +631,8 @@ class RuntimeBridge:
             return
 
         from .templates import (
-            validate_template_name,
             resolve_template_path,
+            validate_template_name,
         )
 
         # 名称合法性校验（拒绝 '/' '\\' '..' 与绝对路径形式)

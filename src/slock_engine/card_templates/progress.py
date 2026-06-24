@@ -131,7 +131,7 @@ def build_progress_overview_card(
         channel_id: Channel for action button routing.
         highlight_plan_id: If set, visually emphasizes this plan row.
     """
-    agent_map: dict[str, AgentIdentity] = {a.agent_id: a for a in agents}
+    {a.agent_id: a for a in agents}
 
     elements: list[dict] = []
 

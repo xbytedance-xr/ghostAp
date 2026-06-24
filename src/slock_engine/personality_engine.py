@@ -8,8 +8,6 @@ proactiveness, and decision confidence.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
-
 
 # Trait → behavioral dimension mapping.
 # Keys are Chinese trait keywords from role_bootstrap._DEFAULT_TRAITS and user-defined values.

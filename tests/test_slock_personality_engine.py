@@ -1,6 +1,5 @@
 """Tests for personality_engine.py — behavioral style differentiation."""
-import pytest
-from src.slock_engine.personality_engine import PersonalityProfile, PersonalityEngine, _TRAIT_DIMENSION_MAP
+from src.slock_engine.personality_engine import _TRAIT_DIMENSION_MAP, PersonalityEngine, PersonalityProfile
 
 
 class TestPersonalityProfile:

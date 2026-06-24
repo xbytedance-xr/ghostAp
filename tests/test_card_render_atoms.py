@@ -279,7 +279,7 @@ class TestInvalidateAtomHandlers:
         # First, ensure cache is populated by calling flatten_to_atoms
         blocks = (ContentBlock(kind="text", block_id="x", content="hi"),)
         flatten_to_atoms(blocks, RenderBudget())
-        
+
         # Verify cache is populated after first call
         assert atoms_mod._block_kind_handlers is not None, \
             "Cache should be populated after calling flatten_to_atoms"

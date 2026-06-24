@@ -307,7 +307,7 @@ def compute_structure_signature(state: CardState) -> str:
                 f"{item.get('status') or ''}:"
                 f"{item.get('label') or item.get('name') or ''}"
             )
-    
+
     if state.metadata.bridge_phrase:
         parts.append(f"bridge:{state.metadata.bridge_phrase}")
     if state.footer.status is not None:
@@ -317,10 +317,10 @@ def compute_structure_signature(state: CardState) -> str:
         parts.append(f"button:{button.action_id}:{button.type}:{'disabled' if button.disabled else 'enabled'}")
     if state.engine_ext and state.engine_ext.phase_info:
         parts.append(f"phase:{state.engine_ext.phase_info}")
-    
+
     parts_key = "|".join(parts)
     sv = state.structural_version
-    
+
     return _compute_sig_cached(sv, parts_key)
 
 

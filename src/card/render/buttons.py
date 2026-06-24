@@ -333,7 +333,6 @@ def _layout_buttons(buttons: list[dict], *, budget: RenderBudget | None = None) 
     """Internal: arrange buttons into layout elements."""
 
     horizontal_spacing = budget.button_horizontal_spacing if budget and budget.button_horizontal_spacing else '8px'
-    vertical_spacing = budget.button_vertical_spacing if budget and budget.button_vertical_spacing else '8px'
 
     # Detect whether any button has a long label (>8 chars). Used as a
     # conservative heuristic to force vertical stacking on narrower widths

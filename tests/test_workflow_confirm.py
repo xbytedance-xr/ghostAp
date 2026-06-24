@@ -9,17 +9,15 @@ Validates:
 
 import os
 import unittest
-from types import SimpleNamespace
-from typing import Any
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, mock_open, patch
 
 from src.card.actions.dispatch import WORKFLOW_CANCEL, WORKFLOW_CONFIRM_START
 from src.card.events.types import CardEventType
 from src.card.events.workflow import workflow_confirm
 from src.feishu.ws_card_action_handler import SYSTEM_CARD_ACTIONS
+from src.spec_engine.review_agents import ReviewAgentBinding
 from src.workflow_engine.models import PendingConfirmation, WorkflowProject, WorkflowStatus
 from src.workflow_engine.script_gen import validate_generated_script
-from src.spec_engine.review_agents import ReviewAgentBinding
 
 
 class TestWorkflowConfirmWithAgentBindings(unittest.TestCase):
@@ -27,7 +25,7 @@ class TestWorkflowConfirmWithAgentBindings(unittest.TestCase):
 
     def setUp(self):
         from src.feishu.handlers.workflow import WorkflowHandler
-        
+
         self.handler = WorkflowHandler.__new__(WorkflowHandler)
         self.handler.ctx = MagicMock()
         self.handler.ctx.workflow_engine_manager = MagicMock()
@@ -43,11 +41,11 @@ class TestWorkflowConfirmWithAgentBindings(unittest.TestCase):
     def test_confirm_passes_agent_bindings_to_engine(self):
         """确认操作将 Agent 绑定信息传递给执行引擎。"""
         from src.workflow_engine.engine import WorkflowEngine
-        
+
         # Create a mock engine
         mock_engine = MagicMock(spec=WorkflowEngine)
         self.handler.ctx.workflow_engine_manager.get.return_value = mock_engine
-        
+
         # Create pending confirmation with agent bindings
         pending = PendingConfirmation(
             requirement="test workflow with agent bindings",
@@ -75,15 +73,15 @@ class TestWorkflowConfirmWithAgentBindings(unittest.TestCase):
             script_path="/tmp/test_script.js",
             script_hash="test_hash"
         )
-        
+
         mock_engine.project = WorkflowProject(
             status=WorkflowStatus.AWAITING_CONFIRM,
             pending=pending
         )
-        
+
         # Mock the execute_workflow method
         mock_engine.execute_workflow = MagicMock()
-        
+
         # Mock file operations
         mock_script_content = b"""
 export const meta = {
@@ -119,14 +117,14 @@ export default async function run() {
                                     # Mock tempfile.mkstemp
                                     with patch("tempfile.mkstemp", return_value=(1, "/tmp/immutable_script.js")):
                                         # Mock os.fdopen
-                                        with patch("os.fdopen", mock_open()) as mock_file:
+                                        with patch("os.fdopen", mock_open()):
                                             # Mock os.remove to avoid cleanup errors
                                             with patch("os.remove"):
                                                 # Mock lock_helper
                                                 self.handler.lock_helper = MagicMock()
                                                 # Make handle_lock_conflict execute the function directly
                                                 self.handler.lock_helper.handle_lock_conflict = lambda func, *args, **kwargs: func()
-                                                
+
                                                 # Call confirm handler
                                                 self.handler.handle_workflow_confirm_start(
                                                     "msg_123",
@@ -134,31 +132,31 @@ export default async function run() {
                                                     "proj_789",
                                                     {"engine_session_key": "session_abc"}
                                                 )
-        
+
         # Verify _reply_workflow_error was NOT called (no errors occurred)
         self.assertEqual(self.handler._reply_workflow_error.call_count, 0)
-        
+
         # Verify that pending state was cleared (start_execution was called)
         self.assertIsNone(mock_engine.project.pending,
                          "Pending state should have been cleared after start_execution")
-        
+
         # Verify that initiator_user_id was migrated from pending
         self.assertEqual(mock_engine.project.initiator_user_id, "user_001",
                        "initiator_user_id should have been migrated from pending")
-        
+
         print("Test completed: Confirm handler executed without errors and migrated pending state")
 
     def test_script_gen_includes_agent_bindings_in_prompt(self):
         """脚本生成提示中包含 Agent 绑定信息。"""
         from src.workflow_engine.script_gen import build_script_gen_prompt
-        
+
         # Test with agent bindings
         orchestrator_binding = {
             "tool_name": "coco",
             "model_name": "gpt-4",
             "use_default_model": False
         }
-        
+
         review_agents = [
             {
                 "tool_name": "claude",
@@ -166,7 +164,7 @@ export default async function run() {
                 "use_default_model": False
             }
         ]
-        
+
         prompt = build_script_gen_prompt(
             requirement="test workflow with agent bindings",
             available_tools=["coco", "claude"],
@@ -174,7 +172,7 @@ export default async function run() {
             orchestrator_binding=orchestrator_binding,
             review_agents=review_agents,
         )
-        
+
         # Verify the prompt includes agent and model info
         self.assertIn("已选择的主 Agent", prompt)
         self.assertIn("coco", prompt)

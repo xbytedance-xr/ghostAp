@@ -15,13 +15,12 @@ regressions that would increase token consumption without providing value.
 import tempfile
 import threading
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from src.workflow_engine.journal import WorkflowJournal
 from src.workflow_engine.models import (
     AgentCallParams,
     AgentCallResult,
-    WorkflowMeta,
     WorkflowMetrics,
     WorkflowProject,
     WorkflowStatus,
@@ -32,7 +31,6 @@ from src.workflow_engine.script_gen import (
     build_script_gen_prompt,
     generate_simple_script,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: rough token count (1 token ≈ 4 characters for English text)
@@ -484,7 +482,6 @@ class TestParallelExecutionTokenEfficiency(unittest.TestCase):
         The AgentExecutor uses a shared ThreadPoolExecutor for session
         creation, avoiding per-call pool overhead.
         """
-        from src.workflow_engine.executor import AgentExecutor
 
         # Create one executor for all parallel tasks
         executor = self._make_executor()
@@ -497,7 +494,7 @@ class TestParallelExecutionTokenEfficiency(unittest.TestCase):
         self.assertEqual(
             executor._session_pool._max_workers,
             expected_workers,
-            f"Session pool should use DEFAULT_MAX_CONCURRENT capped by HARD_MAX_CONCURRENT",
+            "Session pool should use DEFAULT_MAX_CONCURRENT capped by HARD_MAX_CONCURRENT",
         )
 
         # Build prompts for 3 parallel tasks — each should have its own
@@ -600,30 +597,30 @@ def process_user_data(request, db_connection):
     \"\"\"Process user data and update database.\"\"\"
     user_id = request.args.get('user_id')
     raw_data = request.get_json()
-    
+
     # Validate input
     if not user_id or not raw_data:
         return jsonify({'error': 'Missing parameters'}), 400
-    
+
     # SQL injection vulnerability
     query = f"SELECT * FROM users WHERE id = '{user_id}'"
     cursor = db_connection.cursor()
     cursor.execute(query)
     user = cursor.fetchone()
-    
+
     if not user:
         return jsonify({'error': 'User not found'}), 404
-    
+
     # Update user data (no validation)
     update_query = f"UPDATE users SET data = '{raw_data}' WHERE id = '{user_id}'"
     cursor.execute(update_query)
     db_connection.commit()
-    
+
     # Command injection vulnerability
     if raw_data.get('export'):
         import subprocess
         subprocess.call(f"echo {raw_data['export']} > /tmp/export.txt", shell=True)
-    
+
     return jsonify({'status': 'success', 'user': user_id})
 """
         stage1_prompt = f"""\
@@ -650,7 +647,7 @@ For each vulnerability found, specify:
   without parameterization. An attacker could craft a `user_id` like `' OR '1'='1` to
   bypass authentication or execute arbitrary SQL.
 
-### 2. Command Injection (CRITICAL)  
+### 2. Command Injection (CRITICAL)
 - Location: Lines 29-30
 - Issue: `raw_data['export']` is passed directly to `subprocess.call()` with `shell=True`.
   An attacker could provide a value like `"; rm -rf /;"` to execute arbitrary commands.
@@ -689,7 +686,7 @@ Findings to validate:
   cursor.execute(query, (user_id,))
   ```
 
-### 2. Command Injection (CRITICAL) - CONFIRMED  
+### 2. Command Injection (CRITICAL) - CONFIRMED
 - Verdict: True positive
 - Severity: CRITICAL (correct)
 - Fix: Avoid `shell=True` and pass args as list:

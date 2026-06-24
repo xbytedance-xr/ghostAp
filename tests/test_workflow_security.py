@@ -430,7 +430,7 @@ class TestWorkflowToolModelWhitelist(unittest.TestCase):
 
         # Call the validation logic
         _kept, _rejected = handler._validate_tools_against_registry(["invalid_tool"])
-        
+
         self.assertEqual(_rejected, ["invalid_tool"])
         self.assertEqual(_kept, [])
 
@@ -440,18 +440,18 @@ class TestWorkflowToolModelWhitelist(unittest.TestCase):
         handler._validate_tools_against_registry = MagicMock(return_value=(["coco"], []))
 
         _kept, _rejected = handler._validate_tools_against_registry(["coco"])
-        
+
         self.assertEqual(_kept, ["coco"])
         self.assertEqual(_rejected, [])
 
     def test_invalid_model_name_rejected(self):
         """Test that invalid model_name is rejected."""
         handler = self._make_handler()
-        
+
         # Get available models for tool 'coco'
         available_models = handler._get_workflow_models_for_tool("coco", "/tmp")
         model_names = [m.get("name") for m in available_models]
-        
+
         # 'invalid_model' should not be in the list
         self.assertNotIn("invalid_model", model_names)
         self.assertIn("GPT-4", model_names)
@@ -459,10 +459,10 @@ class TestWorkflowToolModelWhitelist(unittest.TestCase):
     def test_valid_model_name_accepted(self):
         """Test that valid model_name is accepted."""
         handler = self._make_handler()
-        
+
         available_models = handler._get_workflow_models_for_tool("coco", "/tmp")
         model_names = [m.get("name") for m in available_models]
-        
+
         # 'GPT-4' should be in the list
         self.assertIn("GPT-4", model_names)
 

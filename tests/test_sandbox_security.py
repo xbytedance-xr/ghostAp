@@ -15,7 +15,6 @@ import pytest
 
 from src.sandbox.executor import DangerousPatternCheckStrategy, SandboxExecutor
 
-
 # ---------------------------------------------------------------------------
 # DangerousPatternCheckStrategy: shell control character blocking
 # ---------------------------------------------------------------------------

@@ -13,8 +13,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from src.feishu.handlers.workflow import WorkflowHandler
 from src.workflow_engine.models import WorkflowProject, WorkflowStatus
 
@@ -191,18 +189,18 @@ def test_tool_select_missing_tool_name_returns_invalid_argument(mock_sender):
 
 def test_budget_selection_removed():
     """Verify budget selection feature has been removed.
-    
+
     Budget selection has been removed in favor of 2-step orchestrator+review selection.
     This test documents that budget-related actions should no longer be registered.
     """
     from src.card.actions.dispatch import build_common_action_registry, build_worktree_action_registry
-    
+
     common_registry = build_common_action_registry()
     worktree_registry = build_worktree_action_registry()
-    
+
     # Combine all action IDs
     all_actions = set(common_registry.keys()) | set(worktree_registry.keys())
-    
+
     # Verify no budget-related actions are registered
     budget_actions = [a for a in all_actions if "budget" in a.lower()]
     assert len(budget_actions) == 0, f"Found unexpected budget actions: {budget_actions}"
@@ -214,7 +212,6 @@ def test_budget_selection_removed():
 
 def test_error_card_is_visible_to_user():
     """AC19: 错误卡片通过 reply_card 发送给用户，可见。"""
-    from src.card.ui_text import UI_TEXT
 
     handler = _create_mock_handler()
 

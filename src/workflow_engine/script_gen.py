@@ -566,7 +566,7 @@ def build_script_gen_prompt(
             if not _ra_use_default and _ra_model:
                 agent_bindings_section += f"  **模型**: {_ra_model}"
             agent_bindings_section += "\n"
-    
+
     if agent_bindings_section:
         agent_capability_section += agent_bindings_section
 

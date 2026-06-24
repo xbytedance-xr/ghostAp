@@ -14,7 +14,6 @@ import unittest
 
 from src.workflow_engine.models import (
     AgentStatus,
-    PhaseProgress,
     WorkflowProject,
     WorkflowStatus,
 )

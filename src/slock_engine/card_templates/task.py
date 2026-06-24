@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from ..models import (
+    AgentIdentity,
+    SlockTask,
+    TaskStatus,
+)
 from .common import (
     DISPLAY_TZ,
     TASK_CONTENT_PREVIEW_LEN,
@@ -19,11 +24,6 @@ from .common import (
     build_column,
     build_column_set_row,
     build_responsive_layout,
-)
-from ..models import (
-    AgentIdentity,
-    SlockTask,
-    TaskStatus,
 )
 
 

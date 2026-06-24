@@ -17,7 +17,6 @@ import pytest
 
 from src.utils.errors import fmt_exception, get_error_detail
 
-
 # ---------------------------------------------------------------------------
 # Helpers for chained exception construction
 # ---------------------------------------------------------------------------

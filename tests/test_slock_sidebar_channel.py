@@ -1,9 +1,7 @@
 """Tests for sidebar_channel.py — lightweight inter-agent communication."""
 import time
-import pytest
-from src.slock_engine.sidebar_channel import (
-    SidebarChannel, SidebarMessage, SidebarMsgType, _SIDEBAR_PATTERN
-)
+
+from src.slock_engine.sidebar_channel import SidebarChannel, SidebarMessage, SidebarMsgType
 
 
 class TestSidebarMessage:

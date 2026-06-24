@@ -20,7 +20,7 @@ import concurrent.futures
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 from src.workflow_engine.constants import (
     AGENT_CALL_TIMEOUT_S,
@@ -31,14 +31,13 @@ from src.workflow_engine.constants import (
 )
 from src.workflow_engine.errors import (
     ErrorCategory,
+    _strip_internal_details,
     categorize_error,
     is_transient_error,
     sanitize_for_reply,
-    _strip_internal_details,
 )
 from src.workflow_engine.executor import AgentExecutor
-from src.workflow_engine.models import AgentCallParams, AgentCallResult
-
+from src.workflow_engine.models import AgentCallParams
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -6,8 +6,6 @@ import threading
 import time
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.workflow_engine.progress_coalescer import ProgressCoalescer
 
 

@@ -32,7 +32,7 @@ class TestOCCConflictRetrySuccess:
         mm.write_agent_memory(agent_id, initial_mem)
 
         # Record expected version BEFORE the async write captures it
-        expected_version = mm._write_counts.get(agent_id, 0)
+        mm._write_counts.get(agent_id, 0)
 
         # Prepare memory that the async writer will try to write
         new_mem = SlockMemory(
@@ -242,8 +242,7 @@ class TestFieldMergeActiveContextLatestWins:
     """Newer active_context (from disk/theirs) overwrites older (ours)."""
 
     def test_field_merge_active_context_latest_wins(self, tmp_path):
-        mm = MemoryManager(base_path=str(tmp_path))
-        agent_id = "agent-ac-latest"
+        MemoryManager(base_path=str(tmp_path))
 
         # Ours: older active_context
         ours = SlockMemory(
@@ -284,8 +283,7 @@ class TestFieldMergeArchivedContextAppends:
     """Archived_context from both writes gets appended."""
 
     def test_field_merge_archived_context_appends(self, tmp_path):
-        mm = MemoryManager(base_path=str(tmp_path))
-        agent_id = "agent-arch-append"
+        MemoryManager(base_path=str(tmp_path))
 
         # Theirs on disk has existing archived content
         theirs = SlockMemory(

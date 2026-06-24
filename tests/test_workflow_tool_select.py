@@ -316,7 +316,6 @@ class TestWorkflowToolSelectionCardUI(unittest.TestCase):
     @patch("src.workflow_engine.tool_registry.get_available_tools")
     def test_tool_selection_card_shows_recommended_tools(self, mock_tools, mock_sender):
         """Verify _show_tool_selection_card includes recommended tools (coco, claude, codex) in the card."""
-        from src.card.actions.dispatch import WORKFLOW_SELECT_TOOL
 
         mock_tools.return_value = {
             "coco": "全栈编程", "claude": "Claude AI", "codex": "Codex",

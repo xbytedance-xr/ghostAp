@@ -1,14 +1,13 @@
 """Tests for CardDelivery engine."""
 
+import dataclasses
 import threading
 import time
-import unittest.mock
 from unittest.mock import MagicMock
 
-import dataclasses
 import pytest
 
-from src.card.delivery.engine import CardDelivery, MutationOutcome, SequenceConflictError, TransportError
+from src.card.delivery.engine import CardDelivery, SequenceConflictError, TransportError
 from src.card.delivery.types import MutationOutcome as MutationOutcomeType
 from src.card.types import ActiveElement, RenderedCard
 from tests.helpers.delivery_internals import DeliveryInspector

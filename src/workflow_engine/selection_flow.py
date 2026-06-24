@@ -20,13 +20,12 @@ add / remove items without having to parse card state.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from src.card.actions.dispatch import WORKFLOW_CANCEL
 from src.card.builder import CardBuilder
 from src.card.render.buttons import build_responsive_button_row
-
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -579,7 +578,7 @@ class SelectionFlowController:
         footer_label = (
             "确认评审选择，生成脚本 →" if is_review else "确认主 Agent，下一步 →"
         )
-        
+
         # Cancel button
         cancel_value = {
             "action": WORKFLOW_CANCEL,
@@ -587,7 +586,7 @@ class SelectionFlowController:
             "project_id": project_id,
             "engine_session_key": session_key,
         }
-        
+
         # Build action buttons row with responsive layout
         action_buttons = [
             {

@@ -11,13 +11,12 @@ import unittest
 from unittest.mock import patch
 
 from src.card.actions.dispatch import (
+    WORKFLOW_BACK_TO_TOOLS,
     WORKFLOW_CANCEL,
     WORKFLOW_CONFIRM_START,
     WORKFLOW_FILL_MISSING_TOOLS,
     WORKFLOW_REGENERATE_SCRIPT,
-    WORKFLOW_BACK_TO_TOOLS,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — walk a card JSON and extract button / panel structures

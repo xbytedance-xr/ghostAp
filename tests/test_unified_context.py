@@ -6,7 +6,6 @@ from src.project.unified_context import (
     ContextBridgeSummary,
     ContextEntry,
     ContextEntryType,
-    ContextResult,
     ContextSourceMode,
     ContextVersion,
     ProjectContextManager,
