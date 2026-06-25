@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-06-25
+- **WF Traex模型分页** — Traex ACP 已返回 90 模型，Workflow 组合卡因模型按钮过多被飞书 11310 拒绝；改为 20/页分页并保留翻页状态，Workflow 回归 710 passed → [详细记录](2026-06-25.md)
 - **WF错误根因暴露** — `/wf` 执行期失败不再走通用 `reply_error()` 内部错误卡；改用 WF 专用错误卡、统一错误分类并携带脱敏 detail，Workflow 回归 706 passed → [详细记录](2026-06-25.md)
 - **WF执行卡切换修复** — 确认 `/wf` 执行阶段进度/完成回调误用 `CardBuilder.build_info_card()` 导致 TypeError 被吞，且确认卡不会立即切到执行卡；改为 renderer 输出统一包装为 CardKit 2.0 并在确认后即时更新，Workflow 回归 704 passed → [详细记录](2026-06-25.md)
 - **WF生成异步化** — `/wf` 三步主路径在评审完成后不再同步阻塞飞书回调；脚本生成提交 TaskScheduler，状态切到 GENERATING_SCRIPT 并加异常兜底，Workflow 回归 700 passed → [详细记录](2026-06-25.md)

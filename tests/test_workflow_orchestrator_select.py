@@ -527,6 +527,36 @@ def test_handle_orchestrator_select_tool_expands_model_panel():
     assert mock_engine.project.status == WorkflowStatus.AWAITING_AGENT_SELECT
 
 
+def test_handle_orchestrator_select_tool_model_page_keeps_panel_expanded():
+    handler, mock_project, _mock_engine = _build_orchestrator_handler_with_project()
+
+    value = {
+        "action": "workflow_orchestrator_select_tool",
+        "tool_name": "traex",
+        "provider": "workflow",
+        "display_name": "Traex",
+        "supports_model": True,
+        "model_page": 2,
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+
+    with patch("src.thread.get_current_sender_id", return_value="user_1"), \
+            patch("src.workflow_engine.tool_registry.get_available_tools", return_value={"traex": "Traex"}):
+        handler.handle_workflow_orchestrator_select_tool(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=value,
+        )
+
+    assert mock_project._wf_selection_snapshot["pending_tool_name"] == "traex"
+    assert mock_project._wf_selection_snapshot["model_page"] == 2
+    handler.update_card.assert_called()
+    handler._reply_workflow_error.assert_not_called()
+
+
 def test_handle_orchestrator_remove_and_clear():
     """调用 handle_workflow_orchestrator_remove 以及 handle_workflow_orchestrator_clear 都应该触发 update_card。
 
@@ -715,6 +745,7 @@ def test_payload_filter_preserves_new_fields():
         "use_default_model": False,
         "_option": "default",
         "selection_key": "sel_xyz",
+        "model_page": 1,
         "chat_id": "chat_1",
         "project_id": "proj_1",
         "engine_session_key": "sess_abc",
@@ -727,7 +758,8 @@ def test_payload_filter_preserves_new_fields():
 
     # 新增字段必须被保留
     for key in ["tool_name", "provider", "supports_model", "model_name",
-                "name", "use_default_model", "_option", "selection_key"]:
+                "name", "use_default_model", "_option", "selection_key",
+                "model_page"]:
         assert key in filtered, f"字段 {key} 未被 filter_workflow_button_value 保留"
 
     # 合法的基本字段也要被保留

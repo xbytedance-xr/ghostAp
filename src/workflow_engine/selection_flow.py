@@ -21,11 +21,18 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from math import ceil
 from typing import Any, Optional
 
 from src.card.actions.dispatch import WORKFLOW_CANCEL
 from src.card.builder import CardBuilder
 from src.card.render.buttons import build_responsive_button_row
+
+# Keep the inline model panel below Feishu's per-container element limits.
+# One default-model button plus 20 concrete models renders as <=11 button rows.
+# Larger providers are paginated so every model remains selectable.
+_MAX_INLINE_MODEL_BUTTONS = 20
+_MODEL_BUTTON_LABEL_MAX_CHARS = 32
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -102,6 +109,7 @@ class SelectionFlowController:
         self.orchestrator_selections: dict[str, dict[str, Any]] = {}
         self.review_selections: dict[str, dict[str, Any]] = {}
         self.review_auto_mode: bool = False
+        self.model_page: int = 0
         # Error message surfaced by the handler on empty-submit failures.
         # The handler sets it and the card builders render it if present.
         self.error_message: str = ""
@@ -115,6 +123,7 @@ class SelectionFlowController:
             raise ValueError(f"step must be 1, 2, or 3, got {step!r}")
         self.step = step
         self.pending_tool_name = None
+        self.model_page = 0
 
     def finish_step(self) -> tuple[int, dict[str, dict[str, Any]]]:
         """Return (next_step, snapshot_of_current_step_selections).
@@ -158,11 +167,24 @@ class SelectionFlowController:
         """
         if not tool_name:
             self.pending_tool_name = None
+            self.model_page = 0
             return
         if self.pending_tool_name == tool_name:
             self.pending_tool_name = None
+            self.model_page = 0
         else:
             self.pending_tool_name = tool_name
+            self.model_page = 0
+
+    def set_model_page(self, tool_name: str, page: int, *, is_review: bool) -> None:
+        """Keep ``tool_name`` expanded and move its inline model panel page."""
+        del is_review
+        if not tool_name:
+            self.pending_tool_name = None
+            self.model_page = 0
+            return
+        self.pending_tool_name = tool_name
+        self.model_page = max(0, int(page))
 
     # ------------------------------------------------------------------
     # Selection mutation
@@ -191,6 +213,7 @@ class SelectionFlowController:
         self._selection_store(is_review=is_review)[key] = normalized
         # Collapse the model panel once a selection lands — cleaner UX
         self.pending_tool_name = None
+        self.model_page = 0
         return key
 
     def remove_selection(self, selection_key: str, *, is_review: bool) -> None:
@@ -234,6 +257,7 @@ class SelectionFlowController:
         return {
             "step": self.step,
             "pending_tool_name": self.pending_tool_name,
+            "model_page": self.model_page,
             "orchestrator_selections": dict(self.orchestrator_selections),
             "review_selections": dict(self.review_selections),
             "review_auto_mode": self.review_auto_mode,
@@ -242,6 +266,7 @@ class SelectionFlowController:
     def restore(self, data: dict[str, Any]) -> None:
         self.step = int(data.get("step", 1))
         self.pending_tool_name = data.get("pending_tool_name")
+        self.model_page = max(0, int(data.get("model_page", 0) or 0))
         self.orchestrator_selections = dict(data.get("orchestrator_selections", {}))
         self.review_selections = dict(data.get("review_selections", {}))
         self.review_auto_mode = bool(data.get("review_auto_mode", False))
@@ -485,7 +510,6 @@ class SelectionFlowController:
             })
 
             if is_pending:
-                panel_elements: list[dict[str, Any]] = []
                 default_value = self._make_button_value(
                     action=(
                         "workflow_review_select_model"
@@ -509,11 +533,24 @@ class SelectionFlowController:
                     "value": default_value,
                     "behaviors": [{"type": "callback", "value": default_value}],
                 }
-                panel_elements.append(default_btn)
+                model_buttons = [default_btn]
 
                 if available_models:
-                    model_buttons = []
-                    for m in available_models:
+                    total_models = len(available_models)
+                    total_pages = max(1, ceil(total_models / _MAX_INLINE_MODEL_BUTTONS))
+                    page = min(max(0, self.model_page), total_pages - 1)
+                    start = page * _MAX_INLINE_MODEL_BUTTONS
+                    end = start + _MAX_INLINE_MODEL_BUTTONS
+                    visible_models = available_models[start:end]
+                    if total_pages > 1:
+                        elements.append({
+                            "tag": "markdown",
+                            "content": (
+                                f"_模型 {start + 1}-{min(end, total_models)} / {total_models}"
+                                f" · 第 {page + 1}/{total_pages} 页_"
+                            ),
+                        })
+                    for m in visible_models:
                         m_name = str(m.get("name", ""))
                         m_display = str(m.get("display_name") or m_name)
                         if not m_name:
@@ -537,29 +574,35 @@ class SelectionFlowController:
                         )
                         model_buttons.append({
                             "tag": "button",
-                            "text": {"tag": "plain_text", "content": m_display},
+                            "text": {
+                                "tag": "plain_text",
+                                "content": self._button_label(m_display),
+                            },
                             "type": "default",
                             "value": m_value,
                             "behaviors": [{"type": "callback", "value": m_value}],
                         })
-                    panel_elements.extend(model_buttons)
+                    elements.extend(build_responsive_button_row(model_buttons))
+                    nav_buttons = self._model_page_buttons(
+                        action=select_action,
+                        session_key=session_key,
+                        is_review=is_review,
+                        chat_id=chat_id,
+                        project_id=project_id,
+                        tool_name=tool_name,
+                        provider=str(tool.get("provider", "workflow")),
+                        display_name=display_name,
+                        supports_model=bool(tool.get("supports_model", True)),
+                        page=page,
+                        total_pages=total_pages,
+                    )
+                    elements.extend(build_responsive_button_row(nav_buttons))
                 else:
-                    panel_elements.append({
+                    elements.extend(build_responsive_button_row(model_buttons))
+                    elements.append({
                         "tag": "markdown",
                         "content": "_未配置额外模型列表；请选择默认模型。_",
                     })
-
-                elements.append({
-                    "tag": "column_set",
-                    "flex_mode": "none",
-                    "background_style": "grey",
-                    "columns": [{
-                        "tag": "column",
-                        "width": "weighted",
-                        "weight": 1,
-                        "elements": panel_elements,
-                    }],
-                })
 
         elements.append({"tag": "hr"})
 
@@ -662,3 +705,70 @@ class SelectionFlowController:
         if sel.get("use_default_model") or not sel.get("model_name"):
             return f"`{name}` (默认模型)"
         return f"`{name}` · {sel['model_name']}"
+
+    @staticmethod
+    def _button_label(text: str) -> str:
+        label = str(text or "").strip()
+        if len(label) <= _MODEL_BUTTON_LABEL_MAX_CHARS:
+            return label
+        return label[: _MODEL_BUTTON_LABEL_MAX_CHARS - 3] + "..."
+
+    def _model_page_buttons(
+        self,
+        *,
+        action: str,
+        session_key: str,
+        is_review: bool,
+        chat_id: str,
+        project_id: str,
+        tool_name: str,
+        provider: str,
+        display_name: str,
+        supports_model: bool,
+        page: int,
+        total_pages: int,
+    ) -> list[dict[str, Any]]:
+        if total_pages <= 1:
+            return []
+        buttons: list[dict[str, Any]] = []
+        if page > 0:
+            prev_value = self._make_button_value(
+                action=action,
+                session_key=session_key,
+                is_review=is_review,
+                chat_id=chat_id,
+                project_id=project_id,
+                tool_name=tool_name,
+                provider=provider,
+                display_name=display_name,
+                supports_model=supports_model,
+                model_page=page - 1,
+            )
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "上一页"},
+                "type": "default",
+                "value": prev_value,
+                "behaviors": [{"type": "callback", "value": prev_value}],
+            })
+        if page + 1 < total_pages:
+            next_value = self._make_button_value(
+                action=action,
+                session_key=session_key,
+                is_review=is_review,
+                chat_id=chat_id,
+                project_id=project_id,
+                tool_name=tool_name,
+                provider=provider,
+                display_name=display_name,
+                supports_model=supports_model,
+                model_page=page + 1,
+            )
+            buttons.append({
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "下一页"},
+                "type": "default",
+                "value": next_value,
+                "behaviors": [{"type": "callback", "value": next_value}],
+            })
+        return buttons

@@ -1622,7 +1622,14 @@ class WorkflowHandler(BaseEngineHandler):
         # Use SelectionFlowController
         ctrl = self._get_selection_controller(project)
         ctrl.set_step(1)
-        ctrl.toggle_tool_expand(tool_name, is_review=False)
+        if "model_page" in value:
+            try:
+                model_page = int(value.get("model_page", 0) or 0)
+            except (TypeError, ValueError):
+                model_page = 0
+            ctrl.set_model_page(tool_name, model_page, is_review=False)
+        else:
+            ctrl.toggle_tool_expand(tool_name, is_review=False)
         self._persist_selection_controller(project, ctrl)
 
         requirement = engine.project.pending.requirement if engine.project.pending else ""
@@ -2001,7 +2008,14 @@ class WorkflowHandler(BaseEngineHandler):
 
         ctrl = self._get_selection_controller(project)
         ctrl.set_step(2)
-        ctrl.toggle_tool_expand(tool_name, is_review=True)
+        if "model_page" in value:
+            try:
+                model_page = int(value.get("model_page", 0) or 0)
+            except (TypeError, ValueError):
+                model_page = 0
+            ctrl.set_model_page(tool_name, model_page, is_review=True)
+        else:
+            ctrl.toggle_tool_expand(tool_name, is_review=True)
         self._persist_selection_controller(project, ctrl)
 
         requirement = engine.project.pending.requirement if engine.project.pending else ""

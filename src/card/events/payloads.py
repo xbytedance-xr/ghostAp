@@ -541,6 +541,7 @@ class WorkflowConfirmCardValue(TypedDict, total=False):
     use_default_model: bool
     _option: str
     selection_key: str
+    model_page: int
 
 
 # ---------------------------------------------------------------------------
@@ -562,6 +563,7 @@ class WorkflowOrchestratorSelectToolButtonValue(_WorkflowBaseButtonValue):
     display_name: str
     supports_model: bool
     selection_key: str
+    model_page: int
 
 
 class WorkflowOrchestratorSelectModelButtonValue(_WorkflowBaseButtonValue):
@@ -588,6 +590,7 @@ class WorkflowReviewSelectToolButtonValue(_WorkflowBaseButtonValue):
     display_name: str
     supports_model: bool
     selection_key: str
+    model_page: int
 
 
 class WorkflowReviewSelectModelButtonValue(_WorkflowBaseButtonValue):
@@ -630,6 +633,7 @@ _WORKFLOW_BUTTON_FIELDS: set[str] = {
     "use_default_model",
     "_option",
     "selection_key",
+    "model_page",
 }
 
 

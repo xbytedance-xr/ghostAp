@@ -459,6 +459,103 @@ class TestOrchestratorCombinedCard:
         assert has_default
         assert has_specific
 
+    def test_pending_tool_model_panel_keeps_columns_under_feishu_element_limit(self):
+        ctrl = _basic_controller()
+        ctrl.toggle_tool_expand("traex", is_review=False)
+        models = [
+            {"name": f"traex-model-{i}", "display_name": f"Traex Model {i}"}
+            for i in range(18)
+        ]
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "traex", "display_name": "Traex"}],
+            available_models=models,
+            session_key="sess_abc",
+        )
+
+        columns = _find_tags(card, "column")
+        assert max(len(col.get("elements", [])) for col in columns) <= 20
+        from src.card.render.payload_truncator import count_tagged_nodes
+        assert count_tagged_nodes(card) <= 180
+
+        model_actions = _find_actions(card, "workflow_orchestrator_select_model")
+        model_names = {a.get("model_name") for a in model_actions if a.get("model_name")}
+        assert len(model_names) == len(models)
+        assert any(a.get("use_default_model") for a in model_actions)
+        assert "traex-model-17" in model_names
+
+    def test_pending_tool_model_panel_paginates_large_model_lists(self):
+        ctrl = _basic_controller()
+        ctrl.toggle_tool_expand("traex", is_review=False)
+        models = [
+            {"name": f"traex-model-{i}", "display_name": f"Traex Model {i}"}
+            for i in range(90)
+        ]
+
+        first_page = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "traex", "display_name": "Traex"}],
+            available_models=models,
+            session_key="sess_abc",
+        )
+        first_model_actions = _find_actions(first_page, "workflow_orchestrator_select_model")
+        first_model_names = {
+            a.get("model_name") for a in first_model_actions if a.get("model_name")
+        }
+        assert len(first_model_names) == 20
+        assert "traex-model-19" in first_model_names
+        assert "traex-model-20" not in first_model_names
+
+        first_tool_actions = _find_actions(first_page, "workflow_orchestrator_select_tool")
+        assert any(a.get("model_page") == 1 for a in first_tool_actions)
+
+        ctrl.set_model_page("traex", 4, is_review=False)
+        last_page = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "traex", "display_name": "Traex"}],
+            available_models=models,
+            session_key="sess_abc",
+        )
+        last_model_actions = _find_actions(last_page, "workflow_orchestrator_select_model")
+        last_model_names = {
+            a.get("model_name") for a in last_model_actions if a.get("model_name")
+        }
+        assert "traex-model-80" in last_model_names
+        assert "traex-model-89" in last_model_names
+
+        last_tool_actions = _find_actions(last_page, "workflow_orchestrator_select_tool")
+        assert any(a.get("model_page") == 3 for a in last_tool_actions)
+        assert not any(a.get("model_page") == 5 for a in last_tool_actions)
+
+        from src.card.render.payload_truncator import count_tagged_nodes
+        assert count_tagged_nodes(last_page) <= 180
+
+    def test_pending_tool_model_panel_stays_under_payload_budget_with_many_tools(self):
+        import json
+
+        from src.card.render.payload_truncator import count_tagged_nodes
+        from src.card.thresholds import THRESHOLDS
+
+        ctrl = _basic_controller()
+        ctrl.toggle_tool_expand("traex", is_review=False)
+        models = [
+            {"name": f"traex-model-{i}", "display_name": f"Traex Model {i}"}
+            for i in range(90)
+        ]
+        tools = [
+            {"tool_name": name, "display_name": name.title(), "description": "AI 编程工具"}
+            for name in ["traex", "claude", "codex", "aiden", "gemini", "coco"]
+        ]
+
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=tools,
+            available_models=models,
+            requirement="检查 Traex 模型列表分页",
+            session_key="sess_abc",
+            chat_id="chat_1",
+            project_id="proj_1",
+        )
+
+        assert count_tagged_nodes(card) <= THRESHOLDS["CARD_NODE_BUDGET"]
+        assert len(json.dumps(card, ensure_ascii=False).encode("utf-8")) <= THRESHOLDS["CARD_BYTE_BUDGET"]
+
     def test_requirement_is_rendered_when_given(self):
         ctrl = _basic_controller()
         card = ctrl.build_orchestrator_combined_card(
