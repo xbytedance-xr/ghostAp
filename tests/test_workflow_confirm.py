@@ -464,6 +464,182 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         # Pending state should be cleared
         self.assertIsNone(engine.project.pending)
 
+    @patch("src.thread.get_current_sender_id", return_value="user_123")
+    def test_confirm_start_updates_confirmation_card_to_running_before_submit(self, mock_sender):
+        """Confirming execution should immediately replace the confirm card with a progress card."""
+        import hashlib
+        import tempfile
+
+        handler, ctx = self._make_handler()
+
+        script_content = (
+            "export const meta = {\n"
+            "  name: 'test',\n"
+            "  description: 'test workflow',\n"
+            "  tools: ['coco'],\n"
+            "};\n"
+            "\n"
+            "export default async function() {\n"
+            "  await agent('do work');\n"
+            "}\n"
+        )
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
+        tmp.write(script_content)
+        tmp.close()
+        script_hash = hashlib.sha256(script_content.encode("utf-8")).hexdigest()
+
+        engine = MagicMock()
+        engine.project = WorkflowProject(
+            status=WorkflowStatus.AWAITING_CONFIRM,
+            pending=PendingConfirmation(
+                script_path=tmp.name,
+                requirement="do X",
+                meta={"name": "x", "tools": ["coco"]},
+                initiator_user_id="user_123",
+                engine_session_key="test_session_key",
+                selected_tools=["coco"],
+                script_hash=script_hash,
+            ),
+        )
+        engine.is_running = False
+        ctx.workflow_engine_manager.get.return_value = engine
+        handler._get_root_path = MagicMock(return_value="/tmp/project")
+
+        project_mock = MagicMock()
+        project_mock.project_name = "test"
+        handler._resolve_project_from_id = MagicMock(return_value=project_mock)
+
+        def _submit_side_effect(*args, **kwargs):
+            self.assertTrue(handler.update_card.called, "progress card must be updated before background submit")
+            submitted_message_id, submitted_card = handler.update_card.call_args[0]
+            self.assertEqual(submitted_message_id, "msg_1")
+            self.assertEqual(submitted_card["schema"], "2.0")
+            self.assertIn("body", submitted_card)
+            self.assertIsInstance(submitted_card["body"]["elements"], list)
+
+        handler._submit_engine_task.side_effect = _submit_side_effect
+
+        handler.handle_workflow_confirm_start(
+            "msg_1", "chat_1", "proj_1",
+            {"action": WORKFLOW_CONFIRM_START, "engine_session_key": "test_session_key"}
+        )
+
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+
+        handler.update_card.assert_called_once()
+        updated_message_id, card = handler.update_card.call_args[0]
+        self.assertEqual(updated_message_id, "msg_1")
+        self.assertEqual(card["schema"], "2.0")
+        self.assertIn("body", card)
+        self.assertIsInstance(card["body"]["elements"], list)
+        self.assertNotIn("elements", card)
+        self.assertIn("Workflow", card["header"]["title"]["content"])
+        self.assertEqual(engine.project.status, WorkflowStatus.RUNNING)
+        handler._submit_engine_task.assert_called_once()
+
+    def test_workflow_callbacks_send_renderer_cards_directly(self):
+        """Progress/done callbacks should pass renderer cards to update_card without build_info_card."""
+        handler, _ctx = self._make_handler()
+        callbacks = handler._build_workflow_callbacks("progress_msg", "chat_1", None)
+
+        progress_card = {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Workflow running"},
+                "template": "blue",
+            },
+            "elements": [{"tag": "markdown", "content": "running"}],
+        }
+        done_project = WorkflowProject(
+            name="done workflow",
+            requirement="do X",
+            status=WorkflowStatus.COMPLETED,
+            result="finished",
+        )
+
+        with patch("src.card.CardBuilder.build_info_card", side_effect=AssertionError("wrong card builder")):
+            callbacks.on_progress(progress_card)
+            callbacks.on_done(done_project)
+
+        self.assertEqual(handler.update_card.call_count, 2)
+        first_card = handler.update_card.call_args_list[0].args[1]
+        self.assertEqual(first_card["schema"], "2.0")
+        self.assertEqual(first_card["body"]["elements"], progress_card["elements"])
+        self.assertNotIn("elements", first_card)
+
+        second_card = handler.update_card.call_args_list[1].args[1]
+        self.assertEqual(second_card["schema"], "2.0")
+        self.assertIn("body", second_card)
+        self.assertIsInstance(second_card["body"]["elements"], list)
+        handler.reply_text.assert_not_called()
+
+    def test_workflow_callbacks_fallback_card_updates_future_message_id(self):
+        """If progress patching fails, callbacks should send a full card and update the target id."""
+        handler, _ctx = self._make_handler()
+        handler.update_card.side_effect = [False, True]
+        handler.send_card_to_chat.return_value = "fallback_msg"
+        callbacks = handler._build_workflow_callbacks("progress_msg", "chat_1", None)
+
+        first_progress = {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Workflow running"},
+                "template": "blue",
+            },
+            "elements": [{"tag": "markdown", "content": "first"}],
+        }
+        second_progress = {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Workflow still running"},
+                "template": "blue",
+            },
+            "elements": [{"tag": "markdown", "content": "second"}],
+        }
+
+        with patch("src.card.CardBuilder.build_info_card", side_effect=AssertionError("wrong card builder")):
+            callbacks.on_progress(first_progress)
+            callbacks.on_progress(second_progress)
+
+        self.assertEqual(handler.update_card.call_args_list[0].args[0], "progress_msg")
+        handler.send_card_to_chat.assert_called_once()
+        sent_card = handler.send_card_to_chat.call_args.args[1]
+        self.assertEqual(sent_card["schema"], "2.0")
+        self.assertEqual(sent_card["body"]["elements"], first_progress["elements"])
+        self.assertNotIn("elements", sent_card)
+
+        self.assertEqual(handler.update_card.call_args_list[1].args[0], "fallback_msg")
+        patched_card = handler.update_card.call_args_list[1].args[1]
+        self.assertEqual(patched_card["schema"], "2.0")
+        self.assertEqual(patched_card["body"]["elements"], second_progress["elements"])
+
+    def test_show_workflow_status_replies_with_normalized_renderer_card(self):
+        """/wf_status should normalize renderer output instead of calling build_info_card."""
+        handler, ctx = self._make_handler()
+        handler._get_root_path = MagicMock(return_value="/tmp/project")
+
+        engine = MagicMock()
+        engine.get_status_text.return_value = "Workflow running"
+        engine.get_progress_card.return_value = {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Workflow status"},
+                "template": "blue",
+            },
+            "elements": [{"tag": "markdown", "content": "status"}],
+        }
+        ctx.workflow_engine_manager.get.return_value = engine
+
+        with patch("src.card.CardBuilder.build_info_card", side_effect=AssertionError("wrong card builder")):
+            handler.show_workflow_status("msg_1", "chat_1", None)
+
+        handler.reply_card.assert_called_once()
+        replied_message_id, card = handler.reply_card.call_args[0]
+        self.assertEqual(replied_message_id, "msg_1")
+        self.assertEqual(card["schema"], "2.0")
+        self.assertEqual(card["body"]["elements"], engine.get_progress_card.return_value["elements"])
+        self.assertNotIn("elements", card)
+        handler.reply_text.assert_not_called()
+
     @patch("src.thread.get_current_sender_id", return_value="user_abc")
     def test_cancel_resets_to_idle(self, mock_sender):
         handler, ctx = self._make_handler()

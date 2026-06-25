@@ -673,6 +673,92 @@ class WorkflowHandler(BaseEngineHandler):
         self.send_card_to_chat(chat_id, card)
 
     @staticmethod
+    def _build_workflow_card_from_renderer_data(card_data: dict[str, Any]) -> dict[str, Any]:
+        """Normalize WorkflowProgressRenderer output to a full Feishu card.
+
+        Workflow renderer helpers return ``{"header": ..., "elements": ...}``
+        because they are pure renderers. Handler delivery APIs expect a full
+        CardKit 2.0 card, so keep that conversion at the handler boundary.
+        """
+        raw_header = card_data.get("header") if isinstance(card_data, dict) else None
+        header_source = raw_header if isinstance(raw_header, dict) else {}
+
+        raw_title = header_source.get("title")
+        if isinstance(raw_title, dict):
+            title_content = str(raw_title.get("content") or "Workflow")
+            title_tag = str(raw_title.get("tag") or "plain_text")
+        else:
+            title_content = str(raw_title or "Workflow")
+            title_tag = "plain_text"
+
+        header: dict[str, Any] = {
+            "title": {"tag": title_tag, "content": title_content},
+            "template": str(header_source.get("template") or "blue"),
+        }
+        raw_subtitle = header_source.get("subtitle")
+        if isinstance(raw_subtitle, dict):
+            subtitle_content = str(raw_subtitle.get("content") or "")
+            if subtitle_content:
+                header["subtitle"] = {
+                    "tag": str(raw_subtitle.get("tag") or "plain_text"),
+                    "content": subtitle_content,
+                }
+
+        body = card_data.get("body") if isinstance(card_data, dict) else None
+        if isinstance(body, dict) and isinstance(body.get("elements"), list):
+            elements = list(body["elements"])
+        else:
+            root_elements = card_data.get("elements") if isinstance(card_data, dict) else None
+            elements = list(root_elements) if isinstance(root_elements, list) else []
+
+        return {
+            "schema": "2.0",
+            "config": {"wide_screen_mode": True},
+            "header": header,
+            "body": {"elements": elements},
+        }
+
+    def _replace_or_send_workflow_rendered_card(
+        self,
+        *,
+        card_message_id: str | None,
+        chat_id: str,
+        card_data: dict[str, Any],
+    ) -> str | None:
+        """Replace a Workflow renderer card, falling back to a new card.
+
+        Returns the message id that should receive future progress updates.
+        """
+        card = self._build_workflow_card_from_renderer_data(card_data)
+        if card_message_id and self.update_card(card_message_id, card):
+            return card_message_id
+        return self.send_card_to_chat(chat_id, card)
+
+    def _show_initial_workflow_progress_card(
+        self,
+        *,
+        card_message_id: str,
+        chat_id: str,
+        wf_project: Any,
+    ) -> str:
+        """Switch the confirmation card to a running progress card immediately."""
+        try:
+            from ...workflow_engine.renderer import WorkflowProgressRenderer
+
+            card_data = WorkflowProgressRenderer(wf_project).render_progress_card()
+            return (
+                self._replace_or_send_workflow_rendered_card(
+                    card_message_id=card_message_id,
+                    chat_id=chat_id,
+                    card_data=card_data,
+                )
+                or card_message_id
+            )
+        except Exception:
+            logger.debug("Failed to show initial workflow progress card", exc_info=True)
+            return card_message_id
+
+    @staticmethod
     def _resolve_tool_lists() -> tuple[dict[str, str], list[str], list[str], list[str]]:
         """Resolve available tools, recommended order, other tools, and default selection in one call.
 
@@ -2650,6 +2736,18 @@ class WorkflowHandler(BaseEngineHandler):
 
         # Clear pending state and set running
         engine.project.start_execution()
+        import time as _time
+
+        engine.project.status = WorkflowStatus.RUNNING
+        engine.project.requirement = requirement
+        engine.project.script_path = immutable_script_path
+        engine.project.started_at = _time.time()
+        engine.project.selected_tools = selected_tools or None
+        progress_card_message_id = self._show_initial_workflow_progress_card(
+            card_message_id=message_id,
+            chat_id=chat_id,
+            wf_project=engine.project,
+        )
 
         # Use project already resolved above for engine_name
         engine_name = self.get_engine_name(
@@ -2661,7 +2759,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         def run_workflow():
             def _executor():
-                callbacks = self._build_workflow_callbacks(message_id, chat_id, project)
+                callbacks = self._build_workflow_callbacks(progress_card_message_id, chat_id, project)
                 engine.execute_workflow(
                     requirement=requirement,
                     script_path=immutable_script_path,
@@ -3798,12 +3896,7 @@ class WorkflowHandler(BaseEngineHandler):
         card_data = engine.get_progress_card()
 
         if card_data:
-            from ...card import CardBuilder
-
-            card_content = CardBuilder.build_info_card(
-                title=card_data.get("header", {}).get("title", {}).get("content", "Workflow"),
-                elements=card_data.get("elements", []),
-            )
+            card_content = self._build_workflow_card_from_renderer_data(card_data)
             self.reply_card(message_id, card_content)
         else:
             self.reply_text(message_id, status_text)
@@ -5181,45 +5274,29 @@ class WorkflowHandler(BaseEngineHandler):
         def on_progress(card_data: dict[str, Any]) -> None:
             """Update the progress card in Feishu."""
             try:
-                from ...card import CardBuilder
-
-                elements = card_data.get("elements", [])
-                header = card_data.get("header", {})
-                title = header.get("title", {}).get("content", "Workflow")
-                template = header.get("template", "blue")
-
-                card_content = CardBuilder.build_info_card(
-                    title=title,
-                    elements=elements,
-                    template=template,
+                new_id = self._replace_or_send_workflow_rendered_card(
+                    card_message_id=card_message_id[0],
+                    chat_id=chat_id,
+                    card_data=card_data,
                 )
-                if not self.update_card(card_message_id[0], card_content):
-                    # If update fails, send a new card
-                    new_id = self.send_card_to_chat(chat_id, card_content)
-                    if new_id:
-                        card_message_id[0] = new_id
+                if new_id:
+                    card_message_id[0] = new_id
             except Exception:
                 logger.debug("Failed to update workflow progress card", exc_info=True)
 
         def on_done(wf_project) -> None:
             """Final completion — send a structured completion card."""
             try:
-                from ...card import CardBuilder
                 from ...workflow_engine.renderer import render_completion_card
 
                 card_data = render_completion_card(wf_project)
-                elements = card_data.get("elements", [])
-                header = card_data.get("header", {})
-                title = header.get("title", {}).get("content", "Workflow 完成")
-                template = header.get("template", "green")
-
-                card_content = CardBuilder.build_info_card(
-                    title=title,
-                    elements=elements,
-                    template=template,
+                new_id = self._replace_or_send_workflow_rendered_card(
+                    card_message_id=card_message_id[0],
+                    chat_id=chat_id,
+                    card_data=card_data,
                 )
-                if not self.update_card(card_message_id[0], card_content):
-                    self.send_card_to_chat(chat_id, card_content)
+                if new_id:
+                    card_message_id[0] = new_id
             except Exception:
                 # Fallback to text if card rendering fails
                 result = wf_project.result or ""
