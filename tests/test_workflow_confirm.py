@@ -613,6 +613,36 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         self.assertEqual(patched_card["schema"], "2.0")
         self.assertEqual(patched_card["body"]["elements"], second_progress["elements"])
 
+    def test_workflow_callbacks_route_validation_error_to_workflow_error_card(self):
+        """Execution-time validation failures should not be hidden behind the generic error card."""
+        handler, _ctx = self._make_handler()
+        handler._reply_workflow_error = MagicMock()
+        callbacks = handler._build_workflow_callbacks("progress_msg", "chat_1", None)
+
+        callbacks.on_error("validation failed: Unbalanced parentheses")
+
+        handler._reply_workflow_error.assert_called_once_with(
+            "progress_msg",
+            "invalid_argument",
+            detail="validation failed: Unbalanced parentheses",
+        )
+        handler.reply_error.assert_not_called()
+
+    def test_workflow_callbacks_route_unknown_error_with_safe_detail(self):
+        """Unknown runtime errors should keep a sanitized root-cause hint on the Workflow card."""
+        handler, _ctx = self._make_handler()
+        handler._reply_workflow_error = MagicMock()
+        callbacks = handler._build_workflow_callbacks("progress_msg", "chat_1", None)
+
+        callbacks.on_error("TypeError: bad workflow state")
+
+        handler._reply_workflow_error.assert_called_once_with(
+            "progress_msg",
+            "internal_error",
+            detail="TypeError: bad workflow state",
+        )
+        handler.reply_error.assert_not_called()
+
     def test_show_workflow_status_replies_with_normalized_renderer_card(self):
         """/wf_status should normalize renderer output instead of calling build_info_card."""
         handler, ctx = self._make_handler()

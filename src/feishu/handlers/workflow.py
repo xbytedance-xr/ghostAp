@@ -5305,23 +5305,31 @@ class WorkflowHandler(BaseEngineHandler):
 
         def on_error(error_msg: str) -> None:
             """Error notification — sanitize before showing to user."""
-            from ...workflow_engine.errors import ErrorCategory, sanitize_for_reply
+            from ...workflow_engine.errors import (
+                ErrorCategory,
+                _strip_internal_details,
+                categorize_error,
+            )
 
-            # Classify the error for user-facing message selection
-            lower = (error_msg or "").lower()
-            if "limit exceeded" in lower:
-                category = ErrorCategory.AGENT_LIMIT
-            elif "timeout" in lower:
-                category = ErrorCategory.RUNTIME_TIMEOUT
-            elif "cancelled" in lower or "canceled" in lower:
-                category = ErrorCategory.CANCELLED
-            elif "not in allowed" in lower:
-                category = ErrorCategory.TOOL_NOT_ALLOWED
+            category = categorize_error(error_msg)
+            if category == ErrorCategory.TOOL_NOT_ALLOWED:
+                workflow_category = "forbidden"
+            elif category == ErrorCategory.SCRIPT_VALIDATION:
+                workflow_category = "invalid_argument"
+            elif category in (
+                ErrorCategory.AGENT_LIMIT,
+                ErrorCategory.RUNTIME_TIMEOUT,
+                ErrorCategory.CANCELLED,
+            ):
+                workflow_category = "invalid_state"
             else:
-                category = ErrorCategory.INTERNAL_ERROR
+                workflow_category = "internal_error"
 
-            safe_msg = sanitize_for_reply(error_msg, category)
-            self.reply_error(message_id, safe_msg, title="Workflow 失败")
+            self._reply_workflow_error(
+                message_id,
+                workflow_category,
+                detail=_strip_internal_details(error_msg or ""),
+            )
 
         def on_log(msg: str) -> None:
             logger.debug("[WorkflowHandler] log: %s", msg)
