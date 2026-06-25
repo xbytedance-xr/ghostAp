@@ -363,8 +363,8 @@ class SelectionFlowController:
         # Error message
         if self.error_message:
             elements.append({
-                "tag": "note",
-                "elements": [{"tag": "markdown", "content": f"⚠️ {self.error_message}"}],
+                "tag": "markdown",
+                "content": f"⚠️ {self.error_message}",
             })
             elements.append({"tag": "hr"})
 

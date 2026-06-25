@@ -51,6 +51,24 @@ def _find_actions(card: dict, action: str) -> list[dict]:
     return matches
 
 
+def _find_tags(card: dict, tag: str) -> list[dict]:
+    """Walk a card dict and collect nodes matching ``tag``."""
+    matches: list[dict] = []
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            if obj.get("tag") == tag:
+                matches.append(obj)
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(card)
+    return matches
+
+
 # ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
@@ -597,3 +615,21 @@ class TestCancelButtonValidation:
         assert payload.get("chat_id") == "chat_456"
         assert payload.get("project_id") == "proj_789"
         assert payload.get("engine_session_key") == "sess_123"
+
+
+class TestSchemaV2Compatibility:
+    def test_selection_error_uses_no_note_tag(self):
+        """Feishu Schema 2.0 rejects ``tag=note`` in workflow selection cards."""
+        ctrl = _basic_controller()
+        ctrl.error_message = "请选择一个主编排 Agent"
+
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "coco"}],
+            session_key="sess_123",
+            chat_id="chat_456",
+            project_id="proj_789",
+        )
+
+        assert not _find_tags(card, "note")
+        markdown = "\n".join(node.get("content", "") for node in _find_tags(card, "markdown"))
+        assert "请选择一个主编排 Agent" in markdown

@@ -4654,10 +4654,8 @@ class WorkflowHandler(BaseEngineHandler):
 
         if is_fallback:
             elements.append({
-                "tag": "note",
-                "elements": [
-                    {"tag": "plain_text", "content": "⚠️ AI 脚本生成失败，已使用默认模板。结果可能不完全匹配需求。"},
-                ],
+                "tag": "markdown",
+                "content": "⚠️ AI 脚本生成失败，已使用默认模板。结果可能不完全匹配需求。",
             })
 
         # --- 2. Requirement summary (first screen) ---
@@ -4710,14 +4708,11 @@ class WorkflowHandler(BaseEngineHandler):
             missing = sorted(script_tools - allowed_tools)
             missing_display = ", ".join(f"`{m}`" for m in missing)
             elements.append({
-                "tag": "note",
-                "elements": [{
-                    "tag": "plain_text",
-                    "content": (
-                        f"⚠️ 脚本需要这些工具但尚未启用：{missing_display}。"
-                        " 点击下方『一键补齐缺失工具』即可放行执行。"
-                    ),
-                }],
+                "tag": "markdown",
+                "content": (
+                    f"⚠️ 脚本需要这些工具但尚未启用：{missing_display}。"
+                    " 点击下方『一键补齐缺失工具』即可放行执行。"
+                ),
             })
 
         # --- 5. Primary CTA block — confirm start / cancel / mismatch fix ---
@@ -4824,11 +4819,8 @@ class WorkflowHandler(BaseEngineHandler):
         if not workflow_refs:
             # Empty state chip so the "add" entry point is still obvious.
             elements.append({
-                "tag": "note",
-                "elements": [{
-                    "tag": "plain_text",
-                    "content": "暂无子 Workflow 引用。点击下方按钮可添加。",
-                }],
+                "tag": "markdown",
+                "content": "<font color='grey'>暂无子 Workflow 引用。点击下方按钮可添加。</font>",
             })
         else:
             for idx, ref in enumerate(workflow_refs):

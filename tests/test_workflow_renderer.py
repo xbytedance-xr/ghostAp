@@ -339,15 +339,27 @@ class TestConfirmCardStructure(unittest.TestCase):
         card = self._build_card(is_fallback=True)
         elements = self._get_elements(card)
 
-        # Warning is now a "note" element (not markdown) for visual distinction
         warning_elements = [
             e for e in elements
-            if (e.get("tag") == "note" and any(
-                "默认模板" in sub.get("content", "")
-                for sub in e.get("elements", [])
-            )) or (e.get("tag") == "markdown" and "默认模板" in e.get("content", ""))
+            if e.get("tag") == "markdown" and "默认模板" in e.get("content", "")
         ]
-        self.assertGreater(len(warning_elements), 0, "Expected a note/markdown element with fallback warning")
+        self.assertGreater(len(warning_elements), 0, "Expected a markdown element with fallback warning")
+
+    def test_confirm_card_uses_no_schema_v2_note_tags(self) -> None:
+        """Feishu Schema 2.0 rejects ``tag=note`` in workflow confirmation cards."""
+        cards = [
+            self._build_card(),
+            self._build_card(is_fallback=True),
+            self._build_card(
+                meta=self._make_meta(tools=["coco", "claude"]),
+                selected_tools=["coco"],
+            ),
+            self._build_card(meta={**self._make_meta(), "workflow_refs": []}),
+        ]
+
+        for card in cards:
+            tags = [node.get("tag") for node in self._walk_elements(self._get_elements(card))]
+            self.assertNotIn("note", tags)
 
     def test_confirm_card_phase_tool_row_uses_two_columns(self) -> None:
         """Phase and tool counts should share a two-column (bisect) row so
