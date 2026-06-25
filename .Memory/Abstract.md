@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-06-25
+- **Slock可用性方案** — 基于最新日志和全局 Slock 持久化状态定位不可顺滑运行原因：Schema V2 非法 tag、缺默认协作角色、测试 marker 恢复污染、TTADK/Traex 默认值不一致和缺诊断入口；已输出分步实施方案 → [详细记录](2026-06-25.md)
 - **WF确认卡note修复** — 最新日志显示 `/wf` 生成成功后确认卡被飞书 V2 拒绝 `tag: note`，导致停留“生成脚本中”；Workflow 确认/选择错误提示改用 markdown，Workflow 回归 699 passed → [详细记录](2026-06-25.md)
 ## 2026-06-24
 - **WF 生成卡片卡住** — 修复 `/wf` 选完模型后停在“生成脚本中”：移除 Workflow `collapsible_panel.header.template` 非法字段，颜色迁移到 `border.color`；生成卡 patch 失败时新发确认/错误卡，模板校验失败清 pending；Workflow 回归 695 passed → [详细记录](2026-06-24.md)
