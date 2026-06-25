@@ -1265,6 +1265,81 @@ class WorkflowHandler(BaseEngineHandler):
             card=confirm_card,
         )
 
+    def _schedule_generate_and_show_confirm_card(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        requirement: str,
+        project: Optional["ProjectContext"],
+        root_path: str,
+        selected_tools: list[str] | None,
+        engine: Any | None = None,
+    ) -> None:
+        """Submit script generation to the task scheduler.
+
+        Script generation can spend minutes inside an ACP/CLI model call. Keep
+        Feishu callback handling short so the websocket receive loop remains
+        healthy while the loading card is replaced from the background task.
+        """
+
+        project_name = (getattr(project, "project_name", "") if project else "") or os.path.basename(root_path)
+        task_id = generate_task_id(project_name or "workflow")
+
+        def run_generate() -> None:
+            try:
+                self._generate_and_show_confirm_card(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    requirement=requirement,
+                    project=project,
+                    root_path=root_path,
+                    selected_tools=selected_tools,
+                )
+            except Exception as exc:
+                from ...workflow_engine.models import WorkflowStatus
+
+                try:
+                    task_engine = self.ctx.workflow_engine_manager.get(chat_id, root_path)
+                    if (
+                        task_engine
+                        and task_engine.project
+                        and task_engine.project.status == WorkflowStatus.GENERATING_SCRIPT
+                    ):
+                        task_engine.project.status = WorkflowStatus.IDLE
+                        task_engine.project.pending = None
+                except Exception:
+                    logger.debug("Failed to reset workflow state after script generation error", exc_info=True)
+
+                logger.error("Workflow script generation task failed: %s", exc, exc_info=True)
+                self._reply_workflow_error(
+                    message_id,
+                    "internal_error",
+                    detail=f"脚本生成失败: {exc}",
+                )
+
+        try:
+            self._submit_engine_task(
+                run_generate,
+                chat_id,
+                message_id,
+                project,
+                request_id=None,
+                task_id=task_id,
+                name_suffix="generate_script",
+            )
+        except Exception as exc:
+            from ...workflow_engine.models import WorkflowStatus
+
+            if engine and engine.project and engine.project.status == WorkflowStatus.GENERATING_SCRIPT:
+                engine.project.status = WorkflowStatus.AWAITING_TOOL_SELECT
+            logger.error("Workflow script generation task submission failed: %s", exc, exc_info=True)
+            self._reply_workflow_error(
+                message_id,
+                "internal_error",
+                detail=f"脚本生成任务提交失败: {exc}",
+            )
+
     # ------------------------------------------------------------------
     # Stop workflow
     # ------------------------------------------------------------------
@@ -2212,15 +2287,18 @@ class WorkflowHandler(BaseEngineHandler):
         if all_selected:
             engine.project.pending.selected_tools = all_selected
 
-        # Proceed to script generation
+        # Proceed to script generation without blocking the Feishu callback
+        # thread on a long-running ACP/CLI model call.
         requirement = engine.project.pending.requirement if engine.project.pending else ""
-        self._generate_and_show_confirm_card(
+        engine.project.status = WorkflowStatus.GENERATING_SCRIPT
+        self._schedule_generate_and_show_confirm_card(
             message_id=message_id,
             chat_id=chat_id,
             requirement=requirement,
             project=project,
             root_path=root_path,
             selected_tools=all_selected if all_selected else None,
+            engine=engine,
         )
 
     def _get_workflow_models_for_tool(self, tool_name: str, root_path: str = "") -> list[dict]:

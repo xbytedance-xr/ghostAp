@@ -649,6 +649,58 @@ def test_handle_orchestrator_finish_writes_binding():
     handler._reply_workflow_error.assert_not_called()
 
 
+def test_review_finish_schedules_script_generation_without_blocking_callback():
+    """review_finish should enqueue script generation instead of running it inline."""
+    handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
+    mock_engine.project.status = WorkflowStatus.AWAITING_TOOL_SELECT
+    mock_engine.project.pending.orchestrator_agent = "coco"
+
+    from src.workflow_engine.selection_flow import SelectionFlowController
+
+    ctrl = SelectionFlowController(step=2)
+    ctrl.add_or_update_selection(
+        {"tool_name": "claude", "display_name": "Claude", "model_name": "sonnet"},
+        is_review=True,
+    )
+    mock_project._wf_selection_snapshot = ctrl.snapshot()
+
+    handler._generate_and_show_confirm_card = MagicMock()
+    handler._submit_engine_task = MagicMock()
+
+    finish_value = {
+        "action": "workflow_review_finish",
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_review_finish(
+            message_id="msg_review_finish",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=finish_value,
+        )
+
+    handler._generate_and_show_confirm_card.assert_not_called()
+    handler._submit_engine_task.assert_called_once()
+    assert mock_engine.project.status == WorkflowStatus.GENERATING_SCRIPT
+    scheduled_fn = handler._submit_engine_task.call_args.args[0]
+    assert callable(scheduled_fn)
+
+    scheduled_fn()
+    handler._generate_and_show_confirm_card.assert_called_once_with(
+        message_id="msg_review_finish",
+        chat_id="chat_1",
+        requirement="build a feature",
+        project=mock_project,
+        root_path="/tmp/test_proj",
+        selected_tools=["coco", "claude"],
+    )
+    assert mock_engine.project.pending.review_agents
+    assert mock_engine.project.pending.selected_tools == ["coco", "claude"]
+    handler._reply_workflow_error.assert_not_called()
+
+
 def test_payload_filter_preserves_new_fields():
     """filter_workflow_button_value 应保留 tool_name/provider/supports_model/model_name/name/use_default_model/_option/selection_key。"""
     from src.card.events.payloads import filter_workflow_button_value
