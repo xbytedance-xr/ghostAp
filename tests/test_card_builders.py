@@ -365,6 +365,46 @@ def test_acp_select_cards_keep_project_tool_thread_and_refresh_fields():
     }
 
 
+def test_acp_model_select_card_paginates_large_model_lists():
+    """大模型列表（如 Traex ~90）应分页，避免飞书卡片元素超限 (ErrCode 11310)。"""
+    models = [
+        ModelOptionView(name=f"model_{i}", description=f"desc {i}")
+        for i in range(90)
+    ]
+
+    _, page0_json = SystemBuilder.build_acp_model_select_card(
+        models, tool_name="traex", project_id="p1", thread_root_id="t1", model_page=0
+    )
+    page0 = json.loads(page0_json)
+    page0_buttons = _collect_buttons(page0)
+    # First page should expose at most 20 concrete model buttons (+1 default +1 refresh + nav).
+    model_only = [b for b in page0_buttons if str(b["value"].get("model_name", "")).startswith("model_")]
+    assert len(model_only) == 20
+    assert model_only[0]["value"]["model_name"] == "model_0"
+    rendered = json.dumps(page0, ensure_ascii=False)
+    assert "下一页" in rendered
+    assert "上一页" not in rendered
+    assert "第 1/5 页" in rendered
+    # Page-nav button carries the page index via the refresh action.
+    next_btn = next(b for b in page0_buttons if b["value"].get("model_page") == 1)
+    assert next_btn["value"]["action"] == "refresh_acp_models"
+    assert next_btn["value"]["tool_name"] == "traex"
+
+    # Last page exposes the tail of the list with only a "previous" control.
+    _, page4_json = SystemBuilder.build_acp_model_select_card(
+        models, tool_name="traex", project_id="p1", thread_root_id="t1", model_page=4
+    )
+    page4 = json.loads(page4_json)
+    page4_models = [
+        b for b in _collect_buttons(page4)
+        if str(b["value"].get("model_name", "")).startswith("model_")
+    ]
+    assert page4_models[-1]["value"]["model_name"] == "model_89"
+    page4_rendered = json.dumps(page4, ensure_ascii=False)
+    assert "上一页" in page4_rendered
+    assert "下一页" not in page4_rendered
+
+
 def test_acp_model_flow_status_cards_keep_refresh_and_ready_actions():
     """ACP 模型选择流的 loading/error/ready 三态应可原卡 PATCH。"""
     _, loading_json = SystemBuilder.build_acp_model_loading_card(

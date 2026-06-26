@@ -157,6 +157,9 @@ class SpecHandler(BaseEngineHandler):
         pending_tool: str = "",
         thread_root_id: str = "",
         patch_existing: bool = True,
+        model_page: int = 0,
+        page_tool_name: str = "",
+        page_provider: str = "",
     ) -> None:
         _ = chat_id
         thread_root_id = self._spec_review_thread_root_id(thread_root_id, fallback_message_id=message_id)
@@ -168,6 +171,9 @@ class SpecHandler(BaseEngineHandler):
             select_action=select_action,
             pending_tool=pending_tool,
             thread_root_id=thread_root_id,
+            model_page=model_page,
+            page_tool_name=page_tool_name,
+            page_provider=page_provider,
         )
         if patch_existing and self.update_card(message_id, card_content):
             return
@@ -462,6 +468,10 @@ class SpecHandler(BaseEngineHandler):
         provider = value.get("provider", "")
         supports_model = value.get("supports_model", False)
         skip_model_selection = value.get("skip_model_selection", False)
+        try:
+            model_page = int(value.get("model_page", 0) or 0)
+        except (TypeError, ValueError):
+            model_page = 0
         if not tool_name:
             self.reply_error(message_id, UI_TEXT["system_worktree_select_tool_error"])
             return
@@ -539,6 +549,9 @@ class SpecHandler(BaseEngineHandler):
                 select_action=SPEC_REVIEW_SELECT_MODEL,
                 pending_tool=option.display_name,
                 thread_root_id=thread_root_id,
+                model_page=model_page,
+                page_tool_name=tool_name,
+                page_provider=provider,
             )
             return
 

@@ -418,6 +418,7 @@ class CardBuilder:
         value_extra: Optional[dict] = None,
         context_markdown: Optional[str] = None,
         refresh_action_name: Optional[str] = None,
+        model_page: int = 0,
     ) -> tuple[str, str]:
         kwargs = {}
         if action_name is not None:
@@ -434,6 +435,7 @@ class CardBuilder:
             project_id=project_id,
             current_model=current_model,
             thread_root_id=thread_root_id,
+            model_page=model_page,
             **kwargs,
         )
 
@@ -485,6 +487,9 @@ class CardBuilder:
         select_action: str = "spec_review_select_tool",
         pending_tool: str = "",
         thread_root_id: str = "",
+        model_page: int = 0,
+        page_tool_name: str = "",
+        page_provider: str = "",
     ) -> tuple[str, str]:
         return SpecReviewBuilder.build_agent_select_card(
             tools=tools,
@@ -494,6 +499,9 @@ class CardBuilder:
             select_action=select_action,
             pending_tool=pending_tool,
             thread_root_id=thread_root_id,
+            model_page=model_page,
+            page_tool_name=page_tool_name,
+            page_provider=page_provider,
         )
 
     @staticmethod

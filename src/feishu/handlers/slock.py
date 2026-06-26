@@ -2088,6 +2088,10 @@ class SlockHandler(BaseEngineHandler):
             return
 
         cwd = getattr(project, "root_path", None) or getattr(engine, "root_path", None) or self.get_working_dir(chat_id)
+        try:
+            model_page = int(value.get("model_page", 0) or 0)
+        except (TypeError, ValueError):
+            model_page = 0
         models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
         _, card_content = CardBuilder.build_acp_model_select_card(
             models,
@@ -2096,8 +2100,13 @@ class SlockHandler(BaseEngineHandler):
             action_name=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
             value_extra={"role_name": role_name},
             context_markdown=f"角色: **{role_name}**",
-            refresh_action_name="",
+            refresh_action_name=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
+            model_page=model_page,
         )
+        # When the click carries a page change, update the existing card in
+        # place; the initial tool selection (page 0) replies a fresh card.
+        if model_page and self.update_card(message_id, card_content):
+            return
         self.reply_card(message_id, card_content)
 
     def handle_new_role_select_model(

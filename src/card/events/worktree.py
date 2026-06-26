@@ -68,6 +68,10 @@ def worktree_tool_select(
     clear_action: str = "",
     back_action: str = "",
     show_stepper: bool = True,
+    model_page: int = 0,
+    page_action: str = "",
+    page_tool_name: str = "",
+    page_provider: str = "",
 ) -> CardEvent:
     """Worktree tool selection card state.
 
@@ -109,9 +113,14 @@ def worktree_tool_select(
         "remove_action": remove_action,
         "clear_action": clear_action,
         "back_action": back_action,
+        "page_action": page_action,
+        "page_tool_name": page_tool_name,
+        "page_provider": page_provider,
     }.items():
         if value:
             payload[key] = value
+    if model_page:
+        payload["model_page"] = int(model_page)
     return CardEvent(type=CardEventType.WORKTREE_TOOL_SELECT, payload=payload)
 
 

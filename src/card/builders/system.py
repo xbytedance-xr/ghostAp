@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 _SELECT_LABEL_MOBILE_LIMIT = 72
 _BUTTON_LABEL_MOBILE_LIMIT = 40
 
+# Cap how many concrete model buttons render on a single ACP model-select card.
+# Providers like Traex expose ~90 models; rendering them all at once overflows
+# Feishu's per-card element limit (ErrCode 11310). Larger lists are paginated so
+# every model stays selectable across all modes that share this card.
+_MAX_ACP_MODEL_BUTTONS = 20
+
 if TYPE_CHECKING:
     from src.project.context import ProjectContext
     from src.sandbox.executor import ExecutionResult
@@ -1077,10 +1083,15 @@ class SystemBuilder:
         value_extra: Optional[dict] = None,
         context_markdown: Optional[str] = None,
         refresh_action_name: Optional[str] = action_ids.REFRESH_ACP_MODELS,
+        model_page: int = 0,
     ) -> tuple[str, str]:
         """Build an interactive card for ACP model selection.
 
-        ``models`` 可以是 ModelOptionView 或任意带 ``name``/``description`` 属性的对象。"""
+        ``models`` 可以是 ModelOptionView 或任意带 ``name``/``description`` 属性的对象。
+
+        模型数量较多时（例如 Traex 约 90 个）按 ``_MAX_ACP_MODEL_BUTTONS`` 分页，
+        翻页按钮复用 ``refresh_action_name`` 并携带 ``model_page``，避免一次性渲染
+        所有按钮触发飞书卡片元素上限（ErrCode 11310）。"""
 
         elements = [
             {
@@ -1143,7 +1154,24 @@ class SystemBuilder:
                 ],
             }
         ]
-        for m in items:
+
+        total_models = len(items)
+        total_pages = max(1, math.ceil(total_models / _MAX_ACP_MODEL_BUTTONS))
+        page = min(max(0, int(model_page or 0)), total_pages - 1)
+        start = page * _MAX_ACP_MODEL_BUTTONS
+        end = start + _MAX_ACP_MODEL_BUTTONS
+        if total_pages > 1:
+            elements.append(
+                {
+                    "tag": "markdown",
+                    "content": (
+                        f"_模型 {start + 1}-{min(end, total_models)} / {total_models}"
+                        f" · 第 {page + 1}/{total_pages} 页_"
+                    ),
+                }
+            )
+
+        for m in items[start:end]:
             label = m.display_name or m.name
             btn_text = f"{label}"
             if m.description and m.description != label:
@@ -1161,6 +1189,49 @@ class SystemBuilder:
             )
 
         elements.extend(build_responsive_layout(buttons))
+
+        # Pagination navigation (only when there is more than one page). Page
+        # buttons reuse the refresh action so the handler re-renders the card
+        # at the requested page; they are no-ops when refresh is disabled.
+        if total_pages > 1 and refresh_action_name:
+            def _page_value(target_page: int) -> dict:
+                value = {
+                    "action": refresh_action_name,
+                    "tool_name": tool_name,
+                    "project_id": project_id,
+                    "thread_root_id": thread_root_id,
+                    "model_page": target_page,
+                }
+                if value_extra:
+                    value.update(value_extra)
+                return value
+
+            nav_buttons: list[dict] = []
+            if page > 0:
+                prev_value = _page_value(page - 1)
+                nav_buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "上一页"},
+                        "type": "default",
+                        "value": prev_value,
+                        "behaviors": [{"type": "callback", "value": prev_value}],
+                    }
+                )
+            if page + 1 < total_pages:
+                next_value = _page_value(page + 1)
+                nav_buttons.append(
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "下一页"},
+                        "type": "default",
+                        "value": next_value,
+                        "behaviors": [{"type": "callback", "value": next_value}],
+                    }
+                )
+            if nav_buttons:
+                elements.extend(build_responsive_layout(nav_buttons))
+
         if refresh_action_name:
             refresh_value = {
                 "action": refresh_action_name,

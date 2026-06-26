@@ -487,6 +487,43 @@ class TestRenderWorktreeToolSelectInteractions:
 
         assert count_tagged_nodes(rendered) <= 180
 
+    def test_huge_model_list_paginates_under_feishu_node_budget(self):
+        """Traex 量级（~90）模型列表必须分页，单页保持在 Feishu 元素硬限制内。"""
+        import json as _json
+
+        from src.card.render.payload_truncator import count_tagged_nodes
+
+        state = CardState(metadata=CardMetadata(engine_type="worktree"))
+        state = reduce_card_state(
+            state,
+            worktree_tool_select(
+                tools=[
+                    {
+                        "id": f"model-{i:02d}",
+                        "name": f"Model {i:02d}",
+                        "description": "Context window: 168k, Quota: 48% used",
+                    }
+                    for i in range(90)
+                ],
+                selected=[],
+                project_id="p-huge",
+                select_action="worktree_select_model",
+                pending_tool="Traex",
+                model_page=0,
+                page_action="worktree_select_tool",
+                page_tool_name="traex",
+                page_provider="acp",
+            ),
+        )
+        rendered = render_card(state, RenderBudget())[0].to_feishu_json()
+        assert count_tagged_nodes(rendered) <= 180
+        blob = _json.dumps(rendered, ensure_ascii=False)
+        # First page shows a next-page control wired back to the tool-select action.
+        assert "下一页" in blob
+        assert "上一页" not in blob
+        assert "第 1/5 页" in blob
+        assert '"model_page": 1' in blob
+
     def test_model_select_subtitle_uses_model_select_text(self):
         """模型选择阶段 header subtitle 必须显示为'选择模型'，与工具选择视觉区分。"""
         from src.card.render.budget import RenderBudget

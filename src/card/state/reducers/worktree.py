@@ -74,10 +74,16 @@ def reduce_worktree(state: CardState, event: CardEvent) -> CardState:
                 "remove_action",
                 "clear_action",
                 "back_action",
+                "page_action",
+                "page_tool_name",
+                "page_provider",
             ):
                 value = event.payload.get(key)
                 if value:
                     data[key] = value
+            model_page = event.payload.get("model_page")
+            if model_page:
+                data["model_page"] = int(model_page)
             block = WorktreeSelectBlock(
                 block_id="worktree_tool_list",
                 data=data,

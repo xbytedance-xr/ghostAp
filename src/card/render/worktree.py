@@ -6,6 +6,7 @@ into formatted Feishu Schema 2.0 markdown elements.
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -24,6 +25,12 @@ from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
 
 if TYPE_CHECKING:
     from src.worktree_engine.models import WorktreeInfo, WorktreeRuntimeState, WorktreeUnit
+
+
+# Cap model buttons per page on Worktree/Spec model-select grids. Providers like
+# Traex expose ~90 models; rendering them all overflows Feishu's element budget
+# (ErrCode 11310 / 230099). Larger lists paginate so every model stays reachable.
+_MAX_MODEL_BUTTONS_PER_PAGE = 20
 
 
 # ---------------------------------------------------------------------------
@@ -270,14 +277,27 @@ def _render_worktree_tool_select(data: dict) -> dict:
         elements.append({"tag": "markdown", "content": message})
 
     if is_model_select:
-        # 模型列表来自真实 ACP/TTADK 环境，常见 25+ 项。每个模型一整行会把
-        # Schema 2.0 元素数推到 Feishu 200 上限附近，导致 patch 被 230099 拒收。
-        # 模型阶段改用双列按钮网格：按钮本身就是选择目标，value 仍携带真实 model_id。
+        # 模型列表来自真实 ACP/TTADK 环境，常见 25+ 项，Traex 可达 ~90 项。
+        # 每个模型一整行会把 Schema 2.0 元素数推到 Feishu 200 上限附近（甚至触发
+        # 11310/230099 拒收）。模型阶段改用双列按钮网格并分页：按钮本身就是选择
+        # 目标，value 仍携带真实 model_id；翻页按钮重新触发工具选择 action 以
+        # 重新拉取并渲染对应页。
+        try:
+            model_page = int(data.get("model_page", 0) or 0)
+        except (TypeError, ValueError):
+            model_page = 0
+        page_action = str(data.get("page_action") or "").strip()
+        page_tool_name = str(data.get("page_tool_name") or pending_tool or "").strip()
+        page_provider = str(data.get("page_provider") or "").strip()
         elements.extend(_render_worktree_model_option_grid(
             tools,
             project_id=project_id,
             thread_root_id=thread_root_id,
             select_action=default_action,
+            model_page=model_page,
+            page_action=page_action,
+            page_tool_name=page_tool_name,
+            page_provider=page_provider,
         ))
     else:
         if auto_action:
@@ -500,12 +520,38 @@ def _render_worktree_model_option_grid(
     project_id: str,
     thread_root_id: str = "",
     select_action: str = WORKTREE_SELECT_MODEL,
+    model_page: int = 0,
+    page_action: str = "",
+    page_tool_name: str = "",
+    page_provider: str = "",
 ) -> list[dict]:
     """Render model choices as compact callback buttons.
 
-    The Worktree model card can list dozens of models. A two-column grid keeps
-    the card under Feishu's component budget while preserving one-tap selection.
+    The Worktree model card can list dozens of models (Traex exposes ~90). A
+    two-column grid keeps each row small, and pagination caps the rendered rows
+    so the card stays under Feishu's component budget while preserving one-tap
+    selection. Page-nav buttons re-trigger ``page_action`` (the tool-select
+    action) carrying ``model_page`` so the handler re-fetches and re-renders.
     """
+    all_tools = [t for t in (tools or []) if isinstance(t, dict)]
+    total = len(all_tools)
+    total_pages = max(1, math.ceil(total / _MAX_MODEL_BUTTONS_PER_PAGE))
+    page = min(max(0, int(model_page or 0)), total_pages - 1)
+    start = page * _MAX_MODEL_BUTTONS_PER_PAGE
+    end = start + _MAX_MODEL_BUTTONS_PER_PAGE
+    visible_tools = all_tools[start:end]
+
+    out: list[dict] = []
+    if total_pages > 1:
+        out.append({
+            "tag": "markdown",
+            "content": (
+                f"_模型 {start + 1}-{min(end, total)} / {total}"
+                f" · 第 {page + 1}/{total_pages} 页_"
+            ),
+            "text_size": "notation",
+        })
+
     rows: list[dict] = []
     pair: list[dict] = []
 
@@ -520,9 +566,7 @@ def _render_worktree_model_option_grid(
         })
         pair.clear()
 
-    for tool in tools or []:
-        if not isinstance(tool, dict):
-            continue
+    for tool in visible_tools:
         model_id, name, _ = _tool_identity(tool)
         if not model_id:
             continue
@@ -552,7 +596,51 @@ def _render_worktree_model_option_grid(
             _flush_pair()
 
     _flush_pair()
-    return rows
+    out.extend(rows)
+
+    # Pagination navigation: reuse the tool-select action so the handler
+    # re-fetches the model list and re-renders the requested page.
+    if total_pages > 1 and page_action and page_tool_name:
+        def _nav_value(target_page: int) -> dict:
+            v = {
+                "action": page_action,
+                "tool_name": page_tool_name,
+                "provider": page_provider,
+                "supports_model": True,
+                "project_id": project_id,
+                "model_page": target_page,
+            }
+            return _with_thread_root(v, thread_root_id)
+
+        nav: list[dict] = []
+        if page > 0:
+            nav.append({
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "center",
+                "elements": [_callback_button(
+                    text="上一页", value=_nav_value(page - 1), size="medium",
+                )],
+            })
+        if page + 1 < total_pages:
+            nav.append({
+                "tag": "column",
+                "width": "weighted",
+                "weight": 1,
+                "vertical_align": "center",
+                "elements": [_callback_button(
+                    text="下一页", value=_nav_value(page + 1), size="medium",
+                )],
+            })
+        if nav:
+            out.append({
+                "tag": "column_set",
+                "flex_mode": "bisect" if len(nav) == 2 else "none",
+                "background_style": "default",
+                "columns": nav,
+            })
+    return out
 
 
 def _render_worktree_select_option(

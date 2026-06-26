@@ -242,6 +242,12 @@ class WorktreeToolSelectPayload(TypedDict):
     clear_action: NotRequired[str]
     back_action: NotRequired[str]
     show_stepper: NotRequired[bool]
+    # Model-select pagination: current page + tool identity so page-nav buttons
+    # can re-trigger the tool-select action and re-fetch the model list.
+    model_page: NotRequired[int]
+    page_action: NotRequired[str]
+    page_tool_name: NotRequired[str]
+    page_provider: NotRequired[str]
 
 
 class WorktreeConfirmPayload(TypedDict):

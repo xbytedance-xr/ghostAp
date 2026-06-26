@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Optional
 
 from src.model_selection import DEFAULT_MODEL_OPTION_VALUE
@@ -9,6 +10,10 @@ from ..actions import dispatch as action_ids
 from ..shared import build_responsive_layout
 from ..ui_text import UI_TEXT
 from .core import CoreBuilder
+
+# Cap model buttons per page on the Spec review model-select card. Traex exposes
+# ~90 models; rendering them all overflows Feishu's element budget.
+_SPEC_MAX_MODEL_BUTTONS_PER_PAGE = 20
 
 
 class SpecReviewBuilder:
@@ -223,6 +228,9 @@ class SpecReviewBuilder:
         select_action: str = action_ids.SPEC_REVIEW_SELECT_TOOL,
         pending_tool: str = "",
         thread_root_id: str = "",
+        model_page: int = 0,
+        page_tool_name: str = "",
+        page_provider: str = "",
     ) -> tuple[str, str]:
         selected_items = [dict(item) for item in selected or [] if isinstance(item, dict)]
         if select_action == action_ids.SPEC_REVIEW_SELECT_MODEL:
@@ -233,6 +241,9 @@ class SpecReviewBuilder:
                 message=message,
                 pending_tool=pending_tool,
                 thread_root_id=thread_root_id,
+                model_page=model_page,
+                page_tool_name=page_tool_name,
+                page_provider=page_provider,
             )
 
         selection_sig = SpecReviewBuilder._selected_signature(selected_items)
@@ -295,6 +306,9 @@ class SpecReviewBuilder:
         message: str,
         pending_tool: str,
         thread_root_id: str,
+        model_page: int = 0,
+        page_tool_name: str = "",
+        page_provider: str = "",
     ) -> tuple[str, str]:
         tool_label = pending_tool or "当前工具"
         elements: list[dict] = [
@@ -309,11 +323,52 @@ class SpecReviewBuilder:
             lines = ["**已选 Review 工具**"]
             lines.extend(f"- {SpecReviewBuilder._selected_label(item)}" for item in selected if SpecReviewBuilder._selected_label(item))
             elements.append({"tag": "markdown", "content": "\n".join(lines)})
+
+        # Paginate large model lists (e.g. Traex ~90) so the card stays under
+        # Feishu's element budget. Page-nav reuses the tool-select action so the
+        # handler re-fetches the model list and re-renders the requested page.
+        all_models = list(models or [])
+        total = len(all_models)
+        total_pages = max(1, math.ceil(total / _SPEC_MAX_MODEL_BUTTONS_PER_PAGE))
+        page = min(max(0, int(model_page or 0)), total_pages - 1)
+        start = page * _SPEC_MAX_MODEL_BUTTONS_PER_PAGE
+        end = start + _SPEC_MAX_MODEL_BUTTONS_PER_PAGE
+        if total_pages > 1:
+            elements.append({
+                "tag": "markdown",
+                "content": (
+                    f"_模型 {start + 1}-{min(end, total)} / {total}"
+                    f" · 第 {page + 1}/{total_pages} 页_"
+                ),
+                "text_size": "notation",
+            })
+
         buttons = [
             SpecReviewBuilder._model_button(dict(model or {}), project_id=project_id, thread_root_id=thread_root_id)
-            for model in models or []
+            for model in all_models[start:end]
         ]
         elements.extend(build_responsive_layout(buttons))
+
+        if total_pages > 1 and page_tool_name:
+            def _nav_value(target_page: int) -> dict:
+                return {
+                    "action": action_ids.SPEC_REVIEW_SELECT_TOOL,
+                    "tool_name": page_tool_name,
+                    "provider": page_provider,
+                    "supports_model": True,
+                    "project_id": project_id,
+                    "thread_root_id": thread_root_id,
+                    "model_page": target_page,
+                }
+
+            nav_buttons: list[dict] = []
+            if page > 0:
+                nav_buttons.append(SpecReviewBuilder._button("上一页", _nav_value(page - 1)))
+            if page + 1 < total_pages:
+                nav_buttons.append(SpecReviewBuilder._button("下一页", _nav_value(page + 1)))
+            if nav_buttons:
+                elements.extend(build_responsive_layout(nav_buttons))
+
         elements.append({"tag": "hr"})
         elements.extend(
             build_responsive_layout(

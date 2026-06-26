@@ -775,6 +775,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         current_model: Optional[str],
         thread_root_id: Optional[str],
         update_existing: bool = False,
+        model_page: int = 0,
     ) -> None:
         """Show ACP model discovery and selection as one progressively patched card."""
         _, loading_card = CardBuilder.build_acp_model_loading_card(
@@ -809,6 +810,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             project_id,
             current_model=current_model,
             thread_root_id=thread_root_id,
+            model_page=model_page,
         )
         if progress_message_id and self.update_card(progress_message_id, model_card):
             return
@@ -900,6 +902,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             current_model = getattr(project, "acp_model_name", None)
         from ...thread import get_current_thread_id
         thread_root_id = str((value or {}).get("thread_root_id") or "").strip() or get_current_thread_id()
+        try:
+            model_page = int((value or {}).get("model_page", 0) or 0)
+        except (TypeError, ValueError):
+            model_page = 0
         self._show_acp_model_selection_flow(
             message_id=message_id,
             chat_id=chat_id,
@@ -909,6 +915,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             current_model=current_model,
             thread_root_id=thread_root_id,
             update_existing=True,
+            model_page=model_page,
         )
 
     def handle_select_acp_model(

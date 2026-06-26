@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-06-26
+- **全模式Traex模型分页** — 普通/slock/Worktree/Spec 选模型仍一次性渲染 90 个 Traex 模型被飞书 11310 拒绝；统一加 20/页分页+翻页导航，相关回归 151+499 passed → [详细记录](2026-06-26.md)
+
 ## 2026-06-25
 - **WF Traex模型分页** — Traex ACP 已返回 90 模型，Workflow 组合卡因模型按钮过多被飞书 11310 拒绝；改为 20/页分页并保留翻页状态，Workflow 回归 710 passed → [详细记录](2026-06-25.md)
 - **WF错误根因暴露** — `/wf` 执行期失败不再走通用 `reply_error()` 内部错误卡；改用 WF 专用错误卡、统一错误分类并携带脱敏 detail，Workflow 回归 706 passed → [详细记录](2026-06-25.md)

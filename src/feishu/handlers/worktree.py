@@ -354,6 +354,10 @@ class WorktreeHandler(BaseEngineHandler):
         provider = value.get("provider", "")
         supports_model = value.get("supports_model", False)
         skip_model_selection = value.get("skip_model_selection", False)
+        try:
+            model_page = int(value.get("model_page", 0) or 0)
+        except (TypeError, ValueError):
+            model_page = 0
 
         if not tool_name:
             self.reply_error(message_id, UI_TEXT["system_worktree_select_tool_error"])
@@ -445,6 +449,10 @@ class WorktreeHandler(BaseEngineHandler):
                 select_action="worktree_select_model",
                 pending_tool=option.display_name,
                 thread_root_id=thread_root_id,
+                model_page=model_page,
+                page_action="worktree_select_tool",
+                page_tool_name=tool_name,
+                page_provider=provider,
             ))
         else:
             model_name = None
