@@ -644,6 +644,20 @@ def validate_generated_script(
     if not script_content or not script_content.strip():
         return False, ["Script content is empty"]
 
+    # --- Check for natural language preamble ---
+    # If the script starts with text that is clearly not JavaScript, reject it.
+    # Valid JS starts with: export, //, /*, const, let, var, "use strict", 'use strict'
+    # This catches cases where the AI model prefixes code with "Let me..." or similar.
+    first_meaningful = script_content.lstrip()
+    if first_meaningful and not re.match(
+        r"""^(export|/[/*]|const |let |var |"use strict"|'use strict')""",
+        first_meaningful,
+    ):
+        errors.append(
+            "Script appears to start with natural language text instead of JavaScript code. "
+            "Expected the file to begin with `export`, a comment, or a declaration."
+        )
+
     # --- Note: Review agent constraints are no longer enforced ---
     # Roles are dynamically inferred by the LLM orchestrator, not statically validated.
     # The orchestrator agent decides how to use review tools based on the task context.

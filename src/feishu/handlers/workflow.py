@@ -4485,13 +4485,76 @@ class WorkflowHandler(BaseEngineHandler):
 
     @staticmethod
     def _strip_markdown_fences(content: str) -> str:
-        """Remove markdown code fences from AI output if present."""
-        if content.startswith("```"):
+        """Remove markdown code fences and natural language preamble from AI output.
+
+        AI models sometimes prefix their code output with explanatory text like
+        "Let me analyze..." or "Here's the workflow script:". This method
+        extracts the actual JavaScript code by:
+        1. Attempting to extract code from markdown fences (even if preceded by text)
+        2. Stripping any natural language preamble before the actual JS code
+        """
+        import re
+
+        # Strategy 1: Find markdown code fence containing the actual code.
+        # This handles cases like: "Here's the script:\n```javascript\n...code...\n```"
+        fence_match = re.search(r"```\s*(?:javascript|js|)\s*\n", content, re.IGNORECASE)
+        if fence_match:
+            after_fence = content[fence_match.end():]
+            # Find the closing fence (last occurrence to handle nested fences in strings)
+            close_idx = after_fence.rfind("```")
+            if close_idx >= 0:
+                content = after_fence[:close_idx].rstrip()
+            else:
+                content = after_fence.rstrip()
+            # After extracting from fences, if it looks like valid JS, return it
+            stripped = content.lstrip()
+            if stripped and re.match(
+                r"^(export|/[/*]|const |let |var |\"use strict\"|'use strict')",
+                stripped,
+            ):
+                return content.strip()
+
+        # Strategy 2: Original logic — content starts directly with a fence
+        elif content.startswith("```"):
             lines = content.split("\n", 1)
             content = lines[1] if len(lines) > 1 else content
             if content.rstrip().endswith("```"):
                 content = content.rstrip()[:-3].rstrip()
-        return content
+
+        # Strategy 3: Detect and strip natural language preamble.
+        # If content doesn't start with valid JS syntax, find the actual code start.
+        stripped = content.lstrip()
+        if stripped and not re.match(
+            r"^(export|/[/*]|const |let |var |\"use strict\"|'use strict'|/\*\*)",
+            stripped,
+        ):
+            # Look for the start of the actual export statement (multiline search)
+            export_match = re.search(
+                r"^(export\s+const\s+meta\s*=|export\s+default\s)",
+                content,
+                re.MULTILINE,
+            )
+            if export_match:
+                start_idx = export_match.start()
+                # Include preceding JSDoc/comment lines that are part of the code
+                preceding = content[:start_idx]
+                if preceding.rstrip():
+                    lines_before = preceding.rstrip().split("\n")
+                    # Walk backwards to include leading comment block
+                    comment_start = start_idx
+                    for line in reversed(lines_before):
+                        ls = line.strip()
+                        if ls.startswith("//") or ls.startswith("*") or ls.startswith("/*") or ls.endswith("*/"):
+                            # This line is a comment, include it
+                            idx = content.rfind(line, 0, comment_start)
+                            if idx >= 0:
+                                comment_start = idx
+                        else:
+                            break
+                    start_idx = comment_start
+                content = content[start_idx:]
+
+        return content.strip()
 
     @staticmethod
     def _find_function_close_brace(script_content: str, open_idx: int) -> int | None:

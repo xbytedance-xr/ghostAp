@@ -24,6 +24,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_content(content: str) -> str:
+    """Remove surrogate code points that cannot be encoded in UTF-8.
+
+    lark_oapi internally calls JSON.marshal(body).encode('utf-8') which
+    raises UnicodeEncodeError if the string contains unpaired surrogates
+    (U+D800-U+DFFF). This helper replaces them with the Unicode
+    replacement character U+FFFD so the message can still be delivered.
+    """
+    try:
+        # Fast path: if encoding succeeds, no surrogates present
+        content.encode("utf-8")
+        return content
+    except UnicodeEncodeError:
+        # Encode allowing surrogates, then decode replacing them
+        return content.encode("utf-8", errors="surrogatepass").decode(
+            "utf-8", errors="replace"
+        )
+
+
 class FeishuIMClient:
     """Client for Feishu IM API interactions with retry logic."""
 
@@ -77,6 +96,7 @@ class FeishuIMClient:
         max_retries: Optional[int] = None,
     ) -> Optional[Any]:
         """Send a message."""
+        content = _sanitize_content(content)
         client = self.api_client_factory()
         request = (
             CreateMessageRequest.builder()
@@ -98,6 +118,7 @@ class FeishuIMClient:
         max_retries: Optional[int] = None,
     ) -> Optional[Any]:
         """Reply to a message."""
+        content = _sanitize_content(content)
         client = self.api_client_factory()
         request = (
             ReplyMessageRequest.builder()
@@ -116,6 +137,7 @@ class FeishuIMClient:
 
     def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None) -> Optional[Any]:
         """Patch a message."""
+        content = _sanitize_content(content)
         client = self.api_client_factory()
         request = (
             PatchMessageRequest.builder()
