@@ -91,6 +91,9 @@ class WorkflowEngine(BaseEngine):
     _gc_label: str = "Workflow"
     _gc_threshold_default: float = 85.0
 
+    # Cache root for workflow state (mirrors project path under ~/.cache/ghostAp)
+    _CACHE_ROOT: str = "~/.cache/ghostAp"
+
     def __init__(
         self,
         chat_id: str,
@@ -128,6 +131,33 @@ class WorkflowEngine(BaseEngine):
     @property
     def cancel_event(self) -> threading.Event:
         return self._cancel_event
+
+    def _state_dir(self) -> str:
+        """Return the cache directory for workflow state (outside project tree).
+
+        Mirrors the project absolute path under ``~/.cache/ghostAp`` so that
+        state files do not pollute the project directory or git status.
+        Example: project at ``/data00/home/user/work/proj``
+        → ``~/.cache/ghostAp/data00/home/user/work/proj/``
+        """
+        import os
+        from pathlib import Path
+
+        cache_root = os.path.abspath(os.path.expanduser(self._CACHE_ROOT))
+        abs_project = os.path.abspath(self.root_path)
+        _, tail = os.path.splitdrive(abs_project)
+        parts = [part for part in Path(tail).parts if part not in (os.sep, "")]
+        return os.path.join(cache_root, *parts)
+
+    def save_state(self, filepath: Optional[str] = None) -> str:
+        """Persist workflow state to ~/.cache/ghostAp/<project_path>/ instead of project root."""
+        import os
+
+        if not filepath:
+            state_dir = self._state_dir()
+            os.makedirs(state_dir, exist_ok=True)
+            filepath = os.path.join(state_dir, self._state_filename)
+        return super().save_state(filepath)
 
     # ------------------------------------------------------------------
     # Lifecycle

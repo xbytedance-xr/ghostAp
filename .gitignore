@@ -67,6 +67,7 @@ Thumbs.db
 # Spec engine runtime artifacts
 .spec_engine/
 .spec_engine_state.json
+.workflow_engine_state.json
 task_summary.md
 
 
