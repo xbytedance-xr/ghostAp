@@ -52,13 +52,14 @@ class WorkflowStateManager:
             self._project.phases.append(phase)
             self._project.status = WorkflowStatus.RUNNING
 
-    def on_agent_started(self, label: str, tool: str, phase: str) -> None:
+    def on_agent_started(self, label: str, tool: str, phase: str, task_summary: str = "") -> None:
         """Add an agent entry to the current (or matching) phase."""
         with self._lock:
             target_phase = self._find_or_create_phase(phase)
             agent = AgentProgress(
                 label=label,
                 tool=tool,
+                task_summary=task_summary,
                 status=AgentStatus.RUNNING,
             )
             target_phase.agents.append(agent)

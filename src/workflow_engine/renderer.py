@@ -379,6 +379,8 @@ class WorkflowProgressRenderer:
                 lines.append(f"🛠 **正在使用:** `{active_agent.tool}`")
             else:
                 lines.append("🛠 **正在使用:** (未指定工具)")
+            if active_agent.task_summary:
+                lines.append(f"📋 **当前任务:** {_middle_ellipsis(active_agent.task_summary, 60)}")
         else:
             lines.append("🤖 **当前 Agent:** (尚未派发)")
             lines.append("🛠 **正在使用:** —")
@@ -539,14 +541,20 @@ class WorkflowProgressRenderer:
                 tool_badge = f"`{agent.tool}`" if agent.tool else ""
                 display_label = _middle_ellipsis(agent.label or "agent")
                 if agent.status == AgentStatus.RUNNING:
-                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} 执行中…")
+                    summary_text = ""
+                    if agent.task_summary:
+                        summary_text = f"\n    > {_middle_ellipsis(agent.task_summary, 60)}"
+                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} 执行中…{summary_text}")
                 elif agent.error:
                     safe_err = _strip_internal_details(agent.error[:60])
                     dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
                     lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur} — {safe_err}")
                 else:
                     dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
-                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur}")
+                    summary_hint = ""
+                    if agent.task_summary:
+                        summary_hint = f" — {_middle_ellipsis(agent.task_summary, 40)}"
+                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur}{summary_hint}")
             header_obj: dict[str, Any] = {
                 "title": {"tag": "plain_text", "content": f"{label} ({len(group)})"},
             }

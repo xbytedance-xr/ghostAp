@@ -446,12 +446,24 @@ class WorkflowEngine(BaseEngine):
             logger.warning("[WorkflowEngine] %s", error_msg)
             return AgentCallResult(error=error_msg, tool=params.tool, model=params.model)
 
+        # Extract a short task summary from the prompt (first meaningful line, max 60 chars)
+        task_summary = ""
+        if params.prompt:
+            for line in params.prompt.strip().splitlines():
+                line = line.strip()
+                if line and not line.startswith(("Role:", "#", "---", "**Subagent")):
+                    task_summary = line[:80]
+                    if len(line) > 80:
+                        task_summary += "..."
+                    break
+
         # Register agent in state manager
         if self._state_manager:
             self._state_manager.on_agent_started(
                 label,
                 tool=params.tool,
                 phase=params.phase or "default",
+                task_summary=task_summary,
             )
 
         cache_key = WorkflowJournal.compute_key(params.prompt, params.tool, params.model)

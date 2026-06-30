@@ -131,6 +131,7 @@ class AgentProgress(BaseModel):
 
     label: str = ""
     tool: str = ""
+    task_summary: str = ""
     status: AgentStatus = AgentStatus.PENDING
     token_usage: int = 0
     duration_s: float = 0.0
