@@ -224,10 +224,12 @@ def create_engine_session(
             effective_model = get_coco_model_manager().get_current_model()
         elif not effective_model and agent_type == "traex":
             try:
-                from ..acp.providers import tool_registry
+                from ..acp.providers import get_providers, tool_registry
+                get_providers()
                 provider = tool_registry.get_provider("traex")
                 if provider and hasattr(provider, "get_default_model"):
                     effective_model = provider.get_default_model()
+                    logger.info("[SessionFactory] traex default model resolved: %s", effective_model)
             except Exception:
                 pass
 
