@@ -65,19 +65,19 @@ _AGENT_OUTPUT_FORBIDDEN_MARKERS: tuple[str, ...] = ()
 
 STATUS_ICONS: dict[AgentStatus, str] = {
     AgentStatus.PENDING: "\u23f3",
-    AgentStatus.RUNNING: "\ud83d\udd04",
+    AgentStatus.RUNNING: "\U0001f504",
     AgentStatus.DONE: "\u2705",
     AgentStatus.FAILED: "\u274c",
-    AgentStatus.CACHED: "\ud83d\udce6",
+    AgentStatus.CACHED: "\U0001f4e6",
 }
 
 WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
     WorkflowStatus.IDLE: "\u23f3",
-    WorkflowStatus.GENERATING_SCRIPT: "\ud83d\udd04",
+    WorkflowStatus.GENERATING_SCRIPT: "\U0001f504",
     WorkflowStatus.AWAITING_AGENT_SELECT: "\U0001f916",
     WorkflowStatus.AWAITING_TOOL_SELECT: "\U0001f527",
     WorkflowStatus.AWAITING_CONFIRM: "\u23f3",
-    WorkflowStatus.RUNNING: "\ud83d\udd04",
+    WorkflowStatus.RUNNING: "\U0001f504",
     WorkflowStatus.COMPLETED: "\u2705",
     WorkflowStatus.FAILED: "\u274c",
     WorkflowStatus.CANCELLED: "\u274c",
@@ -637,7 +637,7 @@ class WorkflowProgressRenderer:
         )
 
         if has_running:
-            return "\ud83d\udd04"
+            return "\U0001f504"
         if all_done:
             return "\u2705"
         if has_failed:

@@ -2434,6 +2434,28 @@ class WorkflowHandler(BaseEngineHandler):
         if all_selected:
             engine.project.pending.selected_tools = all_selected
 
+        # Replace the selection card with a locked summary so it can't be re-clicked
+        from ...card import CardBuilder
+        selections_summary = []
+        orch_agent = engine.project.pending.orchestrator_agent or ""
+        orch_binding = engine.project.pending.orchestrator_binding
+        orch_model = ""
+        if orch_binding:
+            orch_model = getattr(orch_binding, "model_name", "") or "(默认)"
+        selections_summary.append(f"**主编排 Agent**: `{orch_agent}` {orch_model}")
+        review_agents_list = engine.project.pending.review_agents or []
+        if review_agents_list:
+            review_lines = [f"  {i+1}. `{a.tool_name}` {a.model_name or '(默认)'}" for i, a in enumerate(review_agents_list)]
+            selections_summary.append("**评审 Agent**:\n" + "\n".join(review_lines))
+        elif ctrl.review_auto_mode:
+            selections_summary.append("**评审 Agent**: Auto（沿用主 Agent）")
+        locked_card = CardBuilder._wrap_card(
+            header_title="✅ Workflow — 工具选择完成",
+            header_template="green",
+            elements=[{"tag": "markdown", "content": "\n\n".join(selections_summary)}],
+        )
+        self.update_card(message_id, locked_card)
+
         # Proceed to script generation without blocking the Feishu callback
         # thread on a long-running ACP/CLI model call.
         requirement = engine.project.pending.requirement if engine.project.pending else ""
