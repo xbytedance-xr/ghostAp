@@ -556,6 +556,9 @@ class RuntimeBridge:
             try:
                 # Parse params into model
                 agent_params = AgentCallParams.model_validate(params)
+                # Resolve empty tool to the first allowed tool
+                if not agent_params.tool and self._allowed_tools:
+                    agent_params.tool = self._allowed_tools[0]
                 # Execute the callback
                 result = self._on_agent_call(agent_params)
                 # Build response payload

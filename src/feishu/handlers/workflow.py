@@ -1343,7 +1343,7 @@ class WorkflowHandler(BaseEngineHandler):
                 sel_tools = list(selected_tools)
             else:
                 # For templates, initialize from meta
-                sel_tools = list((meta or {}).get("tools", ["coco"]))
+                sel_tools = list((meta or {}).get("tools", selected_tools or []))
             # Track tools mismatch for warning
             script_tools = set((meta or {}).get("tools", []))
             allowed_tools = set(sel_tools or [])
@@ -3092,7 +3092,7 @@ class WorkflowHandler(BaseEngineHandler):
             engine.project.pending = PendingConfirmation()
         if engine.project.pending.selected_tools is None:
             if engine.project.status == WorkflowStatus.AWAITING_CONFIRM:
-                meta_tools = (engine.project.pending.meta or {}).get("tools", ["coco"])
+                meta_tools = (engine.project.pending.meta or {}).get("tools", engine.project.pending.selected_tools or [])
                 engine.project.pending.selected_tools = list(meta_tools)
             else:
                 engine.project.pending.selected_tools = []
@@ -4895,7 +4895,7 @@ class WorkflowHandler(BaseEngineHandler):
         (meta or {}).get("name", "generated-workflow")
         (meta or {}).get("description", requirement[:100])
         phases = (meta or {}).get("phases", [])
-        tools = (meta or {}).get("tools", ["coco"])
+        tools = (meta or {}).get("tools", selected_tools or [])
         phase_tool_mapping: dict = (meta or {}).get("phase_tool_mapping", {})
         workflow_refs = (meta or {}).get("workflow_refs", [])
 

@@ -77,7 +77,7 @@ class AgentCallParams(BaseModel):
     """Parameters for a single agent() invocation from the JS runtime."""
 
     prompt: str
-    tool: str = "coco"
+    tool: str = ""
     model: Optional[str] = None
     role: Optional[str] = None
     output_schema: Optional[dict[str, Any]] = Field(default=None, alias="schema")
@@ -95,7 +95,7 @@ class AgentCallResult(BaseModel):
     duration_s: float = 0.0
     error: Optional[str] = None
     cached: bool = False
-    tool: str = "coco"
+    tool: str = ""
     model: Optional[str] = None
 
 
@@ -130,7 +130,7 @@ class AgentProgress(BaseModel):
     """Runtime state of a single agent() call."""
 
     label: str = ""
-    tool: str = "coco"
+    tool: str = ""
     status: AgentStatus = AgentStatus.PENDING
     token_usage: int = 0
     duration_s: float = 0.0
