@@ -720,3 +720,6 @@
 
 ## 2026-01-09
 - **项目创建** - 核心功能完成 + 飞书 WebSocket + Coco 会话 + ReAct 意图识别 → [2026-01-09.md](2026-01-09.md)
+
+## 2026-06-29
+- **WF卡片乱码+进度+Traex修复** — bridge.py ensure_ascii导致中文\uXXXX乱码、FeishuCardAPIClient缺surrogate清理、两处内联卡片缺schema 2.0引发200830错误、脚本生成阶段缺实时进度反馈、Traex model=None导致Internal error；全部修复，Workflow回归 2019 passed → [详细记录](2026-06-29.md)
