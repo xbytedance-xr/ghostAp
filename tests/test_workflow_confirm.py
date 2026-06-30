@@ -1540,24 +1540,11 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
         except OSError:
             pass
 
-        # Should reject via the unified _reply_workflow_error surface with
-        # "invalid_argument" category; the message must mention the missing
-        # tool name.
-        handler._reply_workflow_error.assert_called_once()
-        call_args = handler._reply_workflow_error.call_args
-        call_positional = call_args[0]
-        # category is the second positional arg after message_id
-        self.assertEqual(call_positional[1], "invalid_argument")
-        # the detail kwarg should contain the missing tool name
-        detail = call_args[1].get("detail", "") if call_args[1] else ""
-        if not detail:
-            # fallback: scan all call parts if signature differs
-            detail = " ".join(str(c) for c in call_positional[2:])
-        self.assertIn("codex", detail)
-        # Should NOT have submitted the engine task
-        handler._submit_engine_task.assert_not_called()
-        # Status should still be AWAITING_CONFIRM
-        self.assertEqual(engine.project.status, WorkflowStatus.AWAITING_CONFIRM)
+        # Auto-fix behavior: unmatched tools are rewritten to primary
+        # selected tool instead of rejecting. No error should be raised.
+        handler._reply_workflow_error.assert_not_called()
+        # The engine task should have been submitted (execution proceeds)
+        handler._submit_engine_task.assert_called_once()
 
     @patch("src.thread.get_current_sender_id", return_value="user_123")
     def test_confirm_start_allows_subset_tools(self, mock_sender):

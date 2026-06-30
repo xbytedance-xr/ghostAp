@@ -2733,22 +2733,38 @@ class WorkflowHandler(BaseEngineHandler):
         fresh_meta = extract_meta_from_script(script_text) or {}
 
         # Tool consistency check — use the freshly-parsed meta, not the
-        # one cached in pending.
+        # one cached in pending. If the AI-generated script references tools
+        # outside the allowed set, auto-fix by restricting meta.tools to the
+        # allowed subset and rewriting tool references in the script.
         fresh_script_tools = set(fresh_meta.get("tools", []))
         allowed_tools = set(selected_tools or [])
         if fresh_script_tools and allowed_tools:
             unmatched = fresh_script_tools - allowed_tools
             if unmatched:
-                self._reply_workflow_error(
-                    message_id,
-                    "invalid_argument",
-                    detail=(
-                        f"脚本计划使用的工具 {sorted(unmatched)} 不在允许的工具列表中。\n"
-                        f"请点击「重新生成编排」按钮基于当前工具选择重新生成脚本，\n"
-                        f"或在工具选择中添加缺失的工具。"
-                    ),
+                logger.warning(
+                    "[workflow] Auto-fixing script tools: removing %s, keeping %s",
+                    sorted(unmatched),
+                    sorted(fresh_script_tools & allowed_tools),
                 )
-                return
+                # Rewrite tool references in script to use only allowed tools
+                primary_tool = (selected_tools or ["coco"])[0]
+                for bad_tool in unmatched:
+                    script_text = script_text.replace(
+                        f'tool: "{bad_tool}"', f'tool: "{primary_tool}"'
+                    )
+                    script_text = script_text.replace(
+                        f"tool: '{bad_tool}'", f"tool: '{primary_tool}'"
+                    )
+                # Update meta.tools in the script
+                import re as _re
+                kept_tools = sorted(fresh_script_tools & allowed_tools) or list(selected_tools or [])
+                tools_json = str(kept_tools).replace("'", '"')
+                script_text = _re.sub(
+                    r'tools:\s*\[[^\]]*\]',
+                    f'tools: {tools_json}',
+                    script_text,
+                    count=1,
+                )
 
         # --- Workflow-refs deferred injection ---
         # Sub-workflow references live in pending.meta.workflow_refs.
