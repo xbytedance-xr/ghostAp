@@ -389,7 +389,7 @@ export default async function() {{
   const {{ winner }} = await tournament(
     topApproaches.map((approach, i) => ({{
       prompt: `Refine and complete this approach:\\n${{typeof approach === 'string' ? approach : JSON.stringify(approach)}}`,
-      tool: ["coco", "claude", "aiden"][i % 3],
+      tool: ["coco", "claude", "aiden", "gemini"][i % 4],
       label: `finalist-${{i}}`,
     }})),
     null,
@@ -1053,14 +1053,19 @@ def _aggressive_json_cleanup(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def generate_simple_script(requirement: str) -> str:
+def generate_simple_script(requirement: str, selected_tools: list[str] | None = None) -> str:
     """Generate a workflow script that uses Dynamic Workflow patterns.
 
     Uses classify → fanout → verify as the default pattern composition:
     classifies the task, fans out to appropriate workers, and verifies the output.
+    When ``selected_tools`` is provided, only those tools are used in the script.
     """
     _enc = get_subagent_encouragement()
+    tools = selected_tools or ["coco"]
+    primary_tool = tools[0]
     escaped = requirement.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+
+    json_tools = str(tools).replace("'", '"')
 
     return f'''/**
  * Auto-generated Dynamic Workflow.
@@ -1076,7 +1081,7 @@ export const meta = {{
     {{ title: "Verification", detail: "Verify output quality" }}
   ],
   maxConcurrent: 6,
-  tools: ["coco", "claude", "aiden"],
+  tools: {json_tools},
   patterns: ["classify", "fanout", "verify"]
 }};
 
@@ -1099,7 +1104,7 @@ Output JSON:
 - "approach": brief description
 
 {_enc}`,
-    tool: "claude",
+    tool: "{primary_tool}",
     role: "architect",
     schema: {{ complexity: "", parallel_subtasks: [], needs_verification: true, approach: "" }},
     label: "task-analysis",
@@ -1125,10 +1130,10 @@ Your specific subtask: ${{typeof task === "string" ? task : task.description || 
 Complete fully and provide the result.
 
 {_enc}`,
-      tool: ["coco", "claude", "aiden"][i % 3],
+      tool: {json_tools}[i % {len(tools)}],
       role: `worker-${{i}}`,
       label: `subtask-${{i}}`,
-    }})), {{ synthesizerTool: "coco", synthesizerRole: "integrator" }});
+    }})), {{ synthesizerTool: "{primary_tool}", synthesizerRole: "integrator" }});
   }} else {{
     // Single focused execution
     log("Executing task...");
@@ -1142,7 +1147,7 @@ Approach: ${{analysis.approach}}
 Provide a complete, production-ready result.
 
 {_enc}`,
-      tool: "coco",
+      tool: "{primary_tool}",
       label: "executor",
     }});
   }}
@@ -1155,10 +1160,10 @@ Provide a complete, production-ready result.
     const {{ accepted, output: verified, feedback }} = await verify(result, {{
       criteria: "correctness, completeness, quality",
       verifiers: [
-        {{ tool: "claude", role: "verifier", focus: "Find errors, omissions, or quality issues" }},
+        {{ tool: "{tools[-1] if len(tools) > 1 else primary_tool}", role: "verifier", focus: "Find errors, omissions, or quality issues" }},
       ],
       maxRounds: 1,
-      reviseTool: "coco",
+      reviseTool: "{primary_tool}",
     }});
 
     if (!accepted) {{

@@ -4385,7 +4385,7 @@ class WorkflowHandler(BaseEngineHandler):
         available_tools = get_available_tools(require_available=True)
         if not available_tools:
             logger.warning("No executable workflow tools detected; using fallback script")
-            return self._write_fallback_script(script_path, requirement), None, True
+            return self._write_fallback_script(script_path, requirement, selected_tools), None, True
 
         # Filter available tools to selected ones if provided
         if selected_tools:
@@ -4395,7 +4395,7 @@ class WorkflowHandler(BaseEngineHandler):
             }
             if not available_tools:
                 logger.warning("Selected workflow tools are unavailable; using fallback script")
-                return self._write_fallback_script(script_path, requirement), None, True
+                return self._write_fallback_script(script_path, requirement, selected_tools), None, True
 
         # Get orchestrator binding and review agents from pending state
         orchestrator_binding = None
@@ -4436,7 +4436,7 @@ class WorkflowHandler(BaseEngineHandler):
             )
             if session is None:
                 logger.warning("Failed to create script-gen session; using fallback")
-                return self._write_fallback_script(script_path, requirement), None, True
+                return self._write_fallback_script(script_path, requirement, selected_tools), None, True
 
             if progress_callback:
                 progress_callback("已创建 AI 会话，正在发送生成请求...")
@@ -4537,7 +4537,7 @@ class WorkflowHandler(BaseEngineHandler):
                 close_session_safely(session)
 
         # Fallback
-        return self._write_fallback_script(script_path, requirement), None, True
+        return self._write_fallback_script(script_path, requirement, selected_tools), None, True
 
     @staticmethod
     def _strip_markdown_fences(content: str) -> str:
@@ -4853,11 +4853,13 @@ class WorkflowHandler(BaseEngineHandler):
         return script_content.rstrip() + "\n\n" + block
 
     @staticmethod
-    def _write_fallback_script(script_path: str, requirement: str) -> str:
+    def _write_fallback_script(
+        script_path: str, requirement: str, selected_tools: list[str] | None = None
+    ) -> str:
         """Write a simple fallback script and return its path."""
         from ...workflow_engine.script_gen import generate_simple_script
 
-        script_content = generate_simple_script(requirement)
+        script_content = generate_simple_script(requirement, selected_tools=selected_tools)
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(script_content)
         return script_path
