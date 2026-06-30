@@ -430,15 +430,20 @@ class WorkflowEngine(BaseEngine):
 
         Flow:
             1. Safety fuse check (MAX_TOTAL_AGENTS)
-            2. Journal cache lookup
-            3. Execute via AgentExecutor (creates one-shot session)
-            4. Store result in journal
-            5. Fire progress callbacks
+            2. Resolve missing model from user's tool-model bindings
+            3. Journal cache lookup
+            4. Execute via AgentExecutor (creates one-shot session)
+            5. Store result in journal
+            6. Fire progress callbacks
         """
         with self._lock:
             self._agent_call_count += 1
             count = self._agent_call_count
         label = params.label or f"agent-{count}"
+
+        # Resolve missing model from user's orchestrator/review bindings
+        if not params.model and params.tool and self._project:
+            params.model = self._resolve_model_for_tool(params.tool)
 
         # Safety fuse
         if count > MAX_TOTAL_AGENTS:
@@ -584,6 +589,17 @@ class WorkflowEngine(BaseEngine):
                 self._callbacks.on_progress(card_data)
         except Exception:
             logger.debug("on_progress callback failed", exc_info=True)
+
+    def _resolve_model_for_tool(self, tool: str) -> str | None:
+        """Resolve the model for a tool from user's selection bindings.
+
+        Uses the tool_model_map populated by start_execution() from the
+        user's orchestrator/review agent selections.
+        """
+        project = self._project
+        if not project:
+            return None
+        return project.tool_model_map.get(tool) or None
 
     # ------------------------------------------------------------------
     # Status / snapshot

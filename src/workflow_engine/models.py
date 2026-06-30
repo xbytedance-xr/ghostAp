@@ -206,6 +206,7 @@ class WorkflowProject(BaseModel):
     # Runtime state — set when execution begins
     initiator_user_id: Optional[str] = None  # Who started this workflow (for stop auth)
     selected_tools: Optional[list[str]] = None  # Active tool whitelist during execution
+    tool_model_map: dict[str, str] = Field(default_factory=dict)  # tool_name -> model_name from user selection
     # Selection state storage for WorktreeSelectionController
     orchestrator_selection_state: Optional[dict] = None
     review_selection_state: Optional[dict] = None
@@ -213,14 +214,25 @@ class WorkflowProject(BaseModel):
     def start_execution(self) -> None:
         """Transition from pending confirmation to execution.
 
-        Migrates initiator_user_id and selected_tools from pending to
-        runtime fields, then clears the pending state.
+        Migrates initiator_user_id, selected_tools, and tool-model bindings
+        from pending to runtime fields, then clears the pending state.
         """
         if self.pending:
             if self.pending.initiator_user_id is not None:
                 self.initiator_user_id = self.pending.initiator_user_id
             if self.pending.selected_tools is not None:
                 self.selected_tools = self.pending.selected_tools
+            # Build tool→model mapping from user selections
+            mapping: dict[str, str] = {}
+            if self.pending.orchestrator_binding:
+                b = self.pending.orchestrator_binding
+                if b.tool_name and b.model_name and not b.use_default_model:
+                    mapping[b.tool_name] = b.model_name
+            for agent in (self.pending.review_agents or []):
+                if agent.tool_name and agent.model_name and not agent.use_default_model:
+                    if agent.tool_name not in mapping:
+                        mapping[agent.tool_name] = agent.model_name
+            self.tool_model_map = mapping
             self.pending = None
 
     def to_dict(self) -> dict[str, Any]:
