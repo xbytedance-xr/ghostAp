@@ -1195,6 +1195,49 @@ class WorkflowHandler(BaseEngineHandler):
         )
         gen_msg_id = self.send_card_to_chat(chat_id, gen_card)
 
+        # Heartbeat timer: updates the "generating" card every 8 seconds with elapsed time
+        import threading as _threading
+        import time as _time
+
+        _heartbeat_start = _time.time()
+        _heartbeat_stop_event = _threading.Event()
+
+        def _heartbeat_update(status_hint: str = "") -> None:
+            """Update the generating card with elapsed time."""
+            elapsed = int(_time.time() - _heartbeat_start)
+            status = status_hint or "正在生成编排脚本..."
+            progress_content = (
+                f"{status}\n\n"
+                f"**需求**: {requirement[:200]}\n\n"
+                f"⏱ 已等待 {elapsed} 秒"
+            )
+            progress_card = CardBuilder._wrap_card(
+                header_title="🔄 Workflow — 生成脚本中...",
+                header_template=UI_TEXT["workflow_header_colors"].get("generating", "blue"),
+                elements=[{"tag": "markdown", "content": progress_content}],
+            )
+            target_id = gen_msg_id
+            if target_id:
+                self.update_card(target_id, progress_card)
+
+        def _heartbeat_loop() -> None:
+            while not _heartbeat_stop_event.is_set():
+                _heartbeat_stop_event.wait(8.0)
+                if not _heartbeat_stop_event.is_set():
+                    try:
+                        _heartbeat_update()
+                    except Exception:
+                        pass
+
+        _heartbeat_thread = _threading.Thread(
+            target=_heartbeat_loop, name="wf-gen-heartbeat", daemon=True
+        )
+        _heartbeat_thread.start()
+
+        def _stop_heartbeat() -> None:
+            _heartbeat_stop_event.set()
+            _heartbeat_thread.join(timeout=2.0)
+
         # Create engine first so we can access pending.orchestrator_agent for script generation
         engine_name = self.get_engine_name(
             chat_id, project_id=(project.project_id if project else None)
@@ -1257,13 +1300,17 @@ class WorkflowHandler(BaseEngineHandler):
             else:
                 # Template load failed — fallback to AI
                 script_path, meta, is_fallback = self._generate_script_via_ai(
-                    requirement, root_path, selected_tools, engine
+                    requirement, root_path, selected_tools, engine,
+                    progress_callback=_heartbeat_update,
                 )
         else:
             # AI generation path with selected tools
             script_path, meta, is_fallback = self._generate_script_via_ai(
-                requirement, root_path, selected_tools, engine
+                requirement, root_path, selected_tools, engine,
+                progress_callback=_heartbeat_update,
             )
+        # Stop the heartbeat timer
+        _stop_heartbeat()
         if engine.project:
             engine.project.status = WorkflowStatus.AWAITING_CONFIRM
             # Preserve fields from the existing pending state so that
@@ -3480,6 +3527,7 @@ class WorkflowHandler(BaseEngineHandler):
         # kwarg; we construct the minimal card dict by hand so this keeps
         # working when the orchestrator isn't available.
         card = {
+            "schema": "2.0",
             "config": {"wide_screen_mode": True},
             "header": {
                 "template": "blue",
@@ -3488,7 +3536,7 @@ class WorkflowHandler(BaseEngineHandler):
                     "content": f"子 Workflow 预览：{ref_name}",
                 },
             },
-            "elements": elements,
+            "body": {"elements": elements},
         }
         self.update_card(message_id, card)
 
@@ -3698,6 +3746,7 @@ class WorkflowHandler(BaseEngineHandler):
                 elements.extend(build_responsive_button_row(pick_button, mobile_force_vertical=True))
 
         card = {
+            "schema": "2.0",
             "config": {"wide_screen_mode": True},
             "header": {
                 "template": "blue",
@@ -3706,7 +3755,7 @@ class WorkflowHandler(BaseEngineHandler):
                     "content": "添加子 Workflow 引用",
                 },
             },
-            "elements": elements,
+            "body": {"elements": elements},
         }
         self.update_card(message_id, card)
 
@@ -4296,6 +4345,7 @@ class WorkflowHandler(BaseEngineHandler):
         root_path: str,
         selected_tools: list[str] | None = None,
         engine: Any = None,
+        progress_callback: Any = None,
     ) -> tuple[str, dict[str, Any] | None, bool]:
         """Generate a workflow script via AI with fallback to simple generation.
 
@@ -4388,6 +4438,9 @@ class WorkflowHandler(BaseEngineHandler):
                 logger.warning("Failed to create script-gen session; using fallback")
                 return self._write_fallback_script(script_path, requirement), None, True
 
+            if progress_callback:
+                progress_callback("已创建 AI 会话，正在发送生成请求...")
+
             # Apply read-only tool filter for script generation. The allowed
             # set is intentionally small: only read-side filesystem + search
             # introspection. Mutation tools (write, shell, network, code
@@ -4457,6 +4510,9 @@ class WorkflowHandler(BaseEngineHandler):
                 return script_path, meta, True
 
             result = session.send_prompt(prompt, timeout=AGENT_CALL_TIMEOUT_S)
+
+            if progress_callback:
+                progress_callback("收到模型响应，正在验证脚本...")
 
             if result and result.text:
                 script_content = self._strip_markdown_fences(result.text.strip())

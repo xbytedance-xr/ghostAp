@@ -453,7 +453,7 @@ class RuntimeBridge:
                     logger.exception("on_log callback error")
         elif method == "done":
             result = params.get("result")
-            self._result = json.dumps(result) if result is not None else ""
+            self._result = json.dumps(result, ensure_ascii=False) if result is not None else ""
             self._done = True
         elif method == "error":
             error_msg = params.get("message", "Unknown error")

@@ -21,6 +21,21 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_TIMEOUT_SECONDS = 35.0
 
 
+def _sanitize_card_content(content: str) -> str:
+    """Remove surrogate code points that cannot be encoded in UTF-8.
+
+    lark_oapi internally encodes content to UTF-8, which fails on unpaired
+    surrogates (U+D800-U+DFFF). Replace them with U+FFFD.
+    """
+    try:
+        content.encode("utf-8")
+        return content
+    except UnicodeEncodeError:
+        return content.encode("utf-8", errors="surrogatepass").decode(
+            "utf-8", errors="replace"
+        )
+
+
 class FeishuCardAPIClient:
     """Implements CardAPIClient protocol using lark_oapi SDK.
 
@@ -108,7 +123,7 @@ class FeishuCardAPIClient:
             ReplyMessageRequestBody,
         )
 
-        content = json.dumps(card_json, ensure_ascii=False)
+        content = _sanitize_card_content(json.dumps(card_json, ensure_ascii=False))
 
         if reply_to:
             if reply_in_thread is None:
@@ -166,7 +181,7 @@ class FeishuCardAPIClient:
         """
         from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
 
-        content = json.dumps(card_json, ensure_ascii=False)
+        content = _sanitize_card_content(json.dumps(card_json, ensure_ascii=False))
 
         request = (
             PatchMessageRequest.builder()
@@ -248,7 +263,7 @@ class FeishuCardAPIClient:
             .request_body(
                 CreateCardRequestBody.builder()
                 .type("card_json")
-                .data(json.dumps(card_json, ensure_ascii=False))
+                .data(_sanitize_card_content(json.dumps(card_json, ensure_ascii=False)))
                 .build()
             )
             .build()

@@ -210,6 +210,26 @@ class TraexACPProvider(GenericACPProvider):
         slug_map = self._load_slug_map()
         return slug_map.get(m, m)
 
+    def get_default_model(self) -> Optional[str]:
+        """Resolve the first available model slug from cache when none specified.
+
+        Intended for callers (e.g. create_engine_session) that need to supply a
+        concrete model when the user did not select one. Not used during probe
+        which deliberately passes model_name=None to get a bare serve command.
+        """
+        try:
+            from pathlib import Path
+
+            cache_path = Path.home() / ".trae" / "cli" / "models_cache.json"
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            for m in data.get("models") or []:
+                slug = str(m.get("slug") or "").strip()
+                if slug:
+                    return slug
+        except Exception:
+            pass
+        return None
+
     def get_serve_command(self, model_name: Optional[str] = None) -> tuple[str, list[str]]:
         resolved = self._resolve_slug(model_name)
         args = list(self._config.serve_args)

@@ -222,6 +222,14 @@ def create_engine_session(
         effective_model = model_name
         if not effective_model and agent_type in ("coco", ""):
             effective_model = get_coco_model_manager().get_current_model()
+        elif not effective_model and agent_type == "traex":
+            try:
+                from ..acp.providers import tool_registry
+                provider = tool_registry.get_provider("traex")
+                if provider and hasattr(provider, "get_default_model"):
+                    effective_model = provider.get_default_model()
+            except Exception:
+                pass
 
         session = start_session_with_retry(
             agent_type=agent_type or "coco",

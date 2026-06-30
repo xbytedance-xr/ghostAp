@@ -47,6 +47,13 @@ def _middle_ellipsis(text: str, limit: int = _LABEL_TRUNCATION_LIMIT) -> str:
     tail = available // 2
     return f"{text[:head]}{_ELLIPSIS}{text[-tail:]}"
 
+def _escape_md(text: str) -> str:
+    """Escape markdown special characters in user-supplied text."""
+    for ch in ("*", "_", "`", "|", "[", "]", "~"):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -727,7 +734,7 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
 
     # Task description
     elements.append(_md_element(
-        f"**任务**: {project.requirement[:200] if project.requirement else name}"
+        f"**任务**: {_escape_md(project.requirement[:200]) if project.requirement else name}"
     ))
 
     # Stats grid — 2x2 column_set layout
