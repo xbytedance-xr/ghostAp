@@ -155,7 +155,7 @@ def test_empty_phase_renders_summary_zero_over_zero() -> None:
     card = renderer.render_progress_card()
     text = _flatten_text(card["elements"])
 
-    assert "已完成 0/0" in text
+    assert "等待中" in text
 
 
 # ---------------------------------------------------------------------------

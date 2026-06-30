@@ -181,11 +181,19 @@ class WorkflowStateManager:
     # ------------------------------------------------------------------
 
     def _find_or_create_phase(self, phase_title: str) -> PhaseProgress:
-        """Find existing phase by title or create a new one."""
-        for phase in self._project.phases:
-            if phase.title == phase_title:
-                return phase
-        new_phase = PhaseProgress(title=phase_title, started_at=time.time())
+        """Find existing phase by title, or fall back to the last active phase.
+
+        When an agent() call omits the phase field (resolved as "default"),
+        assign it to the most recently created phase rather than creating a
+        spurious "default" phase.
+        """
+        if phase_title and phase_title != "default":
+            for phase in self._project.phases:
+                if phase.title == phase_title:
+                    return phase
+        elif self._project.phases:
+            return self._project.phases[-1]
+        new_phase = PhaseProgress(title=phase_title or "default", started_at=time.time())
         self._project.phases.append(new_phase)
         return new_phase
 

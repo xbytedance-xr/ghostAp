@@ -472,12 +472,14 @@ class WorkflowProgressRenderer:
         phase_status = self._get_phase_status_icon(phase)
         elements.append(_md_element(f"**{phase_status} 阶段 {idx + 1}: {_middle_ellipsis(phase.title)}**"))
 
-        if phase.started_at:
+        if phase.started_at and total_agents > 0:
             elapsed = (phase.finished_at or time.time()) - phase.started_at
             duration_text = _format_duration(elapsed)
             elements.append(_md_element(f"已完成 {completed_count}/{total_agents} · 耗时 {duration_text}"))
-        else:
+        elif total_agents > 0:
             elements.append(_md_element(f"已完成 {completed_count}/{total_agents}"))
+        else:
+            elements.append(_md_element("等待中"))
 
         if not agents:
             return elements
