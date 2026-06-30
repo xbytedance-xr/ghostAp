@@ -198,11 +198,14 @@ class SelectionFlowController:
         selection: dict[str, Any],
         *,
         is_review: bool,
+        keep_panel_open: bool = False,
     ) -> str:
         """Insert or update a selection based on its ``selection_key``.
 
         If no key is provided one is generated. Returns the key used for
-        storage.
+        storage. When ``keep_panel_open`` is True (used by multi-select review
+        step), the model panel stays expanded so the user can quickly add
+        another model from the same tool.
         """
         key = str(selection.get("selection_key") or uuid.uuid4().hex)
         normalized = dict(selection)
@@ -210,10 +213,29 @@ class SelectionFlowController:
         # Ensure a display name exists for rendering
         if not normalized.get("display_name"):
             normalized["display_name"] = normalized.get("tool_name", "")
-        self._selection_store(is_review=is_review)[key] = normalized
-        # Collapse the model panel once a selection lands — cleaner UX
-        self.pending_tool_name = None
-        self.model_page = 0
+
+        # Dedup: reject if exact tool+model combo already exists
+        store = self._selection_store(is_review=is_review)
+        if is_review:
+            tool = normalized.get("tool_name", "")
+            model = normalized.get("model_name", "")
+            use_default = normalized.get("use_default_model", False)
+            for existing in store.values():
+                if (
+                    existing.get("tool_name") == tool
+                    and existing.get("model_name") == model
+                    and existing.get("use_default_model", False) == use_default
+                ):
+                    # Exact tool+model duplicate — skip silently
+                    return existing["selection_key"]
+
+        store[key] = normalized
+        if keep_panel_open:
+            # Keep panel open for rapid multi-select from same tool
+            pass
+        else:
+            self.pending_tool_name = None
+            self.model_page = 0
         return key
 
     def remove_selection(self, selection_key: str, *, is_review: bool) -> None:

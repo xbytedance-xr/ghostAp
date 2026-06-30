@@ -2161,7 +2161,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         ctrl = self._get_selection_controller(project)
         ctrl.set_step(2)
-        ctrl.add_or_update_selection(selection, is_review=True)
+        ctrl.add_or_update_selection(selection, is_review=True, keep_panel_open=True)
         self._persist_selection_controller(project, ctrl)
 
         requirement = engine.project.pending.requirement if engine.project.pending else ""
