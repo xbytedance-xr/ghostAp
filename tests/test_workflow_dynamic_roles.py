@@ -238,6 +238,35 @@ class TestRoleParameterMention(unittest.TestCase):
             "Prompt should give role examples",
         )
 
+
+class TestDynamicWorkflowReliabilityGuidance(unittest.TestCase):
+    """Prompt guidance for Claude-style dynamic workflow behavior."""
+
+    def _build_prompt(self, requirement="Diagnose and fix a flaky workflow bug"):
+        return build_script_gen_prompt(
+            requirement=requirement,
+            available_tools=["traex", "claude", "aiden"],
+            orchestrator_agent="traex",
+        )
+
+    def test_prompt_requires_unique_agent_labels(self):
+        prompt = self._build_prompt()
+
+        self.assertIn("每个 agent() label 必须唯一", prompt)
+        self.assertIn("不要复用 task-analysis", prompt)
+
+    def test_prompt_discourages_slow_monolithic_analysis_agent(self):
+        prompt = self._build_prompt()
+
+        self.assertIn("不要先派一个大而慢的 analysis agent", prompt)
+        self.assertIn("直接基于用户需求选择 classify/fanout/verify/loop/race", prompt)
+
+    def test_prompt_requires_timeout_and_error_fallbacks(self):
+        prompt = self._build_prompt()
+
+        self.assertIn("为每个 agent() 显式设置短超时", prompt)
+        self.assertIn("检查 result.error 并提供 fallback", prompt)
+
     def test_role_examples_in_roles_section(self):
         """Test 4: Role examples appear within the Roles section."""
         prompt = self._build_prompt()

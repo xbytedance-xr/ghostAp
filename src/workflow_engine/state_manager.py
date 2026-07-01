@@ -40,6 +40,8 @@ class WorkflowStateManager:
         # 注入文本的路径上累加（目前唯一合法路径是 workflow 完成时的
         # project.result）。中间结果不得通过其他路径增加此计数器。
         self._delta_context_tokens: int = 0
+        self._label_counters: Dict[str, int] = {}
+        self._rebuild_indexes()
 
     # ------------------------------------------------------------------
     # Public: state-changing events
@@ -52,23 +54,35 @@ class WorkflowStateManager:
             self._project.phases.append(phase)
             self._project.status = WorkflowStatus.RUNNING
 
-    def on_agent_started(self, label: str, tool: str, phase: str, task_summary: str = "") -> None:
-        """Add an agent entry to the current (or matching) phase."""
+    def on_agent_started(
+        self, label: str, tool: str, phase: str, task_summary: str = ""
+    ) -> str:
+        """Add an agent entry to the current (or matching) phase.
+
+        Returns the effective, UI-visible label. User-generated workflow
+        scripts can accidentally reuse labels (for example several
+        ``task-analysis`` calls in parallel). State transitions are keyed by
+        label, so duplicate labels are disambiguated at the source.
+        """
         with self._lock:
             target_phase = self._find_or_create_phase(phase)
+            now = time.time()
+            effective_label = self._make_unique_label(label or "agent")
             agent = AgentProgress(
-                label=label,
+                label=effective_label,
                 tool=tool,
                 task_summary=task_summary,
                 status=AgentStatus.RUNNING,
+                started_at=now,
             )
             target_phase.agents.append(agent)
             # Map insert must happen atomically with the agent-list append so
             # that concurrent callers of on_agent_done/on_agent_failed always
             # see a consistent view: if it is in `phases[*].agents` it is also
             # in `_label_to_agent`.
-            self._label_to_agent[label] = agent
+            self._label_to_agent[effective_label] = agent
             self._project.metrics.total_agents += 1
+            return effective_label
 
     def on_agent_done(self, label: str, result: dict) -> None:
         """Update agent status to DONE with metrics from result."""
@@ -88,18 +102,23 @@ class WorkflowStateManager:
             token_usage = result.get("token_usage", 0)
             duration_s = result.get("duration_s", 0.0)
             cached = result.get("cached", False)
+            was_terminal = self._is_terminal_agent(agent)
+            was_cached = agent.status == AgentStatus.CACHED
 
             if cached:
                 agent.status = AgentStatus.CACHED
-                self._project.metrics.cached_agents += 1
+                if not was_cached:
+                    self._project.metrics.cached_agents += 1
             else:
                 agent.status = AgentStatus.DONE
 
             agent.token_usage = token_usage
             agent.duration_s = duration_s
             agent.error = None
+            agent.finished_at = time.time()
 
-            self._project.metrics.completed_agents += 1
+            if not was_terminal:
+                self._project.metrics.completed_agents += 1
             self._project.metrics.total_tokens += token_usage
             self._project.metrics.total_duration_s += duration_s
 
@@ -114,10 +133,18 @@ class WorkflowStateManager:
                     return
                 self._label_to_agent[label] = agent
 
+            was_terminal = self._is_terminal_agent(agent)
+            was_failed = agent.status == AgentStatus.FAILED
+            now = time.time()
             agent.status = AgentStatus.FAILED
             agent.error = error
-            self._project.metrics.failed_agents += 1
-            self._project.metrics.completed_agents += 1
+            agent.finished_at = now
+            if agent.duration_s <= 0 and agent.started_at:
+                agent.duration_s = max(0.0, now - agent.started_at)
+            if not was_failed:
+                self._project.metrics.failed_agents += 1
+            if not was_terminal:
+                self._project.metrics.completed_agents += 1
 
     def on_workflow_done(self, result: str) -> None:
         """Mark workflow as completed."""
@@ -135,20 +162,29 @@ class WorkflowStateManager:
     def on_workflow_failed(self, error: str) -> None:
         """Mark workflow as failed."""
         with self._lock:
+            now = time.time()
             self._project.status = WorkflowStatus.FAILED
             self._project.error = error
-            self._project.finished_at = time.time()
+            self._project.finished_at = now
+            self._close_open_agents(
+                error=f"Workflow failed before agent completed: {error}",
+                finished_at=now,
+            )
+            for phase in self._project.phases:
+                if phase.finished_at is None:
+                    phase.finished_at = now
 
     def on_workflow_cancelled(self, reason: str = "Workflow cancelled") -> None:
         """Mark workflow as cancelled without rewriting it as a failure."""
         with self._lock:
+            now = time.time()
             self._project.status = WorkflowStatus.CANCELLED
             self._project.error = reason
-            self._project.finished_at = time.time()
-            if self._project.phases:
-                last_phase = self._project.phases[-1]
-                if last_phase.finished_at is None:
-                    last_phase.finished_at = time.time()
+            self._project.finished_at = now
+            self._close_open_agents(error=reason, finished_at=now)
+            for phase in self._project.phases:
+                if phase.finished_at is None:
+                    phase.finished_at = now
 
     def add_context_tokens(self, tokens: int) -> None:
         """Increment the main-context token counter (AC4 isolation).
@@ -215,3 +251,48 @@ class WorkflowStateManager:
                 if agent.label == label:
                     return agent
         return None
+
+    def _rebuild_indexes(self) -> None:
+        """Build fast lookup indexes from an existing project snapshot."""
+        for phase in self._project.phases:
+            for agent in phase.agents:
+                if not agent.label:
+                    continue
+                self._label_to_agent[agent.label] = agent
+
+    def _make_unique_label(self, requested: str) -> str:
+        """Return a label not already present in the current project."""
+        base = requested.strip() or "agent"
+        if base not in self._label_to_agent:
+            self._label_counters.setdefault(base, 1)
+            return base
+
+        next_index = self._label_counters.get(base, 1) + 1
+        while True:
+            candidate = f"{base} #{next_index}"
+            if candidate not in self._label_to_agent:
+                self._label_counters[base] = next_index
+                return candidate
+            next_index += 1
+
+    @staticmethod
+    def _is_terminal_agent(agent: AgentProgress) -> bool:
+        return agent.status in (
+            AgentStatus.DONE,
+            AgentStatus.FAILED,
+            AgentStatus.CACHED,
+        )
+
+    def _close_open_agents(self, *, error: str, finished_at: float) -> None:
+        """Move non-terminal agents out of RUNNING/PENDING for terminal cards."""
+        for phase in self._project.phases:
+            for agent in phase.agents:
+                if self._is_terminal_agent(agent):
+                    continue
+                agent.status = AgentStatus.FAILED
+                agent.error = error
+                agent.finished_at = finished_at
+                if agent.duration_s <= 0 and agent.started_at:
+                    agent.duration_s = max(0.0, finished_at - agent.started_at)
+                self._project.metrics.failed_agents += 1
+                self._project.metrics.completed_agents += 1

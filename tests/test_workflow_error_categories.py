@@ -234,7 +234,13 @@ def test_all_error_categories_have_ui_text():
     """AC19: 所有错误类别都有对应的 UI 文本。"""
     from src.card.ui_text import UI_TEXT
 
-    error_categories = ["session_expired", "invalid_state", "invalid_argument", "forbidden"]
+    error_categories = [
+        "session_expired",
+        "invalid_state",
+        "invalid_argument",
+        "forbidden",
+        "runtime_timeout",
+    ]
 
     for category in error_categories:
         ui_key = f"workflow_error_{category}_title"
@@ -276,3 +282,37 @@ def test_error_card_uses_correct_ui_text():
         handler._reply_workflow_error("msg_123", "forbidden")
         card = mock_reply.call_args[0][1]
         assert card["header"]["title"]["content"] == UI_TEXT["workflow_error_forbidden_title"]
+
+        mock_reply.reset_mock()
+
+        # Test runtime_timeout
+        handler._reply_workflow_error(
+            "msg_123",
+            "runtime_timeout",
+            detail="Workflow execution exceeded total timeout of 1800s",
+        )
+        card = mock_reply.call_args[0][1]
+        assert card["header"]["title"]["content"] == UI_TEXT["workflow_error_runtime_timeout_title"]
+        assert card["header"]["title"]["content"] != UI_TEXT["workflow_error_invalid_state_title"]
+        body = card["body"]["elements"][0]["content"]
+        assert "1800s" in body
+
+
+def test_runtime_timeout_callback_is_not_reported_as_invalid_state():
+    """Runtime timeout is a workflow execution failure, not a callback state mismatch."""
+
+    handler = _create_mock_handler()
+    handler._reply_workflow_error = MagicMock()
+
+    callbacks = WorkflowHandler._build_workflow_callbacks(
+        handler,
+        message_id="msg_123",
+        chat_id="chat_123",
+        project=None,
+    )
+
+    callbacks.on_error("Workflow execution exceeded total timeout of 1800s")
+
+    handler._reply_workflow_error.assert_called_once()
+    call_args = handler._reply_workflow_error.call_args
+    assert call_args[0][1] == "runtime_timeout"

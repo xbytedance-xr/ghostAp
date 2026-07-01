@@ -81,6 +81,60 @@ class TestOnAgentStarted(unittest.TestCase):
 
         self.assertEqual(project.metrics.total_agents, 2)
 
+    def test_records_started_at_timestamp(self):
+        project = WorkflowProject()
+        mgr = WorkflowStateManager(project)
+        mgr.on_phase_changed("P1")
+
+        before = time.time()
+        effective_label = mgr.on_agent_started("a1", "coco", "P1")
+        after = time.time()
+
+        self.assertEqual(effective_label, "a1")
+        agent = project.phases[0].agents[0]
+        self.assertGreaterEqual(agent.started_at, before)
+        self.assertLessEqual(agent.started_at, after)
+        self.assertIsNone(agent.finished_at)
+
+    def test_duplicate_labels_get_unique_effective_labels(self):
+        project = WorkflowProject()
+        mgr = WorkflowStateManager(project)
+        mgr.on_phase_changed("P1")
+
+        first = mgr.on_agent_started("task-analysis", "traex", "P1")
+        second = mgr.on_agent_started("task-analysis", "traex", "P1")
+
+        labels = [agent.label for agent in project.phases[0].agents]
+        self.assertEqual(first, "task-analysis")
+        self.assertEqual(second, "task-analysis #2")
+        self.assertEqual(labels, ["task-analysis", "task-analysis #2"])
+        self.assertIn("task-analysis", mgr._label_to_agent)
+        self.assertIn("task-analysis #2", mgr._label_to_agent)
+
+    def test_duplicate_labels_do_not_show_same_agent_running_and_failed(self):
+        project = WorkflowProject()
+        mgr = WorkflowStateManager(project)
+        mgr.on_phase_changed("P1")
+
+        first = mgr.on_agent_started("task-analysis", "traex", "P1")
+        second = mgr.on_agent_started("task-analysis", "traex", "P1")
+        mgr.on_agent_failed(second, "TimeoutError: ACP prompt 执行超时 (300s)")
+
+        running_labels = [
+            agent.label
+            for agent in project.phases[0].agents
+            if agent.status == AgentStatus.RUNNING
+        ]
+        failed_labels = [
+            agent.label
+            for agent in project.phases[0].agents
+            if agent.status == AgentStatus.FAILED
+        ]
+
+        self.assertEqual(running_labels, [first])
+        self.assertEqual(failed_labels, [second])
+        self.assertTrue(set(running_labels).isdisjoint(failed_labels))
+
 
 class TestOnAgentDone(unittest.TestCase):
     """Test on_agent_done behavior."""
@@ -96,6 +150,7 @@ class TestOnAgentDone(unittest.TestCase):
         self.assertEqual(agent.status, AgentStatus.DONE)
         self.assertEqual(agent.token_usage, 1000)
         self.assertEqual(agent.duration_s, 2.5)
+        self.assertIsNotNone(agent.finished_at)
 
     def test_marks_agent_cached(self):
         project = WorkflowProject()
@@ -144,6 +199,7 @@ class TestOnAgentFailed(unittest.TestCase):
         self.assertEqual(agent.error, "timeout")
         self.assertEqual(project.metrics.failed_agents, 1)
         self.assertEqual(project.metrics.completed_agents, 1)
+        self.assertIsNotNone(agent.finished_at)
 
 
 class TestOnWorkflowDone(unittest.TestCase):
@@ -189,6 +245,22 @@ class TestOnWorkflowFailed(unittest.TestCase):
         self.assertEqual(project.status, WorkflowStatus.FAILED)
         self.assertEqual(project.error, "execution failed")
         self.assertIsNotNone(project.finished_at)
+
+    def test_workflow_failed_marks_running_agents_failed_and_closes_phase(self):
+        project = WorkflowProject(status=WorkflowStatus.RUNNING)
+        mgr = WorkflowStateManager(project)
+        mgr.on_phase_changed("P1")
+        mgr.on_agent_started("running-agent", "traex", "P1")
+
+        mgr.on_workflow_failed("runtime crashed")
+
+        agent = project.phases[0].agents[0]
+        self.assertEqual(agent.status, AgentStatus.FAILED)
+        self.assertIn("runtime crashed", agent.error)
+        self.assertIsNotNone(agent.finished_at)
+        self.assertIsNotNone(project.phases[0].finished_at)
+        self.assertEqual(project.metrics.failed_agents, 1)
+        self.assertEqual(project.metrics.completed_agents, 1)
 
 
 class TestSnapshot(unittest.TestCase):
@@ -291,18 +363,19 @@ class TestLabelToAgentMap(unittest.TestCase):
         self.assertIs(mgr._label_to_agent["ghost"], agent_in_list)
         self.assertEqual(agent_in_list.status, AgentStatus.DONE)
 
-    def test_later_start_overwrites_map(self):
-        """Starting the same label in a newer phase points the map at the
-        newest AgentProgress reference."""
+    def test_later_start_with_same_label_creates_distinct_map_entries(self):
+        """Starting the same label in a newer phase must not hide the old run."""
         mgr = self._mgr()
         mgr.on_phase_changed("p1")
-        mgr.on_agent_started("dup", "coco", "p1")
+        first_label = mgr.on_agent_started("dup", "coco", "p1")
         first = mgr._label_to_agent["dup"]
 
         mgr.on_phase_changed("p2")
-        mgr.on_agent_started("dup", "coco", "p2")
-        second = mgr._label_to_agent["dup"]
+        second_label = mgr.on_agent_started("dup", "coco", "p2")
+        second = mgr._label_to_agent[second_label]
 
+        self.assertEqual(first_label, "dup")
+        self.assertEqual(second_label, "dup #2")
         self.assertIsNot(first, second)
         self.assertIs(second, mgr.project.phases[-1].agents[-1])
         self.assertIs(first, mgr.project.phases[-2].agents[-1])

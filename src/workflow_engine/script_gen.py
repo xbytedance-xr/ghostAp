@@ -108,6 +108,17 @@ _SCRIPT_GEN_PROMPT_TEMPLATE = """\
 角色不是固定列表，而是你根据任务复杂度和需要覆盖的维度自主决定的。
 建议考虑：架构设计、代码实现、安全审计、正确性验证、测试覆盖等维度。
 
+## Dynamic Workflow Reliability Rules
+
+目标是生成 Claude-style 动态 workflow：脚本本身负责按用户需求动态选择模式、拆分任务、处理失败并收敛，而不是把所有决策再次外包给一个慢速大 Agent。
+
+- 不要先派一个大而慢的 analysis agent；直接基于用户需求选择 classify/fanout/verify/loop/race 等模式并开始执行。
+- 直接基于用户需求选择 classify/fanout/verify/loop/race，不要生成固定两步 "Analysis -> Execution" 模板。
+- 每个 agent() label 必须唯一，例如 `analysis-router-1`、`impl-worker-2`、`verify-r1-security`；不要复用 task-analysis、analysis、worker 等通用 label。
+- 为每个 agent() 显式设置短超时：轻量分类/路由 60-90s，普通子任务 120-180s，只有确实需要长推理时才使用 300s。
+- 检查 result.error 并提供 fallback：切换工具、走 race() 备用 Agent、降级输出部分结果，或把失败纳入 synthesis，而不是让单个失败阻塞整个 workflow。
+- 对并行结果做容错合成：不要假设 fanout/parallel 的每个结果都成功；过滤错误项并说明哪些子任务失败。
+
 ## Output Format
 
 Generate a complete ES Module (.js) workflow script. The script MUST:

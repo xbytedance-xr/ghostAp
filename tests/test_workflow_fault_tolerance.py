@@ -153,6 +153,27 @@ class TestAgentRetryLogic(unittest.TestCase):
         # send_prompt should be called MAX_RETRIES + 1 times (initial + retries)
         self.assertEqual(mock_session.send_prompt.call_count, MAX_RETRIES + 1)
 
+    def test_acp_prompt_execution_timeout_fails_fast(self):
+        """A full ACP prompt timeout is already an exhausted backend call.
+
+        Retrying the same prompt after a 300s backend timeout stretches one
+        workflow agent call to roughly twenty minutes and leaves the progress
+        card looking stuck. The workflow executor should fail this call once
+        and let the workflow choose a fallback path.
+        """
+        acp_timeout = TimeoutError("ACP prompt 执行超时 (300s)")
+        mock_session = _make_mock_session(side_effect=acp_timeout)
+        mock_future = MagicMock()
+        mock_future.result.return_value = mock_session
+        self.executor._session_pool.submit.return_value = mock_future
+
+        params = AgentCallParams(prompt="Analyze this task", tool="traex")
+        result = self.executor.execute(params)
+
+        self.assertIsNotNone(result.error)
+        self.assertIn("ACP prompt", result.error)
+        self.assertEqual(mock_session.send_prompt.call_count, 1)
+
     def test_retry_does_not_occur_for_permanent_errors(self):
         """Verify permanent errors do not trigger retries.
 
@@ -975,6 +996,11 @@ class TestIsTransientError(unittest.TestCase):
         for msg in transient_errors:
             with self.subTest(msg=msg):
                 self.assertTrue(is_transient_error(msg), f"Should be transient: {msg}")
+
+    def test_acp_prompt_execution_timeout_is_not_retryable(self):
+        """ACP prompt timeout means the model call consumed its full budget."""
+        self.assertFalse(is_transient_error("TimeoutError: ACP prompt 执行超时 (300s)"))
+        self.assertFalse(is_transient_error("ACP prompt execution timeout (300s)"))
 
     def test_permanent_errors_not_retryable(self):
         """Verify permanent errors are correctly identified as not retryable."""

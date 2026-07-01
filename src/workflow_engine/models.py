@@ -136,6 +136,8 @@ class AgentProgress(BaseModel):
     token_usage: int = 0
     duration_s: float = 0.0
     error: Optional[str] = None
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------

@@ -468,7 +468,7 @@ class WorkflowEngine(BaseEngine):
 
         # Register agent in state manager
         if self._state_manager:
-            self._state_manager.on_agent_started(
+            label = self._state_manager.on_agent_started(
                 label,
                 tool=params.tool,
                 phase=params.phase or "default",

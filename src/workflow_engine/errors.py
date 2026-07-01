@@ -85,7 +85,7 @@ _LEGACY_TO_UNIFIED: dict[ErrorCategory, ErrorCategory] = {
     ErrorCategory.AGENT_LIMIT: ErrorCategory.INVALID_STATE,
     ErrorCategory.TOOL_NOT_ALLOWED: ErrorCategory.FORBIDDEN,
     ErrorCategory.SCRIPT_VALIDATION: ErrorCategory.INVALID_ARGUMENT,
-    ErrorCategory.RUNTIME_TIMEOUT: ErrorCategory.INVALID_STATE,
+    ErrorCategory.RUNTIME_TIMEOUT: ErrorCategory.RUNTIME_TIMEOUT,
     ErrorCategory.INTERNAL_ERROR: ErrorCategory.INVALID_STATE,
     ErrorCategory.CANCELLED: ErrorCategory.INVALID_STATE,
     ErrorCategory.BUDGET_EXHAUSTED: ErrorCategory.INVALID_STATE,  # deprecated
@@ -194,6 +194,16 @@ _TRANSIENT_ERROR_KEYWORDS: tuple[str, ...] = (
     "retry later",
 )
 
+# A full ACP prompt timeout means the backend/model call already consumed the
+# per-call timeout budget. Retrying the exact same prompt keeps Workflow cards
+# stuck for several timeout windows; let the workflow script choose fallback
+# routing instead.
+_NON_RETRYABLE_TIMEOUT_MARKERS: tuple[str, ...] = (
+    "acp prompt",
+    "prompt execution timeout",
+    "prompt 执行超时",
+)
+
 # Keywords that indicate a permanent error (not retryable)
 _PERMANENT_ERROR_KEYWORDS: tuple[str, ...] = (
     "invalid schema",
@@ -293,6 +303,9 @@ def is_transient_error(error_message: str) -> bool:
 
     # Permanent errors are never retryable
     if any(kw in msg_lower for kw in _PERMANENT_ERROR_KEYWORDS):
+        return False
+
+    if any(marker in msg_lower for marker in _NON_RETRYABLE_TIMEOUT_MARKERS):
         return False
 
     # Transient errors are retryable

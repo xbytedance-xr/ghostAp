@@ -5552,9 +5552,10 @@ class WorkflowHandler(BaseEngineHandler):
                 workflow_category = "forbidden"
             elif category == ErrorCategory.SCRIPT_VALIDATION:
                 workflow_category = "invalid_argument"
+            elif category == ErrorCategory.RUNTIME_TIMEOUT:
+                workflow_category = "runtime_timeout"
             elif category in (
                 ErrorCategory.AGENT_LIMIT,
-                ErrorCategory.RUNTIME_TIMEOUT,
                 ErrorCategory.CANCELLED,
             ):
                 workflow_category = "invalid_state"
