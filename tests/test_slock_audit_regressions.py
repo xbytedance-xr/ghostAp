@@ -83,6 +83,26 @@ def test_observer_flush_requeues_unprocessed_records_after_timeout():
     assert queue.pending_count == 1
 
 
+def test_observer_queue_tracks_dropped_records_when_full():
+    """A full observer queue should expose how many observations were discarded."""
+    memory = MagicMock()
+    memory.record_skill_feedback.return_value = []
+    router = MagicMock()
+    queue = ObserverLearningQueue(
+        memory,
+        router,
+        flush_interval=3600.0,
+        max_queue_size=2,
+    )
+
+    queue.enqueue("observer", "actor-1", "first", ["code"])
+    queue.enqueue("observer", "actor-2", "second", ["code"])
+    queue.enqueue("observer", "actor-3", "third", ["code"])
+
+    assert queue.pending_count == 2
+    assert queue.dropped_count == 1
+
+
 def test_execute_agent_aborts_when_intermediate_transition_fails(tmp_path):
     """State-machine failures during execution should stop work and restore IDLE."""
     engine = SlockEngine(

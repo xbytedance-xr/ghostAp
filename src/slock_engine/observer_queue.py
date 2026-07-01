@@ -71,6 +71,7 @@ class ObserverLearningQueue:
         self._flush_interval = flush_interval
         self._flush_timeout = flush_timeout
         self._queue: deque[ObservationRecord] = deque(maxlen=max_queue_size)
+        self._dropped_count = 0
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -98,9 +99,11 @@ class ObserverLearningQueue:
         )
         with self._lock:
             if self._queue.maxlen and len(self._queue) >= self._queue.maxlen:
+                self._dropped_count += 1
                 logger.warning(
-                    "Observer queue full (maxlen=%d), oldest record will be discarded",
+                    "Observer queue full (maxlen=%d), oldest record will be discarded; dropped_count=%d",
                     self._queue.maxlen,
+                    self._dropped_count,
                 )
             self._queue.append(record)
 
@@ -171,9 +174,12 @@ class ObserverLearningQueue:
             if maxlen is not None and len(combined) > maxlen:
                 dropped = len(combined) - maxlen
                 combined = combined[:maxlen]
+                self._dropped_count += dropped
                 logger.warning(
-                    "Observer queue full while requeueing timed-out records; dropped %d newest records",
+                    "Observer queue full while requeueing timed-out records; "
+                    "dropped %d newest records; dropped_count=%d",
                     dropped,
+                    self._dropped_count,
                 )
             self._queue.clear()
             self._queue.extend(combined)
@@ -190,6 +196,12 @@ class ObserverLearningQueue:
         """Number of records waiting to be flushed."""
         with self._lock:
             return len(self._queue)
+
+    @property
+    def dropped_count(self) -> int:
+        """Number of observation records dropped due to bounded queue pressure."""
+        with self._lock:
+            return self._dropped_count
 
     def _flush_loop(self) -> None:
         """Background loop that periodically flushes the queue."""

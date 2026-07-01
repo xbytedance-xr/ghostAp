@@ -1,6 +1,5 @@
 """Tests for _strip_markdown_fences robustness against AI preamble text."""
 
-import pytest
 
 from src.feishu.handlers.workflow import WorkflowHandler
 

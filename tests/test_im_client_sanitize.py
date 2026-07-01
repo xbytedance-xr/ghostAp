@@ -1,6 +1,5 @@
 """Tests for surrogate sanitization in FeishuIMClient."""
 
-import pytest
 
 from src.feishu.im_client import _sanitize_content
 
