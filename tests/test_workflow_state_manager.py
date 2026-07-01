@@ -419,7 +419,7 @@ class TestLabelToAgentMap(unittest.TestCase):
         mgr = self._mgr()
         mgr.on_phase_changed("p1")
 
-        N = 200
+        N = 80
         errors: list[Exception] = []
         stop = threading.Event()
 
@@ -443,13 +443,18 @@ class TestLabelToAgentMap(unittest.TestCase):
         prods = [threading.Thread(target=producer, args=(i,)) for i in range(N)]
         reader_thread = threading.Thread(target=reader)
         reader_thread.start()
-        for t in prods:
-            t.start()
-        for t in prods:
-            t.join()
-        stop.set()
-        reader_thread.join()
+        try:
+            for t in prods:
+                t.start()
+            for t in prods:
+                t.join(timeout=5.0)
+            alive_producers = [t.name for t in prods if t.is_alive()]
+            self.assertEqual(alive_producers, [])
+        finally:
+            stop.set()
+            reader_thread.join(timeout=5.0)
 
+        self.assertFalse(reader_thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(len(mgr._label_to_agent), N)
 

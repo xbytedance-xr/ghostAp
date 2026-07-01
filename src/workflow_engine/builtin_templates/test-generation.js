@@ -36,7 +36,12 @@ Output JSON: { "uncovered_modules": [{ "module": "", "file": "", "coverage_estim
     role: "测试工程师",
     schema: { uncovered_modules: [] },
     label: "coverage-analysis",
+    timeout: 180,
   });
+
+  if (coverage && coverage.error) {
+    return { error: coverage.error, stage: "Coverage Analysis" };
+  }
 
   const modules = coverage.uncovered_modules || [];
   log(`Identified ${modules.length} uncovered modules`);
@@ -67,6 +72,7 @@ Output JSON: { "module": "", "file": "", "test_code": "", "test_count": 0, "type
     schema: { module: "", file: "", test_code: "", test_count: 0, types_tested: [] },
     label: `gen-tests-${i}`,
     phase: "Case Generation",
+    timeout: 180,
   }));
 
   const results = genTasks.length > 0 ? await parallel(genTasks) : [];
@@ -103,7 +109,12 @@ Output JSON:
       recommendations: [],
     },
     label: "test-summary",
+    timeout: 180,
   });
+
+  if (summary && summary.error) {
+    return { error: summary.error, stage: "Summary", partial: { coverage, results } };
+  }
 
   return {
     summary,

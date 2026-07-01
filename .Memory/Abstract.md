@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-01
+- **WF动态Workflow二次加固** — fallback 脚本去除固定慢 `task-analysis`，validator 强制唯一 label/显式 timeout/错误处理，runtime 原语透传 timeout，session 创建超时关闭迟到 session，state snapshot 去 Pydantic 深拷贝热路径 → [详细记录](2026-07-01.md)
 - **Slock维护排查优化** — 全项目维护信号复查后，修复 observer queue 满载丢弃仅有日志、无计数接口的问题；同步 Backlog 状态漂移并清理全仓 ruff 既有 lint → [详细记录](2026-07-01.md)
 - **WF动态执行超时/状态修复** — 修复 `/wf` 执行期同 label agent 同时显示执行中/失败、ACP prompt 300s 超时重试到 20 分钟、1800s 总超时误报“状态不匹配”；脚本生成 prompt 强化 Claude-style 动态 workflow：唯一 label、短超时、fallback → [详细记录](2026-07-01.md)
 - **WF状态一致性加固** — 修复 `/wf` 生成中/取消/重开会话串台：GENERATING_SCRIPT 纳入 pending 状态、异步生成 session guard、cancel_event 复位、取消终态不再变 failed；相关回归 143 passed → [详细记录](2026-07-01.md)

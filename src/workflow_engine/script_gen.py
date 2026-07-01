@@ -151,17 +151,18 @@ All primitives are globally available (no import needed):
 const result = await agent(prompt, {{
   tool: "coco",           // which AI tool to use
   role: "architect",      // optional role/persona
-  label: "task-label",    // optional label for tracking
+  label: "task-label",    // required: unique label for tracking
   phase: "Phase Title",   // optional phase association
   schema: {{ key: "string" }},  // optional output schema validation
-  timeout: 300,           // optional timeout in seconds (default 300)
+  timeout: 180,           // required: bound every direct agent call
 }});
+if (result && result.error) return {{ error: result.error, stage: "agent-call" }};
 
 // Run multiple independent tasks in parallel
 const [r1, r2, r3] = await parallel([
-  () => agent("task 1", {{ tool: "coco" }}),
-  () => agent("task 2", {{ tool: "claude" }}),
-  () => agent("task 3", {{ tool: "aiden" }}),
+  () => agent("task 1", {{ tool: "coco", label: "parallel-1", timeout: 120 }}),
+  () => agent("task 2", {{ tool: "claude", label: "parallel-2", timeout: 120 }}),
+  () => agent("task 3", {{ tool: "aiden", label: "parallel-3", timeout: 120 }}),
 ]);
 
 // Parallel/map: items run concurrently, each flows through stages sequentially
@@ -193,17 +194,17 @@ These are higher-order orchestration primitives implementing proven multi-agent 
 const result = await classify(userRequest, {{
   "bug_fix": {{
     description: "Bug fixes and error corrections",
-    handler: async (input) => agent(`Fix this bug: ${{input}}`, {{ tool: "coco" }}),
+    handler: async (input) => agent(`Fix this bug: ${{input}}`, {{ tool: "coco", label: "route-bug-fix", timeout: 180 }}),
   }},
   "feature": {{
     description: "New feature implementation",
-    handler: async (input) => agent(`Implement: ${{input}}`, {{ tool: "claude" }}),
+    handler: async (input) => agent(`Implement: ${{input}}`, {{ tool: "claude", label: "route-feature", timeout: 180 }}),
   }},
   "refactor": {{
     description: "Code refactoring and optimization",
-    handler: async (input) => agent(`Refactor: ${{input}}`, {{ tool: "aiden" }}),
+    handler: async (input) => agent(`Refactor: ${{input}}`, {{ tool: "aiden", label: "route-refactor", timeout: 180 }}),
   }},
-}}, {{ classifierTool: "claude" }});
+}}, {{ classifierTool: "claude", timeout: 90 }});
 ```
 
 #### 2. fanout(input, workers, opts) — 扇出-合成模式 (Fan-out-and-Synthesize)
@@ -212,10 +213,10 @@ const result = await classify(userRequest, {{
 
 ```javascript
 const result = await fanout(codeContext, [
-  {{ prompt: "Review for security: ${{input}}", tool: "claude", role: "security_auditor" }},
-  {{ prompt: "Review for performance: ${{input}}", tool: "aiden", role: "perf_expert" }},
-  {{ prompt: "Review for correctness: ${{input}}", tool: "coco", role: "correctness_checker" }},
-], {{ synthesizerTool: "claude", synthesizerRole: "lead_reviewer" }});
+  {{ prompt: "Review for security: ${{input}}", tool: "claude", role: "security_auditor", label: "security-review", timeout: 180 }},
+  {{ prompt: "Review for performance: ${{input}}", tool: "aiden", role: "perf_expert", label: "performance-review", timeout: 180 }},
+  {{ prompt: "Review for correctness: ${{input}}", tool: "coco", role: "correctness_checker", label: "correctness-review", timeout: 180 }},
+], {{ synthesizerTool: "claude", synthesizerRole: "lead_reviewer", timeout: 180 }});
 ```
 
 #### 3. verify(output, opts) — 对抗性验证模式 (Adversarial Verification)
@@ -226,11 +227,12 @@ const result = await fanout(codeContext, [
 const {{ accepted, output: verifiedCode, feedback }} = await verify(generatedCode, {{
   criteria: "security, correctness, no regressions",
   verifiers: [
-    {{ tool: "claude", role: "security_adversary", focus: "Find security vulnerabilities" }},
-    {{ tool: "aiden", role: "correctness_adversary", focus: "Find logic errors and edge cases" }},
+    {{ tool: "claude", role: "security_adversary", focus: "Find security vulnerabilities", timeout: 180 }},
+    {{ tool: "aiden", role: "correctness_adversary", focus: "Find logic errors and edge cases", timeout: 180 }},
   ],
   maxRounds: 3,
   reviseTool: "coco",
+  timeout: 180,
 }});
 ```
 
@@ -241,9 +243,9 @@ const {{ accepted, output: verifiedCode, feedback }} = await verify(generatedCod
 ```javascript
 const topSolutions = await generate(
   5,  // generate 5 candidates
-  (i) => ({{ prompt: `Design approach ${{i+1}} for: ${{task}}`, tool: "coco", role: `designer-${{i}}` }}),
+  (i) => ({{ prompt: `Design approach ${{i+1}} for: ${{task}}`, tool: "coco", role: `designer-${{i}}`, timeout: 120 }}),
   null,  // use default filter (AI-based ranking)
-  {{ topK: 2, criteria: "feasibility, elegance, maintainability", filterTool: "claude" }}
+  {{ topK: 2, criteria: "feasibility, elegance, maintainability", filterTool: "claude", timeout: 120 }}
 );
 ```
 
@@ -254,13 +256,13 @@ const topSolutions = await generate(
 ```javascript
 const {{ winner, bracket }} = await tournament(
   [
-    {{ prompt: `Solve with approach A: ${{task}}`, tool: "coco", label: "approach-A" }},
-    {{ prompt: `Solve with approach B: ${{task}}`, tool: "claude", label: "approach-B" }},
-    {{ prompt: `Solve with approach C: ${{task}}`, tool: "aiden", label: "approach-C" }},
-    {{ prompt: `Solve with approach D: ${{task}}`, tool: "gemini", label: "approach-D" }},
+    {{ prompt: `Solve with approach A: ${{task}}`, tool: "coco", label: "approach-A", timeout: 180 }},
+    {{ prompt: `Solve with approach B: ${{task}}`, tool: "claude", label: "approach-B", timeout: 180 }},
+    {{ prompt: `Solve with approach C: ${{task}}`, tool: "aiden", label: "approach-C", timeout: 180 }},
+    {{ prompt: `Solve with approach D: ${{task}}`, tool: "gemini", label: "approach-D", timeout: 180 }},
   ],
   null,  // use default judge
-  {{ judgeTool: "claude", task: task, criteria: "correctness, efficiency, readability" }}
+  {{ judgeTool: "claude", task: task, criteria: "correctness, efficiency, readability", timeout: 180 }}
 );
 ```
 
@@ -272,7 +274,7 @@ const {{ winner, bracket }} = await tournament(
 const {{ results, iterations, stoppedBy }} = await loop(
   async (i, prev) => {{
     return agent(`Iteration ${{i+1}}: Find more issues not in: ${{prev || 'none'}}`, {{
-      tool: "claude", label: `hunt-${{i}}`, schema: {{ issues: [], done: false }}
+      tool: "claude", label: `hunt-${{i}}`, schema: {{ issues: [], done: false }}, timeout: 180
     }});
   }},
   {{
@@ -293,8 +295,8 @@ const {{ results, iterations, stoppedBy }} = await loop(
 
 ```javascript
 const fastest = await race([
-  {{ prompt: task, tool: "coco", label: "fast-coco" }},
-  {{ prompt: task, tool: "traex", label: "fast-traex" }},
+  {{ prompt: task, tool: "coco", label: "fast-coco", timeout: 120 }},
+  {{ prompt: task, tool: "traex", label: "fast-traex", timeout: 120 }},
 ], {{ validate: (r) => r && !r.error && r.length > 50 }});
 ```
 
@@ -343,7 +345,9 @@ const fastest = await race([
 6. **Declare phases** - Call phase("Title") before each logical section to enable
    progress tracking in the UI.
 
-7. **Use labels** - Give agent() calls descriptive labels for observability.
+7. **Use unique labels and explicit timeouts** - Every direct agent() call and
+   every agent descriptor passed into a pattern must have a unique `label` and
+   an explicit `timeout`.
 
 8. **Handle results gracefully** - Agent calls may return errors; check results before
    using them in subsequent steps.
@@ -388,10 +392,14 @@ export default async function() {{
       prompt: `Design approach #${{i+1}} for: ${{task}}. Use a distinctly different strategy.`,
       tool: ["coco", "claude", "aiden", "gemini"][i % 4],
       role: `designer-${{i}}`,
+      timeout: 120,
     }}),
     null,
-    {{ topK: 4, criteria: "feasibility and correctness" }}
+    {{ topK: 4, criteria: "feasibility and correctness", timeout: 120 }}
   );
+  if (topApproaches.some(item => item && item.error)) {{
+    return {{ error: "One or more generation candidates failed", partial: topApproaches }};
+  }}
 
   // Phase 2: Tournament to find the best
   phase("Tournament");
@@ -402,10 +410,14 @@ export default async function() {{
       prompt: `Refine and complete this approach:\\n${{typeof approach === 'string' ? approach : JSON.stringify(approach)}}`,
       tool: ["coco", "claude", "aiden", "gemini"][i % 4],
       label: `finalist-${{i}}`,
+      timeout: 180,
     }})),
     null,
-    {{ judgeTool: "claude", task: task, criteria: "correctness, efficiency, maintainability" }}
+    {{ judgeTool: "claude", task: task, criteria: "correctness, efficiency, maintainability", timeout: 180 }}
   );
+  if (winner && winner.error) {{
+    return {{ error: winner.error, stage: "Tournament" }};
+  }}
 
   // Phase 3: Adversarial verification
   phase("Verification");
@@ -414,11 +426,12 @@ export default async function() {{
   const {{ accepted, output: verified }} = await verify(winner, {{
     criteria: "correctness, security, quality",
     verifiers: [
-      {{ tool: "claude", role: "logic_adversary", focus: "Find logic errors and edge cases" }},
-      {{ tool: "aiden", role: "quality_adversary", focus: "Find code quality issues" }},
+      {{ tool: "claude", role: "logic_adversary", focus: "Find logic errors and edge cases", timeout: 180 }},
+      {{ tool: "aiden", role: "quality_adversary", focus: "Find code quality issues", timeout: 180 }},
     ],
     maxRounds: 2,
     reviseTool: "coco",
+    timeout: 180,
   }});
 
   return verified;
@@ -447,6 +460,8 @@ Based on the user requirement above, generate a COMPLETE workflow script that:
 3. Includes verification for critical outputs
 4. Maximizes parallelism where possible
 5. Uses clear phases and labels for observability
+6. Gives every direct agent() call and pattern descriptor a unique label and explicit timeout
+7. Checks `result.error` or uses try/catch before returning direct agent outputs
 
 Output ONLY the JavaScript code, no markdown fences, no explanatory text.
 """
@@ -618,6 +633,98 @@ def build_script_gen_prompt(
     return prompt + ("\n\n" + get_subagent_encouragement() if get_subagent_encouragement() else "")
 
 
+def _iter_js_call_sources(script_content: str, function_name: str) -> list[str]:
+    """Return best-effort source spans for direct JS function calls."""
+    calls: list[str] = []
+    pattern = re.compile(rf"\b{re.escape(function_name)}\s*\(")
+    for match in pattern.finditer(script_content):
+        open_paren = script_content.find("(", match.start())
+        if open_paren < 0:
+            continue
+
+        depth = 0
+        in_string = False
+        string_char = ""
+        escaped = False
+        for idx in range(open_paren, len(script_content)):
+            ch = script_content[idx]
+            if escaped:
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                continue
+            if in_string:
+                if ch == string_char:
+                    in_string = False
+                continue
+            if ch in ("'", '"', "`"):
+                in_string = True
+                string_char = ch
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    calls.append(script_content[match.start() : idx + 1])
+                    break
+    return calls
+
+
+def _literal_agent_labels(script_content: str) -> list[str]:
+    """Extract statically-known agent labels from JS option objects."""
+    return [
+        match.group(2)
+        for match in re.finditer(r"""\blabel\s*:\s*(["'])(.*?)\1""", script_content)
+    ]
+
+
+def _strip_js_strings_and_comments(script_content: str) -> str:
+    """Blank JS string/comment contents so token checks only see executable code."""
+    chars = list(script_content)
+    idx = 0
+    while idx < len(chars):
+        ch = chars[idx]
+        nxt = chars[idx + 1] if idx + 1 < len(chars) else ""
+        if ch == "/" and nxt == "/":
+            chars[idx] = chars[idx + 1] = " "
+            idx += 2
+            while idx < len(chars) and chars[idx] != "\n":
+                chars[idx] = " "
+                idx += 1
+            continue
+        if ch == "/" and nxt == "*":
+            chars[idx] = chars[idx + 1] = " "
+            idx += 2
+            while idx + 1 < len(chars) and not (chars[idx] == "*" and chars[idx + 1] == "/"):
+                chars[idx] = " "
+                idx += 1
+            if idx + 1 < len(chars):
+                chars[idx] = chars[idx + 1] = " "
+                idx += 2
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+            chars[idx] = " "
+            idx += 1
+            escaped = False
+            while idx < len(chars):
+                current = chars[idx]
+                chars[idx] = " "
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == quote:
+                    idx += 1
+                    break
+                idx += 1
+            continue
+        idx += 1
+    return "".join(chars)
+
+
 def validate_generated_script(
     script_content: str,
     review_agents: Optional[list[dict]] = None,
@@ -703,6 +810,35 @@ def validate_generated_script(
         errors.append(
             "No `agent()`, `workflow()`, or pattern primitive call found - workflow must "
             "invoke at least one agent, sub-workflow, or orchestration pattern"
+        )
+
+    # --- Runtime reliability checks ---
+    # Duplicate labels collapse progress updates for different agent attempts;
+    # unbounded calls let one ACP prompt consume the whole workflow timeout.
+    agent_calls = _iter_js_call_sources(script_content, "agent")
+    labels = _literal_agent_labels(script_content)
+    duplicate_labels = sorted({label for label in labels if labels.count(label) > 1})
+    if duplicate_labels:
+        errors.append(
+            "Duplicate agent label(s) found: "
+            + ", ".join(duplicate_labels)
+            + ". Each agent call must use a unique label for state tracking."
+        )
+
+    for idx, call_source in enumerate(agent_calls, start=1):
+        if not re.search(r"\btimeout\s*:", call_source):
+            label_match = re.search(r"""\blabel\s*:\s*(["'])(.*?)\1""", call_source)
+            label = label_match.group(2) if label_match else f"agent call #{idx}"
+            errors.append(
+                f"Direct agent call `{label}` is missing an explicit `timeout:`. "
+                "Bound every agent call so a single ACP prompt cannot consume the total workflow timeout."
+            )
+
+    executable_code = _strip_js_strings_and_comments(script_content)
+    if agent_calls and not re.search(r"""(\.\s*error\b|\bcatch\s*\(|\btry\s*\{)""", executable_code):
+        errors.append(
+            "Direct agent calls must handle `result.error` or use try/catch before returning. "
+            "This prevents failed agent calls from being treated as successful workflow output."
         )
 
     # --- Balanced braces check (rough) ---
@@ -1065,64 +1201,96 @@ def _aggressive_json_cleanup(raw: str) -> str:
 
 
 def generate_simple_script(requirement: str, selected_tools: list[str] | None = None) -> str:
-    """Generate a workflow script that uses Dynamic Workflow patterns.
-
-    Uses classify → fanout → verify as the default pattern composition:
-    classifies the task, fans out to appropriate workers, and verifies the output.
-    When ``selected_tools`` is provided, only those tools are used in the script.
-    """
+    """Generate a bounded fallback workflow using Dynamic Workflow patterns."""
     _enc = get_subagent_encouragement()
     tools = selected_tools or ["coco"]
     primary_tool = tools[0]
     escaped = requirement.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
-
-    json_tools = str(tools).replace("'", '"')
+    comment_requirement = requirement[:80].replace("*/", "* /")
+    json_tools = json.dumps(tools)
 
     return f'''/**
  * Auto-generated Dynamic Workflow.
- * Requirement: {requirement[:80]}
+ * Requirement: {comment_requirement}
  */
 
 export const meta = {{
   name: "generated-dynamic-workflow",
-  description: "Auto-generated dynamic workflow with pattern-based orchestration",
+  description: "Auto-generated bounded dynamic workflow with fallback handling",
   phases: [
-    {{ title: "Analysis", detail: "Classify task and determine optimal strategy" }},
-    {{ title: "Execution", detail: "Execute using appropriate pattern" }},
-    {{ title: "Verification", detail: "Verify output quality" }}
+    {{ title: "Routing", detail: "Choose a proportional execution path" }},
+    {{ title: "Execution", detail: "Execute directly or via bounded fanout" }},
+    {{ title: "Verification", detail: "Run bounded verification and return usable output" }}
   ],
   maxConcurrent: 6,
   tools: {json_tools},
-  patterns: ["classify", "fanout", "verify"]
+  patterns: ["classify", "fanout"]
 }};
 
 export default async function main() {{
   const requirement = `{escaped}`;
+  const tools = {json_tools};
+  const primaryTool = "{primary_tool}";
+  const fallbackTool = tools.length > 1 ? tools[1] : primaryTool;
+  const verifierTool = tools.length > 1 ? tools[tools.length - 1] : primaryTool;
 
-  // Phase 1: Analyze and plan
-  phase("Analysis");
-  log("Analyzing task and determining execution strategy");
+  function fallback(stage, reason, partial = null) {{
+    return {{
+      fallback: true,
+      stage,
+      error: reason || "unknown error",
+      partial,
+      message: "Workflow used bounded fallback handling instead of waiting for the total timeout.",
+    }};
+  }}
 
-  const analysis = await agent({{
-    prompt: `Analyze this task and determine the best execution strategy.
+  phase("Routing");
+  log("Choosing bounded execution path");
 
-Requirement: ${{requirement}}
+  const route = await classify(requirement, {{
+    simple: {{
+      description: "Single focused task, small change, or direct answer",
+      handler: async () => ({{ mode: "simple", subtasks: [requirement] }}),
+    }},
+    parallel: {{
+      description: "Task benefits from independent implementation, review, research, or testing work",
+      handler: async () => {{
+        const split = await agent({{
+          prompt: `Split this requirement into 2-4 independent, executable subtasks.
 
-Output JSON:
-- "complexity": "simple|moderate|complex"
-- "parallel_subtasks": array of independent subtasks (if any)
-- "needs_verification": boolean (true for code changes, security, correctness-critical)
-- "approach": brief description
+Requirement:
+${{requirement}}
+
+Return JSON only: {{ "subtasks": ["..."], "reason": "..." }}
 
 {_enc}`,
-    tool: "{primary_tool}",
-    role: "architect",
-    schema: {{ complexity: "", parallel_subtasks: [], needs_verification: true, approach: "" }},
-    label: "task-analysis",
+          tool: primaryTool,
+          role: "planner",
+          schema: {{ subtasks: [], reason: "" }},
+          label: "split-subtasks",
+          timeout: 120,
+        }});
+        if (split && split.error) {{
+          log(`Subtask split failed, falling back to single execution: ${{split.error}}`);
+          return {{ mode: "simple", subtasks: [requirement], fallback: true, reason: split.error }};
+        }}
+        const subtasks = Array.isArray(split.subtasks)
+          ? split.subtasks.filter(Boolean).slice(0, 4)
+          : [];
+        return {{ mode: subtasks.length > 1 ? "parallel" : "simple", subtasks: subtasks.length ? subtasks : [requirement] }};
+      }},
+    }},
+  }}, {{
+    classifierTool: primaryTool,
+    defaultCategory: "simple",
+    label: "route",
+    timeout: 90,
   }});
 
-  const subtasks = analysis.parallel_subtasks || [];
-  log(`Strategy: ${{analysis.complexity}} complexity, ${{subtasks.length}} subtasks`);
+  const subtasks = Array.isArray(route.subtasks) && route.subtasks.length
+    ? route.subtasks
+    : [requirement];
+  log(`Execution mode: ${{route.mode || "simple"}}, subtasks: ${{subtasks.length}}`);
 
   // Phase 2: Execute
   phase("Execution");
@@ -1130,57 +1298,102 @@ Output JSON:
   let result;
   if (subtasks.length >= 2) {{
     // Fan-out pattern for parallel subtasks
-    log(`Executing ${{subtasks.length}} subtasks in parallel...`);
-    result = await fanout(requirement, subtasks.map((task, i) => ({{
+    log(`Executing ${{subtasks.length}} bounded subtasks in parallel...`);
+    const workerResults = await fanout(requirement, subtasks.map((task, i) => ({{
       prompt: `Complete this subtask as part of a larger requirement.
 
 Overall requirement: ${{requirement}}
-Overall approach: ${{analysis.approach}}
 Your specific subtask: ${{typeof task === "string" ? task : task.description || JSON.stringify(task)}}
 
-Complete fully and provide the result.
+Complete fully and provide concrete output. If blocked, return a clear error object instead of waiting.
 
 {_enc}`,
-      tool: {json_tools}[i % {len(tools)}],
+      tool: tools[i % tools.length],
       role: `worker-${{i}}`,
-      label: `subtask-${{i}}`,
-    }})), {{ synthesizerTool: "{primary_tool}", synthesizerRole: "integrator" }});
+      label: `execute-${{i}}`,
+      timeout: 180,
+    }})), {{ synthesize: false, defaultTool: primaryTool }});
+
+    const successful = workerResults.filter((item) => !(item && item.error));
+    if (successful.length === 0) {{
+      return fallback("Execution", "all parallel workers failed", workerResults);
+    }}
+
+    if (successful.length === 1) {{
+      result = successful[0];
+    }} else {{
+      result = await agent({{
+        prompt: `Synthesize these successful parallel results into one coherent final output.
+
+Requirement:
+${{requirement}}
+
+Results:
+${{JSON.stringify(successful, null, 2)}}
+
+{_enc}`,
+        tool: fallbackTool,
+        role: "integrator",
+        label: "synthesize-result",
+        timeout: 120,
+      }});
+      if (result && result.error) {{
+        return fallback("Synthesis", result.error, successful);
+      }}
+    }}
   }} else {{
     // Single focused execution
-    log("Executing task...");
+    log("Executing bounded single-agent task...");
     result = await agent({{
       prompt: `Complete this task fully:
 
 ${{requirement}}
 
-Approach: ${{analysis.approach}}
-
-Provide a complete, production-ready result.
+Provide a complete, production-ready result. If blocked, return a clear error object quickly.
 
 {_enc}`,
       tool: "{primary_tool}",
-      label: "executor",
+      role: "executor",
+      label: "execute-primary",
+      timeout: 180,
     }});
+    if (result && result.error) {{
+      return fallback("Execution", result.error);
+    }}
   }}
 
-  // Phase 3: Verification (if needed)
-  if (analysis.needs_verification) {{
-    phase("Verification");
-    log("Running adversarial verification...");
+  phase("Verification");
+  log("Running bounded verification");
+  const review = await agent({{
+    prompt: `Review this workflow output for correctness, completeness, and obvious risks.
 
-    const {{ accepted, output: verified, feedback }} = await verify(result, {{
-      criteria: "correctness, completeness, quality",
-      verifiers: [
-        {{ tool: "{tools[-1] if len(tools) > 1 else primary_tool}", role: "verifier", focus: "Find errors, omissions, or quality issues" }},
-      ],
-      maxRounds: 1,
-      reviseTool: "{primary_tool}",
-    }});
+Requirement:
+${{requirement}}
 
-    if (!accepted) {{
-      log(`Verification concerns: ${{feedback}}`);
-    }}
-    return verified;
+Output:
+${{typeof result === "string" ? result : JSON.stringify(result, null, 2)}}
+
+Respond with JSON: {{ "approve": true, "issues": ["..."], "summary": "..." }}`,
+    tool: verifierTool,
+    role: "verifier",
+    schema: {{ approve: false, issues: [], summary: "" }},
+    label: "verify-output",
+    timeout: 120,
+  }});
+
+  if (review && review.error) {{
+    log(`Verification failed, returning execution output with fallback marker: ${{review.error}}`);
+    return {{ result, verification: fallback("Verification", review.error) }};
+  }}
+  if (review && review.approve === false && Array.isArray(review.issues) && review.issues.length > 0) {{
+    return {{
+      result,
+      verification: {{
+        approved: false,
+        issues: review.issues,
+        summary: review.summary || "Verifier reported concerns",
+      }},
+    }};
   }}
 
   return result;

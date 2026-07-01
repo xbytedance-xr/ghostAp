@@ -40,6 +40,7 @@ Output JSON: { "hotspots": [{ "file": "", "description": "", "type": "complexity
       schema: { hotspots: [] },
       label: "static-analysis",
       phase: "Discovery",
+      timeout: 180,
     },
     {
       prompt: `You are a dependency auditor. Audit the codebase at "${target}" ${scope ? `(scope: ${scope})` : ""}.
@@ -53,6 +54,7 @@ Output JSON: { "hotspots": [{ "file": "", "description": "", "type": "coupling|c
       schema: { hotspots: [] },
       label: "dependency-audit",
       phase: "Discovery",
+      timeout: 180,
     },
   ]);
 
@@ -84,6 +86,7 @@ Output JSON: { "file": "", "patch": "", "explanation": "", "tests_impacted": [] 
     schema: { file: "", patch: "", explanation: "", tests_impacted: [] },
     label: `refactor-${i}`,
     phase: "Refactoring",
+    timeout: 180,
   }));
 
   const patches = refactorTasks.length > 0 ? await parallel(refactorTasks) : [];
@@ -122,7 +125,12 @@ Output JSON:
       verification_steps: [],
     },
     label: "validation-summary",
+    timeout: 180,
   });
+
+  if (summary && summary.error) {
+    return { error: summary.error, stage: "Validation", partial: { discovery, patches } };
+  }
 
   return {
     summary,

@@ -36,6 +36,7 @@ Report findings as JSON: { "findings": [{ "severity": "high|medium|low", "catego
       role: "broad_scanner",
       label: "broad-scan",
       schema: { findings: [] },
+      timeout: 180,
     },
     {
       prompt: `Look for subtle, hard-to-find ${huntType} in ${target} that a broad scan might miss.
@@ -45,6 +46,7 @@ Report findings as JSON: { "findings": [{ "severity": "high|medium|low", "catego
       role: "deep_scanner",
       label: "deep-scan",
       schema: { findings: [] },
+      timeout: 180,
     },
   ], { synthesize: false });
 
@@ -78,7 +80,12 @@ Respond with JSON: { "findings": [{ "severity": "high|medium|low", "category": "
         role: `hunter-round-${i}`,
         label: `hunt-${i}`,
         schema: { findings: [], no_new_findings: false, search_strategy: "" },
+        timeout: 180,
       });
+
+      if (newFindings && newFindings.error) {
+        return { findings: [], no_new_findings: true, error: newFindings.error, search_strategy: "agent call failed" };
+      }
 
       if (newFindings && newFindings.findings) {
         for (const f of newFindings.findings) {
@@ -118,9 +125,10 @@ Respond with JSON: { "findings": [{ "severity": "high|medium|low", "category": "
   const { accepted, output: verifiedReport } = await verify(findingsReport, {
     criteria: "accuracy, no false positives, actionability",
     verifiers: [
-      { tool: "claude", role: "accuracy_checker", focus: "Verify each finding is real (not a false positive)" },
+      { tool: "claude", role: "accuracy_checker", focus: "Verify each finding is real (not a false positive)", timeout: 180 },
     ],
     maxRounds: 1,
+    timeout: 180,
   });
 
   const finalReport = await agent(`Create a final actionable report from these verified findings.
@@ -138,7 +146,12 @@ Format as a structured markdown report with:
     tool: "coco",
     role: "report_writer",
     label: "final-report",
+    timeout: 180,
   });
+
+  if (finalReport && finalReport.error) {
+    return { error: finalReport.error, stage: "Synthesis", partial: { accepted, findingsReport } };
+  }
 
   return finalReport;
 }

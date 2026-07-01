@@ -38,7 +38,12 @@ Respond with JSON: { "strategies": [{ "name": "", "philosophy": "", "best_tool":
     role: "strategist",
     label: "strategy-analysis",
     schema: { strategies: [], evaluation_criteria: "" },
+    timeout: 180,
   });
+
+  if (analysis && analysis.error) {
+    return { error: analysis.error, stage: "Analysis" };
+  }
 
   const strategies = (analysis.strategies || []).slice(0, contestantCount);
   const criteria = analysis.evaluation_criteria || "correctness, completeness, efficiency";
@@ -61,9 +66,10 @@ Be thorough and demonstrate why your approach is superior.`,
       tool: strategy.best_tool || tools[i % tools.length],
       role: strategy.name,
       label: `contestant-${strategy.name}`,
+      timeout: 240,
     })),
     null,
-    { judgeTool: "claude", task: task, criteria: criteria }
+    { judgeTool: "claude", task: task, criteria: criteria, timeout: 180 }
   );
 
   log(`Tournament complete: ${rounds} rounds, winner: ${winnerLabel}`);
@@ -76,11 +82,12 @@ Be thorough and demonstrate why your approach is superior.`,
   const { accepted, output: verified, feedback } = await verify(winner, {
     criteria: criteria,
     verifiers: [
-      { tool: "claude", role: "logic_adversary", focus: "Find logical errors and incorrect assumptions" },
-      { tool: "aiden", role: "quality_adversary", focus: "Find code quality issues and maintainability problems" },
+      { tool: "claude", role: "logic_adversary", focus: "Find logical errors and incorrect assumptions", timeout: 180 },
+      { tool: "aiden", role: "quality_adversary", focus: "Find code quality issues and maintainability problems", timeout: 180 },
     ],
     maxRounds: 2,
     reviseTool: "coco",
+    timeout: 180,
   });
 
   if (!accepted) {

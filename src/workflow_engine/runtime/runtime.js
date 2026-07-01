@@ -456,6 +456,7 @@ async function classify(input, categories, opts = {}) {
     role: 'classifier',
     label: opts.label ? `${opts.label}-classify` : 'classify',
     schema: opts.schema,
+    timeout: opts.classifierTimeout || opts.timeout,
   });
 
   const classResult = (typeof classification === 'string' ? classification : '').trim().toLowerCase();
@@ -487,7 +488,11 @@ async function classify(input, categories, opts = {}) {
     return handler(input, selectedCategory, classification);
   }
   if (typeof handler === 'object' && handler !== null && handler.prompt) {
-    return agent({ ...handler, prompt: handler.prompt.replace('${input}', input) });
+    return agent({
+      ...handler,
+      prompt: handler.prompt.replace('${input}', input),
+      timeout: handler.timeout || opts.handlerTimeout || opts.timeout,
+    });
   }
 
   return { category: selectedCategory, input, classification };
@@ -524,6 +529,7 @@ async function fanout(input, workers, opts = {}) {
       label: worker.label || `fanout-${idx}`,
       schema: worker.schema,
       phase: worker.phase,
+      timeout: worker.timeout || opts.workerTimeout || opts.timeout,
     };
   });
 
@@ -553,6 +559,7 @@ async function fanout(input, workers, opts = {}) {
     role: opts.synthesizerRole || 'synthesizer',
     label: opts.label ? `${opts.label}-synthesize` : 'synthesize',
     schema: opts.synthesizerSchema,
+    timeout: opts.synthesizerTimeout || opts.timeout,
   });
 
   return synthesized;
@@ -593,6 +600,7 @@ async function verify(output, opts = {}) {
         role: v.role || `verifier-${idx}`,
         label: `verify-r${round}-${idx}`,
         schema: { issues: [], approve: false },
+        timeout: v.timeout || opts.verifierTimeout || opts.timeout,
       }))
     );
 
@@ -632,7 +640,12 @@ async function verify(output, opts = {}) {
     } else {
       const revised = await agent(
         `Revise this output to address the following issues:\n\nCurrent output:\n${outputStr}\n\nIssues found:\n${lastFeedback}\n\nProvide a revised version that addresses ALL critical and major issues.`,
-        { tool: opts.reviseTool || opts.tool, role: 'reviser', label: `revise-r${round}` }
+        {
+          tool: opts.reviseTool || opts.tool,
+          role: 'reviser',
+          label: `revise-r${round}`,
+          timeout: opts.reviseTimeout || opts.timeout,
+        }
       );
       currentOutput = revised;
     }
@@ -667,14 +680,14 @@ async function generate(count, generatorFn, filterFn, opts = {}) {
     if (typeof generatorFn === 'function') {
       const descriptor = generatorFn(i);
       if (typeof descriptor === 'string') {
-        tasks.push({ prompt: descriptor, label: `gen-${i}` });
+        tasks.push({ prompt: descriptor, label: `gen-${i}`, timeout: opts.generatorTimeout || opts.timeout });
       } else if (typeof descriptor === 'object' && descriptor !== null) {
-        tasks.push({ ...descriptor, label: descriptor.label || `gen-${i}` });
+        tasks.push({ ...descriptor, label: descriptor.label || `gen-${i}`, timeout: descriptor.timeout || opts.generatorTimeout || opts.timeout });
       } else {
         throw new TypeError(`generate() generatorFn must return a string or object, got ${typeof descriptor}`);
       }
     } else if (typeof generatorFn === 'object' && generatorFn !== null && generatorFn.prompt) {
-      tasks.push({ ...generatorFn, label: `gen-${i}` });
+      tasks.push({ ...generatorFn, label: `gen-${i}`, timeout: generatorFn.timeout || opts.generatorTimeout || opts.timeout });
     } else {
       throw new TypeError('generate() generatorFn must be a function or object with .prompt');
     }
@@ -699,6 +712,7 @@ async function generate(count, generatorFn, filterFn, opts = {}) {
     role: 'filter',
     label: 'filter-rank',
     schema: { ranked: [], reasoning: '' },
+    timeout: opts.filterTimeout || opts.timeout,
   });
 
   if (filterResult && filterResult.ranked) {
@@ -733,7 +747,7 @@ async function tournament(contestants, judgeFn, opts = {}) {
   const solutions = await parallel(
     contestants.map((c, idx) => {
       if (typeof c === 'function') return c;
-      if (typeof c === 'object' && c.prompt) return { ...c, label: c.label || `contestant-${idx}` };
+      if (typeof c === 'object' && c.prompt) return { ...c, label: c.label || `contestant-${idx}`, timeout: c.timeout || opts.contestantTimeout || opts.timeout };
       throw new TypeError('tournament() contestants must be functions or agent descriptors');
     })
   );
@@ -773,6 +787,7 @@ async function tournament(contestants, judgeFn, opts = {}) {
           role: 'tournament_judge',
           label: `judge-r${roundNum}-m${mIdx}`,
           schema: { winner: '', reasoning: '' },
+          timeout: opts.judgeTimeout || opts.timeout,
         };
       })
     );

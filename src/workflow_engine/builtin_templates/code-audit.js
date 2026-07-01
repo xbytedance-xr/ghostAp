@@ -35,7 +35,12 @@ Output a JSON object with:
     tool: "claude",
     schema: { files: [], summary: "", risk_areas: [] },
     label: "structure-analysis",
+    timeout: 180,
   });
+
+  if (analysis && analysis.error) {
+    return { error: analysis.error, stage: "Analysis" };
+  }
 
   const files = analysis.files || [];
   const fileList = files.join(", ");
@@ -56,6 +61,7 @@ Output JSON: { "findings": [{ "file": "", "line": 0, "severity": "high|medium|lo
       role: "Security Auditor",
       schema: { findings: [] },
       label: "security-review",
+      timeout: 180,
     },
     {
       prompt: `You are a performance engineer. Review these files for performance issues:
@@ -67,6 +73,7 @@ Output JSON: { "findings": [{ "file": "", "line": 0, "severity": "high|medium|lo
       role: "Performance Engineer",
       schema: { findings: [] },
       label: "performance-review",
+      timeout: 180,
     },
     {
       prompt: `You are a senior maintainability reviewer. Review these files for code quality:
@@ -78,6 +85,7 @@ Output JSON: { "findings": [{ "file": "", "line": 0, "severity": "high|medium|lo
       role: "Maintainability Reviewer",
       schema: { findings: [] },
       label: "maintainability-review",
+      timeout: 180,
     },
   ]);
 
@@ -87,6 +95,15 @@ Output JSON: { "findings": [{ "file": "", "line": 0, "severity": "high|medium|lo
   const allFindings = [];
   const perspectives = ["Security", "Performance", "Maintainability"];
   reviews.forEach((r, i) => {
+    if (r?.error) {
+      allFindings.push({
+        perspective: perspectives[i],
+        severity: "medium",
+        issue: `Reviewer failed: ${r.error}`,
+        fix: "Retry the review or inspect workflow logs",
+      });
+      return;
+    }
     const findings = r?.findings || [];
     findings.forEach(f => {
       allFindings.push({ ...f, perspective: perspectives[i] });
@@ -113,7 +130,12 @@ Create a prioritized report with:
 Format as markdown.`,
     tool: "aiden",
     label: "report-synthesis",
+    timeout: 180,
   });
+
+  if (report && report.error) {
+    return { error: report.error, stage: "Synthesis", findings: allFindings };
+  }
 
   return report;
 }

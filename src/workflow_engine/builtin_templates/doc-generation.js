@@ -47,7 +47,12 @@ Output JSON:
       architecture_summary: "",
     },
     label: "api-discovery",
+    timeout: 180,
   });
+
+  if (structure && structure.error) {
+    return { error: structure.error, stage: "API Discovery" };
+  }
 
   const moduleList = (structure.modules || [])
     .map(m => `${m.name || ""} (${m.path || ""})`)
@@ -77,6 +82,7 @@ Output JSON: { "title": "README", "content": "" }`,
       schema: { title: "README", content: "" },
       label: "gen-readme",
       phase: "Document Generation",
+      timeout: 180,
     },
     {
       prompt: `You are an API documentation specialist. Generate API documentation for:
@@ -95,6 +101,7 @@ Output JSON: { "title": "API Reference", "content": "" }`,
       schema: { title: "API Reference", content: "" },
       label: "gen-api-docs",
       phase: "Document Generation",
+      timeout: 180,
     },
     {
       prompt: `You are a developer advocate. Produce usage examples for:
@@ -113,6 +120,7 @@ Output JSON: { "title": "Usage Examples", "content": "" }`,
       schema: { title: "Usage Examples", content: "" },
       label: "gen-examples",
       phase: "Document Generation",
+      timeout: 180,
     },
   ]);
 
@@ -121,7 +129,10 @@ Output JSON: { "title": "Usage Examples", "content": "" }`,
   // Phase 3: Merge & Validate
   phase("Merge & Validate");
 
-  const merged = docs.map(d => `# ${d?.title || "section"}\n\n${d?.content || ""}\n`).join("\n---\n");
+  const merged = docs
+    .filter(d => !(d && d.error))
+    .map(d => `# ${d?.title || "section"}\n\n${d?.content || ""}\n`)
+    .join("\n---\n");
 
   const validation = await agent({
     prompt: `Validate and merge the generated documentation sections for "${target}".
@@ -152,7 +163,12 @@ Output JSON:
       merged_content: "",
     },
     label: "doc-validation",
+    timeout: 180,
   });
+
+  if (validation && validation.error) {
+    return { error: validation.error, stage: "Merge & Validate", partial: { structure, docs, merged } };
+  }
 
   return {
     summary: validation,

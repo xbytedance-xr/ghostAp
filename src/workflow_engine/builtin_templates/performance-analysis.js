@@ -37,7 +37,12 @@ Output JSON: { "hotspots": [{ "file": "", "description": "", "category": "io|cpu
     role: "性能工程师",
     schema: { hotspots: [] },
     label: "bottleneck-scan",
+    timeout: 180,
   });
+
+  if (scan && scan.error) {
+    return { error: scan.error, stage: "Bottleneck Scan" };
+  }
 
   const hotspots = scan.hotspots || [];
   log(`Found ${hotspots.length} performance hotspots`);
@@ -82,6 +87,7 @@ Output JSON:
     },
     label: `deep-${i}`,
     phase: "Deep Analysis",
+    timeout: 180,
   }));
 
   const analyses = analysisTasks.length > 0 ? await parallel(analysisTasks) : [];
@@ -117,7 +123,12 @@ Output JSON:
       next_steps: [],
     },
     label: "perf-summary",
+    timeout: 180,
   });
+
+  if (summary && summary.error) {
+    return { error: summary.error, stage: "Recommendations", partial: { scan, analyses } };
+  }
 
   return {
     summary,

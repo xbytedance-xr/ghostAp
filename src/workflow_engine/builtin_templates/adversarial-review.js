@@ -53,6 +53,7 @@ Output your complete solution.`,
         tool: "coco",
         role: "Senior Engineer",
         label: `implement-v${iteration}`,
+        timeout: 240,
       });
     } else {
       phase("Refinement");
@@ -74,7 +75,12 @@ Output your revised complete solution.`,
         tool: "coco",
         role: "Senior Engineer",
         label: `refine-v${iteration}`,
+        timeout: 240,
       });
+    }
+
+    if (currentSolution && currentSolution.error) {
+      return { error: currentSolution.error, stage: "Implementation", iteration };
     }
 
     // Phase 2: Adversarial Review
@@ -113,6 +119,7 @@ Output JSON:
         role: reviewer.role,
         schema: { issues: [], overall_quality: "", approve: false },
         label: `review-${reviewer.role.toLowerCase().replace(/\s+/g, "-")}-v${iteration}`,
+        timeout: 180,
       }))
     );
 
@@ -122,6 +129,10 @@ Output JSON:
     const allIssues = [];
     let approvalCount = 0;
     reviews.forEach(r => {
+      if (r?.error) {
+        allIssues.push({ severity: "major", description: `Reviewer failed: ${r.error}`, example: "", suggestion: "Retry or inspect reviewer logs" });
+        return;
+      }
       if (r?.approve) approvalCount++;
       (r?.issues || []).forEach(issue => allIssues.push(issue));
     });
@@ -162,7 +173,12 @@ Format as markdown.`,
     tool: "aiden",
     role: "Technical Lead",
     label: "final-verdict",
+    timeout: 180,
   });
+
+  if (verdict && verdict.error) {
+    return { error: verdict.error, stage: "Judgment", partial: currentSolution };
+  }
 
   return verdict;
 }

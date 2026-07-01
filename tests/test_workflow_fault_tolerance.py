@@ -404,6 +404,47 @@ class TestTimeoutHandling(unittest.TestCase):
         self.assertIsNotNone(result.error)
         self.assertIn("timeout", result.error.lower())
 
+    def test_session_creation_timeout_closes_late_session(self):
+        """Late sessions created after a timeout must be closed.
+
+        The timeout path can return before create_engine_session finishes in
+        the worker pool. If that late session is not closed, repeated WF
+        failures keep subprocess/ACP sessions alive after the workflow has
+        already reported timeout.
+        """
+        create_started = threading.Event()
+        release_create = threading.Event()
+        late_session = _make_mock_session(output_text="late")
+        real_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self.executor._session_pool = real_pool
+
+        def slow_create_engine_session(*args, **kwargs):
+            create_started.set()
+            release_create.wait(timeout=2)
+            return late_session
+
+        try:
+            with (
+                patch("src.workflow_engine.executor.SESSION_CREATE_TIMEOUT_S", 0.01),
+                patch("src.agent_session.factory.create_engine_session", side_effect=slow_create_engine_session),
+            ):
+                params = AgentCallParams(prompt="test prompt", tool="coco")
+                result = self.executor.execute(params)
+
+            self.assertTrue(create_started.is_set())
+            self.assertIsNotNone(result.error)
+            self.assertIn("session creation timeout", result.error)
+
+            release_create.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline and late_session.close.call_count == 0:
+                time.sleep(0.01)
+
+            self.assertGreaterEqual(late_session.close.call_count, 1)
+        finally:
+            release_create.set()
+            real_pool.shutdown(wait=True, cancel_futures=True)
+
     def test_timeout_error_category(self):
         """Verify timeout errors are categorized as RUNTIME_TIMEOUT.
 

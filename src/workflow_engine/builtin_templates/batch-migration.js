@@ -40,7 +40,12 @@ Output JSON:
     tool: "claude",
     schema: { files: [], total_found: 0, needs_migration: 0 },
     label: "file-discovery",
+    timeout: 180,
   });
+
+  if (discovery && discovery.error) {
+    return { error: discovery.error, stage: "Discovery" };
+  }
 
   const targets = (discovery.files || []).filter(f => f.needs_migration);
   log(`Found ${targets.length} files needing migration out of ${discovery.total_found} total`);
@@ -79,10 +84,11 @@ Then output JSON:
         tool: "coco",
         schema: { path: "", status: "", changes_made: "", lines_changed: 0 },
         label: `migrate-${file.path}`,
+        timeout: 240,
       }))
     );
 
-    results.push(...batchResults);
+    results.push(...batchResults.map(r => r?.error ? { status: "failed", error: r.error } : r));
   }
 
   // Phase 3: Verification
@@ -109,10 +115,11 @@ Output JSON: { "path": "${file.path}", "valid": true/false, "issues": [] }`,
       tool: "aiden",
       schema: { path: "", valid: true, issues: [] },
       label: `verify-${file.path}`,
+      timeout: 180,
     }))
   );
 
-  const invalid = verifications.filter(v => !v?.valid);
+  const invalid = verifications.filter(v => v?.error || !v?.valid);
   const summary = `Migration complete:
 - Files processed: ${results.length}
 - Successful: ${successful.length}

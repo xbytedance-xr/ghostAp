@@ -17,6 +17,7 @@ from src.workflow_engine.script_gen import (
     _get_agent_capability_note,
     build_script_gen_prompt,
     generate_simple_script,
+    validate_generated_script,
 )
 
 
@@ -259,6 +260,20 @@ class TestGenerateSimpleScriptEncouragement(unittest.TestCase):
         self.assertIn("export const meta", script)
         self.assertIn("export default async function", script)
         self.assertIn("agent(", script)
+
+    def test_script_avoids_slow_static_analysis_agent(self):
+        script = generate_simple_script("Fix workflow state mismatch")
+        self.assertNotIn('label: "task-analysis"', script)
+        self.assertNotIn("Analyze this task and determine the best execution strategy", script)
+
+    def test_script_bounds_agent_calls_and_handles_errors(self):
+        script = generate_simple_script("Fix workflow state mismatch", selected_tools=["coco", "codex"])
+        self.assertIn("timeout:", script)
+        self.assertIn(".error", script)
+        self.assertIn("fallback", script.lower())
+
+        is_valid, messages = validate_generated_script(script)
+        self.assertTrue(is_valid, f"Expected valid fallback script, got: {messages}")
 
 
 @pytest.mark.skip(reason="Budget/roles selection removed; build_script_gen_prompt no longer accepts budget tokens or static roles.")

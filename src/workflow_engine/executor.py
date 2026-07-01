@@ -126,19 +126,8 @@ class AgentExecutor:
                         params.tool,
                         SESSION_CREATE_TIMEOUT_S,
                     )
-                    # Attempt cleanup if session was created after we timed out
-                    if future.done() and not future.exception():
-                        try:
-                            stale_session = future.result(timeout=0)
-                            stale_session.close()
-                        except Exception:
-                            pass
+                    self._close_late_session(future, params.tool)
                     error_msg = f"session creation timeout (>{SESSION_CREATE_TIMEOUT_S}s)"
-                    last_error = error_msg
-                    # Session creation timeout is transient — retry if attempts remain
-                    if attempt < MAX_RETRIES and is_transient_error(error_msg):
-                        self._sleep_with_backoff(attempt)
-                        continue
                     return AgentCallResult(
                         error=error_msg,
                         tool=params.tool,
@@ -281,6 +270,52 @@ class AgentExecutor:
             model=params.model,
             duration_s=duration_s,
         )
+
+    def _close_late_session(
+        self,
+        future: concurrent.futures.Future[Any],
+        tool: str | None,
+    ) -> None:
+        """Close a session that finishes after the caller already timed out."""
+        if future.cancel():
+            logger.info(
+                "[AgentExecutor] cancelled pending session creation for tool=%s after timeout",
+                tool,
+            )
+            return
+
+        def _cleanup(done: concurrent.futures.Future[Any]) -> None:
+            try:
+                stale_session = done.result()
+            except concurrent.futures.CancelledError:
+                return
+            except Exception as exc:
+                logger.debug(
+                    "[AgentExecutor] late session creation failed after timeout for tool=%s: %s",
+                    tool,
+                    repr(exc),
+                )
+                return
+
+            if stale_session is None:
+                return
+            close = getattr(stale_session, "close", None)
+            if not callable(close):
+                return
+            try:
+                close()
+                logger.info(
+                    "[AgentExecutor] closed late session after creation timeout for tool=%s",
+                    tool,
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[AgentExecutor] late session close failed for tool=%s: %s",
+                    tool,
+                    repr(exc),
+                )
+
+        future.add_done_callback(_cleanup)
 
     def _sleep_with_backoff(self, attempt: int) -> None:
         """Sleep for exponential backoff delay.
@@ -441,4 +476,3 @@ class AgentExecutor:
             "Do not include any explanation, markdown fences, or extra text — "
             "just the raw JSON object."
         )
-

@@ -94,8 +94,11 @@ export default async function run() {
     const result = await agent({
         tool: "coco",
         model: "gpt-4",
-        prompt: "Hello world"
+        prompt: "Hello world",
+        label: "hello-world",
+        timeout: 120
     });
+    if (result && result.error) return result;
     return result;
 }
 """
@@ -342,7 +345,10 @@ class TestValidateGeneratedScriptRegression(unittest.TestCase):
 };
 
 export default async function() {
-  const result = await agent("do something", { tool: "coco" });
+  const result = await agent("do something", { tool: "coco", label: "primary", timeout: 120 });
+  if (result && result.error) {
+    return { error: result.error, fallback: "primary failed" };
+  }
   return result;
 }
 '''
@@ -375,6 +381,61 @@ export default async function() { await agent("x"); }
             "[capability]" in m or "Forbidden pattern" in m
             for m in messages
         ))
+
+    def test_duplicate_agent_labels_fail(self):
+        script = '''export const meta = {
+  name: "bad-labels",
+  description: "Duplicate labels should fail",
+  phases: [{ title: "Phase 1", detail: "Do stuff" }],
+  tools: ["coco"]
+};
+
+export default async function() {
+  const first = await agent("first", { tool: "coco", label: "same", timeout: 120 });
+  if (first && first.error) return first;
+  const second = await agent("second", { tool: "coco", label: "same", timeout: 120 });
+  if (second && second.error) return second;
+  return second;
+}
+'''
+        is_valid, messages = validate_generated_script(script)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("duplicate" in m.lower() and "label" in m.lower() for m in messages))
+
+    def test_direct_agent_without_timeout_fails(self):
+        script = '''export const meta = {
+  name: "missing-timeout",
+  description: "Direct agent calls must be bounded",
+  phases: [{ title: "Phase 1", detail: "Do stuff" }],
+  tools: ["coco"]
+};
+
+export default async function() {
+  const result = await agent("do something", { tool: "coco", label: "primary" });
+  if (result && result.error) return result;
+  return result;
+}
+'''
+        is_valid, messages = validate_generated_script(script)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("timeout" in m.lower() for m in messages))
+
+    def test_direct_agent_without_error_handling_fails(self):
+        script = '''export const meta = {
+  name: "missing-error-handling",
+  description: "Direct agent calls must handle result.error",
+  phases: [{ title: "Phase 1", detail: "Do stuff" }],
+  tools: ["coco"]
+};
+
+export default async function() {
+  const result = await agent("do something", { tool: "coco", label: "primary", timeout: 120 });
+  return result;
+}
+'''
+        is_valid, messages = validate_generated_script(script)
+        self.assertFalse(is_valid)
+        self.assertTrue(any("error" in m.lower() for m in messages))
 
 
 class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
@@ -420,7 +481,9 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             "};\n"
             "\n"
             "export default async function() {\n"
-            "  await agent('do work');\n"
+            "  const result = await agent('do work', { tool: 'coco', label: 'do-work', timeout: 120 });\n"
+            "  if (result && result.error) return result;\n"
+            "  return result;\n"
             "}\n"
         )
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
@@ -480,7 +543,9 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             "};\n"
             "\n"
             "export default async function() {\n"
-            "  await agent('do work');\n"
+            "  const result = await agent('do work', { tool: 'coco', label: 'do-work', timeout: 120 });\n"
+            "  if (result && result.error) return result;\n"
+            "  return result;\n"
             "}\n"
         )
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
@@ -1501,7 +1566,9 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
             "};\n"
             "\n"
             "export default async function() {\n"
-            "  await agent('do work');\n"
+            "  const result = await agent('do work', { tool: 'coco', label: 'do-work', timeout: 120 });\n"
+            "  if (result && result.error) return result;\n"
+            "  return result;\n"
             "}\n"
         )
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
@@ -1562,7 +1629,9 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
             "};\n"
             "\n"
             "export default async function() {\n"
-            "  await agent('do work');\n"
+            "  const result = await agent('do work', { tool: 'coco', label: 'do-work', timeout: 120 });\n"
+            "  if (result && result.error) return result;\n"
+            "  return result;\n"
             "}\n"
         )
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")
@@ -1624,7 +1693,9 @@ class TestWorkflowToolConsistencyValidation(unittest.TestCase):
             "};\n"
             "\n"
             "export default async function() {\n"
-            "  await agent('do work');\n"
+            "  const result = await agent('do work', { tool: 'coco', label: 'do-work', timeout: 120 });\n"
+            "  if (result && result.error) return result;\n"
+            "  return result;\n"
             "}\n"
         )
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")

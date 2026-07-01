@@ -56,11 +56,14 @@ export default async function main(args = {}) {
   const target = args.target || "default";
   phase("Analysis");
   log("Starting analysis...");
-  const result = await agent("Analyze " + target, { tool: "coco", label: "analyzer" });
+  const result = await agent("Analyze " + target, { tool: "coco", label: "analyzer", timeout: 120 });
+  if (result && result.error) return result;
   phase("Execution");
-  const exec = await agent("Execute based on " + result, { tool: "claude", label: "executor" });
+  const exec = await agent("Execute based on " + result, { tool: "claude", label: "executor", timeout: 180 });
+  if (exec && exec.error) return exec;
   phase("Verification");
-  const verify = await agent("Verify " + exec, { tool: "aiden", label: "verifier" });
+  const verify = await agent("Verify " + exec, { tool: "aiden", label: "verifier", timeout: 120 });
+  if (verify && verify.error) return verify;
   return verify;
 }
 '''
@@ -82,7 +85,10 @@ export default async function main(args = {}) {
   const result = await agent({
     prompt: "Process " + args.target + " count=" + args.count,
     tool: "coco",
+    label: "process-args",
+    timeout: 120,
   });
+  if (result && result.error) return result;
   return result;
 }
 '''
@@ -102,7 +108,8 @@ export const meta = {
 export default async function main(args = {}) {
   const target = args.target || "default";
   log("Starting simple workflow...");
-  const result = await agent("Process " + target, { tool: "coco" });
+  const result = await agent("Process " + target, { tool: "coco", label: "process-target", timeout: 120 });
+  if (result && result.error) return result;
   return result;
 }
 '''
@@ -323,7 +330,9 @@ class TestTemplateDiscovery(unittest.TestCase):
 }};
 
 export default async function main() {{
-  return await agent("Do something", {{ tool: "coco" }});
+  const result = await agent("Do something", {{ tool: "coco", label: "do-something", timeout: 120 }});
+  if (result && result.error) return result;
+  return result;
 }}
 '''
         template_file = templates_dir / f"{name}.js"

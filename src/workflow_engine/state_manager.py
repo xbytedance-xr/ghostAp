@@ -7,14 +7,17 @@ the renderer receives immutable snapshots.
 
 from __future__ import annotations
 
+import copy
 import threading
 import time
+from contextlib import contextmanager
 from typing import Dict, Optional
 
 from .models import (
     AgentProgress,
     AgentStatus,
     PhaseProgress,
+    WorkflowMetrics,
     WorkflowProject,
     WorkflowStatus,
 )
@@ -31,6 +34,8 @@ class WorkflowStateManager:
     def __init__(self, project: WorkflowProject) -> None:
         self._project = project
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._writer_wait_lock = threading.Lock()
+        self._writers_waiting = 0
         # O(1) lookup: agent label -> AgentProgress reference.
         # All inserts, lookups and removals happen under ``_lock`` so that the
         # map stays consistent with the project.phases[*].agents lists even
@@ -49,7 +54,7 @@ class WorkflowStateManager:
 
     def on_phase_changed(self, title: str) -> None:
         """Record a new phase start."""
-        with self._lock:
+        with self._write_locked():
             phase = PhaseProgress(title=title, started_at=time.time())
             self._project.phases.append(phase)
             self._project.status = WorkflowStatus.RUNNING
@@ -64,7 +69,7 @@ class WorkflowStateManager:
         ``task-analysis`` calls in parallel). State transitions are keyed by
         label, so duplicate labels are disambiguated at the source.
         """
-        with self._lock:
+        with self._write_locked():
             target_phase = self._find_or_create_phase(phase)
             now = time.time()
             effective_label = self._make_unique_label(label or "agent")
@@ -86,7 +91,7 @@ class WorkflowStateManager:
 
     def on_agent_done(self, label: str, result: dict) -> None:
         """Update agent status to DONE with metrics from result."""
-        with self._lock:
+        with self._write_locked():
             agent = self._label_to_agent.get(label)
             if agent is None:
                 # O(n) fallback: keeps backwards-compatible behaviour when an
@@ -124,7 +129,7 @@ class WorkflowStateManager:
 
     def on_agent_failed(self, label: str, error: str) -> None:
         """Update agent status to FAILED."""
-        with self._lock:
+        with self._write_locked():
             agent = self._label_to_agent.get(label)
             if agent is None:
                 # Same O(n) fallback as on_agent_done.
@@ -148,7 +153,7 @@ class WorkflowStateManager:
 
     def on_workflow_done(self, result: str) -> None:
         """Mark workflow as completed."""
-        with self._lock:
+        with self._write_locked():
             self._project.status = WorkflowStatus.COMPLETED
             self._project.result = result
             self._project.finished_at = time.time()
@@ -161,7 +166,7 @@ class WorkflowStateManager:
 
     def on_workflow_failed(self, error: str) -> None:
         """Mark workflow as failed."""
-        with self._lock:
+        with self._write_locked():
             now = time.time()
             self._project.status = WorkflowStatus.FAILED
             self._project.error = error
@@ -176,7 +181,7 @@ class WorkflowStateManager:
 
     def on_workflow_cancelled(self, reason: str = "Workflow cancelled") -> None:
         """Mark workflow as cancelled without rewriting it as a failure."""
-        with self._lock:
+        with self._write_locked():
             now = time.time()
             self._project.status = WorkflowStatus.CANCELLED
             self._project.error = reason
@@ -195,7 +200,7 @@ class WorkflowStateManager:
         path should call this method; any other path inflating it is a
         regression of the AC4 isolation guarantee.
         """
-        with self._lock:
+        with self._write_locked():
             self._delta_context_tokens += max(0, int(tokens))
 
     @property
@@ -215,8 +220,74 @@ class WorkflowStateManager:
         view. Callers (e.g. renderer) can safely read the returned object
         without risk of concurrent mutation.
         """
+        while self._has_waiting_writer():
+            time.sleep(0.001)
         with self._lock:
-            return self._project.model_copy(deep=True)
+            source_metrics = self._project.metrics
+            metrics = WorkflowMetrics.model_construct(
+                total_agents=source_metrics.total_agents,
+                completed_agents=source_metrics.completed_agents,
+                failed_agents=source_metrics.failed_agents,
+                cached_agents=source_metrics.cached_agents,
+                total_tokens=source_metrics.total_tokens,
+                total_duration_s=source_metrics.total_duration_s,
+                phases_completed=source_metrics.phases_completed,
+            )
+            phases = [
+                PhaseProgress.model_construct(
+                    title=phase.title,
+                    agents=[
+                        AgentProgress.model_construct(
+                            label=agent.label,
+                            tool=agent.tool,
+                            task_summary=agent.task_summary,
+                            status=agent.status,
+                            token_usage=agent.token_usage,
+                            duration_s=agent.duration_s,
+                            error=agent.error,
+                            started_at=agent.started_at,
+                            finished_at=agent.finished_at,
+                        )
+                        for agent in phase.agents
+                    ],
+                    started_at=phase.started_at,
+                    finished_at=phase.finished_at,
+                )
+                for phase in self._project.phases
+            ]
+            return WorkflowProject.model_construct(
+                workflow_id=self._project.workflow_id,
+                name=self._project.name,
+                description=self._project.description,
+                status=self._project.status,
+                requirement=self._project.requirement,
+                script_path=self._project.script_path,
+                meta=copy.deepcopy(self._project.meta) if self._project.meta else None,
+                metrics=metrics,
+                phases=phases,
+                result=self._project.result,
+                error=self._project.error,
+                started_at=self._project.started_at,
+                finished_at=self._project.finished_at,
+                pending=(
+                    copy.deepcopy(self._project.pending)
+                    if self._project.pending
+                    else None
+                ),
+                initiator_user_id=self._project.initiator_user_id,
+                selected_tools=(
+                    list(self._project.selected_tools)
+                    if self._project.selected_tools is not None
+                    else None
+                ),
+                tool_model_map=dict(self._project.tool_model_map),
+                orchestrator_selection_state=copy.deepcopy(
+                    self._project.orchestrator_selection_state
+                ),
+                review_selection_state=copy.deepcopy(
+                    self._project.review_selection_state
+                ),
+            )
 
     @property
     def project(self) -> WorkflowProject:
@@ -226,6 +297,23 @@ class WorkflowStateManager:
     # ------------------------------------------------------------------
     # Private helpers (called under lock)
     # ------------------------------------------------------------------
+
+    @contextmanager
+    def _write_locked(self):
+        """Acquire the state lock while making waiting writers visible."""
+        with self._writer_wait_lock:
+            self._writers_waiting += 1
+        self._lock.acquire()
+        with self._writer_wait_lock:
+            self._writers_waiting -= 1
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    def _has_waiting_writer(self) -> bool:
+        with self._writer_wait_lock:
+            return self._writers_waiting > 0
 
     def _find_or_create_phase(self, phase_title: str) -> PhaseProgress:
         """Find existing phase by title, or fall back to the last active phase.

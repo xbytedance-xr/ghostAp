@@ -33,10 +33,10 @@ export default async function main(args = {}) {
         log("Routed to implementation pipeline");
 
         const implemented = await fanout(input, [
-          { prompt: `Design the architecture for: ${input}`, tool: "claude", role: "architect", label: "design" },
-          { prompt: `Implement the core logic for: ${input}`, tool: "coco", role: "implementer", label: "implement" },
-          { prompt: `Write comprehensive tests for: ${input}`, tool: "aiden", role: "tester", label: "test" },
-        ], { synthesizerTool: "coco", synthesizerRole: "tech_lead" });
+          { prompt: `Design the architecture for: ${input}`, tool: "claude", role: "architect", label: "design", timeout: 180 },
+          { prompt: `Implement the core logic for: ${input}`, tool: "coco", role: "implementer", label: "implement", timeout: 240 },
+          { prompt: `Write comprehensive tests for: ${input}`, tool: "aiden", role: "tester", label: "test", timeout: 180 },
+        ], { synthesizerTool: "coco", synthesizerRole: "tech_lead", timeout: 180 });
 
         phase("Verification");
         log("Verifying implementation...");
@@ -63,7 +63,7 @@ export default async function main(args = {}) {
         const { results, stoppedBy } = await loop(
           async (i, prev) => {
             const context = prev ? `Previous findings: ${typeof prev === 'string' ? prev : JSON.stringify(prev)}` : "No prior findings.";
-            return agent(`Iteration ${i+1} of debugging:
+            const finding = await agent(`Iteration ${i+1} of debugging:
 ${input}
 
 ${context}
@@ -73,7 +73,12 @@ Find root cause(s) not yet identified. If all issues are found, set done=true.`,
               role: "debugger",
               label: `debug-${i}`,
               schema: { issues: [], root_cause: "", fix_suggestion: "", done: false },
+              timeout: 180,
             });
+            if (finding && finding.error) {
+              return { issues: [], root_cause: "", fix_suggestion: finding.error, done: true, error: finding.error };
+            }
+            return finding;
           },
           {
             maxIterations: 5,
@@ -93,11 +98,11 @@ Find root cause(s) not yet identified. If all issues are found, set done=true.`,
         log("Routed to multi-perspective review");
 
         return fanout(input, [
-          { prompt: `Security audit: ${input}`, tool: "claude", role: "security_auditor", label: "security" },
-          { prompt: `Architecture review: ${input}`, tool: "aiden", role: "architect", label: "architecture" },
-          { prompt: `Performance review: ${input}`, tool: "coco", role: "perf_expert", label: "performance" },
-          { prompt: `Correctness review: ${input}`, tool: "claude", role: "correctness_checker", label: "correctness" },
-        ], { synthesizerTool: "claude", synthesizerRole: "lead_reviewer" });
+          { prompt: `Security audit: ${input}`, tool: "claude", role: "security_auditor", label: "security", timeout: 180 },
+          { prompt: `Architecture review: ${input}`, tool: "aiden", role: "architect", label: "architecture", timeout: 180 },
+          { prompt: `Performance review: ${input}`, tool: "coco", role: "perf_expert", label: "performance", timeout: 180 },
+          { prompt: `Correctness review: ${input}`, tool: "claude", role: "correctness_checker", label: "correctness", timeout: 180 },
+        ], { synthesizerTool: "claude", synthesizerRole: "lead_reviewer", timeout: 180 });
       },
     },
     "optimization": {
@@ -108,25 +113,26 @@ Find root cause(s) not yet identified. If all issues are found, set done=true.`,
 
         const { winner } = await tournament(
           [
-            { prompt: `Optimize for runtime performance: ${input}`, tool: "coco", label: "perf-opt" },
-            { prompt: `Optimize for readability and maintainability: ${input}`, tool: "claude", label: "clean-opt" },
-            { prompt: `Optimize for minimal changes and safety: ${input}`, tool: "aiden", label: "safe-opt" },
+            { prompt: `Optimize for runtime performance: ${input}`, tool: "coco", label: "perf-opt", timeout: 180 },
+            { prompt: `Optimize for readability and maintainability: ${input}`, tool: "claude", label: "clean-opt", timeout: 180 },
+            { prompt: `Optimize for minimal changes and safety: ${input}`, tool: "aiden", label: "safe-opt", timeout: 180 },
           ],
           null,
-          { judgeTool: "claude", task: input, criteria: "correctness, improvement magnitude, safety" }
+          { judgeTool: "claude", task: input, criteria: "correctness, improvement magnitude, safety", timeout: 180 }
         );
 
         phase("Verification");
         const { output } = await verify(winner, {
           criteria: "no regressions, correctness preserved",
-          verifiers: [{ tool: "aiden", role: "regression_checker", focus: "Ensure no regressions" }],
+          verifiers: [{ tool: "aiden", role: "regression_checker", focus: "Ensure no regressions", timeout: 180 }],
           maxRounds: 1,
+          timeout: 180,
         });
 
         return output;
       },
     },
-  }, { classifierTool: "claude" });
+  }, { classifierTool: "claude", timeout: 120 });
 
   return result;
 }
