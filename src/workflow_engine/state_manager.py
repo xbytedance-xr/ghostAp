@@ -139,6 +139,17 @@ class WorkflowStateManager:
             self._project.error = error
             self._project.finished_at = time.time()
 
+    def on_workflow_cancelled(self, reason: str = "Workflow cancelled") -> None:
+        """Mark workflow as cancelled without rewriting it as a failure."""
+        with self._lock:
+            self._project.status = WorkflowStatus.CANCELLED
+            self._project.error = reason
+            self._project.finished_at = time.time()
+            if self._project.phases:
+                last_phase = self._project.phases[-1]
+                if last_phase.finished_at is None:
+                    last_phase.finished_at = time.time()
+
     def add_context_tokens(self, tokens: int) -> None:
         """Increment the main-context token counter (AC4 isolation).
 

@@ -21,6 +21,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _workflow_pending_statuses():
+    """States that own a pending Workflow card/session rather than a runtime run."""
+    from ...workflow_engine.models import WorkflowStatus
+
+    return {
+        WorkflowStatus.GENERATING_SCRIPT,
+        WorkflowStatus.AWAITING_AGENT_SELECT,
+        WorkflowStatus.AWAITING_TOOL_SELECT,
+        WorkflowStatus.AWAITING_CONFIRM,
+    }
+
+
 class WorkflowHandler(BaseEngineHandler):
     """Manages the full lifecycle of Workflow Engine tasks.
 
@@ -353,12 +365,7 @@ class WorkflowHandler(BaseEngineHandler):
         from ...workflow_engine.models import WorkflowStatus
 
         _STALE_THRESHOLD_S = 30 * 60
-        if existing and existing.project and existing.project.status in {
-            WorkflowStatus.AWAITING_CONFIRM,
-            WorkflowStatus.AWAITING_TOOL_SELECT,
-            WorkflowStatus.AWAITING_AGENT_SELECT,
-            WorkflowStatus.AWAITING_AGENT_SELECT,
-        }:
+        if existing and existing.project and existing.project.status in _workflow_pending_statuses():
             pending = existing.project.pending
             created_at = getattr(pending, "created_at", 0) if pending else 0
             if _time.time() - created_at > _STALE_THRESHOLD_S:
@@ -465,12 +472,7 @@ class WorkflowHandler(BaseEngineHandler):
         from ...workflow_engine.models import WorkflowStatus
 
         _STALE_THRESHOLD_S = 30 * 60
-        _AWAITING_STATES = {
-            WorkflowStatus.AWAITING_CONFIRM,
-            WorkflowStatus.AWAITING_TOOL_SELECT,
-            WorkflowStatus.AWAITING_AGENT_SELECT,
-            WorkflowStatus.AWAITING_AGENT_SELECT,
-        }
+        _AWAITING_STATES = _workflow_pending_statuses()
         if existing and existing.project and existing.project.status in _AWAITING_STATES:
             pending = existing.project.pending
             created_at = getattr(pending, "created_at", 0) if pending else 0
@@ -1066,10 +1068,10 @@ class WorkflowHandler(BaseEngineHandler):
         # Initialize orchestrator selection controller
         ctrl = SelectionFlowController()
         if project is not None:
-            # Restore from session if exists
-            if hasattr(project, "_wf_selection_snapshot"):
-                ctrl.restore(project._wf_selection_snapshot)
+            # A fresh /wf must not inherit the previous card's selections.
+            # Selection snapshots are valid only within one pending session.
             project._wf_selection_controller = ctrl
+            project._wf_selection_snapshot = ctrl.snapshot()
 
         project_id = project.project_id if project else ""
 
@@ -1152,6 +1154,25 @@ class WorkflowHandler(BaseEngineHandler):
         )
         self.send_card_to_chat(chat_id, card)
 
+    @staticmethod
+    def _is_current_generation_session(engine: Any | None, expected_session_key: str | None) -> bool:
+        """Return True if an async script-generation task still owns the session."""
+        if not expected_session_key:
+            return True
+        if not engine or not getattr(engine, "project", None):
+            return False
+
+        from ...workflow_engine.models import WorkflowStatus
+
+        project = engine.project
+        pending = getattr(project, "pending", None)
+        stored_session_key = getattr(pending, "engine_session_key", "") if pending else ""
+        return (
+            project.status == WorkflowStatus.GENERATING_SCRIPT
+            and bool(stored_session_key)
+            and stored_session_key == expected_session_key
+        )
+
     def _generate_and_show_confirm_card(
         self,
         message_id: str,
@@ -1160,6 +1181,8 @@ class WorkflowHandler(BaseEngineHandler):
         project: Optional["ProjectContext"],
         root_path: str,
         selected_tools: list[str] | None,
+        *,
+        expected_session_key: str | None = None,
     ) -> None:
         """Generate script (template or AI) and show confirmation card.
 
@@ -1247,6 +1270,13 @@ class WorkflowHandler(BaseEngineHandler):
             root_path,
             engine_name=engine_name,
         )
+        if not self._is_current_generation_session(engine, expected_session_key):
+            logger.info(
+                "[workflow] Dropping stale script generation before model call (expected_session=%s)",
+                (expected_session_key or "")[:8],
+            )
+            _stop_heartbeat()
+            return
 
         parts = requirement.strip().split(None, 1)
         template_name = parts[0] if parts else ""
@@ -1311,6 +1341,12 @@ class WorkflowHandler(BaseEngineHandler):
             )
         # Stop the heartbeat timer
         _stop_heartbeat()
+        if not self._is_current_generation_session(engine, expected_session_key):
+            logger.info(
+                "[workflow] Dropping stale script generation result (expected_session=%s)",
+                (expected_session_key or "")[:8],
+            )
+            return
         if engine.project:
             engine.project.status = WorkflowStatus.AWAITING_CONFIRM
             # Preserve fields from the existing pending state so that
@@ -1418,9 +1454,19 @@ class WorkflowHandler(BaseEngineHandler):
 
         project_name = (getattr(project, "project_name", "") if project else "") or os.path.basename(root_path)
         task_id = generate_task_id(project_name or "workflow")
+        expected_session_key = None
+        if engine and getattr(engine, "project", None) and engine.project.pending:
+            expected_session_key = engine.project.pending.engine_session_key
 
         def run_generate() -> None:
             try:
+                task_engine = self.ctx.workflow_engine_manager.get(chat_id, root_path)
+                if not self._is_current_generation_session(task_engine, expected_session_key):
+                    logger.info(
+                        "[workflow] Skipping stale script generation task (expected_session=%s)",
+                        (expected_session_key or "")[:8],
+                    )
+                    return
                 self._generate_and_show_confirm_card(
                     message_id=message_id,
                     chat_id=chat_id,
@@ -1428,6 +1474,7 @@ class WorkflowHandler(BaseEngineHandler):
                     project=project,
                     root_path=root_path,
                     selected_tools=selected_tools,
+                    expected_session_key=expected_session_key,
                 )
             except Exception as exc:
                 from ...workflow_engine.models import WorkflowStatus
@@ -1438,6 +1485,7 @@ class WorkflowHandler(BaseEngineHandler):
                         task_engine
                         and task_engine.project
                         and task_engine.project.status == WorkflowStatus.GENERATING_SCRIPT
+                        and self._is_current_generation_session(task_engine, expected_session_key)
                     ):
                         task_engine.project.status = WorkflowStatus.IDLE
                         task_engine.project.pending = None
@@ -1464,7 +1512,12 @@ class WorkflowHandler(BaseEngineHandler):
         except Exception as exc:
             from ...workflow_engine.models import WorkflowStatus
 
-            if engine and engine.project and engine.project.status == WorkflowStatus.GENERATING_SCRIPT:
+            if (
+                engine
+                and engine.project
+                and engine.project.status == WorkflowStatus.GENERATING_SCRIPT
+                and self._is_current_generation_session(engine, expected_session_key)
+            ):
                 engine.project.status = WorkflowStatus.AWAITING_TOOL_SELECT
             logger.error("Workflow script generation task submission failed: %s", exc, exc_info=True)
             self._reply_workflow_error(
@@ -1579,7 +1632,14 @@ class WorkflowHandler(BaseEngineHandler):
         root_path = self._get_root_path(chat_id, project)
         engine = self.ctx.workflow_engine_manager.get(chat_id, root_path)
 
-        if not engine or not engine.is_running:
+        from ...workflow_engine.models import WorkflowStatus
+
+        is_generating = bool(
+            engine
+            and engine.project
+            and engine.project.status == WorkflowStatus.GENERATING_SCRIPT
+        )
+        if not engine or (not engine.is_running and not is_generating):
             self._reply_workflow_error(message_id, "invalid_state", detail="当前没有运行中的 Workflow 任务")
             return
 
@@ -1587,7 +1647,11 @@ class WorkflowHandler(BaseEngineHandler):
         from ...thread import get_current_sender_id
 
         current_user = get_current_sender_id()
-        stored_initiator = getattr(engine.project, "initiator_user_id", None)
+        pending = getattr(engine.project, "pending", None) if engine.project else None
+        stored_initiator = (
+            getattr(engine.project, "initiator_user_id", None)
+            or (getattr(pending, "initiator_user_id", None) if pending else None)
+        )
         admin_ids: list[str] = getattr(self.ctx.settings, "admin_user_ids", []) or []
 
         # Fail-closed: missing initiator or operator → deny
@@ -1599,7 +1663,11 @@ class WorkflowHandler(BaseEngineHandler):
             self._reply_workflow_error(message_id, "forbidden", detail="只有 Workflow 发起者或管理员才能停止此任务")
             return
 
-        engine.stop()
+        if is_generating:
+            engine.project.status = WorkflowStatus.IDLE
+            engine.project.pending = None
+        else:
+            engine.stop()
         self.reply_text(message_id, "Workflow 任务已停止。")
 
     # ------------------------------------------------------------------
@@ -2967,12 +3035,7 @@ class WorkflowHandler(BaseEngineHandler):
 
         from ...workflow_engine.models import WorkflowStatus
 
-        valid_statuses = (
-            WorkflowStatus.AWAITING_CONFIRM,
-            WorkflowStatus.AWAITING_TOOL_SELECT,
-            WorkflowStatus.AWAITING_AGENT_SELECT,
-            WorkflowStatus.AWAITING_AGENT_SELECT,
-        )
+        valid_statuses = _workflow_pending_statuses()
         if engine.project.status not in valid_statuses:
             self._reply_workflow_error(message_id, "invalid_state")
             return

@@ -224,6 +224,10 @@ class WorkflowEngine(BaseEngine):
             RuntimeError: If Node.js is unavailable or the bridge fails fatally.
         """
         self._callbacks = callbacks or WorkflowEngineCallbacks()
+        # WorkflowEngine instances are intentionally reused by the manager for
+        # the same chat/root path. A previous stop() leaves the event set; every
+        # new run must start with a clean cancellation boundary.
+        self._cancel_event.clear()
 
         # Parse meta from the generated script so we can honor meta.maxConcurrent
         # before the bridge / executor thread pools are created.
@@ -332,7 +336,7 @@ class WorkflowEngine(BaseEngine):
                 project.status = WorkflowStatus.CANCELLED
                 project.error = "Workflow cancelled"
                 project.finished_at = time.time()
-                self._state_manager.on_workflow_failed("cancelled")
+                self._state_manager.on_workflow_cancelled("Workflow cancelled")
             else:
                 project.status = WorkflowStatus.FAILED
                 project.error = sanitized_error

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-01
+- **WF状态一致性加固** — 修复 `/wf` 生成中/取消/重开会话串台：GENERATING_SCRIPT 纳入 pending 状态、异步生成 session guard、cancel_event 复位、取消终态不再变 failed；相关回归 143 passed → [详细记录](2026-07-01.md)
 - **Spec完成度把控三阶段落地** — 客观验证锚点（verify_command 失败时覆盖 LLM 乐观自评）+ completion_control 升级为主动验证者（专属 prompt 指示不择手段验证）+ 证据支撑的提前结束/否决闸门；相关回归 125 passed → [详细记录](2026-07-01.md)
 
 ## 2026-06-26

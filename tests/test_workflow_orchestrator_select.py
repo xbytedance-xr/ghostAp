@@ -725,6 +725,7 @@ def test_review_finish_schedules_script_generation_without_blocking_callback():
         project=mock_project,
         root_path="/tmp/test_proj",
         selected_tools=["coco", "claude"],
+        expected_session_key="sess_abc",
     )
     assert mock_engine.project.pending.review_agents
     assert mock_engine.project.pending.selected_tools == ["coco", "claude"]
