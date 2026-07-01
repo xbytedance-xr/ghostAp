@@ -59,6 +59,28 @@ def decompose_criteria_with_llm(
         return []
 
 
+def run_objective_verify(
+    verify_command: str,
+    cwd: str,
+    timeout: int = 300,
+    chat_id: str = "",
+) -> tuple[bool, str]:
+    """Execute verify_command via SandboxExecutor, return (passed, output)."""
+    if not verify_command:
+        return True, ""
+    try:
+        from ..sandbox.executor import SandboxExecutor
+        executor = SandboxExecutor()
+        result = executor.execute(verify_command, cwd=cwd, interactive=False, chat_id=chat_id)
+        output = result.stdout
+        if result.stderr:
+            output = f"{output}\n{result.stderr}".strip()
+        return result.success, output
+    except Exception as e:
+        logger.warning("[Spec] objective verify execution error: %s", get_error_detail(e))
+        return False, f"verify execution error: {get_error_detail(e)}"
+
+
 def evaluate_criteria(
     session,
     criteria: list[str],
@@ -66,9 +88,11 @@ def evaluate_criteria(
     project,
     send_prompt_fn: Callable,
     settings,
+    *,
+    cached_verify: tuple[bool | None, str] | None = None,
 ) -> dict:
     if not session:
-        return {"all_satisfied": False}
+        return {"all_satisfied": False, "verify_passed": False, "verify_output": ""}
 
     criteria_list = "\n".join(f"CRITERIA_{i + 1}: {c}" for i, c in enumerate(criteria))
     eval_prompt = f"""请评估以下验收标准是否已满足：
@@ -110,8 +134,42 @@ CRITERIA_2: FAIL
             project.criteria_tracker.batch_update(per_criteria, cycle)
 
         all_satisfied = project.criteria_tracker.is_all_satisfied if project else False
-        return {"all_satisfied": all_satisfied}
+
+        # Phase 1: Objective verification gate.
+        # If verify_command exists and is enabled, run it. A failing verify
+        # overrides LLM's optimistic self-eval — never declare all_satisfied
+        # when the real verification command fails.
+        verify_passed = True
+        verify_output = ""
+        if (
+            all_satisfied
+            and project
+            and getattr(project, "verify_command", "")
+            and getattr(settings, "spec_objective_verify_enabled", True)
+        ):
+            if cached_verify is not None:
+                cv_passed, cv_output = cached_verify
+                verify_passed = cv_passed if cv_passed is not None else True
+                verify_output = cv_output
+            else:
+                verify_passed, verify_output = run_objective_verify(
+                    project.verify_command,
+                    cwd=getattr(project, "root_path", ""),
+                    timeout=int(getattr(settings, "spec_objective_verify_timeout", 300)),
+                )
+            if not verify_passed:
+                logger.info(
+                    "[Spec] objective verify FAILED — overriding all_satisfied=True to False. "
+                    "Command: %s", project.verify_command,
+                )
+                all_satisfied = False
+
+        return {
+            "all_satisfied": all_satisfied,
+            "verify_passed": verify_passed,
+            "verify_output": verify_output,
+        }
 
     except Exception as e:
         logger.debug("[Spec] 验收标准评估失败: %s", get_error_detail(e))
-        return {"all_satisfied": False}
+        return {"all_satisfied": False, "verify_passed": False, "verify_output": ""}

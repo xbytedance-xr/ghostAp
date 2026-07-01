@@ -230,8 +230,8 @@ def test_completion_control_blocks_direction_drift_with_artifact_evidence():
 
     def factory(role):
         def runner(prompt, on_event, timeout):
-            assert "当前 Spec 循环是否仍贴合用户原始方向" in prompt
-            assert "验收标准、计划、构建结果和审查结论之间的完成度证据" in prompt
+            # Dedicated prompt contains goal verification instructions
+            assert "不择手段验证" in prompt or "GOAL_MET" in prompt
             return _json(
                 role.role_id,
                 verdict="FAIL",
@@ -257,6 +257,8 @@ def test_completion_control_blocks_direction_drift_with_artifact_evidence():
             tasks_output="1. 修改 guard\n2. 补测试",
             build_output="只更新 README，未运行测试",
             diff_patch="diff --git a/README.md b/README.md\n+docs only",
+            acceptance_criteria=["卡片 guard 覆盖 schema 错误"],
+            criteria_satisfied={0: False},
         ),
         [role],
         prompt_runner_factory=factory,
@@ -292,6 +294,8 @@ def test_role_review_prompt_includes_phase_outputs_for_completion_judgment():
             tasks_output="TASKS: 1. 添加独立角色",
             build_output="BUILD: tests passed",
             diff_patch="diff --git a/src/spec_engine/review_roles.py b/src/spec_engine/review_roles.py\n+role",
+            acceptance_criteria=["修复 completion guard"],
+            criteria_satisfied={0: True},
         ),
         [role],
         prompt_runner_factory=factory,
@@ -300,11 +304,8 @@ def test_role_review_prompt_includes_phase_outputs_for_completion_judgment():
     )
 
     prompt = seen_prompts[0]
-    assert "## Spec 输出" in prompt
-    assert "SPEC: 用户方向是修复 completion guard" in prompt
-    assert "## Plan 输出" in prompt
-    assert "PLAN: 修改 review role planner" in prompt
-    assert "## Task 输出" in prompt
-    assert "TASKS: 1. 添加独立角色" in prompt
-    assert "## Build 输出" in prompt
-    assert "BUILD: tests passed" in prompt
+    # Dedicated completion_control prompt includes requirement, criteria status, and diff
+    assert "修复完成度判断" in prompt
+    assert "修复 completion guard" in prompt
+    assert "GOAL_MET" in prompt
+    assert "diff" in prompt.lower()

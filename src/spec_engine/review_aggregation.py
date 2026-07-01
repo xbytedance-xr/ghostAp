@@ -42,6 +42,10 @@ class RoleReviewOutcome:
     error: str = ""
     blocking: bool = True
     base_perspective_value: str = ""
+    # Completion gate fields (only populated for completion_control role)
+    goal_verdict: str = ""
+    goal_confidence: str = ""
+    goal_evidence: str = ""
 
 
 @dataclass

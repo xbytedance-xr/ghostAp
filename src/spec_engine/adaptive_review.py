@@ -17,7 +17,7 @@ from src.spec_engine.review_aggregation import (
     aggregate_role_outcomes,
 )
 from src.spec_engine.review_artifacts import ReviewArtifacts
-from src.spec_engine.review_roles import ReviewRoleSpec, batch_roles_by_dependencies
+from src.spec_engine.review_roles import COMPLETION_CONTROL_ROLE_ID, ReviewRoleSpec, batch_roles_by_dependencies
 from src.spec_engine.utils import extract_suggestions_from_body, normalize_review_verdict
 from src.utils.errors import classify_timeout, get_error_detail
 
@@ -34,9 +34,90 @@ class AdaptiveReviewResult(ReviewResult):
     role_plan_hash: str = ""
     blocking_suggestion_hash: str = ""
     blocking_review_passed: bool = False
+    # Completion gate (Phase 3): set by completion_control role
+    completion_gate_met: bool = False
+    completion_gate_confidence: str = ""
+    completion_gate_evidence: str = ""
+
+
+def _build_completion_control_prompt(role: ReviewRoleSpec, artifacts: ReviewArtifacts) -> str:
+    """Dedicated prompt for completion_control: instructs active verification."""
+    criteria_lines: list[str] = []
+    for i, c in enumerate(artifacts.acceptance_criteria or []):
+        status = "PASS" if artifacts.criteria_satisfied.get(i, False) else "FAIL"
+        criteria_lines.append(f"  {i + 1}. [{status}] {c}")
+    criteria_section = "\n".join(criteria_lines) if criteria_lines else "  (无验收标准)"
+
+    verify_section = ""
+    if artifacts.verify_command:
+        v_status = "PASS" if artifacts.verify_passed else ("FAIL" if artifacts.verify_passed is False else "未执行")
+        verify_section = f"""
+## 客观验证命令
+命令: `{artifacts.verify_command}`
+结果: {v_status}
+输出摘要: {artifacts.verify_output[:2000] if artifacts.verify_output else '(无输出)'}
+"""
+
+    diff = artifacts.diff_patch or ""
+    if len(diff) > 15_000:
+        diff = diff[:6_000] + f"\n\n...[truncated {len(diff) - 12_000} chars]...\n\n" + diff[-6_000:]
+
+    return f"""你是独立的"完成度与方向把控"评审员。你的唯一任务：客观判定当前实现是否真正完成了用户的原始目标。
+
+## 核心原则
+- **不择手段验证**：不要只读文本——主动运行测试、检查文件存在性、验证输出、grep 代码来确认完成度。
+- **用事实说话**：每条判定必须附带客观证据（命令输出、文件内容、测试结果），不接受"看起来完成了"。
+- **抵制乐观偏差**：其他角色可能倾向于放过，你的职责是怀疑并验证。
+- **方向对齐**：确认当前实现精确回应了用户最初提出的问题，没有偏移。
+
+## 用户原始目标
+{artifacts.requirement}
+
+## 验收标准当前状态
+{criteria_section}
+{verify_section}
+## 当前 Diff（代码变更）
+```diff
+{diff}
+```
+
+## 你的验证步骤
+1. 逐条检查验收标准——对每条声称 PASS 的标准，尝试找到反例或缺失证据
+2. 如果有 verify_command 且为 FAIL，这是硬性证据，不允许判定完成
+3. 检查是否存在方向偏移（做了用户没要的、漏了用户要的）
+4. 综合判定：GOAL_MET（可以停止）或 GOAL_NOT_MET（必须继续）
+
+## 输出格式（严格 JSON）
+{{
+  "role_id": "completion_control",
+  "verdict": "PASS|FAIL",
+  "goal_verdict": "GOAL_MET|GOAL_NOT_MET",
+  "goal_confidence": "high|medium|low",
+  "evidence_summary": "用 2-3 句话列举客观事实证据",
+  "per_criterion": [
+    {{"index": 1, "status": "VERIFIED|UNVERIFIED|FAILED", "evidence": "具体证据"}},
+  ],
+  "suggestions": [
+    {{
+      "severity": "blocker|major|minor|observation",
+      "confidence": "high|medium|low",
+      "evidence": "客观事实证据",
+      "recommendation": "具体改进动作",
+      "target": "目标文件或模块"
+    }}
+  ]
+}}
+
+规则：
+- goal_verdict=GOAL_MET 当且仅当：所有验收标准有客观证据支撑 AND verify_command 通过（如有）AND 方向未偏移
+- 如果你无法验证某条标准（缺乏证据），verdict=FAIL, goal_verdict=GOAL_NOT_MET
+- verdict=PASS 当且仅当 goal_verdict=GOAL_MET 且无 blocker/major suggestions
+"""
 
 
 def build_role_review_prompt(role: ReviewRoleSpec, artifacts: ReviewArtifacts) -> str:
+    if role.role_id == COMPLETION_CONTROL_ROLE_ID:
+        return _build_completion_control_prompt(role, artifacts)
     files = "\n".join(f"- {path}" for path in (artifacts.touched_files or [])[:50])
     diff = artifacts.diff_patch or ""
     if len(diff) > 20_000:
@@ -154,16 +235,24 @@ def parse_role_review_output(role: ReviewRoleSpec, raw: str) -> RoleReviewOutcom
     has_blocking = any(s.blocking for s in suggestions)
     verdict = str(data.get("verdict") or "").strip().upper()
     passed = verdict == "PASS" or not has_blocking
+
+    goal_verdict = str(data.get("goal_verdict") or "").strip().upper()
+    goal_confidence = str(data.get("goal_confidence") or "").strip().lower()
+    goal_evidence = str(data.get("evidence_summary") or "").strip()
+
     return RoleReviewOutcome(
         role_id=role.role_id,
         role_display_name=role.display_name,
         role_category=role.category,
         passed=passed,
-        summary=str(data.get("summary") or ""),
+        summary=str(data.get("summary") or goal_evidence or ""),
         suggestions=suggestions,
         raw_preview=(raw or "")[:500],
         blocking=role.blocking,
         base_perspective_value=role.base_perspective.value if role.base_perspective else "",
+        goal_verdict=goal_verdict,
+        goal_confidence=goal_confidence,
+        goal_evidence=goal_evidence,
     )
 
 
@@ -313,6 +402,17 @@ def _outcomes_to_review_result(outcomes: list[RoleReviewOutcome], iteration: int
             )
         )
 
+    # Extract completion gate from completion_control role
+    completion_gate_met = False
+    completion_gate_confidence = ""
+    completion_gate_evidence = ""
+    for outcome in outcomes:
+        if outcome.role_id == COMPLETION_CONTROL_ROLE_ID and outcome.goal_verdict:
+            completion_gate_met = outcome.goal_verdict == "GOAL_MET"
+            completion_gate_confidence = outcome.goal_confidence
+            completion_gate_evidence = outcome.goal_evidence
+            break
+
     return AdaptiveReviewResult(
         reviews=reviews,
         iteration=iteration,
@@ -320,6 +420,9 @@ def _outcomes_to_review_result(outcomes: list[RoleReviewOutcome], iteration: int
         aggregated=aggregated,
         blocking_suggestion_hash=aggregated.blocking_hash(),
         blocking_review_passed=all(pr.passed for pr in reviews),
+        completion_gate_met=completion_gate_met,
+        completion_gate_confidence=completion_gate_confidence,
+        completion_gate_evidence=completion_gate_evidence,
     )
 
 

@@ -337,6 +337,12 @@ class Settings(BaseSettings):
     # 审查解析失败时的默认判定 ("fail" = 视为未通过, "pass" = 视为通过)
     spec_review_parse_failure_default: Literal["pass", "fail"] = "fail"
 
+    # ---- 完成度把控（Completion Control）----
+    spec_objective_verify_enabled: bool = True
+    spec_objective_verify_timeout: int = 300
+    spec_completion_control_active_verify: bool = True
+    spec_completion_gate_enabled: bool = True
+
     @property
     def spec_review(self) -> "SpecReviewConfig":
         """Structured view of spec review / retry / circuit-breaker settings."""

@@ -54,6 +54,13 @@ class ReviewArtifacts:
     tasks_path: Optional[str] = None
     build_path: Optional[str] = None
 
+    # Completion control context (Phase 2)
+    acceptance_criteria: list[str] = field(default_factory=list)
+    criteria_satisfied: dict[int, bool] = field(default_factory=dict)
+    verify_command: str = ""
+    verify_passed: Optional[bool] = None
+    verify_output: str = ""
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -74,6 +81,11 @@ class ReviewArtifacts:
             plan_path=data.get("plan_path"),
             tasks_path=data.get("tasks_path"),
             build_path=data.get("build_path"),
+            acceptance_criteria=list(data.get("acceptance_criteria") or []),
+            criteria_satisfied={int(k): v for k, v in (data.get("criteria_satisfied") or {}).items()},
+            verify_command=str(data.get("verify_command") or ""),
+            verify_passed=data.get("verify_passed"),
+            verify_output=str(data.get("verify_output") or ""),
         )
 
 
@@ -116,6 +128,8 @@ def collect_review_artifacts(
     cwd: str,
     build_output_max: int = 20_000,
     include_diff: bool = True,
+    verify_passed: Optional[bool] = None,
+    verify_output: str = "",
 ) -> ReviewArtifacts:
     """Build a ReviewArtifacts snapshot from the current cycle state.
 
@@ -124,6 +138,12 @@ def collect_review_artifacts(
     """
     diff = _git_diff(cwd) if include_diff else ""
     files = _git_touched_files(cwd) if include_diff else []
+
+    criteria = list(getattr(project, "acceptance_criteria", []) or [])
+    tracker = getattr(project, "criteria_tracker", None)
+    criteria_satisfied: dict[int, bool] = {}
+    if tracker:
+        criteria_satisfied = dict(getattr(tracker, "satisfied", {}) or {})
 
     return ReviewArtifacts(
         cycle_number=int(cycle.cycle_number),
@@ -142,6 +162,11 @@ def collect_review_artifacts(
         plan_path=cycle.plan_path,
         tasks_path=cycle.tasks_path,
         build_path=cycle.build_path,
+        acceptance_criteria=criteria,
+        criteria_satisfied=criteria_satisfied,
+        verify_command=str(getattr(project, "verify_command", "") or ""),
+        verify_passed=verify_passed,
+        verify_output=truncate_text(verify_output or "", 4_000),
     )
 
 

@@ -217,6 +217,8 @@ class SpecEngine(BaseEngine):
         self._last_cycle_num: int = 0
         self._last_phase: SpecPhase = SpecPhase.SPEC
         self._review_agent_pool: list[ReviewAgentBinding] = []
+        self._last_verify_passed: bool | None = None
+        self._last_verify_output: str = ""
 
     def set_review_agent_pool(self, agents: list[object] | None) -> None:
         """Set optional heterogeneous review agents for adaptive role review."""
@@ -876,6 +878,21 @@ class SpecEngine(BaseEngine):
                     termination = "paused"
                     break
 
+                # Pre-review objective verify (results fed to completion_control)
+                self._last_verify_passed = None
+                self._last_verify_output = ""
+                if (
+                    self._project
+                    and self._project.verify_command
+                    and getattr(self.settings, "spec_objective_verify_enabled", True)
+                ):
+                    from .criteria import run_objective_verify
+                    self._last_verify_passed, self._last_verify_output = run_objective_verify(
+                        self._project.verify_command,
+                        cwd=self.root_path,
+                        timeout=int(getattr(self.settings, "spec_objective_verify_timeout", 300)),
+                    )
+
                 review_passed = self._run_review_phase(cycle_num, cycle, callbacks)
                 cycle.complete()
 
@@ -1288,6 +1305,55 @@ class SpecEngine(BaseEngine):
                     int(getattr(self.settings, "spec_review_pass_streak_required", 2) or 2),
                 )
 
+        # --- COMPLETION GATE (Phase 3): evidence-backed early stop / veto ---
+        completion_gate_met = False
+        completion_gate_confidence = ""
+        if getattr(self.settings, "spec_completion_gate_enabled", True) and cycle.review_result:
+            from .adaptive_review import AdaptiveReviewResult
+            if isinstance(cycle.review_result, AdaptiveReviewResult):
+                completion_gate_met = cycle.review_result.completion_gate_met
+                completion_gate_confidence = cycle.review_result.completion_gate_confidence
+
+        # Evidence-backed early stop: bypass streak requirement when completion_control
+        # confirms GOAL_MET with high confidence AND objective verify passed AND
+        # no other blocking suggestions exist.
+        if (
+            all_satisfied
+            and completion_gate_met
+            and completion_gate_confidence == "high"
+            and review_passed
+            and not effective_review_passed
+            and getattr(self, "_last_verify_passed", None) is not False
+        ):
+            logger.info(
+                "[Spec:%s] 完成度闸门允许提前结束：completion_control=GOAL_MET(high), verify=%s",
+                self._project.name,
+                getattr(self, "_last_verify_passed", None),
+            )
+            effective_review_passed = True
+
+        # Completion control veto: if completion_control says GOAL_NOT_MET with
+        # blocking suggestions, prevent success even if other signals say stop.
+        if (
+            all_satisfied
+            and effective_review_passed
+            and not completion_gate_met
+            and cycle.review_result
+            and getattr(self.settings, "spec_completion_gate_enabled", True)
+        ):
+            from .adaptive_review import AdaptiveReviewResult
+            if isinstance(cycle.review_result, AdaptiveReviewResult):
+                has_cc_blockers = any(
+                    o.role_id == "completion_control" and not o.passed
+                    for o in cycle.review_result.role_outcomes
+                )
+                if has_cc_blockers:
+                    logger.info(
+                        "[Spec:%s] 完成度闸门否决：completion_control 有 blocking 建议",
+                        self._project.name,
+                    )
+                    effective_review_passed = False
+
         decision = policy.should_stop(
             cycle_num=cycle_num,
             all_satisfied=all_satisfied,
@@ -1399,6 +1465,9 @@ class SpecEngine(BaseEngine):
     # Criteria evaluation (reuses loop pattern)
     # ------------------------------------------------------------------
     def _evaluate_criteria(self, criteria: list[str], cycle: int) -> dict:
+        cached = None
+        if self._last_verify_passed is not None:
+            cached = (self._last_verify_passed, self._last_verify_output)
         return _evaluate_criteria_impl(
             session=self._session,
             criteria=criteria,
@@ -1406,6 +1475,7 @@ class SpecEngine(BaseEngine):
             project=self._project,
             send_prompt_fn=self._send_prompt_with_retry,
             settings=self.settings,
+            cached_verify=cached,
         )
 
     # ------------------------------------------------------------------
@@ -1432,6 +1502,8 @@ class SpecEngine(BaseEngine):
                     cycle=cycle_obj,
                     project=self._project,
                     cwd=self.root_path,
+                    verify_passed=getattr(self, "_last_verify_passed", None),
+                    verify_output=getattr(self, "_last_verify_output", "") or "",
                 )
             except Exception as e:
                 logger.warning("[Spec] collect_review_artifacts failed, falling back to legacy: %s", repr(e), exc_info=True)

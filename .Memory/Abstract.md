@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-01
+- **Spec完成度把控三阶段落地** — 客观验证锚点（verify_command 失败时覆盖 LLM 乐观自评）+ completion_control 升级为主动验证者（专属 prompt 指示不择手段验证）+ 证据支撑的提前结束/否决闸门；相关回归 125 passed → [详细记录](2026-07-01.md)
+
 ## 2026-06-26
 - **全模式Traex模型分页** — 普通/slock/Worktree/Spec 选模型仍一次性渲染 90 个 Traex 模型被飞书 11310 拒绝；统一加 20/页分页+翻页导航，相关回归 151+499 passed → [详细记录](2026-06-26.md)
 
