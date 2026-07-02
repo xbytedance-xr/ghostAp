@@ -20,7 +20,7 @@ from src.spec_engine.review_artifacts import ReviewArtifacts
 from src.spec_engine.review_roles import ReviewRoleSpec
 
 
-def _role(role_id: str, *, base_perspective=None) -> ReviewRoleSpec:
+def _role(role_id: str, *, base_perspective=None, blocking: bool = True) -> ReviewRoleSpec:
     return ReviewRoleSpec(
         role_id=role_id,
         display_name=role_id.replace("_", " ").title(),
@@ -30,6 +30,7 @@ def _role(role_id: str, *, base_perspective=None) -> ReviewRoleSpec:
         must_check=["check"],
         evidence_policy="blockers require evidence",
         base_perspective=base_perspective,
+        blocking=blocking,
     )
 
 
@@ -121,8 +122,7 @@ def test_small_diff_not_truncated():
 
 def test_blocking_role_timeout_stays_blocking():
     """Blocking role timeout should remain blocking with timeout_blocking prefix."""
-    role = _role("architect", base_perspective=ReviewPerspective.ARCHITECT)
-    role.blocking = True
+    role = _role("architect", base_perspective=ReviewPerspective.ARCHITECT, blocking=True)
 
     def runner(prompt, on_event, timeout):
         raise TimeoutError("ACP prompt 执行超时 (240.0s)")
@@ -140,8 +140,7 @@ def test_blocking_role_timeout_stays_blocking():
 
 def test_non_blocking_role_timeout_degrades():
     """Non-blocking role timeout should degrade to non-blocking with timeout_degraded prefix."""
-    role = _role("doc_writer", base_perspective=ReviewPerspective.PRODUCT)
-    role.blocking = False
+    role = _role("doc_writer", base_perspective=ReviewPerspective.PRODUCT, blocking=False)
 
     def runner(prompt, on_event, timeout):
         raise TimeoutError("ACP prompt 执行超时 (240.0s)")
@@ -180,8 +179,7 @@ class TestAC17ClassifyTimeoutRegression:
 
     def test_plain_timeout_error_blocking_role(self):
         """Blocking role + plain TimeoutError → blocking=True, timeout_blocking prefix."""
-        role = _role("tester", base_perspective=ReviewPerspective.TESTER)
-        role.blocking = True
+        role = _role("tester", base_perspective=ReviewPerspective.TESTER, blocking=True)
 
         def runner(prompt, on_event, timeout):
             raise TimeoutError("operation timed out")
@@ -195,8 +193,7 @@ class TestAC17ClassifyTimeoutRegression:
 
     def test_plain_timeout_error_non_blocking_role(self):
         """Non-blocking role + plain TimeoutError → blocking=False, timeout_degraded prefix."""
-        role = _role("tester", base_perspective=ReviewPerspective.TESTER)
-        role.blocking = False
+        role = _role("tester", base_perspective=ReviewPerspective.TESTER, blocking=False)
 
         def runner(prompt, on_event, timeout):
             raise TimeoutError("operation timed out")
@@ -210,8 +207,7 @@ class TestAC17ClassifyTimeoutRegression:
 
     def test_asyncio_timeout_error_blocking(self):
         """Blocking role + asyncio.TimeoutError → blocking=True, timeout_blocking."""
-        role = _role("architect", base_perspective=ReviewPerspective.ARCHITECT)
-        role.blocking = True
+        role = _role("architect", base_perspective=ReviewPerspective.ARCHITECT, blocking=True)
 
         def runner(prompt, on_event, timeout):
             raise asyncio.TimeoutError()
@@ -224,8 +220,7 @@ class TestAC17ClassifyTimeoutRegression:
 
     def test_asyncio_timeout_error_non_blocking(self):
         """Non-blocking role + asyncio.TimeoutError → blocking=False, timeout_degraded."""
-        role = _role("architect", base_perspective=ReviewPerspective.ARCHITECT)
-        role.blocking = False
+        role = _role("architect", base_perspective=ReviewPerspective.ARCHITECT, blocking=False)
 
         def runner(prompt, on_event, timeout):
             raise asyncio.TimeoutError()
@@ -238,8 +233,7 @@ class TestAC17ClassifyTimeoutRegression:
 
     def test_wrapped_timeout_in_cause_chain_blocking(self):
         """Blocking role + RuntimeError wrapping TimeoutError → blocking=True."""
-        role = _role("designer", base_perspective=ReviewPerspective.DESIGNER)
-        role.blocking = True
+        role = _role("designer", base_perspective=ReviewPerspective.DESIGNER, blocking=True)
 
         def runner(prompt, on_event, timeout):
             try:
@@ -316,8 +310,7 @@ class TestAC19TimeoutSemanticsByRoleType:
     @pytest.mark.parametrize("role_id,perspective", _ALL_REVIEW_ROLES)
     def test_blocking_role_timeout_stays_blocking(self, role_id, perspective):
         """Blocking role: TimeoutError → blocking=True, timeout_blocking prefix."""
-        role = _role(role_id, base_perspective=perspective)
-        role.blocking = True
+        role = _role(role_id, base_perspective=perspective, blocking=True)
 
         def runner(prompt, on_event, timeout):
             raise TimeoutError(f"ACP prompt 执行超时 ({timeout}s)")
@@ -335,8 +328,7 @@ class TestAC19TimeoutSemanticsByRoleType:
     @pytest.mark.parametrize("role_id,perspective", _ALL_REVIEW_ROLES)
     def test_non_blocking_role_timeout_degrades(self, role_id, perspective):
         """Non-blocking role: TimeoutError → blocking=False, timeout_degraded prefix."""
-        role = _role(role_id, base_perspective=perspective)
-        role.blocking = False
+        role = _role(role_id, base_perspective=perspective, blocking=False)
 
         def runner(prompt, on_event, timeout):
             raise TimeoutError(f"ACP prompt 执行超时 ({timeout}s)")
@@ -353,8 +345,7 @@ class TestAC19TimeoutSemanticsByRoleType:
     @pytest.mark.parametrize("role_id,perspective", _ALL_REVIEW_ROLES)
     def test_blocking_role_timeout_no_json_parse_error(self, role_id, perspective):
         """Blocking role timeout should produce clean outcome, not a JSON parse failure."""
-        role = _role(role_id, base_perspective=perspective)
-        role.blocking = True
+        role = _role(role_id, base_perspective=perspective, blocking=True)
 
         def runner(prompt, on_event, timeout):
             raise asyncio.TimeoutError()

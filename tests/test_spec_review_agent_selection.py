@@ -70,7 +70,13 @@ def test_adaptive_review_uses_selected_agents_for_role_sessions(monkeypatch):
     captured: list[tuple[str, str | None]] = []
 
     class FakeReviewSession:
-        def __init__(self, agent_type: str, cwd: str, model_name: str | None = None):
+        def __init__(
+            self,
+            agent_type: str,
+            cwd: str,
+            model_name: str | None = None,
+            startup_timeout: float | None = None,
+        ):
             captured.append((agent_type, model_name))
 
         def __enter__(self):
@@ -124,7 +130,13 @@ def test_adaptive_review_falls_back_to_default_agent_when_selected_agent_times_o
     captured: list[tuple[str, str | None]] = []
 
     class FakeReviewSession:
-        def __init__(self, agent_type: str, cwd: str, model_name: str | None = None):
+        def __init__(
+            self,
+            agent_type: str,
+            cwd: str,
+            model_name: str | None = None,
+            startup_timeout: float | None = None,
+        ):
             self.agent_type = agent_type
             self.model_name = model_name
             captured.append((agent_type, model_name))
