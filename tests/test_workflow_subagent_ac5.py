@@ -47,8 +47,29 @@ def _stub_params(prompt: str = "do some work", role: str = "") -> AgentCallParam
 class ExecutorPromptInjectionTests(unittest.TestCase):
     """Agent executor appends the encouragement paragraph by default."""
 
+    def setUp(self):
+        self._executors = []
+
+    def tearDown(self):
+        for executor in self._executors:
+            try:
+                executor.shutdown(wait=False)
+            except Exception:
+                pass
+        self._executors.clear()
+
+    def _make_executor(self, cwd: str = "/tmp") -> AgentExecutor:
+        executor = AgentExecutor(
+            cwd=cwd,
+            cancel_event=threading.Event(),
+            on_token_usage=None,
+            max_workers=1,
+        )
+        self._executors.append(executor)
+        return executor
+
     def test_build_prompt_ends_with_encouragement(self) -> None:
-        executor = _make_executor()
+        executor = self._make_executor()
         params = _stub_params(prompt="build a fibonacci function", role="coder")
         full = executor._build_prompt(params)
         self.assertIn("subagent", full.lower(), msg="prompt must mention subagent")
@@ -58,14 +79,14 @@ class ExecutorPromptInjectionTests(unittest.TestCase):
         )
 
     def test_build_prompt_without_role_still_has_encouragement(self) -> None:
-        executor = _make_executor()
+        executor = self._make_executor()
         params = _stub_params(prompt="just research something", role="")
         full = executor._build_prompt(params)
         self.assertIn("subagent", full.lower())
         self.assertTrue(full.rstrip().endswith(SUBAGENT_ENCOURAGEMENT_PROMPT))
 
     def test_build_prompt_switch_false_suppresses_encouragement(self) -> None:
-        executor = _make_executor()
+        executor = self._make_executor()
         params = _stub_params(prompt="do X", role="")
         fake_settings = mock.MagicMock()
         fake_settings.workflow_subagent_hint_enabled = False

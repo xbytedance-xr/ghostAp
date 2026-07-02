@@ -314,37 +314,39 @@ class TestFanOutPattern(unittest.TestCase):
             cancel_event=threading.Event(),
             on_token_usage=None,
         )
+        try:
+            roles = ["implementer", "tester", "reviewer"]
+            prompts = [
+                "Write the implementation",
+                "Write test cases",
+                "Review the code quality",
+            ]
 
-        roles = ["implementer", "tester", "reviewer"]
-        prompts = [
-            "Write the implementation",
-            "Write test cases",
-            "Review the code quality",
-        ]
+            for role, prompt_text in zip(roles, prompts):
+                params = AgentCallParams(
+                    prompt=prompt_text,
+                    tool="coco",
+                    role=role,
+                    label=f"{role}-worker",
+                )
+                full_prompt = executor._build_prompt(params)
 
-        for role, prompt_text in zip(roles, prompts):
-            params = AgentCallParams(
-                prompt=prompt_text,
-                tool="coco",
-                role=role,
-                label=f"{role}-worker",
-            )
-            full_prompt = executor._build_prompt(params)
+                # Verify role prefix is present
+                self.assertTrue(
+                    full_prompt.startswith(f"Role: {role}"),
+                    f"Prompt for role '{role}' should start with 'Role: {role}'. "
+                    f"Got: {full_prompt[:50]}...",
+                )
 
-            # Verify role prefix is present
-            self.assertTrue(
-                full_prompt.startswith(f"Role: {role}"),
-                f"Prompt for role '{role}' should start with 'Role: {role}'. "
-                f"Got: {full_prompt[:50]}...",
-            )
+                # Verify original prompt text is included
+                self.assertIn(prompt_text, full_prompt)
 
-            # Verify original prompt text is included
-            self.assertIn(prompt_text, full_prompt)
-
-        # Verify no role prefix when role is empty
-        params_no_role = AgentCallParams(prompt="Plain task", tool="coco", role="")
-        full_prompt_no_role = executor._build_prompt(params_no_role)
-        self.assertFalse(full_prompt_no_role.startswith("Role:"))
+            # Verify no role prefix when role is empty
+            params_no_role = AgentCallParams(prompt="Plain task", tool="coco", role="")
+            full_prompt_no_role = executor._build_prompt(params_no_role)
+            self.assertFalse(full_prompt_no_role.startswith("Role:"))
+        finally:
+            executor.shutdown(wait=False)
 
     def test_fan_out_preserves_order(self):
         """Verify results are returned in call order even if tasks complete out of order.

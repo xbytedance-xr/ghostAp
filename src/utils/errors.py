@@ -110,7 +110,12 @@ def sanitize_futures_msg(msg: str) -> str:
     return cleaned if cleaned else "操作超时，请稍后重试"
 
 
-def classify_timeout(exc: BaseException) -> bool:
+def classify_timeout(
+    exc: BaseException,
+    *,
+    elapsed_s: float | None = None,
+    timeout_s: float | None = None,
+) -> bool:
     """Determine whether *exc* should be classified as a timeout error.
 
     Returns ``True`` if *exc* is itself a ``TimeoutError`` /
@@ -118,12 +123,49 @@ def classify_timeout(exc: BaseException) -> bool:
     ``__cause__`` / ``__context__`` chain is a timeout type (detected by
     :func:`_has_timeout_in_chain`).
 
+    Heuristic detection (when *elapsed_s* and *timeout_s* are both provided):
+    If the elapsed time is >= 80% of the timeout threshold **and** the
+    exception message (or any message in the ``__cause__`` / ``__context__``
+    chain) contains "Internal error" (case-insensitive), the exception is
+    also classified as a timeout. This catches backends that surface
+    JSON-RPC -32603 "Internal error" instead of raising a proper
+    TimeoutError when a session start times out.
+
     This is the single source of truth for timeout classification — callers
     should prefer this over hand-rolling ``isinstance`` + chain-walk.
     """
     if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
         return True
-    return _has_timeout_in_chain(exc)
+    if _has_timeout_in_chain(exc):
+        return True
+
+    # Heuristic: "Internal error" + elapsed time close to timeout threshold
+    if elapsed_s is not None and timeout_s is not None and timeout_s > 0:
+        if elapsed_s >= timeout_s * 0.8:
+            if _has_internal_error_in_chain(exc):
+                return True
+
+    return False
+
+
+def _has_internal_error_in_chain(err: BaseException, *, _depth: int = 0) -> bool:
+    """Walk __cause__ / __context__ looking for an "Internal error" message.
+
+    The match is case-insensitive. Returns ``True`` as soon as one is found
+    (max 10 levels deep).
+    """
+    if _depth >= _CHAIN_MAX_DEPTH:
+        return False
+    msg = str(err) if err is not None else ""
+    if "internal error" in msg.lower():
+        return True
+    for attr in ("__cause__", "__context__"):
+        chained = getattr(err, attr, None)
+        if chained is None:
+            continue
+        if _has_internal_error_in_chain(chained, _depth=_depth + 1):
+            return True
+    return False
 
 
 def _has_timeout_in_chain(err: BaseException, *, _depth: int = 0) -> bool:

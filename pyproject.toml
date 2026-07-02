@@ -31,7 +31,7 @@ build-backend = "hatchling.build"
 packages = ["src"]
 
 [tool.pytest.ini_options]
-timeout = 300
+timeout = 30
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
 markers = [

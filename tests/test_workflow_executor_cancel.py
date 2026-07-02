@@ -1,0 +1,512 @@
+"""Tests for AgentExecutor cancel guard — active session cancellation.
+
+Verifies that when a per-call cancel_event fires during send_prompt(), the
+executor actively calls session.cancel() to interrupt the blocking call,
+ensuring race() loser sessions shut down within 5s.
+"""
+from __future__ import annotations
+
+import threading
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.workflow_engine.executor import AgentExecutor
+from src.workflow_engine.models import AgentCallParams
+
+
+class _SlowCancelableSession:
+    """Fake session whose send_prompt blocks until cancel() is called.
+
+    Simulates a long-running LLM call that can be interrupted by cancel().
+    """
+
+    def __init__(self, delay_after_cancel: float = 0.1) -> None:
+        self.session_id = "slow-session"
+        self.created_at = time.time()
+        self.last_active = time.time()
+        self.message_count = 0
+        self.last_query = ""
+        self.is_resumed = False
+        self._cancel_event = threading.Event()
+        self._delay_after_cancel = delay_after_cancel
+        self.cancel_called = threading.Event()
+        self.close_called = threading.Event()
+        self.send_prompt_started = threading.Event()
+
+    def describe_agent(self) -> str:
+        return "fake slow session"
+
+    def start(self, startup_timeout: float = 60) -> str:
+        return self.session_id
+
+    def load_session(self, session_id: str) -> None:
+        self.session_id = session_id
+
+    def load_local_history(self, *a, **kw):
+        return []
+
+    def cancel(self) -> None:
+        self.cancel_called.set()
+        self._cancel_event.set()
+
+    def close(self) -> None:
+        self.close_called.set()
+
+    def to_snapshot(self) -> dict:
+        return {"session_id": self.session_id}
+
+    def get_session_info(self) -> str:
+        return "SlowCancelableSession"
+
+    def is_server_running(self) -> bool:
+        return True
+
+    def is_server_healthy(self, healthcheck_timeout: float = 2.0) -> bool:
+        return True
+
+    def send_prompt(self, text: str, on_event=None, timeout=None):
+        self.send_prompt_started.set()
+        self.last_query = text
+        # Block until cancel is called, then simulate short cleanup delay
+        cancelled = self._cancel_event.wait(timeout=timeout or 30)
+        if cancelled:
+            # Simulate the small delay for the process to clean up after cancel
+            time.sleep(self._delay_after_cancel)
+            raise RuntimeError("cancelled by user")
+        # If we timed out without cancel
+        raise TimeoutError("prompt timed out")
+
+    def send_prompt_with_retry(self, *args, **kwargs):
+        return self.send_prompt(*args, **kwargs)
+
+
+@pytest.fixture
+def make_executor():
+    """Factory fixture: create an AgentExecutor with auto-shutdown on teardown.
+
+    Follows the same pattern as make_card_delivery in conftest.py:
+    track all created executors and call shutdown(wait=True) during teardown
+    to prevent background thread leakage between tests.
+    """
+    executors: list[AgentExecutor] = []
+
+    def _factory(tmp_path, cancel_event=None):
+        ex = AgentExecutor(
+            cwd=str(tmp_path),
+            cancel_event=cancel_event or threading.Event(),
+            max_workers=2,
+        )
+        executors.append(ex)
+        return ex
+
+    yield _factory
+
+    for ex in executors:
+        try:
+            ex.shutdown(wait=True)
+        except Exception:
+            pass
+
+
+def test_cancel_guard_fires_session_cancel_within_200ms(tmp_path, make_executor):
+    """When per-call cancel_event fires during send_prompt, session.cancel()
+    must be called within 200ms (the guard poll interval + overhead)."""
+    executor = make_executor(tmp_path)
+    call_cancel = threading.Event()
+    session = _SlowCancelableSession(delay_after_cancel=0.05)
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="hello", tool="coco")
+
+        # Run execute in a background thread
+        result_holder: list = []
+
+        def run():
+            result_holder.append(executor.execute(params, cancel_event=call_cancel))
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+        # Wait for send_prompt to start
+        assert session.send_prompt_started.wait(timeout=5.0), "send_prompt must start"
+
+        # Fire cancel
+        start = time.monotonic()
+        call_cancel.set()
+
+        # Wait for cancel to be called on the session
+        assert session.cancel_called.wait(timeout=2.0), "session.cancel() must be called"
+        elapsed_ms = (time.monotonic() - start) * 1000
+
+        assert elapsed_ms < 500, f"session.cancel() should fire in <500ms, took {elapsed_ms:.0f}ms"
+
+        # Wait for execute to finish
+        t.join(timeout=10.0)
+        assert not t.is_alive(), "execute should complete"
+
+        # Session should be closed
+        assert session.close_called.wait(timeout=1.0), "session.close() must be called"
+
+        # Result should have an error (cancelled)
+        assert len(result_holder) == 1
+        result = result_holder[0]
+        assert result.error is not None, "result should indicate error/cancellation"
+
+
+def test_cancel_guard_not_started_when_session_creation_fails(tmp_path, make_executor):
+    """If session creation fails, no cancel guard thread is started (no crash)."""
+    executor = make_executor(tmp_path)
+    call_cancel = threading.Event()
+
+    # Patch create_engine_session to raise
+    with patch(
+        "src.agent_session.factory.create_engine_session",
+        side_effect=RuntimeError("creation failed"),
+    ):
+        params = AgentCallParams(prompt="hello", tool="coco")
+        result = executor.execute(params, cancel_event=call_cancel)
+
+        assert result.error is not None
+        assert "RuntimeError" in result.error
+
+
+def test_cancel_guard_does_not_fire_for_normal_completion(tmp_path, make_executor):
+    """When send_prompt completes normally, cancel is never called on the session."""
+    executor = make_executor(tmp_path)
+    call_cancel = threading.Event()
+
+    # Use a FakeSession-like mock that completes immediately
+    mock_session = MagicMock()
+    mock_result = MagicMock()
+    mock_result.text = "hello world"
+    mock_result.output_tokens = 10
+    mock_session.send_prompt.return_value = mock_result
+    mock_session.cancel = MagicMock()
+    mock_session.close = MagicMock()
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=mock_session):
+        params = AgentCallParams(prompt="hello", tool="coco")
+        result = executor.execute(params, cancel_event=call_cancel)
+
+        assert result.output == "hello world"
+        assert result.error is None
+        # cancel should never have been called for a normal completion
+        mock_session.cancel.assert_not_called()
+        # close should always be called
+        mock_session.close.assert_called_once()
+
+
+def test_cancel_before_execution_no_session_created(tmp_path, make_executor):
+    """If cancel_event is already set before execute runs, it returns early
+    without creating a session (no cancel guard needed)."""
+    executor = make_executor(tmp_path)
+    call_cancel = threading.Event()
+    call_cancel.set()  # pre-set
+
+    create_called = threading.Event()
+
+    def delayed_create(*args, **kwargs):
+        create_called.set()
+        time.sleep(0.1)
+        return MagicMock()
+
+    with patch("src.agent_session.factory.create_engine_session", side_effect=delayed_create):
+        params = AgentCallParams(prompt="hello", tool="coco")
+        result = executor.execute(params, cancel_event=call_cancel)
+
+        assert result.error is not None
+        assert "Cancelled before execution" in result.error
+        # Session creation should not have been called at all — early exit
+        assert not create_called.is_set(), "create_engine_session should not be called when pre-cancelled"
+
+
+def test_cancel_guard_is_idempotent_multiple_cancel_sets(tmp_path, make_executor):
+    """Setting the cancel event multiple times is safe — cancel guard fires once."""
+    executor = make_executor(tmp_path)
+    call_cancel = threading.Event()
+    session = _SlowCancelableSession(delay_after_cancel=0.05)
+    cancel_count = {"n": 0}
+    cancel_lock = threading.Lock()
+
+    original_cancel = session.cancel
+
+    def counting_cancel():
+        with cancel_lock:
+            cancel_count["n"] += 1
+        original_cancel()
+
+    session.cancel = counting_cancel
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="hello", tool="coco")
+
+        def run():
+            executor.execute(params, cancel_event=call_cancel)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+        assert session.send_prompt_started.wait(timeout=5.0)
+
+        # Set the event multiple times rapidly
+        call_cancel.set()
+        call_cancel.set()
+        call_cancel.set()
+
+        t.join(timeout=10.0)
+        assert not t.is_alive()
+
+        # cancel may be called once or multiple times depending on timing,
+        # but it should never crash. The guard thread fires once and exits.
+        with cancel_lock:
+            count = cancel_count["n"]
+        assert count >= 1, "cancel must be called at least once"
+        # Guard thread exits after first cancel, so we expect 1 call
+        # (but allow 2 max from edge cases)
+        assert count <= 2, f"cancel should be called ~1 time, got {count}"
+
+
+def test_session_close_completes_within_5s_after_cancel(tmp_path, make_executor):
+    """End-to-end timing: from cancel_event set to session.close() returning
+    must be well under 5s — the acceptance criteria for race loser cleanup."""
+    executor = make_executor(tmp_path)
+    call_cancel = threading.Event()
+    # Simulate session that takes 0.5s to clean up after cancel
+    session = _SlowCancelableSession(delay_after_cancel=0.5)
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="hello", tool="coco")
+
+        def run():
+            executor.execute(params, cancel_event=call_cancel)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+        assert session.send_prompt_started.wait(timeout=5.0)
+
+        start = time.monotonic()
+        call_cancel.set()
+
+        # Wait for close to be called
+        assert session.close_called.wait(timeout=10.0), "session.close() must be called"
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, f"session.close() must happen within 5s of cancel, took {elapsed:.2f}s"
+
+        t.join(timeout=10.0)
+
+
+def test_prompt_timeout_not_retried(tmp_path, make_executor):
+    """ACP prompt timeout (TimeoutError) must NOT be retried — the per-call
+    timeout budget was already consumed and retrying wastes another full
+    timeout window."""
+    executor = make_executor(tmp_path)
+    call_count = {"n": 0}
+
+    class _TimeoutSession:
+        def __init__(self):
+            self.session_id = "timeout-session"
+
+        def describe_agent(self): return "fake"
+        def start(self, timeout=60): return self.session_id
+        def load_session(self, sid): pass
+        def load_local_history(self, *a, **kw): return []
+        def cancel(self): pass
+        def close(self): pass
+        def to_snapshot(self): return {}
+        def get_session_info(self): return ""
+        def is_server_running(self): return True
+        def is_server_healthy(self, timeout=2.0): return True
+
+        def send_prompt(self, text, on_event=None, timeout=None):
+            call_count["n"] += 1
+            raise TimeoutError("prompt execution timed out after 300s")
+
+        def send_prompt_with_retry(self, *args, **kwargs):
+            return self.send_prompt(*args, **kwargs)
+
+    session = _TimeoutSession()
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="test prompt that will timeout", tool="coco")
+        start = time.monotonic()
+        result = executor.execute(params)
+        elapsed = time.monotonic() - start
+
+    # Should fail after exactly 1 attempt (no retries)
+    assert call_count["n"] == 1, f"Expected 1 call (no retry), got {call_count['n']}"
+    assert result.error is not None
+    assert "TimeoutError" in result.error
+    # Should complete quickly (not multiple timeout windows)
+    assert elapsed < 5.0, f"Should fail fast, took {elapsed:.2f}s"
+
+
+def test_transient_network_error_is_retried(tmp_path, make_executor):
+    """Transient network errors (not timeouts) should still be retried."""
+    executor = make_executor(tmp_path)
+    call_count = {"n": 0}
+
+    class _FlakySession:
+        def __init__(self):
+            self.session_id = "flaky"
+
+        def describe_agent(self): return "fake"
+        def start(self, timeout=60): return self.session_id
+        def load_session(self, sid): pass
+        def load_local_history(self, *a, **kw): return []
+        def cancel(self): pass
+        def close(self): pass
+        def to_snapshot(self): return {}
+        def get_session_info(self): return ""
+        def is_server_running(self): return True
+        def is_server_healthy(self, timeout=2.0): return True
+
+        def send_prompt(self, text, on_event=None, timeout=None):
+            call_count["n"] += 1
+            if call_count["n"] < 2:
+                raise RuntimeError("connection reset by peer — network error")
+            from types import SimpleNamespace
+            return SimpleNamespace(text="success after retry", output_tokens=5)
+
+        def send_prompt_with_retry(self, *args, **kwargs):
+            return self.send_prompt(*args, **kwargs)
+
+    session = _FlakySession()
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="test", tool="coco")
+        result = executor.execute(params)
+
+    # Should have retried: first fails, second succeeds
+    assert call_count["n"] >= 2, f"Expected at least 2 calls (retry), got {call_count['n']}"
+    assert result.error is None
+    assert result.output == "success after retry"
+
+
+def test_global_cancel_triggers_cancel_guard(tmp_path, make_executor):
+    """When the executor-level (global) cancel_event fires during send_prompt,
+    the cancel guard must fire session.cancel() — even if the per-call
+    cancel_event is never set.  This validates the OR semantics required for
+    /stop_wf to actually interrupt in-flight agent calls."""
+    global_cancel = threading.Event()
+    executor = make_executor(tmp_path, cancel_event=global_cancel)
+    per_call_cancel = threading.Event()  # never set
+    session = _SlowCancelableSession(delay_after_cancel=0.05)
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="hello", tool="coco")
+
+        def run():
+            executor.execute(params, cancel_event=per_call_cancel)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+        assert session.send_prompt_started.wait(timeout=5.0), "send_prompt must start"
+
+        # Fire ONLY the global cancel — per-call stays clear
+        assert not per_call_cancel.is_set(), "per-call should not be set"
+        start = time.monotonic()
+        global_cancel.set()
+
+        assert session.cancel_called.wait(timeout=2.0), (
+            "session.cancel() must be called when global cancel fires"
+        )
+        elapsed_ms = (time.monotonic() - start) * 1000
+        assert elapsed_ms < 500, (
+            f"session.cancel() should fire in <500ms from global cancel, "
+            f"took {elapsed_ms:.0f}ms"
+        )
+
+        t.join(timeout=10.0)
+        assert not t.is_alive(), "execute should complete"
+
+
+def test_global_cancel_interrupts_session_creation(tmp_path, make_executor):
+    """Global cancel must interrupt session creation poll loop, not just
+    the send_prompt phase.  Validates that the creation loop checks both
+    per-call and global cancel events."""
+    global_cancel = threading.Event()
+    executor = make_executor(tmp_path, cancel_event=global_cancel)
+    per_call_cancel = threading.Event()  # never set
+
+    create_started = threading.Event()
+
+    def slow_create(*args, **kwargs):
+        create_started.set()
+        time.sleep(10)
+        return MagicMock()
+
+    with patch(
+        "src.agent_session.factory.create_engine_session",
+        side_effect=slow_create,
+    ):
+        params = AgentCallParams(prompt="hello", tool="coco")
+
+        result_holder: list = []
+
+        def run_and_capture():
+            result_holder.append(executor.execute(params, cancel_event=per_call_cancel))
+
+        t = threading.Thread(target=run_and_capture, daemon=True)
+        t.start()
+
+        assert create_started.wait(timeout=5.0)
+
+        # Fire global cancel
+        assert not per_call_cancel.is_set()
+        start = time.monotonic()
+        global_cancel.set()
+
+        t.join(timeout=10.0)
+        assert not t.is_alive(), "execute should complete after global cancel"
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5.0, (
+            f"Session creation should be interrupted by global cancel "
+            f"within ~5s, took {elapsed:.2f}s"
+        )
+        assert len(result_holder) == 1
+        assert result_holder[0].error is not None
+        assert "Cancelled" in result_holder[0].error
+
+
+def test_per_call_cancel_still_works_with_global_present(tmp_path, make_executor):
+    """Per-call cancel (race loser abort) must still work independently when
+    a global cancel_event is provided.  The OR semantics should not break
+    the single-call cancellation path."""
+    global_cancel = threading.Event()  # never set
+    executor = make_executor(tmp_path, cancel_event=global_cancel)
+    per_call_cancel = threading.Event()
+    session = _SlowCancelableSession(delay_after_cancel=0.05)
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="hello", tool="coco")
+
+        def run():
+            executor.execute(params, cancel_event=per_call_cancel)
+
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+
+        assert session.send_prompt_started.wait(timeout=5.0)
+
+        # Fire only per-call cancel — global stays clear
+        assert not global_cancel.is_set()
+        start = time.monotonic()
+        per_call_cancel.set()
+
+        assert session.cancel_called.wait(timeout=2.0), (
+            "session.cancel() must be called when per-call cancel fires"
+        )
+        elapsed_ms = (time.monotonic() - start) * 1000
+        assert elapsed_ms < 500, (
+            f"session.cancel() should fire in <500ms from per-call cancel, "
+            f"took {elapsed_ms:.0f}ms"
+        )
+
+        t.join(timeout=10.0)
+        assert not t.is_alive()

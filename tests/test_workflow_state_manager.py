@@ -246,6 +246,26 @@ class TestOnWorkflowFailed(unittest.TestCase):
         self.assertEqual(project.error, "execution failed")
         self.assertIsNotNone(project.finished_at)
 
+    def test_done_does_not_overwrite_cancelled(self):
+        project = WorkflowProject(status=WorkflowStatus.RUNNING)
+        mgr = WorkflowStateManager(project)
+        mgr.on_workflow_cancelled("user cancelled")
+        self.assertEqual(project.status, WorkflowStatus.CANCELLED)
+
+        mgr.on_workflow_done("late result")
+        self.assertEqual(project.status, WorkflowStatus.CANCELLED)
+        self.assertIsNone(project.result)
+
+    def test_done_does_not_overwrite_failed(self):
+        project = WorkflowProject(status=WorkflowStatus.RUNNING)
+        mgr = WorkflowStateManager(project)
+        mgr.on_workflow_failed("something broke")
+        self.assertEqual(project.status, WorkflowStatus.FAILED)
+
+        mgr.on_workflow_done("late result")
+        self.assertEqual(project.status, WorkflowStatus.FAILED)
+        self.assertIsNone(project.result)
+
     def test_workflow_failed_marks_running_agents_failed_and_closes_phase(self):
         project = WorkflowProject(status=WorkflowStatus.RUNNING)
         mgr = WorkflowStateManager(project)

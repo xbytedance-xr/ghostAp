@@ -34,6 +34,7 @@ class AdaptiveReviewResult(ReviewResult):
     role_plan_hash: str = ""
     blocking_suggestion_hash: str = ""
     blocking_review_passed: bool = False
+    skipped_roles_count: int = 0
     # Completion gate (Phase 3): set by completion_control role
     completion_gate_met: bool = False
     completion_gate_confidence: str = ""
@@ -321,11 +322,80 @@ class RoleReviewWorker:
             return parse_role_review_output(self.role, raw)
         except Exception as exc:
             err = get_error_detail(exc)
-            is_timeout = classify_timeout(exc)
-            logger.warning("[RoleReviewWorker:%s] failed: %s", self.role.role_id, err)
-            error_str = f"timeout_degraded:{err}" if is_timeout else err
-            blocking = not is_timeout
-            summary = "审查超时（已降级）" if is_timeout else f"审查异常：{err}"
+            startup_elapsed = getattr(exc, "startup_elapsed_s", None)
+            startup_timeout = getattr(exc, "startup_timeout_s", None)
+            is_startup_failure = bool(getattr(exc, "startup_failed", False))
+            is_timeout = classify_timeout(
+                exc,
+                elapsed_s=startup_elapsed,
+                timeout_s=startup_timeout,
+            )
+            logger.warning(
+                "[RoleReviewWorker:%s] failed: %s (startup=%s, timeout=%s)",
+                self.role.role_id, err, is_startup_failure, is_timeout,
+            )
+            if is_timeout:
+                if self.role.blocking:
+                    error_str = f"timeout_blocking:{err}"
+                    blocking = True
+                else:
+                    error_str = f"timeout_degraded:{err}"
+                    blocking = False
+            else:
+                error_str = err
+                blocking = True
+
+            if is_timeout and is_startup_failure:
+                if self.role.blocking:
+                    summary = "审查启动超时（阻断，需重试或修复基础设施）"
+                else:
+                    summary = "审查启动超时（已降级）"
+                rec_prefix = f"{self.role.display_name} 启动超时："
+                evidence = f"startup timed out after {int(startup_elapsed * 1000) if startup_elapsed else int((time.monotonic() - t0) * 1000)}ms (retries exhausted)"
+            elif is_timeout:
+                if self.role.blocking:
+                    summary = "审查超时（阻断，需重试或修复基础设施）"
+                else:
+                    summary = "审查超时（已降级）"
+                rec_prefix = f"{self.role.display_name} 审查超时："
+                evidence = f"role failed after {int((time.monotonic() - t0) * 1000)}ms"
+            elif is_startup_failure:
+                summary = f"审查启动失败：{err}"
+                rec_prefix = f"{self.role.display_name} 启动失败："
+                evidence = f"startup failed after {int(startup_elapsed * 1000) if startup_elapsed else int((time.monotonic() - t0) * 1000)}ms"
+            else:
+                summary = f"审查异常：{err}"
+                rec_prefix = f"{self.role.display_name} 审查异常："
+                evidence = f"role failed after {int((time.monotonic() - t0) * 1000)}ms"
+
+            # Degrade non-blocking roles on startup failure — mark as skipped
+            # instead of failing the whole review pipeline.
+            if is_startup_failure and not self.role.blocking:
+                logger.info(
+                    "[RoleReviewWorker:%s] skipping non-blocking role after startup failure",
+                    self.role.role_id,
+                )
+                return RoleReviewOutcome(
+                    role_id=self.role.role_id,
+                    role_display_name=self.role.display_name,
+                    role_category=self.role.category,
+                    passed=True,
+                    summary=f"{self.role.display_name} 跳过（启动失败，角色非阻断）",
+                    suggestions=[
+                        RoleSuggestion(
+                            severity="observation",
+                            confidence="low",
+                            evidence=evidence,
+                            recommendation=f"{self.role.display_name} 因启动失败被跳过",
+                            blocking=False,
+                        )
+                    ],
+                    error=f"skipped_startup_failure:{err}",
+                    blocking=False,
+                    skipped=True,
+                    base_perspective_value=self.role.base_perspective.value if self.role.base_perspective else "",
+                )
+
             return RoleReviewOutcome(
                 role_id=self.role.role_id,
                 role_display_name=self.role.display_name,
@@ -336,8 +406,8 @@ class RoleReviewWorker:
                     RoleSuggestion(
                         severity="major" if is_timeout else "observation",
                         confidence="low",
-                        evidence=f"role failed after {int((time.monotonic() - t0) * 1000)}ms",
-                        recommendation=f"{self.role.display_name} 审查异常：{err}",
+                        evidence=evidence,
+                        recommendation=rec_prefix + err,
                         blocking=blocking,
                     )
                 ],
@@ -413,6 +483,8 @@ def _outcomes_to_review_result(outcomes: list[RoleReviewOutcome], iteration: int
             completion_gate_evidence = outcome.goal_evidence
             break
 
+    skipped_roles_count = sum(1 for o in outcomes if o.skipped)
+
     return AdaptiveReviewResult(
         reviews=reviews,
         iteration=iteration,
@@ -420,6 +492,7 @@ def _outcomes_to_review_result(outcomes: list[RoleReviewOutcome], iteration: int
         aggregated=aggregated,
         blocking_suggestion_hash=aggregated.blocking_hash(),
         blocking_review_passed=all(pr.passed for pr in reviews),
+        skipped_roles_count=skipped_roles_count,
         completion_gate_met=completion_gate_met,
         completion_gate_confidence=completion_gate_confidence,
         completion_gate_evidence=completion_gate_evidence,

@@ -197,6 +197,130 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
 
         self.assertEqual(violations, [])
 
+    def test_cancelled_agents_in_mixed_state_render_correctly(self):
+        """CANCELLED agents must appear in a "已取消" grey group and NOT
+        alongside RUNNING agents in the "执行中" group."""
+        project = WorkflowProject(
+            name="mixed-cancel-test",
+            status=WorkflowStatus.RUNNING,
+            started_at=time.time() - 60,
+        )
+        phase = PhaseProgress(title="Race Phase", started_at=time.time() - 60)
+
+        # 2 RUNNING
+        phase.agents.append(AgentProgress(
+            label="runner-1", tool="coco", status=AgentStatus.RUNNING,
+        ))
+        phase.agents.append(AgentProgress(
+            label="runner-2", tool="claude", status=AgentStatus.RUNNING,
+        ))
+        # 2 DONE
+        phase.agents.append(AgentProgress(
+            label="finisher-1", tool="coco", status=AgentStatus.DONE,
+            duration_s=10.0,
+        ))
+        phase.agents.append(AgentProgress(
+            label="finisher-2", tool="claude", status=AgentStatus.DONE,
+            duration_s=12.0,
+        ))
+        # 1 FAILED
+        phase.agents.append(AgentProgress(
+            label="flaky-agent", tool="coco", status=AgentStatus.FAILED,
+            duration_s=3.0, error="boom",
+        ))
+        # 2 CANCELLED
+        phase.agents.append(AgentProgress(
+            label="slow-agent", tool="coco", status=AgentStatus.CANCELLED,
+            duration_s=5.0,
+        ))
+        phase.agents.append(AgentProgress(
+            label="race-loser", tool="claude", status=AgentStatus.CANCELLED,
+            duration_s=2.0,
+        ))
+
+        project.phases.append(phase)
+        project.metrics.total_agents = 7
+        project.metrics.completed_agents = 2
+
+        renderer = WorkflowProgressRenderer(project)
+        card = renderer.render_progress_card()
+
+        all_text = self._extract_all_text(card.get("elements", []))
+
+        # CANCELLED group header must be present
+        self.assertIn("已取消", all_text)
+        # CANCELLED agent labels must appear somewhere in the card
+        self.assertIn("slow-agent", all_text)
+        self.assertIn("race-loser", all_text)
+        # RUNNING group header must be present (there ARE running agents)
+        self.assertIn("执行中", all_text)
+        # RUNNING agent labels must appear
+        self.assertIn("runner-1", all_text)
+        self.assertIn("runner-2", all_text)
+
+        # To verify CANCELLED agents are NOT in the RUNNING group, we inspect
+        # each collapsible_panel individually: the panel whose header contains
+        # "执行中" must not mention the CANCELLED agent labels.
+        found_running_panel = False
+        for node in self._walk_card_nodes(card.get("elements", [])):
+            if node.get("tag") != "collapsible_panel":
+                continue
+            header_text = self._panel_header_text(node)
+            if "执行中" in header_text:
+                found_running_panel = True
+                panel_text = self._extract_all_text(node.get("elements", []))
+                self.assertIn("runner-1", panel_text)
+                self.assertIn("runner-2", panel_text)
+                self.assertNotIn("slow-agent", panel_text)
+                self.assertNotIn("race-loser", panel_text)
+
+        self.assertTrue(found_running_panel, "Expected a RUNNING collapsible panel")
+
+        # Also verify the CANCELLED panel contains the cancelled agents
+        found_cancelled_panel = False
+        for node in self._walk_card_nodes(card.get("elements", [])):
+            if node.get("tag") != "collapsible_panel":
+                continue
+            header_text = self._panel_header_text(node)
+            if "已取消" in header_text:
+                found_cancelled_panel = True
+                panel_text = self._extract_all_text(node.get("elements", []))
+                self.assertIn("slow-agent", panel_text)
+                self.assertIn("race-loser", panel_text)
+                self.assertNotIn("runner-1", panel_text)
+
+        self.assertTrue(found_cancelled_panel, "Expected a CANCELLED collapsible panel")
+
+    @staticmethod
+    def _panel_header_text(panel):
+        """Extract the header title text from a collapsible_panel element."""
+        header = panel.get("header", {})
+        title = header.get("title", {})
+        if isinstance(title, dict):
+            return title.get("content", "")
+        return ""
+
+    @staticmethod
+    def _extract_all_text(elements):
+        """Recursively extract all text content from card elements
+        (markdown content, plain_text fields, and collapsible_panel headers)."""
+        out = []
+        for node in TestWorkflowProgressRenderer._walk_card_nodes(elements):
+            if node.get("tag") == "markdown":
+                out.append(node.get("content", ""))
+            if node.get("tag") == "plain_text":
+                out.append(node.get("text", "") or node.get("content", ""))
+            title = node.get("title")
+            if isinstance(title, dict) and title.get("tag") == "plain_text":
+                out.append(title.get("content", ""))
+            # Also pull header.title.content from collapsible_panel
+            if node.get("tag") == "collapsible_panel":
+                header = node.get("header", {})
+                htitle = header.get("title", {})
+                if isinstance(htitle, dict) and htitle.get("tag") == "plain_text":
+                    out.append(htitle.get("content", ""))
+        return "\n".join(out)
+
     @staticmethod
     def _walk_card_nodes(nodes):
         for node in nodes:

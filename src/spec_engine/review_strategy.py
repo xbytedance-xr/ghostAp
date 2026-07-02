@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -33,6 +34,79 @@ from .review_artifacts import ReviewArtifacts
 from .review_roles import ReviewRoleSpec, build_adaptive_role_plan, completion_control_role, fixed_programming_roles
 
 logger = logging.getLogger(__name__)
+
+REVIEW_STARTUP_MAX_RETRIES = 2
+REVIEW_STARTUP_RETRY_BASE_DELAY = 2.0
+REVIEW_STARTUP_RETRY_MAX_DELAY = 5.0
+
+
+def _annotate_startup_failure(exc: Exception, elapsed_s: float, timeout_s: float) -> Exception:
+    """Attach startup metadata to an exception for downstream classification."""
+    try:
+        exc.startup_elapsed_s = elapsed_s  # type: ignore[attr-defined]
+        exc.startup_timeout_s = timeout_s  # type: ignore[attr-defined]
+        exc.startup_failed = True  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return exc
+
+
+def _run_with_startup_retry(
+    role: ReviewRoleSpec,
+    agent_type: str,
+    model_name: str | None,
+    prompt: str,
+    on_event: Optional[Callable],
+    timeout: float,
+    startup_timeout: float,
+    cwd: str,
+) -> str:
+    """Run a prompt with startup-phase retries.
+
+    Session creation failures (detected via the EphemeralReviewSession timing
+    plus error content) are retried with exponential backoff.  Execution-phase
+    failures (after the session is up) are raised immediately.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(REVIEW_STARTUP_MAX_RETRIES + 1):
+        eph = EphemeralReviewSession(
+            agent_type,
+            cwd,
+            model_name,
+            startup_timeout=startup_timeout,
+        )
+        try:
+            with eph as session:
+                res = session.send_prompt(prompt, on_event=on_event, timeout=timeout)
+                return str(getattr(res, "text", res) or "")
+        except Exception as exc:
+            last_exc = exc
+            elapsed = getattr(eph, "startup_elapsed_s", 0.0)
+            is_startup_failure = not eph.session_started
+            if not is_startup_failure:
+                raise
+            _annotate_startup_failure(exc, elapsed, startup_timeout)
+            if attempt >= REVIEW_STARTUP_MAX_RETRIES:
+                raise
+            delay = min(
+                REVIEW_STARTUP_RETRY_BASE_DELAY * (2 ** attempt),
+                REVIEW_STARTUP_RETRY_MAX_DELAY,
+            )
+            logger.warning(
+                "[ReviewStrategy:adaptive_roles] role=%s startup failed on %s/%s "
+                "(attempt %d/%d, elapsed=%.1fs), retrying in %.1fs",
+                role.role_id,
+                agent_type,
+                model_name or "default",
+                attempt + 1,
+                REVIEW_STARTUP_MAX_RETRIES + 1,
+                elapsed,
+                delay,
+            )
+            time.sleep(delay)
+    if last_exc:
+        raise last_exc
+    return ""
 
 __all__ = [
     "ReviewContext",
@@ -198,6 +272,7 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
     ) -> Callable[[ReviewRoleSpec], PromptRunner]:
         cwd = (ctx.artifacts.cwd if ctx.artifacts else "") or "."
         role_agent_map = role_agent_map or {}
+        review_startup_timeout = float(getattr(ctx.settings, "spec_review_startup_timeout", 30) or 30)
 
         def _factory(role: ReviewRoleSpec) -> PromptRunner:
             def _runner(prompt: str, on_event: Optional[Callable] = None, timeout: float = 240.0) -> str:
@@ -209,13 +284,25 @@ class AdaptiveRoleReviewStrategy(ReviewStrategy):
                 last_exc: Exception | None = None
                 for index, (agent_type, model_name) in enumerate(candidates):
                     try:
-                        with EphemeralReviewSession(agent_type, cwd, model_name) as session:
-                            res = session.send_prompt(prompt, on_event=on_event, timeout=timeout)
-                            return str(getattr(res, "text", res) or "")
+                        return _run_with_startup_retry(
+                            role,
+                            agent_type,
+                            model_name,
+                            prompt,
+                            on_event,
+                            timeout,
+                            review_startup_timeout,
+                            cwd,
+                        )
                     except Exception as exc:
                         last_exc = exc
                         has_fallback = index < len(candidates) - 1
-                        if classify_timeout(exc) and has_fallback:
+                        is_timeout = classify_timeout(
+                            exc,
+                            elapsed_s=getattr(exc, "startup_elapsed_s", None),
+                            timeout_s=getattr(exc, "startup_timeout_s", None),
+                        )
+                        if is_timeout and has_fallback:
                             next_agent, next_model = candidates[index + 1]
                             logger.warning(
                                 "[ReviewStrategy:adaptive_roles] role=%s timed out on %s/%s, falling back to %s/%s",

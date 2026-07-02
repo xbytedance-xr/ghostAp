@@ -38,6 +38,17 @@ class TestSubagentEncouragementConstant(unittest.TestCase):
 class TestBuildPromptInjection(unittest.TestCase):
     """Test AgentExecutor._build_prompt injects encouragement."""
 
+    def setUp(self):
+        self._executors = []
+
+    def tearDown(self):
+        for executor in self._executors:
+            try:
+                executor.shutdown(wait=False)
+            except Exception:
+                pass
+        self._executors.clear()
+
     def _make_executor(self):
         import threading
 
@@ -48,6 +59,7 @@ class TestBuildPromptInjection(unittest.TestCase):
             cancel_event=threading.Event(),
             on_token_usage=None,
         )
+        self._executors.append(executor)
         return executor
 
     def _make_params(self, prompt="do something", role=""):
@@ -91,41 +103,52 @@ class TestBuildPromptInjection(unittest.TestCase):
 class TestBridgeArgsPassthrough(unittest.TestCase):
     """Test RuntimeBridge args parameter and passthrough."""
 
-    def test_bridge_stores_args(self):
+    def setUp(self):
+        self._bridges = []
 
+    def tearDown(self):
+        for bridge in self._bridges:
+            try:
+                bridge.stop()
+            except Exception:
+                pass
+        self._bridges.clear()
+
+    def _make_bridge(self, **kwargs):
         from src.workflow_engine.bridge import RuntimeBridge
 
-        bridge = RuntimeBridge(
-            script_path="/tmp/test.js",
-            cwd="/tmp",
-            args={"key": "value", "num": 42},
-        )
+        defaults = {"script_path": "/tmp/test.js", "cwd": "/tmp"}
+        defaults.update(kwargs)
+        bridge = RuntimeBridge(**defaults)
+        self._bridges.append(bridge)
+        return bridge
+
+    def test_bridge_stores_args(self):
+        bridge = self._make_bridge(args={"key": "value", "num": 42})
         self.assertEqual(bridge._args, {"key": "value", "num": 42})
 
     def test_bridge_default_args_empty_dict(self):
-
-        from src.workflow_engine.bridge import RuntimeBridge
-
-        bridge = RuntimeBridge(
-            script_path="/tmp/test.js",
-            cwd="/tmp",
-        )
+        bridge = self._make_bridge()
         self.assertEqual(bridge._args, {})
 
     def test_bridge_none_args_becomes_empty_dict(self):
-
-        from src.workflow_engine.bridge import RuntimeBridge
-
-        bridge = RuntimeBridge(
-            script_path="/tmp/test.js",
-            cwd="/tmp",
-            args=None,
-        )
+        bridge = self._make_bridge(args=None)
         self.assertEqual(bridge._args, {})
 
 
 class TestBridgeBackpressure(unittest.TestCase):
     """Test queue backpressure in _handle_agent_call."""
+
+    def setUp(self):
+        self._bridges = []
+
+    def tearDown(self):
+        for bridge in self._bridges:
+            try:
+                bridge.stop()
+            except Exception:
+                pass
+        self._bridges.clear()
 
     def _make_bridge(self):
         import threading
@@ -136,6 +159,7 @@ class TestBridgeBackpressure(unittest.TestCase):
             script_path="/tmp/test.js",
             cwd="/tmp",
         )
+        self._bridges.append(bridge)
         # Manually set up internals normally created by start()
         bridge._executor = MagicMock()
         bridge._on_agent_call = MagicMock()

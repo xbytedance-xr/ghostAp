@@ -313,3 +313,243 @@ def test_stop_workflow_clears_generating_script_state(tmp_path):
     assert engine.project.pending is None
     handler.reply_text.assert_called_once()
     handler._reply_workflow_error.assert_not_called()
+
+
+import threading
+
+from src.workflow_engine.models import AgentStatus, WorkflowMetrics
+from src.workflow_engine.state_manager import WorkflowStateManager
+
+
+def _make_state_manager():
+    """Create a minimal state manager with a single running agent."""
+    project = WorkflowProject(
+        workflow_id="test",
+        status=WorkflowStatus.RUNNING,
+        metrics=WorkflowMetrics(),
+    )
+    sm = WorkflowStateManager(project)
+    sm.on_phase_changed("phase1")
+    return sm
+
+
+class TestStateManagerStickyTerminal:
+    """Agent terminal states are final — no transition may overwrite another."""
+
+    def test_done_not_overwritten_by_failed(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
+
+        snap = sm.snapshot()
+        agent = snap.phases[0].agents[0]
+        assert agent.status == AgentStatus.DONE
+        assert snap.metrics.completed_agents == 1
+        assert snap.metrics.failed_agents == 0
+
+        sm.on_agent_failed(label, "some error")
+
+        snap = sm.snapshot()
+        agent = snap.phases[0].agents[0]
+        assert agent.status == AgentStatus.DONE, "DONE must not be overwritten by FAILED"
+        assert agent.error is None or agent.error == ""
+        assert snap.metrics.completed_agents == 1
+        assert snap.metrics.failed_agents == 0, "failed_agents must not increment for already-done agent"
+
+    def test_done_not_overwritten_by_cancelled(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
+
+        sm.on_agent_aborted(label, "race loser")
+
+        snap = sm.snapshot()
+        agent = snap.phases[0].agents[0]
+        assert agent.status == AgentStatus.DONE, "DONE must not be overwritten by CANCELLED"
+        assert snap.metrics.completed_agents == 1
+
+    def test_failed_not_overwritten_by_done(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_failed(label, "timeout")
+
+        snap = sm.snapshot()
+        assert snap.phases[0].agents[0].status == AgentStatus.FAILED
+        assert snap.metrics.failed_agents == 1
+
+        sm.on_agent_done(label, {"token_usage": 5, "duration_s": 2.0})
+
+        snap = sm.snapshot()
+        agent = snap.phases[0].agents[0]
+        assert agent.status == AgentStatus.FAILED, "FAILED must not be overwritten by DONE"
+        assert agent.error == "timeout"
+        assert snap.metrics.failed_agents == 1
+        assert snap.metrics.total_tokens == 0, "token_usage from late done must not be counted"
+
+    def test_failed_not_overwritten_by_cancelled(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_failed(label, "connection error")
+
+        sm.on_agent_aborted(label, "race loser")
+
+        snap = sm.snapshot()
+        agent = snap.phases[0].agents[0]
+        assert agent.status == AgentStatus.FAILED, "FAILED must not be overwritten by CANCELLED"
+        assert snap.metrics.failed_agents == 1
+
+    def test_cancelled_not_overwritten_by_done(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_aborted(label, "race loser")
+
+        snap = sm.snapshot()
+        assert snap.phases[0].agents[0].status == AgentStatus.CANCELLED
+        assert snap.metrics.completed_agents == 1
+
+        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
+
+        snap = sm.snapshot()
+        agent = snap.phases[0].agents[0]
+        assert agent.status == AgentStatus.CANCELLED, "CANCELLED must not be overwritten by DONE"
+        assert snap.metrics.completed_agents == 1
+        assert snap.metrics.total_tokens == 0
+
+    def test_cancelled_not_overwritten_by_failed(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_aborted(label, "race loser")
+
+        sm.on_agent_failed(label, "some error")
+
+        snap = sm.snapshot()
+        agent = snap.phases[0].agents[0]
+        assert agent.status == AgentStatus.CANCELLED, "CANCELLED must not be overwritten by FAILED"
+        assert snap.metrics.failed_agents == 0
+
+    def test_done_idempotent(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_done(label, {"token_usage": 10, "duration_s": 1.0})
+        sm.on_agent_done(label, {"token_usage": 20, "duration_s": 2.0})
+
+        snap = sm.snapshot()
+        assert snap.metrics.completed_agents == 1, "completed_agents must not double-count"
+        assert snap.metrics.total_tokens == 10, "second done must not overwrite token count"
+
+    def test_failed_idempotent(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_failed(label, "error1")
+        sm.on_agent_failed(label, "error2")
+
+        snap = sm.snapshot()
+        assert snap.metrics.failed_agents == 1, "failed_agents must not double-count"
+        assert snap.metrics.completed_agents == 1
+
+    def test_aborted_idempotent(self):
+        sm = _make_state_manager()
+        label = sm.on_agent_started("agent1", "coco", "phase1")
+        sm.on_agent_aborted(label, "reason1")
+        sm.on_agent_aborted(label, "reason2")
+
+        snap = sm.snapshot()
+        assert snap.metrics.completed_agents == 1, "completed_agents must not double-count on abort"
+
+    def test_workflow_failed_overwritten_by_cancelled(self):
+        """User-initiated cancel takes precedence over a runtime failure.
+
+        When the user stops a failing workflow, the final status should be
+        CANCELLED — the user's explicit action takes precedence over the
+        failure that was in progress.
+        """
+        sm = _make_state_manager()
+        sm.on_workflow_failed("fatal error")
+
+        sm.on_workflow_cancelled("user cancelled")
+
+        snap = sm.snapshot()
+        assert snap.status == WorkflowStatus.CANCELLED, (
+            "FAILED workflow should be overwritten by CANCELLED "
+            "(user stop takes precedence)"
+        )
+        assert snap.error == "user cancelled"
+
+
+class TestStateManagerMetricsAtomicity:
+    """Metrics counters must be consistent even under concurrent updates."""
+
+    def test_concurrent_done_no_double_count(self):
+        sm = _make_state_manager()
+        labels = [sm.on_agent_started(f"agent{i}", "coco", "phase1") for i in range(20)]
+        barrier = threading.Barrier(20)
+
+        def mark_done(label):
+            barrier.wait()
+            sm.on_agent_done(label, {"token_usage": 5, "duration_s": 0.1})
+
+        threads = [threading.Thread(target=mark_done, args=(lbl,)) for lbl in labels]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        snap = sm.snapshot()
+        assert snap.metrics.total_agents == 20
+        assert snap.metrics.completed_agents == 20, (
+            f"completed_agents must be exactly 20, got {snap.metrics.completed_agents}"
+        )
+        assert snap.metrics.failed_agents == 0
+        assert snap.metrics.total_tokens == 100  # 20 * 5
+
+    def test_concurrent_mixed_statuses_consistent(self):
+        """Concurrent done/failed/abort calls must produce consistent totals."""
+        sm = _make_state_manager()
+        n_done = 15
+        n_failed = 10
+        n_aborted = 5
+        total = n_done + n_failed + n_aborted
+
+        done_labels = [sm.on_agent_started(f"d{i}", "coco", "phase1") for i in range(n_done)]
+        failed_labels = [sm.on_agent_started(f"f{i}", "coco", "phase1") for i in range(n_failed)]
+        aborted_labels = [sm.on_agent_started(f"a{i}", "coco", "phase1") for i in range(n_aborted)]
+
+        barrier = threading.Barrier(total)
+        threads = []
+
+        for lbl in done_labels:
+            def _d(l=lbl):
+                barrier.wait()
+                sm.on_agent_done(l, {"token_usage": 2, "duration_s": 0.1})
+            threads.append(threading.Thread(target=_d))
+
+        for lbl in failed_labels:
+            def _f(l=lbl):
+                barrier.wait()
+                sm.on_agent_failed(l, "fail")
+            threads.append(threading.Thread(target=_f))
+
+        for lbl in aborted_labels:
+            def _a(l=lbl):
+                barrier.wait()
+                sm.on_agent_aborted(l, "abort")
+            threads.append(threading.Thread(target=_a))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10.0)
+
+        snap = sm.snapshot()
+        assert snap.metrics.total_agents == total
+        assert snap.metrics.completed_agents == total, (
+            f"all agents must be terminal, completed_agents={snap.metrics.completed_agents}"
+        )
+        assert snap.metrics.failed_agents == n_failed
+        # done + cached count: n_done agents
+        done_count = sum(
+            1 for ph in snap.phases for a in ph.agents
+            if a.status == AgentStatus.DONE or a.status == AgentStatus.CACHED
+        )
+        assert done_count == n_done
+        assert snap.metrics.total_tokens == n_done * 2

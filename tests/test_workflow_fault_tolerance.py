@@ -61,10 +61,17 @@ def _make_mock_session(output_text="", output_tokens=100, side_effect=None):
 
 
 def _make_executor(cancel_event=None, cwd="/tmp/test"):
-    """Create an AgentExecutor with a mock session pool."""
+    """Create an AgentExecutor with a mock session pool.
+
+    The real ThreadPoolExecutor created by AgentExecutor.__init__ is
+    shut down before replacing it with a mock, preventing thread leaks
+    in unit tests.
+    """
     if cancel_event is None:
         cancel_event = threading.Event()
     executor = AgentExecutor(cwd=cwd, cancel_event=cancel_event)
+    # Shut down the real thread pool before replacing it with a mock
+    executor._session_pool.shutdown(wait=False, cancel_futures=True)
     # Replace the real thread pool with a mock to avoid actual threading
     executor._session_pool = MagicMock()
     return executor
@@ -105,6 +112,9 @@ class TestAgentRetryLogic(unittest.TestCase):
     def setUp(self):
         self.cancel_event = threading.Event()
         self.executor = _make_executor(cancel_event=self.cancel_event)
+
+    def tearDown(self):
+        self.executor.shutdown(wait=False)
 
     def test_retry_on_transient_error(self):
         """Verify transient errors trigger a retry and eventual success.
@@ -248,6 +258,9 @@ class TestSchemaValidationRetry(unittest.TestCase):
         self.cancel_event = threading.Event()
         self.executor = _make_executor(cancel_event=self.cancel_event)
 
+    def tearDown(self):
+        self.executor.shutdown(wait=False)
+
     def test_schema_validation_failure_triggers_fix_prompt(self):
         """Verify schema mismatch generates a fix prompt and retries.
 
@@ -383,6 +396,9 @@ class TestTimeoutHandling(unittest.TestCase):
         self.cancel_event = threading.Event()
         self.executor = _make_executor(cancel_event=self.cancel_event)
 
+    def tearDown(self):
+        self.executor.shutdown(wait=False)
+
     def test_agent_call_times_out(self):
         """Verify agent calls exceeding AGENT_CALL_TIMEOUT_S are cancelled.
 
@@ -512,6 +528,9 @@ class TestBackpressureHandling(unittest.TestCase):
         self.bridge._msg_condition = MagicMock()
         self.bridge._send_error_response = MagicMock()
         self.bridge._send_response = MagicMock()
+
+    def tearDown(self):
+        self.bridge.stop()
 
     def test_queue_full_rejects_new_calls(self):
         """Verify full queue rejects new agent calls with backpressure error.
@@ -932,6 +951,9 @@ class TestCancelHandling(unittest.TestCase):
     def setUp(self):
         self.cancel_event = threading.Event()
         self.executor = _make_executor(cancel_event=self.cancel_event)
+
+    def tearDown(self):
+        self.executor.shutdown(wait=False)
 
     def test_cancel_event_stops_execution(self):
         """Verify setting the cancel event stops in-progress agent calls.

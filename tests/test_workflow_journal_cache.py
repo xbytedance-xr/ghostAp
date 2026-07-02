@@ -80,9 +80,21 @@ class TestKeyComputation(_BaseJournalTest):
         key_none = WorkflowJournal.compute_key("prompt", "coco", None)
         key_empty = WorkflowJournal.compute_key("prompt", "coco", "")
         self.assertEqual(key_none, key_empty)
-        # Verify the raw hash matches our expectation
-        expected = hashlib.sha256(b"prompt|coco|").hexdigest()
+        # Verify the raw hash matches our expectation (with empty role and schema)
+        expected = hashlib.sha256(b"prompt|coco|||").hexdigest()
         self.assertEqual(key_none, expected)
+
+    def test_compute_key_includes_role(self):
+        """Different roles must produce different keys."""
+        key_architect = WorkflowJournal.compute_key("prompt", "coco", None, role="architect")
+        key_reviewer = WorkflowJournal.compute_key("prompt", "coco", None, role="reviewer")
+        self.assertNotEqual(key_architect, key_reviewer)
+
+    def test_compute_key_includes_schema(self):
+        """Different output schemas must produce different keys."""
+        key_a = WorkflowJournal.compute_key("prompt", "coco", None, output_schema={"result": "str"})
+        key_b = WorkflowJournal.compute_key("prompt", "coco", None, output_schema={"score": "int"})
+        self.assertNotEqual(key_a, key_b)
 
 
 # ---------------------------------------------------------------------------

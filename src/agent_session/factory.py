@@ -266,6 +266,7 @@ def create_review_session(
     agent_type: str,
     cwd: str,
     model_name: Optional[str] = None,
+    startup_timeout: Optional[float] = None,
 ) -> SyncSession:
     """Create a short-lived session dedicated to review prompts.
 
@@ -277,6 +278,10 @@ def create_review_session(
       `EphemeralReviewSession` for a context-managed convenience.
 
     Allows `agent_type` to differ from the build agent (heterogeneous review).
+
+    Args:
+        startup_timeout: Optional override for the ACP startup timeout.
+            When None, falls back to ``settings.acp_startup_timeout``.
     """
     from ..acp.sync_adapter import start_session_with_retry
     from ..coco_model import get_coco_model_manager
@@ -285,10 +290,11 @@ def create_review_session(
     settings = get_settings()
     agent_type = (agent_type or "coco").lower()
     cwd = normalize_ttadk_cwd(cwd) or cwd
+    effective_startup_timeout = startup_timeout if startup_timeout is not None else settings.acp_startup_timeout
 
     logger.info(
-        "[SessionFactory] create_review_session: agent=%s cwd=%s model=%s",
-        agent_type, cwd, model_name,
+        "[SessionFactory] create_review_session: agent=%s cwd=%s model=%s startup_timeout=%s",
+        agent_type, cwd, model_name, effective_startup_timeout,
     )
 
     if agent_type == "claude":
@@ -313,7 +319,7 @@ def create_review_session(
     return start_session_with_retry(
         agent_type=agent_type,
         cwd=cwd,
-        startup_timeout=settings.acp_startup_timeout,
+        startup_timeout=float(effective_startup_timeout),
         model_name=effective_model,
     )
 
@@ -323,6 +329,11 @@ class EphemeralReviewSession:
 
     Use to isolate review from the build session so review prompts run on a
     clean, small ACP context. Create anew per cycle — do not reuse across cycles.
+
+    Attributes:
+        startup_elapsed_s: Wall-clock seconds spent inside create_review_session
+            during __enter__. Set even on failure so callers can distinguish
+            startup-time failures from prompt-time failures.
     """
 
     def __init__(
@@ -330,17 +341,30 @@ class EphemeralReviewSession:
         agent_type: str,
         cwd: str,
         model_name: Optional[str] = None,
+        startup_timeout: Optional[float] = None,
     ):
         self._agent_type = agent_type
         self._cwd = cwd
         self._model_name = model_name
+        self._startup_timeout = startup_timeout
         self._session: Optional[SyncSession] = None
+        self.startup_elapsed_s: float = 0.0
+        self.session_started: bool = False
 
     def __enter__(self) -> SyncSession:
-        self._session = create_review_session(
-            self._agent_type, self._cwd, self._model_name
-        )
-        return self._session
+        import time
+        t0 = time.perf_counter()
+        try:
+            self._session = create_review_session(
+                self._agent_type,
+                self._cwd,
+                self._model_name,
+                startup_timeout=self._startup_timeout,
+            )
+            self.session_started = True
+            return self._session
+        finally:
+            self.startup_elapsed_s = time.perf_counter() - t0
 
     def __exit__(self, *exc) -> None:
         if self._session is None:

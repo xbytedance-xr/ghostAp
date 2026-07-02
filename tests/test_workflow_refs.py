@@ -588,21 +588,24 @@ def test_runtime_bridge_reads_template_meta_and_rejects_missing_tools(tmp_path):
         on_phase=lambda *a, **kw: None,
         on_log=lambda *a, **kw: None,
     )
-    bridge._send = lambda payload: captured.append(payload)
+    try:
+        bridge._send = lambda payload: captured.append(payload)
 
-    bridge._handle_workflow_call({"name": "bad-subflow"}, request_id="req-1")
+        bridge._handle_workflow_call({"name": "bad-subflow"}, request_id="req-1")
 
-    assert captured, "bridge should have sent an error response"
-    # Preflight error wins over any downstream failure.
-    preflight = next(
-        (c["error"] for c in captured if isinstance(c, dict) and c.get("error", {}).get("code") == -32004),
-        None,
-    )
-    assert preflight is not None, f"no -32004 tool preflight among {captured}"
-    data = preflight.get("data") or {}
-    assert data.get("kind") == "missing_tools"
-    assert "extra_tool" in data.get("missing_tools", [])
-    assert "coco" in data.get("allowed_tools", [])
+        assert captured, "bridge should have sent an error response"
+        # Preflight error wins over any downstream failure.
+        preflight = next(
+            (c["error"] for c in captured if isinstance(c, dict) and c.get("error", {}).get("code") == -32004),
+            None,
+        )
+        assert preflight is not None, f"no -32004 tool preflight among {captured}"
+        data = preflight.get("data") or {}
+        assert data.get("kind") == "missing_tools"
+        assert "extra_tool" in data.get("missing_tools", [])
+        assert "coco" in data.get("allowed_tools", [])
+    finally:
+        bridge.stop()
 
 
 def test_runtime_bridge_accepts_sub_workflow_when_tools_match(tmp_path):
@@ -635,6 +638,8 @@ def test_runtime_bridge_accepts_sub_workflow_when_tools_match(tmp_path):
         bridge._handle_workflow_call({"name": "ok-subflow"}, request_id="req-2")
     except Exception:  # noqa: BLE001 — subprocess/IO failures are out of scope
         pass
+    finally:
+        bridge.stop()
 
     tool_mismatch_messages = [
         c["error"] for c in captured

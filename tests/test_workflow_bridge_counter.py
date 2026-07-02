@@ -11,12 +11,39 @@ from __future__ import annotations
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Generator
 
 import pytest
 
 from src.workflow_engine.bridge import RuntimeBridge
 
 BRIDGE_PATH = Path(__file__).resolve().parents[1] / "src" / "workflow_engine" / "bridge.py"
+
+# Track all RuntimeBridge instances created during tests so we can guarantee
+# cleanup via .stop() — idempotent and safe to call even if start() was never
+# invoked.  This future-proofs the tests against __init__ acquiring resources
+# (thread pools, sockets, etc.) in later changes.
+_bridge_registry: list[RuntimeBridge] = []
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_bridges() -> Generator[None, None, None]:
+    """Stop every RuntimeBridge created during a test once it finishes."""
+    before = len(_bridge_registry)
+    yield
+    for bridge in _bridge_registry[before:]:
+        try:
+            bridge.stop()
+        except Exception:
+            pass
+    del _bridge_registry[before:]
+
+
+def _make_bridge(**kwargs: object) -> RuntimeBridge:
+    """Create a RuntimeBridge registered for teardown cleanup."""
+    bridge = RuntimeBridge(**kwargs)  # type: ignore[arg-type]
+    _bridge_registry.append(bridge)
+    return bridge
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +60,7 @@ def test_bridge_no_pending_submit_count_attribute() -> None:
     )
     # Structural: confirm no ``_pending_submit_count`` attribute is referenced.
     assert not hasattr(
-        RuntimeBridge(script_path="/dev/null", cwd="/tmp"), "_pending_submit_count"
+        _make_bridge(script_path="/dev/null", cwd="/tmp"), "_pending_submit_count"
     ), (
         "RuntimeBridge exposes _pending_submit_count attribute; "
         "this was removed in favor of len(_active_futures) only."
@@ -46,14 +73,14 @@ def test_bridge_no_pending_submit_count_attribute() -> None:
 
 
 def test_in_flight_count_initial_zero() -> None:
-    bridge = RuntimeBridge(script_path="/dev/null", cwd="/tmp")
+    bridge = _make_bridge(script_path="/dev/null", cwd="/tmp")
     assert bridge.in_flight_count == 0
     assert len(bridge._active_futures) == 0
 
 
 def test_in_flight_count_reflects_active_futures_only() -> None:
     """in_flight_count == len(_active_futures)."""
-    bridge = RuntimeBridge(script_path="/dev/null", cwd="/tmp")
+    bridge = _make_bridge(script_path="/dev/null", cwd="/tmp")
     fake1 = object()
     with bridge._futures_lock:
         bridge._active_futures.add(fake1)  # type: ignore[arg-type]
@@ -71,14 +98,14 @@ def test_in_flight_count_reflects_active_futures_only() -> None:
 
 
 def test_discard_unknown_future_is_safe() -> None:
-    bridge = RuntimeBridge(script_path="/dev/null", cwd="/tmp")
+    bridge = _make_bridge(script_path="/dev/null", cwd="/tmp")
     bridge._discard_future(object())  # type: ignore[arg-type]
     assert bridge.in_flight_count == 0
 
 
 def test_n_submits_then_m_completions() -> None:
     """N submits produce in_flight == N (not 2*N — no double counting)."""
-    bridge = RuntimeBridge(script_path="/dev/null", cwd="/tmp")
+    bridge = _make_bridge(script_path="/dev/null", cwd="/tmp")
     futures: list[object] = []
     n = 10
     for _ in range(n):
@@ -104,7 +131,7 @@ def test_n_submits_then_m_completions() -> None:
 
 def test_in_flight_count_thread_safety() -> None:
     """Add/discard from many threads must converge to zero."""
-    bridge = RuntimeBridge(script_path="/dev/null", cwd="/tmp")
+    bridge = _make_bridge(script_path="/dev/null", cwd="/tmp")
     threads = 20
     per_thread = 50
     barriers = threading.Barrier(threads)
@@ -132,7 +159,7 @@ def test_in_flight_count_thread_safety() -> None:
 
 
 def test_counter_through_real_submit_and_done_callback() -> None:
-    bridge = RuntimeBridge(script_path="/dev/null", cwd="/tmp", max_concurrent=1)
+    bridge = _make_bridge(script_path="/dev/null", cwd="/tmp", max_concurrent=1)
     bridge._executor = ThreadPoolExecutor(max_workers=1)
     try:
         hold = threading.Event()

@@ -494,3 +494,203 @@ def _reset_all_singletons():
         _reset_env_for_testing()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Workflow engine resource fixtures
+# ---------------------------------------------------------------------------
+
+import tempfile
+
+
+@pytest.fixture
+def make_wf_bridge():
+    """Factory fixture: create a RuntimeBridge with auto-teardown.
+
+    Teardown calls .stop() on all created bridges to clean up subprocesses
+    and background threads.
+
+    Usage::
+
+        def test_something(make_wf_bridge):
+            bridge = make_wf_bridge(tmp_path=tmp_path, on_agent_call=my_handler)
+    """
+    from unittest.mock import MagicMock
+
+    bridges: list = []
+
+    def _factory(tmp_path=None, **kwargs):
+        # Lazy import to avoid circular imports / startup overhead
+        from src.workflow_engine.bridge import RuntimeBridge
+
+        if tmp_path is None:
+            tmp_path = tempfile.mkdtemp(prefix="wf_bridge_")
+
+        kwargs.setdefault("script_path", "test_workflow.js")
+        kwargs.setdefault(
+            "on_agent_call",
+            lambda params: MagicMock(output="ok"),
+        )
+
+        bridge = RuntimeBridge(
+            cwd=str(tmp_path),
+            **kwargs,
+        )
+        bridges.append(bridge)
+        return bridge
+
+    yield _factory
+
+    for b in bridges:
+        try:
+            b.stop()
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def make_wf_executor():
+    """Factory fixture: create an AgentExecutor with auto-teardown.
+
+    Teardown calls .shutdown(wait=True) on all created executors to stop
+    their thread pools.
+
+    Usage::
+
+        def test_something(make_wf_executor):
+            executor = make_wf_executor(tmp_path=tmp_path, cancel_event=evt)
+    """
+    executors: list = []
+
+    def _factory(tmp_path=None, cancel_event=None, **kwargs):
+        # Lazy import to avoid circular imports / startup overhead
+        from src.workflow_engine.executor import AgentExecutor
+
+        if tmp_path is None:
+            tmp_path = tempfile.mkdtemp(prefix="wf_executor_")
+        if cancel_event is None:
+            cancel_event = threading.Event()
+
+        kwargs.setdefault("max_workers", 2)
+
+        executor = AgentExecutor(
+            cwd=str(tmp_path),
+            cancel_event=cancel_event,
+            **kwargs,
+        )
+        executors.append(executor)
+        return executor
+
+    yield _factory
+
+    for e in executors:
+        try:
+            e.shutdown(wait=True)
+        except Exception:
+            pass
+
+
+@pytest.fixture
+def make_wf_coalescer():
+    """Factory fixture: create a ProgressCoalescer with auto-teardown.
+
+    Teardown calls .stop() on all created coalescers to stop daemon threads
+    and flush pending updates.
+
+    Usage::
+
+        def test_something(make_wf_coalescer):
+            coalescer = make_wf_coalescer(on_progress=my_callback, debounce_s=0.01)
+    """
+    coalescers: list = []
+
+    def _factory(on_progress=None, debounce_s=0.01, **kwargs):
+        # Lazy import to avoid circular imports / startup overhead
+        from src.workflow_engine.progress_coalescer import ProgressCoalescer
+
+        if on_progress is None:
+            on_progress = lambda snapshot: None  # noqa: E731
+
+        coalescer = ProgressCoalescer(
+            on_progress=on_progress,
+            debounce_s=debounce_s,
+            **kwargs,
+        )
+        coalescers.append(coalescer)
+        return coalescer
+
+    yield _factory
+
+    for c in coalescers:
+        try:
+            c.stop()
+        except Exception:
+            pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _detect_resource_leaks():
+    """Session-scoped diagnostic fixture: detect thread/process leaks.
+
+    Records active threads at session start and warns at session end if
+    more than 5 extra threads remain. Also checks for leftover ``node``
+    subprocesses.
+
+    This is a diagnostic only — it never fails a test.
+    """
+    import sys
+
+    start_count = threading.active_count()
+    start_threads = {t.name for t in threading.enumerate()}
+
+    yield
+
+    # Give daemon threads a moment to wind down
+    import time
+    time.sleep(0.5)
+
+    end_count = threading.active_count()
+    end_threads = {t.name for t in threading.enumerate()}
+    new_threads = end_threads - start_threads
+    extra = end_count - start_count
+
+    if extra > 5:
+        print(
+            f"\n[conftest] WARNING: {extra} extra threads still active at session end "
+            f"(started with {start_count}, ended with {end_count}).",
+            file=sys.stderr,
+        )
+        print(f"[conftest] New thread names: {sorted(new_threads)}", file=sys.stderr)
+
+    # Check for leftover node subprocesses
+    try:
+        import psutil  # type: ignore
+
+        node_procs = [
+            p for p in psutil.process_iter(["name", "pid"])
+            if p.info["name"] and "node" in p.info["name"].lower()
+        ]
+        if node_procs:
+            print(
+                f"\n[conftest] WARNING: {len(node_procs)} node process(es) still running: "
+                + ", ".join(f"pid={p.info['pid']}" for p in node_procs),
+                file=sys.stderr,
+            )
+    except ImportError:
+        # Fallback: use ps aux
+        try:
+            import subprocess as _sp
+            output = _sp.check_output(["ps", "aux"], text=True)
+            node_lines = [
+                line for line in output.splitlines()
+                if "node" in line and "ps aux" not in line and "grep" not in line
+            ]
+            # Filter out entries that are clearly not node processes (e.g. "nodemon" etc is fine)
+            if node_lines:
+                # Only warn if there are more than a baseline — be conservative
+                print(
+                    f"\n[conftest] NOTE: {len(node_lines)} node-related process(es) found via ps.",
+                    file=sys.stderr,
+                )
+        except Exception:
+            pass

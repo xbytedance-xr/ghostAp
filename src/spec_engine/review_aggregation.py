@@ -41,6 +41,7 @@ class RoleReviewOutcome:
     raw_preview: str = ""
     error: str = ""
     blocking: bool = True
+    skipped: bool = False
     base_perspective_value: str = ""
     # Completion gate fields (only populated for completion_control role)
     goal_verdict: str = ""

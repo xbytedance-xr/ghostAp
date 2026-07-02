@@ -70,6 +70,8 @@ class WorkflowStateManager:
         label, so duplicate labels are disambiguated at the source.
         """
         with self._write_locked():
+            if self._is_workflow_terminal():
+                return label or "agent"
             target_phase = self._find_or_create_phase(phase)
             now = time.time()
             effective_label = self._make_unique_label(label or "agent")
@@ -103,6 +105,11 @@ class WorkflowStateManager:
                     return
                 # Repair the map on hit so subsequent lookups stay O(1).
                 self._label_to_agent[label] = agent
+
+            # Sticky terminal: any terminal state is final — DONE does not
+            # overwrite CANCELLED, FAILED, or an already-DONE agent.
+            if self._is_terminal_agent(agent):
+                return
 
             token_usage = result.get("token_usage", 0)
             duration_s = result.get("duration_s", 0.0)
@@ -138,22 +145,51 @@ class WorkflowStateManager:
                     return
                 self._label_to_agent[label] = agent
 
-            was_terminal = self._is_terminal_agent(agent)
-            was_failed = agent.status == AgentStatus.FAILED
+            # Sticky terminal: any terminal state is final — FAILED does not
+            # overwrite DONE, CANCELLED, CACHED, or an already-FAILED agent.
+            if self._is_terminal_agent(agent):
+                return
             now = time.time()
             agent.status = AgentStatus.FAILED
             agent.error = error
             agent.finished_at = now
             if agent.duration_s <= 0 and agent.started_at:
                 agent.duration_s = max(0.0, now - agent.started_at)
-            if not was_failed:
-                self._project.metrics.failed_agents += 1
-            if not was_terminal:
-                self._project.metrics.completed_agents += 1
+            self._project.metrics.failed_agents += 1
+            self._project.metrics.completed_agents += 1
+
+    def on_agent_aborted(self, label: str, reason: str = "Aborted by race loser") -> None:
+        """Mark a running agent as CANCELLED (e.g. race() loser abort).
+
+        Unlike on_agent_failed, this does not increment failed_agents —
+        aborted agents are an expected outcome of race/tournament semantics
+        and should not be counted as failures.
+        """
+        with self._write_locked():
+            agent = self._label_to_agent.get(label)
+            if agent is None:
+                agent = self._find_agent(label)
+                if agent is None:
+                    return
+                self._label_to_agent[label] = agent
+
+            # Sticky terminal: any terminal state is final — CANCELLED does not
+            # overwrite DONE, FAILED, CACHED, or an already-CANCELLED agent.
+            if self._is_terminal_agent(agent):
+                return
+            now = time.time()
+            agent.status = AgentStatus.CANCELLED
+            agent.error = reason
+            agent.finished_at = now
+            if agent.duration_s <= 0 and agent.started_at:
+                agent.duration_s = max(0.0, now - agent.started_at)
+            self._project.metrics.completed_agents += 1
 
     def on_workflow_done(self, result: str) -> None:
         """Mark workflow as completed."""
         with self._write_locked():
+            if self._project.status in (WorkflowStatus.CANCELLED, WorkflowStatus.FAILED):
+                return
             self._project.status = WorkflowStatus.COMPLETED
             self._project.result = result
             self._project.finished_at = time.time()
@@ -167,6 +203,9 @@ class WorkflowStateManager:
     def on_workflow_failed(self, error: str) -> None:
         """Mark workflow as failed."""
         with self._write_locked():
+            # Sticky terminal: if already CANCELLED or COMPLETED, do not overwrite.
+            if self._project.status in (WorkflowStatus.CANCELLED, WorkflowStatus.COMPLETED):
+                return
             now = time.time()
             self._project.status = WorkflowStatus.FAILED
             self._project.error = error
@@ -182,6 +221,11 @@ class WorkflowStateManager:
     def on_workflow_cancelled(self, reason: str = "Workflow cancelled") -> None:
         """Mark workflow as cancelled without rewriting it as a failure."""
         with self._write_locked():
+            # Sticky terminal: COMPLETED is final — nothing overwrites nothing.
+            # FAILED can be overwritten by CANCELLED because user stop takes
+            # precedence over a runtime failure.
+            if self._project.status == WorkflowStatus.COMPLETED:
+                return
             now = time.time()
             self._project.status = WorkflowStatus.CANCELLED
             self._project.error = reason
@@ -369,6 +413,14 @@ class WorkflowStateManager:
             AgentStatus.DONE,
             AgentStatus.FAILED,
             AgentStatus.CACHED,
+            AgentStatus.CANCELLED,
+        )
+
+    def _is_workflow_terminal(self) -> bool:
+        return self._project.status in (
+            WorkflowStatus.COMPLETED,
+            WorkflowStatus.FAILED,
+            WorkflowStatus.CANCELLED,
         )
 
     def _close_open_agents(self, *, error: str, finished_at: float) -> None:

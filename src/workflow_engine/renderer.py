@@ -69,6 +69,7 @@ STATUS_ICONS: dict[AgentStatus, str] = {
     AgentStatus.DONE: "\u2705",
     AgentStatus.FAILED: "\u274c",
     AgentStatus.CACHED: "\U0001f4e6",
+    AgentStatus.CANCELLED: "⏹️",
 }
 
 WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
@@ -272,19 +273,23 @@ class WorkflowProgressRenderer:
     # Rendering — produce Feishu card elements
     # ------------------------------------------------------------------
 
-    def render_progress_card(self) -> dict[str, Any]:
+    def render_progress_card(self, project: WorkflowProject | None = None) -> dict[str, Any]:
         """Generate the full Feishu card JSON structure.
 
-        Returns a dict with 'header' and 'elements' suitable for
-        Feishu Interactive Card v2.
-
-        Layout (top → bottom):
-          1. Current execution summary (active phase / agent / tool / last-change time).
-          2. Overall progress bar.
-          3. Phase tree (collapsed-style detail).
-          4. Token usage section.
-          5. Metrics footer.
+        Args:
+            project: Optional snapshot to render; falls back to self._project.
+                Callers under concurrent mutation MUST pass a snapshot() for safety.
         """
+        if project is not None:
+            saved = self._project
+            self._project = project
+            try:
+                return self._render_progress_card_impl()
+            finally:
+                self._project = saved
+        return self._render_progress_card_impl()
+
+    def _render_progress_card_impl(self) -> dict[str, Any]:
         elements: list[dict[str, Any]] = []
 
         # -- Current execution summary section (top) --
@@ -310,10 +315,9 @@ class WorkflowProgressRenderer:
         elements.append(self._render_metrics_footer())
 
         # Defensive check: ensure no accidental agent-output sentinel leaks
-        # into rendered card text. Default markers tuple is empty → no-op.
         _card_text_for_agent_output(elements, _AGENT_OUTPUT_FORBIDDEN_MARKERS)
 
-        # Enforce Feishu card payload size limit (30KB max, 28KB with margin).
+        # Enforce Feishu card payload size limit
         elements = _enforce_card_size(elements)
 
         return {
@@ -322,12 +326,7 @@ class WorkflowProgressRenderer:
         }
 
     def _render_summary_section(self) -> dict[str, Any] | None:
-        """Render a compact "当前执行中" summary block.
-
-        Returns a markdown element describing the active phase, active
-        agent, active tool, and last change timestamp. Returns None when
-        the workflow has not started yet and there is nothing to report.
-        """
+        """Render a compact "当前执行中" summary block."""
         # Find a running agent first; fall back to the most-recently changed
         # agent across all phases.
         running_agent: Any = None
@@ -354,7 +353,6 @@ class WorkflowProgressRenderer:
 
         active_agent = running_agent or latest_agent
         if active_agent is None and not self._project.phases:
-            # Nothing meaningful to summarise — let the progress bar stand alone.
             return None
 
         # Compose the summary lines
@@ -495,6 +493,7 @@ class WorkflowProgressRenderer:
             "FAILED": [],
             "DONE": [],
             "CACHED": [],
+            "CANCELLED": [],
             "PENDING": [],
         }
         for agent in agents:
@@ -522,6 +521,7 @@ class WorkflowProgressRenderer:
             "FAILED": ("失败", "red"),
             "DONE": ("已完成", "green"),
             "CACHED": ("缓存", "turquoise"),
+            "CANCELLED": ("已取消", "grey"),
             "PENDING": ("待执行", "grey"),
         }
 
@@ -531,6 +531,7 @@ class WorkflowProgressRenderer:
             ("FAILED", True),
             ("DONE", False),
             ("CACHED", False),
+            ("CANCELLED", False),
             ("PENDING", False),
         ]
         for key, expanded in display_order:
@@ -591,7 +592,9 @@ class WorkflowProgressRenderer:
     def _render_metrics_footer(self) -> dict[str, Any]:
         """Render metrics footer as a 2-column stretch layout: Agents/耗时 · 缓存/失败。"""
         metrics = self._project.metrics
-        elapsed = time.time() - self._start_time
+        start = self._project.started_at or self._start_time
+        end = self._project.finished_at or time.time()
+        elapsed = end - start if end >= start else time.time() - self._start_time
         elapsed_str = _format_duration(elapsed)
 
         # Left column: Agents + 耗时
@@ -642,7 +645,7 @@ class WorkflowProgressRenderer:
         has_running = any(a.status == AgentStatus.RUNNING for a in phase.agents)
         has_failed = any(a.status == AgentStatus.FAILED for a in phase.agents)
         all_done = all(
-            a.status in (AgentStatus.DONE, AgentStatus.CACHED)
+            a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED)
             for a in phase.agents
         )
 
@@ -751,7 +754,7 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
     total_phases = len(project.phases)
     completed_phases = sum(
         1 for phase in project.phases
-        if all(a.status in (AgentStatus.DONE, AgentStatus.CACHED) for a in phase.agents)
+        if all(a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED) for a in phase.agents)
     )
     total_agents = max(metrics.total_agents, 1)
     success_rate = int((metrics.completed_agents / total_agents) * 100)

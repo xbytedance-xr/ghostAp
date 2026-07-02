@@ -119,6 +119,13 @@ class WorkflowEngine(BaseEngine):
         # Counters for safety fuse
         self._agent_call_count: int = 0
 
+        # Map JSON-RPC request_id → effective agent label. Used by
+        # _handle_agent_aborted to look up agents by request_id instead of
+        # raw label string, which avoids mismatches when state_manager
+        # disambiguates duplicate labels (e.g. "agent-1" → "agent-1 #2").
+        self._request_to_label: dict[Any, str] = {}
+        self._request_to_label_lock = threading.Lock()  # leaf lock
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
@@ -194,6 +201,10 @@ class WorkflowEngine(BaseEngine):
                 logger.debug("WorkflowEngine bridge stop failed")
             self._bridge = None
 
+        # Clear request_id → label mapping to prevent cross-run leaks
+        with self._request_to_label_lock:
+            self._request_to_label.clear()
+
         super().cleanup()
 
     # ------------------------------------------------------------------
@@ -226,8 +237,12 @@ class WorkflowEngine(BaseEngine):
         self._callbacks = callbacks or WorkflowEngineCallbacks()
         # WorkflowEngine instances are intentionally reused by the manager for
         # the same chat/root path. A previous stop() leaves the event set; every
-        # new run must start with a clean cancellation boundary.
-        self._cancel_event.clear()
+        # new run must start with a clean cancellation boundary. Clear under
+        # self._lock to establish happens-before with _on_stop() which also
+        # acquires self._lock before setting the event.
+        with self._lock:
+            self._cancel_event.clear()
+            self._agent_call_count = 0
 
         # Parse meta from the generated script so we can honor meta.maxConcurrent
         # before the bridge / executor thread pools are created.
@@ -297,6 +312,7 @@ class WorkflowEngine(BaseEngine):
                 cwd=self.root_path,
                 max_concurrent=max_concurrent,
                 on_agent_call=self._handle_agent_call,
+                on_agent_aborted=self._handle_agent_aborted,
                 on_phase=self._handle_phase,
                 on_log=self._handle_log,
                 cancel_event=self._cancel_event,
@@ -429,7 +445,7 @@ class WorkflowEngine(BaseEngine):
     # Bridge callbacks
     # ------------------------------------------------------------------
 
-    def _handle_agent_call(self, params: AgentCallParams) -> AgentCallResult:
+    def _handle_agent_call(self, params: AgentCallParams, *, cancel_event=None, request_id=None) -> AgentCallResult:
         """Handle an agent() call from the JS runtime.
 
         Flow:
@@ -475,7 +491,15 @@ class WorkflowEngine(BaseEngine):
                 task_summary=task_summary,
             )
 
-        cache_key = WorkflowJournal.compute_key(params.prompt, params.tool, params.model)
+        # Track request_id → effective label for abort-by-request-id lookup
+        if request_id is not None:
+            with self._request_to_label_lock:
+                self._request_to_label[request_id] = label
+
+        cache_key = WorkflowJournal.compute_key(
+            params.prompt, params.tool, params.model,
+            role=params.role, output_schema=params.output_schema,
+        )
 
         # Tool whitelist enforcement
         project = self._project
@@ -519,8 +543,8 @@ class WorkflowEngine(BaseEngine):
                 self._fire_progress()
                 return cached_result
 
-        # Execute via AgentExecutor
-        result = self._executor.execute(params)
+        # Execute via AgentExecutor (pass per-call cancel event for race/tournament abort)
+        result = self._executor.execute(params, cancel_event=cancel_event)
 
         # Store in journal (only on success)
         if result.error is None and self._journal:
@@ -556,6 +580,32 @@ class WorkflowEngine(BaseEngine):
         self._fire_progress()
         return result
 
+    def _handle_agent_aborted(self, label: str, reason: str, *, request_id=None) -> None:
+        """Handle an agent_aborted notification from the JS runtime.
+
+        Called when a race() loser (or tournament elimination) agent is
+        aborted. Updates the progress card so the agent no longer shows as
+        '执行中'. The ACP session is interrupted via the per-call cancel_event
+        set by the bridge's _handle_abort_request.
+
+        Uses request_id for authoritative lookup (avoids label mismatch when
+        state_manager disambiguates duplicate labels), falling back to raw
+        label for backward compatibility.
+        """
+        effective_label = label
+        if request_id is not None:
+            with self._request_to_label_lock:
+                mapped = self._request_to_label.get(request_id)
+            if mapped:
+                effective_label = mapped
+        logger.info(
+            "[WorkflowEngine] Agent aborted: %s (reason=%s, request_id=%s)",
+            effective_label, reason, request_id,
+        )
+        if self._state_manager:
+            self._state_manager.on_agent_aborted(effective_label, reason)
+        self._fire_progress(immediate=True)
+
     def _handle_phase(self, title: str) -> None:
         """Handle a phase() notification from the JS runtime."""
         logger.info("[WorkflowEngine] Phase: %s", title)
@@ -579,16 +629,29 @@ class WorkflowEngine(BaseEngine):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _fire_progress(self) -> None:
-        """Fire progress callback via coalescer (non-blocking, debounced)."""
+    def _fire_progress(self, immediate: bool = False) -> None:
+        """Fire progress callback via coalescer (non-blocking, debounced).
+
+        Args:
+            immediate: If True, bypass the coalescer debounce and flush
+                immediately. Used for abort events where the user needs to
+                see cancelled agents disappear from '执行中' quickly.
+        """
         if not self._renderer_wf:
             return
         if not self._callbacks or not self._callbacks.on_progress:
             return
         try:
-            card_data = self._renderer_wf.render_progress_card()
+            if self._state_manager:
+                snapshot = self._state_manager.snapshot()
+                card_data = self._renderer_wf.render_progress_card(snapshot)
+            else:
+                card_data = self._renderer_wf.render_progress_card()
             if self._progress_coalescer:
-                self._progress_coalescer.enqueue(card_data)
+                if immediate:
+                    self._progress_coalescer.flush_immediate(card_data)
+                else:
+                    self._progress_coalescer.enqueue(card_data)
             else:
                 self._callbacks.on_progress(card_data)
         except Exception:
@@ -618,6 +681,8 @@ class WorkflowEngine(BaseEngine):
     def get_progress_card(self) -> Optional[dict[str, Any]]:
         """Return current Feishu card JSON for the workflow progress."""
         if self._renderer_wf:
+            if self._state_manager:
+                return self._renderer_wf.render_progress_card(self._state_manager.snapshot())
             return self._renderer_wf.render_progress_card()
         return None
 

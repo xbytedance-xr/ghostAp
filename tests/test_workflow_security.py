@@ -68,7 +68,7 @@ class TestWorkflowConfirmSecurity(unittest.TestCase):
             "};\n"
             "\n"
             "export default async function() {\n"
-            "  await agent('do work');\n"
+            "  const r = await agent('do work', {timeout: 120}); if (r.error) throw new Error(r.error);\n"
             "}\n"
         )
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".js", delete=False, encoding="utf-8")

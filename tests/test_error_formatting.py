@@ -153,6 +153,52 @@ class TestClassifyTimeout:
     def test_classify_timeout_non_timeout(self):
         assert classify_timeout(ValueError("nope")) is False
 
+    # --- Heuristic: "Internal error" + elapsed/timeout threshold ---
+
+    def test_heuristic_internal_error_near_timeout(self):
+        """97.5% of timeout threshold + "Internal error" -> True."""
+        assert classify_timeout(
+            RuntimeError("Internal error"), elapsed_s=19.5, timeout_s=20
+        ) is True
+
+    def test_heuristic_internal_error_below_threshold(self):
+        """Only 50% of timeout threshold -> False."""
+        assert classify_timeout(
+            RuntimeError("Internal error"), elapsed_s=10, timeout_s=20
+        ) is False
+
+    def test_heuristic_no_internal_error_near_timeout(self):
+        """Near timeout but error message is not "Internal error" -> False."""
+        assert classify_timeout(
+            RuntimeError("some other error"), elapsed_s=19.5, timeout_s=20
+        ) is False
+
+    def test_heuristic_internal_error_case_insensitive(self):
+        """Case-insensitive match on "internal error" -> True."""
+        assert classify_timeout(
+            RuntimeError("internal error"), elapsed_s=19.5, timeout_s=20
+        ) is True
+
+    def test_heuristic_chained_internal_error(self):
+        """Outer RuntimeError wrapping inner "Internal error" -> True."""
+        inner = RuntimeError("Internal error")
+        outer = RuntimeError("session start failed")
+        outer.__cause__ = inner
+        assert classify_timeout(outer, elapsed_s=19.5, timeout_s=20) is True
+
+    def test_heuristic_no_elapsed_no_timeout(self):
+        """No elapsed/timeout provided -> no heuristic, "Internal error" alone -> False."""
+        assert classify_timeout(RuntimeError("Internal error")) is False
+
+    def test_heuristic_only_one_param_provided(self):
+        """Only one of elapsed/timeout provided -> heuristic not applied."""
+        assert classify_timeout(
+            RuntimeError("Internal error"), elapsed_s=19.5
+        ) is False
+        assert classify_timeout(
+            RuntimeError("Internal error"), timeout_s=20
+        ) is False
+
 
 class TestFmtException:
     """Tests for fmt_exception — uses classify_timeout as single source of truth."""

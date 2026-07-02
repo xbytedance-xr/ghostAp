@@ -74,9 +74,16 @@ class WorkflowJournal:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def compute_key(prompt: str, tool: str, model: str | None) -> str:
-        """Compute cache key as sha256 hex of 'prompt|tool|model'."""
-        raw = f"{prompt}|{tool}|{model or ''}"
+    def compute_key(
+        prompt: str,
+        tool: str,
+        model: str | None,
+        role: str | None = None,
+        output_schema: dict | None = None,
+    ) -> str:
+        """Compute cache key as sha256 hex of 'prompt|tool|model|role|schema'."""
+        schema_part = json.dumps(output_schema, sort_keys=True) if output_schema else ""
+        raw = f"{prompt}|{tool}|{model or ''}|{role or ''}|{schema_part}"
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def get_cached(self, key: str) -> Optional[AgentCallResult]:

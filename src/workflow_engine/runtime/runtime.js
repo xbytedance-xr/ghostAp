@@ -82,7 +82,7 @@ function sendRequest(method, params = {}) {
 
   const id = ++requestId;
   return new Promise((resolve, reject) => {
-    pendingRequests.set(id, { resolve, reject });
+    pendingRequests.set(id, { resolve, reject, aborted: false });
     send({ jsonrpc: '2.0', id, method, params });
   });
 }
@@ -104,8 +104,11 @@ function handleMessage(line) {
 
   // Response to a request we sent
   if (msg.id != null && pendingRequests.has(msg.id)) {
-    const { resolve, reject } = pendingRequests.get(msg.id);
+    const entry = pendingRequests.get(msg.id);
     pendingRequests.delete(msg.id);
+
+    // If the request was already aborted, ignore the late response
+    if (entry.aborted) return;
 
     if (msg.error) {
       // Preserve JSON-RPC error code/data so the JS orchestration layer
@@ -113,7 +116,7 @@ function handleMessage(line) {
       // payloads such as `{ kind: "missing_tools", ... }` produced by the
       // Python bridge. Falling back to `new Error(msg.error.message)`
       // would silently drop these attachments.
-      reject(
+      entry.reject(
         new JsonRpcError({
           code: msg.error.code,
           message: msg.error.message,
@@ -121,7 +124,7 @@ function handleMessage(line) {
         }),
       );
     } else {
-      resolve(msg.result);
+      entry.resolve(msg.result);
     }
     return;
   }
@@ -132,8 +135,11 @@ function handleMessage(line) {
       case 'cancel':
         cancelled = true;
         // Reject all pending requests
-        for (const [id, { reject }] of pendingRequests) {
-          reject(new CancelledError());
+        for (const [id, entry] of pendingRequests) {
+          if (!entry.aborted) {
+            entry.aborted = true;
+            entry.reject(new CancelledError());
+          }
         }
         pendingRequests.clear();
         break;
@@ -250,12 +256,38 @@ async function agent(promptOrOpts, opts = {}) {
     ...(opts.timeout && { timeout: opts.timeout }),
   };
 
-  const maxAttempts = opts.schema ? 3 : 1;
+  // Backpressure retry: -32000 errors from the bridge (queue full, pool
+  // exhausted) are transient — retry with exponential backoff + jitter.
+  const MAX_BACKPRESSURE_RETRIES = 3;
+  const BACKPRESSURE_BASE_DELAY_MS = 500;
 
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+  async function callWithBackpressureRetry() {
+    for (let attempt = 0; attempt <= MAX_BACKPRESSURE_RETRIES; attempt++) {
+      if (cancelled) throw new CancelledError();
+      try {
+        return await sendRequest('agent_call', params);
+      } catch (err) {
+        if (err instanceof CancelledError) throw err;
+        const isBackpressure = err instanceof JsonRpcError && err.code === -32000;
+        if (isBackpressure && attempt < MAX_BACKPRESSURE_RETRIES) {
+          const delay = BACKPRESSURE_BASE_DELAY_MS * (2 ** attempt) * (0.5 + Math.random() * 0.5);
+          debugLog(`[runtime] agent_call backpressure (attempt ${attempt + 1}/${MAX_BACKPRESSURE_RETRIES}), retrying in ${Math.round(delay)}ms`);
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        throw err;
+      }
+    }
+    // Unreachable — loop either returns or throws
+    throw new Error('agent_call: backpressure retries exhausted');
+  }
+
+  const maxSchemaAttempts = opts.schema ? 3 : 1;
+
+  for (let attempt = 0; attempt < maxSchemaAttempts; attempt++) {
     let result;
     try {
-      result = await sendRequest('agent_call', params);
+      result = await callWithBackpressureRetry();
     } catch (err) {
       if (err instanceof CancelledError) throw err;
       return { error: err.message };
@@ -271,7 +303,7 @@ async function agent(promptOrOpts, opts = {}) {
         return payload;
       }
 
-      if (attempt < maxAttempts - 1) {
+      if (attempt < maxSchemaAttempts - 1) {
         debugLog(`[runtime] Schema mismatch on attempt ${attempt + 1}, retrying...`);
         continue;
       }
@@ -376,6 +408,7 @@ async function pipeline(items, ...args) {
   if (!Array.isArray(items)) {
     throw new TypeError('pipeline() expects an array of items as first argument');
   }
+  if (cancelled) throw new CancelledError();
 
   // Extract options from last argument if it's an object (not a function)
   let stages = args;
@@ -386,6 +419,52 @@ async function pipeline(items, ...args) {
   }
 
   const continueOnFailure = options.continueOnFailure || options.continue_on_failure || false;
+
+  // When continueOnFailure is false, track in-flight agent_call requests so we
+  // can abort other items' pending calls on first failure and avoid wasting
+  // Python-side thread pool resources.
+  const pipelineRequestIds = !continueOnFailure ? new Set() : null;
+  const requestLabels = !continueOnFailure ? new Map() : null;
+  let _origSendRequest = null;
+
+  if (!continueOnFailure) {
+    _origSendRequest = sendRequest;
+    sendRequest = function (method, params) {
+      const promise = _origSendRequest(method, params);
+      if (method === 'agent_call') {
+        const id = requestId;
+        pipelineRequestIds.add(id);
+        requestLabels.set(id, (params && params.label) || '');
+      }
+      return promise;
+    };
+  }
+
+  function restoreSendRequest() {
+    if (_origSendRequest !== null) {
+      sendRequest = _origSendRequest;
+      _origSendRequest = null;
+    }
+  }
+
+  function abortInFlight(firstError) {
+    if (!pipelineRequestIds) return;
+    for (const rid of pipelineRequestIds) {
+      const entry = pendingRequests.get(rid);
+      if (entry && !entry.aborted) {
+        const label = requestLabels.get(rid) || `pipeline-item-${rid}`;
+        abortRequest(rid);
+        sendNotification('agent_aborted', {
+          label,
+          reason: `pipeline failure: ${firstError && firstError.message ? firstError.message : 'unknown'}`,
+          request_id: rid,
+        });
+      }
+    }
+  }
+
+  let firstError = null;
+  let failed = false;
 
   const results = await Promise.all(
     items.map(async (item) => {
@@ -403,12 +482,22 @@ async function pipeline(items, ...args) {
               partialResult: current,
             };
           }
+          // Aborted items are not the root cause — just re-throw so
+          // Promise.all rejects with the real first error.
+          if (err instanceof CancelledError) {
+            throw err;
+          }
+          if (!failed) {
+            failed = true;
+            firstError = err;
+            abortInFlight(err);
+          }
           throw err;
         }
       }
       return current;
     }),
-  );
+  ).finally(restoreSendRequest);
 
   return results;
 }
@@ -921,6 +1010,15 @@ async function sequence(steps) {
  * @param {Object} opts - Options: { validate, timeout }
  * @returns {*} First valid result
  */
+function abortRequest(request_id) {
+  const entry = pendingRequests.get(request_id);
+  if (!entry || entry.aborted) return;
+  entry.aborted = true;
+  entry.reject(new CancelledError());
+  pendingRequests.delete(request_id);
+  sendNotification('abort_request', { request_id });
+}
+
 async function race(contestants, opts = {}) {
   if (cancelled) throw new CancelledError();
   if (!Array.isArray(contestants) || contestants.length === 0) {
@@ -930,30 +1028,87 @@ async function race(contestants, opts = {}) {
   const validate = opts.validate || ((r) => r != null && r !== '' && !r.error);
 
   return new Promise((resolve, reject) => {
-    let resolved = false;
+    let settled = false;
     let completed = 0;
     let firstResult = null;
+    let firstError = null;
+
+    // Track all agent_call request IDs created by this race, plus their
+    // labels, so we can abort losers and report which agent was aborted.
+    const raceRequestIds = new Set();
+    const requestLabels = new Map();
+    const _origSendRequest = sendRequest;
+
+    // Wrap sendRequest for the duration of this race so we can track
+    // every request ID created by any contestant (including retries).
+    sendRequest = function (method, params) {
+      const promise = _origSendRequest(method, params);
+      if (method === 'agent_call') {
+        // The ID was already incremented by _origSendRequest; we can peek
+        // it because requestId is module-level and was just incremented.
+        const id = requestId;
+        raceRequestIds.add(id);
+        requestLabels.set(id, (params && params.label) || '');
+      }
+      return promise;
+    };
+
+    function abortLosers() {
+      for (const rid of raceRequestIds) {
+        const entry = pendingRequests.get(rid);
+        if (entry && !entry.aborted) {
+          const label = requestLabels.get(rid) || `race-contestant-${rid}`;
+          abortRequest(rid);
+          sendNotification('agent_aborted', {
+            label,
+            reason: 'race loser',
+            request_id: rid,
+          });
+        }
+      }
+    }
+
+    function finish(fn, arg) {
+      if (settled) return;
+      settled = true;
+      // Restore original sendRequest before settling
+      sendRequest = _origSendRequest;
+      fn(arg);
+    }
 
     contestants.forEach((c, idx) => {
       const p = typeof c === 'function' ? c() : agent(c);
       Promise.resolve(p).then(result => {
-        if (resolved) return;
+        if (settled) return;
         completed++;
         if (firstResult === null) firstResult = result;
         if (validate(result)) {
-          resolved = true;
-          resolve(result);
+          abortLosers();
+          finish(resolve, result);
         } else if (completed === contestants.length) {
-          resolve(firstResult);
+          finish(resolve, firstResult);
         }
       }).catch(err => {
-        if (resolved) return;
+        if (settled) return;
+        if (err instanceof CancelledError) {
+          // A contestant was aborted (e.g. race loser) — don't count as failure
+          completed++;
+          if (completed === contestants.length) {
+            if (firstResult !== null) {
+              finish(resolve, firstResult);
+            } else {
+              finish(reject, err);
+            }
+          }
+          return;
+        }
         completed++;
-        if (completed === contestants.length && !resolved) {
+        if (firstError === null) firstError = err;
+        if (completed === contestants.length) {
           if (firstResult !== null) {
-            resolve(firstResult);
+            finish(resolve, firstResult);
           } else {
-            reject(new Error(`race(): all ${contestants.length} contestants failed`));
+            finish(reject, new Error(`race(): all ${contestants.length} contestants failed: ${firstError && firstError.message}`));
           }
         }
       });

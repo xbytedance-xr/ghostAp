@@ -12,6 +12,7 @@ Validates:
 """
 
 import asyncio
+import atexit
 import json
 import subprocess
 import threading
@@ -20,20 +21,63 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
+import pytest
+
 from src.workflow_engine.bridge import RuntimeBridge
 from src.workflow_engine.executor import AgentExecutor
 from src.workflow_engine.models import AgentCallParams, AgentCallResult, WorkflowMeta
+
+# ---------------------------------------------------------------------------
+# Module-level resource tracking for guaranteed cleanup.
+# Every AgentExecutor / RuntimeBridge created during tests is registered here so
+# that shutdown/stop runs even if a test fails before its own cleanup.
+# ---------------------------------------------------------------------------
+
+_perf_executors: list = []
+_perf_bridges: list = []
+
+
+def _register_executor(executor) -> None:
+    _perf_executors.append(executor)
+
+
+def _register_bridge(bridge) -> None:
+    _perf_bridges.append(bridge)
+
+
+def _cleanup_all_perf_resources() -> None:
+    """Shut down all registered executors and bridges. Safe to call multiple times."""
+    while _perf_executors:
+        exc = _perf_executors.pop()
+        try:
+            exc.shutdown(wait=True)
+        except Exception:
+            pass
+    while _perf_bridges:
+        br = _perf_bridges.pop()
+        try:
+            br.stop()
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_all_perf_resources)
 
 
 class TestBuildPrompt(unittest.TestCase):
     """Test AgentExecutor._build_prompt structure."""
 
     def _make_executor(self):
-        return AgentExecutor(
+        executor = AgentExecutor(
             cwd="/tmp",
             cancel_event=threading.Event(),
             on_token_usage=None,
         )
+        _register_executor(executor)
+        return executor
+
+    def tearDown(self):
+        _cleanup_all_perf_resources()
 
     def test_basic_prompt(self):
         executor = self._make_executor()
@@ -58,11 +102,16 @@ class TestSchemaValidation(unittest.TestCase):
     """Test _validate_schema and _extract_json_from_text."""
 
     def _make_executor(self):
-        return AgentExecutor(
+        executor = AgentExecutor(
             cwd="/tmp",
             cancel_event=threading.Event(),
             on_token_usage=None,
         )
+        _register_executor(executor)
+        return executor
+
+    def tearDown(self):
+        _cleanup_all_perf_resources()
 
     def test_valid_json_passes(self):
         executor = self._make_executor()
@@ -113,11 +162,15 @@ class TestExecutorCancellation(unittest.TestCase):
         cancel = threading.Event()
         cancel.set()
         executor = AgentExecutor(cwd="/tmp", cancel_event=cancel)
-        params = AgentCallParams(prompt="task", tool="coco")
-        result = executor.execute(params)
+        _register_executor(executor)
+        try:
+            params = AgentCallParams(prompt="task", tool="coco")
+            result = executor.execute(params)
 
-        self.assertIsNotNone(result.error)
-        self.assertIn("Cancelled", result.error)
+            self.assertIsNotNone(result.error)
+            self.assertIn("Cancelled", result.error)
+        finally:
+            executor.shutdown(wait=True)
 
 
 class TestConcurrentTokenTracking(unittest.TestCase):
@@ -157,15 +210,21 @@ class TestBuildSchemaFixPrompt(unittest.TestCase):
 
     def test_contains_schema_and_output(self):
         executor = AgentExecutor(cwd="/tmp", cancel_event=threading.Event())
-        schema = {"summary": "string"}
-        failed_output = "I did the task"
-        prompt = executor._build_schema_fix_prompt(failed_output, schema)
+        _register_executor(executor)
+        try:
+            schema = {"summary": "string"}
+            failed_output = "I did the task"
+            prompt = executor._build_schema_fix_prompt(failed_output, schema)
 
-        self.assertIn("summary", prompt)
-        self.assertIn("I did the task", prompt)
-        self.assertIn("JSON", prompt)
+            self.assertIn("summary", prompt)
+            self.assertIn("I did the task", prompt)
+            self.assertIn("JSON", prompt)
+        finally:
+            executor.shutdown(wait=True)
 
 
+@pytest.mark.slow
+@pytest.mark.timeout(120)
 class TestParallelPerformance(unittest.IsolatedAsyncioTestCase):
     """Comprehensive parallel execution performance tests.
 
@@ -173,6 +232,9 @@ class TestParallelPerformance(unittest.IsolatedAsyncioTestCase):
     orchestration primitives behave correctly with respect to timing
     and concurrency limits. These tests simulate the JS runtime behavior
     using asyncio to verify the performance characteristics.
+
+    Benchmark tests — tagged as ``slow`` and given a 120s timeout so they
+    can be skipped with ``-m "not slow"`` in quick CI runs.
     """
 
     async def _mock_agent_call(self, duration_s: float, label: str = "") -> dict:
@@ -375,6 +437,9 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
     """The RuntimeBridge must forward max_concurrent to the JS runtime so
     its parallel() primitive honours the same bound as the Python pool."""
 
+    def tearDown(self):
+        _cleanup_all_perf_resources()
+
     def test_init_sends_max_concurrent(self):
         """RuntimeBridge.start() / init payload includes max_concurrent."""
         captured = []
@@ -388,6 +453,7 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
             max_concurrent=4,
             on_agent_call=lambda params: None,
         )
+        _register_bridge(bridge)
         bridge._send = fake_send
         # Replicate the init-message construction path
         bridge._send({
@@ -411,6 +477,7 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
             cwd="/tmp",
             max_concurrent=9999,
         )
+        _register_bridge(bridge)
         self.assertLessEqual(bridge._max_concurrent, HARD_MAX_CONCURRENT)
 
     def test_init_sends_configured_max_concurrent(self):
@@ -426,6 +493,7 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
             max_concurrent=4,
             on_agent_call=lambda params: None,
         )
+        _register_bridge(bridge)
         bridge._send = fake_send
         # Replicate the init-message construction path used in start()
         bridge._send({
@@ -442,10 +510,15 @@ class TestBridgeInitPropagatesMaxConcurrent(unittest.TestCase):
         self.assertEqual(msg["params"]["max_concurrent"], 4)
 
 
+@pytest.mark.slow
+@pytest.mark.timeout(120)
 class TestRuntimeParallelConcurrency(unittest.TestCase):
     """Exercise the Node.js runtime `parallel()` primitive to verify that
     (a) 4 parallel 5s tasks complete well under 10s and (b) the concurrency
-    cap is honoured when one is configured."""
+    cap is honoured when one is configured.
+
+    Benchmark tests — tagged as ``slow`` and given a 120s timeout.
+    Requires a working Node.js installation."""
 
     RUNTIME_JS = "src/workflow_engine/runtime/runtime.js"
 
@@ -662,6 +735,8 @@ def shutil_which(name):
 # asserts the total wall clock is close to a single task's duration.
 # ---------------------------------------------------------------------------
 
+@pytest.mark.slow
+@pytest.mark.timeout(120)
 class TestBridgeExecutorParallelism(unittest.TestCase):
     """Verifies RuntimeBridge's ThreadPoolExecutor is truly parallel.
 
@@ -670,6 +745,8 @@ class TestBridgeExecutorParallelism(unittest.TestCase):
     executor with a tiny handler. This makes them suitable for CI
     environments without Node.js while still exercising the exact
     concurrency path used at runtime.
+
+    Benchmark tests — tagged as ``slow`` and given a 120s timeout.
     """
 
     def _build_bridge(self, max_concurrent: int) -> RuntimeBridge:
@@ -681,8 +758,12 @@ class TestBridgeExecutorParallelism(unittest.TestCase):
                 output="ok", token_usage=0, duration_s=0.0
             ),
         )
+        _register_bridge(bridge)
         bridge._executor = ThreadPoolExecutor(max_workers=bridge._max_concurrent)
         return bridge
+
+    def tearDown(self):
+        _cleanup_all_perf_resources()
 
     def test_four_five_second_tasks_finish_under_ten_seconds(self):
         """AC3 (lightweight): 4 parallel ~5s calls must take <10s.

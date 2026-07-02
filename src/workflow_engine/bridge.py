@@ -58,7 +58,8 @@ class RuntimeBridge:
         script_path: str,
         cwd: str,
         max_concurrent: int = DEFAULT_MAX_CONCURRENT,
-        on_agent_call: Optional[Callable[[AgentCallParams], AgentCallResult]] = None,
+        on_agent_call: Optional[Callable[..., AgentCallResult]] = None,
+        on_agent_aborted: Optional[Callable[..., None]] = None,  # (label, reason, request_id=None)
         on_phase: Optional[Callable[[str], None]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
@@ -71,6 +72,7 @@ class RuntimeBridge:
         self._cwd = cwd
         self._max_concurrent = min(max_concurrent, HARD_MAX_CONCURRENT)
         self._on_agent_call = on_agent_call
+        self._on_agent_aborted = on_agent_aborted
         self._on_phase = on_phase
         self._on_log = on_log
         self._cancel_event = cancel_event or threading.Event()
@@ -108,6 +110,19 @@ class RuntimeBridge:
         # it. ``in_flight_count`` reports the size of that set.
         self._active_futures: set[Future] = set()
         self._futures_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
+        # Map JSON-RPC request_id → Future for abort propagation. When the JS
+        # runtime sends abort_request for a specific in-flight agent call, we
+        # cancel the future here.
+        self._request_futures: dict[Any, Future] = {}
+        self._request_futures_lock = threading.Lock()  # leaf lock
+
+        # Map JSON-RPC request_id → per-call cancel_event. When abort_request
+        # arrives, we set this event to interrupt the in-flight ACP session,
+        # enabling race() loser agents to stop within seconds rather than
+        # running to completion.
+        self._request_cancel_events: dict[Any, threading.Event] = {}
+        self._request_cancel_events_lock = threading.Lock()  # leaf lock
 
         # Parent reference and child tracking for cascade cancellation
         self._parent: Optional["RuntimeBridge"] = None
@@ -328,6 +343,9 @@ class RuntimeBridge:
         if self._shutdown_done:
             return
 
+        # Signal our own cancel event first
+        self._cancel_event.set()
+
         # Cascade cancel to children first (under lock to avoid race)
         with self._children_lock:
             for child in self._children:
@@ -338,9 +356,22 @@ class RuntimeBridge:
                     logger.exception("Failed to cascade stop to child sub-workflow")
             self._children.clear()
 
-        # Signal our own cancel event
-        self._cancel_event.set()
+        # Signal all in-flight agent calls to cancel before killing the
+        # process.  Each per-call cancel_event interrupts the ACP session's
+        # send_prompt via the cancel-guard thread, so in-flight agents stop
+        # within the guard poll interval (~200ms) rather than running to
+        # their full 300s timeout.
+        with self._request_cancel_events_lock:
+            cancel_events_snapshot = list(self._request_cancel_events.values())
+        for evt in cancel_events_snapshot:
+            try:
+                evt.set()
+            except Exception:
+                logger.debug("Failed to set per-call cancel event during stop()")
 
+        # Kill the Node.js process FIRST before waiting on executor shutdown.
+        # This ensures in-flight agent calls get stdin broken and fail-fast
+        # rather than blocking stop() for up to 300s per agent.
         if self._process is not None:
             try:
                 self._send_cancel()
@@ -348,19 +379,43 @@ class RuntimeBridge:
                 pass  # Process may already be dead
             self._kill_process()
 
-        # Shutdown executors (graceful wait on final cleanup)
+        # Wait briefly for reader/stderr threads to finish
+        if self._reader_thread is not None and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
+        if hasattr(self, "_stderr_thread") and self._stderr_thread is not None and self._stderr_thread.is_alive():
+            self._stderr_thread.join(timeout=2.0)
+
+        # Cancel all pending futures and shut down executors without waiting
+        # (process is already dead, in-flight calls will fail with BrokenPipe)
         if self._executor is not None:
             try:
-                self._executor.shutdown(wait=True, cancel_futures=True)
+                # Snapshot active futures under the lock, then cancel outside
+                # to avoid deadlock: cancel() invokes done callbacks which
+                # call _discard_future, which itself acquires _futures_lock.
+                with self._futures_lock:
+                    futures_to_cancel = list(self._active_futures)
+                for future in futures_to_cancel:
+                    future.cancel()
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                self._executor.shutdown(wait=False)
             except Exception:
                 logger.debug("RuntimeBridge executor shutdown failed")
             self._executor = None
         if self._workflow_executor is not None:
             try:
-                self._workflow_executor.shutdown(wait=True, cancel_futures=True)
+                self._workflow_executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                self._workflow_executor.shutdown(wait=False)
             except Exception:
                 logger.debug("RuntimeBridge subwf executor shutdown failed")
             self._workflow_executor = None
+
+        # Clear request futures map
+        with self._request_futures_lock:
+            self._request_futures.clear()
+        with self._request_cancel_events_lock:
+            self._request_cancel_events.clear()
 
         self._shutdown_done = True
         logger.info("RuntimeBridge stopped")
@@ -370,6 +425,48 @@ class RuntimeBridge:
         are released. Safe to call multiple times.
         """
         self.stop()
+
+    # Context manager protocol
+
+    def __enter__(self) -> "RuntimeBridge":
+        """Enter context manager — returns self for use with `with` statement."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> bool:
+        """Exit context manager — stops the bridge.
+
+        Does not suppress exceptions (returns False).
+        """
+        self.stop()
+        return False
+
+    def __del__(self) -> None:
+        """Destructor fallback — best-effort cleanup if stop() was never called.
+
+        Defensive: guards against missing attributes and swallows exceptions
+        to avoid errors during interpreter shutdown.
+        """
+        try:
+            if hasattr(self, "_shutdown_done") and not self._shutdown_done:
+                logger.warning(
+                    "RuntimeBridge was not properly stopped; "
+                    "call stop() or use as context manager"
+                )
+                try:
+                    self.stop()
+                except Exception:
+                    logger.debug(
+                        "RuntimeBridge __del__ stop() failed (ignored)",
+                        exc_info=True,
+                    )
+        except Exception:
+            # Never let __del__ raise — interpreter shutdown is fragile
+            pass
 
     def is_alive(self) -> bool:
         """Check if the Node.js subprocess is still running."""
@@ -389,6 +486,9 @@ class RuntimeBridge:
         assert self._process is not None
         assert self._process.stdout is not None
 
+        consecutive_non_json = 0
+        NON_JSON_WARN_THRESHOLD = 10
+
         try:
             for line in self._process.stdout:
                 line = line.strip()
@@ -397,8 +497,15 @@ class RuntimeBridge:
 
                 try:
                     msg = json.loads(line)
+                    consecutive_non_json = 0
                 except json.JSONDecodeError:
-                    logger.warning("Non-JSON output from runtime: %s", line[:200])
+                    consecutive_non_json += 1
+                    if consecutive_non_json >= NON_JSON_WARN_THRESHOLD:
+                        logger.warning(
+                            "Non-JSON output from runtime (%d consecutive): %s",
+                            consecutive_non_json,
+                            line[:200],
+                        )
                     continue
 
                 # Push to message queue (bounded)
@@ -415,6 +522,13 @@ class RuntimeBridge:
         except (ValueError, OSError):
             # stdout closed — process is shutting down
             pass
+
+        # stdout EOF: signal run() loop to exit (process likely died)
+        if not self._done:
+            logger.debug("Reader thread: stdout closed, signalling done")
+            self._done = True
+            if not self._error:
+                self._error = "Runtime process closed stdout unexpectedly"
 
         logger.debug("Reader thread exiting")
 
@@ -464,6 +578,25 @@ class RuntimeBridge:
                 logger.debug("JS runtime error stack:\n%s", stack)
             self._error = error_msg
             self._done = True
+        elif method == "abort_request":
+            # JS runtime is asking us to abort a specific in-flight agent request
+            request_id = params.get("request_id")
+            self._handle_abort_request(request_id)
+        elif method == "agent_aborted":
+            # JS runtime notifies that an agent was aborted (e.g. race loser).
+            # Used to update the progress card so aborted agents no longer
+            # show as '执行中'.
+            label = params.get("label", "")
+            reason = params.get("reason", "Aborted")
+            request_id = params.get("request_id")
+            if self._on_agent_aborted:
+                try:
+                    self._on_agent_aborted(label, reason, request_id=request_id)
+                except TypeError:
+                    # Backward compat: callback only accepts (label, reason)
+                    self._on_agent_aborted(label, reason)
+                except Exception:
+                    logger.exception("on_agent_aborted callback error")
         else:
             logger.debug("Unhandled notification method: %s", method)
 
@@ -559,8 +692,25 @@ class RuntimeBridge:
                 # Resolve empty tool to the first allowed tool
                 if not agent_params.tool and self._allowed_tools:
                     agent_params.tool = self._allowed_tools[0]
-                # Execute the callback
-                result = self._on_agent_call(agent_params)
+                # Get the per-call cancel event (set by _handle_abort_request)
+                with self._request_cancel_events_lock:
+                    call_cancel_event = self._request_cancel_events.get(request_id)
+                # Execute the callback — pass per-call cancel_event if supported
+                try:
+                    result = self._on_agent_call(
+                        agent_params,
+                        cancel_event=call_cancel_event,
+                        request_id=request_id,
+                    )
+                except TypeError:
+                    # Backward compat: callback only accepts (params, cancel_event) or just params
+                    try:
+                        result = self._on_agent_call(
+                            agent_params,
+                            cancel_event=call_cancel_event,
+                        )
+                    except TypeError:
+                        result = self._on_agent_call(agent_params)
                 # Build response payload
                 response_data: dict[str, Any] = {}
                 if result.parsed is not None:
@@ -582,10 +732,25 @@ class RuntimeBridge:
                     code=-32603,
                     message=sanitize_for_reply(str(exc), ErrorCategory.INTERNAL_ERROR),
                 )
+            finally:
+                # Unregister request future and cancel_event mappings
+                with self._request_futures_lock:
+                    self._request_futures.pop(request_id, None)
+                with self._request_cancel_events_lock:
+                    self._request_cancel_events.pop(request_id, None)
+
+        # Create per-call cancel event (child of global cancel_event)
+        # Setting the global event should also trigger per-call checks, but we
+        # use a dedicated event for precise single-call cancellation (e.g. race).
+        per_call_cancel = threading.Event()
+        with self._request_cancel_events_lock:
+            self._request_cancel_events[request_id] = per_call_cancel
 
         future = self._executor.submit(_execute)
         with self._futures_lock:
             self._active_futures.add(future)
+        with self._request_futures_lock:
+            self._request_futures[request_id] = future
         future.add_done_callback(lambda f: self._discard_future(f))
 
     # ------------------------------------------------------------------
@@ -735,6 +900,7 @@ class RuntimeBridge:
                     cwd=self._cwd,
                     max_concurrent=self._max_concurrent,
                     on_agent_call=self._on_agent_call,
+                    on_agent_aborted=self._on_agent_aborted,
                     on_phase=self._on_phase,
                     on_log=self._on_log,
                     cancel_event=sub_cancel_event,
@@ -795,8 +961,12 @@ class RuntimeBridge:
             try:
                 self._process.stdin.write(line)
                 self._process.stdin.flush()
-            except (OSError, BrokenPipeError) as exc:
+            except (OSError, BrokenPipeError, ValueError) as exc:
                 logger.debug("Failed to write to stdin: %s", repr(exc))
+                # Process died or pipe broken — signal run() loop to exit
+                if not self._done:
+                    self._error = f"Runtime connection lost: {exc}"
+                    self._done = True
 
     def _send_response(self, request_id: Any, result: Any) -> None:
         """Send a JSON-RPC success response."""
@@ -848,6 +1018,46 @@ class RuntimeBridge:
         """Remove a completed future from the active set (done callback)."""
         with self._futures_lock:
             self._active_futures.discard(future)
+
+    def _handle_abort_request(self, request_id: Any) -> None:
+        """Handle an abort_request notification from the JS runtime.
+
+        Sets the per-call cancel_event to interrupt the in-flight ACP session
+        (e.g. for race() loser cancellation). Also cancels the future if not
+        yet started. The per-call cancel_event ensures the session's
+        send_prompt loop exits within its poll interval (typically ~1s),
+        allowing the session to close cleanly and quickly.
+
+        Uses find-and-set for the cancel_event (not pop) so the worker
+        thread can still retrieve it from ``_request_cancel_events``.
+        This eliminates a race where an early abort would pop the event
+        before the worker retrieved it, causing the worker to fall back
+        to the global cancel_event and ignore the per-call abort.
+        """
+        # Set the per-call cancel event first — this is the fast path for
+        # interrupting in-flight sessions that poll cancel_event.
+        # Use get (not pop) — the worker thread may not have retrieved it yet.
+        with self._request_cancel_events_lock:
+            call_cancel = self._request_cancel_events.get(request_id)
+        if call_cancel is not None:
+            call_cancel.set()
+
+        with self._request_futures_lock:
+            future = self._request_futures.pop(request_id, None)
+        if future is None:
+            return
+        if not future.cancel():
+            # Future is already running — the per-call cancel_event above
+            # should interrupt the session's send_prompt loop within its
+            # poll interval. The session close in the finally block will
+            # clean up resources once the call returns.
+            logger.debug("Abort request %s: future already running, per-call cancel_event set", request_id)
+        else:
+            # Future was cancelled before it started running. The _execute
+            # function will never execute, so its finally block won't clean
+            # up the cancel_event entry. Do it here to prevent leaks.
+            with self._request_cancel_events_lock:
+                self._request_cancel_events.pop(request_id, None)
 
     @property
     def in_flight_count(self) -> int:

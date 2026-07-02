@@ -25,6 +25,20 @@ from .roles import get_subagent_encouragement_prompt
 logger = logging.getLogger(__name__)
 
 
+def _is_timeout_in_chain(exc: BaseException) -> bool:
+    """Walk __cause__/__context__ chain looking for TimeoutError."""
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            return True
+        if current.__class__.__name__ == "TimeoutError":
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
 class AgentExecutor:
     """Executes individual agent() calls via ACP/CLI sessions.
 
@@ -56,12 +70,17 @@ class AgentExecutor:
             max_workers=pool_size, thread_name_prefix="wf_session"
         )
         self._shutdown_done = False
+        # Tracking for late-close threads so shutdown() can wait for them.
+        # Without this, daemon threads may be abandoned at interpreter exit
+        # and orphan ACP subprocesses.
+        self._late_close_threads: list[threading.Thread] = []
+        self._late_close_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def execute(self, params: AgentCallParams) -> AgentCallResult:
+    def execute(self, params: AgentCallParams, *, cancel_event: Optional[threading.Event] = None) -> AgentCallResult:
         """Execute a single agent() call end-to-end with retry logic.
 
         1. Build the full prompt (role preamble + task + encouragement).
@@ -78,18 +97,47 @@ class AgentExecutor:
         - Permanent errors (invalid schema, permission denied) are not retried
         - Max retries: MAX_RETRIES (default 3)
         - Cancel event is checked before each retry attempt
+
+        Args:
+            params: Agent call parameters.
+            cancel_event: Optional per-call cancellation event. When provided,
+                it overrides the executor-level cancel_event for this specific
+                call, allowing individual agent calls to be cancelled (e.g.
+                race() loser abort) without affecting other concurrent calls.
         """
         start = time.monotonic()
         last_error: Optional[str] = None
         total_token_usage = 0
+        # Per-call cancel event (may be None if caller doesn't provide one).
+        # When provided, it is used for single-call cancellation (e.g. race
+        # loser abort).  The executor-level cancel_event covers global stops.
+        # Both are effective — the cancel guard and all poll loops treat them
+        # with OR semantics so that either signal triggers cancellation.
+        per_call_cancel_event = cancel_event
+        global_cancel_event = self.cancel_event
+
+        def _is_cancelled() -> bool:
+            if global_cancel_event.is_set():
+                return True
+            if per_call_cancel_event is not None and per_call_cancel_event.is_set():
+                return True
+            return False
+
+        # Pass a single event to session creation for backward compat; use
+        # the per-call event if available, else the global one.  The OR
+        # semantics are enforced by the bridge.stop() path which sets all
+        # per-call events (see RuntimeBridge.stop()), and by the cancel
+        # guard below which polls both events explicitly.
+        call_cancel_event = per_call_cancel_event or global_cancel_event
 
         for attempt in range(MAX_RETRIES + 1):
             session = None
+            cancel_guard_done: Optional[threading.Event] = None
             time.monotonic()
 
             try:
                 # Early cancel check
-                if self.cancel_event.is_set():
+                if _is_cancelled():
                     return AgentCallResult(
                         error="Cancelled before execution",
                         tool=params.tool,
@@ -108,7 +156,10 @@ class AgentExecutor:
 
                 full_prompt = self._build_prompt(params)
 
-                # Create session (with timeout protection via shared pool)
+                # Create session (with timeout protection via shared pool).
+                # Poll cancel_event during creation so that race() loser aborts
+                # and global /stop_wf can interrupt session startup, not just the
+                # send_prompt.
                 from src.agent_session.factory import create_engine_session
 
                 future = self._session_pool.submit(
@@ -116,11 +167,35 @@ class AgentExecutor:
                     agent_type=params.tool,
                     cwd=self.cwd,
                     model_name=params.model,
-                    cancel_event=self.cancel_event,
+                    cancel_event=call_cancel_event,
                 )
-                try:
-                    session = future.result(timeout=SESSION_CREATE_TIMEOUT_S)
-                except concurrent.futures.TimeoutError:
+                # Wait for session creation with periodic cancel checks
+                create_deadline = time.monotonic() + SESSION_CREATE_TIMEOUT_S
+                session = None
+                while time.monotonic() < create_deadline:
+                    if _is_cancelled():
+                        # Cancel during session creation — abandon the future
+                        logger.debug(
+                            "[AgentExecutor] cancel_event set during session creation for tool=%s",
+                            params.tool,
+                        )
+                        self._close_late_session(future, params.tool)
+                        return AgentCallResult(
+                            error="Cancelled during session creation",
+                            tool=params.tool,
+                            model=params.model,
+                            duration_s=time.monotonic() - start,
+                        )
+                    try:
+                        remaining = create_deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        session = future.result(timeout=min(0.5, remaining))
+                        break
+                    except concurrent.futures.TimeoutError:
+                        continue  # check cancel and try again
+                if session is None:
+                    # Timeout or didn't break out of the loop without a TimeoutError:
                     logger.error(
                         "[AgentExecutor] session creation timeout for tool=%s (>%ds) [RUNTIME_TIMEOUT]",
                         params.tool,
@@ -137,6 +212,19 @@ class AgentExecutor:
 
                 # Send prompt and collect result
                 token_usage = 0
+
+                # Start cancel guard: if call_cancel_event fires during send_prompt,
+                # actively cancel the session so the blocking call returns quickly
+                # instead of waiting for the full LLM round-trip.
+                cancel_guard_done = threading.Event()
+                self._start_cancel_guard(
+                    session,
+                    per_call_event=per_call_cancel_event,
+                    global_event=global_cancel_event,
+                    done_event=cancel_guard_done,
+                    tool=params.tool,
+                )
+
                 result = session.send_prompt(
                     full_prompt,
                     on_event=None,
@@ -153,7 +241,7 @@ class AgentExecutor:
                 total_token_usage += token_usage
 
                 # Cancel check after prompt completion
-                if self.cancel_event.is_set():
+                if call_cancel_event.is_set():
                     return AgentCallResult(
                         output=output_text,
                         token_usage=total_token_usage,
@@ -172,7 +260,7 @@ class AgentExecutor:
 
                     schema_retry_count = 0
                     while not valid and schema_retry_count < SCHEMA_RETRY_MAX:
-                        if self.cancel_event.is_set():
+                        if _is_cancelled():
                             break
 
                         schema_retry_count += 1
@@ -235,12 +323,18 @@ class AgentExecutor:
                     exc_info=True,
                 )
 
-                # Check if we should retry
-                if attempt < MAX_RETRIES and is_transient_error(error_msg):
+                # Check if we should retry.
+                # TimeoutError / asyncio.TimeoutError are never retried — the
+                # per-call timeout budget was already consumed and retrying the
+                # same prompt would just waste another full timeout window.
+                is_prompt_timeout = isinstance(e, TimeoutError) or (
+                    e.__class__.__name__ == "TimeoutError"
+                ) or _is_timeout_in_chain(e)
+                if attempt < MAX_RETRIES and is_transient_error(error_msg) and not is_prompt_timeout:
                     # Check cancel before sleeping
-                    if self.cancel_event.is_set():
+                    if _is_cancelled():
                         break
-                    self._sleep_with_backoff(attempt)
+                    self._sleep_with_backoff(attempt, extra_cancel=per_call_cancel_event)
                     continue
 
                 # Permanent error or max retries exceeded — return error
@@ -261,6 +355,9 @@ class AgentExecutor:
                         logger.debug(
                             "[AgentExecutor] session close failed: %s", repr(close_err)
                         )
+                # Signal the cancel-guard thread to exit (if it was started)
+                if cancel_guard_done is not None:
+                    cancel_guard_done.set()
 
         # If we exited the loop due to cancel event
         duration_s = time.monotonic() - start
@@ -276,7 +373,12 @@ class AgentExecutor:
         future: concurrent.futures.Future[Any],
         tool: str | None,
     ) -> None:
-        """Close a session that finishes after the caller already timed out."""
+        """Close a session that finishes after the caller already timed out.
+
+        The close() operation runs in a separate thread (non-daemon, tracked
+        in ``_late_close_threads``) so that shutdown() can wait for it to
+        finish and no ACP subprocesses are orphaned at interpreter exit.
+        """
         if future.cancel():
             logger.info(
                 "[AgentExecutor] cancelled pending session creation for tool=%s after timeout",
@@ -285,39 +387,49 @@ class AgentExecutor:
             return
 
         def _cleanup(done: concurrent.futures.Future[Any]) -> None:
-            try:
-                stale_session = done.result()
-            except concurrent.futures.CancelledError:
-                return
-            except Exception as exc:
-                logger.debug(
-                    "[AgentExecutor] late session creation failed after timeout for tool=%s: %s",
-                    tool,
-                    repr(exc),
-                )
-                return
+            def _close_async() -> None:
+                try:
+                    stale_session = done.result(timeout=30)
+                except concurrent.futures.CancelledError:
+                    return
+                except Exception as exc:
+                    logger.debug(
+                        "[AgentExecutor] late session creation failed after timeout for tool=%s: %s",
+                        tool,
+                        repr(exc),
+                    )
+                    return
 
-            if stale_session is None:
-                return
-            close = getattr(stale_session, "close", None)
-            if not callable(close):
-                return
-            try:
-                close()
-                logger.info(
-                    "[AgentExecutor] closed late session after creation timeout for tool=%s",
-                    tool,
-                )
-            except Exception as exc:
-                logger.debug(
-                    "[AgentExecutor] late session close failed for tool=%s: %s",
-                    tool,
-                    repr(exc),
-                )
+                if stale_session is None:
+                    return
+                close = getattr(stale_session, "close", None)
+                if not callable(close):
+                    return
+                try:
+                    close()
+                    logger.info(
+                        "[AgentExecutor] closed late session after creation timeout for tool=%s",
+                        tool,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[AgentExecutor] late session close failed for tool=%s: %s",
+                        tool,
+                        repr(exc),
+                    )
+
+            t = threading.Thread(
+                target=_close_async,
+                name=f"wf-late-close-{tool}",
+                daemon=False,
+            )
+            with self._late_close_lock:
+                self._late_close_threads.append(t)
+            t.start()
 
         future.add_done_callback(_cleanup)
 
-    def _sleep_with_backoff(self, attempt: int) -> None:
+    def _sleep_with_backoff(self, attempt: int, *, extra_cancel: Optional[threading.Event] = None) -> None:
         """Sleep for exponential backoff delay.
 
         Delay = RETRY_BACKOFF_BASE_S * 2^attempt
@@ -326,6 +438,10 @@ class AgentExecutor:
         ----------
         attempt:
             The zero-based retry attempt number (0 = first retry).
+        extra_cancel:
+            Optional additional cancel event to poll during sleep (OR semantics
+            with the executor-level cancel_event).  Used for per-call cancellation
+            during retry backoff (e.g. race loser abort).
         """
         delay = RETRY_BACKOFF_BASE_S * (2**attempt)
         logger.debug(
@@ -333,10 +449,12 @@ class AgentExecutor:
             delay,
             attempt + 1,
         )
-        # Sleep in small increments to check cancel event frequently
+        # Sleep in small increments to check cancel events frequently
         sleep_start = time.monotonic()
         while time.monotonic() - sleep_start < delay:
             if self.cancel_event.is_set():
+                break
+            if extra_cancel is not None and extra_cancel.is_set():
                 break
             time.sleep(min(0.1, delay - (time.monotonic() - sleep_start)))
 
@@ -344,7 +462,7 @@ class AgentExecutor:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def shutdown(self, wait: bool = True) -> None:
+    def shutdown(self, wait: bool = True, *, late_close_wait_s: float = 2.0) -> None:
         """Shut down the shared session pool. Safe to call multiple times.
 
         Parameters
@@ -352,6 +470,11 @@ class AgentExecutor:
         wait:
             If ``True`` (default), block until all pending workers finish.
             If ``False``, shut down asynchronously.
+        late_close_wait_s:
+            Maximum seconds to wait for late-close threads (sessions that
+            were still being created when the caller timed out).  These
+            threads close orphaned ACP sessions; we give them a short
+            window to finish to avoid leaving subprocesses running.
         """
         if self._shutdown_done:
             return
@@ -366,9 +489,101 @@ class AgentExecutor:
                 logger.debug("[AgentExecutor] session pool shutdown failed: %s", repr(e))
             self._session_pool = None
 
+        # Wait for late-close threads so that no ACP subprocesses are
+        # orphaned at interpreter exit.  Only wait a bounded time — if
+        # sessions are taking longer than ``late_close_wait_s`` to create,
+        # they'll be cleaned up by the process exit anyway.
+        with self._late_close_lock:
+            threads = list(self._late_close_threads)
+        for t in threads:
+            t.join(timeout=max(0.0, late_close_wait_s))
+
+    def __enter__(self) -> "AgentExecutor":
+        """Context manager entry — returns self."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> bool:
+        """Context manager exit — shuts down the executor.
+
+        Returns ``False`` so that any exception is propagated normally.
+        """
+        self.shutdown()
+        return False
+
+    def __del__(self) -> None:
+        """Destructor fallback — warns and best-effort shutdown if not properly closed.
+
+        Defensive: checks attribute existence with ``hasattr`` and wraps
+        ``shutdown()`` in a broad ``try/except`` to avoid errors during
+        interpreter shutdown.
+        """
+        if hasattr(self, "_shutdown_done") and not self._shutdown_done:
+            logger.warning(
+                "AgentExecutor was not properly shut down; "
+                "call shutdown() or use as context manager"
+            )
+            try:
+                self.shutdown()
+            except Exception:
+                pass
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _start_cancel_guard(
+        self,
+        session: Any,
+        *,
+        per_call_event: Optional[threading.Event],
+        global_event: threading.Event,
+        done_event: threading.Event,
+        tool: str,
+    ) -> None:
+        """Start a daemon thread that cancels the session when either cancel event fires.
+
+        The guard polls both per-call and global cancel events with OR semantics
+        — either signal triggers session.cancel().  The done_event is set by the
+        caller in the finally block to signal the guard to exit cleanly if
+        cancel never fires.
+
+        This ensures both race() loser aborts (per-call) and global /stop_wf
+        (global) actually interrupt the LLM call instead of waiting for it to
+        finish.
+        """
+        def _guard() -> None:
+            while not done_event.is_set():
+                per_call_fired = per_call_event is not None and per_call_event.wait(timeout=0.1)
+                global_fired = global_event.is_set()
+                if per_call_fired or global_fired:
+                    if done_event.is_set():
+                        return
+                    try:
+                        session.cancel()
+                        logger.debug(
+                            "[AgentExecutor] cancel guard fired for tool=%s (per_call=%s, global=%s)",
+                            tool,
+                            per_call_fired,
+                            global_fired,
+                        )
+                    except Exception as e:
+                        logger.debug(
+                            "[AgentExecutor] cancel guard session.cancel() failed: %s",
+                            repr(e),
+                        )
+                    return
+
+        t = threading.Thread(
+            target=_guard,
+            name=f"wf-cancel-guard-{tool}",
+            daemon=True,
+        )
+        t.start()
 
     def _build_prompt(self, params: AgentCallParams) -> str:
         """Compose the full prompt: role prefix + task + subagent encouragement.

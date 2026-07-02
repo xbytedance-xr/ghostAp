@@ -18,36 +18,38 @@ def test_agent_call_response_parsed_priority():
         on_phase=lambda phase: None,
         on_log=lambda log: None,
     )
+    try:
+        # Mock _send_response to capture the response
+        captured_response = {}
 
-    # Mock _send_response to capture the response
-    captured_response = {}
+        def mock_send_response(request_id: str, data: dict[str, Any]):
+            captured_response.update(data)
 
-    def mock_send_response(request_id: str, data: dict[str, Any]):
-        captured_response.update(data)
+        bridge._send_response = mock_send_response
 
-    bridge._send_response = mock_send_response
+        # Create a result with both output and parsed
+        result = AgentCallResult(
+            output="raw text output",
+            parsed={"structured": "data"},
+            error=None,
+            token_usage=1000,
+            duration_s=5.0,
+        )
 
-    # Create a result with both output and parsed
-    result = AgentCallResult(
-        output="raw text output",
-        parsed={"structured": "data"},
-        error=None,
-        token_usage=1000,
-        duration_s=5.0,
-    )
+        # Call _handle_agent_call's internal logic
+        # We need to test the response building logic directly
+        response_data: dict[str, Any] = {}
+        if result.parsed is not None:
+            response_data["data"] = result.parsed
+        elif result.output is not None:
+            response_data["data"] = result.output
+        if result.error:
+            response_data["error"] = result.error
 
-    # Call _handle_agent_call's internal logic
-    # We need to test the response building logic directly
-    response_data: dict[str, Any] = {}
-    if result.parsed is not None:
-        response_data["data"] = result.parsed
-    elif result.output is not None:
-        response_data["data"] = result.output
-    if result.error:
-        response_data["error"] = result.error
-
-    assert response_data["data"] == {"structured": "data"}, \
-        "parsed should take priority over output"
+        assert response_data["data"] == {"structured": "data"}, \
+            "parsed should take priority over output"
+    finally:
+        bridge.stop()
 
 
 def test_agent_call_response_output_fallback():
@@ -82,36 +84,38 @@ def test_agent_call_response_integration():
         on_phase=lambda phase: None,
         on_log=lambda log: None,
     )
+    try:
+        # Mock the executor to return a result with both output and parsed
+        mock_result = AgentCallResult(
+            output="raw output",
+            parsed={"key": "value"},
+            error=None,
+            token_usage=500,
+            duration_s=2.0,
+        )
+        mock_callback.return_value = mock_result
 
-    # Mock the executor to return a result with both output and parsed
-    mock_result = AgentCallResult(
-        output="raw output",
-        parsed={"key": "value"},
-        error=None,
-        token_usage=500,
-        duration_s=2.0,
-    )
-    mock_callback.return_value = mock_result
+        # Capture the response
+        captured = {}
+        bridge._send_response = lambda req_id, data: captured.update(data)
 
-    # Capture the response
-    captured = {}
-    bridge._send_response = lambda req_id, data: captured.update(data)
+        # Simulate a request
+        params = {
+            "prompt": "test prompt",
+            "tool": "coco",
+        }
 
-    # Simulate a request
-    params = {
-        "prompt": "test prompt",
-        "tool": "coco",
-    }
+        # We need to call the internal _execute function from _handle_agent_call
+        # Let's test the logic directly by replicating what _handle_agent_call does
+        agent_params = AgentCallParams.model_validate(params)
+        result = bridge._on_agent_call(agent_params)
 
-    # We need to call the internal _execute function from _handle_agent_call
-    # Let's test the logic directly by replicating what _handle_agent_call does
-    agent_params = AgentCallParams.model_validate(params)
-    result = bridge._on_agent_call(agent_params)
+        response_data: dict[str, Any] = {}
+        if result.parsed is not None:
+            response_data["data"] = result.parsed
+        elif result.output is not None:
+            response_data["data"] = result.output
 
-    response_data: dict[str, Any] = {}
-    if result.parsed is not None:
-        response_data["data"] = result.parsed
-    elif result.output is not None:
-        response_data["data"] = result.output
-
-    assert response_data["data"] == {"key": "value"}
+        assert response_data["data"] == {"key": "value"}
+    finally:
+        bridge.stop()

@@ -12,10 +12,34 @@ sent to an AI model is money spent unnecessarily. These tests guard against
 regressions that would increase token consumption without providing value.
 """
 
+import atexit
 import tempfile
 import threading
 import unittest
 from unittest.mock import MagicMock
+
+# Module-level tracking for AgentExecutor cleanup.
+# Every executor created in tests is registered here so we can guarantee
+# shutdown even if a test fails or raises before its own cleanup runs.
+_token_eff_executors: list = []
+
+
+def _register_executor(executor) -> None:
+    """Register an AgentExecutor for module-level cleanup."""
+    _token_eff_executors.append(executor)
+
+
+def _cleanup_all_executors() -> None:
+    """Shut down all registered executors. Safe to call multiple times."""
+    while _token_eff_executors:
+        exc = _token_eff_executors.pop()
+        try:
+            exc.shutdown(wait=True)
+        except Exception:
+            pass
+
+
+atexit.register(_cleanup_all_executors)
 
 from src.workflow_engine.journal import WorkflowJournal
 from src.workflow_engine.models import (
@@ -276,17 +300,21 @@ class TestSubagentEncouragementTokenCost(unittest.TestCase):
             cancel_event=threading.Event(),
             on_token_usage=None,
         )
-        params = AgentCallParams(
-            prompt="Analyze this code for bugs",
-            tool="coco",
-            role="",
-        )
-        full_prompt = executor._build_prompt(params)
+        _register_executor(executor)
+        try:
+            params = AgentCallParams(
+                prompt="Analyze this code for bugs",
+                tool="coco",
+                role="",
+            )
+            full_prompt = executor._build_prompt(params)
 
-        # Should appear exactly once
-        count = full_prompt.count(SUBAGENT_ENCOURAGEMENT_PROMPT)
-        self.assertEqual(count, 1,
-            f"Encouragement should appear exactly once, found {count} times")
+            # Should appear exactly once
+            count = full_prompt.count(SUBAGENT_ENCOURAGEMENT_PROMPT)
+            self.assertEqual(count, 1,
+                f"Encouragement should appear exactly once, found {count} times")
+        finally:
+            executor.shutdown(wait=True)
 
     def test_encouragement_not_duplicated_in_simple_script(self):
         """Verify that in generate_simple_script(), encouragement appears in
@@ -385,30 +413,33 @@ class TestPromptCompactness(unittest.TestCase):
             cancel_event=threading.Event(),
             on_token_usage=None,
         )
+        _register_executor(executor)
+        try:
+            # Typical agent call prompt
+            params = AgentCallParams(
+                prompt="Review this Python function for security issues:\n\n"
+                      "def process_user_input(data):\n"
+                      "    eval(data.get('command', ''))\n"
+                      "    return True",
+                tool="coco",
+                role="security_auditor",
+            )
 
-        # Typical agent call prompt
-        params = AgentCallParams(
-            prompt="Review this Python function for security issues:\n\n"
-                  "def process_user_input(data):\n"
-                  "    eval(data.get('command', ''))\n"
-                  "    return True",
-            tool="coco",
-            role="security_auditor",
-        )
+            full_prompt = executor._build_prompt(params)
+            tokens = _count_tokens(full_prompt)
 
-        full_prompt = executor._build_prompt(params)
-        tokens = _count_tokens(full_prompt)
+            # Should be compact — role prefix + task + encouragement
+            # The task itself is ~100 chars, role prefix ~20, encouragement ~300 chars
+            # Total should be well under 1000 tokens
+            self.assertLess(tokens, 1000,
+                f"Agent executor prompt should be < 1000 tokens, got {tokens}")
 
-        # Should be compact — role prefix + task + encouragement
-        # The task itself is ~100 chars, role prefix ~20, encouragement ~300 chars
-        # Total should be well under 1000 tokens
-        self.assertLess(tokens, 1000,
-            f"Agent executor prompt should be < 1000 tokens, got {tokens}")
-
-        # Verify all parts are present
-        self.assertIn("Role: security_auditor", full_prompt)
-        self.assertIn("Review this Python function", full_prompt)
-        self.assertIn(SUBAGENT_ENCOURAGEMENT_PROMPT, full_prompt)
+            # Verify all parts are present
+            self.assertIn("Role: security_auditor", full_prompt)
+            self.assertIn("Review this Python function", full_prompt)
+            self.assertIn(SUBAGENT_ENCOURAGEMENT_PROMPT, full_prompt)
+        finally:
+            executor.shutdown(wait=True)
 
     def test_role_prefix_adds_minimal_tokens(self):
         """Verify adding a role prefix adds < 100 tokens.
@@ -424,33 +455,36 @@ class TestPromptCompactness(unittest.TestCase):
             cancel_event=threading.Event(),
             on_token_usage=None,
         )
+        _register_executor(executor)
+        try:
+            base_params = AgentCallParams(
+                prompt="Analyze this code",
+                tool="coco",
+                role="",
+            )
+            base_prompt = executor._build_prompt(base_params)
+            base_tokens = _count_tokens(base_prompt)
 
-        base_params = AgentCallParams(
-            prompt="Analyze this code",
-            tool="coco",
-            role="",
-        )
-        base_prompt = executor._build_prompt(base_params)
-        base_tokens = _count_tokens(base_prompt)
+            role_params = AgentCallParams(
+                prompt="Analyze this code",
+                tool="coco",
+                role="security_auditor",
+            )
+            role_prompt = executor._build_prompt(role_params)
+            role_tokens = _count_tokens(role_prompt)
 
-        role_params = AgentCallParams(
-            prompt="Analyze this code",
-            tool="coco",
-            role="security_auditor",
-        )
-        role_prompt = executor._build_prompt(role_params)
-        role_tokens = _count_tokens(role_prompt)
+            added_tokens = role_tokens - base_tokens
+            self.assertLess(added_tokens, 100,
+                f"Role prefix should add < 100 tokens, added {added_tokens}")
 
-        added_tokens = role_tokens - base_tokens
-        self.assertLess(added_tokens, 100,
-            f"Role prefix should add < 100 tokens, added {added_tokens}")
-
-        # The difference should be exactly the role prefix
-        self.assertEqual(
-            role_prompt,
-            "Role: security_auditor\n\n" + base_prompt,
-            "Role prefix should be prepended exactly"
-        )
+            # The difference should be exactly the role prefix
+            self.assertEqual(
+                role_prompt,
+                "Role: security_auditor\n\n" + base_prompt,
+                "Role prefix should be prepended exactly"
+            )
+        finally:
+            executor.shutdown(wait=True)
 
 
 # ===========================================================================
@@ -468,11 +502,17 @@ class TestParallelExecutionTokenEfficiency(unittest.TestCase):
 
     def _make_executor(self, on_token_usage=None):
         from src.workflow_engine.executor import AgentExecutor
-        return AgentExecutor(
+        executor = AgentExecutor(
             cwd="/tmp",
             cancel_event=threading.Event(),
             on_token_usage=on_token_usage,
         )
+        _register_executor(executor)
+        return executor
+
+    def tearDown(self):
+        """Shut down any executor created by _make_executor."""
+        _cleanup_all_executors()
 
     def test_parallel_tasks_dont_duplicate_context(self):
         """Verify parallel agent calls don't duplicate shared context.

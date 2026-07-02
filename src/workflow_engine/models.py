@@ -42,6 +42,7 @@ class AgentStatus(str, Enum):
     DONE = "done"
     FAILED = "failed"
     CACHED = "cached"
+    CANCELLED = "cancelled"
 
 
 # ---------------------------------------------------------------------------

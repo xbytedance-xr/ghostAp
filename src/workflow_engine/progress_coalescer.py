@@ -64,6 +64,33 @@ class ProgressCoalescer:
         with self._lock:
             self._latest_snapshot = snapshot
 
+    def flush_immediate(self, snapshot: dict[str, Any]) -> None:
+        """Flush a snapshot immediately, bypassing the debounce timer.
+
+        Used for abort events where the user needs to see cancelled agents
+        disappear from '执行中' quickly. Also updates the latest snapshot
+        so subsequent debounced deliveries reflect the same state.
+
+        A short min-interval guard prevents runaway spamming when many
+        aborts arrive in quick succession.
+        """
+        if self._stop_event.is_set():
+            return
+
+        with self._lock:
+            self._latest_snapshot = snapshot
+
+        # Min-interval guard: skip if we just flushed within 200ms
+        now = time.monotonic()
+        if hasattr(self, "_last_immediate_flush") and now - self._last_immediate_flush < 0.2:
+            return
+        self._last_immediate_flush = now
+
+        try:
+            self._on_progress(snapshot)
+        except Exception:
+            logger.debug("ProgressCoalescer immediate flush failed", exc_info=True)
+
     def stop(self) -> None:
         """Stop the coalescer and force-flush any pending snapshot.
 
@@ -88,6 +115,43 @@ class ProgressCoalescer:
 
         # Wait for the daemon thread to exit (should be fast since we set stop_event)
         self._thread.join(timeout=2.0)
+
+    def __enter__(self) -> "ProgressCoalescer":
+        """Context manager entry — returns self."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> bool:
+        """Context manager exit — stops the coalescer.
+
+        Does not suppress exceptions (returns False).
+        """
+        self.stop()
+        return False
+
+    def __del__(self) -> None:
+        """Destructor fallback — best-effort stop if not properly closed.
+
+        Logs a warning if the coalescer was never stopped, then attempts
+        cleanup. Defensive against interpreter shutdown where attributes
+        may already be gone.
+        """
+        try:
+            if not hasattr(self, "_stop_event"):
+                return
+            if not self._stop_event.is_set():
+                logger.warning(
+                    "ProgressCoalescer was not properly stopped; "
+                    "call stop() or use as context manager"
+                )
+                self.stop()
+        except Exception:
+            # Best-effort only — never let __del__ raise during shutdown
+            pass
 
     # ------------------------------------------------------------------
     # Internal: Daemon thread loop

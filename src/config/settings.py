@@ -334,6 +334,9 @@ class Settings(BaseSettings):
     spec_review_retry_base_delay: float = 8.0
     spec_review_retry_decay_factor: float = 1.5
 
+    # 审查会话启动超时（秒），独立于全局 acp_startup_timeout
+    spec_review_startup_timeout: int = 30
+
     # 审查解析失败时的默认判定 ("fail" = 视为未通过, "pass" = 视为通过)
     spec_review_parse_failure_default: Literal["pass", "fail"] = "fail"
 
@@ -833,6 +836,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "spec_review_timeout", "spec_review_min_timeout", "spec_review_hard_floor",
+        "spec_review_startup_timeout",
         mode="before",
     )
     @classmethod
