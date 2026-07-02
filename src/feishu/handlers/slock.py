@@ -55,21 +55,17 @@ class SlockHandler(BaseEngineHandler):
             confidence_threshold=getattr(ctx.settings, "slock_nli_confidence_threshold", 0.7),
             timeout=getattr(ctx.settings, "slock_nli_timeout", 5),
         )
-        # Shared executor for NLI classification (avoids per-message ThreadPoolExecutor)
-        from concurrent.futures import ThreadPoolExecutor
-        self._nli_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="slock_nli")
+        # Use shared compute pool for NLI classification
+        from src.utils.thread_pools import get_compute_pool
+        self._nli_executor = get_compute_pool()
 
     def cleanup(self) -> None:
         """Release resources held by this handler instance.
 
         Called by the dispatcher when the handler is being rebuilt or shut down.
-        Shuts down the NLI executor to prevent thread leakage.
+        The NLI executor is shared (compute pool) so we don't shut it down here.
         """
-        try:
-            self._nli_executor.shutdown(wait=False)
-            logger.debug("SlockHandler cleanup: _nli_executor shut down")
-        except Exception as exc:
-            logger.warning("SlockHandler cleanup error: %s", str(exc))
+        pass
 
     # ------------------------------------------------------------------
     # Reply mode override: Slock uses slock_reply_mode (default "direct")
