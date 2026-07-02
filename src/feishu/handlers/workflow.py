@@ -33,7 +33,11 @@ def _workflow_pending_statuses():
     }
 
 
-class WorkflowHandler(BaseEngineHandler):
+from .workflow_script import WorkflowScriptMixin  # noqa: E402
+from .workflow_selection import WorkflowSelectionMixin  # noqa: E402
+
+
+class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHandler):
     """Manages the full lifecycle of Workflow Engine tasks.
 
     Commands:

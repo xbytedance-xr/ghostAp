@@ -42,7 +42,11 @@ def _get_nli_loop():
     return _get_bridge_loop()
 
 
-class SlockHandler(BaseEngineHandler):
+from .slock_roles import SlockRoleMixin  # noqa: E402
+from .slock_tasks import SlockTaskMixin  # noqa: E402
+
+
+class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     """Manages the full lifecycle of Slock Engine (multi-Agent mouthpiece) tasks."""
 
     def __init__(self, ctx: "HandlerContext") -> None:
