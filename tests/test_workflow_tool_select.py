@@ -388,13 +388,14 @@ class TestWorkflowToolSelectionCardUI(unittest.TestCase):
         confirm_btn = None
         for btn in all_buttons:
             btn_text = btn.get("text", {}).get("content", "")
-            if "确认工具" in btn_text or ("确认" in btn_text and "生成脚本" in btn_text):
+            if "确认工具" in btn_text or ("确认" in btn_text and "自动执行" in btn_text):
                 confirm_btn = btn
                 break
 
         self.assertIsNotNone(confirm_btn, "Confirm button not found in card")
         self.assertEqual(confirm_btn.get("value", {}).get("action"), WORKFLOW_CONFIRM_TOOLS)
         self.assertIn("确认工具", confirm_btn.get("text", {}).get("content", ""))
+        self.assertIn("自动执行", confirm_btn.get("text", {}).get("content", ""))
 
     @patch("src.thread.get_current_sender_id", return_value="user_001")
     @patch("src.workflow_engine.tool_registry.get_available_tools")

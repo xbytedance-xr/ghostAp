@@ -529,7 +529,7 @@ def build_responsive_button_row(
     if len(buttons) == 2:
         if mobile_force_vertical:
             # Two long action buttons on narrow screens (e.g. "取消" +
-            # "确认工具并生成脚本 →") would truncate when bisected. Stack
+            # "确认工具并自动执行 →") would truncate when bisected. Stack
             # them as separate column_sets so each button takes the full
             # width individually and the label stays readable.
             return [

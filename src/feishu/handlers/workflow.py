@@ -94,7 +94,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         elif command in ("/wf_history", "/workflow_history"):
             self._handle_wf_history(message_id, chat_id, project)
         elif command in ("/wf", "/workflow"):
-            # /wf <需求> — 主编排 Agent 入口，3步流程：①选择主编排Agent（工具+模型）→ ②选择评审Agent（工具+模型，可多选或Auto）→ ③确认并执行
+            # /wf <需求> — 主编排 Agent 入口：①选择主编排Agent（工具+模型）→ ②选择评审Agent（工具+模型，可多选或Auto）→ 自动生成并执行
             arg = cmd.args
             if arg:
                 self.start_workflow(message_id, chat_id, arg, project)
@@ -290,7 +290,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             "tag": "markdown",
             "content": (
                 "**请在下方聊天框中直接输入你想让 Workflow 完成的任务描述**\n\n"
-                "本聊天已切换到 Workflow 编排模式，下一条消息会被当作需求描述自动进入三步编排流程。\n\n"
+                "本聊天已切换到 Workflow 编排模式，下一条消息会被当作需求描述自动进入编排流程。\n\n"
                 "示例：\n"
                 "• `审查 src/handlers 目录中的错误处理一致性`\n"
                 "• `为 feature-checkout 分支生成端到端集成测试`\n\n"
@@ -1010,7 +1010,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             },
             {
                 "tag": "button",
-                "text": {"tag": "plain_text", "content": "确认工具并生成脚本 →"},
+                "text": {"tag": "plain_text", "content": "确认工具并自动执行 →"},
                 "type": "primary",
                 "value": confirm_value,
                 "behaviors": [{"type": "callback", "value": confirm_value}],
@@ -1188,7 +1188,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         *,
         expected_session_key: str | None = None,
     ) -> None:
-        """Generate script (template or AI) and show confirmation card.
+        """Generate script (template or AI) and auto-start execution.
 
         Called after tool selection is confirmed, or directly for templates.
         """
@@ -1357,6 +1357,11 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             # regenerating the script (e.g. via "重新生成脚本") keeps the
             # user's chosen orchestrator agent rather than resetting to defaults.
             existing_pending = engine.project.pending
+            preserved_initiator = (
+                existing_pending.initiator_user_id
+                if existing_pending and getattr(existing_pending, "initiator_user_id", None)
+                else get_current_sender_id() or ""
+            )
             preserved_orchestrator = (
                 existing_pending.orchestrator_agent
                 if existing_pending and getattr(existing_pending, "orchestrator_agent", None)
@@ -1404,7 +1409,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                 meta=meta,
                 is_fallback=is_fallback,
                 # Security: bind confirmation to initiator and session key
-                initiator_user_id=get_current_sender_id() or "",
+                initiator_user_id=preserved_initiator,
                 engine_session_key=uuid.uuid4().hex,
                 selected_tools=sel_tools,
                 tools_mismatch=tools_mismatch,
@@ -1416,26 +1421,15 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                 script_hash=script_hash,
             )
 
-        # Build and send confirmation card
         project_id = project.project_id if project else ""
-        _script_content = self._read_pending_script(engine)
-        pending = engine.project.pending if engine.project else None
-        confirm_card = self._build_confirm_card(
-            meta=meta,
-            requirement=requirement,
-            engine_session_key=pending.engine_session_key if pending else "",
+        self._start_pending_workflow_execution(
+            message_id=gen_msg_id or message_id,
             chat_id=chat_id,
             project_id=project_id,
-            is_fallback=is_fallback,
-            selected_tools=pending.selected_tools if pending else None,
-            script_content=_script_content,
-            orchestrator_binding=pending.orchestrator_binding if pending else None,
-            review_agents=pending.review_agents if pending else None,
-        )
-        self._replace_or_send_workflow_card(
-            card_message_id=gen_msg_id,
-            chat_id=chat_id,
-            card=confirm_card,
+            project=project,
+            root_path=root_path,
+            engine=engine,
+            allow_server_side_start=True,
         )
 
     def _schedule_generate_and_show_confirm_card(
@@ -2711,6 +2705,57 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             root_path=root_path,
             selected_tools=selected_tools,
         )
+
+    def _start_pending_workflow_execution(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        project: Optional["ProjectContext"],
+        root_path: str,
+        engine: Any,
+        allow_server_side_start: bool = False,
+    ) -> bool:
+        """Start a generated pending workflow through the existing confirm path."""
+        from ...thread import get_current_sender_id, set_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
+
+        _ = (project, root_path)
+        if not engine or not getattr(engine, "project", None) or not engine.project.pending:
+            self._reply_workflow_error(message_id, "session_expired")
+            return False
+        if engine.project.status != WorkflowStatus.AWAITING_CONFIRM:
+            self._reply_workflow_error(message_id, "invalid_state")
+            return False
+
+        pending = engine.project.pending
+        session_key = pending.engine_session_key or ""
+        if not session_key:
+            self._reply_workflow_error(message_id, "session_expired")
+            return False
+
+        previous_sender = get_current_sender_id()
+        should_bind_sender = allow_server_side_start and bool(pending.initiator_user_id)
+        if should_bind_sender:
+            set_current_sender_id(pending.initiator_user_id)
+
+        try:
+            self.handle_workflow_confirm_start(
+                message_id,
+                chat_id,
+                project_id,
+                {
+                    "action": "workflow_confirm_start",
+                    "project_id": project_id,
+                    "engine_session_key": session_key,
+                },
+            )
+        finally:
+            if should_bind_sender:
+                set_current_sender_id(previous_sender)
+
+        return bool(engine.project and engine.project.status == WorkflowStatus.RUNNING)
 
     def handle_workflow_confirm_start(
         self,
@@ -4093,7 +4138,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             "**执行流程**:\n"
             "① 主编排 Agent 选择 → 选择工具+模型（单一选择）\n"
             "② 评审 Agent 选择 → 选择一组用于评审的工具+模型（可多选或 Auto）\n"
-            "③ 确认并执行 → 预览配置后点击「确认执行」，多阶段并行执行，实时进度卡片更新\n\n"
+            "③ 自动生成并执行 → 生成编排脚本后立即启动，多阶段并行执行，实时进度卡片更新\n\n"
             "**特性**:\n"
             "• 多工具并行调度（coco/claude/aiden/codex/traex）\n"
             "• **每个工具 Agent 可自主继续拆分 subagent 并行工作**，显著提升复杂任务收敛速度\n"

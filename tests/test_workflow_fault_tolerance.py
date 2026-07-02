@@ -415,7 +415,8 @@ class TestTimeoutHandling(unittest.TestCase):
         self.executor._session_pool.submit.return_value = mock_future
 
         params = AgentCallParams(prompt="test prompt", tool="coco")
-        result = self.executor.execute(params)
+        with patch("src.workflow_engine.executor.SESSION_CREATE_TIMEOUT_S", 0.01):
+            result = self.executor.execute(params)
 
         self.assertIsNotNone(result.error)
         self.assertIn("timeout", result.error.lower())

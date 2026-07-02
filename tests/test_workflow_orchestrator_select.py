@@ -127,6 +127,7 @@ def test_regenerate_script_preserves_orchestrator_agent():
     handler.ctx.workflow_engine_manager.get = MagicMock(return_value=mock_engine)
     handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
     handler.ctx.project_manager.get_project = MagicMock(return_value=mock_project)
+    handler._start_pending_workflow_execution = MagicMock(return_value=True)
 
     with patch("src.feishu.handlers.workflow.os.path.exists", return_value=True):
         with patch("src.feishu.handlers.workflow.os.remove"):
@@ -236,11 +237,71 @@ def test_generate_and_show_confirm_card_defaults_orchestrator_when_missing():
     assert mock_engine.project.pending.orchestrator_agent == DEFAULT_ORCHESTRATOR_AGENT
 
 
-def test_generate_and_show_confirm_card_sends_new_confirm_card_when_update_fails():
-    """If replacing the loading card fails, send the confirm card as a new card."""
+def test_generate_and_show_confirm_card_auto_starts_without_confirm_card():
+    """脚本生成完成后应直接启动执行，而不是停在确认卡。"""
     handler = _build_handler_for_regen()
-    handler.send_card_to_chat.side_effect = ["loading_msg", "new_confirm_msg"]
+    handler.send_card_to_chat = MagicMock(return_value="generating_card")
+    handler._replace_or_send_workflow_card = MagicMock()
+    handler._start_pending_workflow_execution = MagicMock(return_value=True)
+
+    mock_project = MagicMock()
+    mock_project.project_id = "test_proj"
+    mock_project.root_path = "/tmp/test_proj"
+
+    mock_engine = MagicMock()
+    mock_engine.project = WorkflowProject(
+        workflow_id="test_wf",
+        status=WorkflowStatus.GENERATING_SCRIPT,
+        pending=PendingConfirmation(
+            requirement="test requirement",
+            initiator_user_id="test_user",
+            engine_session_key="session_abc",
+            selected_tools=["coco"],
+            orchestrator_agent="coco",
+        ),
+    )
+    handler.ctx.workflow_engine_manager.get_or_create = MagicMock(return_value=mock_engine)
+
+    handler._generate_script_via_ai = MagicMock(
+        return_value=(
+            "/tmp/test_proj/.ghostap/workflow_scripts/generated_workflow.js",
+            {"name": "test-wf", "description": "Test", "phases": [], "tools": ["coco"]},
+            False,
+        )
+    )
+
+    with patch("src.workflow_engine.templates.discover_templates", return_value=[]):
+        handler._generate_and_show_confirm_card(
+            message_id="loading_msg",
+            chat_id="test_chat",
+            requirement="test requirement",
+            project=mock_project,
+            root_path="/tmp/test_proj",
+            selected_tools=["coco"],
+            expected_session_key="session_abc",
+        )
+
+    handler._build_confirm_card.assert_not_called()
+    handler._replace_or_send_workflow_card.assert_not_called()
+    handler._start_pending_workflow_execution.assert_called_once_with(
+        message_id="generating_card",
+        chat_id="test_chat",
+        project_id="test_proj",
+        project=mock_project,
+        root_path="/tmp/test_proj",
+        engine=mock_engine,
+        allow_server_side_start=True,
+    )
+    assert mock_engine.project.pending.initiator_user_id == "test_user"
+
+
+def test_generate_and_show_confirm_card_starts_from_loading_card_without_confirm_fallback():
+    """生成完成后直接从 loading 卡进入执行，不再 fallback 到确认卡。"""
+    handler = _build_handler_for_regen()
+    handler.send_card_to_chat.return_value = "loading_msg"
     handler.update_card.return_value = False
+    handler._replace_or_send_workflow_card = MagicMock()
+    handler._start_pending_workflow_execution = MagicMock(return_value=True)
 
     mock_engine = MagicMock()
     mock_engine.project = WorkflowProject(
@@ -275,9 +336,10 @@ def test_generate_and_show_confirm_card_sends_new_confirm_card_when_update_fails
                 selected_tools=["coco"],
             )
 
-    handler.update_card.assert_called_once_with("loading_msg", handler._build_confirm_card.return_value)
-    assert handler.send_card_to_chat.call_count == 2
-    handler.send_card_to_chat.assert_any_call("test_chat", handler._build_confirm_card.return_value)
+    handler._build_confirm_card.assert_not_called()
+    handler.update_card.assert_not_called()
+    handler._replace_or_send_workflow_card.assert_not_called()
+    handler._start_pending_workflow_execution.assert_called_once()
 
 
 def test_generate_and_show_confirm_card_replaces_loading_card_on_template_validation_failure():

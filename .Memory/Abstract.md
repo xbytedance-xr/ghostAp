@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-02
+- **WF选模后自动执行** — `/wf` 主/评审 Agent 选完后直接生成脚本并复用确认执行路径自动启动；帮助/入口文案同步为自动生成并执行，Workflow 全量 861 passed → [详细记录](2026-07-02.md)
 - **Spec review测试修复** — 修复 adaptive review 既有失败：frozen ReviewRoleSpec 测试改构造期 blocking，fake session 兼容 startup_timeout；161 相关测试 passed → [详细记录](2026-07-02.md)
 - **Deep/Spec grill-me接入** — Deep/Spec prompt 注入自动尖锐追问、推荐答案与自动采纳；Spec 多角色 review + completion_control 综合采纳判断，93 相关测试 passed → [详细记录](2026-07-02.md)
 - **WF嵌套race取消状态修复** — 子 RuntimeBridge 构造缺 on_agent_aborted 致嵌套 race loser 状态停在 RUNNING；补传回调 + 嵌套回归测试 → [详细记录](2026-07-02.md)

@@ -338,7 +338,7 @@ UI_TEXT = {
         "`/wf_list` · 列出可用 Workflow 模板\n"
         "`/wf_delete <名称>` · 删除已保存模板\n"
         "别名：`/workflow` · `/workflow_status` · `/stop_workflow`\n"
-        "流程：需求分析 → 生成脚本 → 确认执行 → 多 Agent 并行/流水线 → 汇总结果"
+        "流程：需求分析 → 生成脚本 → 自动执行 → 多 Agent 并行/流水线 → 汇总结果"
     ),
     "system_help_section_slock": "🎭 Slock · 飞书群内多 Agent 协作",
     "system_help_section_slock_body": (
@@ -957,10 +957,10 @@ UI_TEXT = {
         "error": "red",               # Error state
         "completed": "green",         # Successfully completed
     },
-    # --- Workflow stepper labels (3-step orchestration flow: main agent → review agents → confirm) ---
+    # --- Workflow stepper labels (selection flow: main agent → review agents → auto execution) ---
     "workflow_stepper_step_main_agent": "① 选择主 Agent",
     "workflow_stepper_step_review_agents": "② 选择评审 Agent",
-    "workflow_stepper_step_confirm": "③ 确认并执行",
+    "workflow_stepper_step_confirm": "③ 自动生成并执行",
     "workflow_stepper_current_label": "当前步骤：{current} / {total}",
     # --- Workflow confirm dialogs ---
     "workflow_btn_confirm_cancel_title": "确认取消 Workflow？",
@@ -979,7 +979,7 @@ UI_TEXT = {
     "workflow_error_runtime_timeout_title": "Workflow 执行超时",
     "workflow_error_runtime_timeout_body": "Workflow 已达到执行时间上限。\n\n🔎 细节：{detail}\n\n💡 恢复方式：缩小任务范围、减少并行 Agent 数量，或重新发起 `/wf` 让编排器生成更短超时和 fallback 的动态流程",
     "workflow_error_internal_error_title": "服务内部错误",
-    "workflow_error_internal_error_body": "Workflow 执行过程中发生内部错误。{detail}\n\n💡 请稍后重试，或点击「重新生成编排」基于当前工具选择重新生成脚本后再次确认；如持续出现请联系管理员",
+    "workflow_error_internal_error_body": "Workflow 执行过程中发生内部错误。{detail}\n\n💡 请稍后重试，或重新发起 `/wf` 基于当前工具选择生成脚本并自动执行；如持续出现请联系管理员",
     # --- Workflow entry help ---
     "workflow_entry_title": "⚡ Workflow · 多 Agent 编排执行",
     "workflow_entry_body": (
@@ -990,7 +990,7 @@ UI_TEXT = {
         "• 支持模板保存与复用，常用流程一键启动\n"
         "• **每个工具 Agent 可自主继续拆分 subagent 并行工作，大幅提升复杂任务收敛速度**\n\n"
         "✅ 主编排 Agent 入口：`/wf` 即 Workflow 主编排 Agent 入口，无需先进入 `/coco` 等普通编程态\n"
-        "📋 流程：主编排 Agent(工具+模型) → 评审 Agent(工具+模型) → 脚本确认 → 执行\n\n"
+        "📋 流程：主编排 Agent(工具+模型) → 评审 Agent(工具+模型/Auto) → 自动生成脚本并执行\n\n"
         "**前置要求**\n"
         "• Workflow 在 Node.js ≥ 20 的沙盒内执行编排脚本；请确保 `node --version` ≥ 20\n\n"
         "**快速开始**\n"

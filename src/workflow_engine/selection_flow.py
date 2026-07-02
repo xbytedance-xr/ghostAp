@@ -385,13 +385,13 @@ class SelectionFlowController:
             stepper_markdown = (
                 "▶ 1. 主编排 Agent  ✅\n"
                 "▶ 2. 评审 Agent  — **当前**\n"
-                "○ 3. 确认执行"
+                "○ 3. 自动生成并执行"
             )
         else:
             stepper_markdown = (
                 "▶ 1. 主编排 Agent  — **当前**\n"
                 "○ 2. 评审 Agent\n"
-                "○ 3. 确认执行"
+                "○ 3. 自动生成并执行"
             )
         elements.append({
             "tag": "markdown",
@@ -641,7 +641,7 @@ class SelectionFlowController:
         )
         ok, _err = self.validate_non_empty(is_review=is_review)
         footer_label = (
-            "确认评审选择，生成脚本 →" if is_review else "确认主 Agent，下一步 →"
+            "确认评审选择，自动执行 →" if is_review else "确认主 Agent，下一步 →"
         )
 
         # Cancel button

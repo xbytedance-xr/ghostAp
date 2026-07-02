@@ -1412,6 +1412,7 @@ class TestWorkflowRegenerateScript(unittest.TestCase):
         project_mock.project_id = "proj_1"
         project_mock.project_name = "test"
         handler._resolve_project_from_id = MagicMock(return_value=project_mock)
+        handler._start_pending_workflow_execution = MagicMock(return_value=True)
 
         # Mock new AI generation result
         mock_gen.return_value = (
@@ -1430,9 +1431,10 @@ class TestWorkflowRegenerateScript(unittest.TestCase):
         call_args = mock_gen.call_args[0]
         self.assertEqual(call_args[2], ["coco", "claude"])  # selected_tools passed
 
-        # Should have sent generating card then updated to confirm card
+        # Should have sent generating card then auto-started execution.
         handler.send_card_to_chat.assert_called_once()
-        handler.update_card.assert_called_once()
+        handler.update_card.assert_not_called()
+        handler._start_pending_workflow_execution.assert_called_once()
 
         # Pending meta should be updated with new script
         self.assertEqual(engine.project.pending.meta["name"] if engine.project.pending and engine.project.pending.meta else None, "regenerated-wf")
