@@ -104,6 +104,21 @@ _READONLY_CARD_ACTIONS = {
     "spec_expand", "spec_collapse", "spec_mode_full", "spec_mode_compact", "spec_expand_ac", "spec_collapse_ac",
 }
 
+# Selection-flow actions where duplicate clicks are silently dropped (no toast).
+# Rapid clicking during model/tool selection is normal UX — showing a toast
+# every time is disruptive.
+_SILENT_DEDUP_ACTIONS = {
+    "workflow_select_tool", "workflow_orchestrator_select_tool",
+    "workflow_orchestrator_select_model", "workflow_review_select_tool",
+    "workflow_review_select_model", "worktree_select_tool",
+    "worktree_select_model", "spec_review_select_tool",
+    "spec_review_select_model", "select_ttadk_tool",
+    "select_ttadk_model", "select_ttadk_combined",
+    "select_ttadk_combined_tool", "select_acp_tool",
+    "select_acp_model", "slock_new_role_select_tool",
+    "slock_new_role_select_model",
+}
+
 
 class FeishuWSClient:
     """Feishu WS Client 的服务端运行态。
@@ -1814,6 +1829,8 @@ class FeishuWSClient:
             dedupe_key = f"{open_chat_id}:{open_message_id}:{operator_id}:{action_type_preview}:{dedupe_fingerprint}"
             try:
                 if self._card_action_dedup_cache.is_duplicate(dedupe_key):
+                    if action_type_preview in _SILENT_DEDUP_ACTIONS:
+                        return {}
                     return {"toast": {"type": "info", "content": UI_TEXT["card_session_toast_dedup"]}}
 
 

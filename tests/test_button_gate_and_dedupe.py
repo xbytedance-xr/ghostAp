@@ -128,7 +128,7 @@ def test_same_worktree_action_with_different_tool_payloads_is_not_deduped():
 
         assert client._scheduler.submit.call_count == 2
         assert second_result is None
-        assert duplicate_result == {"toast": {"type": "info", "content": "操作已受理，请勿重复点击"}}
+        assert duplicate_result == {}
 
         client.close()
 
@@ -189,7 +189,7 @@ def test_same_worktree_tool_after_selection_change_is_not_deduped():
         assert client._scheduler.submit.call_count == 2
         assert first_result is None
         assert second_result is None
-        assert duplicate_result == {"toast": {"type": "info", "content": "操作已受理，请勿重复点击"}}
+        assert duplicate_result == {}
 
         client.close()
 
