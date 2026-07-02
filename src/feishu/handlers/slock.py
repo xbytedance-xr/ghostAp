@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 
 def _get_nli_loop():
     """Return the shared loop used for async NLI classification."""
-    from src.slock_engine.engine import _get_shared_loop
+    from src.utils.async_helpers import _get_bridge_loop
 
-    return _get_shared_loop()
+    return _get_bridge_loop()
 
 
 class SlockHandler(BaseEngineHandler):

@@ -58,26 +58,14 @@ _SHARED_LOOP_LOCK = threading.Lock()  # leaf lock: never held while acquiring a 
 
 
 def _get_shared_loop() -> _asyncio.AbstractEventLoop:
-    """Get or create a persistent asyncio event loop running in a daemon thread.
+    """Get the shared async bridge event loop.
 
-    Thread-safe singleton. Used for autonomous resolver and other async ops
-    that need to run from synchronous worker threads.
+    Delegates to the unified bridge in utils.async_helpers to avoid
+    multiple competing event loops across the process.
     """
-    global _SHARED_LOOP
-    with _SHARED_LOOP_LOCK:
-        if _SHARED_LOOP is not None and _SHARED_LOOP.is_running():
-            return _SHARED_LOOP
+    from src.utils.async_helpers import _get_bridge_loop
 
-        loop = _asyncio.new_event_loop()
-
-        def _run_loop():
-            _asyncio.set_event_loop(loop)
-            loop.run_forever()
-
-        t = threading.Thread(target=_run_loop, name="slock_shared_loop", daemon=True)
-        t.start()
-        _SHARED_LOOP = loop
-        return _SHARED_LOOP
+    return _get_bridge_loop()
 
 
 @dataclass

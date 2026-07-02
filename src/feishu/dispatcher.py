@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from ..agent.intent_recognizer import IntentType
 from ..card.ui_text import UI_TEXT
-from ..slock_engine.slash_commands import NEEDS_ACTIVATION
+from ..slock_engine.gateway import NEEDS_ACTIVATION
 from ..utils.errors import get_error_detail
 from .emoji import EmojiReaction
 from .message_formatter import FeishuMessageFormatter as fmt
@@ -186,65 +186,36 @@ class MessageDispatcher:
             # Skip auto-activate for explicit slash commands
             _is_command_intent = command_match is not None or (text or "").lstrip().startswith("/")
             if slock_auto_activate_allowed and not _is_command_intent:
-                from src.slock_engine.task_classifier import TaskClassifier
-                # In managed chats, bias toward task classification to reduce
-                # false chitchat filtering and silent message drops.
-                _is_already_managed = _is_managed
-                classification, _ = TaskClassifier.classify_with_uncertainty(
-                    text or "", managed_chat=_is_already_managed,
+                from src.slock_engine.gateway import (
+                    SlockMessageClass,
+                    attempt_autonomous_resolve,
+                    build_activation_denied_card,
+                    build_clarification_card,
+                    classify_message,
                 )
 
-                # In managed chats, treat uncertain as task — don't make users
-                # confirm via clarification card (reduces friction).
-                if _is_already_managed and classification == "uncertain":
-                    classification = "task"
+                _is_already_managed = _is_managed
+                result = classify_message(text or "", managed_chat=_is_already_managed)
 
-                if classification == "chat":
-                    # Definitely chitchat — ignore
+                if result.label == SlockMessageClass.CHAT:
                     logger.debug("Slock: message classified as chat, ignoring: chat=%s", chat_id)
-                elif classification == "uncertain":
-                    # Uncertain — try autonomous resolution first, then ask user
+                elif result.label == SlockMessageClass.UNCERTAIN:
                     logger.info("Slock: message classification uncertain, attempting autonomous resolution: chat=%s", chat_id)
                     import json
 
-                    from src.slock_engine.autonomous_resolver import (
-                        AutonomousResolver,
-                        ResolveStatus,
-                    )
-                    from src.slock_engine.card_templates.queue_feedback import build_clarification_card
                     from src.thread.manager import get_current_sender_id
 
-                    # Try autonomous resolution first
-                    resolver = AutonomousResolver()
-                    try:
-                        from src.slock_engine.engine import _get_shared_loop
-                        loop = _get_shared_loop()
-                        resolve_result = loop.run_until_complete(
-                            resolver.attempt_resolve(
-                                task_text=text or "",
-                                context="",
-                                task_id=message_id,
-                                channel_id=chat_id,
-                            )
-                        )
-                    except Exception as e:
-                        logger.warning("Autonomous resolution failed, falling back to clarification: %s", str(e))
-                        resolve_result = None
+                    resolve_outcome = attempt_autonomous_resolve(text or "", message_id, chat_id)
 
-                    # If resolved, treat as task and try auto-activate
-                    if resolve_result and resolve_result.status == ResolveStatus.RESOLVED:
-                        logger.info(
-                            "Slock: autonomous resolution succeeded (status=%s), treating as task",
-                            resolve_result.status,
-                        )
-                        resolved_text = resolve_result.resolved_text or text or ""
+                    if resolve_outcome.resolved:
+                        logger.info("Slock: autonomous resolution succeeded, treating as task")
+                        resolved_text = resolve_outcome.resolved_text or text or ""
                         if self.client._should_auto_activate_slock(chat_id, resolved_text, chat_type=chat_type):
                             activated, reason = self.client._auto_activate_slock(chat_id, resolved_text, project)
                             if activated:
                                 self.client._add_reaction(message_id, EmojiReaction.on_processing())
                                 return
                             else:
-                                from src.slock_engine.card_templates.queue_feedback import build_activation_denied_card
                                 card = build_activation_denied_card(
                                     reason=reason,
                                     hint="自动协作模式激活受限。",
@@ -268,23 +239,18 @@ class MessageDispatcher:
                         message_id,
                         json.dumps(card, ensure_ascii=False),
                     )
-                elif classification == "task" and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type):
-                    # Definitely a task — try to auto-activate
+                elif result.label == SlockMessageClass.TASK and self.client._should_auto_activate_slock(chat_id, text, chat_type=chat_type):
                     activated, reason = self.client._auto_activate_slock(chat_id, text, project)
                     if activated:
-                        # First message is enqueued atomically during bootstrap via
-                        # activate_slock(requirement=text); do NOT handle again here.
                         self.client._add_reaction(message_id, EmojiReaction.on_processing())
                         return
                     else:
-                        # Activation denied — notify user and STOP (do NOT fall through to shell)
                         logger.info(
                             "Slock auto-activation denied for chat=%s, reason=%s",
                             chat_id, reason,
                         )
                         import json
 
-                        from src.slock_engine.card_templates.queue_feedback import build_activation_denied_card
                         card = build_activation_denied_card(
                             reason=reason,
                             hint="自动协作模式激活受限。",

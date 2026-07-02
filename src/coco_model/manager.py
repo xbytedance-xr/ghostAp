@@ -124,7 +124,6 @@ class CocoModelManager:
         CocoModel entries.
         """
         try:
-            import asyncio
 
             from src.acp.client import GhostAPClient
 
@@ -176,7 +175,8 @@ class CocoModelManager:
                 )
             except Exception:
                 timeout_s = 6.0
-            return asyncio.run(
+            from src.utils.async_helpers import run_async
+            return run_async(
                 safe_wait_for(
                     _probe(),
                     timeout=max(0.1, timeout_s),

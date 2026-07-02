@@ -1,4 +1,4 @@
-import asyncio
+
 import json
 import logging
 import threading
@@ -201,7 +201,8 @@ def fetch_acp_models(
 
     try:
         timeout_s = _resolve_acp_model_probe_timeout(probe_timeout)
-        models = asyncio.run(
+        from src.utils.async_helpers import run_async
+        models = run_async(
             safe_wait_for(
                 probe_acp_models(tool_name, cwd, current_model),
                 timeout=timeout_s,
