@@ -74,7 +74,7 @@ class CommandRouter:
     @staticmethod
     def is_slock_command(text: str, chat_id: str = "", manager: Any = None) -> Any:
         from ..slock_engine.gateway import is_slock_command
-        return is_slock_command(text, chat_id)
+        return is_slock_command(text, chat_id, manager=manager)
 
     @staticmethod
     def is_programming_entry(text: str) -> bool:

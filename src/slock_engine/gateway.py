@@ -56,7 +56,7 @@ def is_slock_command(text: str, chat_id: str = "", manager: Any = None) -> Any:
         from .slash_commands import is_slock_command as _is_slock_command
         return _is_slock_command(text, chat_id=chat_id, manager=manager)
     except Exception as e:
-        logger.warning("Slock command parsing failed (non-fatal): %s", e)
+        logger.warning("Slock command parsing failed (non-fatal): %s", str(e))
         return None
 
 
@@ -74,7 +74,7 @@ def classify_message(text: str, *, managed_chat: bool = False) -> SlockClassific
             classification = "task"
         return SlockClassification(label=SlockMessageClass(classification))
     except Exception as e:
-        logger.warning("Slock message classification failed (non-fatal): %s", e)
+        logger.warning("Slock message classification failed (non-fatal): %s", str(e))
         return SlockClassification(label=SlockMessageClass.CHAT)
 
 
@@ -99,13 +99,14 @@ def attempt_autonomous_resolve(
                 context="",
                 task_id=message_id,
                 channel_id=chat_id,
-            )
+            ),
+            timeout=15.0,
         )
         if result and result.status == ResolveStatus.RESOLVED:
             return ResolveOutcome(resolved=True, resolved_text=result.resolved_text)
         return ResolveOutcome(resolved=False)
     except Exception as e:
-        logger.warning("Autonomous resolution failed (non-fatal): %s", e)
+        logger.warning("Autonomous resolution failed (non-fatal): %s", str(e))
         return ResolveOutcome(resolved=False)
 
 
