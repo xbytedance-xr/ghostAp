@@ -117,7 +117,7 @@ def build_activation_denied_card(reason: str, hint: str = "") -> dict:
         )
         return _build(reason=reason, hint=hint)
     except Exception as e:
-        logger.warning("Failed to build activation denied card: %s", e)
+        logger.warning("Failed to build activation denied card: %s", str(e))
         return {}
 
 
@@ -139,5 +139,5 @@ def build_clarification_card(
             sender_id=sender_id,
         )
     except Exception as e:
-        logger.warning("Failed to build clarification card: %s", e)
+        logger.warning("Failed to build clarification card: %s", str(e))
         return {}

@@ -15,7 +15,7 @@ _T = TypeVar("_T")
 # ---------------------------------------------------------------------------
 
 _BRIDGE_LOOP: asyncio.AbstractEventLoop | None = None
-_BRIDGE_LOCK = threading.Lock()
+_BRIDGE_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 def _get_bridge_loop() -> asyncio.AbstractEventLoop:

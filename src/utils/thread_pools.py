@@ -21,7 +21,7 @@ _T = TypeVar("_T")
 _IO_POOL: ThreadPoolExecutor | None = None
 _COMPUTE_POOL: ThreadPoolExecutor | None = None
 _BACKGROUND_POOL: ThreadPoolExecutor | None = None
-_LOCK = threading.Lock()
+_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
 # Defaults — can be overridden via configure() before first use
 _IO_WORKERS = 16
