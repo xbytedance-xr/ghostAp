@@ -1665,6 +1665,10 @@ class TestSpecEngine:
         assert "```json" in prompt
         assert '"acceptance_criteria"' in prompt
         assert "clarification_questions" in prompt
+        assert "grill-me" in prompt
+        assert "尖锐追问" in prompt
+        assert "推荐答案" in prompt
+        assert "不要停下等待用户回答" in prompt
 
     def test_build_plan_prompt(self):
         prompt = build_plan_prompt("spec output here", "/tmp/test")
@@ -1673,6 +1677,8 @@ class TestSpecEngine:
         assert "file_changes" in prompt
         assert "subagent / 子任务委托" in prompt
         assert "无共享文件写入" in prompt
+        assert "grill-me" in prompt
+        assert "自动采纳" in prompt
 
     def test_build_task_prompt(self):
         prompt = build_task_prompt("plan output here")
@@ -1680,6 +1686,8 @@ class TestSpecEngine:
         assert "任务编号" in prompt
         assert "可并行、可委托给 subagent" in prompt
         assert "潜在冲突" in prompt
+        assert "grill-me" in prompt
+        assert "采纳动作" in prompt
 
     def test_build_build_prompt(self):
         tasks = [
@@ -1693,6 +1701,8 @@ class TestSpecEngine:
         assert "严格按照依赖关系推进" in prompt
         assert "优先使用当前工具支持的 subagent / 子任务委托并行执行" in prompt
         assert "严格按照任务顺序执行" not in prompt
+        assert "grill-me" in prompt
+        assert "自动采纳" in prompt
 
     def test_build_review_prompt(self):
         prompt = build_review_prompt("Build auth")
@@ -1702,6 +1712,10 @@ class TestSpecEngine:
         assert "TESTER" in prompt
         assert "DESIGNER" in prompt
         assert "Build auth" in prompt
+        assert "grill-me" in prompt
+        assert "尖锐追问" in prompt
+        assert "推荐答案" in prompt
+        assert "采纳动作" in prompt
 
     def test_build_refinement_input(self):
         project = SpecProject.create(root_path="/tmp")

@@ -15,6 +15,7 @@ from typing import Callable, Optional
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
 from ..engine_base import BaseEngine, BaseEngineManager
+from ..grill_me import DEEP_GRILL_ME_PROTOCOL
 from ..utils.debug_utils import MemorySnapshot
 from ..utils.gc_monitor import get_gc_monitor
 from ..utils.trace import TraceContext
@@ -328,6 +329,7 @@ class DeepEngine(BaseEngine):
 ## 工作目录
 {self.root_path}
 
+{DEEP_GRILL_ME_PROTOCOL}
 ## 要求
 1. 必须先输出清晰的【分析】与【执行计划】，再开始调用工具执行
 2. 计划需要拆成可验证的步骤（建议 3~8 步），每步一句话描述产物/验证点

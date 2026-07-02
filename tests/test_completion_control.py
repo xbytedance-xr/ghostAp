@@ -148,6 +148,9 @@ class TestActiveVerifierPrompt:
         assert "[PASS]" in prompt
         assert "[FAIL]" in prompt
         assert "pytest" in prompt
+        assert "grill-me" in prompt
+        assert "综合采纳判断" in prompt
+        assert "自动采纳" in prompt
 
     def test_non_completion_role_gets_generic_prompt(self):
         role = ReviewRoleSpec(
@@ -171,6 +174,10 @@ class TestActiveVerifierPrompt:
         # Generic prompt doesn't have completion-specific instructions
         assert "不择手段验证" not in prompt
         assert "架构师" in prompt
+        assert "grill-me" in prompt
+        assert "尖锐追问" in prompt
+        assert "推荐答案" in prompt
+        assert "采纳动作" in prompt
 
     def test_review_artifacts_carries_criteria_and_verify(self):
         """collect_review_artifacts passes criteria state and verify results."""

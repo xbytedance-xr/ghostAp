@@ -6,6 +6,12 @@ import json
 from typing import TYPE_CHECKING, Optional
 
 from ..engine_base import ReviewPerspective, ReviewResult
+from ..grill_me import (
+    SPEC_BUILD_GRILL_ME_PROTOCOL,
+    SPEC_PHASE_GRILL_ME_PROTOCOL,
+    SPEC_REVIEW_GRILL_ME_PROTOCOL,
+    SPEC_TASK_GRILL_ME_PROTOCOL,
+)
 
 if TYPE_CHECKING:
     from .models import PlanArtifact, SpecArtifact, SpecProject, SpecTask
@@ -35,6 +41,7 @@ def build_spec_prompt(requirement: str, root_path: str, guidance: str, criteria_
 ## 工作目录
 {root_path}
 {guidance}{criteria_status}
+{SPEC_PHASE_GRILL_ME_PROTOCOL}
 ## 输出要求（必须严格遵守）
 仅输出一个 JSON 对象，放在 ```json fenced code block``` 中，不要输出任何其他文字。
 
@@ -73,6 +80,7 @@ def build_plan_prompt(spec: str, root_path: str, spec_artifact: Optional["SpecAr
 ## 工作目录
 {root_path}
 
+{SPEC_PHASE_GRILL_ME_PROTOCOL}
 ## 输出要求（必须严格遵守）
 仅输出一个 JSON 对象，放在 ```json fenced code block``` 中，不要输出任何其他文字。
 
@@ -104,6 +112,7 @@ def build_task_prompt(plan: str, plan_artifact: Optional["PlanArtifact"] = None)
 ## 实现方案
 {plan_section}
 
+{SPEC_TASK_GRILL_ME_PROTOCOL}
 ## 输出要求
 请输出结构化的任务列表，每个任务包含：
 - 任务编号（1, 2, 3, ...）
@@ -142,6 +151,7 @@ def build_build_prompt(tasks: list[SpecTask], plan: str, root_path: str, guidanc
 ## 工作目录
 {root_path}
 {guidance}
+{SPEC_BUILD_GRILL_ME_PROTOCOL}
 ## 要求
 1. 严格按照依赖关系推进；不要让有冲突的任务并发修改同一文件、同一 API 契约或同一迁移/配置入口
 2. 对依赖已满足且改动范围互不冲突的任务，优先使用当前工具支持的 subagent / 子任务委托并行执行
@@ -177,6 +187,8 @@ def build_review_prompt(requirement: str) -> str:
 - 以细节一致性为底线：命名/状态/交互/错误提示/边界行为必须统一。
 - 以体面为标准：失败与异常也要有尊严（清晰提示、可恢复、不给用户添堵）。
 - 建议要具体可落地：每条建议最好能对应到 1 个明确改动点（文案/交互/流程/边界/信息层级）。
+
+{SPEC_REVIEW_GRILL_ME_PROTOCOL}
 
 <output_format>
 严格按照以下格式输出每个视角的审查结果（每个视角占一个区块）。

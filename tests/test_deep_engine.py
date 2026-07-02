@@ -194,6 +194,16 @@ class TestDeepEngine:
         assert "不会修改相同文件/接口契约/迁移配置" in prompt
         assert "哪些任务并行/委托执行" in prompt
 
+    def test_build_deep_prompt_embeds_grill_me_auto_adoption(self):
+        engine = self._make_engine()
+        prompt = engine._build_deep_prompt("add login feature")
+
+        assert "grill-me" in prompt
+        assert "尖锐追问" in prompt
+        assert "推荐答案" in prompt
+        assert "自动采纳" in prompt
+        assert "不要停下等待用户回答" in prompt
+
     def test_get_rendered_content(self):
         engine = self._make_engine()
         content = engine.get_rendered_content()

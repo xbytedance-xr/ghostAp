@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from src.engine_base import PerspectiveReview, ReviewPerspective, ReviewResult
+from src.grill_me import COMPLETION_CONTROL_GRILL_ME_PROTOCOL, SPEC_REVIEW_GRILL_ME_PROTOCOL
 from src.spec_engine.review_aggregation import (
     AggregatedReview,
     RoleReviewOutcome,
@@ -70,6 +71,8 @@ def _build_completion_control_prompt(role: ReviewRoleSpec, artifacts: ReviewArti
 - **用事实说话**：每条判定必须附带客观证据（命令输出、文件内容、测试结果），不接受"看起来完成了"。
 - **抵制乐观偏差**：其他角色可能倾向于放过，你的职责是怀疑并验证。
 - **方向对齐**：确认当前实现精确回应了用户最初提出的问题，没有偏移。
+
+{COMPLETION_CONTROL_GRILL_ME_PROTOCOL}
 
 ## 用户原始目标
 {artifacts.requirement}
@@ -154,6 +157,8 @@ def build_role_review_prompt(role: ReviewRoleSpec, artifacts: ReviewArtifacts) -
 
 ## 证据规则
 {role.evidence_policy}
+
+{SPEC_REVIEW_GRILL_ME_PROTOCOL}
 
 ## 涉及文件
 {files}
