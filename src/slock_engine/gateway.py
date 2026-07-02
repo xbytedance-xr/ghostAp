@@ -45,7 +45,7 @@ class ResolveOutcome:
 from .slash_commands import NEEDS_ACTIVATION  # noqa: E402, F401
 
 
-def is_slock_command(text: str, chat_id: str = "") -> Any:
+def is_slock_command(text: str, chat_id: str = "", manager: Any = None) -> Any:
     """Check if text is a slock slash command.
 
     Returns a truthy SlockCommandResult if it is a command,
@@ -53,8 +53,8 @@ def is_slock_command(text: str, chat_id: str = "") -> Any:
     or a falsy value otherwise.
     """
     try:
-        from .slash_commands import SlockSlashCommandParser
-        return SlockSlashCommandParser.parse(text, chat_id=chat_id)
+        from .slash_commands import is_slock_command as _is_slock_command
+        return _is_slock_command(text, chat_id=chat_id, manager=manager)
     except Exception as e:
         logger.warning("Slock command parsing failed (non-fatal): %s", e)
         return None

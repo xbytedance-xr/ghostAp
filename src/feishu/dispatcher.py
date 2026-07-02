@@ -16,6 +16,8 @@ from ..slock_engine.gateway import NEEDS_ACTIVATION
 from ..utils.errors import get_error_detail
 from .emoji import EmojiReaction
 from .message_formatter import FeishuMessageFormatter as fmt
+from .request_context import RequestContext
+from .route_decision import CommandRouter, RouteDecision, RouteTarget
 from .slash_command_parser import CommandMatch
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,62 @@ class MessageDispatcher:
 
     def __init__(self, client: Any):
         self.client = client
+        self._router = CommandRouter()
+
+    # ------------------------------------------------------------------
+    # Pure routing: produces RouteDecision without side effects
+    # ------------------------------------------------------------------
+
+    def resolve_command_route(self, ctx: RequestContext) -> Optional[RouteDecision]:
+        """Determine routing target from command detection alone.
+
+        Returns a RouteDecision if a control-plane command matches,
+        or None if the message should proceed to intent recognition.
+        This method is side-effect-free and independently testable.
+        """
+        text = ctx.text
+
+        # Control-plane engine commands
+        if CommandRouter.is_deep_command(text):
+            return RouteDecision(target=RouteTarget.DEEP_ENGINE)
+        if CommandRouter.is_spec_command(text):
+            return RouteDecision(target=RouteTarget.SPEC_ENGINE)
+        if CommandRouter.is_workflow_command(text):
+            return RouteDecision(target=RouteTarget.WORKFLOW_ENGINE)
+
+        # Slock command
+        slock_result = CommandRouter.is_slock_command(
+            text, ctx.chat_id,
+            manager=getattr(self.client, '_slock_engine_manager', None),
+        )
+        if slock_result and slock_result is not NEEDS_ACTIVATION:
+            return RouteDecision(target=RouteTarget.SLOCK_COMMAND)
+        if slock_result == NEEDS_ACTIVATION and ctx.slock_context_allowed:
+            return RouteDecision(
+                target=RouteTarget.SLOCK_AUTO_ACTIVATE,
+                payload={"needs_activation": True},
+            )
+
+        # Exit command while in programming mode
+        if ctx.is_in_programming and CommandRouter.is_exit_command(text):
+            return RouteDecision(target=RouteTarget.EXIT_MODE)
+
+        # Interceptable slash command
+        if ctx.command_match is not None:
+            return RouteDecision(
+                target=RouteTarget.SYSTEM_COMMAND,
+                payload={"command_match": ctx.command_match},
+            )
+
+        # Worktree awaiting goal
+        if ctx.has_project and self.client._is_worktree_awaiting_goal(ctx.project):
+            return RouteDecision(target=RouteTarget.WORKTREE_GOAL)
+
+        # Active programming mode
+        if ctx.is_in_programming:
+            return RouteDecision(target=RouteTarget.PROGRAMMING_MODE)
+
+        return None  # Proceed to intent recognition
 
     def process_request(self, request: FeishuRequestContext):
         """Dispatch using a request context while preserving legacy entrypoint behavior."""
