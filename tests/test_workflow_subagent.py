@@ -299,6 +299,30 @@ class TestGenerateSimpleScriptEncouragement(unittest.TestCase):
         is_valid, messages = validate_generated_script(script)
         self.assertTrue(is_valid, f"Expected valid fallback script, got: {messages}")
 
+    def test_script_uses_race_instead_of_llm_classify_for_fallback_routing(self):
+        script = generate_simple_script(
+            "分析 spec 模式目标完成度如何把控，先不要动手改代码",
+            selected_tools=["traex", "codex", "coco"],
+        )
+
+        self.assertIn("race(", script)
+        self.assertIn("candidateTools", script)
+        self.assertNotIn("await classify(", script)
+        self.assertNotIn('label: "route"', script)
+        self.assertNotIn("route-classify", script)
+
+        is_valid, messages = validate_generated_script(script)
+        self.assertTrue(is_valid, f"Expected valid fallback script, got: {messages}")
+
+    def test_script_prompt_preserves_analysis_only_requests(self):
+        script = generate_simple_script(
+            "分析 spec 模式目标完成度如何把控，先不要动手改代码",
+            selected_tools=["traex", "codex"],
+        )
+
+        self.assertIn("If the user asks for analysis only", script)
+        self.assertIn("do not change code", script)
+
 
 @pytest.mark.skip(reason="Budget/roles selection removed; build_script_gen_prompt no longer accepts budget tokens or static roles.")
 class TestBudgetConstraintAndAgentCapability(unittest.TestCase):

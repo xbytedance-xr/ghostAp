@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-03
+- **WF兜底脚本超时修复** — generated-dynamic-workflow 不再用 `route-classify` 串行等待首个工具；Routing 改本地启发式，simple/parallel split 改多工具 `race()`，并显式尊重“只分析/不要改代码” → [详细记录](2026-07-03.md)
+
 ## 2026-07-02
 - **WF选模后自动执行** — `/wf` 主/评审 Agent 选完后直接生成脚本并复用确认执行路径自动启动；帮助/入口文案同步为自动生成并执行，Workflow 全量 861 passed → [详细记录](2026-07-02.md)
 - **Spec review测试修复** — 修复 adaptive review 既有失败：frozen ReviewRoleSpec 测试改构造期 blocking，fake session 兼容 startup_timeout；161 相关测试 passed → [详细记录](2026-07-02.md)

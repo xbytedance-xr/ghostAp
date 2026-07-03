@@ -1218,21 +1218,22 @@ export const meta = {{
   name: "generated-dynamic-workflow",
   description: "Auto-generated bounded dynamic workflow with fallback handling",
   phases: [
-    {{ title: "Routing", detail: "Choose a proportional execution path" }},
+    {{ title: "Routing", detail: "Choose a deterministic bounded execution path" }},
     {{ title: "Execution", detail: "Execute directly or via bounded fanout" }},
     {{ title: "Verification", detail: "Run bounded verification and return usable output" }}
   ],
   maxConcurrent: 6,
   tools: {json_tools},
-  patterns: ["classify", "fanout"]
+  patterns: ["race", "fanout"]
 }};
 
 export default async function main() {{
   const requirement = `{escaped}`;
   const tools = {json_tools};
   const primaryTool = "{primary_tool}";
-  const fallbackTool = tools.length > 1 ? tools[1] : primaryTool;
-  const verifierTool = tools.length > 1 ? tools[tools.length - 1] : primaryTool;
+  const candidateTools = Array.from(new Set((tools.length ? tools : [primaryTool]).filter(Boolean))).slice(0, 3);
+  const fallbackTool = candidateTools.length > 1 ? candidateTools[1] : primaryTool;
+  const verifierTool = candidateTools[candidateTools.length - 1] || primaryTool;
 
   function fallback(stage, reason, partial = null) {{
     return {{
@@ -1244,18 +1245,32 @@ export default async function main() {{
     }};
   }}
 
-  phase("Routing");
-  log("Choosing bounded execution path");
+  function chooseRoute(text) {{
+    const normalized = String(text || "").toLowerCase();
+    const simpleSignals = ["先不要动手", "不要动手", "不要改代码", "先分析", "只分析", "分析下", "为什么", "why", "explain"];
+    const parallelSignals = ["并行", "批量", "多模块", "多文件", "审计", "测试", "重构", "迁移", "audit", "test", "refactor", "migration", "batch"];
+    if (simpleSignals.some((word) => normalized.includes(word))) {{
+      return {{ mode: "simple", subtasks: [requirement], reason: "analysis-only or direct request" }};
+    }}
+    if (normalized.length > 160 && parallelSignals.some((word) => normalized.includes(word))) {{
+      return {{ mode: "parallel", subtasks: [], reason: "multi-part request" }};
+    }}
+    return {{ mode: "simple", subtasks: [requirement], reason: "fallback default" }};
+  }}
 
-  const route = await classify(requirement, {{
-    simple: {{
-      description: "Single focused task, small change, or direct answer",
-      handler: async () => ({{ mode: "simple", subtasks: [requirement] }}),
-    }},
-    parallel: {{
-      description: "Task benefits from independent implementation, review, research, or testing work",
-      handler: async () => {{
-        const split = await agent({{
+  phase("Routing");
+  log("Choosing bounded execution path without an ACP routing call");
+
+  const route = chooseRoute(requirement);
+  let subtasks = Array.isArray(route.subtasks) && route.subtasks.length
+    ? route.subtasks
+    : [requirement];
+
+  if (route.mode === "parallel") {{
+    log("Attempting bounded subtask split across selected tools");
+    let split = null;
+    try {{
+      split = await race(candidateTools.map((tool) => () => agent({{
           prompt: `Split this requirement into 2-4 independent, executable subtasks.
 
 Requirement:
@@ -1264,32 +1279,30 @@ ${{requirement}}
 Return JSON only: {{ "subtasks": ["..."], "reason": "..." }}
 
 {_enc}`,
-          tool: primaryTool,
+          tool,
           role: "planner",
           schema: {{ subtasks: [], reason: "" }},
-          label: "split-subtasks",
-          timeout: 120,
-        }});
-        if (split && split.error) {{
-          log(`Subtask split failed, falling back to single execution: ${{split.error}}`);
-          return {{ mode: "simple", subtasks: [requirement], fallback: true, reason: split.error }};
-        }}
-        const subtasks = Array.isArray(split.subtasks)
-          ? split.subtasks.filter(Boolean).slice(0, 4)
-          : [];
-        return {{ mode: subtasks.length > 1 ? "parallel" : "simple", subtasks: subtasks.length ? subtasks : [requirement] }};
-      }},
-    }},
-  }}, {{
-    classifierTool: primaryTool,
-    defaultCategory: "simple",
-    label: "route",
-    timeout: 90,
-  }});
-
-  const subtasks = Array.isArray(route.subtasks) && route.subtasks.length
-    ? route.subtasks
-    : [requirement];
+          label: `split-${{tool}}`,
+          timeout: 90,
+        }})), {{
+        validate: (item) => item && !item.error && Array.isArray(item.subtasks) && item.subtasks.length > 1,
+      }});
+    }} catch (err) {{
+      log(`Subtask split failed: ${{err && err.message ? err.message : String(err)}}`);
+    }}
+    if (split && split.error) {{
+      log(`Subtask split failed, falling back to single execution: ${{split.error}}`);
+    }}
+    if (split && !split.error && Array.isArray(split.subtasks)) {{
+      const planned = split.subtasks.filter(Boolean).slice(0, 4);
+      if (planned.length > 1) {{
+        subtasks = planned;
+      }}
+    }}
+    if (subtasks.length < 2) {{
+      subtasks = [requirement];
+    }}
+  }}
   log(`Execution mode: ${{route.mode || "simple"}}, subtasks: ${{subtasks.length}}`);
 
   // Phase 2: Execute
@@ -1342,21 +1355,30 @@ ${{JSON.stringify(successful, null, 2)}}
       }}
     }}
   }} else {{
-    // Single focused execution
-    log("Executing bounded single-agent task...");
-    result = await agent({{
-      prompt: `Complete this task fully:
+    // Single focused execution: race selected tools instead of serially waiting
+    // for the first selected backend to hit its ACP timeout.
+    log(`Executing bounded race across ${{candidateTools.length}} selected tool(s)...`);
+    try {{
+      result = await race(candidateTools.map((tool) => () => agent({{
+        prompt: `Fulfill the user's request exactly.
 
+Requirement:
 ${{requirement}}
 
-Provide a complete, production-ready result. If blocked, return a clear error object quickly.
+If the user asks for analysis only, planning only, or says not to change code, do not change code. Provide the requested analysis and stop.
+If implementation is requested, provide a complete, production-ready result. If blocked, return a clear error object quickly.
 
 {_enc}`,
-      tool: "{primary_tool}",
-      role: "executor",
-      label: "execute-primary",
-      timeout: 180,
-    }});
+        tool,
+        role: "executor",
+        label: `execute-${{tool}}`,
+        timeout: 180,
+      }})), {{
+        validate: (item) => item != null && item !== "" && !(item && item.error),
+      }});
+    }} catch (err) {{
+      return fallback("Execution", err && err.message ? err.message : String(err));
+    }}
     if (result && result.error) {{
       return fallback("Execution", result.error);
     }}
