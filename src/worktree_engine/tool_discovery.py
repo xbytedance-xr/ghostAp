@@ -183,7 +183,7 @@ class WorktreeToolDiscovery:
         provider: str = "ttadk",
         cwd: Optional[str] = None,
         current_model: Optional[str] = None,
-        force_refresh: bool = False,
+        force_refresh: bool = True,
     ) -> list[dict]:
         """Return available models for a tool (ACP or TTADK) as dicts for card builder."""
         if provider == "acp":

@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import shutil
 import threading
 import time
 
@@ -170,12 +171,40 @@ def _discover_acp_tools(*, require_available: bool = False) -> dict[str, str]:
         pass
 
     for name in providers:
-        if require_available and not acp_tool_registry.get_availability(
-            name,
-            allow_sync_probe=True,
-            trigger_async_probe=False,
-        ):
-            continue
+        if require_available:
+            available = False
+
+            # User-facing selection cards need a fast answer. A binary on PATH
+            # is enough to offer the tool; the actual ACP startup path still
+            # performs its normal capability checks and fallbacks later.
+            if shutil.which(name) is not None:
+                available = True
+                try:
+                    acp_tool_registry.get_availability(
+                        name,
+                        allow_sync_probe=False,
+                        trigger_async_probe=True,
+                    )
+                except Exception:
+                    logger.debug("Async ACP availability warmup failed for %s", name, exc_info=True)
+            else:
+                get_fallback = getattr(providers.get(name), "get_fallback_command", None)
+                try:
+                    available = bool(callable(get_fallback) and get_fallback())
+                except Exception:
+                    available = False
+                if not available:
+                    try:
+                        available = bool(acp_tool_registry.get_availability(
+                            name,
+                            allow_sync_probe=False,
+                            trigger_async_probe=True,
+                        ))
+                    except Exception:
+                        available = False
+
+            if not available:
+                continue
         description = (
             desc_map.get(name)
             or _FALLBACK_DESCRIPTIONS.get(name)

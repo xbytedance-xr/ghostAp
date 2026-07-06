@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-06
+- **WF选择性能与失败终态** — `/wf` 工具列表不再同步 ACP 探活/auto-update，首卡后后台预热常用模型，Workflow 模型 lookup 避免全工具扫描且不强刷 TTADK；JS fallback/error 结果标记为 failed 而非 completed，Workflow 885 passed → [详细记录](2026-07-06.md)
 - **WF模型级联选择** — `/wf` Traex 90+ 模型选择由按钮分页改为工具/模型族/Profile/Effort 级联下拉；Workflow 模型发现加 5min 短缓存并避免 TTADK 强刷，Workflow 882 passed → [详细记录](2026-07-06.md)
 - **WF deadline预算联动** — 确认脚本生成 300s、JS 无 deadline、agent timeout 不随总预算裁剪、reader 满队列丢消息等问题；脚本生成改 120s，bridge 下发/继承 deadline 并裁剪 agent/session timeout，runtime 加 request timer，队列满改显式失败；Workflow 871 passed → [详细记录](2026-07-06.md)
 

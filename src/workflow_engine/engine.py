@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -45,6 +46,32 @@ def _node_version_required_text() -> str:
         f"Node.js >= {NODE_MIN_VERSION[0]} is required for workflow mode. "
         f"Please install Node.js and ensure it's in PATH."
     )
+
+
+def _terminal_failure_from_result(result_text: str) -> str | None:
+    """Return a user-visible error when a normal JS result encodes failure."""
+    text = str(result_text or "").strip()
+    if not text or not text.startswith(("{", "[")):
+        return None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+
+    error = parsed.get("error")
+    error_text = str(error or "").strip()
+    if bool(parsed.get("fallback")) and error_text:
+        stage = str(parsed.get("stage") or "").strip()
+        if stage:
+            return f"{stage}: {error_text}"
+        return error_text
+
+    status = str(parsed.get("status") or "").strip().lower()
+    if status in {"error", "failed", "failure"} and error_text:
+        return error_text
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +350,22 @@ class WorkflowEngine(BaseEngine):
 
             # Run the event loop (blocks until done/error/timeout)
             result_text = self._bridge.run()
+
+            terminal_failure = _terminal_failure_from_result(result_text)
+            if terminal_failure:
+                sanitized_error = _strip_internal_details(terminal_failure)
+                project.result = result_text
+                project.status = WorkflowStatus.FAILED
+                project.error = sanitized_error
+                project.finished_at = time.time()
+                self._state_manager.on_workflow_failed(terminal_failure)
+
+                logger.error("[WorkflowEngine:%s] Failed: %s", workflow_id, terminal_failure)
+
+                self._fire_progress()
+                if self._callbacks.on_error:
+                    self._callbacks.on_error(sanitized_error)
+                return project
 
             # Success path
             project.result = result_text

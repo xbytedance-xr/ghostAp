@@ -82,10 +82,13 @@ class TestGetAvailableTools(unittest.TestCase):
             self.assertEqual(tools, {})
 
     def test_discover_acp_tools_filters_unavailable_providers(self):
-        """require_available=True keeps only providers passing runtime probes."""
+        """require_available=True keeps only providers passing cached probes when no binary exists."""
         with patch(
             "src.acp.providers.get_providers",
             return_value={"coco": object(), "codex": object()},
+        ), patch(
+            "shutil.which",
+            return_value=None,
         ), patch(
             "src.acp.providers.tool_registry.get_availability",
             side_effect=lambda name, **_: name == "coco",
@@ -96,6 +99,34 @@ class TestGetAvailableTools(unittest.TestCase):
             tools = _discover_acp_tools(require_available=True)
 
         self.assertEqual(tools, {"coco": "Coco OK"})
+
+    def test_discover_acp_tools_uses_fast_binary_check_without_sync_probe(self):
+        """Selectable tool discovery must not block on ACP probes just to build /wf cards."""
+        seen: list[dict] = []
+
+        def _availability(_name, **kwargs):
+            seen.append(dict(kwargs))
+            if kwargs.get("allow_sync_probe"):
+                raise AssertionError("selectable tool discovery used a synchronous ACP probe")
+            return False
+
+        with patch(
+            "src.acp.providers.get_providers",
+            return_value={"traex": object()},
+        ), patch(
+            "shutil.which",
+            side_effect=lambda name: f"/usr/bin/{name}" if name == "traex" else None,
+        ), patch(
+            "src.acp.providers.tool_registry.get_availability",
+            side_effect=_availability,
+        ), patch(
+            "src.utils.text.get_acp_result_header_text",
+            return_value={"tool_desc_traex": "Traex OK"},
+        ):
+            tools = _discover_acp_tools(require_available=True)
+
+        self.assertEqual(tools, {"traex": "Traex OK"})
+        self.assertTrue(all(not call.get("allow_sync_probe") for call in seen))
 
 
 class TestInvalidateCache(unittest.TestCase):

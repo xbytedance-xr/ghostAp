@@ -15,6 +15,7 @@ import json
 import threading
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 from src.workflow_engine.executor import AgentExecutor
 from src.workflow_engine.journal import WorkflowJournal
@@ -250,6 +251,60 @@ class TestCancelEventClearedOnNewRun(unittest.TestCase):
             engine.cleanup()
 
 
+def test_execute_workflow_marks_bounded_fallback_result_failed(tmp_path):
+    """A structured fallback/error result from JS is a failed workflow, not success."""
+    from src.workflow_engine.engine import WorkflowEngine, WorkflowEngineCallbacks
+
+    script_path = tmp_path / "wf.js"
+    script_path.write_text(
+        """
+export const meta = { name: "fallback", phases: [], tools: [] };
+export default async function workflow() { return "unused"; }
+""",
+        encoding="utf-8",
+    )
+    result_payload = {
+        "fallback": True,
+        "stage": "Execution",
+        "error": "agent_call timed out waiting for host response",
+        "partial": None,
+        "message": "Workflow used bounded fallback handling instead of waiting for the total timeout.",
+    }
+
+    class FakeBridge:
+        @staticmethod
+        def check_node_available():
+            return True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def run(self):
+            return json.dumps(result_payload)
+
+        def stop(self):
+            pass
+
+    on_done = Mock()
+    on_error = Mock()
+    engine = WorkflowEngine(chat_id="chat-fallback", root_path=str(tmp_path))
+
+    with patch("src.workflow_engine.engine.RuntimeBridge", FakeBridge):
+        project = engine.execute_workflow(
+            requirement="test fallback",
+            script_path=str(script_path),
+            callbacks=WorkflowEngineCallbacks(on_done=on_done, on_error=on_error),
+        )
+
+    assert project.status == WorkflowStatus.FAILED
+    assert "agent_call timed out waiting for host response" in (project.error or "")
+    on_done.assert_not_called()
+    on_error.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # Late session close daemon thread
 # ---------------------------------------------------------------------------
@@ -460,7 +515,7 @@ class TestAgentCancelledStatus(unittest.TestCase):
         project = _make_project("render-cancel", status=WorkflowStatus.RUNNING)
         sm = WorkflowStateManager(project)
         sm.on_phase_changed("race")
-        label_running = sm.on_agent_started("still-running", tool="coco", phase="race")
+        sm.on_agent_started("still-running", tool="coco", phase="race")
         label_cancelled = sm.on_agent_started("aborted-one", tool="claude", phase="race")
         sm.on_agent_aborted(label_cancelled, reason="race loser")
 

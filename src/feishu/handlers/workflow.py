@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _WORKFLOW_MODEL_CACHE_TTL_S = 5 * 60
+_WORKFLOW_MODEL_PREHEAT_LIMIT = 2
+_WORKFLOW_ACP_MODEL_TOOLS = {"coco", "claude", "aiden", "codex", "gemini", "traex"}
 
 
 def _workflow_pending_statuses():
@@ -1115,6 +1117,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             project_id=project_id,
         )
         self.send_card_to_chat(chat_id, card)
+        self._preheat_workflow_models(root_path, recommended_tools)
 
 
 
@@ -2763,16 +2766,14 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
 
             started = time.monotonic()
             discovery = WorktreeToolDiscovery()
-            provider = "acp"
-            try:
-                for entry in discovery.get_available_tools():
-                    if entry.get("tool_name") == tool_name:
-                        provider = entry.get("provider") or "acp"
-                        break
-            except Exception:
-                provider = "acp"
+            provider = "acp" if tool_name in _WORKFLOW_ACP_MODEL_TOOLS else "ttadk"
 
-            models = discovery.get_models_for_tool(tool_name, provider=provider, cwd=root_path)
+            models = discovery.get_models_for_tool(
+                tool_name,
+                provider=provider,
+                cwd=root_path,
+                force_refresh=False,
+            )
             normalized = [
                 {"name": m.get("name", ""), "display_name": m.get("display_name", m.get("name", "")), "description": m.get("description", "")}
                 for m in models if m.get("name")
@@ -2789,6 +2790,51 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         except Exception:
             logger.debug("[workflow] model lookup failed for tool=%s", tool_name, exc_info=True)
             return []
+
+    def _preheat_workflow_models(self, root_path: str, tool_names: list[str]) -> None:
+        """Warm likely model lists after the first /wf selection card is visible."""
+        tools: list[str] = []
+        seen: set[str] = set()
+        for name in tool_names:
+            tool = str(name or "").strip()
+            if not tool or tool in seen:
+                continue
+            seen.add(tool)
+            tools.append(tool)
+            if len(tools) >= _WORKFLOW_MODEL_PREHEAT_LIMIT:
+                break
+        if not tools:
+            return
+
+        started: set[tuple[str, str]] = getattr(self, "_workflow_model_preheat_started", set())
+        if not isinstance(started, set):
+            started = set()
+        pending: list[str] = []
+        for tool in tools:
+            key = (tool, str(root_path or ""))
+            if key in started:
+                continue
+            started.add(key)
+            pending.append(tool)
+        self._workflow_model_preheat_started = started
+        if not pending:
+            return
+
+        def _run() -> None:
+            for tool in pending:
+                try:
+                    self._get_workflow_models_for_tool(tool, root_path)
+                except Exception:
+                    logger.debug("[workflow] model preheat failed for tool=%s", tool, exc_info=True)
+
+        import threading as _threading
+
+        thread = _threading.Thread(
+            target=_run,
+            name="workflow-model-preheat",
+            daemon=True,
+        )
+        thread.start()
 
     def handle_workflow_confirm_tools(
         self,
