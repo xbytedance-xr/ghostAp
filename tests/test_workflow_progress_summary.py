@@ -16,7 +16,9 @@ from src.workflow_engine.renderer import (
 )
 
 
-def _make_agent(label: str, status: AgentStatus, *, tool: str = "coco", error: str | None = None, duration_s: float = 1.0) -> AgentProgress:
+def _make_agent(
+    label: str, status: AgentStatus, *, tool: str = "coco", error: str | None = None, duration_s: float = 1.0
+) -> AgentProgress:
     return AgentProgress(
         label=label,
         tool=tool,
@@ -149,13 +151,13 @@ def test_small_phase_renders_everything() -> None:
 
 
 def test_empty_phase_renders_summary_zero_over_zero() -> None:
-    """Empty phase — renders 已完成 0/0."""
+    """Started empty phase — renders an explicit 0/0 in-progress state."""
     project = _make_project("Empty Phase", [])
     renderer = WorkflowProgressRenderer(project)
     card = renderer.render_progress_card()
     text = _flatten_text(card["elements"])
 
-    assert "等待中" in text
+    assert "进行中 0/0" in text
 
 
 # ---------------------------------------------------------------------------
@@ -185,25 +187,17 @@ def test_completion_card_stats_use_stretch_flex_mode() -> None:
     """Stats column_sets in render_completion_card should use flex_mode='stretch'."""
     project = _make_completion_project(WorkflowStatus.COMPLETED)
     card = render_completion_card(project)
-    stats_column_sets = [
-        el for el in card["elements"]
-        if isinstance(el, dict) and el.get("tag") == "column_set"
-    ]
+    stats_column_sets = [el for el in card["elements"] if isinstance(el, dict) and el.get("tag") == "column_set"]
     assert stats_column_sets, "Expected at least one column_set in completion card"
     for cs in stats_column_sets:
-        assert cs.get("flex_mode") == "stretch", (
-            f"Expected flex_mode='stretch', got {cs.get('flex_mode')!r}"
-        )
+        assert cs.get("flex_mode") == "stretch", f"Expected flex_mode='stretch', got {cs.get('flex_mode')!r}"
 
 
 def test_completion_card_stats_columns_centered_text() -> None:
     """Stat column markdown elements should set text_align='center'."""
     project = _make_completion_project(WorkflowStatus.COMPLETED)
     card = render_completion_card(project)
-    stats_column_sets = [
-        el for el in card["elements"]
-        if isinstance(el, dict) and el.get("tag") == "column_set"
-    ]
+    stats_column_sets = [el for el in card["elements"] if isinstance(el, dict) and el.get("tag") == "column_set"]
     assert stats_column_sets, "Expected stats column_sets"
     for cs in stats_column_sets:
         for col in cs.get("columns", []):

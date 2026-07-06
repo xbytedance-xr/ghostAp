@@ -123,7 +123,6 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         md_elements = [e for e in card["elements"] if e.get("tag") == "markdown"]
         self.assertGreater(len(md_elements), 0, "Expected at least one markdown in card")
 
-
     def test_render_compact_status_format(self):
         project = self._make_project()
         renderer = WorkflowProgressRenderer(project)
@@ -144,10 +143,7 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         # The renderer now emits "共 N 条已完成/缓存（已折叠）" for hidden done/cached agents.
         md_elements = [e for e in card["elements"] if e.get("tag") == "markdown"]
         md_texts = [e["content"] for e in md_elements]
-        has_pagination = any(
-            ("代理" in t and "..." in t) or ("条已完成/缓存" in t)
-            for t in md_texts
-        )
+        has_pagination = any(("代理" in t and "..." in t) or ("条已完成/缓存" in t) for t in md_texts)
         self.assertTrue(has_pagination, "Expected pagination notice for 25 agents")
 
     def test_phase_section_uses_collapsible_panels(self):
@@ -208,35 +204,64 @@ class TestWorkflowProgressRenderer(unittest.TestCase):
         phase = PhaseProgress(title="Race Phase", started_at=time.time() - 60)
 
         # 2 RUNNING
-        phase.agents.append(AgentProgress(
-            label="runner-1", tool="coco", status=AgentStatus.RUNNING,
-        ))
-        phase.agents.append(AgentProgress(
-            label="runner-2", tool="claude", status=AgentStatus.RUNNING,
-        ))
+        phase.agents.append(
+            AgentProgress(
+                label="runner-1",
+                tool="coco",
+                status=AgentStatus.RUNNING,
+            )
+        )
+        phase.agents.append(
+            AgentProgress(
+                label="runner-2",
+                tool="claude",
+                status=AgentStatus.RUNNING,
+            )
+        )
         # 2 DONE
-        phase.agents.append(AgentProgress(
-            label="finisher-1", tool="coco", status=AgentStatus.DONE,
-            duration_s=10.0,
-        ))
-        phase.agents.append(AgentProgress(
-            label="finisher-2", tool="claude", status=AgentStatus.DONE,
-            duration_s=12.0,
-        ))
+        phase.agents.append(
+            AgentProgress(
+                label="finisher-1",
+                tool="coco",
+                status=AgentStatus.DONE,
+                duration_s=10.0,
+            )
+        )
+        phase.agents.append(
+            AgentProgress(
+                label="finisher-2",
+                tool="claude",
+                status=AgentStatus.DONE,
+                duration_s=12.0,
+            )
+        )
         # 1 FAILED
-        phase.agents.append(AgentProgress(
-            label="flaky-agent", tool="coco", status=AgentStatus.FAILED,
-            duration_s=3.0, error="boom",
-        ))
+        phase.agents.append(
+            AgentProgress(
+                label="flaky-agent",
+                tool="coco",
+                status=AgentStatus.FAILED,
+                duration_s=3.0,
+                error="boom",
+            )
+        )
         # 2 CANCELLED
-        phase.agents.append(AgentProgress(
-            label="slow-agent", tool="coco", status=AgentStatus.CANCELLED,
-            duration_s=5.0,
-        ))
-        phase.agents.append(AgentProgress(
-            label="race-loser", tool="claude", status=AgentStatus.CANCELLED,
-            duration_s=2.0,
-        ))
+        phase.agents.append(
+            AgentProgress(
+                label="slow-agent",
+                tool="coco",
+                status=AgentStatus.CANCELLED,
+                duration_s=5.0,
+            )
+        )
+        phase.agents.append(
+            AgentProgress(
+                label="race-loser",
+                tool="claude",
+                status=AgentStatus.CANCELLED,
+                duration_s=2.0,
+            )
+        )
 
         project.phases.append(phase)
         project.metrics.total_agents = 7
@@ -428,10 +453,7 @@ class TestConfirmCardStructure(unittest.TestCase):
                                 if col_el.get("tag") == "button":
                                     all_buttons.append(col_el)
 
-        tool_buttons = [
-            btn for btn in all_buttons
-            if btn.get("value", {}).get("action") == "workflow_select_tool"
-        ]
+        tool_buttons = [btn for btn in all_buttons if btn.get("value", {}).get("action") == "workflow_select_tool"]
         self.assertGreater(len(tool_buttons), 0, "Expected at least one tool selection button")
         button_tool_names = [btn["value"]["tool_name"] for btn in tool_buttons]
         self.assertIn("coco", button_tool_names)
@@ -457,16 +479,12 @@ class TestConfirmCardStructure(unittest.TestCase):
         self.assertIn("workflow_confirm_start", button_actions)
         self.assertIn("workflow_cancel", button_actions)
 
-
     def test_confirm_card_fallback_shows_warning(self):
         """Card should show fallback warning when is_fallback=True."""
         card = self._build_card(is_fallback=True)
         elements = self._get_elements(card)
 
-        warning_elements = [
-            e for e in elements
-            if e.get("tag") == "markdown" and "默认模板" in e.get("content", "")
-        ]
+        warning_elements = [e for e in elements if e.get("tag") == "markdown" and "默认模板" in e.get("content", "")]
         self.assertGreater(len(warning_elements), 0, "Expected a markdown element with fallback warning")
 
     def test_confirm_card_uses_no_schema_v2_note_tags(self) -> None:
@@ -490,7 +508,8 @@ class TestConfirmCardStructure(unittest.TestCase):
         the screen space is used efficiently."""
         card = self._build_card(requirement="mobile layout audit")
         two_column_rows = [
-            node for node in self._walk_elements(self._get_elements(card))
+            node
+            for node in self._walk_elements(self._get_elements(card))
             if node.get("tag") == "column_set" and len(node.get("columns", [])) == 2
         ]
         self.assertTrue(
@@ -527,8 +546,6 @@ class TestConfirmCardStructure(unittest.TestCase):
                 nested = node.get(key)
                 if isinstance(nested, list):
                     yield from TestConfirmCardStructure._walk_elements(nested)
-
-
 
 
 class TestRenderScriptPreview(unittest.TestCase):
@@ -663,25 +680,19 @@ class TestRenderCompletionCard(unittest.TestCase):
     def test_elements_contain_phase_summary(self):
         project = self._make_project()
         card = render_completion_card(project)
-        all_content = " ".join(
-            e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown"
-        )
+        all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
         self.assertIn("Analysis", all_content)
 
     def test_elements_contain_result_preview(self):
         project = self._make_project(result="Found 3 issues.")
         card = render_completion_card(project)
-        all_content = " ".join(
-            e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown"
-        )
+        all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
         self.assertIn("Found 3 issues", all_content)
 
     def test_failed_shows_error_message(self):
         project = self._make_project(status=WorkflowStatus.FAILED, error="Runtime timeout exceeded")
         card = render_completion_card(project)
-        all_content = " ".join(
-            e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown"
-        )
+        all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
         self.assertIn("Runtime timeout", all_content)
 
 
@@ -751,13 +762,15 @@ class TestAgentOutputDefensiveCheck(unittest.TestCase):
                 title="Analysis",
                 started_at=time.time() - 60,
             )
-            phase.agents.append(AgentProgress(
-                label=f"leaked-{self.SENTINEL}-label",
-                tool="coco",
-                status=AgentStatus.DONE,
-                duration_s=5.0,
-                token_usage=1000,
-            ))
+            phase.agents.append(
+                AgentProgress(
+                    label=f"leaked-{self.SENTINEL}-label",
+                    tool="coco",
+                    status=AgentStatus.DONE,
+                    duration_s=5.0,
+                    token_usage=1000,
+                )
+            )
             project.phases.append(phase)
             project.metrics.total_agents = 1
             project.metrics.completed_agents = 1
@@ -818,17 +831,14 @@ class TestAgentOutputDefensiveCheck(unittest.TestCase):
         finally:
             setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", original)
 
+
 class TestMiddleEllipsisLabelSafety(unittest.TestCase):
     """WorkflowProgressRenderer must keep long phase/agent labels readable
     on mobile by emitting a middle-ellipsis form rather than raw text that
     would overflow the card width."""
 
-    LONG_PHASE = (
-        "payment-gateway: migrate-checkout-flow-and-verify-3ds2-compliance-phase"
-    )
-    LONG_AGENT = (
-        "agent:generate-migration-script-for-checkout-payment-methods-upgrade"
-    )
+    LONG_PHASE = "payment-gateway: migrate-checkout-flow-and-verify-3ds2-compliance-phase"
+    LONG_AGENT = "agent:generate-migration-script-for-checkout-payment-methods-upgrade"
 
     def _make_project_with_long_labels(self):
         from src.workflow_engine.models import (
@@ -839,7 +849,9 @@ class TestMiddleEllipsisLabelSafety(unittest.TestCase):
         )
 
         project = WorkflowProject(
-            workflow_id="w1", status=WorkflowStatus.RUNNING, name="audit",
+            workflow_id="w1",
+            status=WorkflowStatus.RUNNING,
+            name="audit",
         )
         project.phases = [
             PhaseProgress(
@@ -893,6 +905,65 @@ class TestMiddleEllipsisLabelSafety(unittest.TestCase):
         self.assertIn("…", raw)
 
 
+class TestWorkflowTerminalProgressRendering(unittest.TestCase):
+    """Terminal progress cards must not look like still-running workflows."""
+
+    def test_failed_summary_does_not_say_currently_running(self) -> None:
+        project = WorkflowProject(
+            workflow_id="w-terminal",
+            status=WorkflowStatus.FAILED,
+            name="terminal",
+            error="Execution: agent_call timed out",
+        )
+        project.phases = [
+            PhaseProgress(
+                title="Execution",
+                started_at=1_700_000_000.0,
+                finished_at=1_700_000_120.0,
+                agents=[
+                    AgentProgress(
+                        label="execute-traex",
+                        tool="traex",
+                        status=AgentStatus.FAILED,
+                        error="agent_call timed out",
+                        started_at=1_700_000_000.0,
+                        finished_at=1_700_000_120.0,
+                    ),
+                ],
+            )
+        ]
+
+        renderer = WorkflowProgressRenderer(project)
+        summary = renderer._render_summary_section()
+        self.assertIsNotNone(summary)
+        content = _markdown_content(summary) or ""
+        self.assertIn("执行已失败", content)
+        self.assertNotIn("当前执行中", content)
+
+    def test_finished_empty_phase_is_not_rendered_as_waiting(self) -> None:
+        project = WorkflowProject(
+            workflow_id="w-empty-phase",
+            status=WorkflowStatus.FAILED,
+            name="empty-phase",
+        )
+        project.phases = [
+            PhaseProgress(
+                title="Routing",
+                started_at=1_700_000_000.0,
+                finished_at=1_700_000_001.0,
+                agents=[],
+            )
+        ]
+
+        renderer = WorkflowProgressRenderer(project)
+        card = renderer.render_progress_card()
+        import json as _json
+
+        raw = _json.dumps(card, ensure_ascii=False)
+        self.assertIn("已完成 0/0", raw)
+        self.assertNotIn("等待中", raw)
+
+
 def _markdown_content(element) -> str | None:
     """Best-effort extract of the markdown text inside a render element."""
     if not isinstance(element, dict):
@@ -910,7 +981,6 @@ def _markdown_content(element) -> str | None:
             if inner:
                 return inner
     return None
-
 
 
 if __name__ == "__main__":

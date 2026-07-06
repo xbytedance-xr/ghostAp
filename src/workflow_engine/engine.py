@@ -25,6 +25,7 @@ from .journal import WorkflowJournal
 from .models import (
     AgentCallParams,
     AgentCallResult,
+    AgentStatus,
     WorkflowMetrics,
     WorkflowProject,
     WorkflowStatus,
@@ -48,29 +49,62 @@ def _node_version_required_text() -> str:
     )
 
 
+def _decode_result_payload(result_text: str) -> Any:
+    """Decode JSON result wrappers, including JSON strings that contain JSON."""
+    parsed: Any = result_text
+    for _ in range(3):
+        if not isinstance(parsed, str):
+            return parsed
+        text = parsed.strip()
+        if not text or not text.startswith(("{", "[", '"')):
+            return parsed
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError):
+            return parsed
+    return parsed
+
+
 def _terminal_failure_from_result(result_text: str) -> str | None:
     """Return a user-visible error when a normal JS result encodes failure."""
-    text = str(result_text or "").strip()
-    if not text or not text.startswith(("{", "[")):
-        return None
-    try:
-        parsed = json.loads(text)
-    except (TypeError, ValueError):
-        return None
+    parsed = _decode_result_payload(str(result_text or ""))
     if not isinstance(parsed, dict):
         return None
 
     error = parsed.get("error")
     error_text = str(error or "").strip()
-    if bool(parsed.get("fallback")) and error_text:
-        stage = str(parsed.get("stage") or "").strip()
-        if stage:
-            return f"{stage}: {error_text}"
-        return error_text
-
+    message_text = str(parsed.get("message") or "").strip()
     status = str(parsed.get("status") or "").strip().lower()
-    if status in {"error", "failed", "failure"} and error_text:
-        return error_text
+
+    is_failure = (
+        bool(parsed.get("fallback"))
+        or status in {"error", "failed", "failure"}
+        or ("error" in parsed and bool(error_text))
+    )
+    if not is_failure:
+        return None
+
+    reason = error_text or message_text
+    if not reason:
+        return None
+    stage = str(parsed.get("stage") or "").strip()
+    if stage:
+        return f"{stage}: {reason}"
+    return reason
+
+
+def _terminal_failure_from_project(project: WorkflowProject) -> str | None:
+    """Fail closed when the bridge returns while agent calls are unfinished."""
+    for phase in project.phases:
+        for agent in phase.agents:
+            if agent.status in (AgentStatus.RUNNING, AgentStatus.PENDING):
+                label = agent.label or "agent"
+                status = agent.status.value if hasattr(agent.status, "value") else str(agent.status)
+                return f"Workflow finished while agent {label} was still {status}"
+
+    metrics = project.metrics
+    if metrics.total_agents > metrics.completed_agents:
+        return f"Workflow finished before all agent calls completed ({metrics.completed_agents}/{metrics.total_agents})"
     return None
 
 
@@ -207,6 +241,7 @@ class WorkflowEngine(BaseEngine):
             pending_path = project.pending.script_path
             if pending_path:
                 import os
+
                 try:
                     os.remove(pending_path)
                 except OSError:
@@ -352,6 +387,8 @@ class WorkflowEngine(BaseEngine):
             result_text = self._bridge.run()
 
             terminal_failure = _terminal_failure_from_result(result_text)
+            if terminal_failure is None and self._state_manager is not None:
+                terminal_failure = _terminal_failure_from_project(self._state_manager.snapshot())
             if terminal_failure:
                 sanitized_error = _strip_internal_details(terminal_failure)
                 project.result = result_text
@@ -547,23 +584,22 @@ class WorkflowEngine(BaseEngine):
                 self._request_to_label[request_id] = label
 
         cache_key = WorkflowJournal.compute_key(
-            params.prompt, params.tool, params.model,
-            role=params.role, output_schema=params.output_schema,
+            params.prompt,
+            params.tool,
+            params.model,
+            role=params.role,
+            output_schema=params.output_schema,
         )
 
         # Tool whitelist enforcement
         project = self._project
         if project and project.selected_tools and params.tool:
             if params.tool not in project.selected_tools:
-                error_msg = (
-                    f"Tool '{params.tool}' not in allowed list: {project.selected_tools}"
-                )
+                error_msg = f"Tool '{params.tool}' not in allowed list: {project.selected_tools}"
                 logger.warning("[WorkflowEngine] %s", error_msg)
                 if self._state_manager:
                     self._state_manager.on_agent_failed(label, error_msg)
-                return AgentCallResult(
-                    error=error_msg, tool=params.tool, model=params.model
-                )
+                return AgentCallResult(error=error_msg, tool=params.tool, model=params.model)
 
         # Fire agent start callbacks
         if self._callbacks and self._callbacks.on_agent_start:
@@ -585,11 +621,14 @@ class WorkflowEngine(BaseEngine):
                     model=params.model,
                 )
                 if self._state_manager:
-                    self._state_manager.on_agent_done(label, {
-                        "token_usage": 0,
-                        "duration_s": 0.0,
-                        "cached": True,
-                    })
+                    self._state_manager.on_agent_done(
+                        label,
+                        {
+                            "token_usage": 0,
+                            "duration_s": 0.0,
+                            "cached": True,
+                        },
+                    )
                 self._fire_progress()
                 return cached_result
 
@@ -609,11 +648,14 @@ class WorkflowEngine(BaseEngine):
             if result.error:
                 self._state_manager.on_agent_failed(label, result.error)
             else:
-                self._state_manager.on_agent_done(label, {
-                    "token_usage": result.token_usage,
-                    "duration_s": result.duration_s,
-                    "cached": False,
-                })
+                self._state_manager.on_agent_done(
+                    label,
+                    {
+                        "token_usage": result.token_usage,
+                        "duration_s": result.duration_s,
+                        "cached": False,
+                    },
+                )
 
         # Fire agent done callback — AC4: only meta info, no output body.
         if self._callbacks and self._callbacks.on_agent_done:
@@ -654,7 +696,9 @@ class WorkflowEngine(BaseEngine):
                 effective_label = mapped
         logger.info(
             "[WorkflowEngine] Agent aborted: %s (reason=%s, request_id=%s)",
-            effective_label, reason, request_id,
+            effective_label,
+            reason,
+            request_id,
         )
         if self._state_manager:
             self._state_manager.on_agent_aborted(effective_label, reason)

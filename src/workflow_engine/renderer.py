@@ -47,6 +47,7 @@ def _middle_ellipsis(text: str, limit: int = _LABEL_TRUNCATION_LIMIT) -> str:
     tail = available // 2
     return f"{text[:head]}{_ELLIPSIS}{text[-tail:]}"
 
+
 def _escape_md(text: str) -> str:
     """Escape markdown special characters in user-supplied text."""
     for ch in ("*", "_", "`", "|", "[", "]", "~"):
@@ -326,25 +327,27 @@ class WorkflowProgressRenderer:
         }
 
     def _render_summary_section(self) -> dict[str, Any] | None:
-        """Render a compact "当前执行中" summary block."""
+        """Render a compact current/latest activity summary block."""
         # Find a running agent first; fall back to the most-recently changed
         # agent across all phases.
         running_agent: Any = None
         latest_agent: Any = None
         latest_phase: PhaseProgress | None = None
         latest_changed_at: float | None = None
+        latest_phase_only: PhaseProgress | None = None
+        latest_phase_changed_at: float | None = None
 
         for phase in self._project.phases:
+            phase_changed_at = getattr(phase, "finished_at", None) or getattr(phase, "started_at", None) or 0.0
+            if latest_phase_changed_at is None or phase_changed_at > latest_phase_changed_at:
+                latest_phase_only = phase
+                latest_phase_changed_at = phase_changed_at
             for agent in phase.agents:
                 if agent.status == AgentStatus.RUNNING and running_agent is None:
                     running_agent = agent
                     latest_phase = phase
                 # Track most recently changed agent
-                changed_at = (
-                    getattr(agent, "finished_at", None)
-                    or getattr(agent, "started_at", None)
-                    or 0.0
-                )
+                changed_at = getattr(agent, "finished_at", None) or getattr(agent, "started_at", None) or 0.0
                 if latest_changed_at is None or changed_at > latest_changed_at:
                     latest_agent = agent
                     latest_changed_at = changed_at
@@ -352,36 +355,51 @@ class WorkflowProgressRenderer:
                         latest_phase = phase
 
         active_agent = running_agent or latest_agent
-        if active_agent is None and not self._project.phases:
+        if active_agent is None and latest_phase is None:
+            latest_phase = latest_phase_only
+            latest_changed_at = latest_phase_changed_at
+
+        if active_agent is None and latest_phase is None:
             return None
 
         # Compose the summary lines
         lines: list[str] = []
+        terminal = self._project.status in (
+            WorkflowStatus.COMPLETED,
+            WorkflowStatus.FAILED,
+            WorkflowStatus.CANCELLED,
+        )
+        if self._project.status == WorkflowStatus.COMPLETED:
+            summary_title = "执行已完成"
+        elif self._project.status == WorkflowStatus.FAILED:
+            summary_title = "执行已失败"
+        elif self._project.status == WorkflowStatus.CANCELLED:
+            summary_title = "执行已取消"
+        else:
+            summary_title = "当前执行中"
 
         # Phase
         phase_title = latest_phase.title if latest_phase is not None else "(暂无阶段)"
         phase_title = _middle_ellipsis(phase_title)
-        phase_idx = (
-            self._project.phases.index(latest_phase) + 1
-            if latest_phase in self._project.phases
-            else "—"
-        )
+        phase_idx = self._project.phases.index(latest_phase) + 1 if latest_phase in self._project.phases else "—"
         lines.append(f"📌 **当前阶段:** 阶段 {phase_idx} · {phase_title}")
 
         # Active agent
+        agent_label_key = "最近代理" if terminal else "当前代理"
+        tool_label_key = "使用工具" if terminal else "正在使用"
         if active_agent is not None:
             agent_label = _middle_ellipsis(active_agent.label or "agent")
             agent_status_icon = STATUS_ICONS.get(active_agent.status, "⏳")
-            lines.append(f"🤖 **当前代理:** {agent_status_icon} {agent_label}")
+            lines.append(f"🤖 **{agent_label_key}:** {agent_status_icon} {agent_label}")
             if active_agent.tool:
-                lines.append(f"🛠 **正在使用:** `{active_agent.tool}`")
+                lines.append(f"🛠 **{tool_label_key}:** `{active_agent.tool}`")
             else:
-                lines.append("🛠 **正在使用:** (未指定工具)")
+                lines.append(f"🛠 **{tool_label_key}:** (未指定工具)")
             if active_agent.task_summary:
                 lines.append(f"📋 **当前任务:** {_middle_ellipsis(active_agent.task_summary, 60)}")
         else:
-            lines.append("🤖 **当前 Agent:** (尚未派发)")
-            lines.append("🛠 **正在使用:** —")
+            lines.append(f"🤖 **{agent_label_key}:** (无代理调用)")
+            lines.append(f"🛠 **{tool_label_key}:** —")
 
         # Last-change time
         if latest_changed_at and latest_changed_at > 0:
@@ -395,7 +413,7 @@ class WorkflowProgressRenderer:
         else:
             lines.append("🕒 **最近变更:** —")
 
-        return _md_element("**当前执行中**\n" + "\n".join(lines))
+        return _md_element(f"**{summary_title}**\n" + "\n".join(lines))
 
     def render_compact_status(self) -> str:
         """One-line text summary of workflow status.
@@ -410,7 +428,7 @@ class WorkflowProgressRenderer:
         completed = metrics.completed_agents
         total = metrics.total_agents
 
-        tokens = _format_tokens(metrics.total_tokens if hasattr(metrics, 'total_tokens') else 0)
+        tokens = _format_tokens(metrics.total_tokens if hasattr(metrics, "total_tokens") else 0)
 
         status_icon = WORKFLOW_STATUS_ICONS.get(self._project.status, "\u23f3")
 
@@ -461,10 +479,7 @@ class WorkflowProgressRenderer:
 
         agents = phase.agents
         total_agents = len(agents)
-        completed_count = sum(
-            1 for a in agents
-            if a.status in (AgentStatus.DONE, AgentStatus.CACHED)
-        )
+        completed_count = sum(1 for a in agents if a.status in (AgentStatus.DONE, AgentStatus.CACHED))
 
         # Phase header — row 1: title (middle-ellipsis); row 2: completion count + duration
         phase_status = self._get_phase_status_icon(phase)
@@ -476,6 +491,14 @@ class WorkflowProgressRenderer:
             elements.append(_md_element(f"已完成 {completed_count}/{total_agents} · 耗时 {duration_text}"))
         elif total_agents > 0:
             elements.append(_md_element(f"已完成 {completed_count}/{total_agents}"))
+        elif phase.finished_at:
+            if phase.started_at:
+                elapsed = phase.finished_at - phase.started_at
+                elements.append(_md_element(f"已完成 0/0 · 耗时 {_format_duration(elapsed)}"))
+            else:
+                elements.append(_md_element("已完成 0/0"))
+        elif phase.started_at:
+            elements.append(_md_element("进行中 0/0"))
         else:
             elements.append(_md_element("等待中"))
 
@@ -547,17 +570,23 @@ class WorkflowProgressRenderer:
                     summary_text = ""
                     if agent.task_summary:
                         summary_text = f"\n    > {_middle_ellipsis(agent.task_summary, 60)}"
-                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} 执行中…{summary_text}")
+                    lines.append(
+                        f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} 执行中…{summary_text}"
+                    )
                 elif agent.error:
                     safe_err = _strip_internal_details(agent.error[:60])
                     dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
-                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur} — {safe_err}")
+                    lines.append(
+                        f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur} — {safe_err}"
+                    )
                 else:
                     dur = _format_duration(agent.duration_s) if agent.duration_s > 0 else ""
                     summary_hint = ""
                     if agent.task_summary:
                         summary_hint = f" — {_middle_ellipsis(agent.task_summary, 40)}"
-                    lines.append(f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur}{summary_hint}")
+                    lines.append(
+                        f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {dur}{summary_hint}"
+                    )
             header_obj: dict[str, Any] = {
                 "title": {"tag": "plain_text", "content": f"{label} ({len(group)})"},
             }
@@ -572,9 +601,7 @@ class WorkflowProgressRenderer:
         # Hidden done/cached counter line
         if hidden_done or hidden_cached:
             hidden_total = hidden_done + hidden_cached
-            elements.append(
-                _md_element(f"共 {hidden_total} 条已完成/缓存（已折叠）")
-            )
+            elements.append(_md_element(f"共 {hidden_total} 条已完成/缓存（已折叠）"))
 
         if not apply_pagination and len(agents) > _PHASE_AGENT_DISPLAY_LIMIT:
             hidden = len(agents) - _PHASE_AGENT_DISPLAY_LIMIT
@@ -585,7 +612,7 @@ class WorkflowProgressRenderer:
     def _render_token_usage_section(self) -> dict[str, Any]:
         """Render token consumption as compact informational line (no budget limit)."""
         metrics = self._project.metrics
-        total_tokens = metrics.total_tokens if hasattr(metrics, 'total_tokens') else 0
+        total_tokens = metrics.total_tokens if hasattr(metrics, "total_tokens") else 0
         used_str = _format_tokens(total_tokens)
         return _md_element(f"Token 消耗: {used_str}")
 
@@ -640,14 +667,13 @@ class WorkflowProgressRenderer:
     def _get_phase_status_icon(self, phase: PhaseProgress) -> str:
         """Determine the overall status icon for a phase."""
         if not phase.agents:
+            if phase.finished_at:
+                return "\u2705"
             return "\u23f3"
 
         has_running = any(a.status == AgentStatus.RUNNING for a in phase.agents)
         has_failed = any(a.status == AgentStatus.FAILED for a in phase.agents)
-        all_done = all(
-            a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED)
-            for a in phase.agents
-        )
+        all_done = all(a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED) for a in phase.agents)
 
         if has_running:
             return "\U0001f504"
@@ -746,14 +772,13 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
         elapsed = end_time - project.started_at
 
     # Task description
-    elements.append(_md_element(
-        f"**任务**: {_escape_md(project.requirement[:200]) if project.requirement else name}"
-    ))
+    elements.append(_md_element(f"**任务**: {_escape_md(project.requirement[:200]) if project.requirement else name}"))
 
     # Stats grid — 2x2 column_set layout
     total_phases = len(project.phases)
     completed_phases = sum(
-        1 for phase in project.phases
+        1
+        for phase in project.phases
         if all(a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED) for a in phase.agents)
     )
     total_agents = max(metrics.total_agents, 1)
@@ -771,16 +796,28 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
         )
 
     # Row 1: 总耗时 + 总 Token 消耗
-    elements.append(_column_set([
-        _stat_column(_format_duration(elapsed), "总耗时"),
-        _stat_column(_format_tokens(metrics.total_tokens if hasattr(metrics, 'total_tokens') else 0), "总 Token 消耗"),
-    ], flex_mode="stretch"))
+    elements.append(
+        _column_set(
+            [
+                _stat_column(_format_duration(elapsed), "总耗时"),
+                _stat_column(
+                    _format_tokens(metrics.total_tokens if hasattr(metrics, "total_tokens") else 0), "总 Token 消耗"
+                ),
+            ],
+            flex_mode="stretch",
+        )
+    )
 
     # Row 2: 完成阶段数 + 成功率
-    elements.append(_column_set([
-        _stat_column(f"{completed_phases}/{total_phases}", "完成阶段数"),
-        _stat_column(f"{success_rate}%", "成功率"),
-    ], flex_mode="stretch"))
+    elements.append(
+        _column_set(
+            [
+                _stat_column(f"{completed_phases}/{total_phases}", "完成阶段数"),
+                _stat_column(f"{success_rate}%", "成功率"),
+            ],
+            flex_mode="stretch",
+        )
+    )
 
     # Phase summary
     if project.phases:
@@ -790,10 +827,7 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
             phase_icon = "\u2705"
             if any(a.status == AgentStatus.FAILED for a in phase.agents):
                 phase_icon = "\u274c"
-            done_count = sum(
-                1 for a in phase.agents
-                if a.status in (AgentStatus.DONE, AgentStatus.CACHED)
-            )
+            done_count = sum(1 for a in phase.agents if a.status in (AgentStatus.DONE, AgentStatus.CACHED))
             phase_lines.append(
                 f"{phase_icon} 阶段 {idx}: **{_middle_ellipsis(phase.title)}** — {done_count}/{len(phase.agents)} 代理"
             )

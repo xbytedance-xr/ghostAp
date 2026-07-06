@@ -120,7 +120,7 @@ class TestRendererSnapshot(unittest.TestCase):
             try:
                 # Aggressively mutate the original: add agents, rename, change status.
                 for i in range(50):
-                    _add_running_agent(original, f"phase-{i+2}", f"agent-{i}", tool="traex")
+                    _add_running_agent(original, f"phase-{i + 2}", f"agent-{i}", tool="traex")
                 original.name = "mutated!"
                 original.status = WorkflowStatus.FAILED
                 for phase in original.phases:
@@ -166,9 +166,7 @@ class TestJournalCacheKey(unittest.TestCase):
 
     def test_journal_cache_key_includes_schema(self):
         base = WorkflowJournal.compute_key("do thing", "coco", "model-x")
-        with_schema = WorkflowJournal.compute_key(
-            "do thing", "coco", "model-x", output_schema={"answer": "string"}
-        )
+        with_schema = WorkflowJournal.compute_key("do thing", "coco", "model-x", output_schema={"answer": "string"})
         self.assertNotEqual(base, with_schema, "different schema must produce different key")
 
     def test_journal_cache_key_role_optional(self):
@@ -204,6 +202,7 @@ class TestCancelEventClearedOnNewRun(unittest.TestCase):
 
         tmp_dir = "/tmp/ghostap-wf-test-cancel"
         import os
+
         os.makedirs(tmp_dir, exist_ok=True)
 
         engine = WorkflowEngine(
@@ -301,6 +300,90 @@ export default async function workflow() { return "unused"; }
 
     assert project.status == WorkflowStatus.FAILED
     assert "agent_call timed out waiting for host response" in (project.error or "")
+    on_done.assert_not_called()
+    on_error.assert_called_once()
+
+
+def test_terminal_failure_detects_top_level_error_payloads():
+    """Top-level JS `{error: ...}` results are terminal failures."""
+    from src.workflow_engine.engine import _terminal_failure_from_result
+
+    assert (
+        _terminal_failure_from_result(json.dumps({"error": "agent_call timed out", "stage": "Execution"}))
+        == "Execution: agent_call timed out"
+    )
+    assert (
+        _terminal_failure_from_result(json.dumps(json.dumps({"fallback": True, "error": "nested timeout"})))
+        == "nested timeout"
+    )
+
+
+def test_execute_workflow_fails_when_runtime_returns_with_open_agents(tmp_path):
+    """A bridge 'done' event while agent calls are still running is fail-closed."""
+    from src.workflow_engine.engine import WorkflowEngine, WorkflowEngineCallbacks
+
+    script_path = tmp_path / "wf.js"
+    script_path.write_text(
+        """
+export const meta = { name: "runtime-open-agents", phases: [], tools: [] };
+export default async function workflow() { return "unused"; }
+""",
+        encoding="utf-8",
+    )
+
+    engine = WorkflowEngine(chat_id="chat-open-agent", root_path=str(tmp_path))
+
+    class FakeBridge:
+        @staticmethod
+        def check_node_available():
+            return True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def run(self):
+            assert engine._state_manager is not None
+            engine._state_manager.on_phase_changed("Routing")
+            engine._state_manager.on_phase_changed("Execution")
+            engine._state_manager.on_agent_started(
+                "execute-traex",
+                tool="traex",
+                phase="Execution",
+                task_summary="Fulfill the user's request exactly.",
+            )
+            engine._state_manager.on_agent_started(
+                "execute-coco",
+                tool="coco",
+                phase="Execution",
+                task_summary="Fulfill the user's request exactly.",
+            )
+            engine._state_manager.on_agent_failed(
+                "execute-coco",
+                "Cancelled during execution",
+            )
+            return "ok"
+
+        def stop(self):
+            pass
+
+    on_done = Mock()
+    on_error = Mock()
+
+    with patch("src.workflow_engine.engine.RuntimeBridge", FakeBridge):
+        project = engine.execute_workflow(
+            requirement="test open agent",
+            script_path=str(script_path),
+            callbacks=WorkflowEngineCallbacks(on_done=on_done, on_error=on_error),
+        )
+
+    assert project.status == WorkflowStatus.FAILED
+    assert "execute-traex" in (project.error or "")
+    statuses = [agent.status for phase in project.phases for agent in phase.agents]
+    assert AgentStatus.RUNNING not in statuses
+    assert AgentStatus.PENDING not in statuses
     on_done.assert_not_called()
     on_error.assert_called_once()
 
@@ -417,7 +500,6 @@ class TestStateManagerTerminalStates(unittest.TestCase):
         )
 
 
-
 # ---------------------------------------------------------------------------
 # Agent-level CANCELLED status (race loser abort)
 # ---------------------------------------------------------------------------
@@ -449,11 +531,13 @@ class TestAgentCancelledStatus(unittest.TestCase):
         before_failed = sm._project.metrics.failed_agents
         sm.on_agent_aborted(label, reason="race loser")
         self.assertEqual(
-            sm._project.metrics.completed_agents, before_completed + 1,
+            sm._project.metrics.completed_agents,
+            before_completed + 1,
             "cancelled agent should increment completed_agents",
         )
         self.assertEqual(
-            sm._project.metrics.failed_agents, before_failed,
+            sm._project.metrics.failed_agents,
+            before_failed,
             "cancelled agent should NOT increment failed_agents",
         )
 
