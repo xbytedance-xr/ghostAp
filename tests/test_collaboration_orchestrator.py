@@ -11,6 +11,7 @@ Tests cover:
 
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,6 +28,17 @@ from src.slock_engine.models import (
 )
 from src.slock_engine.observer_queue import TaskStatusNotifier
 from src.slock_engine.task_chain_manager import ChainStep, ChainTemplate, TaskChainManager
+
+
+def _wait_for_mock_call_count(mock: MagicMock, expected: int, *, timeout: float = 1.0) -> None:
+    """Wait for async dispatch executor callbacks to reach the expected count."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if mock.call_count >= expected:
+            return
+        time.sleep(0.01)
+    assert mock.call_count == expected
+
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -130,9 +142,7 @@ def orchestrator(
 
 
 class TestCreatePlan:
-    def test_creates_plan_with_steps_from_template(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_creates_plan_with_steps_from_template(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         assert plan is not None
@@ -141,9 +151,7 @@ class TestCreatePlan:
         assert plan.chain_template == "coder->reviewer->tester"
         assert len(plan.steps) == 3
 
-    def test_steps_have_correct_roles_and_order(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_steps_have_correct_roles_and_order(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         roles = [step.role for step in plan.steps]
@@ -152,18 +160,14 @@ class TestCreatePlan:
         orders = [step.order for step in plan.steps]
         assert orders == [0, 1, 2]
 
-    def test_steps_have_agents_resolved(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_steps_have_agents_resolved(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         assert plan.steps[0].agent_id == "agent-coder"
         assert plan.steps[1].agent_id == "agent-reviewer"
         assert plan.steps[2].agent_id == "agent-tester"
 
-    def test_steps_have_sequential_dependencies(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_steps_have_sequential_dependencies(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         # First step has no dependencies
@@ -173,9 +177,7 @@ class TestCreatePlan:
         # Third step depends on second
         assert plan.steps[2].depends_on == [plan.steps[1].step_id]
 
-    def test_all_steps_start_with_todo_status(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_all_steps_start_with_todo_status(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         for step in plan.steps:
@@ -192,15 +194,11 @@ class TestCreatePlan:
     def test_uses_explicit_chain_template_name(
         self, orchestrator: CollaborationOrchestrator, task: SlockTask, chain_manager: MagicMock
     ):
-        orchestrator.create_plan(
-            task, channel_id="channel-1", chain_template_name="coder->reviewer->tester"
-        )
+        orchestrator.create_plan(task, channel_id="channel-1", chain_template_name="coder->reviewer->tester")
 
         chain_manager.get_template_by_name.assert_called_once_with("coder->reviewer->tester")
 
-    def test_plan_stored_and_retrievable(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_plan_stored_and_retrievable(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         retrieved = orchestrator.get_plan(plan.plan_id)
@@ -216,9 +214,7 @@ class TestCreatePlan:
 
 
 class TestApprovePlan:
-    def test_approve_transitions_to_executing(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_approve_transitions_to_executing(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         result = orchestrator.approve_plan(plan.plan_id)
@@ -241,14 +237,13 @@ class TestApprovePlan:
         assert plan.steps[0].task_id != ""
 
         # dispatch_task should have been called with the created task and coder agent
+        _wait_for_mock_call_count(dispatch_task, 1)
         dispatch_task.assert_called_once()
         dispatched_task, dispatched_agent = dispatch_task.call_args[0]
         assert dispatched_task.task_id == plan.steps[0].task_id
         assert dispatched_agent.agent_id == "agent-coder"
 
-    def test_approve_nonexistent_plan_returns_false(
-        self, orchestrator: CollaborationOrchestrator
-    ):
+    def test_approve_nonexistent_plan_returns_false(self, orchestrator: CollaborationOrchestrator):
         result = orchestrator.approve_plan("nonexistent-plan-id")
         assert result is False
 
@@ -282,9 +277,7 @@ class TestApprovePlan:
 
 
 class TestCancelPlan:
-    def test_cancel_pending_plan(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_cancel_pending_plan(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
 
         result = orchestrator.cancel_plan(plan.plan_id)
@@ -292,9 +285,7 @@ class TestCancelPlan:
         assert result is True
         assert plan.status == CollaborationPlanStatus.CANCELLED
 
-    def test_cancel_executing_plan(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_cancel_executing_plan(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
 
@@ -303,9 +294,7 @@ class TestCancelPlan:
         assert result is True
         assert plan.status == CollaborationPlanStatus.CANCELLED
 
-    def test_cancel_nonexistent_plan_returns_false(
-        self, orchestrator: CollaborationOrchestrator
-    ):
+    def test_cancel_nonexistent_plan_returns_false(self, orchestrator: CollaborationOrchestrator):
         result = orchestrator.cancel_plan("nonexistent-plan-id")
         assert result is False
 
@@ -318,9 +307,7 @@ class TestCancelPlan:
         result = orchestrator.cancel_plan(plan.plan_id)
         assert result is False
 
-    def test_cancel_completed_plan_returns_false(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_cancel_completed_plan_returns_false(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         # Force plan to COMPLETED
         plan.status = CollaborationPlanStatus.COMPLETED
@@ -335,9 +322,7 @@ class TestCancelPlan:
 
 
 class TestOnTaskStatusChanged:
-    def test_marks_step_done_on_task_completion(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_marks_step_done_on_task_completion(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
         step0_task_id = plan.steps[0].task_id
@@ -377,13 +362,12 @@ class TestOnTaskStatusChanged:
         assert plan.steps[1].task_id != ""
 
         # dispatch_task should have been called a second time for reviewer
+        _wait_for_mock_call_count(dispatch_task, 2)
         assert dispatch_task.call_count == 2
         _, dispatched_agent = dispatch_task.call_args[0]
         assert dispatched_agent.agent_id == "agent-reviewer"
 
-    def test_ignores_non_done_status_changes(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_ignores_non_done_status_changes(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
         step0_task_id = plan.steps[0].task_id
@@ -400,9 +384,7 @@ class TestOnTaskStatusChanged:
         # Step should still be IN_PROGRESS (not marked done)
         assert plan.steps[0].status == PlanStepStatus.IN_PROGRESS
 
-    def test_ignores_unknown_task_id(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_ignores_unknown_task_id(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
 
@@ -469,6 +451,7 @@ class TestPlanCompletion:
         resolve_agent: MagicMock,
     ):
         """Plan completes even if some steps are skipped (no agent available)."""
+
         # Make reviewer agent unavailable so step gets skipped
         def _resolve(role: str, channel_id: str):
             if role == "reviewer":
@@ -552,9 +535,7 @@ class TestPlanCompletion:
 class TestPausePlanResumePlan:
     """Test pause_plan and resume_plan lifecycle."""
 
-    def test_pause_executing_plan(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_pause_executing_plan(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
         assert plan.status == CollaborationPlanStatus.EXECUTING
@@ -563,17 +544,13 @@ class TestPausePlanResumePlan:
         assert result is True
         assert plan.status == CollaborationPlanStatus.PAUSED
 
-    def test_pause_non_executing_plan_returns_false(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_pause_non_executing_plan_returns_false(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         # Plan is PENDING_APPROVAL, cannot pause
         result = orchestrator.pause_plan(plan.plan_id)
         assert result is False
 
-    def test_resume_paused_plan(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_resume_paused_plan(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
         orchestrator.pause_plan(plan.plan_id)
@@ -583,18 +560,14 @@ class TestPausePlanResumePlan:
         assert result is True
         assert plan.status == CollaborationPlanStatus.EXECUTING
 
-    def test_resume_non_paused_plan_returns_false(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_resume_non_paused_plan_returns_false(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
         # Plan is EXECUTING, cannot resume
         result = orchestrator.resume_plan(plan.plan_id)
         assert result is False
 
-    def test_paused_plan_does_not_advance_on_task_done(
-        self, orchestrator: CollaborationOrchestrator, task: SlockTask
-    ):
+    def test_paused_plan_does_not_advance_on_task_done(self, orchestrator: CollaborationOrchestrator, task: SlockTask):
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
         orchestrator.pause_plan(plan.plan_id)
@@ -755,6 +728,7 @@ class TestChainAutoDispatch:
         assert plan.steps[1].task_id != ""
 
         # dispatch_task should have been called exactly once for reviewer
+        _wait_for_mock_call_count(dispatch_task, 1)
         dispatch_task.assert_called_once()
         dispatched_task, dispatched_agent = dispatch_task.call_args[0]
         assert dispatched_agent.agent_id == "agent-reviewer"
@@ -809,6 +783,7 @@ class TestChainAutoDispatch:
         assert plan.steps[2].task_id != ""
 
         # dispatch_task should have been called exactly once for tester
+        _wait_for_mock_call_count(dispatch_task, 1)
         dispatch_task.assert_called_once()
         dispatched_task, dispatched_agent = dispatch_task.call_args[0]
         assert dispatched_agent.agent_id == "agent-tester"
@@ -825,11 +800,13 @@ class TestChainAutoDispatch:
         orchestrator.approve_plan(plan.plan_id)
 
         # Complete all 3 steps sequentially
-        for i, (agent_id, role) in enumerate([
-            ("agent-coder", "coder"),
-            ("agent-reviewer", "reviewer"),
-            ("agent-tester", "tester"),
-        ]):
+        for i, (agent_id, role) in enumerate(
+            [
+                ("agent-coder", "coder"),
+                ("agent-reviewer", "reviewer"),
+                ("agent-tester", "tester"),
+            ]
+        ):
             task_id = plan.steps[i].task_id
             assert plan.steps[i].agent_id == agent_id
 
@@ -863,9 +840,14 @@ class TestTaskDedup:
         dispatch_task: MagicMock,
     ):
         """With add_task_fn + claim_task_fn, board creates and claims the task."""
-        add_task_fn = MagicMock(side_effect=lambda content: SlockTask(
-            task_id="board-task-1", content=content, status=TaskStatus.TODO, created_in="ch-1",
-        ))
+        add_task_fn = MagicMock(
+            side_effect=lambda content: SlockTask(
+                task_id="board-task-1",
+                content=content,
+                status=TaskStatus.TODO,
+                created_in="ch-1",
+            )
+        )
         claim_task_fn = MagicMock(return_value=True)
 
         with patch("src.slock_engine.collaboration_orchestrator.get_settings") as mock_settings:
@@ -897,7 +879,7 @@ class TestTaskDedup:
         claim_task_fn.assert_called()
         first_call_args = claim_task_fn.call_args[0]
         assert first_call_args[0] == "board-task-1"  # task_id
-        assert first_call_args[1] == "agent-coder"   # agent_id
+        assert first_call_args[1] == "agent-coder"  # agent_id
 
         orch.shutdown()
 
@@ -936,6 +918,7 @@ class TestTaskDedup:
         # Legacy register_task should have been called
         register_task.assert_called()
         # The dispatched task should have IN_PROGRESS status (set directly)
+        _wait_for_mock_call_count(dispatch_task, 1)
         dispatched_task = dispatch_task.call_args[0][0]
         assert dispatched_task.status == TaskStatus.IN_PROGRESS
 
@@ -949,9 +932,14 @@ class TestTaskDedup:
         dispatch_task: MagicMock,
     ):
         """If claim_task returns False, the step is skipped."""
-        add_task_fn = MagicMock(side_effect=lambda content: SlockTask(
-            task_id="board-task-fail", content=content, status=TaskStatus.TODO, created_in="ch-1",
-        ))
+        add_task_fn = MagicMock(
+            side_effect=lambda content: SlockTask(
+                task_id="board-task-fail",
+                content=content,
+                status=TaskStatus.TODO,
+                created_in="ch-1",
+            )
+        )
         claim_task_fn = MagicMock(return_value=False)  # Claim always fails
 
         with patch("src.slock_engine.collaboration_orchestrator.get_settings") as mock_settings:
@@ -1043,6 +1031,7 @@ class TestCASGuard:
         )
 
         # dispatch_task should be called only once (for step 1 -> reviewer)
+        _wait_for_mock_call_count(dispatch_task, 1)
         assert dispatch_task.call_count == 1
 
 
@@ -1082,14 +1071,32 @@ class TestRestorePlansDeadlock:
             plan_id="restored-plan-1",
             task_id="task-restored",
             steps=[
-                PlanStep(step_id="s0", role="coder", agent_id="agent-coder",
-                         description="code it", order=0, status=PlanStepStatus.DONE),
-                PlanStep(step_id="s1", role="reviewer", agent_id="agent-reviewer",
-                         description="review it", order=1, status=PlanStepStatus.TODO,
-                         depends_on=["s0"]),
-                PlanStep(step_id="s2", role="tester", agent_id="agent-tester",
-                         description="test it", order=2, status=PlanStepStatus.TODO,
-                         depends_on=["s1"]),
+                PlanStep(
+                    step_id="s0",
+                    role="coder",
+                    agent_id="agent-coder",
+                    description="code it",
+                    order=0,
+                    status=PlanStepStatus.DONE,
+                ),
+                PlanStep(
+                    step_id="s1",
+                    role="reviewer",
+                    agent_id="agent-reviewer",
+                    description="review it",
+                    order=1,
+                    status=PlanStepStatus.TODO,
+                    depends_on=["s0"],
+                ),
+                PlanStep(
+                    step_id="s2",
+                    role="tester",
+                    agent_id="agent-tester",
+                    description="test it",
+                    order=2,
+                    status=PlanStepStatus.TODO,
+                    depends_on=["s1"],
+                ),
             ],
             status=CollaborationPlanStatus.EXECUTING,
             chain_template="coder->reviewer->tester",
@@ -1097,7 +1104,9 @@ class TestRestorePlansDeadlock:
 
         # This should NOT deadlock (collect inside lock, start outside)
         import threading
+
         result = [None]
+
         def restore():
             try:
                 orch.restore_plans([plan], channel_id="channel-1")

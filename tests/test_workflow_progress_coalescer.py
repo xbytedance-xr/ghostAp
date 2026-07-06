@@ -89,7 +89,7 @@ class TestProgressCoalescerBasic:
     def test_no_callback_when_empty(self, make_coalescer):
         """No callback fires if nothing was ever enqueued."""
         callback = MagicMock()
-        coalescer = make_coalescer(on_progress=callback, debounce_s=0.02)
+        make_coalescer(on_progress=callback, debounce_s=0.02)
         time.sleep(0.05)  # Wait past debounce
         assert callback.call_count == 0
 

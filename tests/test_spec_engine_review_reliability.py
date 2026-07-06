@@ -8,9 +8,6 @@ Covers:
 - Full pipeline: startup failure -> retry -> skip non-blocking roles
 """
 
-import time
-from dataclasses import dataclass
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,15 +18,15 @@ from src.spec_engine.adaptive_review import (
     _outcomes_to_review_result,
     run_adaptive_role_review_pipeline,
 )
-from src.spec_engine.review_aggregation import RoleReviewOutcome, RoleSuggestion
+from src.spec_engine.review_aggregation import RoleReviewOutcome
 from src.spec_engine.review_artifacts import ReviewArtifacts
 from src.spec_engine.review_roles import ReviewRoleSpec
 from src.utils.errors import classify_timeout
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_role(role_id: str = "test_role", *, blocking: bool = True, category: str = "software") -> ReviewRoleSpec:
     return ReviewRoleSpec(
@@ -67,6 +64,7 @@ def _chain(outer, *, cause=None, context=None):
 # ---------------------------------------------------------------------------
 # classify_timeout heuristic
 # ---------------------------------------------------------------------------
+
 
 class TestClassifyTimeoutStartupHeuristic:
     """Verify the "Internal error" + elapsed-time heuristic."""
@@ -118,6 +116,7 @@ class TestClassifyTimeoutStartupHeuristic:
 # ---------------------------------------------------------------------------
 # RoleReviewWorker — startup vs execution failure distinction
 # ---------------------------------------------------------------------------
+
 
 class TestRoleReviewWorkerFailureTypes:
     """Verify RoleReviewWorker distinguishes startup from execution failures."""
@@ -211,6 +210,7 @@ class TestRoleReviewWorkerFailureTypes:
 # RoleReviewWorker — non-blocking role degradation
 # ---------------------------------------------------------------------------
 
+
 class TestRoleReviewWorkerDegradation:
     """Verify non-blocking roles are skipped on startup failure."""
 
@@ -272,6 +272,7 @@ class TestRoleReviewWorkerDegradation:
 # Full pipeline integration
 # ---------------------------------------------------------------------------
 
+
 class TestReviewPipelineReliability:
     """End-to-end tests with mock prompt runners simulating startup failures."""
 
@@ -296,10 +297,12 @@ class TestReviewPipelineReliability:
                     exc.startup_failed = True
                     raise exc
                 return '{"role_id": "%s", "verdict": "PASS", "summary": "ok", "suggestions": []}' % role.role_id
+
             return runner
 
         result = run_adaptive_role_review_pipeline(
-            artifacts, roles,
+            artifacts,
+            roles,
             prompt_runner_factory=factory,
             max_parallel=1,
             timeout=240.0,
@@ -328,10 +331,12 @@ class TestReviewPipelineReliability:
                     exc.startup_failed = True
                     raise exc
                 return '{"role_id": "%s", "verdict": "PASS", "summary": "ok", "suggestions": []}' % role.role_id
+
             return runner
 
         result = run_adaptive_role_review_pipeline(
-            artifacts, roles,
+            artifacts,
+            roles,
             prompt_runner_factory=factory,
             max_parallel=1,
             timeout=240.0,
@@ -346,16 +351,28 @@ class TestReviewPipelineReliability:
     def test_outcomes_to_result_counts_skipped(self):
         outcomes = [
             RoleReviewOutcome(
-                role_id="r1", role_display_name="R1", role_category="software",
-                passed=True, skipped=False, summary="ok",
+                role_id="r1",
+                role_display_name="R1",
+                role_category="software",
+                passed=True,
+                skipped=False,
+                summary="ok",
             ),
             RoleReviewOutcome(
-                role_id="r2", role_display_name="R2", role_category="writing",
-                passed=True, skipped=True, summary="skipped",
+                role_id="r2",
+                role_display_name="R2",
+                role_category="writing",
+                passed=True,
+                skipped=True,
+                summary="skipped",
             ),
             RoleReviewOutcome(
-                role_id="r3", role_display_name="R3", role_category="research",
-                passed=True, skipped=True, summary="skipped",
+                role_id="r3",
+                role_display_name="R3",
+                role_category="research",
+                passed=True,
+                skipped=True,
+                summary="skipped",
             ),
         ]
         result = _outcomes_to_review_result(outcomes, iteration=1)
@@ -372,10 +389,12 @@ class TestReviewPipelineReliability:
         def factory(role):
             def runner(prompt, on_event, timeout):
                 return '{"role_id": "%s", "verdict": "PASS", "summary": "all good", "suggestions": []}' % role.role_id
+
             return runner
 
         result = run_adaptive_role_review_pipeline(
-            artifacts, roles,
+            artifacts,
+            roles,
             prompt_runner_factory=factory,
             max_parallel=1,
             timeout=240.0,
@@ -388,6 +407,7 @@ class TestReviewPipelineReliability:
 # ---------------------------------------------------------------------------
 # Startup retry with exponential backoff
 # ---------------------------------------------------------------------------
+
 
 class TestStartupRetryBackoff:
     """Verify _run_with_startup_retry actually sleeps and retries on startup failure."""
@@ -422,6 +442,7 @@ class TestStartupRetryBackoff:
         def fake_eph_enter(self):
             call_count["enter"] += 1
             import time as _time
+
             t0 = _time.perf_counter()
             try:
                 if call_count["enter"] <= 1:
@@ -442,11 +463,12 @@ class TestStartupRetryBackoff:
             finally:
                 self._session = None
 
-        with patch("src.spec_engine.review_strategy.EphemeralReviewSession.__init__", fake_eph_init), \
-             patch("src.spec_engine.review_strategy.EphemeralReviewSession.__enter__", fake_eph_enter), \
-             patch("src.spec_engine.review_strategy.EphemeralReviewSession.__exit__", fake_eph_exit), \
-             patch("src.spec_engine.review_strategy.time.sleep") as mock_sleep:
-
+        with (
+            patch("src.spec_engine.review_strategy.EphemeralReviewSession.__init__", fake_eph_init),
+            patch("src.spec_engine.review_strategy.EphemeralReviewSession.__enter__", fake_eph_enter),
+            patch("src.spec_engine.review_strategy.EphemeralReviewSession.__exit__", fake_eph_exit),
+            patch("src.spec_engine.review_strategy.time.sleep") as mock_sleep,
+        ):
             result = _run_with_startup_retry(
                 role,
                 "coco",
@@ -490,6 +512,7 @@ class TestStartupRetryBackoff:
         def fake_eph_enter(self):
             call_count["enter"] += 1
             import time as _time
+
             t0 = _time.perf_counter()
             try:
                 self._session = FakeSession()
@@ -508,11 +531,12 @@ class TestStartupRetryBackoff:
             finally:
                 self._session = None
 
-        with patch("src.spec_engine.review_strategy.EphemeralReviewSession.__init__", fake_eph_init), \
-             patch("src.spec_engine.review_strategy.EphemeralReviewSession.__enter__", fake_eph_enter), \
-             patch("src.spec_engine.review_strategy.EphemeralReviewSession.__exit__", fake_eph_exit), \
-             patch("src.spec_engine.review_strategy.time.sleep") as mock_sleep:
-
+        with (
+            patch("src.spec_engine.review_strategy.EphemeralReviewSession.__init__", fake_eph_init),
+            patch("src.spec_engine.review_strategy.EphemeralReviewSession.__enter__", fake_eph_enter),
+            patch("src.spec_engine.review_strategy.EphemeralReviewSession.__exit__", fake_eph_exit),
+            patch("src.spec_engine.review_strategy.time.sleep") as mock_sleep,
+        ):
             with pytest.raises(RuntimeError, match="model error during execution") as exc_info:
                 _run_with_startup_retry(
                     role,
@@ -535,11 +559,13 @@ class TestStartupRetryBackoff:
 # EphemeralReviewSession session_started field
 # ---------------------------------------------------------------------------
 
+
 class TestEphemeralReviewSessionStarted:
     """Verify EphemeralReviewSession.session_started semantics."""
 
     def test_session_started_false_after_init(self):
         from src.agent_session.factory import EphemeralReviewSession
+
         eph = EphemeralReviewSession("coco", "/tmp", None, startup_timeout=30.0)
         assert eph.session_started is False
 
@@ -572,6 +598,7 @@ class TestEphemeralReviewSessionStarted:
 # Blocking role infrastructure failure fails overall review
 # ---------------------------------------------------------------------------
 
+
 class TestBlockingRoleInfrastructureFailure:
     """Blocking role startup failure must keep blocking_review_passed=False."""
 
@@ -591,10 +618,12 @@ class TestBlockingRoleInfrastructureFailure:
                     exc.startup_failed = True
                     raise exc
                 return '{"role_id": "%s", "verdict": "PASS", "summary": "ok", "suggestions": []}' % role.role_id
+
             return runner
 
         result = run_adaptive_role_review_pipeline(
-            artifacts, roles,
+            artifacts,
+            roles,
             prompt_runner_factory=factory,
             max_parallel=1,
             timeout=240.0,

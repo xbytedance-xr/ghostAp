@@ -34,7 +34,7 @@ class WorkflowStateManager:
     def __init__(self, project: WorkflowProject) -> None:
         self._project = project
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._writer_wait_lock = threading.Lock()
+        self._writer_wait_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._writers_waiting = 0
         # O(1) lookup: agent label -> AgentProgress reference.
         # All inserts, lookups and removals happen under ``_lock`` so that the
@@ -59,9 +59,7 @@ class WorkflowStateManager:
             self._project.phases.append(phase)
             self._project.status = WorkflowStatus.RUNNING
 
-    def on_agent_started(
-        self, label: str, tool: str, phase: str, task_summary: str = ""
-    ) -> str:
+    def on_agent_started(self, label: str, tool: str, phase: str, task_summary: str = "") -> str:
         """Add an agent entry to the current (or matching) phase.
 
         Returns the effective, UI-visible label. User-generated workflow
@@ -313,24 +311,14 @@ class WorkflowStateManager:
                 error=self._project.error,
                 started_at=self._project.started_at,
                 finished_at=self._project.finished_at,
-                pending=(
-                    copy.deepcopy(self._project.pending)
-                    if self._project.pending
-                    else None
-                ),
+                pending=(copy.deepcopy(self._project.pending) if self._project.pending else None),
                 initiator_user_id=self._project.initiator_user_id,
                 selected_tools=(
-                    list(self._project.selected_tools)
-                    if self._project.selected_tools is not None
-                    else None
+                    list(self._project.selected_tools) if self._project.selected_tools is not None else None
                 ),
                 tool_model_map=dict(self._project.tool_model_map),
-                orchestrator_selection_state=copy.deepcopy(
-                    self._project.orchestrator_selection_state
-                ),
-                review_selection_state=copy.deepcopy(
-                    self._project.review_selection_state
-                ),
+                orchestrator_selection_state=copy.deepcopy(self._project.orchestrator_selection_state),
+                review_selection_state=copy.deepcopy(self._project.review_selection_state),
             )
 
     @property

@@ -185,7 +185,7 @@ class WorkflowEngine(BaseEngine):
         # raw label string, which avoids mismatches when state_manager
         # disambiguates duplicate labels (e.g. "agent-1" → "agent-1 #2").
         self._request_to_label: dict[Any, str] = {}
-        self._request_to_label_lock = threading.Lock()  # leaf lock
+        self._request_to_label_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     # ------------------------------------------------------------------
     # Properties

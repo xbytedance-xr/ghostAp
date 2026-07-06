@@ -75,7 +75,7 @@ class AgentExecutor:
         # Without this, daemon threads may be abandoned at interpreter exit
         # and orphan ACP subprocesses.
         self._late_close_threads: list[threading.Thread] = []
-        self._late_close_lock = threading.Lock()
+        self._late_close_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     # ------------------------------------------------------------------
     # Public API
@@ -310,9 +310,7 @@ class AgentExecutor:
                 # Schema validation with retry (separate from general retry)
                 parsed: Optional[dict[str, Any]] = None
                 if params.output_schema:
-                    valid, parsed = self._validate_schema(
-                        output_text, params.output_schema
-                    )
+                    valid, parsed = self._validate_schema(output_text, params.output_schema)
 
                     schema_retry_count = 0
                     while not valid and schema_retry_count < SCHEMA_RETRY_MAX:
@@ -320,9 +318,7 @@ class AgentExecutor:
                             break
 
                         schema_retry_count += 1
-                        fix_prompt = self._build_schema_fix_prompt(
-                            output_text, params.output_schema
-                        )
+                        fix_prompt = self._build_schema_fix_prompt(output_text, params.output_schema)
                         logger.info(
                             "[AgentExecutor] Schema validation failed, retry %d/%d for tool=%s",
                             schema_retry_count,
@@ -344,9 +340,7 @@ class AgentExecutor:
                         )
 
                         retry_text = retry_result.text if retry_result else ""
-                        retry_tokens = (
-                            retry_result.output_tokens or 0 if retry_result else 0
-                        )
+                        retry_tokens = retry_result.output_tokens or 0 if retry_result else 0
 
                         # Accumulate token usage from retries
                         total_token_usage += retry_tokens
@@ -354,9 +348,7 @@ class AgentExecutor:
                             self.on_token_usage(retry_tokens)
 
                         output_text = retry_text
-                        valid, parsed = self._validate_schema(
-                            output_text, params.output_schema
-                        )
+                        valid, parsed = self._validate_schema(output_text, params.output_schema)
 
                     if not valid:
                         logger.warning(
@@ -390,9 +382,9 @@ class AgentExecutor:
                 # TimeoutError / asyncio.TimeoutError are never retried — the
                 # per-call timeout budget was already consumed and retrying the
                 # same prompt would just waste another full timeout window.
-                is_prompt_timeout = isinstance(e, TimeoutError) or (
-                    e.__class__.__name__ == "TimeoutError"
-                ) or _is_timeout_in_chain(e)
+                is_prompt_timeout = (
+                    isinstance(e, TimeoutError) or (e.__class__.__name__ == "TimeoutError") or _is_timeout_in_chain(e)
+                )
                 if attempt < MAX_RETRIES and is_transient_error(error_msg) and not is_prompt_timeout:
                     # Check cancel before sleeping
                     if _is_cancelled():
@@ -415,9 +407,7 @@ class AgentExecutor:
                     try:
                         session.close()
                     except Exception as close_err:
-                        logger.debug(
-                            "[AgentExecutor] session close failed: %s", repr(close_err)
-                        )
+                        logger.debug("[AgentExecutor] session close failed: %s", repr(close_err))
                 # Signal the cancel-guard thread to exit (if it was started)
                 if cancel_guard_done is not None:
                     cancel_guard_done.set()
@@ -586,10 +576,7 @@ class AgentExecutor:
         interpreter shutdown.
         """
         if hasattr(self, "_shutdown_done") and not self._shutdown_done:
-            logger.warning(
-                "AgentExecutor was not properly shut down; "
-                "call shutdown() or use as context manager"
-            )
+            logger.warning("AgentExecutor was not properly shut down; call shutdown() or use as context manager")
             try:
                 self.shutdown()
             except Exception:
@@ -619,6 +606,7 @@ class AgentExecutor:
         (global) actually interrupt the LLM call instead of waiting for it to
         finish.
         """
+
         def _guard() -> None:
             while not done_event.is_set():
                 per_call_fired = per_call_event is not None and per_call_event.wait(timeout=0.1)
@@ -672,9 +660,7 @@ class AgentExecutor:
 
         return "".join(parts)
 
-    def _validate_schema(
-        self, output: str, schema: dict[str, Any]
-    ) -> tuple[bool, Optional[dict[str, Any]]]:
+    def _validate_schema(self, output: str, schema: dict[str, Any]) -> tuple[bool, Optional[dict[str, Any]]]:
         """Try JSON parse + validate against schema keys.
 
         Validation strategy:
@@ -702,9 +688,7 @@ class AgentExecutor:
 
         if not required_keys.issubset(present_keys):
             missing = required_keys - present_keys
-            logger.debug(
-                "[AgentExecutor] Schema validation: missing keys %s", missing
-            )
+            logger.debug("[AgentExecutor] Schema validation: missing keys %s", missing)
             return False, None
 
         return True, parsed
@@ -741,9 +725,7 @@ class AgentExecutor:
 
         return None
 
-    def _build_schema_fix_prompt(
-        self, failed_output: str, schema: dict[str, Any]
-    ) -> str:
+    def _build_schema_fix_prompt(self, failed_output: str, schema: dict[str, Any]) -> str:
         """Build a prompt asking the agent to fix its output to match the schema."""
         schema_desc = json.dumps(schema, indent=2, ensure_ascii=False)
         return (

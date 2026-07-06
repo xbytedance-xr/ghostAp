@@ -117,14 +117,14 @@ class RuntimeBridge:
         # runtime sends abort_request for a specific in-flight agent call, we
         # cancel the future here.
         self._request_futures: dict[Any, Future] = {}
-        self._request_futures_lock = threading.Lock()  # leaf lock
+        self._request_futures_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Map JSON-RPC request_id → per-call cancel_event. When abort_request
         # arrives, we set this event to interrupt the in-flight ACP session,
         # enabling race() loser agents to stop within seconds rather than
         # running to completion.
         self._request_cancel_events: dict[Any, threading.Event] = {}
-        self._request_cancel_events_lock = threading.Lock()  # leaf lock
+        self._request_cancel_events_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
         # Parent reference and child tracking for cascade cancellation
         self._parent: Optional["RuntimeBridge"] = None
@@ -193,13 +193,9 @@ class RuntimeBridge:
         started_monotonic = time.monotonic()
         started_unix_ms = int(time.time() * 1000)
         self._workflow_started_monotonic = started_monotonic
-        self._workflow_deadline_monotonic = (
-            started_monotonic + WORKFLOW_TOTAL_TIMEOUT_S
-        )
+        self._workflow_deadline_monotonic = started_monotonic + WORKFLOW_TOTAL_TIMEOUT_S
         self._workflow_started_unix_ms = started_unix_ms
-        self._workflow_deadline_unix_ms = (
-            started_unix_ms + WORKFLOW_TOTAL_TIMEOUT_S * 1000
-        )
+        self._workflow_deadline_unix_ms = started_unix_ms + WORKFLOW_TOTAL_TIMEOUT_S * 1000
 
     def start(self) -> None:
         """Spawn the Node.js runtime subprocess and wait for 'ready' signal.
@@ -271,10 +267,7 @@ class RuntimeBridge:
         if ready is None:
             self._kill_process()
             stderr_content = self._drain_stderr()
-            raise RuntimeError(
-                f"Node.js runtime did not send 'ready' within 30s. "
-                f"stderr: {stderr_content}"
-            )
+            raise RuntimeError(f"Node.js runtime did not send 'ready' within 30s. stderr: {stderr_content}")
 
         self._ensure_workflow_deadline()
 
@@ -282,17 +275,19 @@ class RuntimeBridge:
         # JS-side parallel() primitive can bound concurrency to match the
         # Python ThreadPoolExecutor size.  Deadline fields let JS reject new
         # work before the Python hard timeout kills the process.
-        self._send({
-            "jsonrpc": "2.0",
-            "method": "init",
-            "params": {
-                "args": self._args,
-                "max_concurrent": self._max_concurrent,
-                "started_unix_ms": self._workflow_started_unix_ms,
-                "deadline_unix_ms": self._workflow_deadline_unix_ms,
-                "total_timeout_s": WORKFLOW_TOTAL_TIMEOUT_S,
-            },
-        })
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "method": "init",
+                "params": {
+                    "args": self._args,
+                    "max_concurrent": self._max_concurrent,
+                    "started_unix_ms": self._workflow_started_unix_ms,
+                    "deadline_unix_ms": self._workflow_deadline_unix_ms,
+                    "total_timeout_s": WORKFLOW_TOTAL_TIMEOUT_S,
+                },
+            }
+        )
 
         # Create executor for agent calls
         self._executor = ThreadPoolExecutor(
@@ -322,9 +317,7 @@ class RuntimeBridge:
             raise RuntimeError("RuntimeBridge not started — call start() first")
 
         self._ensure_workflow_deadline()
-        deadline = self._workflow_deadline_monotonic or (
-            time.monotonic() + WORKFLOW_TOTAL_TIMEOUT_S
-        )
+        deadline = self._workflow_deadline_monotonic or (time.monotonic() + WORKFLOW_TOTAL_TIMEOUT_S)
 
         while not self._done:
             # Check cancellation
@@ -339,10 +332,7 @@ class RuntimeBridge:
             if remaining <= 0:
                 logger.error("Workflow total timeout exceeded (%ds)", WORKFLOW_TOTAL_TIMEOUT_S)
                 self._kill_process()
-                raise RuntimeError(
-                    f"Workflow execution exceeded total timeout of "
-                    f"{WORKFLOW_TOTAL_TIMEOUT_S}s"
-                )
+                raise RuntimeError(f"Workflow execution exceeded total timeout of {WORKFLOW_TOTAL_TIMEOUT_S}s")
 
             # Check process health
             if self._process.poll() is not None and not self._done:
@@ -486,10 +476,7 @@ class RuntimeBridge:
         """
         try:
             if hasattr(self, "_shutdown_done") and not self._shutdown_done:
-                logger.warning(
-                    "RuntimeBridge was not properly stopped; "
-                    "call stop() or use as context manager"
-                )
+                logger.warning("RuntimeBridge was not properly stopped; call stop() or use as context manager")
                 try:
                     self.stop()
                 except Exception:
@@ -671,10 +658,7 @@ class RuntimeBridge:
         self._send_error_response(
             request_id,
             code=-32002,
-            message=(
-                "Workflow deadline exhausted before starting agent call "
-                f"(remaining={max(0.0, remaining):.1f}s)"
-            ),
+            message=(f"Workflow deadline exhausted before starting agent call (remaining={max(0.0, remaining):.1f}s)"),
         )
         return True
 
@@ -735,18 +719,14 @@ class RuntimeBridge:
             inbound_depth = len(self._msg_queue)
         if inbound_depth >= MAX_QUEUE_SIZE:
             logger.warning(
-                "[RuntimeBridge] backpressure rejecting agent_call: "
-                "inbound queue full (%d >= %d)",
+                "[RuntimeBridge] backpressure rejecting agent_call: inbound queue full (%d >= %d)",
                 inbound_depth,
                 MAX_QUEUE_SIZE,
             )
             self._send_error_response(
                 request_id,
                 code=-32000,
-                message=(
-                    "Queue backpressure: too many pending messages, "
-                    "retry later"
-                ),
+                message=("Queue backpressure: too many pending messages, retry later"),
             )
             return
 
@@ -762,18 +742,14 @@ class RuntimeBridge:
         pressure_cap = max(2, self._max_concurrent * 2)
         if pending_response_pressure >= pressure_cap:
             logger.warning(
-                "[RuntimeBridge] backpressure rejecting agent_call "
-                "(active=%d, cap=%d)",
+                "[RuntimeBridge] backpressure rejecting agent_call (active=%d, cap=%d)",
                 active_count,
                 pressure_cap,
             )
             self._send_error_response(
                 request_id,
                 code=-32000,
-                message=(
-                    "Queue backpressure: too many pending agent calls, "
-                    "retry later"
-                ),
+                message=("Queue backpressure: too many pending agent calls, retry later"),
             )
             return
 
@@ -876,8 +852,7 @@ class RuntimeBridge:
                 request_id,
                 code=-32602,
                 message=(
-                    "Sub-workflow invocation by raw script_path is forbidden. "
-                    "Use workflow('<template_name') instead."
+                    "Sub-workflow invocation by raw script_path is forbidden. Use workflow('<template_name') instead."
                 ),
             )
             return
@@ -957,9 +932,7 @@ class RuntimeBridge:
             parsed = {}
             sub_meta_tools = []
 
-        missing_tools = sorted(
-            {t for t in sub_meta_tools if t not in set(self._allowed_tools or [])}
-        )
+        missing_tools = sorted({t for t in sub_meta_tools if t not in set(self._allowed_tools or [])})
         if missing_tools:
             self._send_error_response(
                 request_id,
@@ -969,13 +942,13 @@ class RuntimeBridge:
                     f"the parent allowlist: missing={missing_tools}; "
                     f"allowed={sorted(self._allowed_tools or [])}"
                 ),
-            structured={
-                "kind": "missing_tools",
-                "name": name,
-                "description": sub_description,
-                "missing_tools": missing_tools,
-                "allowed_tools": sorted(self._allowed_tools or []),
-            },
+                structured={
+                    "kind": "missing_tools",
+                    "name": name,
+                    "description": sub_description,
+                    "missing_tools": missing_tools,
+                    "allowed_tools": sorted(self._allowed_tools or []),
+                },
             )
             return
 
@@ -1067,11 +1040,13 @@ class RuntimeBridge:
 
     def _send_response(self, request_id: Any, result: Any) -> None:
         """Send a JSON-RPC success response."""
-        self._send({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": result,
-        })
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": result,
+            }
+        )
 
     def _send_error_response(
         self,
@@ -1101,11 +1076,13 @@ class RuntimeBridge:
 
     def _send_cancel(self) -> None:
         """Send cancel notification to the JS runtime."""
-        self._send({
-            "jsonrpc": "2.0",
-            "method": "cancel",
-            "params": {},
-        })
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "method": "cancel",
+                "params": {},
+            }
+        )
 
     # ------------------------------------------------------------------
     # Internal: Future tracking
@@ -1175,9 +1152,7 @@ class RuntimeBridge:
                 return self._msg_queue.popleft()
         return None
 
-    def _wait_for_notification(
-        self, method: str, timeout: float = 30.0
-    ) -> Optional[dict[str, Any]]:
+    def _wait_for_notification(self, method: str, timeout: float = 30.0) -> Optional[dict[str, Any]]:
         """Wait for a specific notification method, with timeout.
 
         Messages that don't match are re-queued.

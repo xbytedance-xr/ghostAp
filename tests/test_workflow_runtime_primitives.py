@@ -133,6 +133,7 @@ class TestBridgeAbortRequest:
         bridge._executor = MagicMock(spec=type(bridge._executor) if bridge._executor else object)
         # We need a real executor to test future semantics
         from concurrent.futures import ThreadPoolExecutor
+
         bridge._executor = ThreadPoolExecutor(max_workers=1)
         bridge._active_futures = set()
         bridge._futures_lock = threading.Lock()
@@ -579,10 +580,13 @@ def test_race_abort_state_transition_within_100ms(tmp_path):
     longer shows it as '执行中'. This validates the fast-path notification
     that runs parallel to the session cleanup.
     """
-    from src.workflow_engine.state_manager import WorkflowStateManager
     from src.workflow_engine.models import (
-        AgentStatus, WorkflowMetrics, WorkflowProject, WorkflowStatus,
+        AgentStatus,
+        WorkflowMetrics,
+        WorkflowProject,
+        WorkflowStatus,
     )
+    from src.workflow_engine.state_manager import WorkflowStateManager
 
     # Set up state with a running agent
     project = WorkflowProject(
@@ -595,7 +599,9 @@ def test_race_abort_state_transition_within_100ms(tmp_path):
     sm = WorkflowStateManager(project)
     sm.on_phase_changed("race phase")
     label = sm.on_agent_started(
-        "contestant-b", tool="claude", phase="race phase",
+        "contestant-b",
+        tool="claude",
+        phase="race phase",
         task_summary="trying approach B",
     )
 
@@ -623,13 +629,13 @@ def test_race_abort_full_pipeline_under_5s(tmp_path):
     Total budget: 5s. Expected: well under 1s for the state change, and the
     session cleanup follows shortly after.
     """
-    import threading
-    from concurrent.futures import ThreadPoolExecutor
-    from src.workflow_engine.state_manager import WorkflowStateManager
-    from src.workflow_engine.renderer import WorkflowProgressRenderer
     from src.workflow_engine.models import (
-        AgentStatus, WorkflowMetrics, WorkflowProject, WorkflowStatus,
+        WorkflowMetrics,
+        WorkflowProject,
+        WorkflowStatus,
     )
+    from src.workflow_engine.renderer import WorkflowProgressRenderer
+    from src.workflow_engine.state_manager import WorkflowStateManager
 
     # Set up state with 3 agents running (like a race with 3 contestants)
     project = WorkflowProject(
@@ -699,7 +705,11 @@ def test_race_abort_session_cancel_and_close_within_5s(tmp_path):
 
     from src.workflow_engine.executor import AgentExecutor
     from src.workflow_engine.models import (
-        AgentCallParams, AgentStatus, WorkflowMetrics, WorkflowProject, WorkflowStatus,
+        AgentCallParams,
+        AgentStatus,
+        WorkflowMetrics,
+        WorkflowProject,
+        WorkflowStatus,
     )
     from src.workflow_engine.renderer import WorkflowProgressRenderer
     from src.workflow_engine.state_manager import WorkflowStateManager
@@ -717,15 +727,32 @@ def test_race_abort_session_cancel_and_close_within_5s(tmp_path):
             self.close_called = threading.Event()
             self.send_started = threading.Event()
 
-        def describe_agent(self): return "fake"
-        def start(self, timeout=60): return self.session_id
-        def load_session(self, sid): self.session_id = sid
-        def load_local_history(self, *a, **kw): return []
-        def to_snapshot(self): return {"session_id": self.session_id}
-        def get_session_info(self): return "SlowCancelableSession"
-        def is_server_running(self): return True
-        def is_server_healthy(self, timeout=2.0): return True
-        def send_prompt_with_retry(self, *a, **kw): return self.send_prompt(*a, **kw)
+        def describe_agent(self):
+            return "fake"
+
+        def start(self, timeout=60):
+            return self.session_id
+
+        def load_session(self, sid):
+            self.session_id = sid
+
+        def load_local_history(self, *a, **kw):
+            return []
+
+        def to_snapshot(self):
+            return {"session_id": self.session_id}
+
+        def get_session_info(self):
+            return "SlowCancelableSession"
+
+        def is_server_running(self):
+            return True
+
+        def is_server_healthy(self, timeout=2.0):
+            return True
+
+        def send_prompt_with_retry(self, *a, **kw):
+            return self.send_prompt(*a, **kw)
 
         def cancel(self):
             self.cancel_called.set()
@@ -776,7 +803,9 @@ def test_race_abort_session_cancel_and_close_within_5s(tmp_path):
     def on_agent_call(params: AgentCallParams, cancel_event=None):
         label = params.label or params.tool
         sm.on_agent_started(
-            label, tool=params.tool, phase="race phase",
+            label,
+            tool=params.tool,
+            phase="race phase",
             task_summary=params.prompt[:50],
         )
         try:
@@ -784,11 +813,14 @@ def test_race_abort_session_cancel_and_close_within_5s(tmp_path):
             if result.error:
                 sm.on_agent_failed(label, result.error)
             else:
-                sm.on_agent_done(label, {
-                    "token_usage": result.token_usage,
-                    "duration_s": result.duration_s,
-                    "cached": False,
-                })
+                sm.on_agent_done(
+                    label,
+                    {
+                        "token_usage": result.token_usage,
+                        "duration_s": result.duration_s,
+                        "cached": False,
+                    },
+                )
             return result
         except Exception as e:
             sm.on_agent_failed(label, str(e))
@@ -823,8 +855,7 @@ def test_race_abort_session_cancel_and_close_within_5s(tmp_path):
                 request_id="race-loser-1",
             )
 
-            assert loser_session.send_started.wait(timeout=5.0), \
-                "loser send_prompt must start"
+            assert loser_session.send_started.wait(timeout=5.0), "loser send_prompt must start"
 
             snapshot = sm.snapshot()
             card = renderer.render_progress_card(snapshot)
@@ -835,28 +866,20 @@ def test_race_abort_session_cancel_and_close_within_5s(tmp_path):
             bridge._handle_abort_request("race-loser-1")
             sm.on_agent_aborted("loser", reason="race loser")
 
-            assert loser_session.cancel_called.wait(timeout=2.0), \
-                "session.cancel() must be called after abort_request"
+            assert loser_session.cancel_called.wait(timeout=2.0), "session.cancel() must be called after abort_request"
             cancel_elapsed = (time.monotonic() - start) * 1000
-            assert cancel_elapsed < 1000, \
-                f"session.cancel() must fire within 1s, took {cancel_elapsed:.0f}ms"
+            assert cancel_elapsed < 1000, f"session.cancel() must fire within 1s, took {cancel_elapsed:.0f}ms"
 
-            assert loser_session.close_called.wait(timeout=10.0), \
-                "session.close() must be called"
+            assert loser_session.close_called.wait(timeout=10.0), "session.close() must be called"
             close_elapsed = time.monotonic() - start
-            assert close_elapsed < 5.0, \
-                f"session.close() must complete within 5s of abort, took {close_elapsed:.2f}s"
+            assert close_elapsed < 5.0, f"session.close() must complete within 5s of abort, took {close_elapsed:.2f}s"
 
             snapshot = sm.snapshot()
             card = renderer.render_progress_card(snapshot)
             card_text = json.dumps(card, ensure_ascii=False)
             assert "已取消" in card_text, "loser must appear in '已取消' group"
-            running_agents = [
-                a for a in snapshot.phases[0].agents
-                if a.status == AgentStatus.RUNNING
-            ]
-            assert len(running_agents) == 0, \
-                f"no agents should be RUNNING, got {len(running_agents)}"
+            running_agents = [a for a in snapshot.phases[0].agents if a.status == AgentStatus.RUNNING]
+            assert len(running_agents) == 0, f"no agents should be RUNNING, got {len(running_agents)}"
 
     finally:
         executor.shutdown(wait=False)
