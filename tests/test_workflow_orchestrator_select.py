@@ -408,6 +408,9 @@ def _flatten_actions_from_card(card: dict) -> list[dict]:
             elif obj.get("tag") == "button":
                 if "value" in obj:
                     result.append(obj)
+            elif obj.get("tag") == "select_static":
+                if "value" in obj:
+                    result.append(obj)
             for v in obj.values():
                 _walk(v)
         elif isinstance(obj, list):
@@ -587,6 +590,32 @@ def test_handle_orchestrator_select_tool_expands_model_panel():
 
     # 二次检查：状态仍为 AWAITING_AGENT_SELECT（还没有进入下一步）
     assert mock_engine.project.status == WorkflowStatus.AWAITING_AGENT_SELECT
+
+
+def test_handle_orchestrator_select_tool_accepts_dropdown_option():
+    """select_static 回调通过 _option 返回选择值，handler 应使用它更新 pending tool。"""
+    handler, mock_project, _mock_engine = _build_orchestrator_handler_with_project()
+
+    value = {
+        "action": "workflow_orchestrator_select_tool",
+        "_option": "traex",
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+
+    with patch("src.thread.get_current_sender_id", return_value="user_1"), \
+            patch("src.workflow_engine.tool_registry.get_available_tools", return_value={"traex": "Traex"}):
+        handler.handle_workflow_orchestrator_select_tool(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=value,
+        )
+
+    assert mock_project._wf_selection_snapshot["pending_tool_name"] == "traex"
+    assert mock_project._wf_selection_snapshot["model_page"] == 0
+    handler._reply_workflow_error.assert_not_called()
 
 
 def test_handle_orchestrator_select_tool_model_page_keeps_panel_expanded():

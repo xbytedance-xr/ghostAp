@@ -88,12 +88,18 @@ WORKFLOW_REMOVE_WORKFLOW_REF = "workflow_remove_workflow_ref"  # Remove a workfl
 WORKFLOW_ADD_WORKFLOW_REF = "workflow_add_workflow_ref"  # Add a workflow reference
 # Workflow orchestrator selection (two-step flow, combined card)
 WORKFLOW_ORCHESTRATOR_SELECT_TOOL = "workflow_orchestrator_select_tool"
+WORKFLOW_ORCHESTRATOR_SELECT_MODEL_GROUP = "workflow_orchestrator_select_model_group"
+WORKFLOW_ORCHESTRATOR_SELECT_MODEL_PROFILE = "workflow_orchestrator_select_model_profile"
+WORKFLOW_ORCHESTRATOR_SELECT_MODEL_EFFORT = "workflow_orchestrator_select_model_effort"
 WORKFLOW_ORCHESTRATOR_SELECT_MODEL = "workflow_orchestrator_select_model"
 WORKFLOW_ORCHESTRATOR_REMOVE = "workflow_orchestrator_remove"
 WORKFLOW_ORCHESTRATOR_CLEAR = "workflow_orchestrator_clear"
 WORKFLOW_ORCHESTRATOR_FINISH = "workflow_orchestrator_finish"
 # Workflow review agent selection
 WORKFLOW_REVIEW_SELECT_TOOL = "workflow_review_select_tool"
+WORKFLOW_REVIEW_SELECT_MODEL_GROUP = "workflow_review_select_model_group"
+WORKFLOW_REVIEW_SELECT_MODEL_PROFILE = "workflow_review_select_model_profile"
+WORKFLOW_REVIEW_SELECT_MODEL_EFFORT = "workflow_review_select_model_effort"
 WORKFLOW_REVIEW_SELECT_MODEL = "workflow_review_select_model"
 WORKFLOW_REVIEW_FINISH = "workflow_review_finish"
 WORKFLOW_REVIEW_REMOVE = "workflow_review_remove"

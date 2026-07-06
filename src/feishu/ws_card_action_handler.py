@@ -100,12 +100,18 @@ SYSTEM_CARD_ACTIONS = {
     "workflow_show_help",
     # Workflow orchestrator selection (Step 1 of 2-step flow, combined card)
     "workflow_orchestrator_select_tool",
+    "workflow_orchestrator_select_model_group",
+    "workflow_orchestrator_select_model_profile",
+    "workflow_orchestrator_select_model_effort",
     "workflow_orchestrator_select_model",
     "workflow_orchestrator_remove",
     "workflow_orchestrator_clear",
     "workflow_orchestrator_finish",
     # Workflow review agent selection (Step 2 of 2-step flow)
     "workflow_review_select_tool",
+    "workflow_review_select_model_group",
+    "workflow_review_select_model_profile",
+    "workflow_review_select_model_effort",
     "workflow_review_select_model",
     "workflow_review_finish",
     "workflow_review_remove",

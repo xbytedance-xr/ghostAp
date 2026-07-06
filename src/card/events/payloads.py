@@ -577,6 +577,9 @@ class WorkflowOrchestratorSelectModelButtonValue(_WorkflowBaseButtonValue):
 
     model_name: str
     name: str
+    model_group: str
+    model_profile: str
+    model_effort: str
     use_default_model: bool
     _option: str
     selection_key: str
@@ -604,6 +607,9 @@ class WorkflowReviewSelectModelButtonValue(_WorkflowBaseButtonValue):
 
     model_name: str
     name: str
+    model_group: str
+    model_profile: str
+    model_effort: str
     use_default_model: bool
     _option: str
     selection_key: str
@@ -635,6 +641,9 @@ _WORKFLOW_BUTTON_FIELDS: set[str] = {
     "display_name",
     "supports_model",
     "model_name",
+    "model_group",
+    "model_profile",
+    "model_effort",
     "name",
     "use_default_model",
     "_option",

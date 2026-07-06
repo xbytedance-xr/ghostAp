@@ -109,7 +109,13 @@ _READONLY_CARD_ACTIONS = {
 # every time is disruptive.
 _SILENT_DEDUP_ACTIONS = {
     "workflow_select_tool", "workflow_orchestrator_select_tool",
+    "workflow_orchestrator_select_model_group",
+    "workflow_orchestrator_select_model_profile",
+    "workflow_orchestrator_select_model_effort",
     "workflow_orchestrator_select_model", "workflow_review_select_tool",
+    "workflow_review_select_model_group",
+    "workflow_review_select_model_profile",
+    "workflow_review_select_model_effort",
     "workflow_review_select_model", "worktree_select_tool",
     "worktree_select_model", "spec_review_select_tool",
     "spec_review_select_model", "select_ttadk_tool",

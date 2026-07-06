@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
+
+_WORKFLOW_MODEL_CACHE_TTL_S = 5 * 60
 
 
 def _workflow_pending_statuses():
@@ -1617,6 +1620,192 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         else:
             self.send_card_to_chat(chat_id, card)
 
+    def _handle_workflow_model_cascade_select(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+        *,
+        is_review: bool,
+        dimension: str,
+    ) -> None:
+        """Handle model-family/profile/effort dropdown changes."""
+        from ...card.events.payloads import filter_workflow_button_value
+        from ...thread import get_current_sender_id
+        from ...workflow_engine.models import WorkflowStatus
+
+        value = filter_workflow_button_value(value)
+        project_id = value.get("project_id", "") or project_id or ""
+        project = self._resolve_project_from_id(project_id, chat_id) if project_id else None
+        root_path = project.root_path if project else self._get_root_path(chat_id, None)
+        engine = self.ctx.workflow_engine_manager.get(chat_id, root_path)
+
+        if not engine or not engine.project:
+            self._reply_workflow_error(message_id, "session_expired")
+            return
+
+        expected_status = (
+            WorkflowStatus.AWAITING_TOOL_SELECT
+            if is_review
+            else WorkflowStatus.AWAITING_AGENT_SELECT
+        )
+        if engine.project.status != expected_status:
+            self._reply_workflow_error(message_id, "invalid_state")
+            return
+
+        stored_session_key = engine.project.pending.engine_session_key if engine.project.pending else ""
+        button_session_key = value.get("engine_session_key", "")
+        if not stored_session_key or button_session_key != stored_session_key:
+            self._reply_workflow_error(message_id, "session_expired")
+            return
+
+        current_user = get_current_sender_id() or ""
+        stored_initiator = engine.project.pending.initiator_user_id if engine.project.pending else ""
+        if not stored_initiator or not current_user or current_user != stored_initiator:
+            self._reply_workflow_error(message_id, "forbidden")
+            return
+
+        if project is None:
+            self._reply_workflow_error(message_id, "invalid_state", detail="缺少项目上下文")
+            return
+
+        tool_name = value.get("tool_name", "")
+        selected = value.get("_option") or value.get(dimension, "")
+        if not tool_name or not selected:
+            self._reply_workflow_error(message_id, "invalid_argument", detail="缺少模型选择参数")
+            return
+
+        _kept, rejected = self._validate_tools_against_registry([tool_name])
+        if rejected:
+            self._reply_workflow_error(message_id, "invalid_argument", detail=f"无效的工具名称: {tool_name}")
+            return
+
+        ctrl = self._get_selection_controller(project)
+        ctrl.set_step(2 if is_review else 1)
+        if dimension == "model_group":
+            ctrl.set_model_group(tool_name, selected, is_review=is_review)
+        elif dimension == "model_profile":
+            if value.get("model_group"):
+                ctrl.pending_model_group = value.get("model_group")
+            ctrl.set_model_profile(tool_name, selected, is_review=is_review)
+        elif dimension == "model_effort":
+            if value.get("model_group"):
+                ctrl.pending_model_group = value.get("model_group")
+            if value.get("model_profile"):
+                ctrl.pending_model_profile = value.get("model_profile")
+            ctrl.set_model_effort(tool_name, selected, is_review=is_review)
+        else:
+            self._reply_workflow_error(message_id, "invalid_argument", detail="未知模型选择维度")
+            return
+        self._persist_selection_controller(project, ctrl)
+
+        requirement = engine.project.pending.requirement if engine.project.pending else ""
+        self._send_combined_selection_card(
+            message_id=message_id,
+            chat_id=chat_id,
+            project=project,
+            requirement=requirement,
+            session_key=stored_session_key,
+            is_review=is_review,
+        )
+
+    def handle_workflow_orchestrator_select_model_group(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        self._handle_workflow_model_cascade_select(
+            message_id,
+            chat_id,
+            project_id,
+            value,
+            is_review=False,
+            dimension="model_group",
+        )
+
+    def handle_workflow_orchestrator_select_model_profile(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        self._handle_workflow_model_cascade_select(
+            message_id,
+            chat_id,
+            project_id,
+            value,
+            is_review=False,
+            dimension="model_profile",
+        )
+
+    def handle_workflow_orchestrator_select_model_effort(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        self._handle_workflow_model_cascade_select(
+            message_id,
+            chat_id,
+            project_id,
+            value,
+            is_review=False,
+            dimension="model_effort",
+        )
+
+    def handle_workflow_review_select_model_group(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        self._handle_workflow_model_cascade_select(
+            message_id,
+            chat_id,
+            project_id,
+            value,
+            is_review=True,
+            dimension="model_group",
+        )
+
+    def handle_workflow_review_select_model_profile(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        self._handle_workflow_model_cascade_select(
+            message_id,
+            chat_id,
+            project_id,
+            value,
+            is_review=True,
+            dimension="model_profile",
+        )
+
+    def handle_workflow_review_select_model_effort(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        self._handle_workflow_model_cascade_select(
+            message_id,
+            chat_id,
+            project_id,
+            value,
+            is_review=True,
+            dimension="model_effort",
+        )
+
     def stop_workflow(
         self,
         message_id: str,
@@ -1716,7 +1905,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             self._reply_workflow_error(message_id, "forbidden")
             return
 
-        tool_name = value.get("tool_name", "")
+        tool_name = value.get("_option") or value.get("tool_name", "")
         if not tool_name:
             self._reply_workflow_error(message_id, "invalid_argument", detail="缺少 tool_name")
             return
@@ -1741,6 +1930,8 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             except (TypeError, ValueError):
                 model_page = 0
             ctrl.set_model_page(tool_name, model_page, is_review=False)
+        elif value.get("_option"):
+            ctrl.select_tool(tool_name, is_review=False)
         else:
             ctrl.toggle_tool_expand(tool_name, is_review=False)
         self._persist_selection_controller(project, ctrl)
@@ -2103,7 +2294,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             self._reply_workflow_error(message_id, "forbidden")
             return
 
-        tool_name = value.get("tool_name", "")
+        tool_name = value.get("_option") or value.get("tool_name", "")
         if not tool_name:
             self._reply_workflow_error(message_id, "invalid_argument", detail="缺少 tool_name")
             return
@@ -2127,6 +2318,8 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             except (TypeError, ValueError):
                 model_page = 0
             ctrl.set_model_page(tool_name, model_page, is_review=True)
+        elif value.get("_option"):
+            ctrl.select_tool(tool_name, is_review=True)
         else:
             ctrl.toggle_tool_expand(tool_name, is_review=True)
         self._persist_selection_controller(project, ctrl)
@@ -2545,9 +2738,30 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         ACP tools (traex/coco/...) through the wrong transport, returning ``[]``
         leaving the WF model panel empty.
         """
+        tool_name = str(tool_name or "").strip()
+        root_path = str(root_path or "")
+        if not tool_name:
+            return []
+        now = time.monotonic()
+        cache: dict[tuple[str, str, str], tuple[float, list[dict]]] = getattr(
+            self,
+            "_workflow_model_cache",
+            {},
+        )
+        if not isinstance(cache, dict):
+            cache = {}
+        else:
+            for (cached_tool, cached_root, _cached_provider), (cached_at, cached_models) in list(cache.items()):
+                if cached_tool == tool_name and cached_root == root_path:
+                    if now - cached_at <= _WORKFLOW_MODEL_CACHE_TTL_S:
+                        return [dict(m) for m in cached_models]
+                    cache.pop((cached_tool, cached_root, _cached_provider), None)
+        self._workflow_model_cache = cache
+
         try:
             from ...worktree_engine.tool_discovery import WorktreeToolDiscovery
 
+            started = time.monotonic()
             discovery = WorktreeToolDiscovery()
             provider = "acp"
             try:
@@ -2559,11 +2773,21 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                 provider = "acp"
 
             models = discovery.get_models_for_tool(tool_name, provider=provider, cwd=root_path)
-            return [
+            normalized = [
                 {"name": m.get("name", ""), "display_name": m.get("display_name", m.get("name", "")), "description": m.get("description", "")}
                 for m in models if m.get("name")
             ] if models else []
+            cache[(tool_name, root_path, provider)] = (now, [dict(m) for m in normalized])
+            logger.info(
+                "[workflow] model_lookup tool=%s provider=%s count=%d duration_ms=%.1f cached=false",
+                tool_name,
+                provider,
+                len(normalized),
+                (time.monotonic() - started) * 1000,
+            )
+            return normalized
         except Exception:
+            logger.debug("[workflow] model lookup failed for tool=%s", tool_name, exc_info=True)
             return []
 
     def handle_workflow_confirm_tools(

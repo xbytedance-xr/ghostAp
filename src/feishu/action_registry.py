@@ -366,6 +366,18 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.WORKFLOW_ORCHESTRATOR_SELECT_TOOL,
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_select_model_group(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_SELECT_MODEL_GROUP,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_select_model_profile(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_SELECT_MODEL_PROFILE,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_orchestrator_select_model_effort(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_ORCHESTRATOR_SELECT_MODEL_EFFORT,
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_orchestrator_select_model(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_ORCHESTRATOR_SELECT_MODEL,
     )
@@ -384,6 +396,18 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
     client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_review_select_tool(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_REVIEW_SELECT_TOOL,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_select_model_group(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_SELECT_MODEL_GROUP,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_select_model_profile(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_SELECT_MODEL_PROFILE,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_review_select_model_effort(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_REVIEW_SELECT_MODEL_EFFORT,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_review_select_model(mid, cid, pid, val),

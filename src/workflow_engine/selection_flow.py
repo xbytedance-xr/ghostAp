@@ -21,18 +21,29 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from math import ceil
 from typing import Any, Optional
 
-from src.card.actions.dispatch import WORKFLOW_CANCEL
+from src.card.actions.dispatch import (
+    WORKFLOW_CANCEL,
+    WORKFLOW_ORCHESTRATOR_SELECT_MODEL,
+    WORKFLOW_ORCHESTRATOR_SELECT_MODEL_EFFORT,
+    WORKFLOW_ORCHESTRATOR_SELECT_MODEL_GROUP,
+    WORKFLOW_ORCHESTRATOR_SELECT_MODEL_PROFILE,
+    WORKFLOW_ORCHESTRATOR_SELECT_TOOL,
+    WORKFLOW_REVIEW_SELECT_MODEL,
+    WORKFLOW_REVIEW_SELECT_MODEL_EFFORT,
+    WORKFLOW_REVIEW_SELECT_MODEL_GROUP,
+    WORKFLOW_REVIEW_SELECT_MODEL_PROFILE,
+    WORKFLOW_REVIEW_SELECT_TOOL,
+)
 from src.card.builder import CardBuilder
 from src.card.render.buttons import build_responsive_button_row
 
-# Keep the inline model panel below Feishu's per-container element limits.
-# One default-model button plus 20 concrete models renders as <=11 button rows.
-# Larger providers are paginated so every model remains selectable.
-_MAX_INLINE_MODEL_BUTTONS = 20
 _MODEL_BUTTON_LABEL_MAX_CHARS = 32
+_SELECT_LABEL_MAX_CHARS = 72
+_VARIANT_TOKENS = {"low", "medium", "high", "xhigh", "max"}
+_PROFILE_ORDER = {"standard": 0, "max": 1}
+_EFFORT_ORDER = {"default": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -110,6 +121,9 @@ class SelectionFlowController:
         self.review_selections: dict[str, dict[str, Any]] = {}
         self.review_auto_mode: bool = False
         self.model_page: int = 0
+        self.pending_model_group: Optional[str] = None
+        self.pending_model_profile: Optional[str] = None
+        self.pending_model_effort: Optional[str] = None
         # Error message surfaced by the handler on empty-submit failures.
         # The handler sets it and the card builders render it if present.
         self.error_message: str = ""
@@ -124,6 +138,7 @@ class SelectionFlowController:
         self.step = step
         self.pending_tool_name = None
         self.model_page = 0
+        self._reset_model_cascade()
 
     def finish_step(self) -> tuple[int, dict[str, dict[str, Any]]]:
         """Return (next_step, snapshot_of_current_step_selections).
@@ -168,13 +183,23 @@ class SelectionFlowController:
         if not tool_name:
             self.pending_tool_name = None
             self.model_page = 0
+            self._reset_model_cascade()
             return
         if self.pending_tool_name == tool_name:
             self.pending_tool_name = None
             self.model_page = 0
+            self._reset_model_cascade()
         else:
             self.pending_tool_name = tool_name
             self.model_page = 0
+            self._reset_model_cascade()
+
+    def select_tool(self, tool_name: str, *, is_review: bool) -> None:
+        """Select ``tool_name`` from a dropdown and keep its model panel open."""
+        del is_review
+        self.pending_tool_name = str(tool_name or "").strip() or None
+        self.model_page = 0
+        self._reset_model_cascade()
 
     def set_model_page(self, tool_name: str, page: int, *, is_review: bool) -> None:
         """Keep ``tool_name`` expanded and move its inline model panel page."""
@@ -182,9 +207,34 @@ class SelectionFlowController:
         if not tool_name:
             self.pending_tool_name = None
             self.model_page = 0
+            self._reset_model_cascade()
             return
         self.pending_tool_name = tool_name
         self.model_page = max(0, int(page))
+
+    def set_model_group(self, tool_name: str, model_group: str, *, is_review: bool) -> None:
+        """Select the base model/family in the cascading model picker."""
+        del is_review
+        self.pending_tool_name = str(tool_name or "").strip() or self.pending_tool_name
+        self.pending_model_group = str(model_group or "").strip() or None
+        self.pending_model_profile = None
+        self.pending_model_effort = None
+        self.model_page = 0
+
+    def set_model_profile(self, tool_name: str, model_profile: str, *, is_review: bool) -> None:
+        """Select the profile dimension for the current model family."""
+        del is_review
+        self.pending_tool_name = str(tool_name or "").strip() or self.pending_tool_name
+        self.pending_model_profile = str(model_profile or "").strip() or None
+        self.pending_model_effort = None
+        self.model_page = 0
+
+    def set_model_effort(self, tool_name: str, model_effort: str, *, is_review: bool) -> None:
+        """Select the effort dimension for the current model family/profile."""
+        del is_review
+        self.pending_tool_name = str(tool_name or "").strip() or self.pending_tool_name
+        self.pending_model_effort = str(model_effort or "").strip() or None
+        self.model_page = 0
 
     # ------------------------------------------------------------------
     # Selection mutation
@@ -280,6 +330,9 @@ class SelectionFlowController:
             "step": self.step,
             "pending_tool_name": self.pending_tool_name,
             "model_page": self.model_page,
+            "pending_model_group": self.pending_model_group,
+            "pending_model_profile": self.pending_model_profile,
+            "pending_model_effort": self.pending_model_effort,
             "orchestrator_selections": dict(self.orchestrator_selections),
             "review_selections": dict(self.review_selections),
             "review_auto_mode": self.review_auto_mode,
@@ -289,6 +342,9 @@ class SelectionFlowController:
         self.step = int(data.get("step", 1))
         self.pending_tool_name = data.get("pending_tool_name")
         self.model_page = max(0, int(data.get("model_page", 0) or 0))
+        self.pending_model_group = data.get("pending_model_group")
+        self.pending_model_profile = data.get("pending_model_profile")
+        self.pending_model_effort = data.get("pending_model_effort")
         self.orchestrator_selections = dict(data.get("orchestrator_selections", {}))
         self.review_selections = dict(data.get("review_selections", {}))
         self.review_auto_mode = bool(data.get("review_auto_mode", False))
@@ -492,139 +548,57 @@ class SelectionFlowController:
                 })
                 elements.append({"tag": "hr"})
 
-        # Tool list + optional inline model panel
-        elements.append({"tag": "markdown", "content": "**可选工具**"})
-        for tool in available_tools:
-            tool_name = str(tool.get("tool_name", ""))
-            display_name = str(tool.get("display_name") or tool_name)
-            description = str(tool.get("description", ""))
-            is_pending = self.pending_tool_name == tool_name
-
-            left_text = f"**{display_name}**"
-            if description:
-                left_text += f" — {description}"
-
-            select_action = (
-                "workflow_review_select_tool" if is_review else "workflow_orchestrator_select_tool"
+        # Tool + model cascading selectors. Large providers such as Traex expose
+        # many variants; render one tool dropdown plus adaptive model dimensions
+        # instead of dozens of callback buttons.
+        elements.append({"tag": "markdown", "content": "**选择工具与模型**"})
+        tool_select_action = WORKFLOW_REVIEW_SELECT_TOOL if is_review else WORKFLOW_ORCHESTRATOR_SELECT_TOOL
+        selected_tool = self._current_tool(available_tools)
+        fallback_tool = selected_tool or (dict(available_tools[0]) if available_tools else None)
+        selected_tool_name = str(selected_tool.get("tool_name", "")) if selected_tool else ""
+        tool_options = [
+            self._select_option(
+                self._label_with_description(
+                    tool.get("display_name") or tool.get("tool_name") or "",
+                    tool.get("description") or "",
+                ),
+                str(tool.get("tool_name") or ""),
             )
-            select_value = self._make_button_value(
-                action=select_action,
+            for tool in available_tools
+            if str(tool.get("tool_name") or "")
+        ]
+        tool_value = self._make_button_value(
+            action=tool_select_action,
+            session_key=session_key,
+            is_review=is_review,
+            chat_id=chat_id,
+            project_id=project_id,
+            tool_name=str(fallback_tool.get("tool_name", "")) if fallback_tool else "",
+            provider=str(fallback_tool.get("provider", "workflow")) if fallback_tool else "workflow",
+            display_name=str(fallback_tool.get("display_name") or fallback_tool.get("tool_name") or "") if fallback_tool else "",
+            supports_model=bool(fallback_tool.get("supports_model", True)) if fallback_tool else True,
+        )
+        elements.append(
+            self._select_static(
+                placeholder="选择工具",
+                value=tool_value,
+                options=tool_options,
+                initial_option=selected_tool_name or None,
+            )
+        )
+
+        if selected_tool:
+            self._append_model_cascade(
+                elements,
+                tool=selected_tool,
+                available_models=available_models,
                 session_key=session_key,
                 is_review=is_review,
                 chat_id=chat_id,
                 project_id=project_id,
-                tool_name=tool_name,
-                provider=str(tool.get("provider", "workflow")),
-                display_name=display_name,
-                supports_model=bool(tool.get("supports_model", True)),
             )
-            # Vertical layout for mobile responsiveness: markdown description above, button below
-            elements.append({"tag": "markdown", "content": left_text})
-            elements.append({
-                "tag": "button",
-                "text": {
-                    "tag": "plain_text",
-                    "content": "选择模型" if is_pending else f"+ 添加 {display_name}",
-                },
-                "type": "primary" if is_pending else "default",
-                "value": select_value,
-                "behaviors": [{"type": "callback", "value": select_value}],
-            })
-
-            if is_pending:
-                default_value = self._make_button_value(
-                    action=(
-                        "workflow_review_select_model"
-                        if is_review
-                        else "workflow_orchestrator_select_model"
-                    ),
-                    session_key=session_key,
-                    is_review=is_review,
-                    chat_id=chat_id,
-                    project_id=project_id,
-                    tool_name=tool_name,
-                    provider=str(tool.get("provider", "workflow")),
-                    display_name=display_name,
-                    supports_model=bool(tool.get("supports_model", True)),
-                    use_default_model=True,
-                )
-                default_btn = {
-                    "tag": "button",
-                    "text": {"tag": "plain_text", "content": "默认模型（推荐）"},
-                    "type": "primary",
-                    "value": default_value,
-                    "behaviors": [{"type": "callback", "value": default_value}],
-                }
-                model_buttons = [default_btn]
-
-                if available_models:
-                    total_models = len(available_models)
-                    total_pages = max(1, ceil(total_models / _MAX_INLINE_MODEL_BUTTONS))
-                    page = min(max(0, self.model_page), total_pages - 1)
-                    start = page * _MAX_INLINE_MODEL_BUTTONS
-                    end = start + _MAX_INLINE_MODEL_BUTTONS
-                    visible_models = available_models[start:end]
-                    if total_pages > 1:
-                        elements.append({
-                            "tag": "markdown",
-                            "content": (
-                                f"_模型 {start + 1}-{min(end, total_models)} / {total_models}"
-                                f" · 第 {page + 1}/{total_pages} 页_"
-                            ),
-                        })
-                    for m in visible_models:
-                        m_name = str(m.get("name", ""))
-                        m_display = str(m.get("display_name") or m_name)
-                        if not m_name:
-                            continue
-                        m_value = self._make_button_value(
-                            action=(
-                                "workflow_review_select_model"
-                                if is_review
-                                else "workflow_orchestrator_select_model"
-                            ),
-                            session_key=session_key,
-                            is_review=is_review,
-                            chat_id=chat_id,
-                            project_id=project_id,
-                            tool_name=tool_name,
-                            provider=str(tool.get("provider", "workflow")),
-                            display_name=display_name,
-                            supports_model=bool(tool.get("supports_model", True)),
-                            model_name=m_name,
-                            name=m_name,
-                        )
-                        model_buttons.append({
-                            "tag": "button",
-                            "text": {
-                                "tag": "plain_text",
-                                "content": self._button_label(m_display),
-                            },
-                            "type": "default",
-                            "value": m_value,
-                            "behaviors": [{"type": "callback", "value": m_value}],
-                        })
-                    elements.extend(build_responsive_button_row(model_buttons))
-                    nav_buttons = self._model_page_buttons(
-                        action=select_action,
-                        session_key=session_key,
-                        is_review=is_review,
-                        chat_id=chat_id,
-                        project_id=project_id,
-                        tool_name=tool_name,
-                        provider=str(tool.get("provider", "workflow")),
-                        display_name=display_name,
-                        supports_model=bool(tool.get("supports_model", True)),
-                        page=page,
-                        total_pages=total_pages,
-                    )
-                    elements.extend(build_responsive_button_row(nav_buttons))
-                else:
-                    elements.extend(build_responsive_button_row(model_buttons))
-                    elements.append({
-                        "tag": "markdown",
-                        "content": "_未配置额外模型列表；请选择默认模型。_",
-                    })
+        else:
+            elements.append({"tag": "markdown", "content": "_先选择工具，再选择模型。_"})
 
         elements.append({"tag": "hr"})
 
@@ -680,6 +654,341 @@ class SelectionFlowController:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _reset_model_cascade(self) -> None:
+        self.pending_model_group = None
+        self.pending_model_profile = None
+        self.pending_model_effort = None
+
+    def _current_tool(self, available_tools: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not available_tools:
+            return None
+        if self.pending_tool_name:
+            for tool in available_tools:
+                if str(tool.get("tool_name") or "") == self.pending_tool_name:
+                    return dict(tool)
+        return None
+
+    def _append_model_cascade(
+        self,
+        elements: list[dict[str, Any]],
+        *,
+        tool: dict[str, Any],
+        available_models: list[dict[str, Any]],
+        session_key: str,
+        is_review: bool,
+        chat_id: str,
+        project_id: str,
+    ) -> None:
+        tool_name = str(tool.get("tool_name") or "")
+        display_name = str(tool.get("display_name") or tool_name)
+        provider = str(tool.get("provider", "workflow"))
+        supports_model = bool(tool.get("supports_model", True))
+        model_action = WORKFLOW_REVIEW_SELECT_MODEL if is_review else WORKFLOW_ORCHESTRATOR_SELECT_MODEL
+
+        default_value = self._make_button_value(
+            action=model_action,
+            session_key=session_key,
+            is_review=is_review,
+            chat_id=chat_id,
+            project_id=project_id,
+            tool_name=tool_name,
+            provider=provider,
+            display_name=display_name,
+            supports_model=supports_model,
+            use_default_model=True,
+        )
+        elements.extend(
+            build_responsive_button_row([
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "默认模型（推荐）"},
+                    "type": "primary",
+                    "value": default_value,
+                    "behaviors": [{"type": "callback", "value": default_value}],
+                }
+            ])
+        )
+
+        groups = self._build_model_groups(available_models)
+        if not groups:
+            elements.append({"tag": "markdown", "content": "_未配置额外模型列表；请选择默认模型。_"})
+            return
+
+        group_keys = [g["key"] for g in groups]
+        selected_group_key = self.pending_model_group if self.pending_model_group in group_keys else group_keys[0]
+        selected_group = next(g for g in groups if g["key"] == selected_group_key)
+        group_action = (
+            WORKFLOW_REVIEW_SELECT_MODEL_GROUP
+            if is_review
+            else WORKFLOW_ORCHESTRATOR_SELECT_MODEL_GROUP
+        )
+        group_value = self._make_button_value(
+            action=group_action,
+            session_key=session_key,
+            is_review=is_review,
+            chat_id=chat_id,
+            project_id=project_id,
+            tool_name=tool_name,
+            provider=provider,
+            display_name=display_name,
+            supports_model=supports_model,
+        )
+        elements.append({"tag": "markdown", "content": "**模型族**"})
+        elements.append(
+            self._select_static(
+                placeholder="选择模型",
+                value=group_value,
+                options=[self._select_option(g["label"], g["key"]) for g in groups],
+                initial_option=selected_group_key,
+            )
+        )
+
+        variants = list(selected_group["variants"])
+        profiles = self._ordered_unique((v["profile"] for v in variants), kind="profile")
+        selected_profile = (
+            self.pending_model_profile
+            if self.pending_model_profile in profiles
+            else profiles[0]
+        )
+        if len(profiles) > 1:
+            profile_action = (
+                WORKFLOW_REVIEW_SELECT_MODEL_PROFILE
+                if is_review
+                else WORKFLOW_ORCHESTRATOR_SELECT_MODEL_PROFILE
+            )
+            profile_value = self._make_button_value(
+                action=profile_action,
+                session_key=session_key,
+                is_review=is_review,
+                chat_id=chat_id,
+                project_id=project_id,
+                tool_name=tool_name,
+                provider=provider,
+                display_name=display_name,
+                supports_model=supports_model,
+                model_group=selected_group_key,
+            )
+            elements.append({"tag": "markdown", "content": "**Profile**"})
+            elements.append(
+                self._select_static(
+                    placeholder="选择 Profile",
+                    value=profile_value,
+                    options=[self._select_option(self._profile_label(p), p) for p in profiles],
+                    initial_option=selected_profile,
+                )
+            )
+
+        profile_variants = [v for v in variants if v["profile"] == selected_profile]
+        efforts = self._ordered_unique((v["effort"] for v in profile_variants), kind="effort")
+        selected_effort = (
+            self.pending_model_effort
+            if self.pending_model_effort in efforts
+            else efforts[0]
+        )
+        if len(efforts) > 1:
+            effort_action = (
+                WORKFLOW_REVIEW_SELECT_MODEL_EFFORT
+                if is_review
+                else WORKFLOW_ORCHESTRATOR_SELECT_MODEL_EFFORT
+            )
+            effort_value = self._make_button_value(
+                action=effort_action,
+                session_key=session_key,
+                is_review=is_review,
+                chat_id=chat_id,
+                project_id=project_id,
+                tool_name=tool_name,
+                provider=provider,
+                display_name=display_name,
+                supports_model=supports_model,
+                model_group=selected_group_key,
+                model_profile=selected_profile,
+            )
+            elements.append({"tag": "markdown", "content": "**Effort**"})
+            elements.append(
+                self._select_static(
+                    placeholder="选择 Effort",
+                    value=effort_value,
+                    options=[self._select_option(self._effort_label(e), e) for e in efforts],
+                    initial_option=selected_effort,
+                )
+            )
+
+        selected_variant = self._choose_variant(
+            variants,
+            profile=selected_profile,
+            effort=selected_effort,
+        )
+        if not selected_variant:
+            selected_variant = variants[0]
+        model_name = str(selected_variant["name"])
+        add_value = self._make_button_value(
+            action=model_action,
+            session_key=session_key,
+            is_review=is_review,
+            chat_id=chat_id,
+            project_id=project_id,
+            tool_name=tool_name,
+            provider=provider,
+            display_name=display_name,
+            supports_model=supports_model,
+            model_name=model_name,
+            name=model_name,
+            model_group=selected_group_key,
+            model_profile=selected_variant["profile"],
+            model_effort=selected_variant["effort"],
+        )
+        add_label = "添加此组合" if is_review else "设为主编排 Agent"
+        elements.extend(
+            build_responsive_button_row([
+                {
+                    "tag": "button",
+                    "text": {
+                        "tag": "plain_text",
+                        "content": self._button_label(f"{add_label}: {model_name}"),
+                    },
+                    "type": "primary",
+                    "value": add_value,
+                    "behaviors": [{"type": "callback", "value": add_value}],
+                }
+            ])
+        )
+
+    @staticmethod
+    def _build_model_groups(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for model in models:
+            name = str(model.get("name") or "").strip()
+            if not name:
+                continue
+            display = str(model.get("display_name") or name).strip() or name
+            base, tokens = SelectionFlowController._split_model_variant(name)
+            profile, effort = SelectionFlowController._dimensions_from_tokens(tokens)
+            if base not in groups:
+                groups[base] = {
+                    "key": base,
+                    "label": base if tokens else display,
+                    "variants": [],
+                }
+                order.append(base)
+            elif tokens:
+                groups[base]["label"] = base
+            groups[base]["variants"].append({
+                "name": name,
+                "display_name": display,
+                "profile": profile,
+                "effort": effort,
+                "tokens": tokens,
+            })
+        return [groups[key] for key in order]
+
+    @staticmethod
+    def _split_model_variant(model_name: str) -> tuple[str, tuple[str, ...]]:
+        parts = [p for p in str(model_name or "").split("/") if p]
+        if len(parts) <= 1:
+            return str(model_name or ""), ()
+        suffix: list[str] = []
+        while parts and parts[-1].lower() in _VARIANT_TOKENS:
+            suffix.insert(0, parts.pop())
+        if not suffix or not parts:
+            return str(model_name or ""), ()
+        return "/".join(parts), tuple(suffix)
+
+    @staticmethod
+    def _dimensions_from_tokens(tokens: tuple[str, ...]) -> tuple[str, str]:
+        lowered = tuple(t.lower() for t in tokens)
+        if not lowered:
+            return "standard", "default"
+        if len(lowered) == 1:
+            if lowered[0] == "max":
+                return "max", "default"
+            return "standard", lowered[0]
+        return lowered[0], "/".join(lowered[1:])
+
+    @staticmethod
+    def _ordered_unique(values: Any, *, kind: str) -> list[str]:
+        result: list[str] = []
+        for value in values:
+            text = str(value or "")
+            if text and text not in result:
+                result.append(text)
+        order = _PROFILE_ORDER if kind == "profile" else _EFFORT_ORDER
+        return sorted(
+            result,
+            key=lambda x: (
+                order.get(x, 50),
+                x,
+            ),
+        )
+
+    @staticmethod
+    def _choose_variant(
+        variants: list[dict[str, Any]],
+        *,
+        profile: str,
+        effort: str,
+    ) -> dict[str, Any] | None:
+        for variant in variants:
+            if variant["profile"] == profile and variant["effort"] == effort:
+                return variant
+        for variant in variants:
+            if variant["profile"] == profile:
+                return variant
+        return variants[0] if variants else None
+
+    @staticmethod
+    def _select_static(
+        *,
+        placeholder: str,
+        value: dict[str, Any],
+        options: list[dict[str, Any]],
+        initial_option: str | None = None,
+    ) -> dict[str, Any]:
+        select = {
+            "tag": "select_static",
+            "placeholder": {"tag": "plain_text", "content": placeholder},
+            "value": value,
+            "options": options,
+        }
+        if initial_option:
+            select["initial_option"] = initial_option
+        return select
+
+    @staticmethod
+    def _select_option(label: str, value: str) -> dict[str, Any]:
+        return {
+            "text": {"tag": "plain_text", "content": SelectionFlowController._select_label(label)},
+            "value": value,
+        }
+
+    @staticmethod
+    def _select_label(text: str) -> str:
+        label = str(text or "").strip()
+        if len(label) <= _SELECT_LABEL_MAX_CHARS:
+            return label
+        return label[: _SELECT_LABEL_MAX_CHARS - 1].rstrip() + "…"
+
+    @staticmethod
+    def _label_with_description(name: object, description: object = "") -> str:
+        label = str(name or "").strip()
+        desc = str(description or "").strip()
+        if desc:
+            return f"{label} ({desc})"
+        return label
+
+    @staticmethod
+    def _profile_label(profile: str) -> str:
+        if profile == "standard":
+            return "standard"
+        return profile
+
+    @staticmethod
+    def _effort_label(effort: str) -> str:
+        if effort == "default":
+            return "default"
+        return effort
 
     def _make_button_value(
         self,

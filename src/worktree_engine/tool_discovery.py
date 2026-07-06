@@ -183,6 +183,7 @@ class WorktreeToolDiscovery:
         provider: str = "ttadk",
         cwd: Optional[str] = None,
         current_model: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> list[dict]:
         """Return available models for a tool (ACP or TTADK) as dicts for card builder."""
         if provider == "acp":
@@ -213,7 +214,7 @@ class WorktreeToolDiscovery:
             models_result = manager.get_models(
                 tool_name=tool_name,
                 cwd=cwd,
-                force_refresh=True,
+                force_refresh=force_refresh,
             )
             warnings = list(getattr(models_result, "warnings", []) or [])
             source = str(getattr(models_result, "source", "") or "").strip().lower()

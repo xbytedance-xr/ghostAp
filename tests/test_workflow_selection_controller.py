@@ -479,11 +479,17 @@ class TestOrchestratorCombinedCard:
 
         model_actions = _find_actions(card, "workflow_orchestrator_select_model")
         model_names = {a.get("model_name") for a in model_actions if a.get("model_name")}
-        assert len(model_names) == len(models)
+        assert model_names == {"traex-model-0"}
         assert any(a.get("use_default_model") for a in model_actions)
-        assert "traex-model-17" in model_names
 
-    def test_pending_tool_model_panel_paginates_large_model_lists(self):
+        group_select = next(
+            s for s in _find_tags(card, "select_static")
+            if s.get("value", {}).get("action") == "workflow_orchestrator_select_model_group"
+        )
+        option_values = {opt.get("value") for opt in group_select.get("options", [])}
+        assert option_values == {f"traex-model-{i}" for i in range(18)}
+
+    def test_pending_tool_model_panel_uses_select_for_large_model_lists(self):
         ctrl = _basic_controller()
         ctrl.toggle_tool_expand("traex", is_review=False)
         models = [
@@ -500,32 +506,61 @@ class TestOrchestratorCombinedCard:
         first_model_names = {
             a.get("model_name") for a in first_model_actions if a.get("model_name")
         }
-        assert len(first_model_names) == 20
-        assert "traex-model-19" in first_model_names
-        assert "traex-model-20" not in first_model_names
+        assert first_model_names == {"traex-model-0"}
 
-        first_tool_actions = _find_actions(first_page, "workflow_orchestrator_select_tool")
-        assert any(a.get("model_page") == 1 for a in first_tool_actions)
+        group_select = next(
+            s for s in _find_tags(first_page, "select_static")
+            if s.get("value", {}).get("action") == "workflow_orchestrator_select_model_group"
+        )
+        option_values = {opt.get("value") for opt in group_select.get("options", [])}
+        assert len(option_values) == 90
+        assert "traex-model-0" in option_values
+        assert "traex-model-89" in option_values
 
-        ctrl.set_model_page("traex", 4, is_review=False)
-        last_page = ctrl.build_orchestrator_combined_card(
+        from src.card.render.payload_truncator import count_tagged_nodes
+        assert count_tagged_nodes(first_page) <= 180
+
+    def test_large_variant_models_render_as_cascading_selects(self):
+        ctrl = _basic_controller()
+        ctrl.select_tool("traex", is_review=False)
+        ctrl.set_model_group("traex", "openrouter-3o", is_review=False)
+        models = [
+            {"name": "openrouter-3o/low", "display_name": "openrouter-3o/low"},
+            {"name": "openrouter-3o/medium", "display_name": "openrouter-3o/medium"},
+            {"name": "openrouter-3o/high", "display_name": "openrouter-3o/high"},
+            {"name": "openrouter-3o/max", "display_name": "openrouter-3o/max"},
+            {"name": "openrouter-3o/max/low", "display_name": "openrouter-3o/max/low"},
+            {"name": "openrouter-3o/max/high", "display_name": "openrouter-3o/max/high"},
+            {"name": "openrouter-2o/low", "display_name": "openrouter-2o/low"},
+            {"name": "openrouter-2o/high", "display_name": "openrouter-2o/high"},
+        ]
+
+        card = ctrl.build_orchestrator_combined_card(
             available_tools=[{"tool_name": "traex", "display_name": "Traex"}],
             available_models=models,
             session_key="sess_abc",
+            chat_id="chat_1",
+            project_id="proj_1",
         )
-        last_model_actions = _find_actions(last_page, "workflow_orchestrator_select_model")
-        last_model_names = {
-            a.get("model_name") for a in last_model_actions if a.get("model_name")
-        }
-        assert "traex-model-80" in last_model_names
-        assert "traex-model-89" in last_model_names
 
-        last_tool_actions = _find_actions(last_page, "workflow_orchestrator_select_tool")
-        assert any(a.get("model_page") == 3 for a in last_tool_actions)
-        assert not any(a.get("model_page") == 5 for a in last_tool_actions)
+        selects = _find_tags(card, "select_static")
+        select_actions = {s.get("value", {}).get("action") for s in selects}
+        assert "workflow_orchestrator_select_tool" in select_actions
+        assert "workflow_orchestrator_select_model_group" in select_actions
+        assert "workflow_orchestrator_select_model_profile" in select_actions
+        assert "workflow_orchestrator_select_model_effort" in select_actions
 
-        from src.card.render.payload_truncator import count_tagged_nodes
-        assert count_tagged_nodes(last_page) <= 180
+        group_select = next(
+            s for s in selects
+            if s.get("value", {}).get("action") == "workflow_orchestrator_select_model_group"
+        )
+        group_values = {opt.get("value") for opt in group_select.get("options", [])}
+        assert group_values == {"openrouter-3o", "openrouter-2o"}
+
+        model_actions = _find_actions(card, "workflow_orchestrator_select_model")
+        concrete_model_actions = [a for a in model_actions if a.get("model_name")]
+        concrete_model_names = {a["model_name"] for a in concrete_model_actions}
+        assert concrete_model_names == {"openrouter-3o/low"}
 
     def test_pending_tool_model_panel_stays_under_payload_budget_with_many_tools(self):
         import json
@@ -619,6 +654,30 @@ class TestReviewCombinedCard:
             session_key="sess_abc",
         )
         assert not _find_actions(card, "workflow_orchestrator_select_tool")
+
+    def test_review_card_uses_review_cascade_actions(self):
+        ctrl = _basic_controller(step=2)
+        ctrl.select_tool("traex", is_review=True)
+        ctrl.set_model_group("traex", "openrouter-3o", is_review=True)
+        card = ctrl.build_review_combined_card(
+            available_tools=[{"tool_name": "traex", "display_name": "Traex"}],
+            available_models=[
+                {"name": "openrouter-3o/low", "display_name": "openrouter-3o/low"},
+                {"name": "openrouter-3o/max/high", "display_name": "openrouter-3o/max/high"},
+            ],
+            session_key="sess_abc",
+        )
+
+        selects = _find_tags(card, "select_static")
+        select_actions = {s.get("value", {}).get("action") for s in selects}
+        assert "workflow_review_select_tool" in select_actions
+        assert "workflow_review_select_model_group" in select_actions
+        assert "workflow_review_select_model_profile" in select_actions
+
+        model_actions = _find_actions(card, "workflow_review_select_model")
+        model_names = {a.get("model_name") for a in model_actions if a.get("model_name")}
+        assert model_names == {"openrouter-3o/low"}
+        assert not _find_actions(card, "workflow_orchestrator_select_model_group")
 
 
 # ---------------------------------------------------------------------------
