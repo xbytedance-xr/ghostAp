@@ -1,10 +1,14 @@
 """Tests for SLOCK_TEAM_NAME_PREFIX → slock_team_name_suffix compatibility migration (AC-17)."""
 
-import warnings
+from unittest.mock import patch
 
 import pytest
 
 from src.config import Settings, _reset_settings_for_testing
+
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:SLOCK_TEAM_NAME_PREFIX is deprecated, use SLOCK_TEAM_NAME_SUFFIX instead:DeprecationWarning"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -24,48 +28,41 @@ class TestSlockTeamNamePrefixCompat:
         # Clear any existing suffix env to test pure prefix migration
         monkeypatch.delenv("SLOCK_TEAM_NAME_SUFFIX", raising=False)
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
+        with patch("src.config.settings._emit_slock_prefix_deprecation_warning") as warn:
             s = Settings(_env_file=None)
 
         assert s.slock_team_name_suffix == "TestTeam"
+        warn.assert_called_once_with()
 
     def test_new_suffix_env_takes_priority(self, monkeypatch):
         """When both PREFIX and SUFFIX are set, SUFFIX wins."""
         monkeypatch.setenv("SLOCK_TEAM_NAME_PREFIX", "OldValue")
         monkeypatch.setenv("SLOCK_TEAM_NAME_SUFFIX", "NewValue")
 
-        with warnings.catch_warnings(record=True):
-            warnings.simplefilter("always")
+        with patch("src.config.settings._emit_slock_prefix_deprecation_warning") as warn:
             s = Settings(_env_file=None)
 
         assert s.slock_team_name_suffix == "NewValue"
+        warn.assert_called_once_with()
 
     def test_prefix_emits_deprecation_warning(self, monkeypatch):
         """SLOCK_TEAM_NAME_PREFIX triggers DeprecationWarning."""
         monkeypatch.setenv("SLOCK_TEAM_NAME_PREFIX", "DeprecatedVal")
         monkeypatch.delenv("SLOCK_TEAM_NAME_SUFFIX", raising=False)
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with patch("src.config.settings._emit_slock_prefix_deprecation_warning") as warn:
             Settings(_env_file=None)
-
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        assert len(deprecation_warnings) >= 1
-        assert "SLOCK_TEAM_NAME_PREFIX" in str(deprecation_warnings[0].message)
+        warn.assert_called_once_with()
 
     def test_no_prefix_no_warning(self, monkeypatch):
         """Without SLOCK_TEAM_NAME_PREFIX, no deprecation warning is emitted."""
         monkeypatch.delenv("SLOCK_TEAM_NAME_PREFIX", raising=False)
         monkeypatch.delenv("SLOCK_TEAM_NAME_SUFFIX", raising=False)
 
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+        with patch("src.config.settings._emit_slock_prefix_deprecation_warning") as warn:
             Settings(_env_file=None)
 
-        deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
-        prefix_warnings = [x for x in deprecation_warnings if "SLOCK_TEAM_NAME_PREFIX" in str(x.message)]
-        assert len(prefix_warnings) == 0
+        warn.assert_not_called()
 
     def test_default_suffix_without_env(self, monkeypatch):
         """Without any env, slock_team_name_suffix defaults to '[Slock]'."""

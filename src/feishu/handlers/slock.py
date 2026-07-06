@@ -8,6 +8,7 @@ import logging
 import shlex
 import threading
 import time
+from numbers import Real
 from typing import TYPE_CHECKING, Optional
 
 from ...acp.helper import fetch_acp_models
@@ -35,6 +36,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _positive_seconds(value: object, default: float) -> float:
+    """Return a positive timeout value, falling back for mocks or invalid config."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, Real):
+        seconds = float(value)
+    elif isinstance(value, str):
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return default
+    else:
+        return default
+    return seconds if seconds > 0 else default
+
+
+def _confidence_threshold(value: object, default: float) -> float:
+    """Return a valid confidence threshold in [0, 1], falling back for mocks."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, Real):
+        threshold = float(value)
+    elif isinstance(value, str):
+        try:
+            threshold = float(value.strip())
+        except ValueError:
+            return default
+    else:
+        return default
+    return threshold if 0.0 <= threshold <= 1.0 else default
+
+
 def _get_nli_loop():
     """Return the shared loop used for async NLI classification."""
     from src.utils.async_helpers import _get_bridge_loop
@@ -56,8 +89,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         # Singleton IntentRouter (AC-10: only instantiated once per handler lifecycle)
         from src.slock_engine.intent_router import IntentRouter
         self._intent_router = IntentRouter(
-            confidence_threshold=getattr(ctx.settings, "slock_nli_confidence_threshold", 0.7),
-            timeout=getattr(ctx.settings, "slock_nli_timeout", 5),
+            confidence_threshold=_confidence_threshold(
+                getattr(ctx.settings, "slock_nli_confidence_threshold", 0.7), 0.7
+            ),
+            timeout=_positive_seconds(getattr(ctx.settings, "slock_nli_timeout", 5), 5.0),
         )
         # Use shared compute pool for NLI classification
         from src.utils.thread_pools import get_compute_pool
@@ -363,11 +398,12 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             elif not is_chitchat or confidence < 0.7:
                 # Ambiguous or likely-task — invoke LLM NLI for better classification
                 nli_loop = _get_nli_loop()
-                coro = self._classify_with_timeout(text or "")
+                timeout_s = _positive_seconds(getattr(self.ctx.settings, "slock_nli_timeout", 5), 5.0)
+                coro = self._classify_with_timeout(text or "", timeout_s=timeout_s)
                 future = asyncio.run_coroutine_threadsafe(coro, nli_loop)
                 from concurrent.futures import Future
                 scheduled = isinstance(future, Future)
-                intent_result = future.result(timeout=self.ctx.settings.slock_nli_timeout + 0.2)
+                intent_result = future.result(timeout=timeout_s + 0.2)
                 if coro is not None and not scheduled:
                     coro.close()
                     coro = None
@@ -516,7 +552,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             logger.debug("Shell-like check failed for Slock autonomous task planning", exc_info=True)
             return False
 
-    async def _classify_with_timeout(self, text: str):
+    async def _classify_with_timeout(self, text: str, *, timeout_s: float | None = None):
         """Run NLI classification with timeout protection.
 
         Runs inside the shared slock event loop (src/slock_engine/engine.py).
@@ -524,9 +560,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         """
         from src.utils.async_helpers import safe_wait_for
 
+        effective_timeout_s = _positive_seconds(timeout_s, 5.0)
         return await safe_wait_for(
             self._intent_router.classify_intent(text),
-            timeout=self.ctx.settings.slock_nli_timeout,
+            timeout=effective_timeout_s,
             action="NLI 意图分类",
         )
 

@@ -51,7 +51,14 @@ class _LegacyTaskBoardContext:
     def set_dirty(self, value: bool) -> None:
         self.dirty_setter(value)
 
-    def execute_agent(self, agent: AgentIdentity, content: str, callbacks) -> Optional[str]:
+    def execute_agent(
+        self,
+        agent: AgentIdentity,
+        content: str,
+        callbacks,
+        *,
+        freshness_check: bool = True,
+    ) -> Optional[str]:
         if self.execute_agent_fn is None:
             return None
         result = self.execute_agent_fn(agent, content, callbacks)
@@ -60,7 +67,15 @@ class _LegacyTaskBoardContext:
     def resolve_agent_for_role(self, role: str, channel_id: str) -> Optional[AgentIdentity]:
         return None
 
-    def execute_task(self, task_id: str, agent_id: str, callbacks) -> Optional[str]:
+    def execute_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        callbacks,
+        *,
+        request_review: bool = True,
+        freshness_check: bool = True,
+    ) -> Optional[str]:
         return None
 
 
@@ -293,6 +308,9 @@ class TaskBoardManager:
         task_id: str,
         agent_id: str,
         callbacks=None,
+        *,
+        request_review: bool = True,
+        freshness_check: bool = True,
     ) -> Optional[str]:
         """Execute a task end-to-end: claim -> execute -> review gate -> complete/rollback.
 
@@ -320,7 +338,12 @@ class TaskBoardManager:
                 return None
 
         try:
-            result = self._context.execute_agent(agent, task_content, callbacks)
+            result = self._context.execute_agent(
+                agent,
+                task_content,
+                callbacks,
+                freshness_check=freshness_check,
+            )
             if result:
                 # Store execution result summary on task for context passing
                 predecessor_name = ""
@@ -361,12 +384,12 @@ class TaskBoardManager:
                                 )
                             except Exception as e:
                                 logger.debug(
-                                    "Failed to record relationship interaction: %s", e
+                                    "Failed to record relationship interaction: %s", str(e)
                                 )
 
                 self._mark_task_in_review(task_id, agent_id)
                 # Attempt to trigger review; if no reviewer available, auto-complete
-                review_requested = self.request_review(task_id, agent_id, result)
+                review_requested = request_review and self.request_review(task_id, agent_id, result)
                 if not review_requested:
                     # No reviewer role in chain — auto-complete (simple task path)
                     self.complete_task(task_id, agent_id)

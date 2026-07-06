@@ -47,6 +47,14 @@ _DEFAULT_UNCERTAINTY_MARKERS: frozenset[str] = frozenset({
 })
 
 
+def _emit_slock_prefix_deprecation_warning() -> None:
+    warnings.warn(
+        "SLOCK_TEAM_NAME_PREFIX is deprecated, use SLOCK_TEAM_NAME_SUFFIX instead",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -784,11 +792,7 @@ class Settings(BaseSettings):
         # by Pydantic's validation_alias. We detect usage of the old env var
         # by checking os.environ for the deprecated key name.
         if os.environ.get("SLOCK_TEAM_NAME_PREFIX") is not None:
-            warnings.warn(
-                "SLOCK_TEAM_NAME_PREFIX is deprecated, use SLOCK_TEAM_NAME_SUFFIX instead",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+            _emit_slock_prefix_deprecation_warning()
         return v
 
     @field_validator("max_allowed_chat_ids", mode="before")

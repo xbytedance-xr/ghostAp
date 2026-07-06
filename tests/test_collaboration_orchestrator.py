@@ -705,6 +705,7 @@ class TestChainAutoDispatch:
         assert plan.steps[0].agent_id == "agent-coder"
         step0_task_id = plan.steps[0].task_id
 
+        _wait_for_mock_call_count(dispatch_task, 1)
         dispatch_task.reset_mock()
         t0 = _time.monotonic()
 
@@ -745,6 +746,8 @@ class TestChainAutoDispatch:
 
         plan = orchestrator.create_plan(task, channel_id="channel-1")
         orchestrator.approve_plan(plan.plan_id)
+        _wait_for_mock_call_count(dispatch_task, 1)
+        dispatch_task.reset_mock()
 
         # Complete coder step first
         orchestrator.on_task_status_changed(
@@ -760,6 +763,7 @@ class TestChainAutoDispatch:
         assert plan.steps[1].agent_id == "agent-reviewer"
         step1_task_id = plan.steps[1].task_id
 
+        _wait_for_mock_call_count(dispatch_task, 1)
         dispatch_task.reset_mock()
         t0 = _time.monotonic()
 

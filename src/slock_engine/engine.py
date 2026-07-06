@@ -17,6 +17,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass
+from numbers import Real
 from typing import Any, Callable, Optional
 
 from ..agent_session import close_session_safely, create_engine_session
@@ -55,6 +56,22 @@ logger = logging.getLogger(__name__)
 
 _SHARED_LOOP: _asyncio.AbstractEventLoop | None = None
 _SHARED_LOOP_LOCK = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
+
+def _positive_seconds(value: object, default: float) -> float:
+    """Return a positive timeout value, falling back for mocks or invalid config."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, Real):
+        seconds = float(value)
+    elif isinstance(value, str):
+        try:
+            seconds = float(value.strip())
+        except ValueError:
+            return default
+    else:
+        return default
+    return seconds if seconds > 0 else default
 
 
 def _get_shared_loop() -> _asyncio.AbstractEventLoop:
@@ -247,9 +264,16 @@ class SlockEngine(BaseEngine):
         """设置 dirty 标志。"""
         self._set_dirty(value)
 
-    def execute_agent(self, agent: AgentIdentity, content: str, callbacks: Any) -> Optional[str]:
+    def execute_agent(
+        self,
+        agent: AgentIdentity,
+        content: str,
+        callbacks: Any,
+        *,
+        freshness_check: bool = True,
+    ) -> Optional[str]:
         """执行单个 agent 的响应周期。"""
-        return self._execute_agent(agent, content, callbacks)
+        return self._execute_agent(agent, content, callbacks, freshness_check=freshness_check)
 
     def resolve_agent_for_role(self, role: str, channel_id: str) -> Optional[AgentIdentity]:
         """为指定角色在 channel 中解析最佳可用 agent。"""
@@ -316,7 +340,7 @@ class SlockEngine(BaseEngine):
         # Proactive Patrol loop: periodic check for SLA violations, idle agent auto-claim
         self._patrol_thread: Optional[threading.Thread] = None
         self._patrol_stop = threading.Event()
-        self._patrol_interval = getattr(get_settings(), "slock_patrol_interval", 30)
+        self._patrol_interval = _positive_seconds(getattr(get_settings(), "slock_patrol_interval", 30), 30.0)
 
         # Thread pool for parallel agent execution
         self._executor: Optional[BoundedExecutor] = None
@@ -651,21 +675,19 @@ class SlockEngine(BaseEngine):
           if registry is empty after bootstrap timeout, sends recovery card,
           and retains all queued tasks.
         """
-        import time as _time
-
         # Wait for bootstrap with self-healing retries
-        bootstrap_timeout = getattr(get_settings(), "slock_bootstrap_timeout", 10)
+        bootstrap_timeout = _positive_seconds(getattr(get_settings(), "slock_bootstrap_timeout", 10), 10.0)
         max_retries = 3
         bootstrap_ok = False
 
         for attempt in range(max_retries + 1):
             self._bootstrap_ready.wait(timeout=bootstrap_timeout)
+            if self._dispatch_stop.is_set():
+                return
+
             if self._bootstrap_ready.is_set() and self.list_agents():
                 bootstrap_ok = True
                 break
-
-            if self._dispatch_stop.is_set():
-                return
 
             if attempt < max_retries:
                 backoff = min(2 ** (attempt + 1), 30)
@@ -678,7 +700,8 @@ class SlockEngine(BaseEngine):
                 self._send_bootstrap_recovery_card(attempt + 1, max_retries)
                 # Reset the event so next wait is fresh
                 self._bootstrap_ready.clear()
-                _time.sleep(backoff)
+                if self._dispatch_stop.wait(timeout=backoff):
+                    return
             else:
                 logger.error(
                     "Bootstrap failed after %d retries, dispatch loop proceeding "
@@ -1031,9 +1054,12 @@ class SlockEngine(BaseEngine):
     def stop_dispatch_loop(self) -> None:
         """Stop the dispatch loop gracefully."""
         self._dispatch_stop.set()
+        self._bootstrap_ready.set()  # Wake bootstrap wait so shutdown is not delayed by bootstrap timeout.
         self._task_queue.notify_idle()  # Wake the loop so it can check the stop flag
         if self._dispatch_thread and self._dispatch_thread.is_alive():
             self._dispatch_thread.join(timeout=5.0)
+            if self._dispatch_thread.is_alive():
+                logger.warning("Dispatch loop did not stop within 5s for chat=%s", self.chat_id)
 
     # ------------------------------------------------------------------
     # Proactive Patrol loop — periodic SLA check + idle agent auto-claim
@@ -1984,6 +2010,8 @@ class SlockEngine(BaseEngine):
         agent: AgentIdentity,
         message: str,
         callbacks: Optional[SlockEngineCallbacks],
+        *,
+        freshness_check: bool = True,
     ) -> Optional[str]:
         """Execute a single agent's response cycle.
 
@@ -1996,7 +2024,6 @@ class SlockEngine(BaseEngine):
         # Set up cancellation event and watchdog timer
         cancel_event = self._get_cancel_event(agent_id)
         settings = get_settings()
-        watchdog_start_ts = time.time()
         watchdog = threading.Timer(
             settings.slock_agent_execution_timeout,
             cancel_event.set,
@@ -2018,6 +2045,7 @@ class SlockEngine(BaseEngine):
                 agent_name=agent.name,
                 metadata={"routed_to": agent_id},
             )
+            freshness_baseline_ts = time.time()
 
             if callbacks and callbacks.on_agent_wake:
                 callbacks.on_agent_wake(agent)
@@ -2150,12 +2178,12 @@ class SlockEngine(BaseEngine):
             # Before sending, check if new messages arrived since execution started.
             # If so, hold the draft and let agent re-evaluate (bounded retries).
             settings_obj = get_settings()
-            if result and settings_obj.slock_freshness_gate_enabled:
+            if result and freshness_check and settings_obj.slock_freshness_gate_enabled:
                 result = self._freshness_gate_check(
                     agent=agent,
                     original_message=message,
                     draft_result=result,
-                    execution_start_ts=watchdog_start_ts,
+                    execution_start_ts=freshness_baseline_ts,
                     channel_id=channel_id,
                     max_retries=settings_obj.slock_freshness_max_retries,
                     reeval_timeout=settings_obj.slock_freshness_reeval_timeout,
@@ -3227,9 +3255,18 @@ class SlockEngine(BaseEngine):
         task_id: str,
         agent_id: str,
         callbacks: Optional[SlockEngineCallbacks] = None,
+        *,
+        request_review: bool = True,
+        freshness_check: bool = True,
     ) -> Optional[str]:
         """Execute a task end-to-end: claim → execute → complete/rollback."""
-        return self._task_mgr.execute_task(task_id, agent_id, callbacks)
+        return self._task_mgr.execute_task(
+            task_id,
+            agent_id,
+            callbacks,
+            request_review=request_review,
+            freshness_check=freshness_check,
+        )
 
     def _rollback_task(self, task_id: str, agent_id: str) -> None:
         """Rollback a task to TODO state and release its claim."""
@@ -3580,7 +3617,14 @@ class SlockEngine(BaseEngine):
             for task_id, agent_id in task_assignments:
                 task_to_agent[task_id] = agent_id
                 try:
-                    future = executor.submit(self.execute_task, task_id, agent_id, callbacks)
+                    future = executor.submit(
+                        self.execute_task,
+                        task_id,
+                        agent_id,
+                        callbacks,
+                        request_review=False,
+                        freshness_check=False,
+                    )
                     futures[future] = task_id
                 except (QueueFullError, RuntimeError) as e:
                     from src.utils.errors import redact_sensitive

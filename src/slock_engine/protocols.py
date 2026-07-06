@@ -43,7 +43,14 @@ class SlockEngineContext(Protocol):
         """设置 dirty 标志。"""
         ...
 
-    def execute_agent(self, agent: AgentIdentity, content: str, callbacks: Any) -> Optional[str]:
+    def execute_agent(
+        self,
+        agent: AgentIdentity,
+        content: str,
+        callbacks: Any,
+        *,
+        freshness_check: bool = True,
+    ) -> Optional[str]:
         """执行单个 agent 的响应周期。"""
         ...
 
@@ -51,7 +58,15 @@ class SlockEngineContext(Protocol):
         """为指定角色在 channel 中解析最佳可用 agent。"""
         ...
 
-    def execute_task(self, task_id: str, agent_id: str, callbacks: Any) -> Optional[str]:
+    def execute_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        callbacks: Any,
+        *,
+        request_review: bool = True,
+        freshness_check: bool = True,
+    ) -> Optional[str]:
         """按任务 ID 与 agent ID 执行任务。"""
         ...
 

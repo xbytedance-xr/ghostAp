@@ -306,9 +306,10 @@ class TestSlockEngine:
         agent = AgentIdentity(name="ArchiveBot", emoji="📝", agent_type="coco", owner_group="ch_archive")
         engine.registry.register(agent)
 
-        with patch.object(engine, "_run_acp_session", return_value="archived response"):
+        with patch.object(engine, "_run_acp_session", return_value="archived response") as mock_run:
             engine._execute_agent(agent, "please archive this", None)
 
+        mock_run.assert_called_once()
         archive_path = engine.memory.message_archive_path("ch_archive")
         assert os.path.isfile(archive_path)
         with open(archive_path, "r", encoding="utf-8") as f:

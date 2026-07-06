@@ -129,6 +129,15 @@ class TestSessionRotatorConcurrency:
     def test_concurrent_dispatch_no_exception(self):
         """10 threads dispatching concurrently should not raise."""
         session = self._make_mock_session()
+        dispatch_count = 0
+        count_lock = threading.Lock()
+
+        def record_dispatch(_event):
+            nonlocal dispatch_count
+            with count_lock:
+                dispatch_count += 1
+
+        session.dispatch = record_dispatch
         rotator = SessionRotator(session)
 
         errors = []
@@ -147,7 +156,7 @@ class TestSessionRotatorConcurrency:
             t.join()
 
         assert errors == []
-        assert session.dispatch.call_count == 1000
+        assert dispatch_count == 1000
 
     def test_concurrent_dispatch_during_rotate(self):
         """Dispatch during rotation should not raise."""
