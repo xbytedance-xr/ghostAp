@@ -19,7 +19,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.workflow_engine.constants import WORKFLOW_TEMPLATES_DIR
+from src.workflow_engine.constants import (
+    AGENT_CALL_TIMEOUT_S,
+    SCRIPT_GEN_TIMEOUT_S,
+    WORKFLOW_TEMPLATES_DIR,
+)
 from src.workflow_engine.history import WorkflowHistory
 from src.workflow_engine.models import PendingConfirmation, WorkflowProject, WorkflowStatus
 from src.workflow_engine.script_gen import extract_meta_from_script
@@ -179,6 +183,30 @@ class TestScriptSaving(unittest.TestCase):
                 content = f.read()
             self.assertIn("export const meta", content)
             self.assertIn("test-workflow", content)
+
+    def test_script_generation_uses_dedicated_short_timeout(self):
+        """Script generation must not consume the full per-agent timeout window."""
+        self.assertLess(SCRIPT_GEN_TIMEOUT_S, AGENT_CALL_TIMEOUT_S)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            handler, ctx = self._make_handler(tmpdir)
+
+            with patch("src.agent_session.create_engine_session") as mock_create:
+                mock_session = MagicMock()
+                mock_create.return_value = mock_session
+                mock_session.send_prompt.return_value = MagicMock(text=SAMPLE_SCRIPT)
+                mock_session.close = MagicMock()
+
+                with patch("src.agent_session.close_session_safely"):
+                    handler._generate_script_via_ai(
+                        "test requirement", tmpdir, ["coco"]
+                    )
+
+            mock_session.send_prompt.assert_called_once()
+            self.assertEqual(
+                mock_session.send_prompt.call_args.kwargs.get("timeout"),
+                SCRIPT_GEN_TIMEOUT_S,
+            )
 
     def test_saved_script_preserves_metadata(self):
         """Verify that saved scripts preserve the meta block (name, description, tools).

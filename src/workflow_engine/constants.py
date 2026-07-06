@@ -4,7 +4,9 @@ from __future__ import annotations
 
 # --- Timeouts ---
 AGENT_CALL_TIMEOUT_S: int = 300  # Per agent() call timeout (seconds)
+SCRIPT_GEN_TIMEOUT_S: int = 120  # AI workflow script generation timeout
 WORKFLOW_TOTAL_TIMEOUT_S: int = 1800  # Total workflow execution timeout (30 min)
+WORKFLOW_TIMEOUT_HEADROOM_S: int = 5  # Reserved seconds before total deadline
 SESSION_CREATE_TIMEOUT_S: int = 100
 
 # --- Concurrency ---

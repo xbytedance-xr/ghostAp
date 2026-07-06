@@ -38,6 +38,13 @@ let cancelled = false;
 // or non-positive value disables the cap (unbounded).
 let maxConcurrent = 0;
 
+// Host-provided workflow deadline. Python remains authoritative; JS uses this
+// to avoid starting work that cannot finish before the bridge hard timeout.
+let workflowStartedMs = 0;
+let workflowDeadlineMs = 0;
+let workflowTotalTimeoutMs = 0;
+const REQUEST_TIMEOUT_GRACE_MS = 1000;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -75,6 +82,58 @@ function sendNotification(method, params = {}) {
   send({ jsonrpc: '2.0', method, params });
 }
 
+function remainingWorkflowMs() {
+  if (!workflowDeadlineMs) return Infinity;
+  return workflowDeadlineMs - Date.now();
+}
+
+function workflowDeadlineError(label) {
+  return new JsonRpcError({
+    code: -32002,
+    message: `Workflow deadline exceeded before ${label || 'request'}`,
+  });
+}
+
+function capTimeoutToDeadline(timeoutSeconds) {
+  const requested = Number(timeoutSeconds) > 0 ? Number(timeoutSeconds) : 300;
+  const remainingMs = remainingWorkflowMs();
+  if (!Number.isFinite(remainingMs)) return Math.max(1, Math.floor(requested));
+
+  const usableMs = remainingMs - REQUEST_TIMEOUT_GRACE_MS;
+  if (usableMs <= 0) {
+    throw workflowDeadlineError('agent_call');
+  }
+  const usableSeconds = Math.max(1, Math.floor(usableMs / 1000));
+  return Math.max(1, Math.min(Math.floor(requested), usableSeconds));
+}
+
+function requestTimeoutMs(method, params) {
+  const remainingMs = remainingWorkflowMs();
+  let timeoutMs = 0;
+  if (method === 'agent_call') {
+    const timeoutSeconds = Number(params && params.timeout) > 0
+      ? Number(params.timeout)
+      : 300;
+    timeoutMs = Math.max(1, Math.ceil(timeoutSeconds * 1000) + REQUEST_TIMEOUT_GRACE_MS);
+  } else if (Number.isFinite(remainingMs)) {
+    timeoutMs = Math.max(1, Math.floor(remainingMs));
+  }
+
+  if (Number.isFinite(remainingMs)) {
+    timeoutMs = timeoutMs > 0
+      ? Math.min(timeoutMs, Math.max(1, Math.floor(remainingMs)))
+      : Math.max(1, Math.floor(remainingMs));
+  }
+  return timeoutMs > 0 ? timeoutMs : 0;
+}
+
+function clearPendingTimer(entry) {
+  if (entry && entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+}
+
 function sendRequest(method, params = {}) {
   if (cancelled) {
     return Promise.reject(new CancelledError());
@@ -82,7 +141,24 @@ function sendRequest(method, params = {}) {
 
   const id = ++requestId;
   return new Promise((resolve, reject) => {
-    pendingRequests.set(id, { resolve, reject, aborted: false });
+    const entry = { resolve, reject, aborted: false, timer: null };
+    const timeoutMs = requestTimeoutMs(method, params);
+    if (timeoutMs > 0) {
+      entry.timer = setTimeout(() => {
+        const current = pendingRequests.get(id);
+        if (!current || current.aborted) return;
+        current.aborted = true;
+        pendingRequests.delete(id);
+        if (method === 'agent_call') {
+          sendNotification('abort_request', { request_id: id });
+        }
+        reject(new JsonRpcError({
+          code: -32002,
+          message: `${method} timed out waiting for host response`,
+        }));
+      }, timeoutMs);
+    }
+    pendingRequests.set(id, entry);
     send({ jsonrpc: '2.0', id, method, params });
   });
 }
@@ -106,6 +182,7 @@ function handleMessage(line) {
   if (msg.id != null && pendingRequests.has(msg.id)) {
     const entry = pendingRequests.get(msg.id);
     pendingRequests.delete(msg.id);
+    clearPendingTimer(entry);
 
     // If the request was already aborted, ignore the late response
     if (entry.aborted) return;
@@ -136,6 +213,7 @@ function handleMessage(line) {
         cancelled = true;
         // Reject all pending requests
         for (const [id, entry] of pendingRequests) {
+          clearPendingTimer(entry);
           if (!entry.aborted) {
             entry.aborted = true;
             entry.reject(new CancelledError());
@@ -245,6 +323,13 @@ async function agent(promptOrOpts, opts = {}) {
     prompt = promptOrOpts;
   }
 
+  let effectiveTimeout;
+  try {
+    effectiveTimeout = capTimeoutToDeadline(opts.timeout);
+  } catch (err) {
+    return { error: err && err.message ? err.message : String(err) };
+  }
+
   const params = {
     prompt,
     ...(opts.tool && { tool: opts.tool }),
@@ -253,7 +338,7 @@ async function agent(promptOrOpts, opts = {}) {
     ...(opts.schema && { schema: opts.schema }),
     ...(opts.label && { label: opts.label }),
     ...(opts.phase && { phase: opts.phase }),
-    ...(opts.timeout && { timeout: opts.timeout }),
+    timeout: effectiveTimeout,
   };
 
   // Backpressure retry: -32000 errors from the bridge (queue full, pool
@@ -1013,6 +1098,7 @@ async function sequence(steps) {
 function abortRequest(request_id) {
   const entry = pendingRequests.get(request_id);
   if (!entry || entry.aborted) return;
+  clearPendingTimer(entry);
   entry.aborted = true;
   entry.reject(new CancelledError());
   pendingRequests.delete(request_id);
@@ -1225,6 +1311,14 @@ async function main() {
   const initParams = await waitForInit();
   maxConcurrent = Number(initParams.max_concurrent) || 0;
   if (maxConcurrent < 0) maxConcurrent = 0;
+  workflowStartedMs = Number(initParams.started_unix_ms) || Date.now();
+  workflowDeadlineMs = Number(initParams.deadline_unix_ms) || 0;
+  workflowTotalTimeoutMs = Number(initParams.total_timeout_s) > 0
+    ? Number(initParams.total_timeout_s) * 1000
+    : 0;
+  if (!workflowDeadlineMs && workflowTotalTimeoutMs > 0) {
+    workflowDeadlineMs = workflowStartedMs + workflowTotalTimeoutMs;
+  }
   const workflowArgs = initParams.args || {};
 
   // Read user script source

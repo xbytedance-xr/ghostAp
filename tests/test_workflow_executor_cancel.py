@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.workflow_engine.constants import WORKFLOW_TIMEOUT_HEADROOM_S
 from src.workflow_engine.executor import AgentExecutor
 from src.workflow_engine.models import AgentCallParams
 
@@ -384,6 +386,48 @@ def test_transient_network_error_is_retried(tmp_path, make_executor):
     assert call_count["n"] >= 2, f"Expected at least 2 calls (retry), got {call_count['n']}"
     assert result.error is None
     assert result.output == "success after retry"
+
+
+def test_deadline_caps_prompt_timeout(tmp_path, make_executor, monkeypatch):
+    """AgentExecutor should cap send_prompt timeout by workflow deadline."""
+    import src.workflow_engine.executor as executor_mod
+
+    executor = make_executor(tmp_path)
+    seen_timeouts: list[int] = []
+
+    class _DeadlineSession:
+        def cancel(self): pass
+        def close(self): pass
+
+        def send_prompt(self, text, on_event=None, timeout=None):
+            seen_timeouts.append(timeout)
+            return SimpleNamespace(text="ok", output_tokens=0)
+
+    session = _DeadlineSession()
+    monkeypatch.setattr(executor_mod.time, "monotonic", lambda: 100.0)
+
+    with patch("src.agent_session.factory.create_engine_session", return_value=session):
+        params = AgentCallParams(prompt="test", tool="coco", timeout=300)
+        result = executor.execute(params, deadline_monotonic=160.0)
+
+    assert result.error is None
+    assert seen_timeouts == [int(60.0 - WORKFLOW_TIMEOUT_HEADROOM_S)]
+
+
+def test_deadline_exhaustion_fails_before_session_creation(tmp_path, make_executor, monkeypatch):
+    """No session should be created when the workflow deadline is exhausted."""
+    import src.workflow_engine.executor as executor_mod
+
+    executor = make_executor(tmp_path)
+    monkeypatch.setattr(executor_mod.time, "monotonic", lambda: 100.0)
+
+    with patch("src.agent_session.factory.create_engine_session") as mock_create:
+        params = AgentCallParams(prompt="test", tool="coco", timeout=300)
+        result = executor.execute(params, deadline_monotonic=100.0)
+
+    assert result.error is not None
+    assert "deadline" in result.error.lower()
+    mock_create.assert_not_called()
 
 
 def test_global_cancel_triggers_cancel_guard(tmp_path, make_executor):

@@ -17,6 +17,7 @@ from .constants import (
     RETRY_BACKOFF_BASE_S,
     SCHEMA_RETRY_MAX,
     SESSION_CREATE_TIMEOUT_S,
+    WORKFLOW_TIMEOUT_HEADROOM_S,
 )
 from .errors import is_transient_error
 from .models import AgentCallParams, AgentCallResult
@@ -80,7 +81,13 @@ class AgentExecutor:
     # Public API
     # ------------------------------------------------------------------
 
-    def execute(self, params: AgentCallParams, *, cancel_event: Optional[threading.Event] = None) -> AgentCallResult:
+    def execute(
+        self,
+        params: AgentCallParams,
+        *,
+        cancel_event: Optional[threading.Event] = None,
+        deadline_monotonic: float | None = None,
+    ) -> AgentCallResult:
         """Execute a single agent() call end-to-end with retry logic.
 
         1. Build the full prompt (role preamble + task + encouragement).
@@ -123,6 +130,32 @@ class AgentExecutor:
                 return True
             return False
 
+        def _remaining_deadline_s() -> float | None:
+            if deadline_monotonic is None:
+                return None
+            return deadline_monotonic - time.monotonic()
+
+        def _deadline_budget_s() -> int | None:
+            remaining = _remaining_deadline_s()
+            if remaining is None:
+                return None
+            if remaining <= WORKFLOW_TIMEOUT_HEADROOM_S:
+                return 0
+            return int(max(1.0, remaining - WORKFLOW_TIMEOUT_HEADROOM_S))
+
+        def _effective_timeout_s(requested: int | None, fallback: int) -> int:
+            try:
+                requested_s = int(requested or fallback)
+            except (TypeError, ValueError):
+                requested_s = fallback
+            if requested_s <= 0:
+                requested_s = fallback
+
+            budget_s = _deadline_budget_s()
+            if budget_s is None:
+                return requested_s
+            return max(1, min(requested_s, budget_s))
+
         # Pass a single event to session creation for backward compat; use
         # the per-call event if available, else the global one.  The OR
         # semantics are enforced by the bridge.stop() path which sets all
@@ -140,6 +173,13 @@ class AgentExecutor:
                 if _is_cancelled():
                     return AgentCallResult(
                         error="Cancelled before execution",
+                        tool=params.tool,
+                        model=params.model,
+                        duration_s=time.monotonic() - start,
+                    )
+                if _deadline_budget_s() == 0:
+                    return AgentCallResult(
+                        error="Workflow deadline exhausted before execution",
                         tool=params.tool,
                         model=params.model,
                         duration_s=time.monotonic() - start,
@@ -170,7 +210,11 @@ class AgentExecutor:
                     cancel_event=call_cancel_event,
                 )
                 # Wait for session creation with periodic cancel checks
-                create_deadline = time.monotonic() + SESSION_CREATE_TIMEOUT_S
+                create_timeout_s = _effective_timeout_s(
+                    SESSION_CREATE_TIMEOUT_S,
+                    SESSION_CREATE_TIMEOUT_S,
+                )
+                create_deadline = time.monotonic() + create_timeout_s
                 session = None
                 while time.monotonic() < create_deadline:
                     if _is_cancelled():
@@ -199,10 +243,10 @@ class AgentExecutor:
                     logger.error(
                         "[AgentExecutor] session creation timeout for tool=%s (>%ds) [RUNTIME_TIMEOUT]",
                         params.tool,
-                        SESSION_CREATE_TIMEOUT_S,
+                        create_timeout_s,
                     )
                     self._close_late_session(future, params.tool)
-                    error_msg = f"session creation timeout (>{SESSION_CREATE_TIMEOUT_S}s)"
+                    error_msg = f"session creation timeout (>{create_timeout_s}s)"
                     return AgentCallResult(
                         error=error_msg,
                         tool=params.tool,
@@ -225,10 +269,22 @@ class AgentExecutor:
                     tool=params.tool,
                 )
 
+                prompt_timeout_s = _effective_timeout_s(
+                    params.timeout,
+                    AGENT_CALL_TIMEOUT_S,
+                )
+                if _deadline_budget_s() == 0:
+                    return AgentCallResult(
+                        error="Workflow deadline exhausted before prompt execution",
+                        tool=params.tool,
+                        model=params.model,
+                        duration_s=time.monotonic() - start,
+                    )
+
                 result = session.send_prompt(
                     full_prompt,
                     on_event=None,
-                    timeout=params.timeout or AGENT_CALL_TIMEOUT_S,
+                    timeout=prompt_timeout_s,
                 )
 
                 # Extract text output and token usage from PromptResult
@@ -274,10 +330,17 @@ class AgentExecutor:
                             params.tool,
                         )
 
+                        retry_timeout_s = _effective_timeout_s(
+                            params.timeout,
+                            AGENT_CALL_TIMEOUT_S,
+                        )
+                        if _deadline_budget_s() == 0:
+                            break
+
                         retry_result = session.send_prompt(
                             fix_prompt,
                             on_event=None,
-                            timeout=params.timeout or AGENT_CALL_TIMEOUT_S,
+                            timeout=retry_timeout_s,
                         )
 
                         retry_text = retry_result.text if retry_result else ""

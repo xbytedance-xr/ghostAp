@@ -445,7 +445,14 @@ class WorkflowEngine(BaseEngine):
     # Bridge callbacks
     # ------------------------------------------------------------------
 
-    def _handle_agent_call(self, params: AgentCallParams, *, cancel_event=None, request_id=None) -> AgentCallResult:
+    def _handle_agent_call(
+        self,
+        params: AgentCallParams,
+        *,
+        cancel_event=None,
+        request_id=None,
+        deadline_monotonic: float | None = None,
+    ) -> AgentCallResult:
         """Handle an agent() call from the JS runtime.
 
         Flow:
@@ -544,7 +551,11 @@ class WorkflowEngine(BaseEngine):
                 return cached_result
 
         # Execute via AgentExecutor (pass per-call cancel event for race/tournament abort)
-        result = self._executor.execute(params, cancel_event=cancel_event)
+        result = self._executor.execute(
+            params,
+            cancel_event=cancel_event,
+            deadline_monotonic=deadline_monotonic,
+        )
 
         # Store in journal (only on success)
         if result.error is None and self._journal:

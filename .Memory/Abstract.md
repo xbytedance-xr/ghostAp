@@ -1,6 +1,9 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-06
+- **WF deadline预算联动** — 确认脚本生成 300s、JS 无 deadline、agent timeout 不随总预算裁剪、reader 满队列丢消息等问题；脚本生成改 120s，bridge 下发/继承 deadline 并裁剪 agent/session timeout，runtime 加 request timer，队列满改显式失败；Workflow 871 passed → [详细记录](2026-07-06.md)
+
 ## 2026-07-03
 - **消息/模型选择巨慢修复** — `6ba03b7` 把 `run_async` 改成全进程单一共享事件循环，ACP/Coco 模型探测、slock 自主消解、NLI 全被 head-of-line 串行化；`run_async` 改回 thread-local 每线程 loop 恢复并行（5 并发 1s 协程 5s→1s），验证 733 相关 passed → [详细记录](2026-07-03.md)
 - **WF兜底脚本超时修复** — generated-dynamic-workflow 不再用 `route-classify` 串行等待首个工具；Routing 改本地启发式，simple/parallel split 改多工具 `race()`，并显式尊重“只分析/不要改代码” → [详细记录](2026-07-03.md)

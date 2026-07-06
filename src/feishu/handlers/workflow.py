@@ -4511,7 +4511,10 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             Tuple of (script_path, meta_dict_or_None, is_fallback).
         """
         from ...agent_session import close_session_safely, create_engine_session
-        from ...workflow_engine.constants import AGENT_CALL_TIMEOUT_S, DEFAULT_ORCHESTRATOR_AGENT
+        from ...workflow_engine.constants import (
+            DEFAULT_ORCHESTRATOR_AGENT,
+            SCRIPT_GEN_TIMEOUT_S,
+        )
         from ...workflow_engine.script_gen import (
             build_script_gen_prompt,
             extract_meta_from_script,
@@ -4659,7 +4662,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                 meta = {"name": "fallback-orchestration"}
                 return script_path, meta, True
 
-            result = session.send_prompt(prompt, timeout=AGENT_CALL_TIMEOUT_S)
+            result = session.send_prompt(prompt, timeout=SCRIPT_GEN_TIMEOUT_S)
 
             if progress_callback:
                 progress_callback("收到模型响应，正在验证脚本...")

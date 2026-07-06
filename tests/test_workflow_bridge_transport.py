@@ -9,14 +9,20 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import pytest
 
+import src.workflow_engine.bridge as bridge_mod
 from src.workflow_engine.bridge import RuntimeBridge
-from src.workflow_engine.constants import WORKFLOW_TOTAL_TIMEOUT_S
+from src.workflow_engine.constants import (
+    WORKFLOW_TIMEOUT_HEADROOM_S,
+    WORKFLOW_TOTAL_TIMEOUT_S,
+)
+from src.workflow_engine.models import AgentCallResult
 
 # ---------------------------------------------------------------------------
 # Helpers / fixtures
@@ -163,6 +169,116 @@ def test_stop_kills_process_before_shutdown(tmp_path):
         pass
 
 
+def test_start_sends_deadline_budget_in_init(tmp_path, monkeypatch):
+    """The JS runtime needs the host deadline to fail before hard kill."""
+    bridge = _make_bridge(tmp_path)
+    sent_messages: list[dict] = []
+
+    class FakeStream:
+        def __iter__(self):
+            return iter([])
+
+        def readline(self):
+            return ""
+
+        def read(self):
+            return ""
+
+        def close(self):
+            pass
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = MagicMock()
+            self.stdout = FakeStream()
+            self.stderr = FakeStream()
+            self.returncode = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(bridge_mod.shutil, "which", lambda name: "/usr/bin/node")
+    monkeypatch.setattr(bridge_mod.subprocess, "Popen", lambda *a, **k: FakeProcess())
+    monkeypatch.setattr(
+        bridge,
+        "_wait_for_notification",
+        lambda method, timeout=30.0: {"jsonrpc": "2.0", "method": "ready"},
+    )
+    monkeypatch.setattr(bridge, "_send", lambda msg: sent_messages.append(msg))
+
+    try:
+        bridge.start()
+    finally:
+        bridge.stop()
+
+    init_msg = next(msg for msg in sent_messages if msg.get("method") == "init")
+    params = init_msg["params"]
+    assert params["total_timeout_s"] == WORKFLOW_TOTAL_TIMEOUT_S
+    assert params["deadline_unix_ms"] > params["started_unix_ms"]
+    assert params["deadline_unix_ms"] - params["started_unix_ms"] <= (
+        WORKFLOW_TOTAL_TIMEOUT_S * 1000
+    )
+
+
+def test_agent_call_timeout_is_capped_by_remaining_workflow_budget(tmp_path, monkeypatch):
+    """Host-side cap prevents one late agent() from outliving the run budget."""
+    bridge = _make_bridge(tmp_path)
+    monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: 100.0)
+    bridge._workflow_deadline_monotonic = 160.0
+
+    params = {"prompt": "late call", "tool": "coco", "timeout": 300}
+    capped = bridge._cap_agent_timeout_to_remaining_budget(params)
+
+    expected = int(60.0 - WORKFLOW_TIMEOUT_HEADROOM_S)
+    assert capped is not params
+    assert capped["timeout"] == expected
+    assert params["timeout"] == 300
+
+
+def test_agent_call_rejected_when_no_workflow_budget_remains(tmp_path, monkeypatch):
+    bridge = _make_bridge(tmp_path)
+    monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: 100.0)
+    bridge._workflow_deadline_monotonic = 100.0
+    bridge._send_error_response = MagicMock()
+
+    assert bridge._reject_if_workflow_budget_exhausted("req-1") is True
+    bridge._send_error_response.assert_called_once()
+    assert "deadline" in bridge._send_error_response.call_args.kwargs["message"].lower()
+
+
+def test_handle_agent_call_passes_capped_timeout_to_callback(tmp_path, monkeypatch):
+    seen_timeouts: list[int] = []
+    called = threading.Event()
+
+    def on_agent_call(params, **_kwargs):
+        seen_timeouts.append(params.timeout)
+        called.set()
+        return AgentCallResult(output="ok", tool=params.tool)
+
+    bridge = _make_bridge(tmp_path, max_concurrent=1, on_agent_call=on_agent_call)
+    try:
+        _attach_mock_process(bridge)
+        bridge._executor = ThreadPoolExecutor(max_workers=1)
+        monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: 100.0)
+        bridge._workflow_deadline_monotonic = 160.0
+
+        bridge._handle_agent_call(
+            {"prompt": "late call", "tool": "coco", "timeout": 300},
+            request_id="req-capped",
+        )
+
+        assert called.wait(timeout=2.0)
+        assert seen_timeouts == [int(60.0 - WORKFLOW_TIMEOUT_HEADROOM_S)]
+    finally:
+        bridge.stop()
+
+
 # ---------------------------------------------------------------------------
 # 3. abort_request cancels the corresponding future
 # ---------------------------------------------------------------------------
@@ -256,6 +372,37 @@ def test_read_loop_non_json_does_not_crash(tmp_path, caplog):
     finally:
         # stdout was replaced with a plain iterator; clear _process so stop()
         # doesn't try to close iterator streams that lack a close() method.
+        bridge._process = None
+        bridge.stop()
+
+
+def test_read_loop_queue_full_fails_runtime_instead_of_dropping(tmp_path, monkeypatch):
+    """A full bridge queue must become a visible runtime failure.
+
+    Dropping a JSON-RPC response/notification silently can leave a JS Promise
+    pending until the total workflow timeout.
+    """
+    monkeypatch.setattr(bridge_mod, "MAX_QUEUE_SIZE", 1)
+
+    bridge = _make_bridge(tmp_path)
+    try:
+        proc = _attach_mock_process(bridge)
+        with bridge._msg_condition:
+            bridge._msg_queue.append({"jsonrpc": "2.0", "method": "already_full"})
+
+        valid_msg = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {"data": "late-response"},
+        }) + "\n"
+        proc.stdout = iter([valid_msg])
+
+        bridge._read_loop()
+
+        assert bridge._done is True
+        assert bridge._error is not None
+        assert "message queue full" in bridge._error.lower()
+    finally:
         bridge._process = None
         bridge.stop()
 
@@ -504,7 +651,6 @@ def test_handle_abort_request_sets_per_call_cancel_event(tmp_path):
 def test_handle_agent_call_creates_per_call_cancel_event(tmp_path):
     """_handle_agent_call must create a per-call cancel_event and store it in
     _request_cancel_events so that a later abort_request can interrupt it."""
-    import threading
     bridge = _make_bridge(tmp_path)
     try:
         _attach_mock_process(bridge)

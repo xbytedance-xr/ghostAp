@@ -14,12 +14,14 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Callable, Optional
 
 from .constants import (
+    AGENT_CALL_TIMEOUT_S,
     DEFAULT_MAX_CONCURRENT,
     HARD_MAX_CONCURRENT,
     MAX_NESTING_DEPTH,
     MAX_QUEUE_SIZE,
     NODE_MIN_VERSION,
     RUNTIME_JS_PATH,
+    WORKFLOW_TIMEOUT_HEADROOM_S,
     WORKFLOW_TOTAL_TIMEOUT_S,
 )
 from .errors import ErrorCategory, _strip_internal_details, sanitize_for_reply
@@ -137,6 +139,13 @@ class RuntimeBridge:
         self._result: Optional[str] = None
         self._error: Optional[str] = None
 
+        # Workflow-level deadline shared with the JS runtime.  The monotonic
+        # value drives Python-side enforcement; unix-ms values are sent to JS.
+        self._workflow_started_monotonic: float | None = None
+        self._workflow_deadline_monotonic: float | None = None
+        self._workflow_started_unix_ms: int | None = None
+        self._workflow_deadline_unix_ms: int | None = None
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -175,6 +184,22 @@ class RuntimeBridge:
         except (subprocess.TimeoutExpired, OSError) as exc:
             logger.warning("Failed to check Node.js version: %s", repr(exc))
             return False
+
+    def _ensure_workflow_deadline(self) -> None:
+        """Initialize the per-run deadline once and keep it stable."""
+        if self._workflow_deadline_monotonic is not None:
+            return
+
+        started_monotonic = time.monotonic()
+        started_unix_ms = int(time.time() * 1000)
+        self._workflow_started_monotonic = started_monotonic
+        self._workflow_deadline_monotonic = (
+            started_monotonic + WORKFLOW_TOTAL_TIMEOUT_S
+        )
+        self._workflow_started_unix_ms = started_unix_ms
+        self._workflow_deadline_unix_ms = (
+            started_unix_ms + WORKFLOW_TOTAL_TIMEOUT_S * 1000
+        )
 
     def start(self) -> None:
         """Spawn the Node.js runtime subprocess and wait for 'ready' signal.
@@ -251,15 +276,21 @@ class RuntimeBridge:
                 f"stderr: {stderr_content}"
             )
 
+        self._ensure_workflow_deadline()
+
         # Send init with workflow args and max_concurrent so the
         # JS-side parallel() primitive can bound concurrency to match the
-        # Python ThreadPoolExecutor size.
+        # Python ThreadPoolExecutor size.  Deadline fields let JS reject new
+        # work before the Python hard timeout kills the process.
         self._send({
             "jsonrpc": "2.0",
             "method": "init",
             "params": {
                 "args": self._args,
                 "max_concurrent": self._max_concurrent,
+                "started_unix_ms": self._workflow_started_unix_ms,
+                "deadline_unix_ms": self._workflow_deadline_unix_ms,
+                "total_timeout_s": WORKFLOW_TOTAL_TIMEOUT_S,
             },
         })
 
@@ -290,8 +321,10 @@ class RuntimeBridge:
         if self._process is None:
             raise RuntimeError("RuntimeBridge not started — call start() first")
 
-        start_time = time.monotonic()
-        deadline = start_time + WORKFLOW_TOTAL_TIMEOUT_S
+        self._ensure_workflow_deadline()
+        deadline = self._workflow_deadline_monotonic or (
+            time.monotonic() + WORKFLOW_TOTAL_TIMEOUT_S
+        )
 
         while not self._done:
             # Check cancellation
@@ -511,11 +544,15 @@ class RuntimeBridge:
                 # Push to message queue (bounded)
                 with self._msg_condition:
                     if len(self._msg_queue) >= MAX_QUEUE_SIZE:
-                        logger.error(
-                            "Message queue full (%d) — dropping message",
-                            MAX_QUEUE_SIZE,
+                        error_msg = (
+                            f"Runtime message queue full ({MAX_QUEUE_SIZE}); "
+                            "aborting workflow to avoid a pending JS request"
                         )
-                        continue
+                        logger.error(error_msg)
+                        self._error = error_msg
+                        self._done = True
+                        self._msg_condition.notify_all()
+                        break
                     self._msg_queue.append(msg)
                     self._msg_condition.notify()
 
@@ -617,6 +654,57 @@ class RuntimeBridge:
                 message=f"Unknown method: {method}",
             )
 
+    def _remaining_workflow_budget_s(self) -> float | None:
+        """Return seconds remaining before the total workflow deadline."""
+        if self._workflow_deadline_monotonic is None:
+            return None
+        return self._workflow_deadline_monotonic - time.monotonic()
+
+    def _reject_if_workflow_budget_exhausted(self, request_id: Any) -> bool:
+        """Reject a request when no useful budget remains."""
+        remaining = self._remaining_workflow_budget_s()
+        if remaining is None:
+            return False
+        if remaining > WORKFLOW_TIMEOUT_HEADROOM_S:
+            return False
+
+        self._send_error_response(
+            request_id,
+            code=-32002,
+            message=(
+                "Workflow deadline exhausted before starting agent call "
+                f"(remaining={max(0.0, remaining):.1f}s)"
+            ),
+        )
+        return True
+
+    def _cap_agent_timeout_to_remaining_budget(
+        self,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return params with timeout bounded by remaining workflow budget.
+
+        The generated JS may request a long per-agent timeout near the end of
+        the run.  The host deadline is authoritative, so cap every request here
+        before it reaches AgentExecutor.
+        """
+        remaining = self._remaining_workflow_budget_s()
+        if remaining is None:
+            return dict(params)
+
+        budget_s = int(max(1.0, remaining - WORKFLOW_TIMEOUT_HEADROOM_S))
+        raw_timeout = params.get("timeout") or AGENT_CALL_TIMEOUT_S
+        try:
+            requested_s = int(raw_timeout)
+        except (TypeError, ValueError):
+            requested_s = AGENT_CALL_TIMEOUT_S
+        if requested_s <= 0:
+            requested_s = AGENT_CALL_TIMEOUT_S
+
+        capped = dict(params)
+        capped["timeout"] = max(1, min(requested_s, budget_s))
+        return capped
+
     def _handle_agent_call(self, params: dict[str, Any], request_id: Any) -> None:
         """Submit an agent call to the thread pool and send response on completion."""
         if self._executor is None:
@@ -634,6 +722,10 @@ class RuntimeBridge:
                 message="No agent call handler configured",
             )
             return
+
+        if self._reject_if_workflow_budget_exhausted(request_id):
+            return
+        params = self._cap_agent_timeout_to_remaining_budget(params)
 
         # Backpressure layer 1: reject if inbound JS→Python queue is full.
         # This preserves the historical MAX_QUEUE_SIZE ceiling used by
@@ -701,6 +793,7 @@ class RuntimeBridge:
                         agent_params,
                         cancel_event=call_cancel_event,
                         request_id=request_id,
+                        deadline_monotonic=self._workflow_deadline_monotonic,
                     )
                 except TypeError:
                     # Backward compat: callback only accepts (params, cancel_event) or just params
@@ -909,6 +1002,10 @@ class RuntimeBridge:
                     args=sub_args,
                     initiator_user_id=self._initiator_user_id,
                 )
+                sub_bridge._workflow_started_monotonic = self._workflow_started_monotonic
+                sub_bridge._workflow_deadline_monotonic = self._workflow_deadline_monotonic
+                sub_bridge._workflow_started_unix_ms = self._workflow_started_unix_ms
+                sub_bridge._workflow_deadline_unix_ms = self._workflow_deadline_unix_ms
                 # Link parent-child for cascade cancellation
                 sub_bridge._parent = self
                 with self._children_lock:
