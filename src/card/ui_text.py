@@ -747,7 +747,7 @@ UI_TEXT = {
     "card_session_toast_dispatch_error": "系统暂时繁忙，请稍等片刻后重新发送命令",
     "card_session_toast_action_ack": "操作已提交，正在处理",
     "card_session_toast_dedup": "操作已受理，请勿重复点击",
-    "card_session_terminal_retry_failed": "⚠️ 任务已结束（卡片未能刷新最终状态）。如需查看结果，可重新发送 {engine_cmd}",
+    "card_session_terminal_retry_failed": "⚠️ 任务已结束（卡片未能刷新最终状态）。可发送状态命令查看结果；开始新任务请发送 {engine_cmd} <需求描述>",
     # TTL expiry messages — mutually exclusive triggers:
     # All engine-specific messages follow a consistent structure:
     # TTL expired messages — unified two-line structure: status line + action line
@@ -758,7 +758,7 @@ UI_TEXT = {
     "card_session_ttl_expired_commands": "",  # dynamically generated below from ENGINE_CMD_MAP
     "card_session_ttl_prewarning": "{engine_name} 会话长时间无更新，将在约 {minutes} 分钟后关闭；执行中的任务会自动顺延。点击下方「保持连接」按钮或发送任意消息即可续期",
     "card_session_ttl_force_close_notice": "⏰ {engine_name} 已因空闲超时关闭（系统回收资源）· 发送 {engine_cmd} 重新启动",
-    "card_session_terminal_fallback_notice": "⚠️ 任务已结束，但卡片未能及时更新。请发送 {engine_cmd} 开始新任务，无需点击之前卡片中的按钮",
+    "card_session_terminal_fallback_notice": "⚠️ 任务已结束，但卡片未能及时更新。可发送状态命令查看结果；开始新任务请发送 {engine_cmd} <需求描述>，无需点击之前卡片中的按钮",
     "card_session_warning_render_fail": "⚠️ 状态更新异常，任务仍在运行，可发送 {engine_cmd} 查看最新状态",
     "card_session_ttl_lock_contention": "⚠️ 系统繁忙，请稍后重试或发送 {engine_cmd} 重新启动",
     "card_session_toast_completed": "任务已完成，无需额外操作",

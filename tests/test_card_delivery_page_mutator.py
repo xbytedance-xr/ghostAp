@@ -39,7 +39,7 @@ class MockClient:
     def update_element(self, card_id, element_id, content, *, sequence=0):
         if self._raise_on_element:
             raise self._raise_on_element
-        self.elements.append({"card_id": card_id, "element_id": element_id})
+        self.elements.append({"card_id": card_id, "element_id": element_id, "content": content})
 
     def create_streaming_card(self, card_json):
         if self._raise_on_streaming:
@@ -134,6 +134,50 @@ class TestCreatePage:
         assert outcome.kind == "applied"
         binding = bindings.get("sess_1")
         assert binding.pages[0].last_text == "guarded active text"
+
+    def test_create_page_redacts_email_like_content_before_send(self):
+        """Feishu audit rejects EMAIL_ADDRESS; card delivery must redact before create."""
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        payload = {
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "element_id": "el_1",
+                        "content": "contact admin@example.com for details",
+                    }
+                ]
+            }
+        }
+        sent_payloads = []
+
+        def create_card(chat_id, card_json, *, reply_to=None, reply_in_thread=None, idempotency_key=None):
+            sent_payloads.append(card_json)
+            return ("msg_1", "card_1")
+
+        client.create_card = create_card
+        bindings.create("sess_1", "chat_1")
+        card = RenderedCard(
+            _card_json=payload,
+            structure_signature="sig_email",
+            page_index=0,
+            total_pages=1,
+            active_element=ActiveElement(element_id="el_1", text="contact admin@example.com for details"),
+        )
+
+        outcome = mutator.create_page("sess_1", "chat_1", card)
+
+        assert outcome.kind == "applied"
+        sent_content = sent_payloads[0]["body"]["elements"][0]["content"]
+        assert "admin@example.com" not in sent_content
+        assert "[redacted:email]" in sent_content
+        binding = bindings.get("sess_1")
+        assert binding is not None
+        assert binding.pages[0].last_text == "contact [redacted:email] for details"
 
     def test_create_page_streaming_fallback_to_im(self):
         """When streaming creation fails, should fall back to IM create API."""
@@ -352,6 +396,45 @@ class TestUpdatePage:
         assert binding.pages[0].last_text == "card_content_invalid"
         assert len(calls) == 2
 
+    def test_update_page_audit_rejection_patches_safe_fallback(self):
+        """Audit rejection is permanent for the raw payload; patch a safe terminal fallback."""
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "old_sig", "old_text")
+        page = bindings.get("sess_1").pages[0]
+
+        calls = []
+
+        def update_card(card_id, card_json, *, sequence=0):
+            calls.append({"card_id": card_id, "card_json": card_json, "sequence": sequence})
+            if len(calls) == 1:
+                raise TransportError(
+                    "Patch failed: code=230028, msg=The messages do NOT pass the audit, "
+                    "ext=contain sensitive data: EMAIL_ADDRESS",
+                    code=230028,
+                )
+
+        client.update_card = update_card
+        card = _make_card(signature="new_sig", text="hello admin@example.com")
+        outcome = mutator.update_page("sess_1", page, card)
+
+        assert outcome.kind == "applied"
+        assert outcome.message == "fallback_audit_rejected:230028"
+        assert len(calls) == 2
+        fallback_payload = calls[1]["card_json"]
+        assert fallback_payload["header"]["title"]["content"] == "⚠️ 卡片内容受限"
+        fallback_content = fallback_payload["body"]["elements"][0]["content"]
+        assert "EMAIL_ADDRESS" not in fallback_content
+        assert "admin@example.com" not in fallback_content
+        binding = bindings.get("sess_1")
+        assert binding is not None
+        assert binding.pages[0].signature == "new_sig"
+        assert binding.pages[0].last_text == "card_audit_rejected"
+
     def test_update_page_missing_message_removes_binding_for_recreate(self):
         client = MockClient()
         client._raise_on_update = TransportError("message not found", code=99992354)
@@ -386,6 +469,23 @@ class TestStreamElement:
 
         assert outcome.kind == "applied"
         assert "element:" in outcome.message
+
+    def test_stream_element_redacts_email_like_content_before_send(self):
+        client = MockClient()
+        bindings = BindingStore()
+        sequences = SequenceManager()
+        mutator = PageMutator(client, bindings, sequences)
+
+        bindings.create("sess_1", "chat_1")
+        bindings.set_page("sess_1", 0, "msg_1", "card_1", "sig", "old_text")
+        page = bindings.get("sess_1").pages[0]
+
+        card = _make_card(text="contact admin@example.com")
+        outcome = mutator.stream_element("sess_1", page, card)
+
+        assert outcome.kind == "applied"
+        assert client.elements[0]["content"] == "contact [redacted:email]"
+        assert bindings.get("sess_1").pages[0].last_text == "contact [redacted:email]"
 
     def test_stream_element_no_active_element(self):
         """Without active_element, returns skipped."""

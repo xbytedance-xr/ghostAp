@@ -17,15 +17,40 @@ logger = logging.getLogger(__name__)
 
 _PAGE_CREATE_NAMESPACE = uuid.UUID("4388eebc-b0bc-5d6a-9c65-6ac058db0324")
 _ERRMSG_RE = re.compile(r"ErrMsg:\s*([^;]+)")
+_EMAIL_ADDRESS_RE = re.compile(
+    r"(?<![\w.+-])[\w.+-]+@(?:[\w-]+\.)+[A-Za-z]{2,}(?![\w.-])"
+)
+
+
+def sanitize_card_text_for_audit(text: str) -> str:
+    """Remove text patterns known to trigger Feishu card content audit."""
+    if not text:
+        return text
+    return _EMAIL_ADDRESS_RE.sub("[redacted:email]", text)
+
+
+def _sanitize_payload_for_audit(node):
+    if isinstance(node, dict):
+        for key, value in list(node.items()):
+            node[key] = _sanitize_payload_for_audit(value)
+        return node
+    if isinstance(node, list):
+        for idx, value in enumerate(node):
+            node[idx] = _sanitize_payload_for_audit(value)
+        return node
+    if isinstance(node, str):
+        return sanitize_card_text_for_audit(node)
+    return node
 
 
 def _guard_payload(card_payload: dict) -> dict:
     """Pre-flight guard: truncate payload if it exceeds Feishu limits (200 elements)."""
+    card_payload = _sanitize_payload_for_audit(card_payload)
     raw = json.dumps(card_payload, ensure_ascii=False)
     guarded = check_and_truncate_payload(raw)
     if guarded is raw:
         return card_payload
-    return json.loads(guarded)
+    return _sanitize_payload_for_audit(json.loads(guarded))
 
 
 def _find_element_content(payload: dict, element_id: str | None) -> tuple[bool, str]:
@@ -88,6 +113,29 @@ def _fallback_invalid_card(reason: str) -> dict:
                     "content": (
                         "当前卡片内容不符合飞书卡片格式，已停止自动重建以避免重复刷屏。\n\n"
                         f"原因：{reason or 'card_content_invalid'}"
+                    ),
+                }
+            ]
+        },
+    }
+
+
+def _fallback_audit_rejected_card() -> dict:
+    """Small known-good card used when Feishu audit rejects rendered content."""
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True, "update_multi": True},
+        "header": {
+            "template": "yellow",
+            "title": {"tag": "plain_text", "content": "⚠️ 卡片内容受限"},
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": (
+                        "任务已结束，但最终卡片包含飞书审核限制内容，已改为安全提示以避免停留在旧状态。\n\n"
+                        "可发送状态命令查看任务状态；如需继续，请重新发起任务。"
                     ),
                 }
             ]
@@ -165,6 +213,18 @@ class PageMutator:
                 last_text=last_text,
             )
             return MutationOutcome(kind="applied", message=f"created:{message_id}")
+        except TransportError as e:
+            if e.is_audit_rejected:
+                return self._create_audit_rejected_fallback_page(
+                    session_id,
+                    chat_id,
+                    card,
+                    reply_to=reply_to,
+                    reply_in_thread=reply_in_thread,
+                    error=e,
+                )
+            logger.warning("Card create failed: %s", str(e))
+            return MutationOutcome(kind="reconcile", message=str(e))
         except Exception as e:
             logger.warning("Card create failed: %s", str(e))
             return MutationOutcome(kind="reconcile", message=str(e))
@@ -202,6 +262,8 @@ class PageMutator:
                 return MutationOutcome(kind="reconcile", message=f"recreate:{e.code}")
             if e.is_content_invalid:
                 return self._replace_with_invalid_card_fallback(session_id, page, card, e)
+            if e.is_audit_rejected:
+                return self._replace_with_audit_rejected_fallback(session_id, page, card, e)
             logger.warning("Transport error updating %s: %s", page.card_id, str(e))
             return MutationOutcome(kind="reconcile", message=str(e))
         except Exception as e:
@@ -218,13 +280,14 @@ class PageMutator:
 
         try:
             seq = self._sequences.next_sequence(page.card_id)
+            content = sanitize_card_text_for_audit(card.active_element.text)
             self._client.update_element(
                 page.card_id,
                 card.active_element.element_id,
-                card.active_element.text,
+                content,
                 sequence=seq,
             )
-            self._bindings.update_text(session_id, page.page_index, card.active_element.text)
+            self._bindings.update_text(session_id, page.page_index, content)
             return MutationOutcome(kind="applied", message=f"element:{page.card_id}")
         except SequenceConflictError as e:
             self._sequences.raise_floor(page.card_id, e.next_floor)
@@ -294,3 +357,77 @@ class PageMutator:
             self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
             self._bindings.update_text(session_id, page.page_index, "card_content_invalid")
             return MutationOutcome(kind="applied", message="fallback_suppressed")
+
+    def _create_audit_rejected_fallback_page(
+        self,
+        session_id: str,
+        chat_id: str,
+        card: RenderedCard,
+        *,
+        reply_to: str | None = None,
+        reply_in_thread: bool | None = None,
+        error: TransportError,
+    ) -> MutationOutcome:
+        logger.error(
+            "Feishu audit rejected card create (code=%d); sending safe fallback: %s",
+            error.code,
+            str(error),
+        )
+        try:
+            idempotency_key = _page_create_idempotency_key(session_id, card.page_index)
+            message_id, card_id = self._client.create_card(
+                chat_id,
+                _fallback_audit_rejected_card(),
+                reply_to=reply_to,
+                reply_in_thread=reply_in_thread,
+                idempotency_key=idempotency_key,
+            )
+            self._bindings.set_page(
+                session_id=session_id,
+                page_index=card.page_index,
+                message_id=message_id,
+                card_id=card_id,
+                signature=card.structure_signature,
+                last_text="card_audit_rejected",
+            )
+            return MutationOutcome(kind="applied", message=f"fallback_audit_rejected:{error.code}")
+        except Exception as fallback_exc:
+            logger.warning("Audit fallback card create failed: %s", str(fallback_exc))
+            return MutationOutcome(kind="reconcile", message=str(error))
+
+    def _replace_with_audit_rejected_fallback(
+        self,
+        session_id: str,
+        page: PageBinding,
+        card: RenderedCard,
+        error: TransportError,
+    ) -> MutationOutcome:
+        logger.error(
+            "Feishu audit rejected rendered card on %s (code=%d); patching safe fallback: %s",
+            page.card_id,
+            error.code,
+            str(error),
+        )
+        try:
+            seq = self._sequences.next_sequence(page.card_id)
+            self._client.update_card(page.card_id, _fallback_audit_rejected_card(), sequence=seq)
+            self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
+            self._bindings.update_text(session_id, page.page_index, "card_audit_rejected")
+            return MutationOutcome(kind="applied", message=f"fallback_audit_rejected:{error.code}")
+        except SequenceConflictError as seq_err:
+            self._sequences.raise_floor(page.card_id, seq_err.next_floor)
+            return MutationOutcome(kind="reconcile", message="sequence_conflict")
+        except TransportError as fallback_err:
+            if fallback_err.needs_recreate:
+                self._bindings.remove_page(session_id, page.page_index)
+                self._sequences.reset(page.card_id)
+                return MutationOutcome(kind="reconcile", message=f"recreate:{fallback_err.code}")
+            logger.warning("Audit fallback card patch failed on %s: %s", page.card_id, str(fallback_err))
+            self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
+            self._bindings.update_text(session_id, page.page_index, "card_audit_rejected")
+            return MutationOutcome(kind="applied", message=f"fallback_audit_suppressed:{fallback_err.code}")
+        except Exception as fallback_exc:
+            logger.warning("Audit fallback card patch failed on %s: %s", page.card_id, str(fallback_exc))
+            self._bindings.update_signature(session_id, page.page_index, card.structure_signature)
+            self._bindings.update_text(session_id, page.page_index, "card_audit_rejected")
+            return MutationOutcome(kind="applied", message="fallback_audit_suppressed")

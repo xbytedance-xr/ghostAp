@@ -7,7 +7,7 @@ import threading
 
 from src.card.delivery.binding import BindingStore, PageBinding
 from src.card.delivery.lock_pool import SessionLockPool
-from src.card.delivery.page_mutator import PageMutator
+from src.card.delivery.page_mutator import PageMutator, sanitize_card_text_for_audit
 from src.card.delivery.registry import DeliveryRegistry, delivery_registry
 from src.card.delivery.sequence import SequenceManager
 from src.card.delivery.ttl_set import TTLSet
@@ -215,7 +215,7 @@ class CardDelivery:
                     outcome = self._update_page(session_id, existing_page, card)
                 elif (
                     card.active_element is not None
-                    and card.active_element.text != existing_page.last_text
+                    and sanitize_card_text_for_audit(card.active_element.text) != existing_page.last_text
                 ):
                     outcome = self._stream_element(session_id, existing_page, card)
                 else:

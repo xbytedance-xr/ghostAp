@@ -33,6 +33,9 @@ class TransportError(Exception):
     CONTENT_INVALID_CODES = frozenset({
         230099,  # card content invalid; Feishu often wraps schema errors in this code
     })
+    AUDIT_REJECTED_CODES = frozenset({
+        230028,  # message/card content failed Feishu audit, e.g. EMAIL_ADDRESS
+    })
     CONTENT_INVALID_SUBCODES = frozenset({
         200621,  # card content parse/schema error
         200861,  # card content parse/schema error
@@ -45,7 +48,7 @@ class TransportError(Exception):
     @property
     def is_permanent(self) -> bool:
         """Whether this error is permanent (retrying won't help)."""
-        return self.needs_recreate or self.is_content_invalid
+        return self.needs_recreate or self.is_content_invalid or self.is_audit_rejected
 
     @property
     def needs_recreate(self) -> bool:
@@ -65,3 +68,11 @@ class TransportError(Exception):
             except ValueError:
                 continue
         return False
+
+    @property
+    def is_audit_rejected(self) -> bool:
+        """Whether Feishu rejected the payload during content audit."""
+        if self.code in self.AUDIT_REJECTED_CODES:
+            return True
+        text = str(self).lower()
+        return "do not pass the audit" in text or "contain sensitive data" in text

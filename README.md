@@ -195,6 +195,14 @@ uv run ruff check .
 ```text
 ghostAp/
 ├── src/                 # 应用代码
+│   ├── card/            # 飞书卡片事件、渲染、投递和状态管线
+│   │   ├── actions/
+│   │   ├── delivery/
+│   │   ├── events/
+│   │   ├── render/
+│   │   ├── session/
+│   │   ├── state/
+│   │   ├── timers/
 ├── tests/               # 测试
 ├── docs/                # 架构记录和接入指南
 ├── scripts/             # 辅助脚本

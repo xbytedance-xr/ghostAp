@@ -208,6 +208,15 @@ class TestNewPhase3Keys:
     def test_terminal_fallback_has_engine_cmd(self):
         assert "{engine_cmd}" in UI_TEXT["card_session_terminal_fallback_notice"]
 
+    def test_terminal_fallback_does_not_suggest_bare_deep_command(self):
+        rendered = UI_TEXT["card_session_terminal_fallback_notice"].format(engine_cmd="/deep")
+        retry_rendered = UI_TEXT["card_session_terminal_retry_failed"].format(engine_cmd="/deep")
+
+        assert "发送 /deep 开始新任务" not in rendered
+        assert "重新发送 /deep" not in retry_rendered
+        assert "/deep <需求描述>" in rendered
+        assert "/deep <需求描述>" in retry_rendered
+
     def test_warning_render_fail_has_engine_cmd(self):
         assert "{engine_cmd}" in UI_TEXT["card_session_warning_render_fail"]
 
