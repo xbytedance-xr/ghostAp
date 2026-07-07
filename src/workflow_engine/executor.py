@@ -26,6 +26,20 @@ from .roles import get_subagent_encouragement_prompt
 logger = logging.getLogger(__name__)
 
 
+def _settings_int(field: str, fallback: int) -> int:
+    """Read an int workflow-timeout setting, falling back to the constant.
+
+    Lets .env overrides take effect at runtime while never breaking the
+    executor if config is unavailable/invalid.
+    """
+    try:
+        from src.config import get_settings
+
+        return int(getattr(get_settings(), field, fallback))
+    except Exception:  # pragma: no cover - defensive: config not importable
+        return fallback
+
+
 def _is_timeout_in_chain(exc: BaseException) -> bool:
     """Walk __cause__/__context__ chain looking for TimeoutError."""
     seen = set()
@@ -210,9 +224,12 @@ class AgentExecutor:
                     cancel_event=call_cancel_event,
                 )
                 # Wait for session creation with periodic cancel checks
+                session_create_timeout = _settings_int(
+                    "workflow_session_create_timeout_s", SESSION_CREATE_TIMEOUT_S
+                )
                 create_timeout_s = _effective_timeout_s(
-                    SESSION_CREATE_TIMEOUT_S,
-                    SESSION_CREATE_TIMEOUT_S,
+                    session_create_timeout,
+                    session_create_timeout,
                 )
                 create_deadline = time.monotonic() + create_timeout_s
                 session = None
@@ -271,7 +288,7 @@ class AgentExecutor:
 
                 prompt_timeout_s = _effective_timeout_s(
                     params.timeout,
-                    AGENT_CALL_TIMEOUT_S,
+                    _settings_int("workflow_agent_call_timeout_s", AGENT_CALL_TIMEOUT_S),
                 )
                 if _deadline_budget_s() == 0:
                     return AgentCallResult(
@@ -328,7 +345,7 @@ class AgentExecutor:
 
                         retry_timeout_s = _effective_timeout_s(
                             params.timeout,
-                            AGENT_CALL_TIMEOUT_S,
+                            _settings_int("workflow_agent_call_timeout_s", AGENT_CALL_TIMEOUT_S),
                         )
                         if _deadline_budget_s() == 0:
                             break

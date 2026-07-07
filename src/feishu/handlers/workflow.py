@@ -1860,6 +1860,29 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             engine.stop()
         self.reply_text(message_id, "Workflow 任务已停止。")
 
+    def handle_workflow_stop_running(
+        self,
+        message_id: str,
+        chat_id: str,
+        project_id: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Handle the "停止" button on a RUNNING workflow progress card.
+
+        Delegates to :meth:`stop_workflow`, which owns the initiator/admin
+        authorization checks and state validation. This keeps the auth logic
+        in a single place and maximizes reuse.
+        """
+        from ...card.events.payloads import filter_workflow_button_value
+
+        value = filter_workflow_button_value(value)
+        project_id = project_id or value.get("project_id", "")
+        project = self._resolve_project_from_id(project_id, chat_id)
+        # Resolve root_path defensively so a missing project still lets the
+        # underlying stop_workflow re-derive engine state from the chat.
+        self._get_root_path(chat_id, project)
+        self.stop_workflow(message_id, chat_id, project)
+
     # ------------------------------------------------------------------
     # Confirm / Cancel actions (card button callbacks)
     # ------------------------------------------------------------------
@@ -4932,7 +4955,10 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                 meta = {"name": "fallback-orchestration"}
                 return script_path, meta, True
 
-            result = session.send_prompt(prompt, timeout=SCRIPT_GEN_TIMEOUT_S)
+            script_gen_timeout_s = getattr(
+                self.settings, "workflow_script_gen_timeout_s", SCRIPT_GEN_TIMEOUT_S
+            )
+            result = session.send_prompt(prompt, timeout=script_gen_timeout_s)
 
             if progress_callback:
                 progress_callback("收到模型响应，正在验证脚本...")

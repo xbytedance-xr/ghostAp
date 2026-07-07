@@ -201,7 +201,10 @@ class WorkflowScriptMixin:
                 meta = {"name": "fallback-orchestration"}
                 return script_path, meta, True
 
-            result = session.send_prompt(prompt, timeout=SCRIPT_GEN_TIMEOUT_S)
+            script_gen_timeout_s = getattr(
+                self.settings, "workflow_script_gen_timeout_s", SCRIPT_GEN_TIMEOUT_S
+            )
+            result = session.send_prompt(prompt, timeout=script_gen_timeout_s)
 
             if progress_callback:
                 progress_callback("收到模型响应，正在验证脚本...")
@@ -1097,10 +1100,15 @@ class WorkflowScriptMixin:
         from ...workflow_engine.engine import WorkflowEngineCallbacks
 
         card_message_id: list[str] = [message_id]  # Mutable ref for card updates
+        project_id = getattr(project, "project_id", "") or ""
 
         def on_progress(card_data: dict[str, Any]) -> None:
             """Update the progress card in Feishu."""
             try:
+                # Inject a "停止" button while the workflow is still running so
+                # users can stop it directly from the progress card. Guard so
+                # any failure here never breaks the progress update itself.
+                self._inject_workflow_stop_button(card_data, chat_id, project_id)
                 new_id = self._replace_or_send_workflow_rendered_card(
                     card_message_id=card_message_id[0],
                     chat_id=chat_id,
@@ -1168,3 +1176,55 @@ class WorkflowScriptMixin:
             on_error=on_error,
             on_log=on_log,
         )
+
+    def _inject_workflow_stop_button(
+        self,
+        card_data: dict[str, Any],
+        chat_id: str,
+        project_id: str,
+    ) -> None:
+        """Append a "停止" button row to a RUNNING progress card.
+
+        ``card_data`` is the renderer output ``{"header": ..., "elements": [...]}``.
+        We only call this from ``on_progress`` (invoked while the workflow is
+        executing), so it is always safe to add the stop button here — the
+        completion card is delivered via a separate ``on_done`` callback.
+
+        The button value carries only ``action``/``chat_id``/``project_id``.
+        The handler delegates to ``stop_workflow``, which re-derives auth from
+        the live engine state, so no session key is required in the payload.
+        """
+        from ...card.actions.dispatch import WORKFLOW_STOP_RUNNING
+        from ...card.render.buttons import build_responsive_button_row
+        from ...card.ui_text import UI_TEXT
+
+        if not isinstance(card_data, dict):
+            return
+        elements = card_data.get("elements")
+        if not isinstance(elements, list):
+            return
+
+        confirm_title = UI_TEXT.get("workflow_btn_confirm_stop_title", "确认停止 Workflow？")
+        confirm_body = UI_TEXT.get(
+            "workflow_btn_confirm_stop_body",
+            "正在执行的步骤将中断，已完成的部分不受影响。",
+        )
+        stop_value = {
+            "action": WORKFLOW_STOP_RUNNING,
+            "chat_id": chat_id,
+            "project_id": project_id or "",
+        }
+        stop_button = {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "⏹️ 停止 Workflow"},
+            "type": "danger",
+            "value": stop_value,
+            "behaviors": [{"type": "callback", "value": stop_value}],
+            "confirm": {
+                "title": {"tag": "plain_text", "content": confirm_title},
+                "text": {"tag": "plain_text", "content": confirm_body},
+            },
+        }
+
+        elements.append({"tag": "hr"})
+        elements.extend(build_responsive_button_row([stop_button]))

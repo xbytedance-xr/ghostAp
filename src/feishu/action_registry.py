@@ -353,6 +353,10 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.WORKFLOW_CANCEL,
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._handle_workflow_stop_running(mid, cid, pid, val),
+        exact=action_ids.WORKFLOW_STOP_RUNNING,
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._handle_workflow_select_tool(mid, cid, pid, val),
         exact=action_ids.WORKFLOW_SELECT_TOOL,
     )
@@ -482,6 +486,24 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
     client._register_action(
         lambda mid, cid, pid, val: client._handle_refresh_acp_models(mid, cid, val.get("tool_name", ""), pid, val),
         exact=action_ids.REFRESH_ACP_MODELS,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_acp_model_cascade_select(
+            mid, cid, val.get("tool_name", ""), pid, val
+        ),
+        exact=action_ids.SELECT_ACP_MODEL_GROUP,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_acp_model_cascade_select(
+            mid, cid, val.get("tool_name", ""), pid, val
+        ),
+        exact=action_ids.SELECT_ACP_MODEL_PROFILE,
+    )
+    client._register_action(
+        lambda mid, cid, pid, val: client._handle_acp_model_cascade_select(
+            mid, cid, val.get("tool_name", ""), pid, val
+        ),
+        exact=action_ids.SELECT_ACP_MODEL_EFFORT,
     )
     client._register_action(
         lambda mid, cid, pid, val: client._slock_handler.handle_new_role_select_tool(

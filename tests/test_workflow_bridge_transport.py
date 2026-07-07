@@ -241,6 +241,73 @@ def test_agent_call_timeout_is_capped_by_remaining_workflow_budget(tmp_path, mon
     assert params["timeout"] == 300
 
 
+def test_ensure_deadline_uses_settings_total_timeout(tmp_path, monkeypatch):
+    """A larger workflow_total_timeout_s from Settings yields a larger deadline."""
+    # Simulate an .env override of 7200s (2h) for complex tasks.
+    monkeypatch.setattr(
+        bridge_mod,
+        "_settings_int",
+        lambda field, fallback: 7200 if field == "workflow_total_timeout_s" else fallback,
+    )
+    monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: 1000.0)
+
+    bridge = _make_bridge(tmp_path)
+    bridge._ensure_workflow_deadline()
+
+    assert bridge._workflow_total_timeout_s == 7200
+    # deadline = started_monotonic (1000) + total_timeout (7200)
+    assert bridge._workflow_deadline_monotonic == 1000.0 + 7200
+    assert (
+        bridge._workflow_deadline_unix_ms - bridge._workflow_started_unix_ms
+        == 7200 * 1000
+    )
+
+
+def test_cap_agent_timeout_uses_settings_fallback_when_unset(tmp_path, monkeypatch):
+    """When JS omits per-call timeout, the Settings default (larger) is used."""
+    monkeypatch.setattr(
+        bridge_mod,
+        "_settings_int",
+        lambda field, fallback: 1200 if field == "workflow_agent_call_timeout_s" else fallback,
+    )
+    monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: 100.0)
+    bridge = _make_bridge(tmp_path)
+    # Plenty of budget so the cap does not clamp the requested value.
+    bridge._workflow_deadline_monotonic = 100.0 + 10_000
+
+    # No explicit "timeout" in params → falls back to settings value (1200).
+    capped = bridge._cap_agent_timeout_to_remaining_budget({"prompt": "x", "tool": "coco"})
+    assert capped["timeout"] == 1200
+
+
+def test_ensure_deadline_unlimited_when_total_timeout_zero(tmp_path, monkeypatch):
+    """workflow_total_timeout_s <= 0 → no total deadline (unlimited mode).
+
+    In unlimited mode the monotonic deadline stays None and the unix-ms value
+    sent to JS is 0 (JS treats a falsy deadline as Infinity), while the
+    started_* fields are still populated. Remaining-budget helpers must report
+    'no deadline' so per-call timeout capping falls back to the Settings value.
+    """
+    monkeypatch.setattr(
+        bridge_mod,
+        "_settings_int",
+        lambda field, fallback: 0 if field == "workflow_total_timeout_s" else fallback,
+    )
+    bridge = _make_bridge(tmp_path)
+    bridge._ensure_workflow_deadline()
+
+    assert bridge._workflow_total_timeout_s == 0
+    assert bridge._workflow_deadline_monotonic is None
+    assert bridge._workflow_deadline_unix_ms == 0
+    assert bridge._workflow_started_monotonic is not None
+    assert bridge._workflow_started_unix_ms is not None
+    # No deadline → remaining budget is None and no rejection happens.
+    assert bridge._remaining_workflow_budget_s() is None
+    bridge._send_error_response = MagicMock()
+    assert bridge._reject_if_workflow_budget_exhausted("req-1") is False
+    bridge._send_error_response.assert_not_called()
+
+
 def test_agent_call_rejected_when_no_workflow_budget_remains(tmp_path, monkeypatch):
     bridge = _make_bridge(tmp_path)
     monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: 100.0)

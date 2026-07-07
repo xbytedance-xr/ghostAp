@@ -79,6 +79,7 @@ SHOW_WORKTREE_MERGE_ENTRY = "show_worktree_merge_entry"  # Show merge entry card
 WORKFLOW_CONFIRM_TOOLS = "workflow_confirm_tools"  # Confirm tool selection and generate script
 WORKFLOW_CONFIRM_START = "workflow_confirm_start"  # Confirm generated script and start execution
 WORKFLOW_CANCEL = "workflow_cancel"  # Cancel workflow before execution starts
+WORKFLOW_STOP_RUNNING = "workflow_stop_running"  # Stop a running workflow from the progress card
 WORKFLOW_SELECT_TOOL = "workflow_select_tool"  # Toggle tool selection for workflow execution
 WORKFLOW_REGENERATE_SCRIPT = "workflow_regenerate_script"  # Regenerate script with current tool selection
 WORKFLOW_FILL_MISSING_TOOLS = "workflow_fill_missing_tools"  # Auto-add tools the script needs but user hasn't selected
@@ -149,6 +150,12 @@ SHOW_ACP_MENU = "show_acp_menu"  # Show ACP tool/model selection menu
 SELECT_ACP_TOOL = "select_acp_tool"  # Select an ACP-capable tool
 SELECT_ACP_MODEL = "select_acp_model"  # Select a model for the ACP tool
 REFRESH_ACP_MODELS = "refresh_acp_models"  # Refresh available ACP model list
+# Cascade model-select dropdowns for normal programming mode. Changing the
+# family/profile/effort dropdown only re-renders the card (does not enter the
+# mode); the final SELECT_ACP_MODEL button commits the choice.
+SELECT_ACP_MODEL_GROUP = "select_acp_model_group"  # Model-family dropdown change
+SELECT_ACP_MODEL_PROFILE = "select_acp_model_profile"  # Profile dropdown change
+SELECT_ACP_MODEL_EFFORT = "select_acp_model_effort"  # Effort dropdown change
 
 # ---------------------------------------------------------------------------
 # Tui2ACP actions

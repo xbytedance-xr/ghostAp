@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 # --- Timeouts ---
-AGENT_CALL_TIMEOUT_S: int = 300  # Per agent() call timeout (seconds)
-SCRIPT_GEN_TIMEOUT_S: int = 120  # AI workflow script generation timeout
-WORKFLOW_TOTAL_TIMEOUT_S: int = 1800  # Total workflow execution timeout (30 min)
+# NOTE: These are the default-value SSOT / import-time fallbacks. The
+# authoritative runtime values are read from Settings (workflow_* fields),
+# which allow .env overrides. Keep the numbers here aligned with the Settings
+# defaults so any code that still reads the constant directly gets the same
+# (more permissive) default.
+AGENT_CALL_TIMEOUT_S: int = 600  # Per agent() call timeout (seconds)
+SCRIPT_GEN_TIMEOUT_S: int = 180  # AI workflow script generation timeout
+WORKFLOW_TOTAL_TIMEOUT_S: int = 3600  # Total workflow execution timeout (60 min); 0 in Settings disables the total deadline (unlimited)
 WORKFLOW_TIMEOUT_HEADROOM_S: int = 5  # Reserved seconds before total deadline
-SESSION_CREATE_TIMEOUT_S: int = 100
+SESSION_CREATE_TIMEOUT_S: int = 120
 
 # --- Concurrency ---
 DEFAULT_MAX_CONCURRENT: int = 10  # Default parallel agent slots

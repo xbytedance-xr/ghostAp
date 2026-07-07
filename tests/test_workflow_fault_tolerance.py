@@ -415,7 +415,10 @@ class TestTimeoutHandling(unittest.TestCase):
         self.executor._session_pool.submit.return_value = mock_future
 
         params = AgentCallParams(prompt="test prompt", tool="coco")
-        with patch("src.workflow_engine.executor.SESSION_CREATE_TIMEOUT_S", 0.01):
+        with (
+            patch("src.workflow_engine.executor.SESSION_CREATE_TIMEOUT_S", 0.01),
+            patch("src.workflow_engine.executor._settings_int", lambda field, fallback: 0.01),
+        ):
             result = self.executor.execute(params)
 
         self.assertIsNotNone(result.error)
@@ -443,6 +446,7 @@ class TestTimeoutHandling(unittest.TestCase):
         try:
             with (
                 patch("src.workflow_engine.executor.SESSION_CREATE_TIMEOUT_S", 0.01),
+                patch("src.workflow_engine.executor._settings_int", lambda field, fallback: 0.01),
                 patch("src.agent_session.factory.create_engine_session", side_effect=slow_create_engine_session),
             ):
                 params = AgentCallParams(prompt="test prompt", tool="coco")

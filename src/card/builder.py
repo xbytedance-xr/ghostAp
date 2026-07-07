@@ -440,6 +440,31 @@ class CardBuilder:
         )
 
     @staticmethod
+    def build_acp_model_cascade_card(
+        models: list,
+        tool_name: str,
+        project_id: Optional[str] = None,
+        current_model: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+        *,
+        pending_group: Optional[str] = None,
+        pending_profile: Optional[str] = None,
+        pending_effort: Optional[str] = None,
+        context_markdown: Optional[str] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_acp_model_cascade_card(
+            models,
+            tool_name,
+            project_id=project_id,
+            current_model=current_model,
+            thread_root_id=thread_root_id,
+            pending_group=pending_group,
+            pending_profile=pending_profile,
+            pending_effort=pending_effort,
+            context_markdown=context_markdown,
+        )
+
+    @staticmethod
     def build_acp_model_loading_card(
         tool_name: str,
         project_id: Optional[str] = None,

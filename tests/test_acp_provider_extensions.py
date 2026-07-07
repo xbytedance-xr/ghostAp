@@ -255,3 +255,75 @@ def test_traex_provider_passes_through_unknown_model(mock_run):
     cmd, args = provider.get_serve_command("some-unknown-model")
     assert cmd == "traex"
     assert args == ["acp", "serve", "-c", 'model="some-unknown-model"']
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_strips_compound_variant_suffix_before_slug(mock_run, tmp_path):
+    """Compound cascade values (config_name/profile/effort) resolve via base slug.
+
+    Regression for Deep+Traex Internal error: a value like
+    "c_o_new_thinking/max/max" was passed verbatim to `-c model=`, causing the
+    Traex CLI to fail metadata lookup and return Internal error.
+    """
+    import json
+
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout='Usage: traecli acp serve [OPTIONS]\n  -c, --config <key=value>\n',
+        stderr="",
+    )
+
+    cache_data = {
+        "models": [
+            {"slug": "Test-O-New-Thinking", "config_name": "c_o_new_thinking"},
+        ]
+    }
+
+    provider = TraexProvider()
+    provider._load_slug_map.cache_clear()
+
+    with patch("pathlib.Path.home", return_value=tmp_path.parent):
+        trae_dir = tmp_path.parent / ".trae" / "cli"
+        trae_dir.mkdir(parents=True, exist_ok=True)
+        (trae_dir / "models_cache.json").write_text(json.dumps(cache_data))
+
+        provider._load_slug_map.cache_clear()
+        cmd, args = provider.get_serve_command("c_o_new_thinking/max/max")
+
+    assert cmd == "traex"
+    # Base config_name resolves to slug; compound suffix is stripped.
+    assert args == ["acp", "serve", "-c", 'model="Test-O-New-Thinking"']
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_compound_unknown_model_falls_back_to_base(mock_run):
+    """Unknown compound value falls back to base config_name (never the compound)."""
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout='Usage: traecli acp serve [OPTIONS]\n  -c, --config <key=value>\n',
+        stderr="",
+    )
+
+    provider = TraexProvider()
+    provider._load_slug_map.cache_clear()
+
+    cmd, args = provider.get_serve_command("openrouter-3o/max/high")
+    assert cmd == "traex"
+    assert args == ["acp", "serve", "-c", 'model="openrouter-3o"']
+
+
+@patch("src.acp.providers.subprocess.run")
+def test_traex_provider_preserves_ordinary_slash_model(mock_run):
+    """Ordinary slash-bearing names without variant tokens are preserved intact."""
+    _get_traex_acp_serve_help_blob.cache_clear()
+    mock_run.return_value = SimpleNamespace(
+        stdout='Usage: traecli acp serve [OPTIONS]\n  -c, --config <key=value>\n',
+        stderr="",
+    )
+
+    provider = TraexProvider()
+    provider._load_slug_map.cache_clear()
+
+    cmd, args = provider.get_serve_command("anthropic/claude-sonnet")
+    assert cmd == "traex"
+    assert args == ["acp", "serve", "-c", 'model="anthropic/claude-sonnet"']

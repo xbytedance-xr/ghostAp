@@ -30,6 +30,22 @@ from .models import AgentCallParams, AgentCallResult
 logger = logging.getLogger(__name__)
 
 
+def _settings_int(field: str, fallback: int) -> int:
+    """Read an int workflow-timeout setting, falling back to the constant.
+
+    Settings overrides (from .env) must take effect at runtime, but we must
+    never let a missing/invalid config break the workflow — hence the graceful
+    fallback to the import-time constant.
+    """
+    try:
+        from src.config import get_settings
+
+        value = getattr(get_settings(), field, fallback)
+        return int(value)
+    except Exception:  # pragma: no cover - defensive: config not importable
+        return fallback
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -145,6 +161,8 @@ class RuntimeBridge:
         self._workflow_deadline_monotonic: float | None = None
         self._workflow_started_unix_ms: int | None = None
         self._workflow_deadline_unix_ms: int | None = None
+        # Effective total timeout (seconds) resolved from Settings once per run.
+        self._workflow_total_timeout_s: int = WORKFLOW_TOTAL_TIMEOUT_S
 
     # ------------------------------------------------------------------
     # Public API
@@ -186,16 +204,41 @@ class RuntimeBridge:
             return False
 
     def _ensure_workflow_deadline(self) -> None:
-        """Initialize the per-run deadline once and keep it stable."""
+        """Initialize the per-run deadline once and keep it stable.
+
+        A total timeout of ``0`` (or negative) means *unlimited*: no total
+        deadline is enforced.  In that mode the monotonic deadline stays
+        ``None`` and the unix-ms value sent to JS is ``0`` (JS treats a
+        falsy deadline as ``Infinity``).  Per-agent timeouts and the
+        MAX_TOTAL_AGENTS fuse still bound resource use.
+        """
         if self._workflow_deadline_monotonic is not None:
             return
+        # Already resolved unlimited mode on a prior call — keep it stable.
+        if self._workflow_started_monotonic is not None:
+            return
+
+        # Read the effective total timeout from Settings (allows .env override)
+        # exactly once per run, then cache it so init/run stay consistent.
+        total_timeout_s = _settings_int(
+            "workflow_total_timeout_s", WORKFLOW_TOTAL_TIMEOUT_S
+        )
+        self._workflow_total_timeout_s = total_timeout_s
 
         started_monotonic = time.monotonic()
         started_unix_ms = int(time.time() * 1000)
         self._workflow_started_monotonic = started_monotonic
-        self._workflow_deadline_monotonic = started_monotonic + WORKFLOW_TOTAL_TIMEOUT_S
         self._workflow_started_unix_ms = started_unix_ms
-        self._workflow_deadline_unix_ms = started_unix_ms + WORKFLOW_TOTAL_TIMEOUT_S * 1000
+
+        if total_timeout_s <= 0:
+            # Unlimited: no total deadline. Leave *_deadline_* fields cleared;
+            # JS receives deadline_unix_ms=0 → Infinity.
+            self._workflow_deadline_monotonic = None
+            self._workflow_deadline_unix_ms = 0
+            return
+
+        self._workflow_deadline_monotonic = started_monotonic + total_timeout_s
+        self._workflow_deadline_unix_ms = started_unix_ms + total_timeout_s * 1000
 
     def start(self) -> None:
         """Spawn the Node.js runtime subprocess and wait for 'ready' signal.
@@ -284,7 +327,7 @@ class RuntimeBridge:
                     "max_concurrent": self._max_concurrent,
                     "started_unix_ms": self._workflow_started_unix_ms,
                     "deadline_unix_ms": self._workflow_deadline_unix_ms,
-                    "total_timeout_s": WORKFLOW_TOTAL_TIMEOUT_S,
+                    "total_timeout_s": self._workflow_total_timeout_s,
                 },
             }
         )
@@ -317,7 +360,10 @@ class RuntimeBridge:
             raise RuntimeError("RuntimeBridge not started — call start() first")
 
         self._ensure_workflow_deadline()
-        deadline = self._workflow_deadline_monotonic or (time.monotonic() + WORKFLOW_TOTAL_TIMEOUT_S)
+        # ``deadline`` is None in unlimited mode (workflow_total_timeout_s <= 0):
+        # the total-timeout check is skipped and the loop only exits on
+        # done/error/cancel/process-death, letting the user stop when ready.
+        deadline = self._workflow_deadline_monotonic
 
         while not self._done:
             # Check cancellation
@@ -327,12 +373,17 @@ class RuntimeBridge:
                 self._kill_process()
                 raise RuntimeError("Workflow cancelled")
 
-            # Check timeout
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                logger.error("Workflow total timeout exceeded (%ds)", WORKFLOW_TOTAL_TIMEOUT_S)
-                self._kill_process()
-                raise RuntimeError(f"Workflow execution exceeded total timeout of {WORKFLOW_TOTAL_TIMEOUT_S}s")
+            # Check timeout (skipped entirely when running unlimited)
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.error("Workflow total timeout exceeded (%ds)", self._workflow_total_timeout_s)
+                    self._kill_process()
+                    raise RuntimeError(
+                        f"Workflow execution exceeded total timeout of {self._workflow_total_timeout_s}s"
+                    )
+            else:
+                remaining = None
 
             # Check process health
             if self._process.poll() is not None and not self._done:
@@ -343,8 +394,10 @@ class RuntimeBridge:
                     f"{self._process.returncode}. stderr: {sanitized_stderr}"
                 )
 
-            # Wait for next message
-            msg = self._pop_message(timeout=min(1.0, remaining))
+            # Wait for next message. Cap the block at 1s so cancellation and
+            # process-death are still detected promptly in unlimited mode.
+            pop_timeout = 1.0 if remaining is None else min(1.0, remaining)
+            msg = self._pop_message(timeout=pop_timeout)
             if msg is None:
                 continue
 
@@ -677,13 +730,16 @@ class RuntimeBridge:
             return dict(params)
 
         budget_s = int(max(1.0, remaining - WORKFLOW_TIMEOUT_HEADROOM_S))
-        raw_timeout = params.get("timeout") or AGENT_CALL_TIMEOUT_S
+        default_timeout = _settings_int(
+            "workflow_agent_call_timeout_s", AGENT_CALL_TIMEOUT_S
+        )
+        raw_timeout = params.get("timeout") or default_timeout
         try:
             requested_s = int(raw_timeout)
         except (TypeError, ValueError):
-            requested_s = AGENT_CALL_TIMEOUT_S
+            requested_s = default_timeout
         if requested_s <= 0:
-            requested_s = AGENT_CALL_TIMEOUT_S
+            requested_s = default_timeout
 
         capped = dict(params)
         capped["timeout"] = max(1, min(requested_s, budget_s))

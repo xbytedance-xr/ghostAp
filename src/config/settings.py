@@ -228,6 +228,30 @@ class Settings(BaseSettings):
     # (e.g. for short one-shot calls where the extra verbosity is not useful).
     workflow_subagent_hint_enabled: bool = True
 
+    # Workflow timeout knobs (runtime-overridable via .env). Defaults are kept
+    # aligned with the import-time fallbacks in workflow_engine/constants.py.
+    # Raise these for complex, long-running /wf tasks that hit the deadline.
+    workflow_total_timeout_s: int = Field(
+        default=3600,
+        ge=0,
+        description="Total /wf workflow execution timeout (seconds); SSOT for the run deadline. Set 0 to disable the total deadline entirely (unlimited) — the workflow then runs until it finishes or the user stops it. Per-agent timeout and the MAX_TOTAL_AGENTS fuse still apply.",
+    )
+    workflow_agent_call_timeout_s: int = Field(
+        default=600,
+        ge=10,
+        description="Per agent() call timeout inside a workflow (seconds).",
+    )
+    workflow_script_gen_timeout_s: int = Field(
+        default=180,
+        ge=10,
+        description="AI workflow script generation timeout (seconds).",
+    )
+    workflow_session_create_timeout_s: int = Field(
+        default=120,
+        ge=10,
+        description="Agent session creation timeout inside a workflow (seconds).",
+    )
+
     ttadk_preheat_timeout: float = 2.5
 
     # TTADK model list fetch strategy knobs

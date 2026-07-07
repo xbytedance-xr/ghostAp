@@ -37,13 +37,16 @@ from src.card.actions.dispatch import (
     WORKFLOW_REVIEW_SELECT_TOOL,
 )
 from src.card.builder import CardBuilder
+from src.card.render import model_cascade
 from src.card.render.buttons import build_responsive_button_row
 
 _MODEL_BUTTON_LABEL_MAX_CHARS = 32
 _SELECT_LABEL_MAX_CHARS = 72
-_VARIANT_TOKENS = {"low", "medium", "high", "xhigh", "max"}
-_PROFILE_ORDER = {"standard": 0, "max": 1}
-_EFFORT_ORDER = {"default": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
+# Kept as module aliases so existing references stay valid; the source of
+# truth now lives in ``src.card.render.model_cascade``.
+_VARIANT_TOKENS = model_cascade.VARIANT_TOKENS
+_PROFILE_ORDER = model_cascade.PROFILE_ORDER
+_EFFORT_ORDER = model_cascade.EFFORT_ORDER
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -857,71 +860,19 @@ class SelectionFlowController:
 
     @staticmethod
     def _build_model_groups(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        groups: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
-        for model in models:
-            name = str(model.get("name") or "").strip()
-            if not name:
-                continue
-            display = str(model.get("display_name") or name).strip() or name
-            base, tokens = SelectionFlowController._split_model_variant(name)
-            profile, effort = SelectionFlowController._dimensions_from_tokens(tokens)
-            if base not in groups:
-                groups[base] = {
-                    "key": base,
-                    "label": base if tokens else display,
-                    "variants": [],
-                }
-                order.append(base)
-            elif tokens:
-                groups[base]["label"] = base
-            groups[base]["variants"].append({
-                "name": name,
-                "display_name": display,
-                "profile": profile,
-                "effort": effort,
-                "tokens": tokens,
-            })
-        return [groups[key] for key in order]
+        return model_cascade.build_model_groups(models)
 
     @staticmethod
     def _split_model_variant(model_name: str) -> tuple[str, tuple[str, ...]]:
-        parts = [p for p in str(model_name or "").split("/") if p]
-        if len(parts) <= 1:
-            return str(model_name or ""), ()
-        suffix: list[str] = []
-        while parts and parts[-1].lower() in _VARIANT_TOKENS:
-            suffix.insert(0, parts.pop())
-        if not suffix or not parts:
-            return str(model_name or ""), ()
-        return "/".join(parts), tuple(suffix)
+        return model_cascade.split_model_variant(model_name)
 
     @staticmethod
     def _dimensions_from_tokens(tokens: tuple[str, ...]) -> tuple[str, str]:
-        lowered = tuple(t.lower() for t in tokens)
-        if not lowered:
-            return "standard", "default"
-        if len(lowered) == 1:
-            if lowered[0] == "max":
-                return "max", "default"
-            return "standard", lowered[0]
-        return lowered[0], "/".join(lowered[1:])
+        return model_cascade.dimensions_from_tokens(tokens)
 
     @staticmethod
     def _ordered_unique(values: Any, *, kind: str) -> list[str]:
-        result: list[str] = []
-        for value in values:
-            text = str(value or "")
-            if text and text not in result:
-                result.append(text)
-        order = _PROFILE_ORDER if kind == "profile" else _EFFORT_ORDER
-        return sorted(
-            result,
-            key=lambda x: (
-                order.get(x, 50),
-                x,
-            ),
-        )
+        return model_cascade.ordered_unique(values, kind=kind)
 
     @staticmethod
     def _choose_variant(
@@ -930,13 +881,8 @@ class SelectionFlowController:
         profile: str,
         effort: str,
     ) -> dict[str, Any] | None:
-        for variant in variants:
-            if variant["profile"] == profile and variant["effort"] == effort:
-                return variant
-        for variant in variants:
-            if variant["profile"] == profile:
-                return variant
-        return variants[0] if variants else None
+        return model_cascade.choose_variant(variants, profile=profile, effort=effort)
+
 
     @staticmethod
     def _select_static(

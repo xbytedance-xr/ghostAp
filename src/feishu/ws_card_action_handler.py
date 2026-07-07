@@ -87,6 +87,7 @@ SYSTEM_CARD_ACTIONS = {
     "show_spec_review_menu",
     "workflow_confirm_start",
     "workflow_cancel",
+    "workflow_stop_running",
     "workflow_select_tool",
     "workflow_confirm_tools",
     "workflow_regenerate_script",

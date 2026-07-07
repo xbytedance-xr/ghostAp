@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ACP Model Cascade Preview (普通编程模式)</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --card: #ffffff;
+      --border: #d9dde3;
+      --text: #1f2329;
+      --muted: #646a73;
+      --blue: #1456f0;
+      --blue-soft: #e8efff;
+      --green-soft: #e6f4ea;
+      --green: #1a7f37;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { max-width: 760px; margin: 32px auto; padding: 0 16px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 28px;
+    }
+    .header {
+      padding: 14px 18px;
+      background: var(--blue);
+      color: white;
+      font-weight: 700;
+    }
+    .body { padding: 18px; }
+    .prompt { margin-bottom: 8px; }
+    .section { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
+    label {
+      display: block;
+      margin: 12px 0 6px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    select {
+      width: 100%;
+      min-height: 40px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: white;
+      color: var(--text);
+      font: inherit;
+    }
+    select.remembered {
+      border-color: var(--green);
+      background: var(--green-soft);
+    }
+    .button-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    button {
+      min-height: 38px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: white;
+      color: var(--text);
+      padding: 8px 12px;
+      font: inherit;
+      cursor: default;
+    }
+    button.primary { border-color: var(--blue); background: var(--blue); color: white; }
+    .selected {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: var(--blue-soft);
+      color: #143c9e;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 12px;
+      padding: 1px 8px;
+      border-radius: 10px;
+      background: var(--green-soft);
+      color: var(--green);
+      margin-left: 6px;
+    }
+    .hint { color: var(--muted); margin: 10px 0 0; }
+    .model-btn-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .model-btn-grid button { flex: 1 1 40%; }
+    @media (max-width: 560px) {
+      main { margin: 12px auto; }
+      .button-row { flex-direction: column; }
+      button { width: 100%; }
+      .model-btn-grid button { flex: 1 1 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <!--
+      Preview of the normal programming-mode ACP model selection after
+      migrating the Workflow (/wf) family × profile × effort cascade.
+      Card builder: SystemBuilder.build_acp_model_cascade_card
+      Redraw actions: select_acp_model_group / _profile / _effort
+      Commit action: select_acp_model (confirm button)
+    -->
+
+    <!-- Case 1: Traex — cascade, default selection remembered from last model -->
+    <div class="card">
+      <div class="header">Traex 模型选择</div>
+      <div class="body">
+        <div class="prompt">请为 <strong>traex</strong> 选择模型：</div>
+
+        <div class="section">
+          <div class="button-row">
+            <button>默认模型（推荐）</button>
+          </div>
+
+          <label for="group">模型族</label>
+          <select id="group" class="remembered">
+            <option selected>openrouter-3o</option>
+            <option>c_o_new_thinking</option>
+            <option>doubao-seed-2.1-pro</option>
+          </select>
+
+          <label for="profile">Profile</label>
+          <select id="profile" class="remembered">
+            <option>standard</option>
+            <option selected>max</option>
+          </select>
+
+          <label for="effort">Effort</label>
+          <select id="effort" class="remembered">
+            <option>low</option>
+            <option>medium</option>
+            <option selected>high</option>
+            <option>xhigh</option>
+            <option>max</option>
+          </select>
+
+          <div class="selected">
+            默认选中来自上次模型 <code>openrouter-3o/max/high</code>
+            <span class="badge">记住上次选择</span>
+          </div>
+
+          <div class="button-row">
+            <button class="primary">确认此模型: openrouter-3o/max/high</button>
+          </div>
+
+          <hr>
+          <div class="button-row">
+            <button>刷新模型</button>
+          </div>
+          <p class="hint">
+            绿色高亮 = 由 project.acp_model_name 反解出的默认选中；改动任意下拉只重绘卡片、不进入编程模式，
+            点击“确认此模型”才写入 acp_model_name 并进入模式。
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Case 2: Coco — no splittable variants, falls back to button list -->
+    <div class="card">
+      <div class="header">Coco 模型选择</div>
+      <div class="body">
+        <div class="prompt">请为 <strong>coco</strong> 选择模型：</div>
+        <div class="section">
+          <div class="model-btn-grid">
+            <button>默认模型（推荐）</button>
+            <button>test-o-new</button>
+            <button class="primary">deepseek-v4-pro</button>
+          </div>
+          <hr>
+          <div class="button-row">
+            <button>刷新模型</button>
+          </div>
+          <p class="hint">
+            无可拆分变体的小模型列表回退为原分页按钮卡（当前模型高亮），级联下拉不介入。
+          </p>
+        </div>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

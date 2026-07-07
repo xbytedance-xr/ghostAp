@@ -1260,6 +1260,128 @@ class SystemBuilder:
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
+    def build_acp_model_cascade_card(
+        models: list,
+        tool_name: str,
+        project_id: Optional[str] = None,
+        current_model: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+        *,
+        pending_group: Optional[str] = None,
+        pending_profile: Optional[str] = None,
+        pending_effort: Optional[str] = None,
+        context_markdown: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build a cascade (family × profile × effort) ACP model-select card.
+
+        Mirrors the Workflow ``/wf`` cascade UI: instead of paginating ~90
+        Traex model buttons, the model list is compressed into
+        family/profile/effort ``select_static`` dropdowns plus a "confirm"
+        button (:data:`SELECT_ACP_MODEL`). Changing a dropdown re-renders the
+        card via the ``SELECT_ACP_MODEL_*`` actions without entering the mode.
+
+        Default selection remembers the last chosen model: the cascade
+        reverse-solves ``current_model`` into its group/profile/effort so the
+        dropdowns open pre-selected on the user's previous choice.
+
+        Lists without splittable variants (e.g. Coco's handful of models) fall
+        back to the plain paginated button card so those flows keep working.
+        """
+        from ..render.model_cascade import build_model_cascade_elements, has_cascade_variants
+
+        norm_models: list[dict] = []
+        for model in models or []:
+            if isinstance(model, dict):
+                m_name = str(model.get("name") or "").strip()
+                m_disp = model.get("display_name") or m_name
+                m_desc = model.get("description", "")
+            else:
+                m_name = str(getattr(model, "name", None) or model or "").strip()
+                m_disp = getattr(model, "display_name", None) or getattr(model, "friendly_name", None) or m_name
+                m_desc = getattr(model, "description", "")
+            if not m_name:
+                continue
+            norm_models.append({
+                "name": m_name,
+                "display_name": str(m_disp or m_name),
+                "description": str(m_desc or ""),
+            })
+
+        # No splittable variants → nothing to cascade; reuse the button card so
+        # small model lists (Coco et al.) keep the original behavior.
+        if not has_cascade_variants(norm_models):
+            return SystemBuilder.build_acp_model_select_card(
+                models,
+                tool_name,
+                project_id,
+                current_model=current_model,
+                thread_root_id=thread_root_id,
+            )
+
+        def _value_builder(action: str, extra: dict) -> dict:
+            value = {
+                "action": action,
+                "tool_name": tool_name,
+                "project_id": project_id,
+                "thread_root_id": thread_root_id,
+            }
+            value.update(extra)
+            return value
+
+        elements: list[dict] = [
+            {
+                "tag": "markdown",
+                "content": UI_TEXT["system_acp_select_model_prompt"].format(tool=tool_name),
+            }
+        ]
+        if context_markdown:
+            elements.append({"tag": "markdown", "content": context_markdown})
+
+        elements.extend(
+            build_model_cascade_elements(
+                models=norm_models,
+                value_builder=_value_builder,
+                group_action=action_ids.SELECT_ACP_MODEL_GROUP,
+                profile_action=action_ids.SELECT_ACP_MODEL_PROFILE,
+                effort_action=action_ids.SELECT_ACP_MODEL_EFFORT,
+                select_action=action_ids.SELECT_ACP_MODEL,
+                default_action=action_ids.SELECT_ACP_MODEL,
+                pending_group=pending_group,
+                pending_profile=pending_profile,
+                pending_effort=pending_effort,
+                current_model=current_model,
+                button_row_builder=build_responsive_layout,
+            )
+        )
+
+        # Refresh button (re-probe models), consistent with the button card.
+        refresh_value = {
+            "action": action_ids.REFRESH_ACP_MODELS,
+            "tool_name": tool_name,
+            "project_id": project_id,
+            "thread_root_id": thread_root_id,
+        }
+        elements.append({"tag": "hr"})
+        elements.extend(
+            build_responsive_layout(
+                [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": UI_TEXT["system_ttadk_refresh_btn"]},
+                        "type": "default",
+                        "value": refresh_value,
+                        "behaviors": [{"type": "callback", "value": refresh_value}],
+                    }
+                ]
+            )
+        )
+
+        card = CoreBuilder._wrap_card(
+            UI_TEXT["system_acp_model_select_title"].format(tool=tool_name), "blue", elements
+        )
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
     def build_acp_model_loading_card(
         tool_name: str,
         project_id: Optional[str] = None,

@@ -202,13 +202,46 @@ class TraexACPProvider(GenericACPProvider):
         except Exception:
             return {}
 
+    # Reasoning/profile suffix tokens that Traex's UI-side cascade may append to
+    # a model value as "config_name/<profile>/<effort>" (e.g. "c_o_new_thinking/max/max").
+    # Traex's CLI metadata lookup only recognises the base config_name/slug, so a
+    # compound value is passed through verbatim to `-c model=` and fails with
+    # "Model metadata for <compound> not found" → Internal error. Strip these
+    # trailing tokens before slug resolution.
+    _VARIANT_SUFFIX_TOKENS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+    @classmethod
+    def _strip_variant_suffix(cls, model_name: str) -> str:
+        """Reduce "config_name/<profile>/<effort>" to the base config_name.
+
+        Only trailing segments that are known reasoning/profile tokens are
+        removed, so ordinary slash-bearing names (e.g. "anthropic/claude-sonnet")
+        are preserved intact.
+        """
+        parts = [p for p in str(model_name or "").split("/") if p]
+        if len(parts) <= 1:
+            return str(model_name or "").strip()
+        while len(parts) > 1 and parts[-1].lower() in cls._VARIANT_SUFFIX_TOKENS:
+            parts.pop()
+        return "/".join(parts)
+
     def _resolve_slug(self, model_name: Optional[str]) -> Optional[str]:
-        """Resolve config_name to slug if a mapping exists."""
+        """Resolve config_name to slug if a mapping exists.
+
+        Compound cascade values ("config_name/profile/effort") are normalised to
+        their base config_name first so the slug map (keyed by bare config_name)
+        can match instead of passing an unknown compound name to the CLI.
+        """
         m = (model_name or "").strip()
         if not m:
             return model_name
+        base = self._strip_variant_suffix(m)
         slug_map = self._load_slug_map()
-        return slug_map.get(m, m)
+        if base in slug_map:
+            return slug_map[base]
+        # Fall back to the stripped base (never the compound) so the CLI receives
+        # a name it can look up, even when no explicit slug mapping exists.
+        return base or m
 
     def get_default_model(self) -> Optional[str]:
         """Resolve the first available model slug from cache when none specified.

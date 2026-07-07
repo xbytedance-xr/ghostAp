@@ -127,6 +127,7 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_select_acp_tool": ("system", "handle_select_acp_tool"),
     "_handle_select_acp_model": ("system", "handle_select_acp_model"),
     "_handle_refresh_acp_models": ("system", "handle_refresh_acp_models"),
+    "_handle_acp_model_cascade_select": ("system", "handle_acp_model_cascade_select"),
     "_handle_help_category": ("system", "handle_help_category"),
     "_handle_deep_prompt": ("system", "handle_deep_prompt"),
     # --- Deep Engine ---
@@ -198,6 +199,7 @@ FORWARDING_MAP: dict[str, tuple[str, str]] = {
     "_handle_workflow_confirm_tools": ("workflow", "handle_workflow_confirm_tools"),
     "_handle_workflow_confirm_start": ("workflow", "handle_workflow_confirm_start"),
     "_handle_workflow_cancel": ("workflow", "handle_workflow_cancel"),
+    "_handle_workflow_stop_running": ("workflow", "handle_workflow_stop_running"),
     "_handle_workflow_select_tool": ("workflow", "handle_workflow_select_tool"),
     "_handle_workflow_regenerate_script": ("workflow", "handle_workflow_regenerate_script"),
     "_handle_workflow_fill_missing_tools": ("workflow", "handle_workflow_fill_missing_tools"),

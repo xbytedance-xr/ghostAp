@@ -422,3 +422,47 @@ class TestSpecReviewParseFailureDefault:
     def test_spec_review_property_includes_parse_failure_default(self):
         s = Settings(spec_review_parse_failure_default="pass")
         assert s.spec_review.parse_failure_default == "pass"
+
+
+class TestWorkflowTimeoutSettings:
+    """Workflow (/wf) timeout knobs: raised defaults + lower-bound validation."""
+
+    def test_defaults(self):
+        s = Settings()
+        assert s.workflow_total_timeout_s == 3600
+        assert s.workflow_agent_call_timeout_s == 600
+        assert s.workflow_script_gen_timeout_s == 180
+        assert s.workflow_session_create_timeout_s == 120
+
+    def test_env_override_applied(self):
+        s = Settings(
+            workflow_total_timeout_s=7200,
+            workflow_agent_call_timeout_s=1200,
+            workflow_script_gen_timeout_s=300,
+            workflow_session_create_timeout_s=240,
+        )
+        assert s.workflow_total_timeout_s == 7200
+        assert s.workflow_agent_call_timeout_s == 1200
+        assert s.workflow_script_gen_timeout_s == 300
+        assert s.workflow_session_create_timeout_s == 240
+
+    def test_total_timeout_zero_allowed_means_unlimited(self):
+        # 0 disables the total deadline entirely (unlimited long-running /wf).
+        s = Settings(workflow_total_timeout_s=0)
+        assert s.workflow_total_timeout_s == 0
+
+    def test_total_timeout_negative_rejected(self):
+        with pytest.raises(Exception):
+            Settings(workflow_total_timeout_s=-1)  # ge=0
+
+    def test_agent_call_timeout_below_floor_rejected(self):
+        with pytest.raises(Exception):
+            Settings(workflow_agent_call_timeout_s=5)  # ge=10
+
+    def test_script_gen_timeout_below_floor_rejected(self):
+        with pytest.raises(Exception):
+            Settings(workflow_script_gen_timeout_s=5)  # ge=10
+
+    def test_session_create_timeout_below_floor_rejected(self):
+        with pytest.raises(Exception):
+            Settings(workflow_session_create_timeout_s=5)  # ge=10

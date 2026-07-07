@@ -190,6 +190,9 @@ class TestScriptSaving(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             handler, ctx = self._make_handler(tmpdir)
+            # Script-gen timeout is now read from Settings (falls back to the
+            # constant). Pin it so the assertion checks a concrete value.
+            ctx.settings.workflow_script_gen_timeout_s = SCRIPT_GEN_TIMEOUT_S
 
             with patch("src.agent_session.create_engine_session") as mock_create:
                 mock_session = MagicMock()
@@ -206,6 +209,29 @@ class TestScriptSaving(unittest.TestCase):
             self.assertEqual(
                 mock_session.send_prompt.call_args.kwargs.get("timeout"),
                 SCRIPT_GEN_TIMEOUT_S,
+            )
+
+    def test_script_generation_respects_settings_override(self):
+        """A larger workflow_script_gen_timeout_s from Settings is honored."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            handler, ctx = self._make_handler(tmpdir)
+            ctx.settings.workflow_script_gen_timeout_s = 300
+
+            with patch("src.agent_session.create_engine_session") as mock_create:
+                mock_session = MagicMock()
+                mock_create.return_value = mock_session
+                mock_session.send_prompt.return_value = MagicMock(text=SAMPLE_SCRIPT)
+                mock_session.close = MagicMock()
+
+                with patch("src.agent_session.close_session_safely"):
+                    handler._generate_script_via_ai(
+                        "test requirement", tmpdir, ["coco"]
+                    )
+
+            mock_session.send_prompt.assert_called_once()
+            self.assertEqual(
+                mock_session.send_prompt.call_args.kwargs.get("timeout"),
+                300,
             )
 
     def test_saved_script_preserves_metadata(self):

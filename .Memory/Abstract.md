@@ -1,7 +1,10 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-07
+- **WF可不限时+运行态停止按钮** — `/wf` 总超时 `workflow_total_timeout_s` 支持 0=不限制（`ge=0`，bridge deadline=None 跳过总超时检查，JS 侧 0→Infinity，per-agent 超时/200 agent 熔断仍生效），运行态进度卡新增 danger「停止」按钮委托 `stop_workflow` 鉴权；停止按钮包由并行 subagent 实现，115 定向 + 1777 相关 passed → [详细记录](2026-07-07.md)
 ## 2026-07-06
+- **普通模式模型级联迁移** — WF 的工具/族/Profile/Effort 级联下拉迁到普通编程模式 ACP 选模型，抽取共享 `model_cascade.py` 纯函数，新增用 `acp_model_name` 反解「记住上次模型」默认选中；WF/Slock/`/model` 复用未破坏，级联 10 + 定向 311 passed、WF 903、Slock 2342 passed → [详细记录](2026-07-06.md)
 - **Slock warning清零** — 修复 Slock coroutine/thread/Freshness Gate 并发 warning 与全量 flaky，保留必要配置 warning log；全量 9691 passed，`-W error` 目标集 268 passed → [详细记录](2026-07-06.md)
 - **全量case收敛** — 修复全量 pytest 的 3 个失败：Slock async dispatch 测试竞态、docs/superpowers 归档噪音、Workflow leaf-lock 注释；`tests/` 全量 9691 passed，ruff/validate/diff-check 通过 → [详细记录](2026-07-06.md)
 - **WF终态一致性收口** — 修复 `/wf` runtime done 时仍有 RUNNING/PENDING agent 导致绿头“完成”但正文“执行中/失败”的卡片矛盾；顶层 `{error}` 结果 fail-close，终态摘要和 0-agent 阶段文案同步，Workflow 889 passed → [详细记录](2026-07-06.md)

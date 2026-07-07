@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Optional
 from ...acp.helper import fetch_acp_models, list_acp_tools
 from ...acp.providers import tool_registry
 from ...card import CardBuilder
+from ...card.actions import dispatch as action_ids
 from ...card.builders.project import ProjectBuilder
 from ...card.ui_text import UI_TEXT
 from ...coco_model import get_coco_model_manager
@@ -804,13 +805,12 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             self.reply_error(message_id, UI_TEXT["system_acp_get_models_failed"].format(tool_name=tool))
             return
 
-        _, model_card = CardBuilder.build_acp_model_select_card(
+        _, model_card = CardBuilder.build_acp_model_cascade_card(
             models,
             tool,
             project_id,
             current_model=current_model,
             thread_root_id=thread_root_id,
-            model_page=model_page,
         )
         if progress_message_id and self.update_card(progress_message_id, model_card):
             return
@@ -917,6 +917,81 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             update_existing=True,
             model_page=model_page,
         )
+
+    def handle_acp_model_cascade_select(
+        self,
+        message_id: str,
+        chat_id: str,
+        tool_name: str,
+        project_id: Optional[str] = None,
+        value: Optional[dict] = None,
+    ) -> None:
+        """Re-render the ACP model cascade after a family/profile/effort change.
+
+        This only updates the pending dropdown selection and repaints the card;
+        it does NOT enter the mode. The user must click the final "confirm"
+        button (``SELECT_ACP_MODEL``) to actually commit the model choice.
+
+        The pending group/profile/effort are carried statelessly in the button
+        ``value`` (plus the Feishu-injected ``_option`` for the just-changed
+        dropdown), so no per-chat selection state is stored.
+        """
+        value = value or {}
+        tool = (tool_name or "").strip().lower()
+        if not tool:
+            self.reply_error(message_id, UI_TEXT["system_acp_select_tool_prompt"])
+            return
+
+        action = str(value.get("action") or "")
+        selected = str(value.get("_option") or "").strip()
+
+        pending_group = value.get("model_group")
+        pending_profile = value.get("model_profile")
+        pending_effort = value.get("model_effort")
+        # Apply the just-changed dropdown's new value. Downstream dropdowns
+        # reset so the cascade recomputes their defaults from the new parent.
+        if action == action_ids.SELECT_ACP_MODEL_GROUP:
+            pending_group = selected or pending_group
+            pending_profile = None
+            pending_effort = None
+        elif action == action_ids.SELECT_ACP_MODEL_PROFILE:
+            pending_profile = selected or pending_profile
+            pending_effort = None
+        elif action == action_ids.SELECT_ACP_MODEL_EFFORT:
+            pending_effort = selected or pending_effort
+
+        project = (
+            self.project_manager.get_project_for_chat(project_id, chat_id)
+            if project_id
+            else self.project_manager.get_active_project(chat_id)
+        )
+        cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
+        current_model = None
+        if project and getattr(project, "acp_tool_name", "") == tool:
+            current_model = getattr(project, "acp_model_name", None)
+
+        from ...thread import get_current_thread_id
+        thread_root_id = str(value.get("thread_root_id") or "").strip() or get_current_thread_id()
+
+        models = self._fetch_acp_models(tool, cwd=cwd, current_model=current_model)
+        if not models:
+            _, error_card = CardBuilder.build_acp_model_error_card(
+                tool, project_id=project_id, thread_root_id=thread_root_id
+            )
+            self.update_card(message_id, error_card)
+            return
+
+        _, model_card = CardBuilder.build_acp_model_cascade_card(
+            models,
+            tool,
+            project_id,
+            current_model=current_model,
+            thread_root_id=thread_root_id,
+            pending_group=pending_group,
+            pending_profile=pending_profile,
+            pending_effort=pending_effort,
+        )
+        self.update_card(message_id, model_card)
 
     def handle_select_acp_model(
         self,
