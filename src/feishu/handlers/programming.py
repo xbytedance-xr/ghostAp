@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Optional
 
 from ...acp import ACPEventRenderer
 from ...acp.manager import ACPSessionManager
+from ...acp.providers import normalize_acp_model_name
 from ...agent_session import SyncSession
 from ...card import CardBuilder
 from ...card.hooks import EmojiHook
@@ -503,15 +504,23 @@ class ProgrammingModeHandler(BaseHandler):
         project_id = project.project_id if project else None
         cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
         mgr = self._get_session_manager()
+        backend_model_name = normalize_acp_model_name(self.mode_key, model_name)
+        if backend_model_name != model_name:
+            logger.info(
+                "[%s] Normalized selected model for backend: selected=%s backend=%s",
+                self.mode_name,
+                model_name,
+                backend_model_name,
+            )
 
         session = mgr.get_session(chat_id, project_id=project_id)
         if session:
             # Attempt protocol-level model switch (preserves conversation context).
             set_model_fn = getattr(session, "set_model", None)
-            if model_name and callable(set_model_fn):
+            if backend_model_name and callable(set_model_fn):
                 try:
-                    if set_model_fn(model_name):
-                        logger.info("[%s] Model switched via ACP protocol: %s", self.mode_name, model_name)
+                    if set_model_fn(backend_model_name):
+                        logger.info("[%s] Model switched via ACP protocol: %s", self.mode_name, backend_model_name)
 
                         banner = CardBuilder._build_banner_element(UI_TEXT["mode_model_switched_banner"].format(name=self.mode_name, model=model_name), type="success")
                         msg_type, card_content = CardBuilder.build_project_response_card(
@@ -538,7 +547,7 @@ class ProgrammingModeHandler(BaseHandler):
                 startup_timeout=startup_timeout,
                 project_id=project_id,
                 agent_type_override=agent_type_override,
-                model_name=model_name,
+                model_name=backend_model_name,
             )
 
             display_model = model_name or UI_TEXT["system_acp_default_model_option"]

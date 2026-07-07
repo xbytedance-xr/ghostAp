@@ -24,6 +24,7 @@ class ACPProvider(Protocol):
     - `check_availability()` 仅做轻量探测：判断二进制是否存在、是否支持 `acp serve`。
     - `get_serve_command()` 负责返回启动 ACP Server 的 (cmd, args)。
     - `get_fallback_command()` 可选：在不可用时提供可执行的兜底命令。
+    - `normalize_model_name()` 可选：把 UI/配置层模型值转换为后端可执行模型值。
     """
 
     @property
@@ -37,6 +38,8 @@ class ACPProvider(Protocol):
     def check_availability(self) -> bool: ...
 
     def get_fallback_command(self, model_name: Optional[str] = None) -> Optional[tuple[str, list[str]]]: ...
+
+    def normalize_model_name(self, model_name: Optional[str] = None) -> Optional[str]: ...
 
 
 class ToolRegistry:

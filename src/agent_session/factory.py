@@ -6,6 +6,7 @@ import logging
 import threading
 from typing import Callable, Optional
 
+from ..acp.providers import normalize_acp_model_name
 from ..acp.sync_adapter import SyncACPSession
 from ..config import get_settings
 from ..utils.errors import get_error_detail
@@ -15,6 +16,27 @@ from .ttadk_cli import SyncTTADKCLISession
 from .wrappers import ModelFailureAwareSession, RateLimitAwareSession
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_acp_startup_model(agent_type: str, model_name: Optional[str]) -> Optional[str]:
+    """Normalize ACP model values before startup/protocol use.
+
+    Some providers expose UI-facing values that are not valid backend model IDs
+    when passed back to their CLI/ACP protocol. Keep this at the session-factory
+    boundary so Deep/Spec/Review/Slock share the same normalization.
+    """
+    agent = (agent_type or "").strip().lower()
+    if not model_name or agent == "claude" or agent.startswith("ttadk_"):
+        return model_name
+    normalized = normalize_acp_model_name(agent, model_name)
+    if normalized != model_name:
+        logger.info(
+            "[SessionFactory] normalized ACP model: agent=%s selected_model=%s backend_model=%s",
+            agent,
+            model_name,
+            normalized,
+        )
+    return normalized
 
 
 def close_session_safely(session: Optional[SyncSession]) -> None:
@@ -120,6 +142,7 @@ def create_sync_session(agent_type: str, cwd: str, model_name: Optional[str] = N
         # Switch to CLI backend
         return SyncTTADKCLISession(agent_type=agent_type, cwd=cwd, model_name=model_name)
 
+    effective_model = _normalize_acp_startup_model(agent_type or "coco", effective_model)
     return SyncACPSession(agent_type=agent_type or "coco", cwd=cwd, model_name=effective_model)
 
 
@@ -233,6 +256,7 @@ def create_engine_session(
             except Exception:
                 pass
 
+        effective_model = _normalize_acp_startup_model(agent_type or "coco", effective_model)
         session = start_session_with_retry(
             agent_type=agent_type or "coco",
             cwd=cwd,
@@ -316,6 +340,7 @@ def create_review_session(
     effective_model = model_name
     if not effective_model and agent_type in ("coco", ""):
         effective_model = get_coco_model_manager().get_current_model()
+    effective_model = _normalize_acp_startup_model(agent_type, effective_model)
     return start_session_with_retry(
         agent_type=agent_type,
         cwd=cwd,

@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-07
+- **Traex模型ID规范化** — 定位 Deep `Model metadata for c_o_new_thinking/max/max not found` 根因是 UI 级联复合模型 ID 被直接传给 Traex `session/setModel`/engine 启动；新增 provider 级 `normalize_acp_model_name`，普通切模型、ACPSessionManager、Deep/Spec/Review factory 全接入，后端收到 `Test-O-New-Thinking`，相关 3+231+109+237 passed、ruff 通过 → [详细记录](2026-07-07.md)
 - **WF可不限时+运行态停止按钮** — `/wf` 总超时 `workflow_total_timeout_s` 支持 0=不限制（`ge=0`，bridge deadline=None 跳过总超时检查，JS 侧 0→Infinity，per-agent 超时/200 agent 熔断仍生效），运行态进度卡新增 danger「停止」按钮委托 `stop_workflow` 鉴权；停止按钮包由并行 subagent 实现，115 定向 + 1777 相关 passed → [详细记录](2026-07-07.md)
 ## 2026-07-06
 - **普通模式模型级联迁移** — WF 的工具/族/Profile/Effort 级联下拉迁到普通编程模式 ACP 选模型，抽取共享 `model_cascade.py` 纯函数，新增用 `acp_model_name` 反解「记住上次模型」默认选中；WF/Slock/`/model` 复用未破坏，级联 10 + 定向 311 passed、WF 903、Slock 2342 passed → [详细记录](2026-07-06.md)

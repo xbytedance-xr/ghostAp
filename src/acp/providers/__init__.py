@@ -168,12 +168,18 @@ class GenericACPProvider:
     def get_serve_command(self, model_name: Optional[str] = None) -> tuple[str, list[str]]:
         args = list(self._config.serve_args)
         args = _apply_model_args(
-            args, model_name, self._config.model_style, self._config.help_blob_loader
+            args, self.normalize_model_name(model_name), self._config.model_style, self._config.help_blob_loader
         )
         return self._config.tool_name, args
 
     def get_fallback_command(self, model_name: Optional[str] = None) -> Optional[tuple[str, list[str]]]:
         return None
+
+    def normalize_model_name(self, model_name: Optional[str] = None) -> Optional[str]:
+        """Return the backend-facing model name for this provider."""
+        if model_name is None:
+            return None
+        return str(model_name or "").strip() or None
 
 
 class TraexACPProvider(GenericACPProvider):
@@ -225,7 +231,7 @@ class TraexACPProvider(GenericACPProvider):
             parts.pop()
         return "/".join(parts)
 
-    def _resolve_slug(self, model_name: Optional[str]) -> Optional[str]:
+    def normalize_model_name(self, model_name: Optional[str] = None) -> Optional[str]:
         """Resolve config_name to slug if a mapping exists.
 
         Compound cascade values ("config_name/profile/effort") are normalised to
@@ -234,7 +240,7 @@ class TraexACPProvider(GenericACPProvider):
         """
         m = (model_name or "").strip()
         if not m:
-            return model_name
+            return None
         base = self._strip_variant_suffix(m)
         slug_map = self._load_slug_map()
         if base in slug_map:
@@ -264,7 +270,7 @@ class TraexACPProvider(GenericACPProvider):
         return None
 
     def get_serve_command(self, model_name: Optional[str] = None) -> tuple[str, list[str]]:
-        resolved = self._resolve_slug(model_name)
+        resolved = self.normalize_model_name(model_name)
         args = list(self._config.serve_args)
         args = _apply_model_args(
             args, resolved, self._config.model_style, self._config.help_blob_loader
@@ -452,6 +458,28 @@ def get_providers() -> dict[str, GenericACPProvider]:
     return _ensure_providers()
 
 
+def normalize_acp_model_name(tool_name: str, model_name: Optional[str]) -> Optional[str]:
+    """Normalize a selected ACP model into the backend-facing model identifier.
+
+    UI model pickers may carry richer values such as Traex cascade variants
+    (``config_name/profile/effort``). Provider-specific launch and protocol
+    calls should use this helper so the backend receives a model it can resolve.
+    """
+    if model_name is None:
+        return None
+    model = str(model_name or "").strip()
+    if not model:
+        return None
+    try:
+        provider = get_providers().get(str(tool_name or "").strip().lower())
+        normalize = getattr(provider, "normalize_model_name", None) if provider else None
+        if callable(normalize):
+            return normalize(model)
+    except Exception:
+        logger.debug("normalize_acp_model_name failed for tool=%s model=%s", tool_name, model_name, exc_info=True)
+    return model
+
+
 def _reset_providers_for_testing() -> None:
     """Reset providers, checkers, and their lru_caches. **Test-only.**
 
@@ -516,6 +544,7 @@ __all__ = [
     "ToolRegistry",
     "tool_registry",
     "get_providers",
+    "normalize_acp_model_name",
     "_reset_providers_for_testing",
     "CocoProvider",
     "ClaudeProvider",

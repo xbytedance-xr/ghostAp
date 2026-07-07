@@ -36,6 +36,27 @@ from .telemetry import (
 logger = logging.getLogger(__name__)
 
 
+def _normalize_manager_acp_model(agent_type: str, model_name: Optional[str]) -> Optional[str]:
+    agent = (agent_type or "").strip().lower()
+    if not model_name or agent == "claude" or agent.startswith("ttadk_"):
+        return model_name
+    try:
+        from .providers import normalize_acp_model_name
+
+        normalized = normalize_acp_model_name(agent, model_name)
+        if normalized != model_name:
+            logger.info(
+                "[ACP:%s] normalized selected model for backend: selected=%s backend=%s",
+                agent.upper(),
+                model_name,
+                normalized,
+            )
+        return normalized
+    except Exception:
+        logger.debug("ACPSessionManager model normalization failed", exc_info=True)
+        return model_name
+
+
 if TYPE_CHECKING:
     # 仅用于类型检查：避免在运行时将内部协议/实现暴露为公开 API。
     from ..utils.time_ago import IdleHealth, TimeAgoBucket
@@ -454,6 +475,7 @@ class ACPSessionManager:
         retries = int(getattr(settings, "acp_startup_retries", 2) or 2)
         retries = max(1, retries)
         effective_agent_type = (agent_type_override or self._agent_type).lower()
+        model_name = _normalize_manager_acp_model(effective_agent_type, model_name)
         startup_result = self._build_startup_coordinator().start(
             _startup_utils.SessionStartupRequest(
                 key=key,
@@ -524,6 +546,8 @@ class ACPSessionManager:
         3) Optionally load a given session_id (resume) after startup.
         """
         key = self._session_key(chat_id, project_id, thread_id=thread_id)
+        effective_agent_for_model = (agent_type_override or self._agent_type).lower()
+        model_name = _normalize_manager_acp_model(effective_agent_for_model, model_name)
 
         # Helper: safely end session under lock with double-check
         def _safe_end_session(check_fn) -> bool:
