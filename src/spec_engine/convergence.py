@@ -128,7 +128,18 @@ def detect_convergence(
                         ss.add(ns)
             suggestion_sets.append(frozenset(ss))
 
-    return len(set(suggestion_sets)) == 1
+    if len(set(suggestion_sets)) != 1:
+        return False
+
+    # Suppress convergence if recent cycles show productive work (file changes
+    # or tool calls) — criteria evaluation may lag behind actual progress.
+    for c in recent:
+        tool_count = getattr(c, "tool_call_count", 0) or 0
+        modified = getattr(c, "modified_files", None) or []
+        if tool_count > 0 and len(modified) > 0:
+            return False
+
+    return True
 
 
 def detect_backlog_stuck(project: SpecProject, *, window: int = 3) -> bool:

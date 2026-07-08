@@ -14,10 +14,13 @@ from typing import Callable, Optional
 
 from ..acp import ACPEvent, ACPEventType
 from ..agent_session import create_engine_session
+from ..agent_session.backend_resolver import is_ttadk_type, resolve_cwd
 from ..engine_base import BaseEngine, BaseEngineManager
 from ..grill_me import DEEP_GRILL_ME_PROTOCOL
 from ..utils.debug_utils import MemorySnapshot
+from ..utils.errors import get_error_detail
 from ..utils.gc_monitor import get_gc_monitor
+from ..utils.retry import RetryPolicy
 from ..utils.trace import TraceContext
 from .models import (
     DeepProject,
@@ -160,7 +163,6 @@ class DeepEngine(BaseEngine):
                 if event.event_type == ACPEventType.TEXT_CHUNK and callbacks.on_text:
                     callbacks.on_text(event.text or "")
             except Exception as e:
-                from ..utils.errors import get_error_detail
                 logger.warning("[Deep] on_event 回调异常(已捕获): %s", get_error_detail(e))
 
         return on_event
@@ -202,8 +204,6 @@ class DeepEngine(BaseEngine):
         try:
             with trace_ctx:
                 # Create session
-                from ..agent_session.backend_resolver import resolve_cwd
-
                 self._session = create_engine_session(
                     agent_type=self._agent_type,
                     cwd=resolve_cwd(self._agent_type, self.root_path),
@@ -215,7 +215,6 @@ class DeepEngine(BaseEngine):
                 prompt = self._build_deep_prompt(requirement_text)
 
                 on_event = self._make_on_event(callbacks)
-                from ..agent_session.backend_resolver import is_ttadk_type
                 if is_ttadk_type(self._agent_type):
                     timeout = self.settings.coco_execution_timeout
                 else:
@@ -232,7 +231,6 @@ class DeepEngine(BaseEngine):
                     # Best effort clear for a fresh retry
                     self._planning_done_fired = False
 
-                from ..utils.retry import RetryPolicy
                 result = self._session.send_prompt_with_retry(
                     prompt, on_event=on_event, timeout=timeout,
                     retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0),
@@ -303,18 +301,15 @@ class DeepEngine(BaseEngine):
 {ctx}
 
 请根据以上信息调整你的执行方案并继续。"""
-            from ..utils.retry import RetryPolicy
             try:
                 last_result = self._session.send_prompt_with_retry(
                     follow_up, on_event=on_event, timeout=timeout,
                     retry_policy=RetryPolicy(max_retries=1, retry_delay=2.0)
                 )
             except TimeoutError as e:
-                from ..utils.errors import get_error_detail
                 logger.warning("[Deep] _drain_pending_context 超时: %s", get_error_detail(e))
                 break
             except Exception as e:
-                from ..utils.errors import get_error_detail
                 logger.error("[Deep] _drain_pending_context 发送失败: %s", get_error_detail(e))
                 break
         return last_result
@@ -384,7 +379,6 @@ class DeepEngine(BaseEngine):
             # Close old session before opening new one (prevent resource leak)
             self._close_session_safely()
 
-            from ..agent_session.backend_resolver import resolve_cwd
 
             self._session = create_engine_session(
                 agent_type=self._agent_type,
@@ -396,8 +390,7 @@ class DeepEngine(BaseEngine):
             resume_prompt = self._build_resume_prompt()
 
             on_event = self._make_on_event(callbacks)
-            from ..agent_session.backend_resolver import is_ttadk_type as _is_ttadk
-            if _is_ttadk(self._agent_type):
+            if is_ttadk_type(self._agent_type):
                 timeout = self.settings.coco_execution_timeout
             else:
                 timeout = (
@@ -405,7 +398,6 @@ class DeepEngine(BaseEngine):
                     if self._agent_type == "coco"
                     else self.settings.claude_execution_timeout
                 )
-            from ..utils.retry import RetryPolicy
             result = self._session.send_prompt_with_retry(
                 resume_prompt, on_event=on_event, timeout=timeout,
                 retry_policy=RetryPolicy(max_retries=2, retry_delay=2.0)
@@ -528,7 +520,6 @@ class DeepEngine(BaseEngine):
             self._project = DeepProject.from_dict(state["project"])
             return True
         except Exception as e:
-            from ..utils.errors import get_error_detail
             logger.error("加载状态失败: %s", get_error_detail(e))
             return False
 

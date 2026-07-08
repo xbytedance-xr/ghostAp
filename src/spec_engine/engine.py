@@ -1233,7 +1233,11 @@ class SpecEngine(BaseEngine):
             1 for w in self._project.work_items
             if w.status == SpecWorkItemStatus.PENDING
         )
-        if self.settings.spec_discovery_enabled and self._run_state == EngineRunState.RUNNING:
+        if (
+            self.settings.spec_discovery_enabled
+            and self._run_state == EngineRunState.RUNNING
+            and _backlog_pending < 5
+        ):
             discovery = self._discover_optimization_questions(
                 cycle_num,
                 all_satisfied=all_satisfied,

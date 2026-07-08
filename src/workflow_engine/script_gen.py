@@ -1276,11 +1276,11 @@ export default async function main() {{
   function chooseRoute(text) {{
     const normalized = String(text || "").toLowerCase();
     const simpleSignals = ["先不要动手", "不要动手", "不要改代码", "先分析", "只分析", "分析下", "为什么", "why", "explain"];
-    const parallelSignals = ["并行", "批量", "多模块", "多文件", "审计", "测试", "重构", "迁移", "audit", "test", "refactor", "migration", "batch"];
+    const parallelSignals = ["并行执行", "批量处理", "多模块", "多文件同时", "全面审计", "全面测试", "批量重构", "批量迁移", "parallel", "batch migration", "audit all", "refactor all"];
     if (simpleSignals.some((word) => normalized.includes(word))) {{
       return {{ mode: "simple", subtasks: [requirement], reason: "analysis-only or direct request" }};
     }}
-    if (normalized.length > 160 && parallelSignals.some((word) => normalized.includes(word))) {{
+    if (parallelSignals.some((phrase) => normalized.includes(phrase))) {{
       return {{ mode: "parallel", subtasks: [], reason: "multi-part request" }};
     }}
     return {{ mode: "simple", subtasks: [requirement], reason: "fallback default" }};
