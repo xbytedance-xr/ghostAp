@@ -625,7 +625,7 @@ class CardSession:
         """Deliver rendered cards via coordinator and handle outcomes."""
         _fire_first_deliver_msg_id: str | None = None
         try:
-            outcomes = self._coordinator.deliver(rendered)
+            outcomes = self._coordinator.deliver(rendered, is_terminal=is_terminal)
             # Check for rejected outcomes (capacity exhausted or shutdown)
             rejected = [o for o in outcomes if o.kind == "rejected"]
             if rejected:

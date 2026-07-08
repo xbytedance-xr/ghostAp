@@ -133,6 +133,7 @@ class CardDelivery:
         *,
         reply_to: str | None = None,
         reply_in_thread: bool | None = None,
+        is_terminal: bool = False,
     ) -> list[MutationOutcome]:
         """Deliver rendered cards to Feishu.
 
@@ -141,6 +142,11 @@ class CardDelivery:
         - Signature changed → card.update
         - Only text changed → element_content
         - No change → skip
+
+        When ``is_terminal`` is True (completion/failure/cancel), history pages
+        are NOT frozen: every page is flushed to its final state so the first
+        (and any intermediate) card message shows the completed header and the
+        full final content instead of staying stuck on a mid-run snapshot.
 
         Idempotent: returns empty list if session is already closed.
 
@@ -169,7 +175,7 @@ class CardDelivery:
         self._lock_pool.enter_delivery()
         try:
             with session_lock:
-                return self._deliver_unlocked(session_id, chat_id, rendered, reply_to=reply_to, reply_in_thread=reply_in_thread)
+                return self._deliver_unlocked(session_id, chat_id, rendered, reply_to=reply_to, reply_in_thread=reply_in_thread, is_terminal=is_terminal)
         finally:
             self._lock_pool.exit_delivery()
 
@@ -181,6 +187,7 @@ class CardDelivery:
         *,
         reply_to: str | None = None,
         reply_in_thread: bool | None = None,
+        is_terminal: bool = False,
     ) -> list[MutationOutcome]:
         """Internal deliver implementation (caller holds per-session lock)."""
         # Second check under session lock: eliminates TOCTOU window between
@@ -191,7 +198,13 @@ class CardDelivery:
         outcomes: list[MutationOutcome] = []
         rendered_indices = {card.page_index for card in rendered}
         latest_page_idx = max(rendered_indices) if rendered_indices else 0
-        freeze_history_pages = binding is not None and len(rendered_indices) > 1
+        # Freeze non-latest pages during streaming updates to avoid churn, but
+        # NOT on terminal delivery — the completed/failed state (final full text,
+        # terminal header, trailing summary) must reach every page, including the
+        # first card message the user sees.
+        freeze_history_pages = (
+            binding is not None and len(rendered_indices) > 1 and not is_terminal
+        )
 
         if binding is None:
             binding = self._bindings.create(session_id, chat_id)

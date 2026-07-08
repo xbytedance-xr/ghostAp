@@ -181,7 +181,7 @@ class TestNotifyRejectedIntegration:
             def __init__(self):
                 self.close_calls = 0
 
-            def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+            def deliver(self, *, session_id, chat_id, rendered, reply_to=None, is_terminal=False):
                 return [MutationOutcome(kind="rejected", message="lock full")]
 
             def close(self, session_id):
@@ -219,7 +219,7 @@ class TestNotifyRejectedIntegration:
                 self.calls = 0
                 self.close_calls = 0
 
-            def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+            def deliver(self, *, session_id, chat_id, rendered, reply_to=None, is_terminal=False):
                 self.calls += 1
                 if self.calls == 1:
                     return [MutationOutcome(kind="applied", message="created")]
@@ -259,7 +259,7 @@ class TestNotifyRejectedIntegration:
             def __init__(self):
                 self.calls = 0
 
-            def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+            def deliver(self, *, session_id, chat_id, rendered, reply_to=None, is_terminal=False):
                 self.calls += 1
                 if self.calls == 2:
                     return [MutationOutcome(kind="reconcile", message="api timeout")]

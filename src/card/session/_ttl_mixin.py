@@ -216,7 +216,7 @@ class TTLActuator:
             rendered = _core.render_card(snap, ctx.budget)
             ctx.delivery.deliver(
                 session_id=ctx.session_id, chat_id=ctx.chat_id,
-                rendered=rendered, reply_to=ctx.reply_to,
+                rendered=rendered, reply_to=ctx.reply_to, is_terminal=True,
             )
             lightweight_delivered = True
         except Exception as exc:
@@ -254,6 +254,7 @@ class TTLActuator:
             chat_id=ctx.chat_id,
             rendered=rendered,
             reply_to=ctx.reply_to,
+            is_terminal=True,
         )
         failed = [o for o in outcomes if o.kind in {"rejected", "reconcile"}]
         if failed:

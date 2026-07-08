@@ -88,13 +88,19 @@ class DispatchDeliveryCoordinator:
         """Delegate: last failure timestamp from the tracker."""
         return self._tracker.last_failure_timestamp
 
-    def deliver(self, rendered: list, *, reply_to: str | None = None) -> list:
-        """Call CardDelivery.deliver() and return outcomes. Raises on transport error."""
+    def deliver(self, rendered: list, *, reply_to: str | None = None, is_terminal: bool = False) -> list:
+        """Call CardDelivery.deliver() and return outcomes. Raises on transport error.
+
+        ``is_terminal`` propagates to the delivery engine so terminal renders
+        flush every page (no history-page freeze) — the first card message must
+        show the final completed/failed state, not a stale mid-run snapshot.
+        """
         return self._delivery.deliver(
             session_id=self._session_id,
             chat_id=self._chat_id,
             rendered=rendered,
             reply_to=reply_to if reply_to is not None else self._reply_to,
+            is_terminal=is_terminal,
         )
 
     def on_success(self, is_terminal: bool) -> None:

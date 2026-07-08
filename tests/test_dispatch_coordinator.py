@@ -46,6 +46,21 @@ class TestDeliverSuccess:
             chat_id="chat-1",
             rendered=[{"card": "data"}],
             reply_to=None,
+            is_terminal=False,
+        )
+
+    def test_deliver_propagates_is_terminal(self):
+        """Terminal deliveries must flag is_terminal so the delivery engine
+        stops freezing history pages (first card message reaches final state)."""
+        coord, delivery, _, _, _ = _make_coordinator()
+        delivery.deliver.return_value = []
+        coord.deliver([{"card": "data"}], is_terminal=True)
+        delivery.deliver.assert_called_once_with(
+            session_id="sess-1",
+            chat_id="chat-1",
+            rendered=[{"card": "data"}],
+            reply_to=None,
+            is_terminal=True,
         )
 
     def test_on_success_resets_failure_count(self):

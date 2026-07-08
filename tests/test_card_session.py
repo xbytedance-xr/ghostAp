@@ -512,7 +512,7 @@ class FailingDelivery:
         self._fail_count = fail_count
         self._calls = 0
 
-    def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+    def deliver(self, *, session_id, chat_id, rendered, reply_to=None, is_terminal=False):
         self._calls += 1
         if self._calls <= self._fail_count:
             raise ConnectionError("network error")
@@ -778,7 +778,7 @@ class CountingDelivery:
         self.close_calls = 0
         self.fail_until = 0  # fail first N deliver calls
 
-    def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+    def deliver(self, *, session_id, chat_id, rendered, reply_to=None, is_terminal=False):
         self.deliver_calls += 1
         if self.deliver_calls <= self.fail_until:
             raise ConnectionError("simulated failure")
@@ -2338,7 +2338,7 @@ class RejectingDelivery:
         self.deliver_calls = 0
         self.close_calls = 0
 
-    def deliver(self, *, session_id, chat_id, rendered, reply_to=None):
+    def deliver(self, *, session_id, chat_id, rendered, reply_to=None, is_terminal=False):
         self.deliver_calls += 1
         return [MutationOutcome(kind="rejected", message="capacity exhausted")]
 

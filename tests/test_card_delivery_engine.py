@@ -195,6 +195,54 @@ class TestMultiPage:
         outcomes = delivery.deliver("sess_1", "chat_abc", second)
         assert [o.kind for o in outcomes] == ["skipped", "applied"]
 
+    def test_terminal_delivery_updates_all_pages_including_history(self):
+        """Regression: on terminal (completed/failed) delivery, history pages must
+        NOT be frozen. The first card message has to reach the final completed
+        state (full text + terminal header + trailing summary), otherwise Deep's
+        multi-page result looks incomplete and its cards look out of order —
+        page 0 stuck on 'running' while page 1 shows 'completed'.
+        """
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        running = [
+            RenderedCard(_card_json={"page": 0, "hdr": "running"}, structure_signature="p0_run", page_index=0, total_pages=2),
+            RenderedCard(_card_json={"page": 1, "hdr": "running"}, structure_signature="p1_run", page_index=1, total_pages=2),
+        ]
+        delivery.deliver("deep_sess", "chat_abc", running)
+
+        terminal = [
+            RenderedCard(_card_json={"page": 0, "hdr": "completed"}, structure_signature="p0_done", page_index=0, total_pages=2),
+            RenderedCard(_card_json={"page": 1, "hdr": "completed", "summary": "FINAL"}, structure_signature="p1_done", page_index=1, total_pages=2),
+        ]
+        outcomes = delivery.deliver("deep_sess", "chat_abc", terminal, is_terminal=True)
+
+        # Both pages must be applied — no history_page_frozen skip on terminal.
+        assert [o.kind for o in outcomes] == ["applied", "applied"]
+        assert all(o.message != "history_page_frozen" for o in outcomes)
+        # Page 0 (first message) must actually be PATCHed to the completed state.
+        patched_pages = [u["card_json"].get("page") for u in client.updates]
+        assert 0 in patched_pages
+
+    def test_non_terminal_still_freezes_history_pages(self):
+        """Streaming (non-terminal) updates keep freezing history pages to avoid
+        churn — the terminal exemption must not regress this optimization."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        first = [
+            RenderedCard(_card_json={"page": 0, "title": "old"}, structure_signature="p0_t1", page_index=0, total_pages=2),
+            RenderedCard(_card_json={"page": 1, "title": "latest 1s"}, structure_signature="p1_t1", page_index=1, total_pages=2),
+        ]
+        delivery.deliver("sess_1", "chat_abc", first)
+
+        second = [
+            RenderedCard(_card_json={"page": 0, "title": "old 2s"}, structure_signature="p0_t2", page_index=0, total_pages=2),
+            RenderedCard(_card_json={"page": 1, "title": "latest 2s"}, structure_signature="p1_t2", page_index=1, total_pages=2),
+        ]
+        outcomes = delivery.deliver("sess_1", "chat_abc", second, is_terminal=False)
+        assert [o.kind for o in outcomes] == ["skipped", "applied"]
+
 
 class TestPageShrink:
     def test_shrink_removes_stale_page_from_binding(self):
