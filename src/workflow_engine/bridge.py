@@ -23,6 +23,7 @@ from .constants import (
     NODE_MIN_VERSION,
     RUNTIME_JS_PATH,
     SCHEMA_RETRY_MAX,
+    STDERR_TAIL_MAX_LINES,
     WORKFLOW_TIMEOUT_HEADROOM_S,
     WORKFLOW_TOTAL_TIMEOUT_S,
 )
@@ -114,6 +115,19 @@ class RuntimeBridge:
         # Read loop thread
         self._reader_thread: Optional[threading.Thread] = None
 
+        # Bounded ring buffer of the most recent Node stderr lines. The
+        # dedicated stderr drain thread continuously consumes the stderr pipe
+        # (to avoid a pipe-buffer deadlock) and logs each line at DEBUG. That
+        # means by the time stdout closes, a one-shot _drain_stderr() would
+        # find the pipe already empty — so the dying process's stderr would be
+        # lost. Keeping a tail here lets the unexpected-exit diagnostic surface
+        # the real cause (e.g. a V8 OOM/FATAL line) instead of a bare
+        # "closed stdout unexpectedly".
+        self._stderr_tail: collections.deque[str] = collections.deque(
+            maxlen=STDERR_TAIL_MAX_LINES
+        )
+        self._stderr_tail_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+
         # Incoming message queue (for the run() loop)
         self._msg_queue: collections.deque[dict[str, Any]] = collections.deque()
         self._msg_condition = threading.Condition()
@@ -156,6 +170,12 @@ class RuntimeBridge:
         self._done = False
         self._result: Optional[str] = None
         self._error: Optional[str] = None
+        # Fallback diagnostic recorded when stdout closes / the process dies
+        # WITHOUT a terminal done/error frame. Kept separate from ``_error`` so
+        # a real terminal frame that is still queued at EOF (a common race now
+        # that the runtime flushes before exit) always wins over the synthetic
+        # "process died" message. Only used if no done/error frame is applied.
+        self._eof_fallback_error: Optional[str] = None
 
         # Workflow-level deadline shared with the JS runtime.  The monotonic
         # value drives Python-side enforcement; unix-ms values are sent to JS.
@@ -322,8 +342,10 @@ class RuntimeBridge:
         # Wait for the 'ready' notification
         ready = self._wait_for_notification("ready", timeout=30.0)
         if ready is None:
+            # Capture stderr BEFORE _kill_process() nulls out self._process,
+            # otherwise the diagnostic would be empty.
+            stderr_content = self._stderr_diagnostic()
             self._kill_process()
-            stderr_content = self._drain_stderr()
             raise RuntimeError(f"Node.js runtime did not send 'ready' within 30s. stderr: {stderr_content}")
 
         self._ensure_workflow_deadline()
@@ -435,9 +457,18 @@ class RuntimeBridge:
             else:
                 remaining = None
 
-            # Check process health
+            # Check process health. The process may have exited cleanly right
+            # after queueing its terminal done/error frame, so drain and
+            # dispatch anything still queued before treating the exit as an
+            # unexpected death — otherwise a valid result would be masked by a
+            # synthetic "process exited" error.
             if self._process.poll() is not None and not self._done:
-                stderr_content = self._drain_stderr()
+                self._drain_pending_messages()
+                if self._done:
+                    # A terminal frame was applied while draining — fall
+                    # through to the normal exit path below.
+                    break
+                stderr_content = self._stderr_diagnostic()
                 sanitized_stderr = _strip_internal_details(stderr_content)
                 raise RuntimeError(
                     f"Node.js process exited unexpectedly with code "
@@ -455,9 +486,20 @@ class RuntimeBridge:
             last_activity = time.monotonic()
             self._dispatch_message(msg)
 
-        # Return result or raise error
+        # The loop exited because self._done is set. Drain any terminal frame
+        # (done/error) that the reader thread queued just before stdout EOF so
+        # a real result/error always wins over the synthetic EOF fallback.
+        self._drain_pending_messages()
+
+        # Return result or raise error. Precedence: a genuine done/error frame
+        # (which sets self._result or self._error) is authoritative; the EOF
+        # fallback is only used when the process vanished without one.
         if self._error:
             raise RuntimeError(f"Workflow runtime error: {self._error}")
+        if self._result is not None:
+            return self._result
+        if self._eof_fallback_error:
+            raise RuntimeError(f"Workflow runtime error: {self._eof_fallback_error}")
 
         return self._result or ""
 
@@ -652,12 +694,20 @@ class RuntimeBridge:
             # stdout closed — process is shutting down
             pass
 
-        # stdout EOF: signal run() loop to exit (process likely died)
+        # stdout EOF: the process is gone. Record a fallback diagnostic but do
+        # NOT set self._error directly — a valid done/error frame may still be
+        # sitting in the queue (the runtime flushes it right before exit). The
+        # run() loop drains the queue first and only falls back to this string
+        # when no terminal frame arrived. We still set _done so the loop wakes.
         if not self._done:
             logger.debug("Reader thread: stdout closed, signalling done")
-            self._done = True
-            if not self._error:
-                self._error = "Runtime process closed stdout unexpectedly"
+            if self._eof_fallback_error is None:
+                self._eof_fallback_error = self._describe_unexpected_exit()
+            # Wake the run() loop; it will drain any queued terminal frame
+            # before consulting the fallback.
+            with self._msg_condition:
+                self._done = True
+                self._msg_condition.notify_all()
 
         logger.debug("Reader thread exiting")
 
@@ -1281,6 +1331,33 @@ class RuntimeBridge:
                 return self._msg_queue.popleft()
         return None
 
+    def _drain_pending_messages(self) -> None:
+        """Dispatch every message still queued, without blocking.
+
+        Called on the run() exit paths after the process has died / stdout has
+        closed. Its purpose is to apply a terminal done/error frame that the
+        reader thread queued in the instant before EOF — so a genuine result
+        wins over the synthetic "process exited unexpectedly" fallback.
+
+        Dispatching remaining ``agent_call`` requests here is harmless: the
+        executor callback will fail fast because the subprocess (and thus the
+        stdin write path) is gone, and _send() swallows the BrokenPipe. We stop
+        as soon as a terminal frame is applied to avoid unnecessary work.
+        """
+        while True:
+            with self._msg_condition:
+                if not self._msg_queue:
+                    return
+                msg = self._msg_queue.popleft()
+            try:
+                self._dispatch_message(msg)
+            except Exception:
+                logger.debug("Error dispatching queued message during drain", exc_info=True)
+            # A terminal frame sets _result or _error; once we have either we
+            # can stop — nothing after a done/error frame is meaningful.
+            if self._result is not None or self._error is not None:
+                return
+
     def _wait_for_notification(self, method: str, timeout: float = 30.0) -> Optional[dict[str, Any]]:
         """Wait for a specific notification method, with timeout.
 
@@ -1349,8 +1426,56 @@ class RuntimeBridge:
 
         self._process = None
 
+    def _describe_unexpected_exit(self) -> str:
+        """Build a diagnostic error string for an unexpected runtime exit.
+
+        The Node runtime now flushes stdout before exiting, so a bare stdout
+        EOF here means the process died *without* emitting a terminal frame —
+        e.g. SIGKILL/OOM, a native crash, or a truncated write. Include the
+        exit/signal code and the buffered stderr tail so the real cause is not
+        masked by a generic message. The reader thread may observe EOF a beat
+        before ``poll()`` reaps the child, so briefly wait for the return code.
+        """
+        returncode: Optional[int] = None
+        proc = self._process
+        if proc is not None:
+            rc = proc.poll()
+            if rc is None:
+                # Give the process a moment to be reaped so we can report the
+                # exit/signal code rather than "still running".
+                try:
+                    rc = proc.wait(timeout=2.0)
+                except (subprocess.TimeoutExpired, OSError, ValueError):
+                    rc = proc.poll()
+            # Coerce defensively: a real Popen yields int|None, but tests (and
+            # exotic wrappers) may hand back a non-int — never let the
+            # diagnostic itself raise.
+            if rc is not None:
+                try:
+                    returncode = int(rc)
+                except (TypeError, ValueError):
+                    returncode = None
+
+        detail = "Runtime process closed stdout unexpectedly"
+        if returncode is not None:
+            if returncode < 0:
+                detail += f" (terminated by signal {-returncode})"
+            else:
+                detail += f" (exit code {returncode})"
+
+        stderr_text = _strip_internal_details(self._stderr_diagnostic())
+        if stderr_text:
+            detail += f". stderr: {stderr_text}"
+        return detail
+
     def _stderr_reader(self) -> None:
-        """Drain stderr continuously to prevent pipe buffer deadlock."""
+        """Drain stderr continuously to prevent pipe buffer deadlock.
+
+        Each line is logged at DEBUG and also appended to a bounded ring
+        buffer (``_stderr_tail``) so the most recent stderr output survives
+        for the unexpected-exit diagnostic even though the pipe itself is
+        consumed here.
+        """
         assert self._process is not None
         assert self._process.stderr is not None
         try:
@@ -1358,9 +1483,37 @@ class RuntimeBridge:
                 line = self._process.stderr.readline()
                 if not line:
                     break  # EOF — process closed stderr
-                logger.debug("[runtime stderr] %s", line.rstrip())
+                stripped = line.rstrip()
+                logger.debug("[runtime stderr] %s", stripped)
+                if stripped:
+                    with self._stderr_tail_lock:
+                        self._stderr_tail.append(stripped)
         except (OSError, ValueError):
             pass
+
+    def _stderr_tail_text(self) -> str:
+        """Return the buffered tail of Node stderr (most recent lines).
+
+        Used by the unexpected-exit diagnostics: the continuous drain thread
+        has already emptied the stderr pipe, so a one-shot :meth:`_drain_stderr`
+        typically returns nothing. This tail preserves the real dying words.
+        """
+        with self._stderr_tail_lock:
+            return "\n".join(self._stderr_tail).strip()
+
+    def _stderr_diagnostic(self) -> str:
+        """Best-effort combined stderr: buffered tail plus any pipe remainder."""
+        parts: list[str] = []
+        tail = self._stderr_tail_text()
+        if tail:
+            parts.append(tail)
+        remainder = self._drain_stderr()
+        # Defensive: _drain_stderr is typed -> str, but guard against test
+        # mocks / exotic streams returning a non-str so the diagnostic path
+        # can never itself raise.
+        if isinstance(remainder, str) and remainder and remainder not in tail:
+            parts.append(remainder)
+        return "\n".join(parts).strip()
 
     def _drain_stderr(self) -> str:
         """Read remaining stderr content from the subprocess."""

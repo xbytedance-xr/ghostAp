@@ -600,8 +600,12 @@ def test_reader_eof_sets_done(tmp_path):
         assert bridge._done is False
         bridge._read_loop()
         assert bridge._done is True, "_done must be set after stdout EOF"
-        # _error should also be set when EOF happens without an explicit 'done' msg
-        assert bridge._error is not None
+        # On EOF without an explicit terminal frame the reader records a
+        # *fallback* diagnostic (kept separate from _error so a queued
+        # done/error frame can still win in run()). _error stays None here.
+        assert bridge._error is None
+        assert bridge._eof_fallback_error is not None
+        assert "closed stdout unexpectedly" in bridge._eof_fallback_error
     finally:
         # stdout was replaced with a plain iterator; clear _process so stop()
         # doesn't try to close iterator streams that lack a close() method.

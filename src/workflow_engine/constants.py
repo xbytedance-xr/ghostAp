@@ -108,6 +108,11 @@ MAX_QUEUE_SIZE: int = 10_000  # Max pending messages in bridge queue
 # --- Runtime ---
 RUNTIME_JS_PATH: str = "src/workflow_engine/runtime/runtime.js"
 NODE_MIN_VERSION: tuple[int, ...] = (20, 0, 0)
+# Number of most-recent Node stderr lines the bridge keeps in a ring buffer.
+# Surfaced in the "process exited/closed stdout unexpectedly" diagnostic so a
+# crash's dying words (e.g. a V8 FATAL/OOM line) are not lost to the DEBUG-only
+# stderr drain. Bounded so a chatty runtime cannot grow memory without limit.
+STDERR_TAIL_MAX_LINES: int = 50
 
 # --- Progress ---
 PROGRESS_DEBOUNCE_S: float = 2.0  # Max 1 card update per N seconds

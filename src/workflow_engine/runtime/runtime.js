@@ -105,6 +105,51 @@ function sendNotification(method, params = {}) {
   send({ jsonrpc: '2.0', method, params });
 }
 
+// Exit only AFTER stdout/stderr have drained to the host pipe.
+//
+// process.exit() truncates any output still buffered in an async pipe. During a
+// real workflow the runtime emits a large backlog of log/phase frames, so the
+// terminal `done`/`error` frame written just before exit is frequently still in
+// the buffer — process.exit() then discards it and the Python bridge sees a
+// bare stdout EOF, surfacing the misleading "Runtime process closed stdout
+// unexpectedly" error instead of the true result/error. Draining first
+// guarantees the final frame reaches the host. A bounded fallback timer still
+// forces exit if a wedged pipe never drains, so we can never hang the runtime.
+function flushAndExit(code) {
+  let exited = false;
+  const doExit = () => {
+    if (exited) return;
+    exited = true;
+    process.exit(code);
+  };
+  // Stop reading stdin so nothing keeps the event loop alive past the flush.
+  try { process.stdin.pause(); } catch { /* stdin may already be closed */ }
+
+  let pending = 0;
+  const onStreamDrained = () => {
+    pending -= 1;
+    if (pending <= 0) doExit();
+  };
+  // A zero-length write's callback fires once the stream's buffer has flushed
+  // to the OS pipe — the portable way to await drain for both empty and
+  // backlogged buffers.
+  for (const stream of [process.stdout, process.stderr]) {
+    try {
+      pending += 1;
+      stream.write('', onStreamDrained);
+    } catch {
+      pending -= 1; // stream already destroyed — ignore
+    }
+  }
+  if (pending <= 0) {
+    doExit();
+    return;
+  }
+  // Safety net: never let an un-drainable pipe hang the process.
+  const timer = setTimeout(doExit, 2000);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+
 function remainingWorkflowMs() {
   if (!workflowDeadlineMs) return Infinity;
   return workflowDeadlineMs - Date.now();
@@ -1343,7 +1388,8 @@ async function main() {
   const scriptPath = process.argv[2];
   if (!scriptPath) {
     process.stderr.write('[runtime] Usage: node runtime.js <script-path>\n');
-    process.exit(1);
+    flushAndExit(1);
+    return;
   }
 
   // Setup readline for incoming NDJSON
@@ -1381,7 +1427,8 @@ async function main() {
       message: sanitizePath(`Failed to read script: ${err.message}`),
       stack: '',
     });
-    process.exit(1);
+    flushAndExit(1);
+    return;
   }
 
   // Create sandboxed context with only orchestration primitives.
@@ -1466,7 +1513,8 @@ async function main() {
       message: sanitizePath(`Sandbox hardening failed — aborting: ${err.message}`),
       stack: '',
     });
-    process.exit(1);
+    flushAndExit(1);
+    return;
   }
 
   // Load and execute using vm.SourceTextModule (sandboxed ESM)
@@ -1488,7 +1536,8 @@ async function main() {
       message: sanitizePath(`Failed to load script: ${err.message}`),
       stack: '',
     });
-    process.exit(1);
+    flushAndExit(1);
+    return;
   }
 
   // Extract exports from the module namespace
@@ -1503,7 +1552,8 @@ async function main() {
       message: sanitizePath(`Meta validation failed: ${err.message}`),
       stack: '',
     });
-    process.exit(1);
+    flushAndExit(1);
+    return;
   }
 
   // Execute workflow
@@ -1531,12 +1581,14 @@ async function main() {
         stack: '',
       });
     }
-    process.exit(1);
+    flushAndExit(1);
+    return;
   }
 
-  // Clean shutdown
+  // Clean shutdown — flush the `done` frame before exiting so the host never
+  // sees a bare stdout EOF in place of the real result.
   rl.close();
-  process.exit(0);
+  flushAndExit(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,12 +1598,12 @@ async function main() {
 process.on('unhandledRejection', (reason) => {
   const message = reason instanceof Error ? reason.message : String(reason);
   sendNotification('error', { message: sanitizePath(message), stack: '' });
-  process.exit(1);
+  flushAndExit(1);
 });
 
 process.on('uncaughtException', (err) => {
   sendNotification('error', { message: sanitizePath(err.message), stack: '' });
-  process.exit(1);
+  flushAndExit(1);
 });
 
 // ---------------------------------------------------------------------------
