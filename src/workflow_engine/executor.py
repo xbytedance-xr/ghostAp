@@ -69,6 +69,7 @@ class AgentExecutor:
         cwd: str,
         cancel_event: threading.Event,
         on_token_usage: Optional[Callable[[int], None]] = None,
+        on_activity: Optional[Callable[[str, str], None]] = None,
         max_workers: int = DEFAULT_MAX_CONCURRENT,
         # Deprecated: kept for backwards compatibility
         budget_total: Optional[int] = None,
@@ -77,6 +78,7 @@ class AgentExecutor:
         self.cwd = cwd
         self.cancel_event = cancel_event
         self.on_token_usage = on_token_usage
+        self.on_activity = on_activity  # (label, activity_text) -> None
         # Deprecated parameters - kept for backwards compatibility but ignored
         del budget_total, on_budget_exceeded
         # Shared thread pool for session creation — avoids per-call pool overhead.
@@ -335,10 +337,38 @@ class AgentExecutor:
                     "workflow_agent_idle_timeout_s", AGENT_IDLE_TIMEOUT_S
                 )
 
+                # Build on_event callback for activity tracking
+                _on_activity = self.on_activity
+                _agent_label = params.label or ""
+
+                def _event_cb(ev: Any) -> None:
+                    if not _on_activity or not _agent_label:
+                        return
+                    try:
+                        ev_type = getattr(ev, "event_type", None)
+                        if ev_type is None:
+                            return
+                        type_val = ev_type.value if hasattr(ev_type, "value") else str(ev_type)
+                        if type_val == "tool_call_start":
+                            tc = getattr(ev, "tool_call", None)
+                            if tc:
+                                title = getattr(tc, "title", "") or getattr(tc, "kind", "")
+                                _on_activity(_agent_label, title[:60])
+                        elif type_val == "tool_call_done":
+                            tc = getattr(ev, "tool_call", None)
+                            if tc:
+                                title = getattr(tc, "title", "") or getattr(tc, "kind", "")
+                                status = getattr(tc, "status", "")
+                                _on_activity(_agent_label, f"{title[:50]} ({status})")
+                        elif type_val == "text_chunk":
+                            _on_activity(_agent_label, "generating output...")
+                    except Exception:
+                        pass
+
                 # Pass idle_timeout for adaptive timeout; gracefully degrade
                 # for session implementations that don't support it (e.g. test mocks).
                 send_kwargs: dict[str, Any] = {
-                    "on_event": None,
+                    "on_event": _event_cb if _on_activity else None,
                     "timeout": prompt_timeout_s,
                 }
                 if idle_timeout_s > 0:

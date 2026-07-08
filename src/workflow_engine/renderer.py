@@ -400,6 +400,9 @@ class WorkflowProgressRenderer:
                 lines.append(f"🛠 **{tool_label_key}:** (未指定工具)")
             if active_agent.task_summary:
                 lines.append(f"📋 **当前任务:** {_middle_ellipsis(active_agent.task_summary, 60)}")
+            activity = getattr(active_agent, "current_activity", "") or ""
+            if activity:
+                lines.append(f"⚡ **正在:** {_middle_ellipsis(activity, 60)}")
         else:
             lines.append(f"🤖 **{agent_label_key}:** (无代理调用)")
             lines.append(f"🛠 **{tool_label_key}:** —")
@@ -584,7 +587,10 @@ class WorkflowProgressRenderer:
                 display_label = _middle_ellipsis(agent.label or "agent")
                 if agent.status == AgentStatus.RUNNING:
                     summary_text = ""
-                    if agent.task_summary:
+                    activity_text = getattr(agent, "current_activity", "") or ""
+                    if activity_text:
+                        summary_text = f"\n    > {_middle_ellipsis(activity_text, 60)}"
+                    elif agent.task_summary:
                         summary_text = f"\n    > {_middle_ellipsis(agent.task_summary, 60)}"
                     # Live elapsed suffix so a long-running agent's line keeps
                     # advancing (paired with the engine heartbeat re-render).

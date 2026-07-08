@@ -385,6 +385,7 @@ class WorkflowEngine(BaseEngine):
             cwd=self.root_path,
             cancel_event=self._cancel_event,
             max_workers=max_concurrent,
+            on_activity=self._handle_agent_activity,
         )
         self._state_manager = WorkflowStateManager(project)
         self._renderer_wf = WorkflowProgressRenderer(project)
@@ -718,6 +719,11 @@ class WorkflowEngine(BaseEngine):
 
         self._fire_progress()
         return result
+
+    def _handle_agent_activity(self, label: str, activity: str) -> None:
+        """Update live activity hint for a running agent from ACP events."""
+        if self._state_manager:
+            self._state_manager.update_agent_activity(label, activity)
 
     def _handle_agent_aborted(self, label: str, reason: str, *, request_id=None) -> None:
         """Handle an agent_aborted notification from the JS runtime.

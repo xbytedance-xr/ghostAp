@@ -156,6 +156,16 @@ class WorkflowStateManager:
             self._project.metrics.failed_agents += 1
             self._project.metrics.completed_agents += 1
 
+    def update_agent_activity(self, label: str, activity: str) -> None:
+        """Update the live activity hint for a running agent (non-blocking)."""
+        with self._write_locked():
+            agent = self._label_to_agent.get(label)
+            if agent is None:
+                return
+            if self._is_terminal_agent(agent):
+                return
+            agent.current_activity = activity
+
     def on_agent_aborted(self, label: str, reason: str = "Aborted by race loser") -> None:
         """Mark a running agent as CANCELLED (e.g. race() loser abort).
 

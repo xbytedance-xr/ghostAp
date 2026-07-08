@@ -22,6 +22,7 @@ from .constants import (
     MAX_QUEUE_SIZE,
     NODE_MIN_VERSION,
     RUNTIME_JS_PATH,
+    SCHEMA_RETRY_MAX,
     WORKFLOW_TIMEOUT_HEADROOM_S,
     WORKFLOW_TOTAL_TIMEOUT_S,
 )
@@ -797,6 +798,13 @@ class RuntimeBridge:
             requested_s = 0
         # Script value may only raise the effective timeout above the floor.
         effective_s = max(base_s, requested_s) if requested_s > 0 else base_s
+
+        # When an output_schema is specified, the Python executor may perform
+        # up to SCHEMA_RETRY_MAX additional prompts on the same session. The JS
+        # watchdog timer must account for this total wall time, not just a single
+        # prompt round-trip.
+        if params.get("schema"):
+            effective_s = effective_s * (1 + SCHEMA_RETRY_MAX)
 
         capped = dict(params)
 

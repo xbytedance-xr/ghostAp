@@ -139,6 +139,7 @@ class AgentProgress(BaseModel):
     error: Optional[str] = None
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
+    current_activity: str = ""  # Live activity hint (e.g. "read_file src/...", "writing code...")
 
 
 # ---------------------------------------------------------------------------
