@@ -721,9 +721,14 @@ class WorkflowEngine(BaseEngine):
         return result
 
     def _handle_agent_activity(self, label: str, activity: str) -> None:
-        """Update live activity hint for a running agent from ACP events."""
+        """Update live activity hint for a running agent from ACP events.
+
+        Fires a debounced progress update so the card reflects the new activity
+        without waiting for the next heartbeat cycle.
+        """
         if self._state_manager:
             self._state_manager.update_agent_activity(label, activity)
+            self._fire_progress()
 
     def _handle_agent_aborted(self, label: str, reason: str, *, request_id=None) -> None:
         """Handle an agent_aborted notification from the JS runtime.

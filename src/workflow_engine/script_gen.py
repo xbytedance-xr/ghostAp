@@ -93,6 +93,13 @@ _USER_REQUIREMENT_INSERT_POINT = (
 _SCRIPT_GEN_PROMPT_TEMPLATE = """\
 # Workflow Script Generation Task
 
+## CRITICAL RULES (违反即验证失败)
+
+1. 每个 agent() 必须有唯一 `label` 和显式 `timeout`
+2. 必须检查 result.error — 单个 agent 失败不能终止整个 workflow
+3. 输出格式：`export const meta = {{...}}` + `export default async function() {{...}}`
+4. 禁止 require()/import/process.exit/eval/filesystem/network 访问
+
 """ + _USER_REQUIREMENT_INSERT_POINT + """
 ## User Requirement
 
@@ -349,8 +356,22 @@ const fastest = await race([
    every agent descriptor passed into a pattern must have a unique `label` and
    an explicit `timeout`.
 
-8. **Handle results gracefully** - Agent calls may return errors; check results before
-   using them in subsequent steps.
+8. **Never let a single agent failure kill the workflow** - Always wrap agent() calls
+   in error handling. If one agent fails, continue with remaining agents and include
+   the error in the final report. Pattern:
+   ```
+   const result = await agent({{ ... }});
+   if (result.error) {{
+     log(`Agent failed: ${{result.error}}`);
+     // Continue with fallback or skip this step
+   }}
+   ```
+   For parallel/fanout patterns, filter out errored results before synthesis:
+   ```
+   const results = await fanout(input, workers);
+   const valid = results.filter(r => !r.error);
+   if (valid.length === 0) return {{ error: "All agents failed", details: results }};
+   ```
 
 9. **模式可嵌套** — verify() 内部可以用 fanout()，loop() 每轮可以用 tournament()，等等。
 

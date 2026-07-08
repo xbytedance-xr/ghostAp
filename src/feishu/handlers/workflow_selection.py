@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowSelectionMixin:
-    """Mixin providing orchestrator/review selection callback handlers."""
+    """Mixin providing orchestrator/review selection callback handlers.
+
+    NOTE: handle_workflow_{orchestrator,review}_select_{tool,model} are
+    defined on WorkflowHandler directly (workflow.py) because they need
+    _option handling from Feishu's select_static widget.
+    """
 
     def handle_workflow_orchestrator_select_tool(
         self,

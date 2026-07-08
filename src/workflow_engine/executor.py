@@ -360,8 +360,6 @@ class AgentExecutor:
                                 title = getattr(tc, "title", "") or getattr(tc, "kind", "")
                                 status = getattr(tc, "status", "")
                                 _on_activity(_agent_label, f"{title[:50]} ({status})")
-                        elif type_val == "text_chunk":
-                            _on_activity(_agent_label, "generating output...")
                     except Exception:
                         pass
 

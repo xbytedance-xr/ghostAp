@@ -89,8 +89,8 @@ WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
 _PHASE_AGENT_DISPLAY_LIMIT = 20
 _PHASE_COMPLETED_TAIL = 5
 _CARD_MAX_BYTES = 28_000  # Feishu card payload limit with safety margin
-_COMPLETION_REPORT_MAX_CHARS = 1_800
-_COMPLETION_SECTION_MAX_CHARS = 900
+_COMPLETION_REPORT_MAX_CHARS = 4_000
+_COMPLETION_SECTION_MAX_CHARS = 2_000
 
 
 # ---------------------------------------------------------------------------
