@@ -8,11 +8,20 @@ from __future__ import annotations
 # which allow .env overrides. Keep the numbers here aligned with the Settings
 # defaults so any code that still reads the constant directly gets the same
 # (more permissive) default.
-AGENT_CALL_TIMEOUT_S: int = 600  # Per agent() call timeout (seconds)
+AGENT_CALL_TIMEOUT_S: int = 600  # Per agent() call timeout (seconds); 0 in Settings disables the per-agent deadline (unlimited)
 SCRIPT_GEN_TIMEOUT_S: int = 180  # AI workflow script generation timeout
 WORKFLOW_TOTAL_TIMEOUT_S: int = 3600  # Total workflow execution timeout (60 min); 0 in Settings disables the total deadline (unlimited)
 WORKFLOW_TIMEOUT_HEADROOM_S: int = 5  # Reserved seconds before total deadline
 SESSION_CREATE_TIMEOUT_S: int = 120
+
+# Finite backstop applied when a per-agent / total timeout is configured as 0
+# (unlimited). A blocking future.result() must never wait *forever* — an
+# orphaned ACP subprocess would hang the workflow with no way to recover except
+# a manual /stop_wf. This backstop is intentionally huge (30 days) so it never
+# curtails a legitimately long-running task, while still guaranteeing the call
+# eventually returns. Real bounding in unlimited mode comes from the user's
+# stop button and the MAX_TOTAL_AGENTS fuse, not this value.
+AGENT_UNLIMITED_BACKSTOP_S: int = 30 * 24 * 3600  # 30 days
 
 # --- Concurrency ---
 DEFAULT_MAX_CONCURRENT: int = 10  # Default parallel agent slots
@@ -101,6 +110,12 @@ NODE_MIN_VERSION: tuple[int, ...] = (20, 0, 0)
 
 # --- Progress ---
 PROGRESS_DEBOUNCE_S: float = 2.0  # Max 1 card update per N seconds
+# Heartbeat interval for re-rendering the progress card while a long agent()
+# call is in flight. Without this, a single multi-minute agent call produces no
+# card updates between start and finish, so the card looks "stuck". The
+# heartbeat re-renders the running snapshot so the elapsed-time counter keeps
+# advancing and the user can see the workflow is still alive and working.
+PROGRESS_HEARTBEAT_S: float = 10.0
 
 # --- Template roots (trusted for sub-workflow loading) ---
 # NOTE: Project root is implicitly trusted (cwd_realpath check in bridge.py)

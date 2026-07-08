@@ -16,6 +16,7 @@ from .constants import (
     DEFAULT_MAX_CONCURRENT,
     MAX_TOTAL_AGENTS,
     NODE_MIN_VERSION,
+    PROGRESS_HEARTBEAT_S,
     STATE_FILENAME,
 )
 from .errors import _strip_internal_details
@@ -177,6 +178,13 @@ class WorkflowEngine(BaseEngine):
         self._cancel_event = threading.Event()
         self._callbacks: Optional[WorkflowEngineCallbacks] = None
 
+        # Heartbeat: periodically re-renders the progress card while a run is
+        # active so the live elapsed counters keep advancing even when no
+        # agent start/done/phase event fires during a long blocking agent()
+        # call. Plain Event (no lock needed — set/clear/wait are atomic).
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: Optional[threading.Thread] = None
+
         # Counters for safety fuse
         self._agent_call_count: int = 0
 
@@ -246,6 +254,12 @@ class WorkflowEngine(BaseEngine):
                     os.remove(pending_path)
                 except OSError:
                     pass
+
+        # Ensure any lingering heartbeat thread is stopped (best-effort).
+        try:
+            self._stop_heartbeat()
+        except Exception as e:
+            logger.debug("Heartbeat stop during cleanup failed: %s", str(e))
 
         # Release AgentExecutor thread pool (prevents thread leak across runs).
         if self._executor is not None:
@@ -383,6 +397,11 @@ class WorkflowEngine(BaseEngine):
             )
             self._bridge.start()
 
+            # Start the progress heartbeat so the card (and the new elapsed
+            # counters) keep refreshing while the bridge blocks on a long
+            # agent() call. Stopped in the finally: block below.
+            self._start_heartbeat()
+
             # Run the event loop (blocks until done/error/timeout)
             result_text = self._bridge.run()
 
@@ -461,6 +480,10 @@ class WorkflowEngine(BaseEngine):
                 self._callbacks.on_error(sanitized_error)
 
         finally:
+            # Stop the progress heartbeat before flushing the final card so no
+            # stray re-render races the terminal render below.
+            self._stop_heartbeat()
+
             # Flush any pending progress update (stop() forces final flush
             if self._progress_coalescer:
                 self._progress_coalescer.stop()
@@ -510,6 +533,8 @@ class WorkflowEngine(BaseEngine):
         lingering threads after a cancelled run.
         """
         self._cancel_event.set()
+        # Best-effort: ensure the heartbeat cannot outlive a stop() call.
+        self._heartbeat_stop.set()
         if self._bridge:
             try:
                 self._bridge.stop()
@@ -754,6 +779,53 @@ class WorkflowEngine(BaseEngine):
                 self._callbacks.on_progress(card_data)
         except Exception:
             logger.debug("on_progress callback failed", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # Progress heartbeat
+    # ------------------------------------------------------------------
+
+    def _start_heartbeat(self) -> None:
+        """Start the daemon heartbeat thread that re-renders the progress card.
+
+        Idempotent: only one heartbeat thread runs per workflow. The thread
+        exits when ``_heartbeat_stop`` is set (see :meth:`_stop_heartbeat`).
+        """
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+        # Fresh cancellation boundary for this run (the event may be set from a
+        # previous run when the engine instance is reused by the manager).
+        self._heartbeat_stop.clear()
+        thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="WorkflowHeartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread = thread
+        thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        """Signal the heartbeat thread to stop and join it (best-effort)."""
+        self._heartbeat_stop.set()
+        thread = self._heartbeat_thread
+        if thread is not None:
+            try:
+                thread.join(timeout=2.0)
+            except Exception as e:
+                logger.debug("Heartbeat join failed: %s", str(e))
+            self._heartbeat_thread = None
+
+    def _heartbeat_loop(self) -> None:
+        """Re-render the progress card every ``PROGRESS_HEARTBEAT_S`` seconds.
+
+        Goes through the coalescer (debounced) so it never spams Feishu. Any
+        error is swallowed at debug level — a failed heartbeat must never
+        terminate the run.
+        """
+        while not self._heartbeat_stop.wait(PROGRESS_HEARTBEAT_S):
+            try:
+                self._fire_progress()
+            except Exception as e:
+                logger.debug("Heartbeat progress fire failed: %s", str(e))
 
     def _resolve_model_for_tool(self, tool: str) -> str | None:
         """Resolve the model for a tool from user's selection bindings.

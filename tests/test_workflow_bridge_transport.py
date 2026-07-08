@@ -171,6 +171,16 @@ def test_stop_kills_process_before_shutdown(tmp_path):
 
 def test_start_sends_deadline_budget_in_init(tmp_path, monkeypatch):
     """The JS runtime needs the host deadline to fail before hard kill."""
+    # Hermetic: pin the total-timeout to the code default regardless of the
+    # deployment .env (which may set 0 = unlimited). This test specifically
+    # exercises the bounded-deadline propagation path.
+    monkeypatch.setattr(
+        bridge_mod,
+        "_settings_int",
+        lambda field, fallback: WORKFLOW_TOTAL_TIMEOUT_S
+        if field == "workflow_total_timeout_s"
+        else fallback,
+    )
     bridge = _make_bridge(tmp_path)
     sent_messages: list[dict] = []
 
@@ -278,6 +288,104 @@ def test_cap_agent_timeout_uses_settings_fallback_when_unset(tmp_path, monkeypat
     # No explicit "timeout" in params → falls back to settings value (1200).
     capped = bridge._cap_agent_timeout_to_remaining_budget({"prompt": "x", "tool": "coco"})
     assert capped["timeout"] == 1200
+
+
+def test_cap_agent_timeout_small_script_value_raised_to_floor(tmp_path, monkeypatch):
+    """A small script-baked per-agent timeout must be raised to the configured
+    floor, not honored verbatim — this is the fix for long agent() calls being
+    killed at the script's tiny timeout."""
+    monkeypatch.setattr(
+        bridge_mod,
+        "_settings_int",
+        lambda field, fallback: 600 if field == "workflow_agent_call_timeout_s" else fallback,
+    )
+    monkeypatch.setattr(bridge_mod.time, "monotonic", lambda: 100.0)
+    bridge = _make_bridge(tmp_path)
+    # Plenty of budget so the cap does not clamp the floor.
+    bridge._workflow_deadline_monotonic = 100.0 + 10_000
+
+    capped = bridge._cap_agent_timeout_to_remaining_budget(
+        {"prompt": "x", "tool": "coco", "timeout": 180}
+    )
+    assert capped["timeout"] == 600, f"expected floor 600, got {capped['timeout']}"
+
+
+def test_cap_agent_timeout_zero_floor_is_unlimited_backstop(tmp_path, monkeypatch):
+    """A configured floor of 0 (unlimited) resolves to the finite backstop when
+    no total deadline caps it."""
+    from src.workflow_engine.constants import AGENT_UNLIMITED_BACKSTOP_S
+
+    monkeypatch.setattr(
+        bridge_mod,
+        "_settings_int",
+        lambda field, fallback: 0 if field == "workflow_agent_call_timeout_s" else fallback,
+    )
+    bridge = _make_bridge(tmp_path)
+    # Unlimited total deadline (remaining budget is None).
+    bridge._workflow_deadline_monotonic = None
+
+    capped = bridge._cap_agent_timeout_to_remaining_budget(
+        {"prompt": "x", "tool": "coco", "timeout": 180}
+    )
+    assert capped["timeout"] == AGENT_UNLIMITED_BACKSTOP_S
+
+
+def test_start_sends_agent_call_timeout_floor_in_init(tmp_path, monkeypatch):
+    """The JS runtime must receive the per-agent timeout floor so its watchdog
+    matches the Python executor instead of the script's small baked value."""
+    monkeypatch.setattr(
+        bridge_mod,
+        "_settings_int",
+        lambda field, fallback: 900 if field == "workflow_agent_call_timeout_s" else fallback,
+    )
+    bridge = _make_bridge(tmp_path)
+    sent_messages: list[dict] = []
+
+    class FakeStream:
+        def __iter__(self):
+            return iter([])
+
+        def readline(self):
+            return ""
+
+        def read(self):
+            return ""
+
+        def close(self):
+            pass
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = MagicMock()
+            self.stdout = FakeStream()
+            self.stderr = FakeStream()
+            self.returncode = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(bridge_mod.shutil, "which", lambda name: "/usr/bin/node")
+    monkeypatch.setattr(bridge_mod.subprocess, "Popen", lambda *a, **k: FakeProcess())
+    monkeypatch.setattr(
+        bridge,
+        "_wait_for_notification",
+        lambda method, timeout=30.0: {"jsonrpc": "2.0", "method": "ready"},
+    )
+    monkeypatch.setattr(bridge, "_send", lambda msg: sent_messages.append(msg))
+
+    try:
+        bridge.start()
+    finally:
+        bridge.stop()
+
+    init_msg = next(msg for msg in sent_messages if msg.get("method") == "init")
+    assert init_msg["params"]["agent_call_timeout_s"] == 900
 
 
 def test_ensure_deadline_unlimited_when_total_timeout_zero(tmp_path, monkeypatch):

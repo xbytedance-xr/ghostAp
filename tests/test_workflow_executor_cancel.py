@@ -554,3 +554,88 @@ def test_per_call_cancel_still_works_with_global_present(tmp_path, make_executor
 
         t.join(timeout=10.0)
         assert not t.is_alive()
+
+
+# ---------------------------------------------------------------------------
+# Effective per-call timeout resolution (host config is the authoritative floor;
+# 0 == unlimited; script value may only raise, never lower it)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingSession:
+    """Fake session that records the timeout passed to send_prompt and returns
+    a successful result immediately (no blocking)."""
+
+    def __init__(self) -> None:
+        self.session_id = "recording"
+        self.recorded_timeout = None
+
+    def describe_agent(self): return "fake"
+    def start(self, startup_timeout: float = 60): return self.session_id
+    def load_session(self, sid): pass
+    def load_local_history(self, *a, **kw): return []
+    def cancel(self): pass
+    def close(self): pass
+    def to_snapshot(self): return {}
+    def get_session_info(self): return "RecordingSession"
+    def is_server_running(self): return True
+    def is_server_healthy(self, healthcheck_timeout: float = 2.0): return True
+
+    def send_prompt(self, text, on_event=None, timeout=None):
+        self.recorded_timeout = timeout
+        return SimpleNamespace(text="ok", output_tokens=0)
+
+    def send_prompt_with_retry(self, *args, **kwargs):
+        return self.send_prompt(*args, **kwargs)
+
+
+def _run_and_capture_timeout(tmp_path, make_executor, *, params, settings_agent_timeout):
+    """Execute one agent call and return the timeout passed to send_prompt."""
+    session = _RecordingSession()
+
+    def _fake_settings_int(field, fallback):
+        if field == "workflow_agent_call_timeout_s":
+            return settings_agent_timeout
+        return fallback
+
+    executor = make_executor(tmp_path)
+    with patch("src.agent_session.factory.create_engine_session", return_value=session), \
+         patch("src.workflow_engine.executor._settings_int", side_effect=_fake_settings_int):
+        result = executor.execute(params)
+    assert result.error is None, f"unexpected error: {result.error}"
+    return session.recorded_timeout
+
+
+def test_script_small_timeout_is_raised_to_config_floor(tmp_path, make_executor):
+    """A small script-baked timeout (e.g. 180) must NOT lower the effective
+    per-call timeout below the configured floor (600). This is the core fix:
+    the LLM script's short timeout was killing long-running coding tasks."""
+    params = AgentCallParams(prompt="long task", tool="coco", timeout=180)
+    recorded = _run_and_capture_timeout(
+        tmp_path, make_executor, params=params, settings_agent_timeout=600
+    )
+    assert recorded == 600, f"expected floor 600, got {recorded}"
+
+
+def test_script_larger_timeout_can_raise_above_floor(tmp_path, make_executor):
+    """A script timeout larger than the configured floor may raise it."""
+    params = AgentCallParams(prompt="very long task", tool="coco", timeout=1800)
+    recorded = _run_and_capture_timeout(
+        tmp_path, make_executor, params=params, settings_agent_timeout=600
+    )
+    assert recorded == 1800, f"expected raised 1800, got {recorded}"
+
+
+def test_config_zero_means_unlimited_uses_finite_backstop(tmp_path, make_executor):
+    """A configured per-agent timeout of 0 (unlimited) resolves to the finite
+    backstop so the blocking call still eventually returns, never a tiny
+    script value."""
+    from src.workflow_engine.constants import AGENT_UNLIMITED_BACKSTOP_S
+
+    params = AgentCallParams(prompt="unbounded task", tool="coco", timeout=180)
+    recorded = _run_and_capture_timeout(
+        tmp_path, make_executor, params=params, settings_agent_timeout=0
+    )
+    assert recorded == AGENT_UNLIMITED_BACKSTOP_S, (
+        f"expected backstop {AGENT_UNLIMITED_BACKSTOP_S}, got {recorded}"
+    )

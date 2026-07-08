@@ -964,6 +964,93 @@ class TestWorkflowTerminalProgressRendering(unittest.TestCase):
         self.assertNotIn("等待中", raw)
 
 
+class TestRunningAgentElapsed(unittest.TestCase):
+    """Task B1: RUNNING agents show a live elapsed-time counter derived from
+    ``started_at`` without leaking any agent output."""
+
+    def _make_running_project(self, started_at):
+        """Build a RUNNING project with a single RUNNING agent."""
+        project = WorkflowProject(
+            name="elapsed-test",
+            status=WorkflowStatus.RUNNING,
+            started_at=time.time() - 200,
+        )
+        phase = PhaseProgress(
+            title="Execution",
+            started_at=time.time() - 200,
+        )
+        phase.agents.append(
+            AgentProgress(
+                label="long-runner",
+                tool="coco",
+                status=AgentStatus.RUNNING,
+                started_at=started_at,
+            )
+        )
+        project.phases.append(phase)
+        project.metrics.total_agents = 1
+        project.metrics.completed_agents = 0
+        return project
+
+    def test_running_agent_renders_duration_token(self):
+        """A RUNNING agent with started_at ~125s ago shows a "2m" token in the
+        RUNNING panel text and keeps the trailing ellipsis."""
+        project = self._make_running_project(started_at=time.time() - 125)
+        renderer = WorkflowProgressRenderer(project)
+        card = renderer.render_progress_card()
+
+        all_text = TestWorkflowProgressRenderer._extract_all_text(card.get("elements", []))
+        # 125s → "2m5s" (approx); assert the minute token appears in a
+        # "执行中 <dur>…" fragment.
+        self.assertIn("执行中 2m", all_text)
+        self.assertIn("…", all_text)
+
+    def test_running_agent_without_started_at_does_not_crash(self):
+        """A RUNNING agent with started_at=None must render the plain
+        "执行中…" text with no duration and must not raise."""
+        project = self._make_running_project(started_at=None)
+        renderer = WorkflowProgressRenderer(project)
+        card = renderer.render_progress_card()
+
+        all_text = TestWorkflowProgressRenderer._extract_all_text(card.get("elements", []))
+        self.assertIn("执行中…", all_text)
+        # No duration token should be attached to the running line. The RUNNING
+        # panel header itself renders as "执行中 (1)", so match specifically on
+        # a digit following "执行中 " to avoid that false positive.
+        import re as _re
+
+        self.assertIsNone(_re.search(r"执行中 \d", all_text))
+
+    def test_summary_shows_running_elapsed_line(self):
+        """The top "当前执行中" summary shows a "已运行" elapsed line for a
+        genuinely running agent."""
+        project = self._make_running_project(started_at=time.time() - 125)
+        renderer = WorkflowProgressRenderer(project)
+        summary = renderer._render_summary_section()
+        self.assertIsNotNone(summary)
+        content = _markdown_content(summary) or ""
+        self.assertIn("已运行", content)
+        self.assertIn("2m", content)
+
+    def test_summary_no_running_elapsed_in_terminal_state(self):
+        """Terminal workflows must NOT show the "已运行" line even if the last
+        agent still carries a started_at."""
+        project = self._make_running_project(started_at=time.time() - 125)
+        # Flip to a terminal state and mark the agent finished.
+        project.status = WorkflowStatus.COMPLETED
+        project.finished_at = time.time()
+        agent = project.phases[0].agents[0]
+        agent.status = AgentStatus.DONE
+        agent.finished_at = time.time()
+        agent.duration_s = 125.0
+
+        renderer = WorkflowProgressRenderer(project)
+        summary = renderer._render_summary_section()
+        self.assertIsNotNone(summary)
+        content = _markdown_content(summary) or ""
+        self.assertNotIn("已运行", content)
+
+
 def _markdown_content(element) -> str | None:
     """Best-effort extract of the markdown text inside a render element."""
     if not isinstance(element, dict):

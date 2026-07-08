@@ -43,7 +43,24 @@ let maxConcurrent = 0;
 let workflowStartedMs = 0;
 let workflowDeadlineMs = 0;
 let workflowTotalTimeoutMs = 0;
+// Host-provided per-agent timeout floor (ms). The Python executor treats the
+// configured workflow_agent_call_timeout_s as the authoritative floor and only
+// lets the script's baked timeout *raise* it. The JS-side agent_call watchdog
+// must agree, otherwise a small script timeout (e.g. 180s) fires here and
+// aborts a legitimately long-running agent() call before the host does. A
+// value of 0 means "unlimited" per-agent — the watchdog then relies only on
+// the total workflow deadline (or never fires if that is also unlimited).
+let workflowAgentCallTimeoutMs = 0;
 const REQUEST_TIMEOUT_GRACE_MS = 1000;
+// Large finite backstop mirroring AGENT_UNLIMITED_BACKSTOP_S on the Python
+// side: even in "unlimited" mode a bounded timer eventually fires so a wedged
+// host cannot hang the runtime forever. 30 days in ms.
+const AGENT_UNLIMITED_BACKSTOP_MS = 30 * 24 * 3600 * 1000;
+// Node's setTimeout silently clamps any delay > 2^31-1 ms (~24.8 days) down to
+// 1ms, which would make an "unlimited" watchdog fire *immediately*. Clamp every
+// timer delay to this safe maximum so a huge/omitted timeout degrades to a very
+// long (but real) watchdog instead of an instant abort.
+const MAX_SAFE_TIMER_MS = 2147483647;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -94,27 +111,46 @@ function workflowDeadlineError(label) {
   });
 }
 
+// Resolve the effective per-agent timeout in seconds, mirroring the Python
+// executor: the host floor (workflowAgentCallTimeoutMs) is authoritative and a
+// script-provided value may only RAISE it, never lower it. A floor of 0 means
+// unlimited → a large finite backstop is used so a timer still eventually
+// fires. The result is NOT yet capped by the remaining workflow deadline; that
+// happens in capTimeoutToDeadline / requestTimeoutMs where a live deadline
+// exists.
+function effectiveAgentTimeoutSeconds(requestedSeconds) {
+  const floorMs = workflowAgentCallTimeoutMs > 0
+    ? workflowAgentCallTimeoutMs
+    : AGENT_UNLIMITED_BACKSTOP_MS;
+  const floorSeconds = Math.max(1, Math.floor(floorMs / 1000));
+  const requested = Number(requestedSeconds) > 0 ? Math.floor(Number(requestedSeconds)) : 0;
+  return requested > 0 ? Math.max(floorSeconds, requested) : floorSeconds;
+}
+
 function capTimeoutToDeadline(timeoutSeconds) {
-  const requested = Number(timeoutSeconds) > 0 ? Number(timeoutSeconds) : 300;
+  // Host floor is authoritative; script value may only raise it. This replaces
+  // the previous behavior of honoring the (often tiny) script timeout, which
+  // killed long-running agent() calls before the host's own deadline.
+  const effective = effectiveAgentTimeoutSeconds(timeoutSeconds);
   const remainingMs = remainingWorkflowMs();
-  if (!Number.isFinite(remainingMs)) return Math.max(1, Math.floor(requested));
+  if (!Number.isFinite(remainingMs)) return Math.max(1, effective);
 
   const usableMs = remainingMs - REQUEST_TIMEOUT_GRACE_MS;
   if (usableMs <= 0) {
     throw workflowDeadlineError('agent_call');
   }
   const usableSeconds = Math.max(1, Math.floor(usableMs / 1000));
-  return Math.max(1, Math.min(Math.floor(requested), usableSeconds));
+  return Math.max(1, Math.min(effective, usableSeconds));
 }
 
 function requestTimeoutMs(method, params) {
   const remainingMs = remainingWorkflowMs();
   let timeoutMs = 0;
   if (method === 'agent_call') {
-    const timeoutSeconds = Number(params && params.timeout) > 0
-      ? Number(params.timeout)
-      : 300;
-    timeoutMs = Math.max(1, Math.ceil(timeoutSeconds * 1000) + REQUEST_TIMEOUT_GRACE_MS);
+    // params.timeout is already the floor-aware effective value set by agent()
+    // via capTimeoutToDeadline; fall back to the host floor if it is missing.
+    const effectiveSeconds = effectiveAgentTimeoutSeconds(params && params.timeout);
+    timeoutMs = Math.max(1, Math.ceil(effectiveSeconds * 1000) + REQUEST_TIMEOUT_GRACE_MS);
   } else if (Number.isFinite(remainingMs)) {
     timeoutMs = Math.max(1, Math.floor(remainingMs));
   }
@@ -124,6 +160,10 @@ function requestTimeoutMs(method, params) {
       ? Math.min(timeoutMs, Math.max(1, Math.floor(remainingMs)))
       : Math.max(1, Math.floor(remainingMs));
   }
+  // Clamp to Node's safe setTimeout ceiling: a delay > 2^31-1 ms is silently
+  // truncated to 1ms by Node, which would make an "unlimited" watchdog fire
+  // instantly. Clamping keeps it a very-long (but real) timer instead.
+  if (timeoutMs > MAX_SAFE_TIMER_MS) timeoutMs = MAX_SAFE_TIMER_MS;
   return timeoutMs > 0 ? timeoutMs : 0;
 }
 
@@ -1315,6 +1355,10 @@ async function main() {
   workflowDeadlineMs = Number(initParams.deadline_unix_ms) || 0;
   workflowTotalTimeoutMs = Number(initParams.total_timeout_s) > 0
     ? Number(initParams.total_timeout_s) * 1000
+    : 0;
+  // Per-agent timeout floor (seconds → ms); 0 means unlimited per-agent.
+  workflowAgentCallTimeoutMs = Number(initParams.agent_call_timeout_s) > 0
+    ? Number(initParams.agent_call_timeout_s) * 1000
     : 0;
   if (!workflowDeadlineMs && workflowTotalTimeoutMs > 0) {
     workflowDeadlineMs = workflowStartedMs + workflowTotalTimeoutMs;

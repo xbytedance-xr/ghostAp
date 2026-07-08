@@ -413,6 +413,19 @@ class WorkflowProgressRenderer:
         else:
             lines.append("🕒 **最近变更:** —")
 
+        # Live elapsed for a genuinely running agent — mirrors the per-agent
+        # elapsed suffix so the top summary keeps advancing during a long
+        # blocking agent() call (only meaningful while non-terminal).
+        if (
+            not terminal
+            and active_agent is not None
+            and active_agent.status == AgentStatus.RUNNING
+            and active_agent.started_at
+        ):
+            elapsed = time.time() - active_agent.started_at
+            if elapsed > 0:
+                lines.append(f"⏱ **已运行:** {_format_duration(elapsed)}")
+
         return _md_element(f"**{summary_title}**\n" + "\n".join(lines))
 
     def render_compact_status(self) -> str:
@@ -570,8 +583,15 @@ class WorkflowProgressRenderer:
                     summary_text = ""
                     if agent.task_summary:
                         summary_text = f"\n    > {_middle_ellipsis(agent.task_summary, 60)}"
+                    # Live elapsed suffix so a long-running agent's line keeps
+                    # advancing (paired with the engine heartbeat re-render).
+                    running_text = "执行中…"
+                    if agent.started_at:
+                        elapsed = time.time() - agent.started_at
+                        if elapsed > 0:
+                            running_text = f"执行中 {_format_duration(elapsed)}…"
                     lines.append(
-                        f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} 执行中…{summary_text}"
+                        f"{STATUS_ICONS.get(agent.status, '·')} {display_label} {tool_badge} {running_text}{summary_text}"
                     )
                 elif agent.error:
                     safe_err = _strip_internal_details(agent.error[:60])

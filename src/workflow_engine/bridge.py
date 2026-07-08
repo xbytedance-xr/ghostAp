@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 
 from .constants import (
     AGENT_CALL_TIMEOUT_S,
+    AGENT_UNLIMITED_BACKSTOP_S,
     DEFAULT_MAX_CONCURRENT,
     HARD_MAX_CONCURRENT,
     MAX_NESTING_DEPTH,
@@ -163,6 +164,12 @@ class RuntimeBridge:
         self._workflow_deadline_unix_ms: int | None = None
         # Effective total timeout (seconds) resolved from Settings once per run.
         self._workflow_total_timeout_s: int = WORKFLOW_TOTAL_TIMEOUT_S
+        # Effective per-agent timeout floor (seconds) resolved from Settings
+        # once per run. This is the authoritative floor sent to the JS runtime
+        # so the JS-side agent_call watchdog matches the Python-side executor
+        # rather than the (often much smaller) timeout baked into the script.
+        # 0 means unlimited per-agent (JS relies on the total deadline / stop).
+        self._workflow_agent_call_timeout_s: int = AGENT_CALL_TIMEOUT_S
 
     # ------------------------------------------------------------------
     # Public API
@@ -224,6 +231,12 @@ class RuntimeBridge:
             "workflow_total_timeout_s", WORKFLOW_TOTAL_TIMEOUT_S
         )
         self._workflow_total_timeout_s = total_timeout_s
+
+        # Resolve the per-agent timeout floor once per run too, so the value
+        # sent to JS in init() matches what the Python executor enforces.
+        self._workflow_agent_call_timeout_s = _settings_int(
+            "workflow_agent_call_timeout_s", AGENT_CALL_TIMEOUT_S
+        )
 
         started_monotonic = time.monotonic()
         started_unix_ms = int(time.time() * 1000)
@@ -328,6 +341,7 @@ class RuntimeBridge:
                     "started_unix_ms": self._workflow_started_unix_ms,
                     "deadline_unix_ms": self._workflow_deadline_unix_ms,
                     "total_timeout_s": self._workflow_total_timeout_s,
+                    "agent_call_timeout_s": self._workflow_agent_call_timeout_s,
                 },
             }
         )
@@ -719,30 +733,44 @@ class RuntimeBridge:
         self,
         params: dict[str, Any],
     ) -> dict[str, Any]:
-        """Return params with timeout bounded by remaining workflow budget.
+        """Resolve the per-agent timeout, honoring the host floor and budget.
 
-        The generated JS may request a long per-agent timeout near the end of
-        the run.  The host deadline is authoritative, so cap every request here
-        before it reaches AgentExecutor.
+        Two independent concerns are handled here:
+
+        1. Host config is the authoritative *floor*. The generated JS bakes a
+           small ``timeout`` (e.g. 180) into each agent() call; honoring that
+           verbatim was prematurely killing long-running coding tasks. So the
+           script value may only *raise* the timeout above the configured
+           ``workflow_agent_call_timeout_s`` floor, never lower it. A floor of
+           ``0`` means unlimited → a large finite backstop is used instead.
+        2. The total-workflow deadline is authoritative: when a total deadline
+           is in effect the resolved timeout is capped so one late agent()
+           cannot outlive the remaining run budget.
         """
-        remaining = self._remaining_workflow_budget_s()
-        if remaining is None:
-            return dict(params)
-
-        budget_s = int(max(1.0, remaining - WORKFLOW_TIMEOUT_HEADROOM_S))
         default_timeout = _settings_int(
             "workflow_agent_call_timeout_s", AGENT_CALL_TIMEOUT_S
         )
-        raw_timeout = params.get("timeout") or default_timeout
+        # Configured floor (0 => unlimited => finite backstop).
+        base_s = default_timeout if default_timeout > 0 else AGENT_UNLIMITED_BACKSTOP_S
+
+        raw_timeout = params.get("timeout")
         try:
-            requested_s = int(raw_timeout)
+            requested_s = int(raw_timeout) if raw_timeout is not None else 0
         except (TypeError, ValueError):
-            requested_s = default_timeout
-        if requested_s <= 0:
-            requested_s = default_timeout
+            requested_s = 0
+        # Script value may only raise the effective timeout above the floor.
+        effective_s = max(base_s, requested_s) if requested_s > 0 else base_s
 
         capped = dict(params)
-        capped["timeout"] = max(1, min(requested_s, budget_s))
+
+        remaining = self._remaining_workflow_budget_s()
+        if remaining is None:
+            # Unlimited total deadline — no budget cap, floor logic stands.
+            capped["timeout"] = max(1, effective_s)
+            return capped
+
+        budget_s = int(max(1.0, remaining - WORKFLOW_TIMEOUT_HEADROOM_S))
+        capped["timeout"] = max(1, min(effective_s, budget_s))
         return capped
 
     def _handle_agent_call(self, params: dict[str, Any], request_id: Any) -> None:

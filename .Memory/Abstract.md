@@ -2,7 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-07
-- **Deep终态审核拦截** — Deep 实际完成但终态卡片 PATCH 被飞书 `230028 EMAIL_ADDRESS` 审核拒绝，卡片停在执行中且 fallback 提示裸 `/deep`；卡片投递层新增邮箱预脱敏、`230028` 稳定兜底卡和终态提示 `{engine_cmd} <需求描述>`，全量 9729 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-07.md)
+- **WF单agent超时权威化+进度心跳** — `/wf` `execute-traex` 失败根因是 JS runtime 单 agent RPC 看门狗用脚本硬编码 `timeout:180` 把长编码任务在 180s abort（非总超时）；反转语义为 host 配置作“权威下限”、脚本值只能抬高、`agent=0`=不限时（有限 backstop 兜底），executor/bridge/runtime.js 三处对齐并下发 `agent_call_timeout_s`，修复 Node setTimeout 溢出(30天>2^31ms 被截断成1ms 致看门狗立即触发)，`.env` 补齐 WF 超时块(total/agent=0 不限时)；并行 subagent 加进度心跳(10s 重刷)+RUNNING 行「已运行时长」，`workflow or config_validation` 965 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-07.md)
 - **README精简去厂商化** — 重写 README 以匹配当前实现：保留飞书/Lark、ACP、普通编程、Deep/Spec/Worktree/Workflow/Slock、配置、命令、架构入口和开发验证，删除特定厂商说明与端点，文档 628→219 行，README 关键词残留检查无匹配 → [详细记录](2026-07-07.md)
 - **Traex模型ID规范化** — 定位 Deep `Model metadata for c_o_new_thinking/max/max not found` 根因是 UI 级联复合模型 ID 被直接传给 Traex `session/setModel`/engine 启动；新增 provider 级 `normalize_acp_model_name`，普通切模型、ACPSessionManager、Deep/Spec/Review factory 全接入，后端收到 `Test-O-New-Thinking`，相关 3+231+109+237 passed、ruff 通过 → [详细记录](2026-07-07.md)
 - **WF可不限时+运行态停止按钮** — `/wf` 总超时 `workflow_total_timeout_s` 支持 0=不限制（`ge=0`，bridge deadline=None 跳过总超时检查，JS 侧 0→Infinity，per-agent 超时/200 agent 熔断仍生效），运行态进度卡新增 danger「停止」按钮委托 `stop_workflow` 鉴权；停止按钮包由并行 subagent 实现，115 定向 + 1777 相关 passed → [详细记录](2026-07-07.md)

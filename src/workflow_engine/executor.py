@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 from .constants import (
     AGENT_CALL_TIMEOUT_S,
+    AGENT_UNLIMITED_BACKSTOP_S,
     DEFAULT_MAX_CONCURRENT,
     HARD_MAX_CONCURRENT,
     MAX_RETRIES,
@@ -157,18 +158,49 @@ class AgentExecutor:
                 return 0
             return int(max(1.0, remaining - WORKFLOW_TIMEOUT_HEADROOM_S))
 
-        def _effective_timeout_s(requested: int | None, fallback: int) -> int:
+        def _effective_timeout_s(requested: float | int | None, fallback: float | int) -> float:
+            """Resolve the effective per-call timeout in seconds.
+
+            ``fallback`` is the authoritative host config value (from Settings /
+            .env). It is treated as the *floor*, not a cap: the LLM-generated
+            script frequently bakes a small ``timeout`` (e.g. 180) into each
+            agent() call, and honoring that verbatim was killing legitimately
+            long-running coding tasks. So the script value can only *raise* the
+            timeout above the configured floor, never lower it.
+
+            A configured value of ``<= 0`` means *unlimited*: we substitute a
+            large but finite backstop (:data:`AGENT_UNLIMITED_BACKSTOP_S`) so
+            the blocking call still eventually returns instead of hanging
+            forever on an orphaned session. Real bounding in unlimited mode
+            comes from the user's stop button, the total-workflow deadline (if
+            any), and the MAX_TOTAL_AGENTS fuse.
+
+            The result is always further capped by the remaining total-workflow
+            budget when a total deadline is in effect. Sub-second values are
+            preserved (fast tests rely on fractional timeouts); only ``<= 0`` is
+            treated as the unlimited sentinel, never a small positive fraction.
+            """
+            # Configured floor (<= 0 => unlimited => finite backstop). Compare on
+            # floats so a legitimate sub-second config (e.g. 0.01 in tests) is
+            # NOT mistaken for the unlimited sentinel via int truncation.
             try:
-                requested_s = int(requested or fallback)
+                configured_s = float(fallback)
             except (TypeError, ValueError):
-                requested_s = fallback
-            if requested_s <= 0:
-                requested_s = fallback
+                configured_s = float(AGENT_CALL_TIMEOUT_S)
+            base_s = float(AGENT_UNLIMITED_BACKSTOP_S) if configured_s <= 0 else configured_s
+
+            # Script-requested value may only raise the effective timeout above
+            # the configured floor.
+            try:
+                requested_s = float(requested) if requested is not None else 0.0
+            except (TypeError, ValueError):
+                requested_s = 0.0
+            effective_s = max(base_s, requested_s) if requested_s > 0 else base_s
 
             budget_s = _deadline_budget_s()
             if budget_s is None:
-                return requested_s
-            return max(1, min(requested_s, budget_s))
+                return effective_s
+            return max(1.0, min(effective_s, float(budget_s)))
 
         # Pass a single event to session creation for backward compat; use
         # the per-call event if available, else the global one.  The OR
