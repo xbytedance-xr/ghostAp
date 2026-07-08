@@ -241,6 +241,11 @@ class Settings(BaseSettings):
         ge=0,
         description="Per agent() call timeout inside a workflow (seconds). Set 0 to disable the per-agent deadline (unlimited) — a single agent() call then runs until it finishes or the user stops the workflow. The MAX_TOTAL_AGENTS fuse and (if set) the total-workflow deadline still apply. When >0 this value is the authoritative floor: it overrides any smaller per-call timeout baked into the generated script so long-running coding tasks are not killed prematurely.",
     )
+    workflow_agent_idle_timeout_s: int = Field(
+        default=120,
+        ge=0,
+        description="Adaptive idle timeout for agent() calls (seconds). When >0, the per-agent timeout becomes activity-based: as long as ACP events (tool calls, text output) keep arriving, the agent stays alive. Only after this many seconds of complete silence is the agent killed. The hard cap (workflow_agent_call_timeout_s) still applies as an absolute maximum. Set 0 to disable adaptive timeout and use fixed timeout only.",
+    )
     workflow_script_gen_timeout_s: int = Field(
         default=180,
         ge=10,

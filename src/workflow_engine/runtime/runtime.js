@@ -51,7 +51,7 @@ let workflowTotalTimeoutMs = 0;
 // value of 0 means "unlimited" per-agent — the watchdog then relies only on
 // the total workflow deadline (or never fires if that is also unlimited).
 let workflowAgentCallTimeoutMs = 0;
-const REQUEST_TIMEOUT_GRACE_MS = 1000;
+const REQUEST_TIMEOUT_GRACE_MS = 10000;
 // Large finite backstop mirroring AGENT_UNLIMITED_BACKSTOP_S on the Python
 // side: even in "unlimited" mode a bounded timer eventually fires so a wedged
 // host cannot hang the runtime forever. 30 days in ms.

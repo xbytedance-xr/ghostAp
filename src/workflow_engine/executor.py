@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional
 
 from .constants import (
     AGENT_CALL_TIMEOUT_S,
+    AGENT_IDLE_TIMEOUT_S,
     AGENT_UNLIMITED_BACKSTOP_S,
     DEFAULT_MAX_CONCURRENT,
     HARD_MAX_CONCURRENT,
@@ -330,11 +331,28 @@ class AgentExecutor:
                         duration_s=time.monotonic() - start,
                     )
 
-                result = session.send_prompt(
-                    full_prompt,
-                    on_event=None,
-                    timeout=prompt_timeout_s,
+                idle_timeout_s = _settings_int(
+                    "workflow_agent_idle_timeout_s", AGENT_IDLE_TIMEOUT_S
                 )
+
+                # Pass idle_timeout for adaptive timeout; gracefully degrade
+                # for session implementations that don't support it (e.g. test mocks).
+                send_kwargs: dict[str, Any] = {
+                    "on_event": None,
+                    "timeout": prompt_timeout_s,
+                }
+                if idle_timeout_s > 0:
+                    send_kwargs["idle_timeout"] = float(idle_timeout_s)
+
+                try:
+                    result = session.send_prompt(full_prompt, **send_kwargs)
+                except TypeError:
+                    # Fallback: session doesn't accept idle_timeout
+                    result = session.send_prompt(
+                        full_prompt,
+                        on_event=None,
+                        timeout=prompt_timeout_s,
+                    )
 
                 # Extract text output and token usage from PromptResult
                 output_text = result.text if result else ""
@@ -382,11 +400,21 @@ class AgentExecutor:
                         if _deadline_budget_s() == 0:
                             break
 
-                        retry_result = session.send_prompt(
-                            fix_prompt,
-                            on_event=None,
-                            timeout=retry_timeout_s,
-                        )
+                        retry_kwargs: dict[str, Any] = {
+                            "on_event": None,
+                            "timeout": retry_timeout_s,
+                        }
+                        if idle_timeout_s > 0:
+                            retry_kwargs["idle_timeout"] = float(idle_timeout_s)
+
+                        try:
+                            retry_result = session.send_prompt(fix_prompt, **retry_kwargs)
+                        except TypeError:
+                            retry_result = session.send_prompt(
+                                fix_prompt,
+                                on_event=None,
+                                timeout=retry_timeout_s,
+                            )
 
                         retry_text = retry_result.text if retry_result else ""
                         retry_tokens = retry_result.output_tokens or 0 if retry_result else 0

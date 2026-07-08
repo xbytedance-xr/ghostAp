@@ -1092,39 +1092,48 @@ def _enforce_card_size(elements: list[dict]) -> list[dict]:
     """Truncate card elements if they would exceed Feishu's 30KB payload limit.
 
     Progressive truncation strategy:
-    1. Truncate any long text content (> 200 chars) in markdown elements
-    2. Remove trailing elements until under the limit
+    1. Truncate any long text content (> 500 chars) in markdown elements
+    2. Remove elements from the end (footer/metrics first, keeping phases)
+    3. If still over, aggressively truncate remaining markdown to 200 chars
 
     Returns the (possibly trimmed) element list.
     """
     import json as _json
 
     serialized = _json.dumps(elements, ensure_ascii=False)
-    # Use surrogateescape to handle emoji surrogates gracefully
     byte_len = len(serialized.encode("utf-8", errors="surrogatepass"))
     if byte_len <= _CARD_MAX_BYTES:
         return elements
 
-    # Strategy 1: Truncate long markdown text content
+    # Strategy 1: Moderate truncation of long markdown text
     for elem in elements:
         if isinstance(elem, dict) and elem.get("tag") == "markdown":
             content = elem.get("content", "")
-            if isinstance(content, str) and len(content) > 200:
-                elem["content"] = content[:197] + "..."
+            if isinstance(content, str) and len(content) > 500:
+                elem["content"] = content[:497] + "..."
 
-    # Re-check after text truncation
     serialized = _json.dumps(elements, ensure_ascii=False)
     byte_len = len(serialized.encode("utf-8", errors="surrogatepass"))
     if byte_len <= _CARD_MAX_BYTES:
         return elements
 
-    # Strategy 2: Remove elements from the end (before metrics/budget footer)
-    # until we're under the limit, keeping at least 3 elements (summary, progress, footer)
+    # Strategy 2: Remove from the end (footer/metrics go first) — keeping the
+    # front which contains summary, progress, and phase details (most useful)
     while len(elements) > 3:
         serialized = _json.dumps(elements, ensure_ascii=False)
         byte_len = len(serialized.encode("utf-8", errors="surrogatepass"))
         if byte_len <= _CARD_MAX_BYTES:
             break
-        elements.pop(-2)  # Remove second-to-last (keep footer)
+        elements.pop()
+
+    # Strategy 3: Aggressive truncation if still over
+    serialized = _json.dumps(elements, ensure_ascii=False)
+    byte_len = len(serialized.encode("utf-8", errors="surrogatepass"))
+    if byte_len > _CARD_MAX_BYTES:
+        for elem in elements:
+            if isinstance(elem, dict) and elem.get("tag") == "markdown":
+                content = elem.get("content", "")
+                if isinstance(content, str) and len(content) > 200:
+                    elem["content"] = content[:197] + "..."
 
     return elements

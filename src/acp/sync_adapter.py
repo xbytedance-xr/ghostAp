@@ -1657,47 +1657,82 @@ class SyncACPSession:
         text: str,
         on_event: Optional[Callable[[ACPEvent], None]] = None,
         timeout: Optional[int] = None,
+        idle_timeout: Optional[float] = None,
     ) -> PromptResult:
         """Send prompt synchronously, blocking until completion.
 
         A persistent watchdog thread monitors for agent process death and
         cancels the future early instead of waiting for the full timeout.
+
+        When *idle_timeout* is set, the timeout becomes activity-based: as long
+        as ACP events keep arriving (indicating the agent is working), the
+        deadline is extended.  The agent is only timed out after *idle_timeout*
+        seconds of silence.  *timeout* then acts as a hard cap to prevent
+        infinite runs.
         """
         if not self._acp_session:
             raise RuntimeError("Session not started")
 
         effective_timeout = timeout if timeout is not None else 600.0
+        effective_idle_timeout = idle_timeout if idle_timeout is not None else 0.0
 
         self.last_active = time.time()
         self.message_count += 1
         self.last_query = text
 
+        # Activity tracker — updated by _activity_on_event wrapper
+        last_activity_ts = [time.time()]
+
+        def _activity_on_event(ev: ACPEvent) -> None:
+            last_activity_ts[0] = time.time()
+            if on_event:
+                on_event(ev)
+
+        use_adaptive = effective_idle_timeout > 0
+        event_cb = _activity_on_event if use_adaptive else on_event
+
         future = asyncio.run_coroutine_threadsafe(
-            self._acp_session.prompt(text, on_event=on_event),
+            self._acp_session.prompt(text, on_event=event_cb),
             self._loop,
         )
         self._active_future = future
         self._start_watchdog()
 
         try:
-            return future.result(timeout=effective_timeout)
+            if not use_adaptive:
+                return future.result(timeout=effective_timeout)
+
+            # Adaptive polling: check idle vs hard cap
+            poll_interval = 5.0
+            hard_deadline = time.time() + effective_timeout
+            while True:
+                remaining = hard_deadline - time.time()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"ACP prompt 执行超时 (hard cap {effective_timeout}s)"
+                    )
+                wait_time = min(poll_interval, remaining)
+                try:
+                    return future.result(timeout=wait_time)
+                except TimeoutError:
+                    if future.done():
+                        return future.result(timeout=0)
+                    idle_elapsed = time.time() - last_activity_ts[0]
+                    if idle_elapsed >= effective_idle_timeout:
+                        raise TimeoutError(
+                            f"ACP prompt 空闲超时 ({idle_elapsed:.0f}s 无活动, "
+                            f"idle_timeout={effective_idle_timeout}s)"
+                        )
+                    # Agent still active — continue waiting
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
-            # Mark session dead so ensure_session evicts it immediately.
             self._force_dead = True
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
         except TimeoutError as e:
             agent_type_str = getattr(self, "_agent_type", "unknown")
             logger.error("[ACP:%s] prompt 执行超时 (timeout=%ss): %s", agent_type_str, effective_timeout, get_error_detail(e), exc_info=True)
-            # Cancel the agent process on timeout to free resources.
-            # Wait briefly for cancel to be acknowledged — otherwise a follow-up
-            # send_prompt can race with the in-flight cancel and the agent
-            # rejects it with `-32602 Invalid params`.
             self.cancel(wait=True, timeout=2.0)
             raise TimeoutError(f"ACP prompt 执行超时 ({effective_timeout}s)") from e
         except Exception as e:
-            # Detect terminal-state / broken-pipe errors indicating the session
-            # is irrecoverably dead.  Mark it so ensure_session evicts on the
-            # NEXT call rather than serving the stale cached session.
             err_detail = str(e).lower()
             if "terminal state" in err_detail or "broken pipe" in err_detail or "connection" in err_detail and "closed" in err_detail:
                 self._force_dead = True

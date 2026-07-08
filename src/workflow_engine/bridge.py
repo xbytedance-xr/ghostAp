@@ -364,7 +364,10 @@ class RuntimeBridge:
         """Main event loop: process messages from the Node.js runtime.
 
         Blocks until the runtime sends 'done' or 'error', or until the
-        total timeout expires. Returns the final result string.
+        total timeout expires. The total timeout is activity-aware: as long
+        as the runtime is producing messages (agent calls, phase changes,
+        logs), the deadline is extended. The workflow is only killed after
+        a prolonged period of complete silence.
 
         Raises:
             RuntimeError: If the subprocess dies unexpectedly, times out,
@@ -379,6 +382,20 @@ class RuntimeBridge:
         # done/error/cancel/process-death, letting the user stop when ready.
         deadline = self._workflow_deadline_monotonic
 
+        # Activity-based timeout: track the last time any message arrived from
+        # the JS runtime. The hard deadline is used as an absolute cap, but a
+        # softer idle check kills the workflow if no messages arrive for a long
+        # period (meaning all agents are stuck/dead).
+        last_activity = time.monotonic()
+        # Idle threshold: 5 minutes of complete silence from the JS runtime
+        # (no phase, no log, no agent_call, no done). This is generous because
+        # during a long ACP call the JS runtime itself produces no messages —
+        # only the Python executor does. The bridge-level idle is a last-resort
+        # safety net; per-agent idle is handled by sync_adapter.
+        bridge_idle_timeout_s = max(
+            300, self._workflow_total_timeout_s // 6 if self._workflow_total_timeout_s > 0 else 300
+        )
+
         while not self._done:
             # Check cancellation
             if self._cancel_event.is_set():
@@ -387,15 +404,33 @@ class RuntimeBridge:
                 self._kill_process()
                 raise RuntimeError("Workflow cancelled")
 
-            # Check timeout (skipped entirely when running unlimited)
+            # Check timeout: activity-aware
             if deadline is not None:
+                now = time.monotonic()
+                # Hard cap — absolute deadline never exceeded
+                if now >= deadline:
+                    # But if there are active agent calls running, extend the
+                    # deadline rather than killing mid-work.
+                    if self.in_flight_count > 0:
+                        # Extend by the idle timeout — agents are still working
+                        deadline = now + bridge_idle_timeout_s
+                        self._workflow_deadline_monotonic = deadline
+                        logger.info(
+                            "Workflow deadline extended — %d agent(s) still in flight",
+                            self.in_flight_count,
+                        )
+                    else:
+                        # No agents running and deadline hit — truly timed out
+                        idle_s = now - last_activity
+                        logger.error(
+                            "Workflow total timeout exceeded (%ds, idle=%.0fs, in_flight=0)",
+                            self._workflow_total_timeout_s, idle_s,
+                        )
+                        self._kill_process()
+                        raise RuntimeError(
+                            f"Workflow execution exceeded total timeout of {self._workflow_total_timeout_s}s"
+                        )
                 remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    logger.error("Workflow total timeout exceeded (%ds)", self._workflow_total_timeout_s)
-                    self._kill_process()
-                    raise RuntimeError(
-                        f"Workflow execution exceeded total timeout of {self._workflow_total_timeout_s}s"
-                    )
             else:
                 remaining = None
 
@@ -415,6 +450,8 @@ class RuntimeBridge:
             if msg is None:
                 continue
 
+            # Any message from the JS runtime counts as activity
+            last_activity = time.monotonic()
             self._dispatch_message(msg)
 
         # Return result or raise error

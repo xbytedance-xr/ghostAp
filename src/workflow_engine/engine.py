@@ -67,7 +67,12 @@ def _decode_result_payload(result_text: str) -> Any:
 
 
 def _terminal_failure_from_result(result_text: str) -> str | None:
-    """Return a user-visible error when a normal JS result encodes failure."""
+    """Return a user-visible error when a normal JS result encodes failure.
+
+    Only triggers when the *top-level* result is purely an error — not when
+    the result contains partial agent errors alongside valid output (which is
+    normal for scripts that try-catch individual agent failures).
+    """
     parsed = _decode_result_payload(str(result_text or ""))
     if not isinstance(parsed, dict):
         return None
@@ -76,6 +81,19 @@ def _terminal_failure_from_result(result_text: str) -> str | None:
     error_text = str(error or "").strip()
     message_text = str(parsed.get("message") or "").strip()
     status = str(parsed.get("status") or "").strip().lower()
+
+    # A result is only a terminal failure if it looks like a *pure* error
+    # payload — i.e., it has no meaningful output alongside the error.
+    # Scripts that catch sub-agent errors and include them in a report (e.g.,
+    # {"final_report": "...", "error": "agent X failed"}) are NOT failures.
+    has_meaningful_output = any(
+        k not in ("error", "message", "status", "stage", "fallback")
+        and bool(v)
+        for k, v in parsed.items()
+    )
+
+    if has_meaningful_output:
+        return None
 
     is_failure = (
         bool(parsed.get("fallback"))

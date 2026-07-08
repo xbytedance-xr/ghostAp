@@ -204,26 +204,50 @@ class WorkflowScriptMixin:
             script_gen_timeout_s = getattr(
                 self.settings, "workflow_script_gen_timeout_s", SCRIPT_GEN_TIMEOUT_S
             )
-            result = session.send_prompt(prompt, timeout=script_gen_timeout_s)
 
-            if progress_callback:
-                progress_callback("收到模型响应，正在验证脚本...")
-
-            if result and result.text:
-                script_content = self._strip_markdown_fences(result.text.strip())
-
-                is_valid, errors = validate_generated_script(script_content, review_agents=review_agents)
-                if is_valid:
-                    with open(script_path, "w", encoding="utf-8") as f:
-                        f.write(script_content)
-                    meta = extract_meta_from_script(script_content)
-                    if meta is None:
-                        meta = {}
-                    return script_path, meta, False
+            # Retry loop: feed validation errors back to LLM for correction
+            max_script_retries = 3
+            last_errors: list[str] = []
+            for gen_attempt in range(max_script_retries):
+                if gen_attempt == 0:
+                    current_prompt = prompt
                 else:
-                    logger.warning("Generated script failed validation: %s", errors)
-            else:
-                logger.warning("AI returned empty script content")
+                    # Build retry prompt with validation error feedback
+                    error_summary = "\n".join(f"- {e}" for e in last_errors)
+                    current_prompt = (
+                        f"Your previous script had validation errors:\n{error_summary}\n\n"
+                        f"Please regenerate the workflow script fixing ALL the above errors. "
+                        f"Output ONLY the corrected JavaScript code, no explanations.\n\n"
+                        f"Original requirement: {requirement}"
+                    )
+                    if progress_callback:
+                        progress_callback(f"脚本验证失败，正在重试 ({gen_attempt + 1}/{max_script_retries})...")
+
+                result = session.send_prompt(current_prompt, timeout=script_gen_timeout_s)
+
+                if progress_callback and gen_attempt == 0:
+                    progress_callback("收到模型响应，正在验证脚本...")
+
+                if result and result.text:
+                    script_content = self._strip_markdown_fences(result.text.strip())
+
+                    is_valid, errors = validate_generated_script(script_content, review_agents=review_agents)
+                    if is_valid:
+                        with open(script_path, "w", encoding="utf-8") as f:
+                            f.write(script_content)
+                        meta = extract_meta_from_script(script_content)
+                        if meta is None:
+                            meta = {}
+                        return script_path, meta, False
+                    else:
+                        last_errors = errors
+                        logger.warning(
+                            "Generated script failed validation (attempt %d/%d): %s",
+                            gen_attempt + 1, max_script_retries, errors,
+                        )
+                else:
+                    logger.warning("AI returned empty script content (attempt %d/%d)", gen_attempt + 1, max_script_retries)
+                    break  # Empty response won't improve with retry
 
         except Exception as exc:
             logger.error("Script generation via AI failed: %s", exc, exc_info=True)
