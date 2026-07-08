@@ -1221,7 +1221,11 @@ def _aggressive_json_cleanup(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def generate_simple_script(requirement: str, selected_tools: list[str] | None = None) -> str:
+def generate_simple_script(
+    requirement: str,
+    selected_tools: list[str] | None = None,
+    tool_model_map: dict[str, str] | None = None,
+) -> str:
     """Generate a bounded fallback workflow using Dynamic Workflow patterns."""
     _enc = get_subagent_encouragement()
     tools = selected_tools or ["coco"]
@@ -1229,6 +1233,7 @@ def generate_simple_script(requirement: str, selected_tools: list[str] | None = 
     escaped = requirement.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
     comment_requirement = requirement[:80].replace("*/", "* /")
     json_tools = json.dumps(tools)
+    json_tool_models = json.dumps(tool_model_map or {})
 
     return f'''/**
  * Auto-generated Dynamic Workflow.
@@ -1251,10 +1256,12 @@ export const meta = {{
 export default async function main() {{
   const requirement = `{escaped}`;
   const tools = {json_tools};
+  const toolModels = {json_tool_models};
   const primaryTool = "{primary_tool}";
   const candidateTools = Array.from(new Set((tools.length ? tools : [primaryTool]).filter(Boolean))).slice(0, 3);
   const fallbackTool = candidateTools.length > 1 ? candidateTools[1] : primaryTool;
   const verifierTool = candidateTools[candidateTools.length - 1] || primaryTool;
+  function modelFor(tool) {{ return toolModels[tool] || undefined; }}
 
   function fallback(stage, reason, partial = null) {{
     return {{
@@ -1301,6 +1308,7 @@ Return JSON only: {{ "subtasks": ["..."], "reason": "..." }}
 
 {_enc}`,
           tool,
+          model: modelFor(tool),
           role: "planner",
           schema: {{ subtasks: [], reason: "" }},
           label: `split-${{tool}}`,
@@ -1343,6 +1351,7 @@ Complete fully and provide concrete output. If blocked, return a clear error obj
 
 {_enc}`,
       tool: tools[i % tools.length],
+      model: modelFor(tools[i % tools.length]),
       role: `worker-${{i}}`,
       label: `execute-${{i}}`,
       timeout: 180,
@@ -1367,6 +1376,7 @@ ${{JSON.stringify(successful, null, 2)}}
 
 {_enc}`,
         tool: fallbackTool,
+        model: modelFor(fallbackTool),
         role: "integrator",
         label: "synthesize-result",
         timeout: 120,
@@ -1391,6 +1401,7 @@ If implementation is requested, provide a complete, production-ready result. If 
 
 {_enc}`,
         tool,
+        model: modelFor(tool),
         role: "executor",
         label: `execute-${{tool}}`,
         timeout: 180,
@@ -1406,6 +1417,10 @@ If implementation is requested, provide a complete, production-ready result. If 
   }}
 
   phase("Verification");
+  if (route.reason === "analysis-only or direct request") {{
+    log("Skipping verification for analysis-only task");
+    return result;
+  }}
   log("Running bounded verification");
   const review = await agent({{
     prompt: `Review this workflow output for correctness, completeness, and obvious risks.
@@ -1418,6 +1433,7 @@ ${{typeof result === "string" ? result : JSON.stringify(result, null, 2)}}
 
 Respond with JSON: {{ "approve": true, "issues": ["..."], "summary": "..." }}`,
     tool: verifierTool,
+    model: modelFor(verifierTool),
     role: "verifier",
     schema: {{ approve: false, issues: [], summary: "" }},
     label: "verify-output",

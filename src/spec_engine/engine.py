@@ -854,26 +854,36 @@ class SpecEngine(BaseEngine):
                 )
 
                 # --- SPEC → PLAN → TASK → BUILD → REVIEW ---
+                # Per-phase timeout multipliers: BUILD needs more time for
+                # code execution; SPEC/PLAN/TASK are fast analysis phases.
+                _phase_timeout = {
+                    "spec": int(timeout * 0.6),
+                    "plan": int(timeout * 0.6),
+                    "task": int(timeout * 0.5),
+                    "build": int(timeout * 2.5),
+                    "review": int(timeout * 0.8),
+                }
+
                 spec_output = self._run_spec_phase(
-                    cycle_num, cycle, spec_input, work_item, callbacks, timeout,
+                    cycle_num, cycle, spec_input, work_item, callbacks, _phase_timeout["spec"],
                 )
                 if self._check_cycle_pause(cycle, cycle_num):
                     termination = "paused"
                     break
 
                 plan_output = self._run_plan_phase(
-                    cycle_num, cycle, spec_output, callbacks, timeout,
+                    cycle_num, cycle, spec_output, callbacks, _phase_timeout["plan"],
                 )
                 if self._check_cycle_pause(cycle, cycle_num):
                     termination = "paused"
                     break
 
-                self._run_task_phase(cycle_num, cycle, plan_output, callbacks, timeout)
+                self._run_task_phase(cycle_num, cycle, plan_output, callbacks, _phase_timeout["task"])
                 if self._check_cycle_pause(cycle, cycle_num):
                     termination = "paused"
                     break
 
-                self._run_build_phase(cycle_num, cycle, plan_output, callbacks, timeout)
+                self._run_build_phase(cycle_num, cycle, plan_output, callbacks, _phase_timeout["build"])
                 if self._check_cycle_pause(cycle, cycle_num):
                     termination = "paused"
                     break

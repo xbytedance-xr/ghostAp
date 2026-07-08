@@ -393,9 +393,7 @@ class DeepEngine(BaseEngine):
                 model_name=self._model_name,
             )
 
-            resume_prompt = """你之前的执行被暂停了。请继续完成剩余的任务。
-检查之前的进度，对未完成的部分继续实现。
-完成后输出总结报告。"""
+            resume_prompt = self._build_resume_prompt()
 
             on_event = self._make_on_event(callbacks)
             from ..agent_session.backend_resolver import is_ttadk_type as _is_ttadk
@@ -438,6 +436,24 @@ class DeepEngine(BaseEngine):
             get_gc_monitor(memory_threshold_percent=self.settings.deep_memory_threshold).check_and_collect(label="Deep", mem_snapshot=self._mem_snapshot)
 
         return self._project
+
+    def _build_resume_prompt(self) -> str:
+        """Build a context-rich resume prompt from progress state."""
+        sections = ["你之前的执行被暂停了。以下是之前的进度，请继续完成剩余任务。"]
+
+        if self._progress.plan_entries:
+            plan_lines = []
+            for entry in self._progress.plan_entries:
+                status_icon = "✅" if entry["status"] == "completed" else "⬜"
+                plan_lines.append(f"  {status_icon} {entry['content']}")
+            sections.append("## 任务计划\n" + "\n".join(plan_lines))
+
+        if self._progress.modified_files:
+            files = sorted(self._progress.modified_files)[:20]
+            sections.append("## 已修改文件\n" + "\n".join(f"  - {f}" for f in files))
+
+        sections.append("请从未完成的步骤继续执行。完成后输出总结报告。")
+        return "\n\n".join(sections)
 
     # Static status messages (no f-string allocation per call)
     _STATUS_MESSAGES: dict[DeepProjectStatus, str] = {

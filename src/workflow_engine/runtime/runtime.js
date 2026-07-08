@@ -62,6 +62,12 @@ const AGENT_UNLIMITED_BACKSTOP_MS = 30 * 24 * 3600 * 1000;
 // long (but real) watchdog instead of an instant abort.
 const MAX_SAFE_TIMER_MS = 2147483647;
 
+// Stack of request-ID interceptors. race() and pipeline() push a collector
+// Set onto this stack; sendRequest checks all active collectors after each
+// agent_call so multiple nested primitives can track their own request IDs
+// concurrently without overwriting each other.
+const requestInterceptors = [];
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -180,6 +186,17 @@ function sendRequest(method, params = {}) {
   }
 
   const id = ++requestId;
+
+  // Notify all active interceptors (race/pipeline tracking)
+  if (method === 'agent_call' && requestInterceptors.length > 0) {
+    for (const interceptor of requestInterceptors) {
+      interceptor.ids.add(id);
+      if (params && params.label) {
+        interceptor.labels.set(id, params.label);
+      }
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const entry = { resolve, reject, aborted: false, timer: null };
     const timeoutMs = requestTimeoutMs(method, params);
@@ -480,11 +497,13 @@ async function parallel(items) {
   let cursor = 0;
   const results = new Array(items.length);
   let rejector = null;
+  let settled = false;
 
   return new Promise((resolve, reject) => {
     rejector = reject;
 
     function launch(index) {
+      if (settled) return;
       if (inFlight >= cap) return;
       if (index >= items.length) return;
       const item = items[index];
@@ -493,22 +512,27 @@ async function parallel(items) {
         try {
           p = item();
         } catch (err) {
+          settled = true;
           rejector(err);
           return;
         }
       } else if (typeof item === 'object' && item !== null && item.prompt) {
         p = agent(item);
       } else {
+        settled = true;
         rejector(new TypeError('parallel() items must be functions or agent-call descriptors'));
         return;
       }
       inFlight += 1;
       Promise.resolve(p).then((value) => {
+        if (settled) return;
         results[index] = value;
         inFlight -= 1;
         if (cursor < items.length) launch(cursor++);
-        else if (inFlight === 0) resolve(results);
+        else if (inFlight === 0) { settled = true; resolve(results); }
       }, (err) => {
+        if (settled) return;
+        settled = true;
         rejector(err);
       });
     }
@@ -520,7 +544,7 @@ async function parallel(items) {
       launch(i);
     }
     // All items smaller than cap; in-flight completion will resolve.
-    if (cursor >= items.length && inFlight === 0) resolve(results);
+    if (!settled && cursor >= items.length && inFlight === 0) resolve(results);
   });
 }
 
@@ -548,27 +572,21 @@ async function pipeline(items, ...args) {
   // When continueOnFailure is false, track in-flight agent_call requests so we
   // can abort other items' pending calls on first failure and avoid wasting
   // Python-side thread pool resources.
-  const pipelineRequestIds = !continueOnFailure ? new Set() : null;
-  const requestLabels = !continueOnFailure ? new Map() : null;
-  let _origSendRequest = null;
+  let pipelineRequestIds = null;
+  let pipelineRequestLabels = null;
+  let pipelineInterceptor = null;
 
   if (!continueOnFailure) {
-    _origSendRequest = sendRequest;
-    sendRequest = function (method, params) {
-      const promise = _origSendRequest(method, params);
-      if (method === 'agent_call') {
-        const id = requestId;
-        pipelineRequestIds.add(id);
-        requestLabels.set(id, (params && params.label) || '');
-      }
-      return promise;
-    };
+    pipelineInterceptor = { ids: new Set(), labels: new Map() };
+    requestInterceptors.push(pipelineInterceptor);
+    pipelineRequestIds = pipelineInterceptor.ids;
+    pipelineRequestLabels = pipelineInterceptor.labels;
   }
 
   function restoreSendRequest() {
-    if (_origSendRequest !== null) {
-      sendRequest = _origSendRequest;
-      _origSendRequest = null;
+    if (pipelineInterceptor) {
+      const idx = requestInterceptors.indexOf(pipelineInterceptor);
+      if (idx !== -1) requestInterceptors.splice(idx, 1);
     }
   }
 
@@ -577,7 +595,7 @@ async function pipeline(items, ...args) {
     for (const rid of pipelineRequestIds) {
       const entry = pendingRequests.get(rid);
       if (entry && !entry.aborted) {
-        const label = requestLabels.get(rid) || `pipeline-item-${rid}`;
+        const label = (pipelineRequestLabels && pipelineRequestLabels.get(rid)) || `pipeline-item-${rid}`;
         abortRequest(rid);
         sendNotification('agent_aborted', {
           label,
@@ -1163,21 +1181,8 @@ async function race(contestants, opts = {}) {
     // labels, so we can abort losers and report which agent was aborted.
     const raceRequestIds = new Set();
     const requestLabels = new Map();
-    const _origSendRequest = sendRequest;
-
-    // Wrap sendRequest for the duration of this race so we can track
-    // every request ID created by any contestant (including retries).
-    sendRequest = function (method, params) {
-      const promise = _origSendRequest(method, params);
-      if (method === 'agent_call') {
-        // The ID was already incremented by _origSendRequest; we can peek
-        // it because requestId is module-level and was just incremented.
-        const id = requestId;
-        raceRequestIds.add(id);
-        requestLabels.set(id, (params && params.label) || '');
-      }
-      return promise;
-    };
+    const interceptor = { ids: raceRequestIds, labels: requestLabels };
+    requestInterceptors.push(interceptor);
 
     function abortLosers() {
       for (const rid of raceRequestIds) {
@@ -1197,8 +1202,9 @@ async function race(contestants, opts = {}) {
     function finish(fn, arg) {
       if (settled) return;
       settled = true;
-      // Restore original sendRequest before settling
-      sendRequest = _origSendRequest;
+      // Remove our interceptor from the stack
+      const idx = requestInterceptors.indexOf(interceptor);
+      if (idx !== -1) requestInterceptors.splice(idx, 1);
       fn(arg);
     }
 

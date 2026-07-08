@@ -572,13 +572,19 @@ class WorkflowScriptMixin:
         return script_content.rstrip() + "\n\n" + block
 
     @staticmethod
+    @staticmethod
     def _write_fallback_script(
-        script_path: str, requirement: str, selected_tools: list[str] | None = None
+        script_path: str,
+        requirement: str,
+        selected_tools: list[str] | None = None,
+        tool_model_map: dict[str, str] | None = None,
     ) -> str:
         """Write a simple fallback script and return its path."""
         from ...workflow_engine.script_gen import generate_simple_script
 
-        script_content = generate_simple_script(requirement, selected_tools=selected_tools)
+        script_content = generate_simple_script(
+            requirement, selected_tools=selected_tools, tool_model_map=tool_model_map
+        )
         with open(script_path, "w", encoding="utf-8") as f:
             f.write(script_content)
         return script_path
