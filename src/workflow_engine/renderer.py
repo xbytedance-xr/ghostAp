@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -88,6 +89,8 @@ WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
 _PHASE_AGENT_DISPLAY_LIMIT = 20
 _PHASE_COMPLETED_TAIL = 5
 _CARD_MAX_BYTES = 28_000  # Feishu card payload limit with safety margin
+_COMPLETION_REPORT_MAX_CHARS = 1_800
+_COMPLETION_SECTION_MAX_CHARS = 900
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +753,192 @@ def render_script_preview(
     return result
 
 
+def _truncate_completion_text(text: str, limit: int) -> str:
+    """Truncate completion report text while preserving valid markdown."""
+    text = _strip_internal_details(str(text or "").strip())
+    if len(text) <= limit:
+        return text
+    trimmed = text[:limit].rstrip()
+    last_newline = trimmed.rfind("\n")
+    if last_newline > limit // 2:
+        trimmed = trimmed[:last_newline].rstrip()
+    return f"{trimmed}\n\n_(内容已截断)_"
+
+
+def _parse_result_payload(raw_result: str) -> Any | None:
+    """Best-effort parse of Workflow JS return values encoded as JSON."""
+    raw_result = str(raw_result or "").strip()
+    if not raw_result or raw_result[0] not in "[{":
+        return None
+    try:
+        return json.loads(raw_result)
+    except (TypeError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def _humanize_result_key(key: str) -> str:
+    labels = {
+        "summary": "摘要",
+        "final_report": "最终报告",
+        "report": "报告",
+        "result": "结果",
+        "output": "输出",
+        "status": "状态",
+        "conclusion": "结论",
+        "verification": "验证",
+        "reviews": "评审",
+        "risks": "风险",
+        "risk": "风险",
+        "findings": "发现",
+        "recommendations": "建议",
+        "next_steps": "后续",
+        "worker_findings": "执行发现",
+        "parallel_results": "并行结果",
+        "results": "结果",
+    }
+    return labels.get(key, key.replace("_", " "))
+
+
+def _format_result_value(value: Any, *, max_chars: int = _COMPLETION_SECTION_MAX_CHARS) -> str:
+    """Format a scalar/list/dict result payload into compact markdown text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _truncate_completion_text(value, max_chars)
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        lines: list[str] = []
+        for idx, item in enumerate(value[:8], 1):
+            item_text = _format_result_value(item, max_chars=280).replace("\n", "；")
+            if item_text:
+                lines.append(f"{idx}. {item_text}")
+        if len(value) > 8:
+            lines.append(f"... 还有 {len(value) - 8} 项")
+        return _truncate_completion_text("\n".join(lines), max_chars)
+    if isinstance(value, dict):
+        priority = [
+            "summary",
+            "conclusion",
+            "status",
+            "result",
+            "output",
+            "findings",
+            "risks",
+            "recommendations",
+            "next_steps",
+            "reviews",
+        ]
+        ordered_keys = [key for key in priority if key in value]
+        ordered_keys.extend(key for key in value.keys() if key not in ordered_keys)
+
+        lines = []
+        for key in ordered_keys[:10]:
+            item_text = _format_result_value(value.get(key), max_chars=320).replace("\n", "；")
+            if item_text:
+                lines.append(f"- {_humanize_result_key(key)}: {item_text}")
+        if len(ordered_keys) > 10:
+            lines.append(f"... 还有 {len(ordered_keys) - 10} 个字段")
+        return _truncate_completion_text("\n".join(lines), max_chars)
+
+    return _truncate_completion_text(str(value), max_chars)
+
+
+def _completion_report_markdown(raw_result: str) -> str:
+    """Build a user-facing report from the workflow's final return value."""
+    payload = _parse_result_payload(raw_result)
+    if payload is None:
+        body = _format_result_value(raw_result, max_chars=_COMPLETION_REPORT_MAX_CHARS)
+        return f"**执行报告**\n{body}"
+
+    if not isinstance(payload, dict):
+        body = _format_result_value(payload, max_chars=_COMPLETION_REPORT_MAX_CHARS)
+        return f"**执行报告**\n{body}"
+
+    section_plan = [
+        ("final_report", "执行报告", _COMPLETION_REPORT_MAX_CHARS),
+        ("report", "执行报告", _COMPLETION_REPORT_MAX_CHARS),
+        ("summary", "执行摘要", _COMPLETION_SECTION_MAX_CHARS),
+        ("result", "任务结果", _COMPLETION_SECTION_MAX_CHARS),
+        ("output", "任务结果", _COMPLETION_SECTION_MAX_CHARS),
+        ("verification", "验证摘要", _COMPLETION_SECTION_MAX_CHARS),
+        ("reviews", "评审摘要", _COMPLETION_SECTION_MAX_CHARS),
+        ("risks", "风险提示", _COMPLETION_SECTION_MAX_CHARS),
+        ("next_steps", "后续建议", _COMPLETION_SECTION_MAX_CHARS),
+    ]
+    sections: list[tuple[str, str]] = []
+    used_keys: set[str] = set()
+    used_titles: set[str] = set()
+    for key, title, limit in section_plan:
+        if key not in payload:
+            continue
+        text = _format_result_value(payload.get(key), max_chars=limit)
+        if not text:
+            continue
+        if title in used_titles:
+            title = _humanize_result_key(key)
+        sections.append((title, text))
+        used_keys.add(key)
+        used_titles.add(title)
+
+    if not sections:
+        body = _format_result_value(payload, max_chars=_COMPLETION_REPORT_MAX_CHARS)
+        return f"**执行报告**\n{body}"
+
+    important_unknowns = [
+        key
+        for key in ("worker_findings", "parallel_results", "results", "findings", "recommendations")
+        if key in payload and key not in used_keys
+    ]
+    for key in important_unknowns[:3]:
+        text = _format_result_value(payload.get(key), max_chars=600)
+        if text:
+            sections.append((_humanize_result_key(key), text))
+
+    return "\n\n".join(f"**{title}**\n{text}" for title, text in sections)
+
+
+def _completion_process_markdown(
+    project: WorkflowProject,
+    *,
+    completed_phases: int,
+    total_phases: int,
+    completed_agents: int,
+    total_agents: int,
+    failed_agents: int,
+    cached_agents: int,
+) -> str:
+    """Build a concise run process summary for the completion card."""
+    lines = [
+        "**执行过程**",
+        f"- 阶段: {completed_phases}/{total_phases}",
+        f"- 代理: {completed_agents}/{total_agents} 完成，{failed_agents} 失败，{cached_agents} 缓存",
+    ]
+
+    for idx, phase in enumerate(project.phases, 1):
+        agents = phase.agents
+        total = len(agents)
+        done = sum(1 for agent in agents if agent.status in (AgentStatus.DONE, AgentStatus.CACHED))
+        cancelled = sum(1 for agent in agents if agent.status == AgentStatus.CANCELLED)
+        failed = sum(1 for agent in agents if agent.status == AgentStatus.FAILED)
+        if failed:
+            icon = "\u274c"
+            state = f"{done}/{total} 完成，{failed} 失败"
+        elif cancelled:
+            icon = "⏹️"
+            state = f"{done}/{total} 完成，{cancelled} 已取消"
+        else:
+            icon = "\u2705"
+            state = f"已完成 {done}/{total}"
+
+        duration = ""
+        if phase.started_at and phase.finished_at:
+            duration = f" · {_format_duration(phase.finished_at - phase.started_at)}"
+        lines.append(f"{icon} 阶段 {idx}: **{_middle_ellipsis(phase.title)}** — {state}{duration}")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Completion card helper (module-level, used by WorkflowHandler on_done)
 # ---------------------------------------------------------------------------
@@ -794,15 +983,22 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
     # Task description
     elements.append(_md_element(f"**任务**: {_escape_md(project.requirement[:200]) if project.requirement else name}"))
 
-    # Stats grid — 2x2 column_set layout
     total_phases = len(project.phases)
     completed_phases = sum(
         1
         for phase in project.phases
         if all(a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED) for a in phase.agents)
     )
-    total_agents = max(metrics.total_agents, 1)
-    success_rate = int((metrics.completed_agents / total_agents) * 100)
+    phase_agents = [agent for phase in project.phases for agent in phase.agents]
+    total_agents_count = metrics.total_agents or len(phase_agents)
+    completed_agents_count = metrics.completed_agents or sum(
+        1 for agent in phase_agents if agent.status in (AgentStatus.DONE, AgentStatus.CACHED)
+    )
+    failed_agents_count = metrics.failed_agents or sum(1 for agent in phase_agents if agent.status == AgentStatus.FAILED)
+    cached_agents_count = metrics.cached_agents or sum(1 for agent in phase_agents if agent.status == AgentStatus.CACHED)
+    total_tokens = metrics.total_tokens or sum(agent.token_usage for agent in phase_agents)
+    total_agents_for_rate = max(total_agents_count, 1)
+    success_rate = int((completed_agents_count / total_agents_for_rate) * 100)
 
     def _stat_column(value: str, label: str) -> dict[str, Any]:
         """Create a single stat column with large number + description."""
@@ -820,9 +1016,7 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
         _column_set(
             [
                 _stat_column(_format_duration(elapsed), "总耗时"),
-                _stat_column(
-                    _format_tokens(metrics.total_tokens if hasattr(metrics, "total_tokens") else 0), "总 Token 消耗"
-                ),
+                _stat_column(_format_tokens(total_tokens), "总 Token 消耗"),
             ],
             flex_mode="stretch",
         )
@@ -839,27 +1033,35 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
         )
     )
 
-    # Phase summary
-    if project.phases:
-        elements.append(_hr_element())
-        phase_lines = []
-        for idx, phase in enumerate(project.phases, 1):
-            phase_icon = "\u2705"
-            if any(a.status == AgentStatus.FAILED for a in phase.agents):
-                phase_icon = "\u274c"
-            done_count = sum(1 for a in phase.agents if a.status in (AgentStatus.DONE, AgentStatus.CACHED))
-            phase_lines.append(
-                f"{phase_icon} 阶段 {idx}: **{_middle_ellipsis(phase.title)}** — {done_count}/{len(phase.agents)} 代理"
-            )
-        elements.append(_md_element("\n".join(phase_lines)))
-
-    # Result preview (truncated)
+    # Final report, with structured JSON payloads rendered as user-facing sections.
     if project.result:
         elements.append(_hr_element())
-        preview = project.result[:500]
-        if len(project.result) > 500:
-            preview += "\n\n_(结果已截断)_"
-        elements.append(_md_element(f"**结果摘要**:\n{preview}"))
+        elements.append(_md_element(_completion_report_markdown(project.result)))
+    elif status == WorkflowStatus.COMPLETED:
+        elements.append(_hr_element())
+        elements.append(
+            _md_element(
+                "**执行报告**\n"
+                "本次 Workflow 没有返回最终结果；请参考下方执行过程确认阶段和代理执行情况。"
+            )
+        )
+
+    # Process summary
+    if project.phases:
+        elements.append(_hr_element())
+        elements.append(
+            _md_element(
+                _completion_process_markdown(
+                    project,
+                    completed_phases=completed_phases,
+                    total_phases=total_phases,
+                    completed_agents=completed_agents_count,
+                    total_agents=total_agents_count,
+                    failed_agents=failed_agents_count,
+                    cached_agents=cached_agents_count,
+                )
+            )
+        )
 
     # Error message for failed workflows
     if status == WorkflowStatus.FAILED and project.error:
@@ -870,6 +1072,7 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
     # Defensive check: ensure no accidental agent-output sentinel leaks
     # into rendered card text. Default markers tuple is empty → no-op.
     _card_text_for_agent_output(elements, _AGENT_OUTPUT_FORBIDDEN_MARKERS)
+    elements = _enforce_card_size(elements)
 
     return {
         "header": {

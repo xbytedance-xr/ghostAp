@@ -8,6 +8,7 @@ Validates:
 - Pagination works for large agent lists
 """
 
+import json
 import time
 import unittest
 
@@ -689,11 +690,90 @@ class TestRenderCompletionCard(unittest.TestCase):
         all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
         self.assertIn("Found 3 issues", all_content)
 
+    def test_completed_card_without_result_still_has_report_notice(self):
+        project = self._make_project(result="")
+        card = render_completion_card(project)
+        all_content = self._extract_all_text(card["elements"])
+
+        self.assertIn("执行报告", all_content)
+        self.assertIn("没有返回最终结果", all_content)
+
     def test_failed_shows_error_message(self):
         project = self._make_project(status=WorkflowStatus.FAILED, error="Runtime timeout exceeded")
         card = render_completion_card(project)
         all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
         self.assertIn("Runtime timeout", all_content)
+
+    def test_completion_card_surfaces_final_report_and_process_summary(self):
+        long_context = "背景说明 " * 80
+        result = {
+            "final_report": (
+                f"{long_context}\n"
+                "最终结论：需要增加目标完成度监控，并在任务结束后展示执行报告。"
+            ),
+            "verification": {
+                "summary": "验证通过：报告包含任务结果、过程摘要和后续风险。",
+                "risks": ["若完成卡被晚到进度覆盖，用户仍会只看到进度。"],
+            },
+        }
+        project = self._make_project(
+            result=json.dumps(result, ensure_ascii=False),
+            phases=[
+                PhaseProgress(
+                    title="Routing",
+                    finished_at=time.time() - 90,
+                    agents=[],
+                ),
+                PhaseProgress(
+                    title="Execution",
+                    finished_at=time.time() - 30,
+                    agents=[
+                        AgentProgress(
+                            label="execute-traex",
+                            tool="traex",
+                            status=AgentStatus.DONE,
+                            duration_s=30.0,
+                        )
+                    ],
+                ),
+                PhaseProgress(
+                    title="Verification",
+                    finished_at=time.time(),
+                    agents=[
+                        AgentProgress(
+                            label="verify-output",
+                            tool="traex",
+                            status=AgentStatus.DONE,
+                            duration_s=20.0,
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        card = render_completion_card(project)
+        all_content = self._extract_all_text(card["elements"])
+
+        self.assertIn("执行报告", all_content)
+        self.assertIn("最终结论：需要增加目标完成度监控", all_content)
+        self.assertIn("验证通过：报告包含任务结果、过程摘要和后续风险", all_content)
+        self.assertIn("执行过程", all_content)
+        self.assertIn("Routing", all_content)
+        self.assertIn("Execution", all_content)
+        self.assertIn("Verification", all_content)
+
+    @staticmethod
+    def _extract_all_text(elements):
+        out = []
+        for node in TestWorkflowProgressRenderer._walk_card_nodes(elements):
+            if node.get("tag") == "markdown":
+                out.append(node.get("content", ""))
+            if node.get("tag") == "plain_text":
+                out.append(node.get("text", "") or node.get("content", ""))
+            title = node.get("title")
+            if isinstance(title, dict) and title.get("tag") == "plain_text":
+                out.append(title.get("content", ""))
+        return "\n".join(out)
 
 
 class TestAgentOutputDefensiveCheck(unittest.TestCase):

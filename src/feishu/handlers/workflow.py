@@ -5854,10 +5854,19 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         from ...workflow_engine.engine import WorkflowEngineCallbacks
 
         card_message_id: list[str] = [message_id]  # Mutable ref for card updates
+        terminal_sent: list[bool] = [False]
+        project_id = getattr(project, "project_id", "") or ""
 
         def on_progress(card_data: dict[str, Any]) -> None:
             """Update the progress card in Feishu."""
+            if terminal_sent[0]:
+                logger.debug("Ignored workflow progress update after terminal card was sent")
+                return
             try:
+                # Keep runtime progress cards aligned with the mixin
+                # implementation: users can stop active workflows from the card,
+                # but terminal completion cards are delivered separately.
+                self._inject_workflow_stop_button(card_data, chat_id, project_id)
                 new_id = self._replace_or_send_workflow_rendered_card(
                     card_message_id=card_message_id[0],
                     chat_id=chat_id,
@@ -5870,6 +5879,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
 
         def on_done(wf_project) -> None:
             """Final completion — send a structured completion card."""
+            terminal_sent[0] = True
             try:
                 from ...workflow_engine.renderer import render_completion_card
 
@@ -5889,6 +5899,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
 
         def on_error(error_msg: str) -> None:
             """Error notification — sanitize before showing to user."""
+            terminal_sent[0] = True
             from ...workflow_engine.errors import (
                 ErrorCategory,
                 _strip_internal_details,

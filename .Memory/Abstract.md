@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-08
+- **WF完成报告卡补齐** — `/wf` 完成后不再停留在终态进度卡：completion card 解析结构化 `project.result`，展示“执行报告/验证摘要/执行过程”，空结果给出明确占位，并在 `on_done()`/`on_error()` 后忽略迟到 progress，避免终态卡被进度卡覆盖；Workflow 919 passed、validate 通过 → [详细记录](2026-07-08.md)
 ## 2026-07-07
 - **WF单agent超时权威化+进度心跳** — `/wf` `execute-traex` 失败根因是 JS runtime 单 agent RPC 看门狗用脚本硬编码 `timeout:180` 把长编码任务在 180s abort（非总超时）；反转语义为 host 配置作“权威下限”、脚本值只能抬高、`agent=0`=不限时（有限 backstop 兜底），executor/bridge/runtime.js 三处对齐并下发 `agent_call_timeout_s`，修复 Node setTimeout 溢出(30天>2^31ms 被截断成1ms 致看门狗立即触发)，`.env` 补齐 WF 超时块(total/agent=0 不限时)；并行 subagent 加进度心跳(10s 重刷)+RUNNING 行「已运行时长」，`workflow or config_validation` 965 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-07.md)
 - **README精简去厂商化** — 重写 README 以匹配当前实现：保留飞书/Lark、ACP、普通编程、Deep/Spec/Worktree/Workflow/Slock、配置、命令、架构入口和开发验证，删除特定厂商说明与端点，文档 628→219 行，README 关键词残留检查无匹配 → [详细记录](2026-07-07.md)

@@ -1100,10 +1100,14 @@ class WorkflowScriptMixin:
         from ...workflow_engine.engine import WorkflowEngineCallbacks
 
         card_message_id: list[str] = [message_id]  # Mutable ref for card updates
+        terminal_sent: list[bool] = [False]
         project_id = getattr(project, "project_id", "") or ""
 
         def on_progress(card_data: dict[str, Any]) -> None:
             """Update the progress card in Feishu."""
+            if terminal_sent[0]:
+                logger.debug("Ignored workflow progress update after terminal card was sent")
+                return
             try:
                 # Inject a "停止" button while the workflow is still running so
                 # users can stop it directly from the progress card. Guard so
@@ -1121,6 +1125,7 @@ class WorkflowScriptMixin:
 
         def on_done(wf_project) -> None:
             """Final completion — send a structured completion card."""
+            terminal_sent[0] = True
             try:
                 from ...workflow_engine.renderer import render_completion_card
 
@@ -1140,6 +1145,7 @@ class WorkflowScriptMixin:
 
         def on_error(error_msg: str) -> None:
             """Error notification — sanitize before showing to user."""
+            terminal_sent[0] = True
             from ...workflow_engine.errors import (
                 ErrorCategory,
                 _strip_internal_details,

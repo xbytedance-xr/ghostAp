@@ -640,6 +640,35 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         self.assertIsInstance(second_card["body"]["elements"], list)
         handler.reply_text.assert_not_called()
 
+    def test_workflow_callbacks_ignore_late_progress_after_done(self):
+        """Late progress callbacks must not replace the final completion report."""
+        handler, _ctx = self._make_handler()
+        callbacks = handler._build_workflow_callbacks("progress_msg", "chat_1", None)
+
+        done_project = WorkflowProject(
+            name="done workflow",
+            requirement="do X",
+            status=WorkflowStatus.COMPLETED,
+            result="finished",
+        )
+        late_progress = {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Workflow running"},
+                "template": "blue",
+            },
+            "elements": [{"tag": "markdown", "content": "late progress"}],
+        }
+
+        callbacks.on_done(done_project)
+        calls_after_done = handler.update_card.call_count
+        callbacks.on_progress(late_progress)
+
+        self.assertEqual(handler.update_card.call_count, calls_after_done)
+        final_card = handler.update_card.call_args.args[1]
+        final_text = str(final_card)
+        self.assertIn("finished", final_text)
+        self.assertNotIn("late progress", final_text)
+
     def test_workflow_callbacks_fallback_card_updates_future_message_id(self):
         """If progress patching fails, callbacks should send a full card and update the target id."""
         handler, _ctx = self._make_handler()
@@ -692,6 +721,25 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             detail="validation failed: Unbalanced parentheses",
         )
         handler.reply_error.assert_not_called()
+
+    def test_workflow_callbacks_ignore_late_progress_after_error(self):
+        """Late progress callbacks must not replace a terminal workflow error card."""
+        handler, _ctx = self._make_handler()
+        handler._reply_workflow_error = MagicMock()
+        callbacks = handler._build_workflow_callbacks("progress_msg", "chat_1", None)
+        late_progress = {
+            "header": {
+                "title": {"tag": "plain_text", "content": "Workflow running"},
+                "template": "blue",
+            },
+            "elements": [{"tag": "markdown", "content": "late progress"}],
+        }
+
+        callbacks.on_error("validation failed: Unbalanced parentheses")
+        callbacks.on_progress(late_progress)
+
+        handler._reply_workflow_error.assert_called_once()
+        handler.update_card.assert_not_called()
 
     def test_workflow_callbacks_route_unknown_error_with_safe_detail(self):
         """Unknown runtime errors should keep a sanitized root-cause hint on the Workflow card."""
