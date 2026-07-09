@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-09
+- **WF完整报告附件** — `/wf` 终态卡片继续保持简表，但完整结论/原始结果/agent输出写成自包含 HTML+Markdown 报告，存入 `~/.cache/ghostAp/<项目绝对路径>/workflow_reports/` 并作为飞书文件回复到当前话题；附件失败时完成卡显示降级原因和本地路径。相关 124 passed、ruff/validate 通过 → [详细记录](2026-07-09.md)
 ## 2026-07-08
 - **Deep多页终态卡不完整+顺序错乱修复** — Deep 单session多page，最终长输出超 27KB 分页后，delivery 的 `freeze_history_pages` 流式防抖在**终态也生效**，无条件 skip 非末页 → page0(第一条消息)永远冻结在"执行中"中途快照，缺完成全文/绿头/末页总结，且与末页"已完成"状态矛盾(顺序错乱)；投递链路贯穿 `is_terminal`(engine/coordinator/session/_ttl_mixin)，终态豁免冻结刷全部页、流式期冻结保留；221+149+218 相关 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-08.md)
 - **WF"closed stdout"根因修复** — `/wf` 报 `Runtime process closed stdout unexpectedly` 根因是 `runtime.js` 终态 `sendNotification(done/error)` 紧跟同步 `process.exit()`，stdout 管道有 backlog 时截断未 flush 的终态帧（成功路径也丢结果）；新增 `flushAndExit()`（drain stdout/stderr 后再退，2s 兜底）替换全部 9 处 exit，并修 bridge EOF 竞态（`_eof_fallback_error` 独立字段 + `run()` 退出前排空队列，done/error 帧优先于 fallback）+ stderr ring buffer（`STDERR_TAIL_MAX_LINES=50`）让崩溃临终 stderr/exit code 进入诊断；真实 Node E2E 复现+验证，208+90 相关 passed、ruff/validate/node-check/diff-check 通过 → [详细记录](2026-07-08.md)

@@ -9,8 +9,10 @@ Validates:
 """
 
 import json
+import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from src.workflow_engine.models import (
     AgentProgress,
@@ -761,6 +763,73 @@ class TestRenderCompletionCard(unittest.TestCase):
         self.assertIn("Routing", all_content)
         self.assertIn("Execution", all_content)
         self.assertIn("Verification", all_content)
+
+    def test_completion_card_with_html_report_does_not_embed_truncated_result(self):
+        """When a full artifact exists, the card should point to it instead of truncating result text."""
+        sentinel = "FINAL_SENTINEL_AFTER_LONG_CONTENT"
+        result = {
+            "final_report": ("完整报告 " * 1200) + sentinel,
+            "verification": "验证通过",
+        }
+        project = self._make_project(result=json.dumps(result, ensure_ascii=False))
+
+        card = render_completion_card(
+            project,
+            report_status={
+                "generated": True,
+                "attachment_sent": True,
+                "html_path": "/tmp/report.html",
+            },
+        )
+        all_content = self._extract_all_text(card["elements"])
+
+        self.assertIn("完整 HTML 报告已发送", all_content)
+        self.assertIn("完整结论、验证结果、原始输出", all_content)
+        self.assertNotIn("内容已截断", all_content)
+        self.assertNotIn(sentinel, all_content)
+
+    def test_workflow_report_files_preserve_full_result_and_escape_html(self):
+        """Full HTML/Markdown artifacts should carry untruncated result content safely."""
+        from src.workflow_engine.reporting import write_workflow_report_files
+
+        sentinel = "FINAL_SENTINEL_AFTER_LONG_CONTENT"
+        result = {
+            "final_report": ("完整报告 " * 1200) + sentinel,
+            "verification": {
+                "summary": "验证通过",
+                "raw": "<script>alert('x')</script>",
+            },
+            "agent_outputs": [
+                {
+                    "label": "auditor",
+                    "output": "agent raw output " * 200,
+                }
+            ],
+        }
+        project = self._make_project(result=json.dumps(result, ensure_ascii=False))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir) / "project"
+            cache_root = Path(tmpdir) / "cache"
+            project_root.mkdir()
+            files = write_workflow_report_files(
+                project,
+                root_path=str(project_root),
+                cache_root=str(cache_root),
+            )
+            html = Path(files.html_path).read_text(encoding="utf-8")
+            markdown = Path(files.markdown_path).read_text(encoding="utf-8")
+
+        self.assertIn(f"{cache_root}", files.html_path)
+        self.assertIn("workflow_reports", files.html_path)
+        self.assertNotIn(".ghostap", files.html_path)
+        self.assertIn(sentinel, html)
+        self.assertIn(sentinel, markdown)
+        self.assertIn("原始结果 JSON", html)
+        self.assertIn("agent raw output", html)
+        self.assertIn("&lt;script&gt;alert", html)
+        self.assertNotIn("<script>alert", html)
+        self.assertIn("function toggleSection", html)
 
     @staticmethod
     def _extract_all_text(elements):

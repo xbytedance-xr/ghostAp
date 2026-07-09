@@ -27,6 +27,77 @@ class WorkflowScriptMixin:
             return project.root_path
         return self.get_working_dir(chat_id)
 
+    def _send_workflow_completion_report(
+        self,
+        *,
+        wf_project: Any,
+        chat_id: str,
+        message_id: str,
+        project: Optional["ProjectContext"],
+    ) -> dict[str, Any]:
+        """Generate a full Workflow report and reply with its HTML attachment."""
+        from ...utils.errors import get_error_detail
+        from ...workflow_engine.reporting import write_workflow_report_files
+
+        im_client = getattr(self, "im_client", None)
+        if im_client is None:
+            return {
+                "generated": False,
+                "attachment_sent": False,
+                "error": "IM 客户端不可用，未生成附件报告",
+            }
+
+        try:
+            root_path = self._get_root_path(chat_id, project)
+        except Exception:
+            logger.debug("Failed to resolve workflow report root path", exc_info=True)
+            root_path = os.getcwd()
+
+        try:
+            files = write_workflow_report_files(wf_project, root_path=root_path)
+        except Exception as exc:
+            logger.warning("Failed to generate workflow completion report: %s", get_error_detail(exc), exc_info=True)
+            return {
+                "generated": False,
+                "attachment_sent": False,
+                "error": get_error_detail(exc),
+            }
+
+        status: dict[str, Any] = {
+            "generated": True,
+            "attachment_sent": False,
+            "html_path": files.html_path,
+            "markdown_path": files.markdown_path,
+            "html_filename": files.html_filename,
+            "markdown_filename": files.markdown_filename,
+            "run_id": files.run_id,
+        }
+
+        try:
+            file_key = im_client.upload_file(
+                files.html_path,
+                file_type="stream",
+                file_name=files.html_filename,
+            )
+            if not file_key:
+                status["error"] = "上传 HTML 报告失败，已保留本地报告"
+                return status
+
+            response = im_client.reply_file(message_id, file_key, reply_in_thread=True)
+            if response is None:
+                status["error"] = "回复 HTML 附件失败，已保留本地报告"
+                return status
+            if hasattr(response, "success") and not response.success():
+                status["error"] = getattr(response, "msg", "回复 HTML 附件失败")
+                return status
+
+            status["attachment_sent"] = True
+            status["file_key"] = file_key
+            return status
+        except Exception as exc:
+            logger.warning("Failed to send workflow completion report attachment: %s", get_error_detail(exc), exc_info=True)
+            status["error"] = get_error_detail(exc)
+            return status
 
     def _generate_script_via_ai(
         self,
@@ -1159,7 +1230,13 @@ class WorkflowScriptMixin:
             try:
                 from ...workflow_engine.renderer import render_completion_card
 
-                card_data = render_completion_card(wf_project)
+                report_status = self._send_workflow_completion_report(
+                    wf_project=wf_project,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    project=project,
+                )
+                card_data = render_completion_card(wf_project, report_status=report_status)
                 new_id = self._replace_or_send_workflow_rendered_card(
                     card_message_id=card_message_id[0],
                     chat_id=chat_id,

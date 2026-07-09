@@ -669,6 +669,79 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         self.assertIn("finished", final_text)
         self.assertNotIn("late progress", final_text)
 
+    def test_workflow_callbacks_send_html_report_attachment_on_done(self):
+        """Terminal Workflow completion should create/send the full HTML report artifact."""
+        handler, _ctx = self._make_handler()
+        handler._send_workflow_completion_report = MagicMock(
+            return_value={"html_path": "/tmp/report.html", "attachment_sent": True}
+        )
+        project = MagicMock()
+        project.root_path = "/tmp/project"
+        project.project_id = "proj_1"
+        callbacks = handler._build_workflow_callbacks("progress_msg", "chat_1", project)
+
+        done_project = WorkflowProject(
+            name="done workflow",
+            requirement="do X",
+            status=WorkflowStatus.COMPLETED,
+            result='{"final_report": "full result"}',
+        )
+
+        callbacks.on_done(done_project)
+
+        handler._send_workflow_completion_report.assert_called_once_with(
+            wf_project=done_project,
+            chat_id="chat_1",
+            message_id="progress_msg",
+            project=project,
+        )
+        final_card = handler.update_card.call_args.args[1]
+        self.assertIn("完整 HTML 报告已发送", str(final_card))
+
+    def test_send_workflow_completion_report_writes_cache_report_and_replies_file(self):
+        """The report helper should write under ~/.cache/ghostAp mirror and send the HTML file."""
+        import tempfile
+        from pathlib import Path
+
+        handler, _ctx = self._make_handler()
+        reply_response = MagicMock()
+        reply_response.success.return_value = True
+        handler.im_client = MagicMock()
+        handler.im_client.upload_file.return_value = "file_key_123"
+        handler.im_client.reply_file.return_value = reply_response
+
+        project = MagicMock()
+        project.root_path = "/tmp/workflow-report-project"
+        project.project_id = "proj_1"
+        done_project = WorkflowProject(
+            workflow_id="wf_123",
+            name="done workflow",
+            requirement="do X",
+            status=WorkflowStatus.COMPLETED,
+            result='{"final_report": "cache sentinel"}',
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_root = Path(tmpdir) / "cache"
+            with patch("src.workflow_engine.reporting.DEFAULT_WORKFLOW_CACHE_ROOT", str(cache_root)):
+                status = handler._send_workflow_completion_report(
+                    wf_project=done_project,
+                    chat_id="chat_1",
+                    message_id="msg_1",
+                    project=project,
+                )
+
+            html_path = Path(status["html_path"])
+            html = html_path.read_text(encoding="utf-8")
+
+        self.assertTrue(status["attachment_sent"])
+        self.assertIn(str(cache_root), str(html_path))
+        self.assertIn("workflow_reports", str(html_path))
+        self.assertNotIn(".ghostap", str(html_path))
+        self.assertIn("cache sentinel", html)
+        handler.im_client.upload_file.assert_called_once()
+        handler.im_client.reply_file.assert_called_once_with("msg_1", "file_key_123", reply_in_thread=True)
+
     def test_workflow_callbacks_fallback_card_updates_future_message_id(self):
         """If progress patching fails, callbacks should send a full card and update the target id."""
         handler, _ctx = self._make_handler()

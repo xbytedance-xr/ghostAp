@@ -950,7 +950,34 @@ def _completion_process_markdown(
 # ---------------------------------------------------------------------------
 
 
-def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
+def _completion_report_status_markdown(report_status: dict[str, Any]) -> str:
+    """Render the full-report attachment status for the compact completion card."""
+    if report_status.get("attachment_sent"):
+        return "📎 **完整 HTML 报告已发送**\n- 附件已回复到当前 Workflow 话题，包含完整结论、原始结果和执行详情。"
+
+    if report_status.get("generated"):
+        html_path = report_status.get("html_path") or ""
+        markdown_path = report_status.get("markdown_path") or ""
+        error = report_status.get("error") or "附件发送失败"
+        lines = [
+            "📎 **完整 HTML 报告已生成，附件发送失败**",
+            f"- 原因: {_escape_md(str(error))}",
+        ]
+        if html_path:
+            lines.append(f"- HTML: `{_escape_md(str(html_path))}`")
+        if markdown_path:
+            lines.append(f"- Markdown: `{_escape_md(str(markdown_path))}`")
+        return "\n".join(lines)
+
+    error = report_status.get("error") or "未知错误"
+    return f"📎 **HTML 报告生成失败**\n- 原因: {_escape_md(str(error))}"
+
+
+def render_completion_card(
+    project: WorkflowProject,
+    *,
+    report_status: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Render a final completion card summarizing the workflow run.
 
     Returns a dict with 'header' and 'elements' ready for Feishu card.
@@ -1039,8 +1066,21 @@ def render_completion_card(project: WorkflowProject) -> dict[str, Any]:
         )
     )
 
+    if report_status:
+        elements.append(_hr_element())
+        elements.append(_md_element(_completion_report_status_markdown(report_status)))
+
     # Final report, with structured JSON payloads rendered as user-facing sections.
-    if project.result:
+    has_full_report_file = bool(report_status and report_status.get("generated"))
+    if project.result and has_full_report_file:
+        elements.append(_hr_element())
+        elements.append(
+            _md_element(
+                "**执行报告摘要**\n"
+                "完整结论、验证结果、原始输出和 Workflow 状态已写入 HTML 报告；卡片仅保留执行过程简表。"
+            )
+        )
+    elif project.result:
         elements.append(_hr_element())
         elements.append(_md_element(_completion_report_markdown(project.result)))
     elif status == WorkflowStatus.COMPLETED:

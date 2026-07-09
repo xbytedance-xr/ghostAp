@@ -5882,7 +5882,13 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             try:
                 from ...workflow_engine.renderer import render_completion_card
 
-                card_data = render_completion_card(wf_project)
+                report_status = self._send_workflow_completion_report(
+                    wf_project=wf_project,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    project=project,
+                )
+                card_data = render_completion_card(wf_project, report_status=report_status)
                 new_id = self._replace_or_send_workflow_rendered_card(
                     card_message_id=card_message_id[0],
                     chat_id=chat_id,

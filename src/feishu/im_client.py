@@ -1,8 +1,12 @@
+import json
 import logging
+import os
 import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from lark_oapi.api.im.v1 import (
+    CreateFileRequest,
+    CreateFileRequestBody,
     CreateMessageReactionRequest,
     CreateMessageReactionRequestBody,
     CreateMessageRequest,
@@ -134,6 +138,62 @@ class FeishuIMClient:
         )
 
         return self._execute_with_retry(lambda: client.im.v1.message.reply(request), "回复消息", max_retries)
+
+    def upload_file(
+        self,
+        file_path: str,
+        file_type: str = "stream",
+        file_name: str | None = None,
+        duration: int | None = None,
+        max_retries: Optional[int] = None,
+    ) -> Optional[str]:
+        """Upload a local file to Feishu IM and return its file_key."""
+        client = self.api_client_factory()
+        resolved_name = file_name or os.path.basename(file_path)
+        with open(file_path, "rb") as file_obj:
+            body_builder = (
+                CreateFileRequestBody.builder()
+                .file_type(file_type)
+                .file_name(resolved_name)
+                .file(file_obj)
+            )
+            if duration is not None:
+                body_builder.duration(duration)
+            request = CreateFileRequest.builder().request_body(body_builder.build()).build()
+            response = self._execute_with_retry(lambda: client.im.v1.file.create(request), "上传文件", max_retries)
+
+        if response is None:
+            return None
+        if hasattr(response, "success") and not response.success():
+            return None
+        data = getattr(response, "data", None)
+        file_key = getattr(data, "file_key", None)
+        return str(file_key) if file_key else None
+
+    def reply_file(
+        self,
+        message_id: str,
+        file_key: str,
+        reply_in_thread: bool = False,
+        max_retries: Optional[int] = None,
+    ) -> Optional[Any]:
+        """Reply to a message with a Feishu file attachment."""
+        content = _sanitize_content(json.dumps({"file_key": file_key}, ensure_ascii=False))
+        client = self.api_client_factory()
+        request = (
+            ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(
+                ReplyMessageRequestBody.builder()
+                .content(content)
+                .msg_type("file")
+                .reply_in_thread(reply_in_thread)
+                .build()
+            )
+            .build()
+        )
+
+        return self._execute_with_retry(lambda: client.im.v1.message.reply(request), "回复文件", max_retries)
 
     def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None) -> Optional[Any]:
         """Patch a message."""
