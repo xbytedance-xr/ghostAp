@@ -835,6 +835,17 @@ class ACPToolOption:
     emoji: str = "🤖"
 
 
+@dataclass(frozen=True)
+class ACPModelVariantOption:
+    """One explicit UI/persistence variant of an ACP model family."""
+
+    name: str
+    profile: str
+    effort: str = "default"
+    display_name: str = ""
+    is_variant_default: bool = False
+
+
 @dataclass
 class ACPModelOption:
     """ACP 模型选择 UI 选项模型。
@@ -852,6 +863,7 @@ class ACPModelOption:
     supports_1m: bool = False
     reasoning_efforts: tuple[str, ...] = ()
     adapted_reasoning_effort: Optional[str] = None
+    selection_variants: tuple[ACPModelVariantOption, ...] = ()
 
 
 @dataclass(frozen=True)
