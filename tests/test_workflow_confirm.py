@@ -7,6 +7,7 @@ Validates:
 - AI fallback works when script generation fails
 """
 
+import json
 import os
 import unittest
 from unittest.mock import MagicMock, mock_open, patch
@@ -621,7 +622,14 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             name="done workflow",
             requirement="do X",
             status=WorkflowStatus.COMPLETED,
-            result="finished",
+            result=json.dumps(
+                {
+                    "card_summary": {
+                        "verdict": "passed",
+                        "conclusion": "finished",
+                    }
+                }
+            ),
         )
 
         with patch("src.card.CardBuilder.build_info_card", side_effect=AssertionError("wrong card builder")):
@@ -649,7 +657,14 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
             name="done workflow",
             requirement="do X",
             status=WorkflowStatus.COMPLETED,
-            result="finished",
+            result=json.dumps(
+                {
+                    "card_summary": {
+                        "verdict": "passed",
+                        "conclusion": "finished",
+                    }
+                }
+            ),
         )
         late_progress = {
             "header": {
@@ -697,6 +712,37 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         )
         final_card = handler.update_card.call_args.args[1]
         self.assertIn("完整 HTML 报告已发送", str(final_card))
+
+    def test_workflow_completion_fallback_never_replies_with_partial_raw_result(self):
+        handler, _ctx = self._make_handler()
+        handler._send_workflow_completion_report = MagicMock(
+            return_value={
+                "generated": True,
+                "attachment_sent": False,
+                "html_filename": "wf-report.html",
+                "html_path": "/tmp/wf-report.html",
+                "error": "upload failed",
+            }
+        )
+        handler._replace_or_send_workflow_rendered_card = MagicMock(
+            side_effect=RuntimeError("card failed")
+        )
+        callbacks = handler._build_workflow_callbacks("msg_1", "chat_1", None)
+        sentinel = "RAW_RESULT_SENTINEL"
+        project = WorkflowProject(
+            name="done workflow",
+            requirement="do X",
+            status=WorkflowStatus.COMPLETED,
+            result=("raw body " * 1000) + sentinel,
+        )
+
+        callbacks.on_done(project)
+
+        fallback_text = handler.reply_text.call_args.args[1]
+        self.assertIn("结果卡发送失败", fallback_text)
+        self.assertIn("wf-report.html", fallback_text)
+        self.assertNotIn(sentinel, fallback_text)
+        self.assertNotIn("raw body", fallback_text)
 
     def test_send_workflow_completion_report_writes_cache_report_and_replies_file(self):
         """The report helper should write under ~/.cache/ghostAp mirror and send the HTML file."""

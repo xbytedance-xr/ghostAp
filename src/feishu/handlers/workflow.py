@@ -5879,6 +5879,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
 
         def on_done(wf_project) -> None:
             """Final completion — send a structured completion card."""
+            report_status: dict[str, Any] | None = None
             try:
                 from ...workflow_engine.renderer import render_completion_card
 
@@ -5901,10 +5902,10 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                     # Card delivery returned None — try text fallback
                     raise RuntimeError("Card delivery returned None")
             except Exception:
-                # Fallback to text if card rendering/delivery fails
-                result = wf_project.result or ""
-                summary = result[:500] if result else "Workflow completed."
-                self.reply_text(message_id, f"✅ Workflow 完成\n\n{summary}")
+                self._reply_workflow_completion_fallback(
+                    message_id=message_id,
+                    report_status=report_status,
+                )
                 terminal_sent[0] = True
 
         def on_error(error_msg: str) -> None:

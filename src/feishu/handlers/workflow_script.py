@@ -27,6 +27,29 @@ class WorkflowScriptMixin:
             return project.root_path
         return self.get_working_dir(chat_id)
 
+    def _reply_workflow_completion_fallback(
+        self,
+        *,
+        message_id: str,
+        report_status: dict[str, Any] | None,
+    ) -> None:
+        """Reply with terminal/report state without leaking partial raw output."""
+        lines = ["✅ Workflow 已结束", "结果卡发送失败，未展示不完整结果。"]
+        status = report_status or {}
+        if status.get("attachment_sent"):
+            lines.append("完整 HTML 报告已回复到当前话题。")
+        elif status.get("generated"):
+            filename = status.get("html_filename")
+            if not filename and status.get("html_path"):
+                filename = os.path.basename(str(status["html_path"]))
+            filename = str(filename or "Workflow HTML 报告")
+            if len(filename.encode("utf-8", errors="surrogatepass")) > 800:
+                filename = "Workflow HTML 报告"
+            lines.append(f"完整报告已保存在本地：{filename}")
+        else:
+            lines.append("完整报告未生成，请查看服务日志。")
+        self.reply_text(message_id, "\n\n".join(lines))
+
     def _send_workflow_completion_report(
         self,
         *,
@@ -1227,6 +1250,7 @@ class WorkflowScriptMixin:
         def on_done(wf_project) -> None:
             """Final completion — send a structured completion card."""
             terminal_sent[0] = True
+            report_status: dict[str, Any] | None = None
             try:
                 from ...workflow_engine.renderer import render_completion_card
 
@@ -1245,10 +1269,10 @@ class WorkflowScriptMixin:
                 if new_id:
                     card_message_id[0] = new_id
             except Exception:
-                # Fallback to text if card rendering fails
-                result = wf_project.result or ""
-                summary = result[:500] if result else "Workflow completed."
-                self.reply_text(message_id, f"✅ Workflow 完成\n\n{summary}")
+                self._reply_workflow_completion_fallback(
+                    message_id=message_id,
+                    report_status=report_status,
+                )
 
         def on_error(error_msg: str) -> None:
             """Error notification — sanitize before showing to user."""
