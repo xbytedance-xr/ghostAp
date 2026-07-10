@@ -9,6 +9,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from src.autonomous.config import AutonomousDeploymentMode
+
 from .card import CardSessionConfig
 from .spec import SpecReviewConfig
 
@@ -608,6 +610,29 @@ class Settings(BaseSettings):
     # on plain comma-separated values; converted to frozenset in model_validator.
     # ------------------------------------------------------------------
     admin_user_ids: str = ""
+
+    # ------------------------------------------------------------------
+    # Autonomous Work System
+    # Configuration requests a deployment surface; effective write autonomy
+    # is derived separately from runtime safety attestations.
+    # ------------------------------------------------------------------
+    autonomous_deployment_mode: AutonomousDeploymentMode = AutonomousDeploymentMode.OFF
+    autonomous_compatibility_mode: Literal["legacy", "shadow_read", "manager_only", "disabled"] = "legacy"
+    autonomous_write_enabled: bool = False
+    autonomous_state_dir: str = "~/.ghostap/autonomy"
+    autonomous_journal_dir: str = "~/.ghostap/autonomy/journal"
+    autonomous_snapshot_dir: str = "~/.ghostap/autonomy/snapshots"
+    autonomous_blob_dir: str = "~/.ghostap/autonomy/blobs"
+    autonomous_manager_acl: str = ""
+    autonomous_anchor_provider: str = ""
+    autonomous_sandbox_required: bool = True
+    autonomous_worker_sandbox_verified: bool = False
+    autonomous_oracle_sandbox_verified: bool = False
+    autonomous_memory_enabled: bool = False
+    autonomous_vc_enabled: bool = False
+    autonomous_goal_queue_limit: int = Field(default=1000, ge=1)
+    autonomous_run_queue_limit: int = Field(default=100, ge=1)
+    autonomous_visible_employee_limit: int = Field(default=0, ge=0)
 
     # ------------------------------------------------------------------
     # 授权白名单（安全加固 A2）
