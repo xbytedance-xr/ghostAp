@@ -205,7 +205,14 @@ class SandboxExecutor:
                 return False, reason
         return True, None
 
-    def execute(self, command: str, cwd: Optional[str] = None, interactive: bool = True, chat_id: Optional[str] = None) -> ExecutionResult:
+    def execute(
+        self,
+        command: str,
+        cwd: Optional[str] = None,
+        interactive: bool = True,
+        chat_id: Optional[str] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
+    ) -> ExecutionResult:
         is_safe, reason = self.is_command_safe(command)
         if not is_safe:
             return ExecutionResult(
@@ -245,9 +252,15 @@ class SandboxExecutor:
             except Exception:
                 logger.debug("best-effort sentinel check failed", exc_info=True)
 
-        return self._execute_command(command, cwd, interactive)
+        return self._execute_command(command, cwd, interactive, env_overrides)
 
-    def _execute_command(self, command: str, cwd: Optional[str], interactive: bool) -> ExecutionResult:
+    def _execute_command(
+        self,
+        command: str,
+        cwd: Optional[str],
+        interactive: bool,
+        env_overrides: Optional[Dict[str, str]] = None,
+    ) -> ExecutionResult:
         """Inner command execution logic (subprocess call)."""
         try:
             # 1) 尽可能把“会打开 pager 的命令”变成非交互式
@@ -272,6 +285,8 @@ class SandboxExecutor:
                     "TERM": "dumb",
                 }
             )
+            if env_overrides:
+                env.update(env_overrides)
 
             # Detect shell and use it in interactive mode to load profiles/aliases
             shell_path = os.environ.get("SHELL", "/bin/bash")

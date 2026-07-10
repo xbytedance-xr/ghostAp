@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import threading
 import time
 import uuid
@@ -58,6 +59,7 @@ logger = logging.getLogger(__name__)
 # Default fallback; prefer Settings.acp_max_file_chars at runtime.
 _MAX_FILE_CHARS = 200_000
 _ACP_PERMISSION_DANGEROUS_CHECK = DangerousPatternCheckStrategy()
+_ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _get_max_file_chars() -> int:
@@ -167,6 +169,30 @@ def _safe_resolve_path(root_dir: str, user_path: str) -> Path:
     except Exception as e:
         raise PermissionError(f"path escapes root_dir: {user_path}") from e
     return resolved
+
+
+def _validated_env_overrides(env: Optional[list[Any]]) -> dict[str, str]:
+    """Convert ACP terminal environment values without leaking them into logs."""
+    overrides: dict[str, str] = {}
+    for item in env or []:
+        name = str(getattr(item, "name", "") or "")
+        if not _ENVIRONMENT_NAME_RE.fullmatch(name):
+            raise ValueError("终端环境变量名称无效")
+        overrides[name] = str(getattr(item, "value", "") or "")
+    return overrides
+
+
+def _truncate_utf8_tail(text: str, byte_limit: Optional[int]) -> tuple[str, bool]:
+    """Retain the ACP-required final byte window at a UTF-8 character boundary."""
+    if byte_limit is None:
+        return text, False
+    limit = max(0, int(byte_limit))
+    payload = (text or "").encode("utf-8")
+    if len(payload) <= limit:
+        return text, False
+    if limit == 0:
+        return "", True
+    return payload[-limit:].decode("utf-8", errors="ignore"), True
 
 
 _TERMINAL_TTL = 3600  # 1 hour — expired terminals are cleaned up lazily
@@ -522,7 +548,9 @@ class GhostAPClient(Client):
     # ------------------------------------------------------------------
     # Permission handling
     # ------------------------------------------------------------------
-    async def request_permission(self, options, session_id: str, tool_call, **kwargs: Any) -> RequestPermissionResponse:
+    async def request_permission(
+        self, session_id: str, tool_call, options, **kwargs: Any
+    ) -> RequestPermissionResponse:
         """Handle permission requests from agent."""
         if not self._auto_approve:
             self._record(session_id, "permission", {"outcome": "cancelled", "reason": "auto_approve_disabled"})
@@ -600,13 +628,25 @@ class GhostAPClient(Client):
     # ------------------------------------------------------------------
     # File operations (delegate to agent's own filesystem)
     # ------------------------------------------------------------------
-    async def read_text_file(self, path: str, session_id: str, **kwargs: Any) -> ReadTextFileResponse:
-        if not self._is_tool_allowed("file_read", {"path": path, **kwargs}):
+    async def read_text_file(
+        self,
+        session_id: str,
+        path: str,
+        line: Optional[int] = None,
+        limit: Optional[int] = None,
+        **kwargs: Any,
+    ) -> ReadTextFileResponse:
+        tool_args = {"path": path, "line": line, "limit": limit, **kwargs}
+        if not self._is_tool_allowed("file_read", tool_args):
             self._record(session_id, "read_file", {"path": path, "blocked": True, "reason": "tool_filter_denied"})
             return ReadTextFileResponse(content="", field_meta={"blocked": True, "reason": "tool_filter_denied"})
         try:
             resolved = _safe_resolve_path(self._root_dir, path)
             content = resolved.read_text(encoding="utf-8")
+            if line is not None or limit is not None:
+                start = max(0, int(line or 1) - 1)
+                end = start + max(0, int(limit)) if limit is not None else None
+                content = "".join(content.splitlines(keepends=True)[start:end])
             max_chars = _get_max_file_chars()
             if len(content) > max_chars:
                 content = content[:max_chars]
@@ -625,7 +665,7 @@ class GhostAPClient(Client):
             return ReadTextFileResponse(content="", field_meta={"error": get_error_detail(e), "path": path})
 
     async def write_text_file(
-        self, content: str, path: str, session_id: str, **kwargs: Any
+        self, session_id: str, path: str, content: str, **kwargs: Any
     ) -> Optional[WriteTextFileResponse]:
         if not self._is_tool_allowed("file_write", {"path": path, **kwargs}):
             self._record(session_id, "write_file", {"path": path, "blocked": True, "reason": "tool_filter_denied"})
@@ -644,37 +684,69 @@ class GhostAPClient(Client):
     # ------------------------------------------------------------------
     # Terminal operations (stub — agent manages its own terminals)
     # ------------------------------------------------------------------
-    async def create_terminal(self, command: str, session_id: str, **kwargs: Any) -> CreateTerminalResponse:
+    async def create_terminal(
+        self,
+        session_id: str,
+        command: str,
+        args: Optional[list[str]] = None,
+        env: Optional[list[Any]] = None,
+        cwd: Optional[str] = None,
+        output_byte_limit: Optional[int] = None,
+        **kwargs: Any,
+    ) -> CreateTerminalResponse:
         # Lazy cleanup of expired terminals to prevent unbounded growth
         self._cleanup_expired_terminals()
 
-        if not self._is_tool_allowed("shell", {"command": command, **kwargs}):
-            term_id = f"term_{uuid.uuid4().hex[:8]}"
-            with self._terminals_lock:
-                self._terminals[term_id] = _TerminalRecord(
-                    output="❌ 工具权限检查未通过: tool_filter_denied",
-                    exit_code=1,
-                    truncated=False,
-                    created_at=time.time(),
-                )
-            self._record(session_id, "execute", {"command": command, "blocked": True, "reason": "tool_filter_denied"})
-            return CreateTerminalResponse(terminal_id=term_id, field_meta={"blocked": True, "reason": "tool_filter_denied"})
+        shell_command = shlex.join([command, *(args or [])]) if args else command
+        try:
+            execution_cwd = str(_safe_resolve_path(self._root_dir, cwd)) if cwd else self._root_dir
+        except Exception:
+            return self._create_failed_terminal(
+                session_id=session_id,
+                command=shell_command,
+                message="❌ 工作目录超出项目范围",
+                reason="cwd_outside_project_root",
+            )
+        try:
+            env_overrides = _validated_env_overrides(env)
+        except ValueError as e:
+            return self._create_failed_terminal(
+                session_id=session_id,
+                command=shell_command,
+                message=f"❌ {get_error_detail(e)}",
+                reason="invalid_environment_variable",
+            )
 
-        ok, reason = self._sandbox.is_command_safe(command)
+        tool_args = {
+            "command": shell_command,
+            "args": list(args or []),
+            "cwd": execution_cwd,
+            "output_byte_limit": output_byte_limit,
+            **kwargs,
+        }
+        if not self._is_tool_allowed("shell", tool_args):
+            return self._create_failed_terminal(
+                session_id=session_id,
+                command=shell_command,
+                message="❌ 工具权限检查未通过: tool_filter_denied",
+                reason="tool_filter_denied",
+            )
+
+        ok, reason = self._sandbox.is_command_safe(shell_command)
         if not ok:
-            # Create a virtual terminal that immediately returns the safety error.
-            term_id = f"term_{uuid.uuid4().hex[:8]}"
-            with self._terminals_lock:
-                self._terminals[term_id] = _TerminalRecord(
-                    output=f"❌ 安全检查未通过: {reason}",
-                    exit_code=1,
-                    truncated=False,
-                    created_at=time.time(),
-                )
-            self._record(session_id, "execute", {"command": command, "blocked": True, "reason": reason})
-            return CreateTerminalResponse(terminal_id=term_id, field_meta={"blocked": True, "reason": reason})
+            return self._create_failed_terminal(
+                session_id=session_id,
+                command=shell_command,
+                message=f"❌ 安全检查未通过: {reason}",
+                reason=reason or "sandbox_rejected",
+            )
 
-        result = self._sandbox.execute(command, cwd=self._root_dir)
+        result = self._sandbox.execute(
+            shell_command,
+            cwd=execution_cwd,
+            interactive=False,
+            env_overrides=env_overrides or None,
+        )
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         output_parts: list[str] = []
@@ -683,7 +755,8 @@ class GhostAPClient(Client):
         if stderr:
             output_parts.append(stderr)
         output = "\n".join(output_parts).strip("\n")
-        truncated = ("输出被截断" in output) or ("错误输出被截断" in output)
+        output, byte_truncated = _truncate_utf8_tail(output, output_byte_limit)
+        truncated = byte_truncated or ("输出被截断" in output) or ("错误输出被截断" in output)
 
         # Persist a capped copy of output for recovery/debug UI.
         cap = 8000
@@ -692,8 +765,8 @@ class GhostAPClient(Client):
             session_id,
             "execute",
             {
-                "command": command,
-                "cwd": self._root_dir,
+                "command": shell_command,
+                "cwd": execution_cwd,
                 "exit_code": result.return_code,
                 "truncated": truncated,
                 "output": output_cap,
@@ -709,6 +782,33 @@ class GhostAPClient(Client):
                 created_at=time.time(),
             )
         return CreateTerminalResponse(terminal_id=term_id)
+
+    def _create_failed_terminal(
+        self,
+        *,
+        session_id: str,
+        command: str,
+        message: str,
+        reason: str,
+    ) -> CreateTerminalResponse:
+        """Create a virtual terminal for a denied ACP operation without executing it."""
+        term_id = f"term_{uuid.uuid4().hex[:8]}"
+        with self._terminals_lock:
+            self._terminals[term_id] = _TerminalRecord(
+                output=message,
+                exit_code=1,
+                truncated=False,
+                created_at=time.time(),
+            )
+        self._record(
+            session_id,
+            "execute",
+            {"command": command, "blocked": True, "reason": reason},
+        )
+        return CreateTerminalResponse(
+            terminal_id=term_id,
+            field_meta={"blocked": True, "reason": reason},
+        )
 
     def _cleanup_expired_terminals(self) -> None:
         """Remove terminal records older than _TERMINAL_TTL."""

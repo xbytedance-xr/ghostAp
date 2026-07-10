@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from acp.schema import EnvVariable
 
 from src.acp.client import ACPHistoryStore, GhostAPClient, _parse_plan, _parse_tool_call
 from src.acp.models import ACPEvent
@@ -498,8 +499,8 @@ def test_read_write_text_file(tmp_path: Path):
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(client.write_text_file("hello", "a.txt", session_id="s1"))
-        resp = loop.run_until_complete(client.read_text_file("a.txt", session_id="s1"))
+        loop.run_until_complete(client.write_text_file("s1", "a.txt", "hello"))
+        resp = loop.run_until_complete(client.read_text_file("s1", "a.txt"))
         assert resp.content == "hello"
     finally:
         loop.close()
@@ -514,8 +515,8 @@ def test_tool_filter_blocks_acp_file_and_terminal_tools(tmp_path: Path):
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        read_resp = loop.run_until_complete(client.read_text_file("a.txt", session_id="s1"))
-        write_resp = loop.run_until_complete(client.write_text_file("changed", "a.txt", session_id="s1"))
+        read_resp = loop.run_until_complete(client.read_text_file("s1", "a.txt"))
+        write_resp = loop.run_until_complete(client.write_text_file("s1", "a.txt", "changed"))
         term_resp = loop.run_until_complete(client.create_terminal(command="echo hi", session_id="s1"))
         term_out = loop.run_until_complete(client.terminal_output(session_id="s1", terminal_id=term_resp.terminal_id))
 
@@ -619,7 +620,7 @@ def test_read_text_file_path_escape_denied(tmp_path: Path):
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        resp = loop.run_until_complete(client.read_text_file("../etc/passwd", session_id="s1"))
+        resp = loop.run_until_complete(client.read_text_file("s1", "../etc/passwd"))
         assert resp.content == ""
         assert resp.field_meta and "error" in resp.field_meta
     finally:
@@ -714,8 +715,68 @@ def test_read_text_file_truncates(tmp_path: Path):
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        resp = loop.run_until_complete(client.read_text_file("big.txt", session_id="s1"))
+        resp = loop.run_until_complete(client.read_text_file("s1", "big.txt"))
         assert len(resp.content) == 200_000
         assert resp.field_meta and resp.field_meta.get("truncated") is True
     finally:
         loop.close()
+
+
+def test_acp_011_permission_arguments_keep_allow_once_selection():
+    client = GhostAPClient(on_event=lambda _event: None, auto_approve=True)
+    option = MagicMock()
+    option.kind = "allow_once"
+    option.option_id = "allow-once"
+
+    response = asyncio.run(
+        client.request_permission("session-1", MagicMock(), [option])
+    )
+
+    assert response.outcome.outcome == "selected"
+    assert response.outcome.option_id == "allow-once"
+
+
+def test_acp_011_read_and_write_argument_order_and_line_limit(tmp_path: Path):
+    client = GhostAPClient(on_event=lambda _event: None, root_dir=str(tmp_path))
+
+    asyncio.run(client.write_text_file("session-1", "lines.txt", "one\ntwo\nthree\n"))
+    response = asyncio.run(
+        client.read_text_file("session-1", "lines.txt", line=2, limit=1)
+    )
+
+    assert response.content == "two\n"
+
+
+def test_acp_011_terminal_arguments_honor_env_cwd_and_output_byte_limit(tmp_path: Path):
+    client = GhostAPClient(on_event=lambda _event: None, root_dir=str(tmp_path))
+
+    terminal = asyncio.run(
+        client.create_terminal(
+            "session-1",
+            "sh",
+            ["-c", "printf '%s' \"$ACP_TEST_VALUE-abcd\""],
+            [EnvVariable(name="ACP_TEST_VALUE", value="value")],
+            str(tmp_path),
+            2,
+        )
+    )
+    output = asyncio.run(
+        client.terminal_output("session-1", terminal.terminal_id)
+    )
+
+    assert output.output == "cd"
+    assert output.truncated is True
+
+
+def test_acp_011_terminal_rejects_cwd_outside_project_root(tmp_path: Path):
+    client = GhostAPClient(on_event=lambda _event: None, root_dir=str(tmp_path))
+
+    terminal = asyncio.run(
+        client.create_terminal("session-1", "pwd", None, None, "/tmp", None)
+    )
+    output = asyncio.run(
+        client.terminal_output("session-1", terminal.terminal_id)
+    )
+
+    assert terminal.field_meta and terminal.field_meta.get("blocked") is True
+    assert "工作目录" in output.output
