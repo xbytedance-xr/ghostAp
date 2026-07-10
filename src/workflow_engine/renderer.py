@@ -914,13 +914,25 @@ def _completion_process_markdown(
     failed_agents: int,
     cached_agents: int,
 ) -> str:
-    """Build a concise run process summary for the completion card."""
-    lines = [
-        "**执行过程**",
-        f"- 阶段: {completed_phases}/{total_phases}",
-        f"- 代理: {completed_agents}/{total_agents} 完成，{failed_agents} 失败，{cached_agents} 缓存",
-    ]
+    """Build a compact run process summary for the completion card."""
+    elapsed = 0.0
+    if project.started_at:
+        end_time = project.finished_at or time.time()
+        elapsed = end_time - project.started_at
 
+    # Header stats line — dense, single row
+    stats_parts = [f"**阶段** {completed_phases}/{total_phases}"]
+    agent_desc = f"{completed_agents}/{total_agents} 完成"
+    if failed_agents:
+        agent_desc += f"，{failed_agents} 失败"
+    if cached_agents:
+        agent_desc += f"，{cached_agents} 缓存"
+    stats_parts.append(f"**代理** {agent_desc}")
+    stats_parts.append(f"**耗时** {_format_duration(elapsed)}")
+
+    lines = [" · ".join(stats_parts)]
+
+    # Phase rows — compact, no bullets
     for idx, phase in enumerate(project.phases, 1):
         agents = phase.agents
         total = len(agents)
@@ -931,7 +943,7 @@ def _completion_process_markdown(
             icon = "\u274c"
             state = f"{done}/{total} 完成，{failed} 失败"
         elif cancelled:
-            icon = "⏹️"
+            icon = "⏹\ufe0f"
             state = f"{done}/{total} 完成，{cancelled} 已取消"
         else:
             icon = "\u2705"
@@ -940,7 +952,7 @@ def _completion_process_markdown(
         duration = ""
         if phase.started_at and phase.finished_at:
             duration = f" · {_format_duration(phase.finished_at - phase.started_at)}"
-        lines.append(f"{icon} 阶段 {idx}: **{_middle_ellipsis(phase.title)}** — {state}{duration}")
+        lines.append(f"{icon} 阶段 {idx}: {_middle_ellipsis(phase.title)} — {state}{duration}")
 
     return "\n".join(lines)
 
@@ -1033,66 +1045,36 @@ def render_completion_card(
     total_agents_for_rate = max(total_agents_count, 1)
     success_rate = int((completed_agents_count / total_agents_for_rate) * 100)
 
-    def _stat_column(value: str, label: str) -> dict[str, Any]:
-        """Create a single stat column with large number + description."""
-        return _column(
-            [
-                _md_element(f"**{value}**", text_align="center"),
-                _md_element(f"<font color='grey'>{label}</font>", text_align="center"),
-            ],
-            weight=1,
-            vertical_align="center",
-        )
-
-    # Row 1: 总耗时 + 总 Token 消耗
+    # Compact 4-stat row
     elements.append(
         _column_set(
             [
-                _stat_column(_format_duration(elapsed), "总耗时"),
-                _stat_column(_format_tokens(total_tokens), "总 Token 消耗"),
+                _column(
+                    [_md_element(f"**{_format_duration(elapsed)}**\n<font color='grey'>耗时</font>", text_align="center")],
+                    weight=1,
+                    vertical_align="center",
+                ),
+                _column(
+                    [_md_element(f"**{completed_phases}/{total_phases}**\n<font color='grey'>阶段</font>", text_align="center")],
+                    weight=1,
+                    vertical_align="center",
+                ),
+                _column(
+                    [_md_element(f"**{success_rate}%**\n<font color='grey'>成功率</font>", text_align="center")],
+                    weight=1,
+                    vertical_align="center",
+                ),
+                _column(
+                    [_md_element(f"**{_format_tokens(total_tokens)}**\n<font color='grey'>Token</font>", text_align="center")],
+                    weight=1,
+                    vertical_align="center",
+                ),
             ],
             flex_mode="stretch",
         )
     )
 
-    # Row 2: 完成阶段数 + 成功率
-    elements.append(
-        _column_set(
-            [
-                _stat_column(f"{completed_phases}/{total_phases}", "完成阶段数"),
-                _stat_column(f"{success_rate}%", "成功率"),
-            ],
-            flex_mode="stretch",
-        )
-    )
-
-    if report_status:
-        elements.append(_hr_element())
-        elements.append(_md_element(_completion_report_status_markdown(report_status)))
-
-    # Final report, with structured JSON payloads rendered as user-facing sections.
-    has_full_report_file = bool(report_status and report_status.get("generated"))
-    if project.result and has_full_report_file:
-        elements.append(_hr_element())
-        elements.append(
-            _md_element(
-                "**执行报告摘要**\n"
-                "完整结论、验证结果、原始输出和 Workflow 状态已写入 HTML 报告；卡片仅保留执行过程简表。"
-            )
-        )
-    elif project.result:
-        elements.append(_hr_element())
-        elements.append(_md_element(_completion_report_markdown(project.result)))
-    elif status == WorkflowStatus.COMPLETED:
-        elements.append(_hr_element())
-        elements.append(
-            _md_element(
-                "**执行报告**\n"
-                "本次 Workflow 没有返回最终结果；请参考下方执行过程确认阶段和代理执行情况。"
-            )
-        )
-
-    # Process summary
+    # Process summary — placed early for at-a-glance visibility
     if project.phases:
         elements.append(_hr_element())
         elements.append(
@@ -1108,6 +1090,28 @@ def render_completion_card(
                 )
             )
         )
+
+    # Execution result summary
+    has_full_report_file = bool(report_status and report_status.get("generated"))
+    if project.result and has_full_report_file:
+        elements.append(_hr_element())
+        elements.append(_md_element(_completion_report_markdown(project.result)))
+    elif project.result:
+        elements.append(_hr_element())
+        elements.append(_md_element(_completion_report_markdown(project.result)))
+    elif status == WorkflowStatus.COMPLETED:
+        elements.append(_hr_element())
+        elements.append(
+            _md_element(
+                "**执行结果**\n"
+                "本次 Workflow 没有返回最终结果；请参考上方执行过程确认阶段和代理执行情况。"
+            )
+        )
+
+    # Report attachment status
+    if report_status:
+        elements.append(_hr_element())
+        elements.append(_md_element(_completion_report_status_markdown(report_status)))
 
     # Error message for failed workflows
     if status == WorkflowStatus.FAILED and project.error:

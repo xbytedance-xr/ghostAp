@@ -221,6 +221,8 @@ _PERMANENT_ERROR_KEYWORDS: tuple[str, ...] = (
     "400",
     "unauthorized",
     "401",
+    "circuit breaker",
+    "acpstartuperror",
 )
 
 # Category detection rules: (category, keyword_list, match_all)

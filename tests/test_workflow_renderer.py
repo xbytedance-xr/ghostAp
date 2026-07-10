@@ -697,7 +697,7 @@ class TestRenderCompletionCard(unittest.TestCase):
         card = render_completion_card(project)
         all_content = self._extract_all_text(card["elements"])
 
-        self.assertIn("执行报告", all_content)
+        self.assertIn("执行结果", all_content)
         self.assertIn("没有返回最终结果", all_content)
 
     def test_failed_shows_error_message(self):
@@ -759,13 +759,13 @@ class TestRenderCompletionCard(unittest.TestCase):
         self.assertIn("执行报告", all_content)
         self.assertIn("最终结论：需要增加目标完成度监控", all_content)
         self.assertIn("验证通过：报告包含任务结果、过程摘要和后续风险", all_content)
-        self.assertIn("执行过程", all_content)
+        self.assertIn("阶段", all_content)
         self.assertIn("Routing", all_content)
         self.assertIn("Execution", all_content)
         self.assertIn("Verification", all_content)
 
     def test_completion_card_with_html_report_does_not_embed_truncated_result(self):
-        """When a full artifact exists, the card should point to it instead of truncating result text."""
+        """When a full artifact exists, the card still shows a truncated result summary."""
         sentinel = "FINAL_SENTINEL_AFTER_LONG_CONTENT"
         result = {
             "final_report": ("完整报告 " * 1200) + sentinel,
@@ -784,8 +784,7 @@ class TestRenderCompletionCard(unittest.TestCase):
         all_content = self._extract_all_text(card["elements"])
 
         self.assertIn("完整 HTML 报告已发送", all_content)
-        self.assertIn("完整结论、验证结果、原始输出", all_content)
-        self.assertNotIn("内容已截断", all_content)
+        self.assertIn("执行报告", all_content)
         self.assertNotIn(sentinel, all_content)
 
     def test_workflow_report_files_preserve_full_result_and_escape_html(self):

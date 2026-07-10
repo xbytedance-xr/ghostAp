@@ -1260,7 +1260,7 @@ export default async function main() {{
   const primaryTool = "{primary_tool}";
   const candidateTools = Array.from(new Set((tools.length ? tools : [primaryTool]).filter(Boolean))).slice(0, 3);
   const fallbackTool = candidateTools.length > 1 ? candidateTools[1] : primaryTool;
-  const verifierTool = candidateTools[candidateTools.length - 1] || primaryTool;
+  const verifierTool = primaryTool;
   function modelFor(tool) {{ return toolModels[tool] || undefined; }}
 
   function fallback(stage, reason, partial = null) {{

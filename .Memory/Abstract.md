@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-10
+- **WF报告压缩+启动失败熔断** — `/wf` 完成卡片改为紧凑统计和前置执行过程，HTML 报告补顶部统计/阶段时间线/agent 明细；ACPStartupError 在单次 Workflow run 内按工具熔断，后续调用直接返回 circuit breaker 永久错误，fallback verifier 固定主编排工具。相关 230 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-10.md)
 ## 2026-07-09
 - **WF完整报告附件** — `/wf` 终态卡片继续保持简表，但完整结论/原始结果/agent输出写成自包含 HTML+Markdown 报告，存入 `~/.cache/ghostAp/<项目绝对路径>/workflow_reports/` 并作为飞书文件回复到当前话题；附件失败时完成卡显示降级原因和本地路径。相关 124 passed、ruff/validate 通过 → [详细记录](2026-07-09.md)
 ## 2026-07-08

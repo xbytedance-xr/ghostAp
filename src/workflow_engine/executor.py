@@ -56,6 +56,20 @@ def _is_timeout_in_chain(exc: BaseException) -> bool:
     return False
 
 
+def _is_startup_error(exc: BaseException) -> bool:
+    """Return True if the exception is an ACP startup failure (process won't start)."""
+    if exc.__class__.__name__ == "ACPStartupError":
+        return True
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if current.__class__.__name__ == "ACPStartupError":
+            return True
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+    return False
+
+
 class AgentExecutor:
     """Executes individual agent() calls via ACP/CLI sessions.
 
@@ -94,6 +108,10 @@ class AgentExecutor:
         # and orphan ACP subprocesses.
         self._late_close_threads: list[threading.Thread] = []
         self._late_close_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        # Circuit breaker: tools whose ACP startup failed during this workflow
+        # run are blacklisted so subsequent calls skip the 50s timeout penalty.
+        self._startup_blacklist: dict[str, str] = {}  # tool -> error message
+        self._blacklist_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     # ------------------------------------------------------------------
     # Public API
@@ -211,6 +229,23 @@ class AgentExecutor:
         # per-call events (see RuntimeBridge.stop()), and by the cancel
         # guard below which polls both events explicitly.
         call_cancel_event = per_call_cancel_event or global_cancel_event
+
+        # Circuit breaker: skip tools whose ACP startup already failed in this run
+        if params.tool:
+            with self._blacklist_lock:
+                blacklisted_reason = self._startup_blacklist.get(params.tool)
+            if blacklisted_reason:
+                logger.info(
+                    "[AgentExecutor] Circuit breaker: skipping tool=%s (previous startup failure: %s)",
+                    params.tool,
+                    blacklisted_reason,
+                )
+                return AgentCallResult(
+                    error=f"Circuit breaker: {params.tool} ACP startup failed earlier in this workflow ({blacklisted_reason})",
+                    tool=params.tool,
+                    model=params.model,
+                    duration_s=0.0,
+                )
 
         for attempt in range(MAX_RETRIES + 1):
             session = None
@@ -482,6 +517,17 @@ class AgentExecutor:
                     error_msg,
                     exc_info=True,
                 )
+
+                # Circuit breaker: if ACP startup itself failed, blacklist the
+                # tool for the rest of this workflow run so we don't waste 50s
+                # on each subsequent call to the same broken tool.
+                if _is_startup_error(e) and params.tool:
+                    with self._blacklist_lock:
+                        self._startup_blacklist[params.tool] = str(e)[:120]
+                    logger.warning(
+                        "[AgentExecutor] Circuit breaker armed: tool=%s blacklisted for this workflow run",
+                        params.tool,
+                    )
 
                 # Check if we should retry.
                 # TimeoutError / asyncio.TimeoutError are never retried — the

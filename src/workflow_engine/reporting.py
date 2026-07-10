@@ -271,6 +271,116 @@ def build_workflow_report_markdown(project: WorkflowProject) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_summary_stats_html(project: WorkflowProject) -> str:
+    """Render a visual stats grid for the HTML report hero section."""
+    metrics = project.metrics
+    phase_agents = [agent for phase in project.phases for agent in phase.agents]
+    total_agents = metrics.total_agents or len(phase_agents)
+    completed_agents = metrics.completed_agents or sum(
+        1 for agent in phase_agents if agent.status in (AgentStatus.DONE, AgentStatus.CACHED)
+    )
+    failed_agents = metrics.failed_agents or sum(1 for agent in phase_agents if agent.status == AgentStatus.FAILED)
+    cached_agents = metrics.cached_agents or sum(1 for agent in phase_agents if agent.status == AgentStatus.CACHED)
+    total_tokens = metrics.total_tokens or sum(agent.token_usage for agent in phase_agents)
+    total_phases = len(project.phases)
+    completed_phases = sum(
+        1
+        for phase in project.phases
+        if all(a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED) for a in phase.agents)
+    )
+    elapsed = 0.0
+    if project.started_at:
+        end_time = project.finished_at or datetime.now(timezone.utc).timestamp()
+        elapsed = max(0.0, end_time - project.started_at)
+    success_rate = int((completed_agents / max(total_agents, 1)) * 100)
+
+    cards = [
+        (_format_duration(elapsed), "总耗时", "#3370ff"),
+        (f"{completed_phases}/{total_phases}", "阶段完成", "#00b578"),
+        (f"{completed_agents}/{total_agents}", "代理完成", "#722ed1"),
+        (f"{success_rate}%", "成功率", "#00b578" if success_rate >= 80 else "#ff4d4f"),
+        (str(total_tokens), "Token 消耗", "#646a73"),
+        (str(failed_agents), "失败", "#ff4d4f" if failed_agents > 0 else "#646a73"),
+        (str(cached_agents), "缓存命中", "#13c2c2"),
+    ]
+    items = []
+    for value, label, color in cards:
+        items.append(
+            f'<div class="stat-card">'
+            f'<div class="stat-value" style="color:{color}">{html.escape(value)}</div>'
+            f'<div class="stat-label">{html.escape(label)}</div>'
+            f'</div>'
+        )
+    return f'<div class="stats-grid">{"".join(items)}</div>'
+
+
+def _render_phases_html(project: WorkflowProject) -> str:
+    """Render a structured phases timeline for the HTML report."""
+    if not project.phases:
+        return '<p class="empty-hint">本次 Workflow 没有记录阶段。</p>'
+
+    items: list[str] = []
+    for idx, phase in enumerate(project.phases, 1):
+        agents = phase.agents
+        total = len(agents)
+        done = sum(1 for agent in agents if agent.status in (AgentStatus.DONE, AgentStatus.CACHED))
+        failed = sum(1 for agent in agents if agent.status == AgentStatus.FAILED)
+        cancelled = sum(1 for agent in agents if agent.status == AgentStatus.CANCELLED)
+        duration = ""
+        if phase.started_at and phase.finished_at:
+            duration = _format_duration(max(0.0, phase.finished_at - phase.started_at))
+
+        if failed:
+            badge_cls = "badge-fail"
+            status_text = f"{done}/{total} 完成，{failed} 失败"
+        elif cancelled:
+            badge_cls = "badge-warn"
+            status_text = f"{done}/{total} 完成，{cancelled} 已取消"
+        elif done == total and total > 0:
+            badge_cls = "badge-ok"
+            status_text = f"已完成 {done}/{total}"
+        else:
+            badge_cls = "badge-pending"
+            status_text = f"{done}/{total}"
+
+        agent_rows = []
+        for agent in agents:
+            a_status = _status_text(agent.status)
+            a_cls = {
+                "done": "agent-ok", "cached": "agent-cached",
+                "failed": "agent-fail", "cancelled": "agent-cancel",
+            }.get(a_status.lower(), "agent-pending")
+            a_dur = f' <span class="agent-meta">{_format_duration(agent.duration_s)}</span>' if agent.duration_s else ""
+            a_tok = f' <span class="agent-meta">{agent.token_usage} tok</span>' if agent.token_usage else ""
+            a_tool = f' <span class="agent-tool">{html.escape(agent.tool or "")}</span>' if agent.tool else ""
+            a_task = f'<div class="agent-task">{html.escape(agent.task_summary or "")}</div>' if agent.task_summary else ""
+            a_err = f'<div class="agent-error">{html.escape(agent.error or "")}</div>' if agent.error else ""
+            agent_rows.append(
+                f'<div class="agent-row {a_cls}">'
+                f'<span class="agent-status">{html.escape(a_status)}</span>'
+                f'<span class="agent-label">{html.escape(agent.label or "agent")}</span>'
+                f'{a_tool}{a_dur}{a_tok}'
+                f'{a_task}{a_err}'
+                f'</div>'
+            )
+
+        agents_html = "".join(agent_rows) if agent_rows else '<div class="empty-hint">无代理调用</div>'
+        dur_html = f'<span class="phase-duration">{html.escape(duration)}</span>' if duration else ""
+
+        items.append(
+            f'<div class="phase-block">'
+            f'<div class="phase-header">'
+            f'<span class="phase-num">阶段 {idx}</span>'
+            f'<span class="phase-title">{html.escape(phase.title)}</span>'
+            f'<span class="badge {badge_cls}">{html.escape(status_text)}</span>'
+            f'{dur_html}'
+            f'</div>'
+            f'<div class="phase-agents">{agents_html}</div>'
+            f'</div>'
+        )
+    return "".join(items)
+
+
 def build_workflow_report_html(project: WorkflowProject, markdown: str | None = None) -> str:
     """Return a self-contained, static HTML report for a Workflow run."""
     title = project.name or "Workflow"
@@ -289,158 +399,321 @@ def build_workflow_report_html(project: WorkflowProject, markdown: str | None = 
             f"""
       <details class="report-section" id="section-{idx}" data-search="{search_text}"{expanded_attr}>
         <summary>
-          <span>{html.escape(section.title)}</span>
-          <button type="button" onclick="toggleSection('section-{idx}'); event.preventDefault();">折叠/展开</button>
-          <button type="button" onclick="copyText('section-body-{idx}'); event.preventDefault();">复制</button>
+          <span class="section-title">{html.escape(section.title)}</span>
+          <div class="section-actions">
+            <button type="button" onclick="toggleSection('section-{idx}'); event.preventDefault();">折叠/展开</button>
+            <button type="button" onclick="copyText('section-body-{idx}'); event.preventDefault();">复制</button>
+          </div>
         </summary>
-        <pre id="section-body-{idx}">{body}</pre>
+        <div class="section-body" id="section-body-{idx}">{body}</div>
       </details>"""
         )
 
     escaped_markdown = html.escape(markdown)
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    status_text = _status_text(project.status)
+    status_cls = {"completed": "status-ok", "failed": "status-fail", "cancelled": "status-cancel"}.get(
+        status_text.lower(), "status-running"
+    )
+    stats_html = _render_summary_stats_html(project)
+    phases_html = _render_phases_html(project)
+
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)} 完整报告</title>
+  <title>{html.escape(title)} — Workflow 报告</title>
   <style>
     :root {{
-      color-scheme: light;
-      --bg: #f7f8fa;
+      --bg: #f5f6f8;
       --panel: #ffffff;
       --text: #1f2329;
-      --muted: #646a73;
-      --line: #dee0e3;
+      --muted: #8f959e;
+      --line: #e5e6eb;
       --accent: #3370ff;
-      --code: #f2f3f5;
+      --ok: #00b578;
+      --fail: #ff4d4f;
+      --warn: #faad14;
+      --purple: #722ed1;
+      --code-bg: #fafbfc;
+      --radius: 10px;
+      --shadow: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
     }}
-    * {{ box-sizing: border-box; }}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
-      margin: 0;
       background: var(--bg);
       color: var(--text);
-      font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
     }}
-    header {{
+
+    /* Header */
+    .page-header {{
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      color: #fff;
+      padding: 36px 0 28px;
+    }}
+    .page-header .wrap {{ max-width: 1080px; margin: 0 auto; padding: 0 28px; }}
+    .page-header h1 {{ font-size: 26px; font-weight: 700; margin-bottom: 8px; }}
+    .page-header .meta {{ color: rgba(255,255,255,.7); font-size: 13px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }}
+    .status-badge {{ display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }}
+    .status-ok {{ background: rgba(0,181,120,.2); color: #5eff9e; }}
+    .status-fail {{ background: rgba(255,77,79,.2); color: #ff9b9c; }}
+    .status-cancel {{ background: rgba(255,255,255,.15); color: rgba(255,255,255,.7); }}
+    .status-running {{ background: rgba(51,112,255,.2); color: #8cb4ff; }}
+
+    /* Stats grid */
+    .stats-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 12px;
+      margin-top: 24px;
+    }}
+    .stat-card {{
+      background: rgba(255,255,255,.08);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 8px;
+      padding: 14px 12px;
+      text-align: center;
+    }}
+    .stat-value {{ font-size: 22px; font-weight: 700; line-height: 1.2; }}
+    .stat-label {{ font-size: 12px; color: rgba(255,255,255,.6); margin-top: 4px; }}
+
+    /* Toolbar */
+    .toolbar-wrap {{
       position: sticky;
       top: 0;
-      z-index: 2;
+      z-index: 10;
+      background: var(--panel);
       border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.96);
-      backdrop-filter: blur(8px);
+      box-shadow: var(--shadow);
     }}
-    .wrap {{ max-width: 1120px; margin: 0 auto; padding: 18px 24px; }}
-    h1 {{ margin: 0 0 8px; font-size: 24px; line-height: 1.25; }}
-    .meta {{ color: var(--muted); }}
     .toolbar {{
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 12px 28px;
       display: flex;
       gap: 10px;
       align-items: center;
-      margin-top: 14px;
       flex-wrap: wrap;
     }}
-    input[type="search"] {{
-      min-width: min(480px, 100%);
+    .toolbar input[type="search"] {{
       flex: 1;
+      min-width: 200px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 9px 10px;
+      border-radius: 8px;
+      padding: 8px 12px;
       font: inherit;
+      outline: none;
+      transition: border-color .15s;
     }}
-    button {{
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #fff;
-      color: var(--text);
-      cursor: pointer;
-      padding: 7px 10px;
-      font: inherit;
-    }}
-    button.primary {{ border-color: var(--accent); color: var(--accent); }}
-    nav {{
-      display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
-      margin-top: 12px;
-    }}
-    nav a {{
-      color: var(--accent);
-      text-decoration: none;
-      border: 1px solid #d6e4ff;
-      border-radius: 999px;
-      padding: 4px 9px;
-      background: #f0f5ff;
-    }}
-    main .wrap {{ padding-top: 20px; padding-bottom: 40px; }}
-    details.report-section {{
-      margin: 12px 0;
+    .toolbar input[type="search"]:focus {{ border-color: var(--accent); }}
+    .toolbar button {{
       border: 1px solid var(--line);
       border-radius: 8px;
       background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+      padding: 7px 14px;
+      font: inherit;
+      transition: background .15s, border-color .15s;
+    }}
+    .toolbar button:hover {{ background: var(--bg); }}
+    .toolbar button.primary {{ border-color: var(--accent); color: var(--accent); }}
+    .toolbar nav {{
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      width: 100%;
+      margin-top: 4px;
+    }}
+    .toolbar nav a {{
+      color: var(--accent);
+      text-decoration: none;
+      border: 1px solid #d6e4ff;
+      border-radius: 99px;
+      padding: 3px 10px;
+      font-size: 12px;
+      background: #f0f5ff;
+      transition: background .15s;
+    }}
+    .toolbar nav a:hover {{ background: #d6e4ff; }}
+
+    /* Main */
+    main {{ max-width: 1080px; margin: 0 auto; padding: 24px 28px 60px; }}
+
+    /* Phase timeline */
+    .phases-section {{ margin-bottom: 28px; }}
+    .phases-section > h2 {{ font-size: 16px; margin-bottom: 14px; }}
+    .phase-block {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      margin-bottom: 12px;
       overflow: hidden;
+      box-shadow: var(--shadow);
+    }}
+    .phase-header {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--line);
+      flex-wrap: wrap;
+    }}
+    .phase-num {{
+      font-weight: 700;
+      font-size: 13px;
+      color: var(--accent);
+      white-space: nowrap;
+    }}
+    .phase-title {{ font-weight: 600; flex: 1; min-width: 100px; }}
+    .badge {{
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 99px;
+      white-space: nowrap;
+    }}
+    .badge-ok {{ background: #e6fff5; color: #00875a; }}
+    .badge-fail {{ background: #fff1f0; color: #cf1322; }}
+    .badge-warn {{ background: #fffbe6; color: #ad6800; }}
+    .badge-pending {{ background: #f0f0f0; color: #595959; }}
+    .phase-duration {{ font-size: 12px; color: var(--muted); white-space: nowrap; }}
+    .phase-agents {{ padding: 10px 16px; }}
+    .agent-row {{
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 5px 0;
+      font-size: 13px;
+      border-bottom: 1px solid #f5f5f5;
+      flex-wrap: wrap;
+    }}
+    .agent-row:last-child {{ border-bottom: none; }}
+    .agent-status {{
+      font-size: 11px;
+      font-weight: 600;
+      padding: 1px 6px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }}
+    .agent-ok .agent-status {{ background: #e6fff5; color: #00875a; }}
+    .agent-cached .agent-status {{ background: #e6fffb; color: #006d75; }}
+    .agent-fail .agent-status {{ background: #fff1f0; color: #cf1322; }}
+    .agent-cancel .agent-status {{ background: #f0f0f0; color: #595959; }}
+    .agent-pending .agent-status {{ background: #f0f0f0; color: #8c8c8c; }}
+    .agent-label {{ font-weight: 500; }}
+    .agent-tool {{
+      font-size: 12px;
+      background: #f0f5ff;
+      color: var(--accent);
+      padding: 1px 6px;
+      border-radius: 4px;
+    }}
+    .agent-meta {{ font-size: 12px; color: var(--muted); }}
+    .agent-task {{ width: 100%; font-size: 12px; color: var(--muted); padding-left: 60px; }}
+    .agent-error {{ width: 100%; font-size: 12px; color: var(--fail); padding-left: 60px; }}
+    .empty-hint {{ color: var(--muted); font-size: 13px; padding: 8px 0; }}
+
+    /* Report sections */
+    details.report-section {{
+      margin: 12px 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      overflow: hidden;
+      box-shadow: var(--shadow);
     }}
     details[hidden] {{ display: none; }}
     summary {{
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--line);
+      padding: 14px 16px;
       cursor: pointer;
-      font-weight: 700;
+      font-weight: 600;
+      user-select: none;
+      border-bottom: 1px solid transparent;
+      transition: background .1s;
     }}
-    summary span {{ flex: 1; min-width: 160px; }}
-    pre {{
-      margin: 0;
-      padding: 14px;
+    details[open] > summary {{ border-bottom-color: var(--line); background: #fafbfc; }}
+    summary .section-title {{ flex: 1; }}
+    summary .section-actions {{ display: flex; gap: 6px; }}
+    summary .section-actions button {{
+      font-size: 12px;
+      padding: 3px 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      color: var(--muted);
+      transition: color .15s, border-color .15s;
+    }}
+    summary .section-actions button:hover {{ color: var(--accent); border-color: var(--accent); }}
+    .section-body {{
+      padding: 16px;
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-word;
-      background: var(--code);
-      font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font: 13px/1.65 ui-monospace, "SFMono-Regular", "Cascadia Code", Menlo, Consolas, monospace;
+      background: var(--code-bg);
+      max-height: 600px;
     }}
-    .markdown-source {{ margin-top: 18px; }}
+    .markdown-source {{ margin-top: 24px; }}
   </style>
 </head>
 <body>
-  <header>
+  <div class="page-header">
     <div class="wrap">
-      <h1>{html.escape(title)} 完整报告</h1>
-      <div class="meta">生成时间: {generated_at} · 状态: {html.escape(_status_text(project.status))}</div>
-      <div class="toolbar">
-        <input id="filter" type="search" placeholder="搜索报告内容" oninput="filterSections(this.value)">
-        <button class="primary" type="button" onclick="setAllSections(true)">全部展开</button>
-        <button type="button" onclick="setAllSections(false)">全部折叠</button>
+      <h1>{html.escape(title)} — Workflow 报告</h1>
+      <div class="meta">
+        <span class="status-badge {status_cls}">{html.escape(status_text)}</span>
+        <span>生成时间: {generated_at}</span>
+        <span>ID: {html.escape(project.workflow_id or '—')}</span>
       </div>
+      {stats_html}
+    </div>
+  </div>
+  <div class="toolbar-wrap">
+    <div class="toolbar">
+      <input id="filter" type="search" placeholder="搜索报告内容…" oninput="filterSections(this.value)">
+      <button class="primary" type="button" onclick="setAllSections(true)">全部展开</button>
+      <button type="button" onclick="setAllSections(false)">全部折叠</button>
       <nav>{nav_links}</nav>
     </div>
-  </header>
+  </div>
   <main>
-    <div class="wrap">
-      {''.join(section_html)}
-      <details class="report-section markdown-source">
-        <summary><span>完整 Markdown 源文本</span><button type="button" onclick="copyText('markdown-source'); event.preventDefault();">复制</button></summary>
-        <pre id="markdown-source">{escaped_markdown}</pre>
-      </details>
+    <div class="phases-section">
+      <h2>执行过程</h2>
+      {phases_html}
     </div>
+    {''.join(section_html)}
+    <details class="report-section markdown-source">
+      <summary>
+        <span class="section-title">完整 Markdown 源文本</span>
+        <div class="section-actions"><button type="button" onclick="copyText('markdown-source'); event.preventDefault();">复制</button></div>
+      </summary>
+      <div class="section-body" id="markdown-source">{escaped_markdown}</div>
+    </details>
   </main>
   <script>
     function toggleSection(id) {{
-      const section = document.getElementById(id);
-      if (section) section.open = !section.open;
+      const el = document.getElementById(id);
+      if (el) el.open = !el.open;
     }}
     function setAllSections(open) {{
-      document.querySelectorAll('details.report-section').forEach((section) => {{
-        if (!section.hidden) section.open = open;
+      document.querySelectorAll('details.report-section').forEach(s => {{
+        if (!s.hidden) s.open = open;
       }});
     }}
     function filterSections(query) {{
       const q = (query || '').trim().toLowerCase();
-      document.querySelectorAll('details.report-section').forEach((section) => {{
-        const haystack = section.getAttribute('data-search') || section.textContent.toLowerCase();
-        section.hidden = q.length > 0 && !haystack.includes(q);
+      document.querySelectorAll('details.report-section').forEach(s => {{
+        const hay = s.getAttribute('data-search') || s.textContent.toLowerCase();
+        s.hidden = q.length > 0 && !hay.includes(q);
       }});
     }}
     async function copyText(id) {{
