@@ -473,6 +473,27 @@ Match workflow complexity to task complexity. NOT every task needs multiple patt
 If the task is simple, direct, and unambiguous — a single agent() call IS the best workflow.
 Do NOT add patterns for their own sake. Every extra agent call costs time.
 
+## Completion Result Contract (REQUIRED)
+
+The final successful return value must preserve the full business result and include this compact card contract:
+
+```javascript
+return {{
+  "card_summary": {{
+    "verdict": "passed|needs_attention|failed|unknown",
+    "conclusion": "one complete actionable conclusion",
+    "findings": [{{ "severity": "high|medium|low|info", "text": "one complete finding" }}],
+    "verification": [{{ "status": "passed|failed|warning|info", "text": "one complete verification result" }}],
+    "deliverables": [{{ "type": "code|test|document|artifact|other", "text": "one complete deliverable" }}],
+    "next_steps": ["one complete next action"]
+  }},
+  "result": fullResult,
+  "verification": fullVerification
+}};
+```
+
+Every brief field must be a 完整语义条目. Never manually cut a sentence or add a truncation marker; keep verbose evidence in `result`.
+
 ## Now Generate
 
 Based on the user requirement above, generate a COMPLETE workflow script that:
@@ -537,7 +558,18 @@ export default async function() {
   // Fallback orchestration that delegates to sub-workflows if available.
   // This is a minimal valid workflow that meets validation requirements
   // without making any real agent calls.
-  return { status: "fallback-orchestration", message: "Workflow execution initiated via fallback path" };
+  return {
+    card_summary: {
+      verdict: "unknown",
+      conclusion: "任务已完成，完整结果见报告。",
+      findings: [],
+      verification: [],
+      deliverables: [],
+      next_steps: [],
+    },
+    result: { status: "fallback-orchestration", message: "Workflow execution initiated via fallback path" },
+    verification: null,
+  };
 }
 """
 
@@ -1273,6 +1305,58 @@ export default async function main() {{
     }};
   }}
 
+  function completionEnvelope(resultValue, review = null) {{
+    const resultObject = resultValue && typeof resultValue === "object" ? resultValue : {{}};
+    const reviewObject = review && typeof review === "object" ? review : {{}};
+    const conclusion =
+      (typeof reviewObject.summary === "string" && reviewObject.summary.trim()) ||
+      (typeof resultObject.conclusion === "string" && resultObject.conclusion.trim()) ||
+      (typeof resultObject.summary === "string" && resultObject.summary.trim()) ||
+      "任务已完成，完整结果见报告。";
+    const rawIssues = Array.isArray(reviewObject.issues) ? reviewObject.issues : [];
+    const findings = rawIssues.map((issue) => {{
+      if (typeof issue === "string") return {{ severity: "high", text: issue }};
+      if (!issue || typeof issue !== "object") return null;
+      const text = issue.text || issue.claim || issue.description || issue.issue || issue.summary;
+      return typeof text === "string" && text.trim()
+        ? {{ severity: issue.severity || "high", text: text.trim() }}
+        : null;
+    }}).filter(Boolean);
+    const verdict = reviewObject.approve === false
+      ? "needs_attention"
+      : reviewObject.approve === true
+        ? "passed"
+        : "unknown";
+    const verification = review
+      ? [{{
+          status: reviewObject.approve === false ? "failed" : reviewObject.approve === true ? "passed" : "warning",
+          text: typeof reviewObject.summary === "string" && reviewObject.summary.trim()
+            ? reviewObject.summary.trim()
+            : reviewObject.error
+              ? "验证未完成，完整详情见报告。"
+              : "验证状态未明确，完整详情见报告。",
+        }}]
+      : [];
+    const deliverables = Array.isArray(resultObject.deliverables)
+      ? resultObject.deliverables.map((item) => typeof item === "string" ? {{ type: "other", text: item }} : item)
+      : [];
+    const nextSteps = Array.isArray(resultObject.next_steps)
+      ? resultObject.next_steps.filter((item) => typeof item === "string" && item.trim())
+      : [];
+    return {{
+      card_summary: {{
+        verdict,
+        conclusion,
+        findings,
+        verification,
+        deliverables,
+        next_steps: nextSteps,
+      }},
+      result: resultValue,
+      verification: review,
+    }};
+  }}
+
   function chooseRoute(text) {{
     const normalized = String(text || "").toLowerCase();
     const simpleSignals = ["先不要动手", "不要动手", "不要改代码", "先分析", "只分析", "分析下", "为什么", "why", "explain"];
@@ -1419,7 +1503,7 @@ If implementation is requested, provide a complete, production-ready result. If 
   phase("Verification");
   if (route.reason === "analysis-only or direct request") {{
     log("Skipping verification for analysis-only task");
-    return result;
+    return completionEnvelope(result);
   }}
   log("Running bounded verification");
   const review = await agent({{
@@ -1442,19 +1526,16 @@ Respond with JSON: {{ "approve": true, "issues": ["..."], "summary": "..." }}`,
 
   if (review && review.error) {{
     log(`Verification failed, returning execution output with fallback marker: ${{review.error}}`);
-    return {{ result, verification: fallback("Verification", review.error) }};
+    return completionEnvelope(result, fallback("Verification", review.error));
   }}
   if (review && review.approve === false && Array.isArray(review.issues) && review.issues.length > 0) {{
-    return {{
-      result,
-      verification: {{
-        approved: false,
-        issues: review.issues,
-        summary: review.summary || "Verifier reported concerns",
-      }},
-    }};
+    return completionEnvelope(result, {{
+      approved: false,
+      issues: review.issues,
+      summary: review.summary || "Verifier reported concerns",
+    }});
   }}
 
-  return result;
+  return completionEnvelope(result, review);
 }}
 '''

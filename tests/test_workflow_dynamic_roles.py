@@ -452,6 +452,18 @@ class TestPromptStructure(unittest.TestCase):
             "Prompt should have main title",
         )
 
+    def test_script_generation_prompt_requires_card_summary_contract(self):
+        prompt = self._build_prompt()
+
+        self.assertIn("card_summary", prompt)
+        self.assertIn('"verdict"', prompt)
+        self.assertIn('"conclusion"', prompt)
+        self.assertIn('"findings"', prompt)
+        self.assertIn('"verification"', prompt)
+        self.assertIn('"deliverables"', prompt)
+        self.assertIn('"next_steps"', prompt)
+        self.assertIn("完整语义条目", prompt)
+
     def test_has_user_requirement_section(self):
         """Test 8: Prompt has 'User Requirement' section."""
         prompt = self._build_prompt()

@@ -279,6 +279,14 @@ class TestGenerateSimpleScriptEncouragement(unittest.TestCase):
         count = script.count(SUBAGENT_ENCOURAGEMENT)
         self.assertGreaterEqual(count, 3, f"Expected encouragement in at least 3 agent prompts, found {count}")
 
+    def test_generate_simple_script_returns_card_summary_envelope(self):
+        script = generate_simple_script("Implement and verify a focused change")
+
+        self.assertIn("function completionEnvelope", script)
+        self.assertIn("card_summary", script)
+        self.assertIn("needs_attention", script)
+        self.assertIn("任务已完成，完整结果见报告。", script)
+
     def test_script_has_valid_structure(self):
         script = generate_simple_script("Test requirement")
         self.assertIn("export const meta", script)
