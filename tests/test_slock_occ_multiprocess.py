@@ -48,18 +48,21 @@ def _mp_hold_lock_then_write(args) -> tuple[float, float]:
     """Worker function: acquire file lock, hold it, then write.
 
     Args:
-        args: tuple (base_path, agent_id, hold_seconds)
+        args: tuple (base_path, agent_id, hold_seconds[, acquired_event])
 
     Returns:
         (acquire_time, release_time) as timestamps.
     """
-    base_path, agent_id, hold_seconds = args
+    base_path, agent_id, hold_seconds, *optional = args
+    acquired_event = optional[0] if optional else None
     mgr = MemoryManager(base_path=base_path)
     acquire_time = 0.0
     release_time = 0.0
     try:
         with mgr._agent_file_lock(agent_id):
             acquire_time = time.time()
+            if acquired_event is not None:
+                acquired_event.set()
             time.sleep(hold_seconds)
             mem = SlockMemory(role="tester", key_knowledge=f"written-at-{acquire_time}")
             mgr.write_agent_memory(agent_id, mem)
@@ -203,22 +206,24 @@ class TestFileLockCrossProcess:
 
         # Start process A that holds the lock for hold_seconds
         ctx = multiprocessing.get_context("spawn")
-        with ctx.Pool(processes=2) as pool:
-            # Process A: acquire lock, hold 0.3s, release
-            future_a = pool.apply_async(
-                _mp_hold_lock_then_write,
-                [(str(tmp_path), agent_id, hold_seconds)],
-            )
-            # Small delay to ensure A starts first
-            time.sleep(0.1)
-            # Process B: try to acquire lock (should wait for A)
-            future_b = pool.apply_async(
-                _mp_hold_lock_then_write,
-                [(str(tmp_path), agent_id, 0.01)],
-            )
+        with ctx.Manager() as manager:
+            acquired_event = manager.Event()
+            with ctx.Pool(processes=2) as pool:
+                # Process A: acquire lock, signal readiness, hold, release.
+                future_a = pool.apply_async(
+                    _mp_hold_lock_then_write,
+                    [(str(tmp_path), agent_id, hold_seconds, acquired_event)],
+                )
+                # Do not rely on Pool worker startup order: wait until A owns
+                # the file lock before allowing B to contend for it.
+                assert acquired_event.wait(timeout=10), "Process A did not acquire the lock in time"
+                future_b = pool.apply_async(
+                    _mp_hold_lock_then_write,
+                    [(str(tmp_path), agent_id, 0.01)],
+                )
 
-            a_acquire, a_release = future_a.get(timeout=10)
-            b_acquire, b_release = future_b.get(timeout=10)
+                a_acquire, a_release = future_a.get(timeout=10)
+                b_acquire, b_release = future_b.get(timeout=10)
 
         # B should acquire AFTER A releases
         assert b_acquire >= a_release, (
