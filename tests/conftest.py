@@ -480,8 +480,8 @@ def _reset_all_singletons():
     except Exception:
         pass
     try:
-        from src.thread.manager import _reset_thread_manager_for_testing
         from src.thread import set_current_thread_id
+        from src.thread.manager import _reset_thread_manager_for_testing
 
         _reset_thread_manager_for_testing()
         # The manager singleton and the request-scoped ContextVar are separate.

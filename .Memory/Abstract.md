@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-10
+- **普通ACP选模异步激活** — 最终确认模型原先同步等待 ACP 启动两次超时（20s+30s），且 `silent=True` 吞异常后 helper 无条件返回 true，失败仍误显“已就绪”；现改为立即 PATCH“初始化中”并交 `TaskScheduler` 项目串行后台启动，真实 success bool 决定 ready/失败重试卡，pending 仅成功后转发，旧选择任务不覆盖新状态。扩展 375 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-10.md)
 - **ACP模型探测慢修复** — `/wf` 选模型 `model_lookup cached=false` 从不命中：traex 惊群式并发全量探测（预热线程+点击线程各 spawn 一次），claude 每次固定 15s 超时。`src/acp/helper.py` 加 single-flight（`threading.Event` leader/waiter 复用）+ 负缓存（45s，claude 类不可探测工具窗口内不重探）+ 三层缓存统一 `(tool,cwd)` 键，并修缓存命中共享 `ACPModelOption.is_default` 别名 bug（改 `dataclasses.replace` 返回副本）；`workflow.py` 缓存命中补 `cached=true` 日志。probe 17 + 相关 152 passed、ruff/validate 通过 → [详细记录](2026-07-10.md)
 - **WF结果简报卡去截断** — 终态卡新增类型化 `card_summary`/旧结果兼容层，只展示完整结论/发现/验证/交付物/下一步，超量整条省略并计数，过程折叠、原始结果完整保留在报告；同步清理 `result[:500]` 降级和 worktree 测试路径/线程不稳定 → [详细记录](2026-07-10.md)
 - **WF报告压缩+启动失败熔断** — `/wf` 完成卡片改为紧凑统计和前置执行过程，HTML 报告补顶部统计/阶段时间线/agent 明细；ACPStartupError 在单次 Workflow run 内按工具熔断，后续调用直接返回 circuit breaker 永久错误，fallback verifier 固定主编排工具。相关 230 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-10.md)
