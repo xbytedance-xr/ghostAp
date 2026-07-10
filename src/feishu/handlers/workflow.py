@@ -2777,11 +2777,27 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                     clone["reasoning_efforts"] = list(
                         clone.get("reasoning_efforts") or []
                     )
+                if "selection_variants" in clone:
+                    clone["selection_variants"] = [
+                        dict(variant or {})
+                        for variant in (
+                            clone.get("selection_variants") or []
+                        )
+                    ]
                 copied.append(clone)
             return copied
 
         now = time.monotonic()
-        cache: dict[tuple[str, str, str], tuple[float, list[dict]]] = getattr(
+        provider = "acp" if tool_name in _WORKFLOW_ACP_MODEL_TOOLS else "ttadk"
+        generation = 0
+        if provider == "acp":
+            from ...acp.helper import get_acp_model_cache_generation
+
+            generation = get_acp_model_cache_generation(tool_name, root_path)
+        cache: dict[
+            tuple[str, str, str, int],
+            tuple[float, list[dict]],
+        ] = getattr(
             self,
             "_workflow_model_cache",
             {},
@@ -2789,9 +2805,22 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         if not isinstance(cache, dict):
             cache = {}
         else:
-            for (cached_tool, cached_root, _cached_provider), (cached_at, cached_models) in list(cache.items()):
+            for cache_key, (cached_at, cached_models) in list(cache.items()):
+                if len(cache_key) == 4:
+                    (
+                        cached_tool,
+                        cached_root,
+                        _cached_provider,
+                        cached_generation,
+                    ) = cache_key
+                else:
+                    cached_tool, cached_root, _cached_provider = cache_key
+                    cached_generation = -1
                 if cached_tool == tool_name and cached_root == root_path:
-                    if now - cached_at <= _WORKFLOW_MODEL_CACHE_TTL_S:
+                    if (
+                        cached_generation == generation
+                        and now - cached_at <= _WORKFLOW_MODEL_CACHE_TTL_S
+                    ):
                         logger.info(
                             "[workflow] model_lookup tool=%s provider=%s count=%d duration_ms=%.1f cached=true",
                             tool_name,
@@ -2800,7 +2829,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                             (time.monotonic() - now) * 1000,
                         )
                         return _copy_models(cached_models)
-                    cache.pop((cached_tool, cached_root, _cached_provider), None)
+                    cache.pop(cache_key, None)
         self._workflow_model_cache = cache
 
         try:
@@ -2808,8 +2837,6 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
 
             started = time.monotonic()
             discovery = WorktreeToolDiscovery()
-            provider = "acp" if tool_name in _WORKFLOW_ACP_MODEL_TOOLS else "ttadk"
-
             models = discovery.get_models_for_tool(
                 tool_name,
                 provider=provider,
@@ -2835,8 +2862,17 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                     item["adapted_reasoning_effort"] = model.get(
                         "adapted_reasoning_effort"
                     )
+                selection_variants = [
+                    dict(variant or {})
+                    for variant in (
+                        model.get("selection_variants") or []
+                    )
+                ]
+                if selection_variants:
+                    item["is_default"] = bool(model.get("is_default"))
+                    item["selection_variants"] = selection_variants
                 normalized.append(item)
-            cache[(tool_name, root_path, provider)] = (
+            cache[(tool_name, root_path, provider, generation)] = (
                 now,
                 _copy_models(normalized),
             )

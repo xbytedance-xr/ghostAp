@@ -8,7 +8,11 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
-from ...acp.helper import fetch_acp_models, list_acp_tools
+from ...acp.helper import (
+    fetch_acp_models,
+    invalidate_acp_model_cache,
+    list_acp_tools,
+)
 from ...acp.providers import tool_registry
 from ...card import CardBuilder
 from ...card.actions import dispatch as action_ids
@@ -920,6 +924,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             model_page = int((value or {}).get("model_page", 0) or 0)
         except (TypeError, ValueError):
             model_page = 0
+        if "model_page" not in (value or {}):
+            invalidate_acp_model_cache(tool, cwd)
         self._show_acp_model_selection_flow(
             message_id=message_id,
             chat_id=chat_id,

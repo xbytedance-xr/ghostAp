@@ -127,9 +127,12 @@ class SpecHandler(BaseEngineHandler):
         cwd: Optional[str] = None,
         current_model: Optional[str] = None,
     ) -> list[dict]:
-        return self._worktree_manager().get_models_for_tool(
+        models = self._worktree_manager().get_models_for_tool(
             tool_name, provider=provider, cwd=cwd, current_model=current_model
         )
+        from ...acp.traex_selection import expand_model_option_dicts
+
+        return expand_model_option_dicts(models)
 
     @staticmethod
     def _normalize_ttadk_tool_option(tool: dict) -> dict:

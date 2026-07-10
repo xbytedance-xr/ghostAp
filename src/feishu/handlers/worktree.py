@@ -128,9 +128,12 @@ class WorktreeHandler(BaseEngineHandler):
     ) -> list[dict]:
         """Helper to fetch models for a given worktree tool."""
         mgr = self._worktree_manager()
-        return mgr.get_models_for_tool(
+        models = mgr.get_models_for_tool(
             tool_name, provider=provider, cwd=cwd, current_model=current_model
         )
+        from ...acp.traex_selection import expand_model_option_dicts
+
+        return expand_model_option_dicts(models)
 
     @staticmethod
     def _normalize_ttadk_tool_option(tool: dict) -> dict:

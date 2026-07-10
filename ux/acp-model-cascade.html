@@ -128,8 +128,8 @@
 
           <label for="group">模型族</label>
           <select id="group" class="remembered">
-            <option selected>openrouter-3o</option>
-            <option>c_o_new_thinking</option>
+            <option>openrouter-3o</option>
+            <option selected>c_o_new_thinking</option>
             <option>doubao-seed-2.1-pro</option>
           </select>
 
@@ -143,18 +143,18 @@
           <select id="effort" class="remembered">
             <option>low</option>
             <option>medium</option>
-            <option selected>high</option>
+            <option>high</option>
             <option>xhigh</option>
-            <option>max</option>
+            <option selected>max</option>
           </select>
 
           <div class="selected">
-            默认选中来自上次模型 <code>openrouter-3o/max/high</code>
+            默认选中来自上次模型 <code>c_o_new_thinking/max/max</code>
             <span class="badge">记住上次选择</span>
           </div>
 
           <div class="button-row">
-            <button class="primary">确认此模型: openrouter-3o/max/high</button>
+            <button class="primary">确认此模型: c_o_new_thinking/max/max</button>
           </div>
 
           <hr>
@@ -163,7 +163,8 @@
           </div>
           <p class="hint">
             绿色高亮 = 由 project.acp_model_name 反解出的默认选中；改动任意下拉只重绘卡片、不进入编程模式，
-            点击“确认此模型”才写入 acp_model_name 并进入模式。
+            点击“确认此模型”才写入 acp_model_name 并进入模式。运行时会分别应用
+            <code>model=c_o_new_thinking__max</code> 与 <code>reasoning_effort=max</code>。
           </p>
         </div>
       </div>

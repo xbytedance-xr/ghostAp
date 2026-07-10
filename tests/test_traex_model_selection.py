@@ -187,3 +187,38 @@ def test_acp_model_variant_options_are_immutable():
 
     with pytest.raises(FrozenInstanceError):
         variant.effort = "high"
+
+
+def test_expand_model_option_dicts_emits_explicit_variants():
+    from src.acp.traex_selection import expand_model_option_dicts
+
+    expanded = expand_model_option_dicts([
+        {
+            "name": "c_o_new_thinking",
+            "display_name": "Test-O-New-Thinking",
+            "description": "reasoning model",
+            "is_default": True,
+            "selection_variants": [
+                {
+                    "name": "c_o_new_thinking/standard/high",
+                    "profile": "standard",
+                    "effort": "high",
+                    "display_name": "Test · standard · high",
+                    "is_variant_default": True,
+                },
+                {
+                    "name": "c_o_new_thinking/max/max",
+                    "profile": "max",
+                    "effort": "max",
+                    "display_name": "Test · max · max",
+                    "is_variant_default": False,
+                },
+            ],
+        }
+    ])
+
+    assert [item["name"] for item in expanded] == [
+        "c_o_new_thinking/standard/high",
+        "c_o_new_thinking/max/max",
+    ]
+    assert [item["is_default"] for item in expanded] == [True, False]

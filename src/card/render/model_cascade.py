@@ -100,6 +100,40 @@ def build_model_groups(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not name:
             continue
         display = str(model.get("display_name") or name).strip() or name
+        explicit_variants = list(model.get("selection_variants") or [])
+        if explicit_variants:
+            groups[name] = {
+                "key": name,
+                "label": display,
+                "variants": [],
+            }
+            order.append(name)
+            for raw_variant in explicit_variants:
+                variant = dict(raw_variant or {})
+                variant_name = str(variant.get("name") or "").strip()
+                profile = str(variant.get("profile") or "").strip().lower()
+                effort = str(variant.get("effort") or "default").strip().lower()
+                if not variant_name or not profile:
+                    continue
+                is_variant_default = bool(
+                    variant.get("is_variant_default")
+                )
+                groups[name]["variants"].append({
+                    "name": variant_name,
+                    "display_name": str(
+                        variant.get("display_name") or variant_name
+                    ),
+                    "profile": profile,
+                    "effort": effort,
+                    "tokens": (),
+                    "is_variant_default": is_variant_default,
+                    "is_default": bool(model.get("is_default"))
+                    and is_variant_default,
+                })
+            if not groups[name]["variants"]:
+                groups.pop(name, None)
+                order.pop()
+            continue
         reasoning_efforts = tuple(
             str(effort or "").strip().lower()
             for effort in (model.get("reasoning_efforts") or ())
@@ -274,6 +308,8 @@ def has_cascade_variants(models: list[dict[str, Any]]) -> bool:
     plain button list (single-group / few models) is the better fit.
     """
     for model in models or []:
+        if model.get("selection_variants"):
+            return True
         if model.get("reasoning_efforts"):
             return True
         _base, tokens = split_model_variant(str(model.get("name") or ""))
@@ -391,14 +427,18 @@ def build_model_cascade_elements(
 
     profile_variants = [v for v in variants if v["profile"] == selected_profile]
     efforts = ordered_unique((v["effort"] for v in profile_variants), kind="effort")
+    profile_default_effort = next(
+        (
+            variant["effort"]
+            for variant in profile_variants
+            if variant.get("is_variant_default")
+        ),
+        None,
+    )
     effort_default = (
         default_effort
         if (selected_group_key == default_group and selected_profile == default_profile)
-        else (
-            group_default_effort
-            if selected_profile == group_default_profile
-            else None
-        )
+        else profile_default_effort
     )
     if pending_effort in efforts:
         selected_effort = pending_effort

@@ -381,3 +381,75 @@ def test_cascade_redraw_resets_downstream_dropdowns_on_group_change(monkeypatch)
     group_sel = next(s for s in selects if s["value"]["action"] == action_ids.SELECT_ACP_MODEL_GROUP)
     assert group_sel["initial_option"] == "c_o_new_thinking"
 
+
+def _explicit_traex_models() -> list[dict]:
+    return [
+        {
+            "name": "c_o_new_thinking",
+            "display_name": "Test-O-New-Thinking",
+            "is_default": True,
+            "selection_variants": [
+                {
+                    "name": f"c_o_new_thinking/{profile}/{effort}",
+                    "display_name": (
+                        f"Test-O-New-Thinking · {profile} · {effort}"
+                    ),
+                    "profile": profile,
+                    "effort": effort,
+                    "is_variant_default": effort == "high",
+                }
+                for profile in ("standard", "max")
+                for effort in ("low", "medium", "high", "max")
+            ],
+        }
+    ]
+
+
+def test_explicit_traex_variants_render_three_level_dropdowns():
+    _, card_json = SystemBuilder.build_acp_model_cascade_card(
+        _explicit_traex_models(),
+        "traex",
+        project_id="p1",
+        current_model="c_o_new_thinking/max/max",
+    )
+
+    card = json.loads(card_json)
+    by_action = {
+        select["value"]["action"]: select
+        for select in _walk_selects(card)
+    }
+    assert by_action[action_ids.SELECT_ACP_MODEL_GROUP]["initial_option"] == (
+        "c_o_new_thinking"
+    )
+    assert by_action[action_ids.SELECT_ACP_MODEL_PROFILE]["initial_option"] == "max"
+    assert by_action[action_ids.SELECT_ACP_MODEL_EFFORT]["initial_option"] == "max"
+    assert "c_o_new_thinking/max/max" in card_json
+
+
+def test_button_model_card_expands_explicit_traex_variants():
+    from src.ttadk.models import ACPModelOption, ACPModelVariantOption
+
+    model = ACPModelOption(
+        name="c_o_new_thinking",
+        selection_variants=(
+            ACPModelVariantOption(
+                name="c_o_new_thinking/standard/high",
+                profile="standard",
+                effort="high",
+            ),
+            ACPModelVariantOption(
+                name="c_o_new_thinking/max/max",
+                profile="max",
+                effort="max",
+            ),
+        ),
+    )
+
+    _, card_json = SystemBuilder.build_acp_model_select_card(
+        [model],
+        "traex",
+        refresh_action_name=None,
+    )
+
+    assert "c_o_new_thinking/standard/high" in card_json
+    assert "c_o_new_thinking/max/max" in card_json

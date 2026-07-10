@@ -1108,6 +1108,41 @@ class SystemBuilder:
                 items.append(model)
                 continue
 
+            selection_variants = list(
+                getattr(model, "selection_variants", ()) or ()
+            )
+            if selection_variants:
+                model_default = bool(getattr(model, "is_default", False))
+                model_description = str(
+                    getattr(model, "description", "") or ""
+                )
+                for variant in selection_variants:
+                    variant_name = str(
+                        getattr(variant, "name", "") or ""
+                    ).strip()
+                    if not variant_name:
+                        continue
+                    variant_display = str(
+                        getattr(variant, "display_name", "")
+                        or variant_name
+                    )
+                    items.append(
+                        ModelOptionView(
+                            name=variant_name,
+                            description=variant_display or model_description,
+                            is_default=bool(
+                                model_default
+                                and getattr(
+                                    variant,
+                                    "is_variant_default",
+                                    False,
+                                )
+                            ),
+                            display_name=variant_display,
+                        )
+                    )
+                continue
+
             m_name = getattr(model, "name", None) or str(model)
             m_name = str(m_name or "").strip()
             if not m_name:
@@ -1300,6 +1335,9 @@ class SystemBuilder:
                     "adapted_reasoning_effort"
                 )
                 is_default = bool(model.get("is_default"))
+                raw_selection_variants = list(
+                    model.get("selection_variants") or []
+                )
             else:
                 m_name = str(getattr(model, "name", None) or model or "").strip()
                 m_disp = getattr(model, "display_name", None) or getattr(model, "friendly_name", None) or m_name
@@ -1313,8 +1351,32 @@ class SystemBuilder:
                     None,
                 )
                 is_default = bool(getattr(model, "is_default", False))
+                raw_selection_variants = list(
+                    getattr(model, "selection_variants", ()) or ()
+                )
             if not m_name:
                 continue
+            selection_variants = []
+            for raw_variant in raw_selection_variants:
+                if isinstance(raw_variant, dict):
+                    selection_variants.append(dict(raw_variant))
+                else:
+                    selection_variants.append({
+                        "name": str(getattr(raw_variant, "name", "") or ""),
+                        "profile": str(
+                            getattr(raw_variant, "profile", "") or ""
+                        ),
+                        "effort": str(
+                            getattr(raw_variant, "effort", "default")
+                            or "default"
+                        ),
+                        "display_name": str(
+                            getattr(raw_variant, "display_name", "") or ""
+                        ),
+                        "is_variant_default": bool(
+                            getattr(raw_variant, "is_variant_default", False)
+                        ),
+                    })
             norm_models.append({
                 "name": m_name,
                 "display_name": str(m_disp or m_name),
@@ -1322,6 +1384,7 @@ class SystemBuilder:
                 "reasoning_efforts": reasoning_efforts,
                 "adapted_reasoning_effort": adapted_reasoning_effort,
                 "is_default": is_default,
+                "selection_variants": selection_variants,
             })
 
         # No splittable variants → nothing to cascade; reuse the button card so

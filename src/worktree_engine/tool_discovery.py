@@ -215,6 +215,19 @@ class WorktreeToolDiscovery:
                             "adapted_reasoning_effort",
                             None,
                         )
+                    selection_variants = []
+                    for variant in (
+                        getattr(model, "selection_variants", ()) or ()
+                    ):
+                        selection_variants.append({
+                            "name": variant.name,
+                            "profile": variant.profile,
+                            "effort": variant.effort,
+                            "display_name": variant.display_name,
+                            "is_variant_default": variant.is_variant_default,
+                        })
+                    if selection_variants:
+                        item["selection_variants"] = selection_variants
                     models.append(item)
                 return models
             except Exception:

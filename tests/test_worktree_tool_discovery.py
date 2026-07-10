@@ -238,6 +238,56 @@ def test_traex_binary_is_exposed_as_top_level_acp_tool():
     ]
 
 
+def test_acp_model_discovery_preserves_explicit_selection_variants():
+    from src.ttadk.models import ACPModelOption, ACPModelVariantOption
+
+    discovery = WorktreeToolDiscovery()
+    model = ACPModelOption(
+        name="c_o_new_thinking",
+        description="Test-O-New-Thinking",
+        selection_variants=(
+            ACPModelVariantOption(
+                name="c_o_new_thinking/standard/high",
+                profile="standard",
+                effort="high",
+                is_variant_default=True,
+            ),
+            ACPModelVariantOption(
+                name="c_o_new_thinking/max/max",
+                profile="max",
+                effort="max",
+            ),
+        ),
+    )
+
+    with patch(
+        "src.worktree_engine.tool_discovery.fetch_acp_models",
+        return_value=[model],
+    ):
+        models = discovery.get_models_for_tool(
+            "traex",
+            provider="acp",
+            cwd="/repo",
+        )
+
+    assert models[0]["selection_variants"] == [
+        {
+            "name": "c_o_new_thinking/standard/high",
+            "profile": "standard",
+            "effort": "high",
+            "display_name": "",
+            "is_variant_default": True,
+        },
+        {
+            "name": "c_o_new_thinking/max/max",
+            "profile": "max",
+            "effort": "max",
+            "display_name": "",
+            "is_variant_default": False,
+        },
+    ]
+
+
 def test_get_ttadk_tools_returns_concrete_ttadk_tools():
     """TTADK concrete tools should still be available from the TTADK-only discovery path."""
     discovery = WorktreeToolDiscovery()

@@ -600,3 +600,37 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         assert self.handler.update_card.call_count == 2
         failed = json.loads(self.handler.update_card.call_args_list[-1].args[1])
         assert "初始化失败" in failed["header"]["title"]["content"]
+
+
+class TestRefreshAcpModels(unittest.TestCase):
+    def setUp(self):
+        self.handler = _make_handler()
+        self.handler._show_acp_model_selection_flow = MagicMock()
+
+    def test_refresh_invalidates_shared_probe_cache(self):
+        with patch(
+            "src.feishu.handlers.system.invalidate_acp_model_cache",
+            create=True,
+        ) as invalidate:
+            self.handler.handle_refresh_acp_models(
+                "msg1",
+                "chat1",
+                "traex",
+                value={"tool_name": "traex"},
+            )
+
+        invalidate.assert_called_once_with("traex", "/tmp")
+
+    def test_pagination_does_not_invalidate_shared_probe_cache(self):
+        with patch(
+            "src.feishu.handlers.system.invalidate_acp_model_cache",
+            create=True,
+        ) as invalidate:
+            self.handler.handle_refresh_acp_models(
+                "msg1",
+                "chat1",
+                "traex",
+                value={"tool_name": "traex", "model_page": 1},
+            )
+
+        invalidate.assert_not_called()

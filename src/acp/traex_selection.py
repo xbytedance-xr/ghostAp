@@ -229,3 +229,30 @@ def expand_acp_model_options(
                 )
             )
     return expanded
+
+
+def expand_model_option_dicts(models: list[dict]) -> list[dict]:
+    expanded: list[dict] = []
+    for model in models or []:
+        item = dict(model or {})
+        variants = list(item.get("selection_variants") or [])
+        if not variants:
+            expanded.append(item)
+            continue
+        for raw_variant in variants:
+            variant = dict(raw_variant or {})
+            name = str(variant.get("name") or "").strip()
+            if not name:
+                continue
+            clone = dict(item)
+            clone.pop("selection_variants", None)
+            clone["name"] = name
+            clone["display_name"] = str(
+                variant.get("display_name") or name
+            )
+            clone["is_default"] = bool(
+                item.get("is_default")
+                and variant.get("is_variant_default")
+            )
+            expanded.append(clone)
+    return expanded

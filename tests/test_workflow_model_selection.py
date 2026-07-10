@@ -141,3 +141,69 @@ def test_workflow_codex_model_lookup_preserves_effort_capabilities_and_cache(
             "adapted_reasoning_effort": "high",
         }
     ]
+
+
+def test_workflow_model_lookup_preserves_explicit_variants_and_copy_isolation(
+    monkeypatch,
+):
+    from src.feishu.handlers.workflow import WorkflowHandler
+
+    calls = 0
+
+    class FakeDiscovery:
+        def get_models_for_tool(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [
+                {
+                    "name": "c_o_new_thinking",
+                    "display_name": "Test-O-New-Thinking",
+                    "selection_variants": [
+                        {
+                            "name": "c_o_new_thinking/max/max",
+                            "profile": "max",
+                            "effort": "max",
+                        }
+                    ],
+                }
+            ]
+
+    monkeypatch.setattr(
+        "src.worktree_engine.tool_discovery.WorktreeToolDiscovery",
+        FakeDiscovery,
+    )
+    handler = WorkflowHandler.__new__(WorkflowHandler)
+
+    first = handler._get_workflow_models_for_tool("traex", "/repo")
+    first[0]["selection_variants"][0]["effort"] = "mutated"
+    second = handler._get_workflow_models_for_tool("traex", "/repo")
+
+    assert calls == 1
+    assert second[0]["selection_variants"][0]["effort"] == "max"
+
+
+def test_workflow_model_cache_reloads_after_shared_generation_changes(monkeypatch):
+    from src.acp.helper import invalidate_acp_model_cache
+    from src.feishu.handlers.workflow import WorkflowHandler
+
+    calls = 0
+
+    class FakeDiscovery:
+        def get_models_for_tool(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [{"name": f"traex-model-{calls}"}]
+
+    monkeypatch.setattr(
+        "src.worktree_engine.tool_discovery.WorktreeToolDiscovery",
+        FakeDiscovery,
+    )
+    handler = WorkflowHandler.__new__(WorkflowHandler)
+
+    first = handler._get_workflow_models_for_tool("traex", "/repo")
+    invalidate_acp_model_cache("traex", "/repo")
+    second = handler._get_workflow_models_for_tool("traex", "/repo")
+
+    assert first[0]["name"] == "traex-model-1"
+    assert second[0]["name"] == "traex-model-2"
+    assert calls == 2
