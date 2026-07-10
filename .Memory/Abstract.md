@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-10
+- **Codex ACP迁移收口** — 补齐官方 adapter 首次选模（`new_session` 后 config option fail-close）、ACP 0.11 permission/file/terminal 回调签名与 `restart.sh --version` 预热；真实 `gpt-5.6-sol` smoke OK，全量 9853 tests 0 failed → [详细记录](2026-07-10.md)
 - **Codex ACP官方迁移** — `/codex` 事故根因是 UI 读取本机 Codex `models_cache.json` 暴露 `gpt-5.6-sol`，实际 fallback 仍跑旧 `@zed-industries/codex-acp@0.14.0` 且 Python ACP SDK 0.8 只会旧 `session/set_model`；已迁到官方 `@agentclientprotocol/codex-acp@1.1.2` + `agent-client-protocol==0.11.0`，Codex 模型列表只信任 adapter config_options/探测，失败返回空列表 fail-close，选模改 `set_config_option(config_id="model")` 且失败不再降级旧 RPC。全量 9793 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-10.md)
 - **普通ACP选模异步激活** — 最终确认模型原先同步等待 ACP 启动两次超时（20s+30s），且 `silent=True` 吞异常后 helper 无条件返回 true，失败仍误显“已就绪”；现改为立即 PATCH“初始化中”并交 `TaskScheduler` 项目串行后台启动，真实 success bool 决定 ready/失败重试卡，pending 仅成功后转发，旧选择任务不覆盖新状态。扩展 375 + 全量 9789 passed，ruff/validate/diff-check 通过 → [详细记录](2026-07-10.md)
 - **ACP模型探测慢修复** — `/wf` 选模型 `model_lookup cached=false` 从不命中：traex 惊群式并发全量探测（预热线程+点击线程各 spawn 一次），claude 每次固定 15s 超时。`src/acp/helper.py` 加 single-flight（`threading.Event` leader/waiter 复用）+ 负缓存（45s，claude 类不可探测工具窗口内不重探）+ 三层缓存统一 `(tool,cwd)` 键，并修缓存命中共享 `ACPModelOption.is_default` 别名 bug（改 `dataclasses.replace` 返回副本）；`workflow.py` 缓存命中补 `cached=true` 日志。probe 17 + 相关 152 passed、ruff/validate 通过 → [详细记录](2026-07-10.md)

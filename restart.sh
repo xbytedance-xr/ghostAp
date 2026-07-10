@@ -93,7 +93,7 @@ prepare_codex_acp_dependency() {
     fi
 
     echo "准备 Codex ACP fallback 依赖..."
-    if npx --yes "$CODEX_ACP_NPM_PACKAGE" --help >/dev/null 2>&1; then
+    if npx --yes "$CODEX_ACP_NPM_PACKAGE" --version >/dev/null 2>&1; then
         log_restart "codex acp fallback ready package=$CODEX_ACP_NPM_PACKAGE"
     else
         echo "⚠️  Codex ACP fallback 依赖预热失败，后续 /codex 可能启动失败"

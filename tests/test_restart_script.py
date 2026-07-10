@@ -14,7 +14,8 @@ def test_restart_script_preheats_codex_acp_fallback_dependency():
     assert "@agentclientprotocol/codex-acp@1.1.2" in text
     assert "PREPARE_CODEX_ACP=" in text
     assert "prepare_codex_acp_dependency()" in text
-    assert 'npx --yes "$CODEX_ACP_NPM_PACKAGE" --help' in text
+    assert 'npx --yes "$CODEX_ACP_NPM_PACKAGE" --version' in text
+    assert 'npx --yes "$CODEX_ACP_NPM_PACKAGE" --help' not in text
     assert "prepare_codex_acp_dependency" in text.split("start_service() {", 1)[1]
 
 
