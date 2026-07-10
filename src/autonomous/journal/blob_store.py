@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import secrets
+import stat
 import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -114,6 +115,20 @@ class BlobRef:
     ciphertext_hash: str = ""
 
     def __post_init__(self) -> None:
+        blob_aliases = [
+            value
+            for value in (self.blob_hash, self.blob_id, self.ciphertext_hash)
+            if value
+        ]
+        payload_aliases = [
+            value
+            for value in (self.payload_hash, self.content_hash)
+            if value
+        ]
+        if len(set(blob_aliases)) > 1:
+            raise ValueError("conflicting blob hash aliases")
+        if len(set(payload_aliases)) > 1:
+            raise ValueError("conflicting payload hash aliases")
         blob_hash = self.blob_hash or self.blob_id or self.ciphertext_hash
         payload_hash = self.payload_hash or self.content_hash
         if not blob_hash:
@@ -246,8 +261,11 @@ class BlobStore:
     def __init__(self, root: str | Path, encryption: EncryptionProvider) -> None:
         self.root = Path(root)
         self.encryption = encryption
+        root_existed = self.root.exists()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.chmod(0o700)
+        if not root_existed:
+            _fsync_directory(self.root.parent)
 
     def stage_and_publish(
         self,
@@ -308,12 +326,22 @@ class BlobStore:
         try:
             _write_bytes(temp, envelope)
             _fsync_file(temp)
+            if target.is_symlink():
+                raise BlobIntegrityError(
+                    "existing content address is not a regular file"
+                )
             if target.exists():
+                target_stat = target.stat(follow_symlinks=False)
+                if not stat.S_ISREG(target_stat.st_mode):
+                    raise BlobIntegrityError(
+                        "existing content address is not a regular file"
+                    )
                 if target.read_bytes() != envelope:
                     raise BlobIntegrityError(
                         "existing content address contains different bytes"
                     )
                 temp.unlink(missing_ok=True)
+                _fsync_directory(self.root)
                 return ref
             _atomic_replace(temp, target)
             target.chmod(0o600)
@@ -351,8 +379,10 @@ class BlobStore:
         path = self.root / f"{ref.blob_hash}.blob"
         try:
             raw = path.read_bytes()
-        except OSError as exc:
+        except FileNotFoundError as exc:
             raise BlobIntegrityError("blob is missing") from exc
+        except OSError as exc:
+            raise BlobIntegrityError(f"blob read failed: {exc}") from exc
         if _sha256(raw) != ref.blob_hash:
             raise BlobIntegrityError("blob hash mismatch")
         try:
@@ -413,4 +443,6 @@ class BlobStore:
                 removed += 1
             except FileNotFoundError:
                 continue
+        if removed:
+            _fsync_directory(self.root)
         return removed

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .frame import JournalEvent, TransactionFrame
+from .writer import AnchorMismatchError, CommitState
 from .writer import JournalWriter as _CanonicalJournalWriter
 
 
@@ -44,4 +45,9 @@ class JournalWriter(_CanonicalJournalWriter):
             aggregate_id: self._aggregate_versions.get(aggregate_id, 0)
             for aggregate_id in aggregate_ids
         }
-        return self.commit(events, expected).frame
+        result = self.commit(events, expected)
+        if result.state is not CommitState.ANCHORED:
+            raise AnchorMismatchError(
+                "legacy commit is durable locally but not anchored"
+            )
+        return result.frame

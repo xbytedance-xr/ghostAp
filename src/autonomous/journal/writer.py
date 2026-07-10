@@ -69,6 +69,20 @@ class DefaultFileSystemOperations:
             os.close(fd)
 
 
+def _append_record(
+    path: Path,
+    record: bytes,
+    fs_ops: FileSystemOperations,
+) -> None:
+    with open(path, "ab", buffering=0) as file:
+        written = file.write(record)
+        if written != len(record):
+            raise OSError(
+                f"short journal write: expected {len(record)} bytes, wrote {written}"
+            )
+        fs_ops.fsync_file(file)
+
+
 class JournalWriter:
     """The sole append authority for one local autonomous journal."""
 
@@ -154,15 +168,19 @@ class JournalWriter:
         self.close()
 
     def close(self) -> None:
-        if getattr(self, "_closed", True):
+        mutex = getattr(self, "_mutex", None)
+        if mutex is None:
             return
-        self._closed = True
-        lock_file = getattr(self, "_lock_file", None)
-        if lock_file is not None and not lock_file.closed:
-            try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-            finally:
-                lock_file.close()
+        with mutex:
+            if getattr(self, "_closed", True):
+                return
+            self._closed = True
+            lock_file = getattr(self, "_lock_file", None)
+            if lock_file is not None and not lock_file.closed:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock_file.close()
 
     def _ensure_writable(self) -> None:
         if self._closed or self._write_disabled:
@@ -172,6 +190,7 @@ class JournalWriter:
         raw = self.journal_path.read_bytes()
         if not raw:
             return []
+        anchored_before_recovery = self.anchor.read()
         physical_lines = raw.splitlines(keepends=True)
         nonempty_indexes = [
             index
@@ -219,6 +238,11 @@ class JournalWriter:
             previous_hash = frame.frame_hash
             expected_sequence += 1
         if tail_incomplete:
+            last_complete_sequence = frames[-1].sequence if frames else 0
+            if anchored_before_recovery.sequence > last_complete_sequence:
+                raise AnchorMismatchError(
+                    "anchor confirms a journal tail that is incomplete locally"
+                )
             with open(self.journal_path, "r+b") as file:
                 file.truncate(valid_length)
                 file.flush()
@@ -232,6 +256,14 @@ class JournalWriter:
     ) -> dict[str, int]:
         versions: dict[str, int] = {}
         for frame in frames:
+            event_aggregate_ids = {event.aggregate_id for event in frame.events}
+            if (
+                event_aggregate_ids != set(frame.expected_versions)
+                or event_aggregate_ids != set(frame.aggregate_versions)
+            ):
+                raise JournalIntegrityError(
+                    "event aggregate ids and version maps must match"
+                )
             for aggregate_id, expected in frame.expected_versions.items():
                 if versions.get(aggregate_id, 0) != expected:
                     raise JournalIntegrityError(
@@ -318,9 +350,11 @@ class JournalWriter:
                 hmac_key=self._hmac_key,
             )
             try:
-                with open(self.journal_path, "ab", buffering=0) as file:
-                    file.write(frame.to_bytes())
-                    self._fs_ops.fsync_file(file)
+                _append_record(
+                    self.journal_path,
+                    frame.to_bytes(),
+                    self._fs_ops,
+                )
                 self._fs_ops.fsync_directory(self.base_dir)
             except BaseException:
                 self._write_disabled = True
@@ -349,14 +383,16 @@ class JournalWriter:
     def replay(self, from_sequence: int = 1) -> Iterator[TransactionFrame]:
         if isinstance(from_sequence, bool) or from_sequence < 1:
             raise ValueError("from_sequence must be >= 1")
-        frames = self._load_and_recover()
-        self._rebuild_aggregate_versions(frames)
+        with self._mutex:
+            frames = tuple(self._load_and_recover())
+            self._rebuild_aggregate_versions(frames)
         for frame in frames:
             if frame.sequence >= from_sequence:
                 yield frame
 
     def get_last_frame(self) -> TransactionFrame | None:
-        return self._frames[-1] if self._frames else None
+        with self._mutex:
+            return self._frames[-1] if self._frames else None
 
     def verify_chain(self) -> tuple[bool, list[str]]:
         try:

@@ -5,12 +5,14 @@ import os
 import stat
 import subprocess
 import sys
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+import src.autonomous.journal.writer as writer_module
 from src.autonomous.journal import (
     AnchorMismatchError,
     CommitState,
@@ -190,6 +192,25 @@ class FailingFsOps:
             os.close(fd)
 
 
+class BlockingFsOps:
+    def __init__(self) -> None:
+        self.write_started = threading.Event()
+        self.allow_fsync = threading.Event()
+
+    def fsync_file(self, file_or_fd: Any) -> None:
+        self.write_started.set()
+        assert self.allow_fsync.wait(timeout=5)
+        fd = file_or_fd if isinstance(file_or_fd, int) else file_or_fd.fileno()
+        os.fsync(fd)
+
+    def fsync_directory(self, directory: str | Path) -> None:
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 def resolve_compat_result(value: Any) -> Any:
     if inspect.isawaitable(value):
         return asyncio.run(value)
@@ -340,6 +361,24 @@ def test_anchor_cas_failure_is_durable_but_closes_writes_and_restart_fails_close
         open_writer(base_dir, durable_anchor, writer_epoch=8)
 
 
+def test_compatibility_commit_frame_does_not_hide_unanchored_state(
+    tmp_path: Path,
+) -> None:
+    writer = open_writer(
+        tmp_path / "journal",
+        RejectingAnchor(MemoryAnchor()),
+    )
+    entry = JournalEntry(
+        entry_type="goal_created",
+        entity_id="goal_1",
+        data={"objective": "durable"},
+    )
+
+    with pytest.raises(AnchorMismatchError, match="not anchored"):
+        resolve_compat_result(writer.commit_frame([entry]))
+    writer.close()
+
+
 def test_anchor_exception_is_durable_but_closes_writes(
     tmp_path: Path,
 ) -> None:
@@ -354,6 +393,30 @@ def test_anchor_exception_is_durable_but_closes_writes(
             [event(event_type="goal.updated", value="must-not-write")],
             {"goal_1": 1},
         )
+    writer.close()
+
+
+def test_short_append_fails_closed_before_anchor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = open_writer(tmp_path / "journal", MemoryAnchor())
+    original_append = writer_module._append_record
+
+    def short_append(path: Path, record: bytes, fs_ops: Any) -> None:
+        with open(path, "ab", buffering=0) as file:
+            file.write(record[: len(record) // 2])
+            fs_ops.fsync_file(file)
+        raise OSError("short journal write")
+
+    monkeypatch.setattr(writer_module, "_append_record", short_append)
+
+    with pytest.raises(OSError, match="short journal write"):
+        writer.commit([event()], {"goal_1": 0})
+    with pytest.raises(JournalClosedError):
+        writer.commit([event()], {"goal_1": 0})
+
+    monkeypatch.setattr(writer_module, "_append_record", original_append)
     writer.close()
 
 
@@ -421,6 +484,65 @@ def test_durability_boundary_failure_closes_writer(
     writer.close()
 
 
+def test_replay_waits_for_inflight_commit_instead_of_recovering_its_tail(
+    tmp_path: Path,
+) -> None:
+    fs_ops = BlockingFsOps()
+    writer = open_writer(tmp_path / "journal", MemoryAnchor(), fs_ops=fs_ops)
+    commit_done = threading.Event()
+    replay_done = threading.Event()
+    replayed: list[int] = []
+
+    def commit() -> None:
+        writer.commit([event()], {"goal_1": 0})
+        commit_done.set()
+
+    def replay() -> None:
+        replayed.extend(frame.sequence for frame in writer.replay())
+        replay_done.set()
+
+    commit_thread = threading.Thread(target=commit)
+    replay_thread = threading.Thread(target=replay)
+    commit_thread.start()
+    assert fs_ops.write_started.wait(timeout=5)
+    replay_thread.start()
+
+    assert not replay_done.wait(timeout=0.1)
+    fs_ops.allow_fsync.set()
+    commit_thread.join(timeout=5)
+    replay_thread.join(timeout=5)
+
+    assert commit_done.is_set()
+    assert replay_done.is_set()
+    assert replayed == [1]
+    writer.close()
+
+
+def test_close_waits_for_inflight_commit_before_releasing_writer_lock(
+    tmp_path: Path,
+) -> None:
+    base_dir = tmp_path / "journal"
+    fs_ops = BlockingFsOps()
+    writer = open_writer(base_dir, MemoryAnchor(), fs_ops=fs_ops)
+    commit_thread = threading.Thread(
+        target=lambda: writer.commit([event()], {"goal_1": 0})
+    )
+    close_thread = threading.Thread(target=writer.close)
+    commit_thread.start()
+    assert fs_ops.write_started.wait(timeout=5)
+    close_thread.start()
+
+    assert close_thread.is_alive()
+    with pytest.raises(WriterLockError):
+        open_writer(base_dir, MemoryAnchor(), writer_epoch=8)
+
+    fs_ops.allow_fsync.set()
+    commit_thread.join(timeout=5)
+    close_thread.join(timeout=5)
+    assert not commit_thread.is_alive()
+    assert not close_thread.is_alive()
+
+
 def test_physically_truncated_tail_is_removed_without_losing_committed_frames(
     tmp_path: Path,
 ) -> None:
@@ -444,6 +566,25 @@ def test_physically_truncated_tail_is_removed_without_losing_committed_frames(
         ]
 
     assert path.read_bytes() == committed_bytes
+
+
+def test_anchor_confirmed_incomplete_tail_is_not_truncated(
+    tmp_path: Path,
+) -> None:
+    base_dir = tmp_path / "journal"
+    anchor = MemoryAnchor()
+    writer = open_writer(base_dir, anchor)
+    first = committed_frame(writer.commit([event()], {"goal_1": 0}))
+    writer.close()
+    path = journal_path(base_dir)
+    original = path.read_bytes()
+    path.write_bytes(original[:-12])
+
+    with pytest.raises(AnchorMismatchError):
+        open_writer(base_dir, anchor, writer_epoch=8)
+
+    assert path.read_bytes() == original[:-12]
+    assert anchor_position(anchor) == (first.sequence, first.frame_hash)
 
 
 def test_explicit_uncommitted_tail_is_removed(
@@ -533,6 +674,28 @@ def test_replay_validates_skipped_prefix_and_complete_hash_chain(
             list(writer.replay(from_sequence=2))
     finally:
         writer.close()
+
+
+def test_replay_rejects_event_and_version_key_mismatch(tmp_path: Path) -> None:
+    base_dir = tmp_path / "journal"
+    base_dir.mkdir(mode=0o700)
+    frame = TransactionFrame.seal(
+        tx_id="tx_mismatch",
+        sequence=1,
+        writer_epoch=7,
+        timestamp=1_750_000_000.0,
+        expected_versions={"other": 0},
+        aggregate_versions={"other": 1},
+        previous_hash=GENESIS_HASH,
+        events=(event("goal_1"),),
+        hmac_key=HMAC_KEY,
+    )
+    journal_path(base_dir).write_bytes(frame.to_bytes())
+    anchor = MemoryAnchor()
+    assert anchor.compare_and_swap(0, GENESIS_HASH, 1, frame.frame_hash)
+
+    with pytest.raises(JournalIntegrityError, match="aggregate"):
+        open_writer(base_dir, anchor)
 
 
 def test_compatibility_commit_frame_uses_the_canonical_journal_chain(

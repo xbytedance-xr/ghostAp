@@ -46,6 +46,23 @@ def blob_path(root: Path, ref: BlobRef) -> Path:
     return root / f"{ref.blob_hash}.blob"
 
 
+def test_new_store_fsyncs_parent_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "blobs"
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        blob_store_module,
+        "_fsync_directory",
+        lambda path: calls.append(Path(path)),
+    )
+
+    make_store(root)
+
+    assert calls == [tmp_path]
+
+
 def rewrite_envelope(root: Path, ref: BlobRef, **changes: object) -> BlobRef:
     original_path = blob_path(root, ref)
     envelope = json.loads(original_path.read_bytes())
@@ -55,10 +72,15 @@ def rewrite_envelope(root: Path, ref: BlobRef, **changes: object) -> BlobRef:
     rewritten_path = root / f"{rewritten_hash}.blob"
     rewritten_path.write_bytes(rewritten)
     rewritten_path.chmod(0o600)
+    rewritten_blob_hash = rewritten_hash
+    rewritten_payload_hash = str(envelope["payload_hash"])
     return replace(
         ref,
-        blob_hash=rewritten_hash,
-        payload_hash=str(envelope["payload_hash"]),
+        blob_hash=rewritten_blob_hash,
+        blob_id=rewritten_blob_hash,
+        ciphertext_hash=rewritten_blob_hash,
+        payload_hash=rewritten_payload_hash,
+        content_hash=rewritten_payload_hash,
         labels_hash=str(envelope["labels_hash"]),
         key_ref=str(envelope["key_ref"]),
     )
@@ -145,6 +167,26 @@ def test_existing_identical_content_address_is_idempotent(
     assert len(list((tmp_path / "blobs").glob("*.blob"))) == 1
 
 
+def test_existing_identical_content_address_fsyncs_directory_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(blob_store_module, "_random_nonce", lambda: b"\x03" * 12)
+    store = make_store(tmp_path / "blobs")
+    first = store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        blob_store_module,
+        "_fsync_directory",
+        lambda path: calls.append(Path(path)),
+    )
+
+    second = store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+
+    assert second == first
+    assert calls == [tmp_path / "blobs"]
+
+
 def test_existing_content_address_with_different_bytes_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -156,6 +198,47 @@ def test_existing_content_address_with_different_bytes_fails_closed(
 
     with pytest.raises(BlobIntegrityError, match="existing"):
         store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+
+
+def test_existing_content_address_rejects_symlink_and_non_regular_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(blob_store_module, "_random_nonce", lambda: b"\x04" * 12)
+    root = tmp_path / "blobs"
+    store = make_store(root)
+    ref = store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+    target = blob_path(root, ref)
+    raw = target.read_bytes()
+    target.unlink()
+    outside = tmp_path / "outside"
+    outside.write_bytes(raw)
+    target.symlink_to(outside)
+
+    with pytest.raises(BlobIntegrityError, match="regular"):
+        store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+
+    target.unlink()
+    target.mkdir()
+    with pytest.raises(BlobIntegrityError, match="regular"):
+        store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+
+
+def test_conflicting_blobref_hash_aliases_are_rejected() -> None:
+    with pytest.raises(ValueError, match="conflicting blob hash"):
+        BlobRef(
+            blob_hash="a" * 64,
+            blob_id="b" * 64,
+            ciphertext_hash="a" * 64,
+            payload_hash="c" * 64,
+        )
+
+    with pytest.raises(ValueError, match="conflicting payload hash"):
+        BlobRef(
+            blob_hash="a" * 64,
+            payload_hash="b" * 64,
+            content_hash="c" * 64,
+        )
 
 
 def test_blob_hash_tampering_fails_before_decryption(tmp_path: Path) -> None:
@@ -219,7 +302,14 @@ def test_reference_hashes_must_be_sha256_hex(tmp_path: Path) -> None:
     ref = store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
 
     with pytest.raises(BlobIntegrityError, match="blob hash"):
-        store.read(replace(ref, blob_hash="../../outside"))
+        store.read(
+            replace(
+                ref,
+                blob_hash="../../outside",
+                blob_id="../../outside",
+                ciphertext_hash="../../outside",
+            )
+        )
 
 
 def test_reference_labels_must_match_labels_hash(tmp_path: Path) -> None:
@@ -301,6 +391,26 @@ def test_publish_boundary_failure_never_returns_a_ref(
     assert not list(root.glob("*.tmp"))
 
 
+def test_read_permission_error_is_not_reported_as_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "blobs"
+    store = make_store(root)
+    ref = store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
+    original = Path.read_bytes
+
+    def fail(path: Path) -> bytes:
+        if path == blob_path(root, ref):
+            raise PermissionError("denied")
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail)
+
+    with pytest.raises(BlobIntegrityError, match="read failed"):
+        store.read(ref)
+
+
 def test_cleanup_orphan_temps_removes_only_blob_temp_files(tmp_path: Path) -> None:
     root = tmp_path / "blobs"
     store = make_store(root)
@@ -312,3 +422,21 @@ def test_cleanup_orphan_temps_removes_only_blob_temp_files(tmp_path: Path) -> No
     assert store.cleanup_orphan_temps() == 1
     assert not orphan.exists()
     assert unrelated.read_bytes() == b"not owned by BlobStore"
+
+
+def test_cleanup_orphan_temps_fsyncs_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "blobs"
+    store = make_store(root)
+    (root / ".blob-orphan.tmp").write_bytes(b"partial")
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        blob_store_module,
+        "_fsync_directory",
+        lambda path: calls.append(Path(path)),
+    )
+
+    assert store.cleanup_orphan_temps() == 1
+    assert calls == [root]

@@ -3,8 +3,11 @@ from typing import Any
 
 import pytest
 
+import src.autonomous.journal.blob_store as blob_store_module
 from src.autonomous.journal import (
+    AesGcmEncryptionProvider,
     BlobRef,
+    BlobStore,
     JournalIntegrityError,
     JournalWriter,
     MemoryAnchor,
@@ -12,6 +15,7 @@ from src.autonomous.journal import (
 from src.autonomous.journal.frame import JournalEvent
 
 HMAC_KEY = b"journal-blob-chaos-test-key-at-least-32-bytes"
+BLOB_KEY = b"0123456789abcdef0123456789abcdef"
 
 
 def blob_event(blob_ref: BlobRef) -> JournalEvent:
@@ -72,11 +76,45 @@ def test_blob_stage_failure_never_produces_a_journal_frame(tmp_path: Path) -> No
     writer.close()
 
 
+@pytest.mark.parametrize(
+    "boundary",
+    ["_write_bytes", "_fsync_file", "_atomic_replace", "_fsync_directory"],
+)
+def test_real_blob_publish_failure_never_produces_a_journal_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    base_dir = tmp_path / "journal"
+    writer = open_writer(base_dir, MemoryAnchor())
+    store = BlobStore(
+        tmp_path / "blobs",
+        AesGcmEncryptionProvider(lambda _key_ref: BLOB_KEY),
+    )
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError(f"injected {boundary} failure")
+
+    monkeypatch.setattr(blob_store_module, boundary, fail)
+
+    with pytest.raises(Exception, match="injected"):
+        ref = store.stage_and_publish(
+            b"sensitive model output",
+            labels={"purpose": "evidence"},
+            key_ref="tenant-key-v1",
+        )
+        writer.commit([blob_event(ref)], {"run_1": 0})
+
+    assert list(writer.replay(from_sequence=1)) == []
+    writer.close()
+
+
 def test_published_blob_must_validate_before_blobref_frame_commit(
     tmp_path: Path,
 ) -> None:
     base_dir = tmp_path / "journal"
     anchor = MemoryAnchor()
+    blob_id = "b" * 64
     published: set[str] = set()
 
     def validate(blob_ref: BlobRef) -> bool:
@@ -87,9 +125,9 @@ def test_published_blob_must_validate_before_blobref_frame_commit(
 
     writer = open_writer(base_dir, anchor, blob_ref_validator=validate)
     ref = BlobRef(
-        blob_id="blob_published",
+        blob_id=blob_id,
         content_hash="a" * 64,
-        ciphertext_hash="b" * 64,
+        ciphertext_hash=blob_id,
         size=22,
         labels={"purpose": "evidence"},
         key_ref="tenant-key-v1",
@@ -100,7 +138,7 @@ def test_published_blob_must_validate_before_blobref_frame_commit(
         writer.commit([blob_event(ref)], {"run_1": 0})
     assert (base_dir / "journal.jsonl").read_bytes() == journal_before_publish
 
-    published.add("blob_published")
+    published.add(blob_id)
     result = writer.commit([blob_event(ref)], {"run_1": 0})
     assert getattr(result, "frame", result).sequence == 1
     writer.close()
@@ -111,7 +149,8 @@ def test_missing_blob_referenced_by_valid_frame_fails_closed_on_restart(
 ) -> None:
     base_dir = tmp_path / "journal"
     anchor = MemoryAnchor()
-    existing = {"blob_existing"}
+    blob_id = "d" * 64
+    existing = {blob_id}
 
     def validate(blob_ref: BlobRef) -> bool:
         blob_id = getattr(blob_ref, "blob_id", None)
@@ -120,9 +159,9 @@ def test_missing_blob_referenced_by_valid_frame_fails_closed_on_restart(
         return blob_id in existing
 
     ref = BlobRef(
-        blob_id="blob_existing",
+        blob_id=blob_id,
         content_hash="c" * 64,
-        ciphertext_hash="d" * 64,
+        ciphertext_hash=blob_id,
         size=19,
         labels={"purpose": "tool_result"},
         key_ref="tenant-key-v1",
