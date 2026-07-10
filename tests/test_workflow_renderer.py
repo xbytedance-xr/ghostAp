@@ -677,28 +677,30 @@ class TestRenderCompletionCard(unittest.TestCase):
             return content
 
         all_content = " ".join(extract_markdown(card["elements"]))
-        self.assertIn("代理", all_content)
-        self.assertIn("Token", all_content)
+        self.assertIn("耗时", all_content)
+        self.assertIn("阶段", all_content)
+        self.assertIn("验证", all_content)
 
     def test_elements_contain_phase_summary(self):
         project = self._make_project()
         card = render_completion_card(project)
-        all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
+        all_content = self._extract_all_text(card["elements"])
         self.assertIn("Analysis", all_content)
 
-    def test_elements_contain_result_preview(self):
+    def test_unstructured_result_uses_neutral_conclusion(self):
         project = self._make_project(result="Found 3 issues.")
         card = render_completion_card(project)
-        all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
-        self.assertIn("Found 3 issues", all_content)
+        all_content = self._extract_all_text(card["elements"])
+        self.assertIn("任务已完成，完整结果见报告", all_content)
+        self.assertNotIn("Found 3 issues", all_content)
 
     def test_completed_card_without_result_still_has_report_notice(self):
         project = self._make_project(result="")
         card = render_completion_card(project)
         all_content = self._extract_all_text(card["elements"])
 
-        self.assertIn("执行结果", all_content)
-        self.assertIn("没有返回最终结果", all_content)
+        self.assertIn("结论", all_content)
+        self.assertIn("任务已完成，完整结果见报告", all_content)
 
     def test_failed_shows_error_message(self):
         project = self._make_project(status=WorkflowStatus.FAILED, error="Runtime timeout exceeded")
@@ -706,16 +708,21 @@ class TestRenderCompletionCard(unittest.TestCase):
         all_content = " ".join(e.get("content", "") for e in card["elements"] if e.get("tag") == "markdown")
         self.assertIn("Runtime timeout", all_content)
 
-    def test_completion_card_surfaces_final_report_and_process_summary(self):
-        long_context = "背景说明 " * 80
+    def test_completion_card_surfaces_result_brief_and_process_summary(self):
         result = {
-            "final_report": (
-                f"{long_context}\n"
-                "最终结论：需要增加目标完成度监控，并在任务结束后展示执行报告。"
-            ),
-            "verification": {
-                "summary": "验证通过：报告包含任务结果、过程摘要和后续风险。",
-                "risks": ["若完成卡被晚到进度覆盖，用户仍会只看到进度。"],
+            "card_summary": {
+                "verdict": "passed",
+                "conclusion": "已增加目标完成度监控，并展示任务结果简报。",
+                "findings": [
+                    {"severity": "medium", "text": "晚到进度可能覆盖终态结果。"},
+                ],
+                "verification": [
+                    {"status": "passed", "text": "结果、过程和风险回归通过。"},
+                ],
+                "deliverables": [
+                    {"type": "code", "text": "Workflow 完成卡实现。"},
+                ],
+                "next_steps": ["观察真实飞书移动端阅读体验。"],
             },
         }
         project = self._make_project(
@@ -756,20 +763,30 @@ class TestRenderCompletionCard(unittest.TestCase):
         card = render_completion_card(project)
         all_content = self._extract_all_text(card["elements"])
 
-        self.assertIn("执行报告", all_content)
-        self.assertIn("最终结论：需要增加目标完成度监控", all_content)
-        self.assertIn("验证通过：报告包含任务结果、过程摘要和后续风险", all_content)
+        self.assertIn("已增加目标完成度监控", all_content)
+        self.assertIn("晚到进度可能覆盖终态结果", all_content)
+        self.assertIn("结果、过程和风险回归通过", all_content)
+        self.assertIn("Workflow 完成卡实现", all_content)
+        self.assertIn("观察真实飞书移动端阅读体验", all_content)
         self.assertIn("阶段", all_content)
         self.assertIn("Routing", all_content)
         self.assertIn("Execution", all_content)
         self.assertIn("Verification", all_content)
 
-    def test_completion_card_with_html_report_does_not_embed_truncated_result(self):
-        """When a full artifact exists, the card still shows a truncated result summary."""
+    def test_completion_card_with_html_report_shows_complete_brief_without_truncation(self):
         sentinel = "FINAL_SENTINEL_AFTER_LONG_CONTENT"
         result = {
+            "card_summary": {
+                "verdict": "needs_attention",
+                "conclusion": "两项事实错误必须修正。",
+                "findings": [
+                    {"severity": "high", "text": "Freshness Gate 已有三段式重试闭环。"},
+                    {"severity": "low", "text": ("完整长发现" * 1200) + sentinel},
+                ],
+                "verification": [{"status": "failed", "text": "评审未通过。"}],
+                "next_steps": ["修正事实错误后重新评审。"],
+            },
             "final_report": ("完整报告 " * 1200) + sentinel,
-            "verification": "验证通过",
         }
         project = self._make_project(result=json.dumps(result, ensure_ascii=False))
 
@@ -784,8 +801,64 @@ class TestRenderCompletionCard(unittest.TestCase):
         all_content = self._extract_all_text(card["elements"])
 
         self.assertIn("完整 HTML 报告已发送", all_content)
-        self.assertIn("执行报告", all_content)
+        self.assertIn("两项事实错误必须修正", all_content)
+        self.assertIn("Freshness Gate 已有三段式重试闭环", all_content)
+        self.assertIn("评审未通过", all_content)
+        self.assertIn("修正事实错误后重新评审", all_content)
+        self.assertIn("另有 1 条", all_content)
+        self.assertNotIn("内容已截断", all_content)
         self.assertNotIn(sentinel, all_content)
+
+    def test_completion_card_keeps_result_before_collapsed_process(self):
+        project = self._make_project(
+            result=json.dumps(
+                {"card_summary": {"verdict": "passed", "conclusion": "目标已完成。"}},
+                ensure_ascii=False,
+            )
+        )
+
+        card = render_completion_card(project)
+
+        conclusion_index = next(
+            index for index, element in enumerate(card["elements"])
+            if "目标已完成" in str(element)
+        )
+        process_index = next(
+            index for index, element in enumerate(card["elements"])
+            if element.get("tag") == "collapsible_panel" and "执行过程" in str(element)
+        )
+        self.assertLess(conclusion_index, process_index)
+        self.assertFalse(card["elements"][process_index]["expanded"])
+
+    def test_completion_card_stays_under_payload_limit_without_slicing_result_items(self):
+        findings = [
+            {"severity": "medium", "text": f"完整发现 {index}: " + ("证据" * 120)}
+            for index in range(100)
+        ]
+        project = self._make_project(
+            result=json.dumps(
+                {
+                    "card_summary": {
+                        "verdict": "needs_attention",
+                        "conclusion": "需要处理。",
+                        "findings": findings,
+                    }
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        card = render_completion_card(
+            project,
+            report_status={"generated": True, "attachment_sent": True},
+        )
+        payload = json.dumps(card, ensure_ascii=False).encode("utf-8")
+        all_content = self._extract_all_text(card["elements"])
+
+        self.assertLessEqual(len(payload), 28_000)
+        self.assertIn("需要处理", all_content)
+        self.assertIn("详见报告", all_content)
+        self.assertNotIn("内容已截断", all_content)
 
     def test_workflow_report_files_preserve_full_result_and_escape_html(self):
         """Full HTML/Markdown artifacts should carry untruncated result content safely."""
@@ -954,7 +1027,14 @@ class TestAgentOutputDefensiveCheck(unittest.TestCase):
             setattr(renderer_mod, "_AGENT_OUTPUT_FORBIDDEN_MARKERS", (self.SENTINEL,))
             project = self._make_project(
                 status=WorkflowStatus.COMPLETED,
-                result=f"leaked {self.SENTINEL} here",
+                result=json.dumps(
+                    {
+                        "card_summary": {
+                            "verdict": "passed",
+                            "conclusion": f"leaked {self.SENTINEL} here",
+                        }
+                    }
+                ),
             )
             with self.assertRaises(RuntimeError) as ctx:
                 render_completion_card(project)

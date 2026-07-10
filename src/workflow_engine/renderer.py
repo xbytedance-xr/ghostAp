@@ -14,6 +14,14 @@ from .models import (
     WorkflowProject,
     WorkflowStatus,
 )
+from .result_brief import (
+    BriefItem,
+    BriefSeverity,
+    BriefVerdict,
+    WorkflowResultBrief,
+    build_result_brief,
+    fit_result_brief,
+)
 
 # ---------------------------------------------------------------------------
 # Internal: string helpers
@@ -89,8 +97,6 @@ WORKFLOW_STATUS_ICONS: dict[WorkflowStatus, str] = {
 _PHASE_AGENT_DISPLAY_LIMIT = 20
 _PHASE_COMPLETED_TAIL = 5
 _CARD_MAX_BYTES = 28_000  # Feishu card payload limit with safety margin
-_COMPLETION_REPORT_MAX_CHARS = 4_000
-_COMPLETION_SECTION_MAX_CHARS = 2_000
 
 
 # ---------------------------------------------------------------------------
@@ -759,149 +765,85 @@ def render_script_preview(
     return result
 
 
-def _truncate_completion_text(text: str, limit: int) -> str:
-    """Truncate completion report text while preserving valid markdown."""
-    text = _strip_internal_details(str(text or "").strip())
-    if len(text) <= limit:
-        return text
-    trimmed = text[:limit].rstrip()
-    last_newline = trimmed.rfind("\n")
-    if last_newline > limit // 2:
-        trimmed = trimmed[:last_newline].rstrip()
-    return f"{trimmed}\n\n_(内容已截断)_"
+_VERDICT_LABELS = {
+    BriefVerdict.PASSED: "通过",
+    BriefVerdict.NEEDS_ATTENTION: "需处理",
+    BriefVerdict.FAILED: "失败",
+    BriefVerdict.UNKNOWN: "待确认",
+}
+
+_FINDING_ICONS = {
+    BriefSeverity.HIGH: "🔴",
+    BriefSeverity.MEDIUM: "🟡",
+    BriefSeverity.LOW: "🔵",
+    BriefSeverity.INFO: "•",
+}
 
 
-def _parse_result_payload(raw_result: str) -> Any | None:
-    """Best-effort parse of Workflow JS return values encoded as JSON."""
-    raw_result = str(raw_result or "").strip()
-    if not raw_result or raw_result[0] not in "[{":
-        return None
-    try:
-        return json.loads(raw_result)
-    except (TypeError, json.JSONDecodeError, ValueError):
-        return None
+def _brief_section_markdown(
+    title: str,
+    items: list[BriefItem],
+    *,
+    omitted: int = 0,
+    finding_icons: bool = False,
+) -> str:
+    """Render complete brief items and one semantic overflow counter."""
+    lines = [f"**{title}**"]
+    for item in items:
+        prefix = _FINDING_ICONS[item.severity] if finding_icons else "-"
+        lines.append(f"{prefix} {_escape_md(item.text)}")
+    if omitted:
+        lines.append(f"- 另有 {omitted} 条完整内容，详见报告")
+    return "\n".join(lines)
 
 
-def _humanize_result_key(key: str) -> str:
-    labels = {
-        "summary": "摘要",
-        "final_report": "最终报告",
-        "report": "报告",
-        "result": "结果",
-        "output": "输出",
-        "status": "状态",
-        "conclusion": "结论",
-        "verification": "验证",
-        "reviews": "评审",
-        "risks": "风险",
-        "risk": "风险",
-        "findings": "发现",
-        "recommendations": "建议",
-        "next_steps": "后续",
-        "worker_findings": "执行发现",
-        "parallel_results": "并行结果",
-        "results": "结果",
-    }
-    return labels.get(key, key.replace("_", " "))
-
-
-def _format_result_value(value: Any, *, max_chars: int = _COMPLETION_SECTION_MAX_CHARS) -> str:
-    """Format a scalar/list/dict result payload into compact markdown text."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return _truncate_completion_text(value, max_chars)
-    if isinstance(value, (int, float, bool)):
-        return str(value)
-    if isinstance(value, list):
-        lines: list[str] = []
-        for idx, item in enumerate(value[:8], 1):
-            item_text = _format_result_value(item, max_chars=280).replace("\n", "；")
-            if item_text:
-                lines.append(f"{idx}. {item_text}")
-        if len(value) > 8:
-            lines.append(f"... 还有 {len(value) - 8} 项")
-        return _truncate_completion_text("\n".join(lines), max_chars)
-    if isinstance(value, dict):
-        priority = [
-            "summary",
-            "conclusion",
-            "status",
-            "result",
-            "output",
-            "findings",
-            "risks",
-            "recommendations",
-            "next_steps",
-            "reviews",
-        ]
-        ordered_keys = [key for key in priority if key in value]
-        ordered_keys.extend(key for key in value.keys() if key not in ordered_keys)
-
-        lines = []
-        for key in ordered_keys[:10]:
-            item_text = _format_result_value(value.get(key), max_chars=320).replace("\n", "；")
-            if item_text:
-                lines.append(f"- {_humanize_result_key(key)}: {item_text}")
-        if len(ordered_keys) > 10:
-            lines.append(f"... 还有 {len(ordered_keys) - 10} 个字段")
-        return _truncate_completion_text("\n".join(lines), max_chars)
-
-    return _truncate_completion_text(str(value), max_chars)
-
-
-def _completion_report_markdown(raw_result: str) -> str:
-    """Build a user-facing report from the workflow's final return value."""
-    payload = _parse_result_payload(raw_result)
-    if payload is None:
-        body = _format_result_value(raw_result, max_chars=_COMPLETION_REPORT_MAX_CHARS)
-        return f"**执行报告**\n{body}"
-
-    if not isinstance(payload, dict):
-        body = _format_result_value(payload, max_chars=_COMPLETION_REPORT_MAX_CHARS)
-        return f"**执行报告**\n{body}"
-
+def _render_result_brief_elements(brief: WorkflowResultBrief) -> list[dict[str, Any]]:
+    """Render the fixed result-first information hierarchy."""
+    elements: list[dict[str, Any]] = [
+        _md_element(f"**结论**\n{_escape_md(brief.conclusion)}"),
+    ]
     section_plan = [
-        ("final_report", "执行报告", _COMPLETION_REPORT_MAX_CHARS),
-        ("report", "执行报告", _COMPLETION_REPORT_MAX_CHARS),
-        ("summary", "执行摘要", _COMPLETION_SECTION_MAX_CHARS),
-        ("result", "任务结果", _COMPLETION_SECTION_MAX_CHARS),
-        ("output", "任务结果", _COMPLETION_SECTION_MAX_CHARS),
-        ("verification", "验证摘要", _COMPLETION_SECTION_MAX_CHARS),
-        ("reviews", "评审摘要", _COMPLETION_SECTION_MAX_CHARS),
-        ("risks", "风险提示", _COMPLETION_SECTION_MAX_CHARS),
-        ("next_steps", "后续建议", _COMPLETION_SECTION_MAX_CHARS),
+        ("关键发现", "findings", brief.findings, True),
+        ("验证", "verification", brief.verification, False),
+        ("交付物", "deliverables", brief.deliverables, False),
+        ("下一步", "next_steps", brief.next_steps, False),
     ]
-    sections: list[tuple[str, str]] = []
-    used_keys: set[str] = set()
-    used_titles: set[str] = set()
-    for key, title, limit in section_plan:
-        if key not in payload:
+    for title, key, items, finding_icons in section_plan:
+        omitted = brief.omitted_counts.get(key, 0)
+        if not items and not omitted:
             continue
-        text = _format_result_value(payload.get(key), max_chars=limit)
-        if not text:
-            continue
-        if title in used_titles:
-            title = _humanize_result_key(key)
-        sections.append((title, text))
-        used_keys.add(key)
-        used_titles.add(title)
+        elements.append(
+            _md_element(
+                _brief_section_markdown(
+                    title,
+                    items,
+                    omitted=omitted,
+                    finding_icons=finding_icons,
+                )
+            )
+        )
+    return elements
 
-    if not sections:
-        body = _format_result_value(payload, max_chars=_COMPLETION_REPORT_MAX_CHARS)
-        return f"**执行报告**\n{body}"
 
-    important_unknowns = [
-        key
-        for key in ("worker_findings", "parallel_results", "results", "findings", "recommendations")
-        if key in payload and key not in used_keys
-    ]
-    for key in important_unknowns[:3]:
-        text = _format_result_value(payload.get(key), max_chars=600)
-        if text:
-            sections.append((_humanize_result_key(key), text))
+def _card_text_for_result_brief(
+    brief: WorkflowResultBrief,
+    forbidden_markers: tuple[str, ...],
+) -> None:
+    """Run the defensive output gate before Markdown escaping changes text."""
+    raw_elements = [_md_element(brief.conclusion)]
+    for items in (brief.findings, brief.verification, brief.deliverables, brief.next_steps):
+        raw_elements.extend(_md_element(item.text) for item in items)
+    _card_text_for_agent_output(raw_elements, forbidden_markers)
 
-    return "\n\n".join(f"**{title}**\n{text}" for title, text in sections)
+
+def _complete_text_or_default(value: Any, *, max_bytes: int, default: str) -> str:
+    """Keep a complete status value or replace it with a semantic fallback."""
+    text = _strip_internal_details(str(value or "").strip())
+    if not text:
+        return default
+    if len(text.encode("utf-8", errors="surrogatepass")) > max_bytes:
+        return default
+    return text
 
 
 def _completion_process_markdown(
@@ -968,20 +910,38 @@ def _completion_report_status_markdown(report_status: dict[str, Any]) -> str:
         return "📎 **完整 HTML 报告已发送**\n- 附件已回复到当前 Workflow 话题，包含完整结论、原始结果和执行详情。"
 
     if report_status.get("generated"):
-        html_path = report_status.get("html_path") or ""
-        markdown_path = report_status.get("markdown_path") or ""
-        error = report_status.get("error") or "附件发送失败"
+        html_path = report_status.get("html_filename") or report_status.get("html_path") or ""
+        markdown_path = report_status.get("markdown_filename") or report_status.get("markdown_path") or ""
+        error = _complete_text_or_default(
+            report_status.get("error"),
+            max_bytes=600,
+            default="附件发送失败，详情请查看服务日志",
+        )
         lines = [
             "📎 **完整 HTML 报告已生成，附件发送失败**",
             f"- 原因: {_escape_md(str(error))}",
         ]
         if html_path:
-            lines.append(f"- HTML: `{_escape_md(str(html_path))}`")
+            safe_html = _complete_text_or_default(
+                html_path,
+                max_bytes=800,
+                default="本地 HTML 报告",
+            )
+            lines.append(f"- HTML: `{_escape_md(safe_html)}`")
         if markdown_path:
-            lines.append(f"- Markdown: `{_escape_md(str(markdown_path))}`")
+            safe_markdown = _complete_text_or_default(
+                markdown_path,
+                max_bytes=800,
+                default="本地 Markdown 报告",
+            )
+            lines.append(f"- Markdown: `{_escape_md(safe_markdown)}`")
         return "\n".join(lines)
 
-    error = report_status.get("error") or "未知错误"
+    error = _complete_text_or_default(
+        report_status.get("error"),
+        max_bytes=600,
+        default="未知错误，详情请查看服务日志",
+    )
     return f"📎 **HTML 报告生成失败**\n- 原因: {_escape_md(str(error))}"
 
 
@@ -990,15 +950,17 @@ def render_completion_card(
     *,
     report_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Render a final completion card summarizing the workflow run.
-
-    Returns a dict with 'header' and 'elements' ready for Feishu card.
-    """
+    """Render a result-first completion card without slicing result items."""
     status = project.status
     metrics = project.metrics
+    brief = fit_result_brief(build_result_brief(project.result))
+    _card_text_for_result_brief(brief, _AGENT_OUTPUT_FORBIDDEN_MARKERS)
 
-    # Header color
-    if status == WorkflowStatus.COMPLETED:
+    if status == WorkflowStatus.COMPLETED and brief.verdict == BriefVerdict.NEEDS_ATTENTION:
+        template = "orange"
+        icon = "⚠️"
+        title_suffix = "需修正"
+    elif status == WorkflowStatus.COMPLETED:
         template = "green"
         icon = "\u2705"
         title_suffix = "完成"
@@ -1015,24 +977,35 @@ def render_completion_card(
         icon = "\u2705"
         title_suffix = "完成"
 
-    name = project.name or "Workflow"
+    name = _middle_ellipsis(project.name or "Workflow", 32)
+    header = {
+        "title": {"tag": "plain_text", "content": f"{icon} {name} — {title_suffix}"},
+        "template": template,
+    }
 
     elements: list[dict[str, Any]] = []
 
-    # Summary section
     elapsed = 0.0
     if project.started_at:
         end_time = project.finished_at or time.time()
         elapsed = end_time - project.started_at
 
-    # Task description
-    elements.append(_md_element(f"**任务**: {_escape_md(project.requirement[:200]) if project.requirement else name}"))
+    task_text = _complete_text_or_default(
+        project.requirement,
+        max_bytes=600,
+        default=project.name or "Workflow",
+    )
+    elements.append(_md_element(f"**任务**: {_escape_md(task_text)}"))
 
     total_phases = len(project.phases)
     completed_phases = sum(
         1
         for phase in project.phases
-        if all(a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED) for a in phase.agents)
+        if (
+            all(a.status in (AgentStatus.DONE, AgentStatus.CACHED, AgentStatus.CANCELLED) for a in phase.agents)
+            if phase.agents
+            else bool(phase.finished_at)
+        )
     )
     phase_agents = [agent for phase in project.phases for agent in phase.agents]
     total_agents_count = metrics.total_agents or len(phase_agents)
@@ -1041,11 +1014,11 @@ def render_completion_card(
     )
     failed_agents_count = metrics.failed_agents or sum(1 for agent in phase_agents if agent.status == AgentStatus.FAILED)
     cached_agents_count = metrics.cached_agents or sum(1 for agent in phase_agents if agent.status == AgentStatus.CACHED)
-    total_tokens = metrics.total_tokens or sum(agent.token_usage for agent in phase_agents)
-    total_agents_for_rate = max(total_agents_count, 1)
-    success_rate = int((completed_agents_count / total_agents_for_rate) * 100)
+    verdict_label = _VERDICT_LABELS[brief.verdict]
+    high_risk_count = sum(1 for item in brief.findings if item.severity == BriefSeverity.HIGH)
+    outcome_count = high_risk_count if high_risk_count else len(brief.deliverables)
+    outcome_label = "高风险" if high_risk_count else "交付物"
 
-    # Compact 4-stat row
     elements.append(
         _column_set(
             [
@@ -1060,12 +1033,12 @@ def render_completion_card(
                     vertical_align="center",
                 ),
                 _column(
-                    [_md_element(f"**{success_rate}%**\n<font color='grey'>成功率</font>", text_align="center")],
+                    [_md_element(f"**{verdict_label}**\n<font color='grey'>验证</font>", text_align="center")],
                     weight=1,
                     vertical_align="center",
                 ),
                 _column(
-                    [_md_element(f"**{_format_tokens(total_tokens)}**\n<font color='grey'>Token</font>", text_align="center")],
+                    [_md_element(f"**{outcome_count}**\n<font color='grey'>{outcome_label}</font>", text_align="center")],
                     weight=1,
                     vertical_align="center",
                 ),
@@ -1074,63 +1047,65 @@ def render_completion_card(
         )
     )
 
-    # Process summary — placed early for at-a-glance visibility
+    elements.append(_hr_element())
+    elements.extend(_render_result_brief_elements(brief))
+
     if project.phases:
         elements.append(_hr_element())
         elements.append(
-            _md_element(
-                _completion_process_markdown(
-                    project,
-                    completed_phases=completed_phases,
-                    total_phases=total_phases,
-                    completed_agents=completed_agents_count,
-                    total_agents=total_agents_count,
-                    failed_agents=failed_agents_count,
-                    cached_agents=cached_agents_count,
-                )
+            _collapsible_panel(
+                "执行过程",
+                [
+                    _md_element(
+                        _completion_process_markdown(
+                            project,
+                            completed_phases=completed_phases,
+                            total_phases=total_phases,
+                            completed_agents=completed_agents_count,
+                            total_agents=total_agents_count,
+                            failed_agents=failed_agents_count,
+                            cached_agents=cached_agents_count,
+                        )
+                    )
+                ],
+                expanded=False,
+                template="grey",
             )
         )
 
-    # Execution result summary
-    has_full_report_file = bool(report_status and report_status.get("generated"))
-    if project.result and has_full_report_file:
-        elements.append(_hr_element())
-        elements.append(_md_element(_completion_report_markdown(project.result)))
-    elif project.result:
-        elements.append(_hr_element())
-        elements.append(_md_element(_completion_report_markdown(project.result)))
-    elif status == WorkflowStatus.COMPLETED:
-        elements.append(_hr_element())
-        elements.append(
-            _md_element(
-                "**执行结果**\n"
-                "本次 Workflow 没有返回最终结果；请参考上方执行过程确认阶段和代理执行情况。"
-            )
-        )
-
-    # Report attachment status
     if report_status:
         elements.append(_hr_element())
         elements.append(_md_element(_completion_report_status_markdown(report_status)))
 
-    # Error message for failed workflows
     if status == WorkflowStatus.FAILED and project.error:
         elements.append(_hr_element())
-        safe_project_err = _strip_internal_details(project.error[:200])
+        safe_project_err = _complete_text_or_default(
+            project.error,
+            max_bytes=600,
+            default="错误详情过长，请查看服务日志",
+        )
         elements.append(_md_element(f"\u274c **错误**: {safe_project_err}"))
 
-    # Defensive check: ensure no accidental agent-output sentinel leaks
-    # into rendered card text. Default markers tuple is empty → no-op.
     _card_text_for_agent_output(elements, _AGENT_OUTPUT_FORBIDDEN_MARKERS)
-    elements = _enforce_card_size(elements)
+    card = {"header": header, "elements": elements}
+    if len(json.dumps(card, ensure_ascii=False).encode("utf-8", errors="surrogatepass")) <= _CARD_MAX_BYTES:
+        return card
 
-    return {
-        "header": {
-            "title": {"tag": "plain_text", "content": f"{icon} {name} — {title_suffix}"},
-            "template": template,
-        },
-        "elements": elements,
-    }
+    hidden_items = sum(brief.omitted_counts.values()) + sum(
+        len(items)
+        for items in (brief.findings, brief.verification, brief.deliverables, brief.next_steps)
+    )
+    minimal_elements = [_md_element(f"**结论**\n{_escape_md(brief.conclusion)}")]
+    if hidden_items:
+        minimal_elements.append(_md_element(f"另有 {hidden_items} 条完整内容，详见报告"))
+    if report_status:
+        minimal_elements.append(_hr_element())
+        minimal_elements.append(_md_element(_completion_report_status_markdown(report_status)))
+    if status == WorkflowStatus.FAILED and project.error:
+        minimal_elements.append(_hr_element())
+        minimal_elements.append(_md_element(f"\u274c **错误**: {safe_project_err}"))
+    _card_text_for_agent_output(minimal_elements, _AGENT_OUTPUT_FORBIDDEN_MARKERS)
+    return {"header": header, "elements": minimal_elements}
 
 
 # ---------------------------------------------------------------------------
