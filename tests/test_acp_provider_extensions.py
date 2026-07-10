@@ -58,6 +58,10 @@ def test_codex_provider_name():
     assert CodexProvider().name == "codex"
 
 
+def test_codex_fallback_package_is_official_agentclientprotocol_adapter():
+    assert CODEX_ACP_NPM_PACKAGE == "@agentclientprotocol/codex-acp@1.1.2"
+
+
 @patch("src.acp.providers.shutil.which")
 @patch("src.acp.sync_adapter._probe_acp_serve_help")
 def test_codex_provider_availability(mock_probe, mock_which):
@@ -92,7 +96,7 @@ def test_codex_provider_serve_command_model_style_short(mock_probe):
 
 @patch("src.acp.providers.shutil.which")
 @patch("src.acp.sync_adapter._probe_acp_serve_help")
-def test_codex_provider_falls_back_to_zed_codex_acp_when_native_serve_missing(mock_probe, mock_which):
+def test_codex_provider_falls_back_to_official_codex_acp_when_native_serve_missing(mock_probe, mock_which):
     mock_probe.return_value = (False, 2, "", "error: unrecognized subcommand 'serve'")
     mock_which.return_value = "/usr/bin/npx"
 

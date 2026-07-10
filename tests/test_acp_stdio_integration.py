@@ -72,7 +72,7 @@ _FAKE_AGENT_CODE = textwrap.dedent(
 
     async def main():
         reader, writer = await _make_stdio_streams()
-        conn = AgentSideConnection(FakeAgent(), writer, reader, listening=True)
+        conn = AgentSideConnection(FakeAgent(), writer, reader, listening=False)
         await conn.listen()
 
 

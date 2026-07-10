@@ -29,6 +29,11 @@ class TestACPSessionSetModel(unittest.IsolatedAsyncioTestCase):
         session = ACPSession.__new__(ACPSession)
         session._agent_cmd = "coco"
         session._conn = AsyncMock()
+        session._conn.set_config_option = None
+        session._conn.setConfigOption = None
+        session._conn.set_session_config_option = None
+        session._conn.setSessionConfigOption = None
+        session._conn._conn = None
         session._session_id = "sess-abc123"
 
         result = await session.set_model("gpt-5.2")
@@ -44,10 +49,48 @@ class TestACPSessionSetModel(unittest.IsolatedAsyncioTestCase):
         session = ACPSession.__new__(ACPSession)
         session._agent_cmd = "coco"
         session._conn = AsyncMock()
+        session._conn.set_config_option = None
+        session._conn.setConfigOption = None
+        session._conn.set_session_config_option = None
+        session._conn.setSessionConfigOption = None
+        session._conn._conn = None
         session._conn.set_session_model.side_effect = RuntimeError("not supported")
         session._session_id = "sess-abc123"
 
         result = await session.set_model("gpt-5.2")
+        assert result is False
+
+    async def test_set_model_prefers_config_option_protocol(self):
+        from src.acp.session import ACPSession
+
+        session = ACPSession.__new__(ACPSession)
+        session._agent_cmd = "npx"
+        session._conn = AsyncMock()
+        session._session_id = "sess-abc123"
+
+        result = await session.set_model("gpt-5.6-sol")
+
+        session._conn.set_config_option.assert_awaited_once_with(
+            session_id="sess-abc123",
+            config_id="model",
+            value="gpt-5.6-sol",
+        )
+        session._conn.set_session_model.assert_not_awaited()
+        assert result is True
+
+    async def test_set_model_config_option_failure_does_not_fall_back_to_set_model(self):
+        from src.acp.session import ACPSession
+
+        session = ACPSession.__new__(ACPSession)
+        session._agent_cmd = "npx"
+        session._conn = AsyncMock()
+        session._conn.set_config_option.side_effect = RuntimeError("Internal error")
+        session._session_id = "sess-abc123"
+
+        result = await session.set_model("gpt-5.6-sol")
+
+        session._conn.set_config_option.assert_awaited_once()
+        session._conn.set_session_model.assert_not_awaited()
         assert result is False
 
     async def test_set_model_raises_when_not_started(self):

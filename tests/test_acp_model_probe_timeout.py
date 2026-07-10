@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import src.acp.helper as _helper_mod
@@ -6,7 +7,7 @@ from src.acp.helper import fetch_acp_models
 from src.coco_model.manager import DEFAULT_MODELS
 
 
-def test_fetch_acp_models_times_out_and_returns_current_model(monkeypatch, tmp_path):
+def test_fetch_codex_models_timeout_returns_empty_without_adapter_models(monkeypatch, tmp_path):
     async def slow_probe(_tool_name, _cwd, _current_model):
         await asyncio.sleep(1)
         return []
@@ -25,13 +26,15 @@ def test_fetch_acp_models_times_out_and_returns_current_model(monkeypatch, tmp_p
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.5
-    assert [m.name for m in models] == ["current-fast-fallback"]
-    assert models[0].is_default is True
+    assert models == []
 
 
-def test_fetch_codex_models_uses_local_codex_cache_without_live_probe(monkeypatch, tmp_path):
-    async def probe_should_not_run(*_args, **_kwargs):  # pragma: no cover
-        raise AssertionError("codex fallback should not require live model probe")
+def test_fetch_codex_models_does_not_use_local_codex_cache_after_empty_probe(monkeypatch, tmp_path):
+    probe_calls = []
+
+    async def empty_probe(*args, **_kwargs):
+        probe_calls.append(args)
+        return []
 
     codex_home = tmp_path / ".codex"
     codex_home.mkdir()
@@ -49,18 +52,23 @@ def test_fetch_codex_models_uses_local_codex_cache_without_live_probe(monkeypatc
     )
 
     _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe_should_not_run)
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", empty_probe)
 
     models = fetch_acp_models("codex", cwd="/tmp/ghostap", probe_timeout=0.1)
 
-    assert [m.name for m in models] == ["gpt-5.5", "gpt-5.4"]
-    assert models[0].is_default is True
+    assert len(probe_calls) == 1
+    assert models == []
 
 
-def test_fetch_codex_models_current_model_marks_default_without_collapsing_cache(monkeypatch, tmp_path):
-    async def probe_should_not_run(*_args, **_kwargs):  # pragma: no cover
-        raise AssertionError("codex fallback should not require live model probe")
+def test_fetch_codex_models_does_not_use_local_codex_cache_for_current_model_after_empty_probe(monkeypatch, tmp_path):
+    probe_calls = []
+
+    async def empty_probe(*args, **_kwargs):
+        probe_calls.append(args)
+        return []
 
     codex_home = tmp_path / ".codex"
     codex_home.mkdir()
@@ -79,8 +87,10 @@ def test_fetch_codex_models_current_model_marks_default_without_collapsing_cache
     )
 
     _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe_should_not_run)
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", empty_probe)
 
     models = fetch_acp_models(
         "codex",
@@ -89,8 +99,8 @@ def test_fetch_codex_models_current_model_marks_default_without_collapsing_cache
         probe_timeout=0.1,
     )
 
-    assert [m.name for m in models] == ["gpt-5.5", "gpt-5.4"]
-    assert [m.name for m in models if m.is_default] == ["gpt-5.4"]
+    assert len(probe_calls) == 1
+    assert models == []
 
 
 def test_fetch_coco_models_timeout_uses_static_defaults(monkeypatch):
@@ -415,6 +425,55 @@ def test_fetch_acp_models_different_cwd_probed_separately(monkeypatch):
     fetch_acp_models("aiden", cwd="/repo/a", probe_timeout=1.0)
 
     assert seen_cwds == ["/repo/a", "/repo/b"]
+
+
+def test_fetch_codex_models_prefers_adapter_probe_over_local_codex_cache(monkeypatch, tmp_path):
+    """Codex model picker must reflect the running ACP adapter, not stale CLI cache."""
+    from src.acp import helper as helper_mod
+    from src.acp.helper import fetch_acp_models
+    from src.ttadk.models import ACPModelOption
+
+    helper_mod._acp_probe_cache.clear()
+    helper_mod._acp_neg_cache.clear()
+    helper_mod._acp_probe_inflight.clear()
+
+    cache_dir = tmp_path / ".codex"
+    cache_dir.mkdir()
+    (cache_dir / "models_cache.json").write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "stale-local-only",
+                        "display_name": "Stale local model",
+                        "visibility": "list",
+                        "priority": 1,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def fake_probe(tool_name, cwd, current_model):
+        assert tool_name == "codex"
+        assert cwd == "/repo"
+        assert current_model == "gpt-5.6-sol"
+        return [
+            ACPModelOption(
+                name="gpt-5.6-sol",
+                description="GPT-5.6 Sol from adapter",
+                is_default=True,
+            )
+        ]
+
+    monkeypatch.setattr("src.acp.helper.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", fake_probe)
+
+    models = fetch_acp_models("codex", cwd="/repo", current_model="gpt-5.6-sol", probe_timeout=1.0)
+
+    assert [m.name for m in models] == ["gpt-5.6-sol"]
+    assert models[0].is_default is True
 
 
 # ---------------------------------------------------------------------------

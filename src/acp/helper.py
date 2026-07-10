@@ -1,10 +1,8 @@
 
 import dataclasses
-import json
 import logging
 import threading
 import time as _time
-import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -118,81 +116,10 @@ def _set_negative_probe(tool_name: str, cwd: Optional[str] = None) -> None:
         _acp_neg_cache[key] = _time.time()
 
 
-def _read_codex_current_model() -> str:
-    try:
-        config_path = Path.home() / ".codex" / "config.toml"
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        return str(data.get("model") or "").strip()
-    except Exception:
-        logger.debug("[ACP] codex config model lookup failed", exc_info=True)
-        return ""
-
-
-def _codex_models_from_local_cache(current_model: Optional[str] = None) -> list[ACPModelOption]:
-    explicit_current = str(current_model or "").strip()
-
-    target_default = explicit_current or _read_codex_current_model()
-    models: list[ACPModelOption] = []
-    seen: set[str] = set()
-
-    try:
-        cache_path = Path.home() / ".codex" / "models_cache.json"
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        raw_models = list(data.get("models") or [])
-    except Exception:
-        logger.debug("[ACP] codex model cache lookup failed", exc_info=True)
-        raw_models = []
-
-    raw_models.sort(
-        key=lambda item: int(
-            item.get("priority") if item.get("priority") is not None else 9999
-        )
-    )
-    for item in raw_models:
-        slug = str(item.get("slug") or "").strip()
-        if not slug or slug in seen:
-            continue
-        if item.get("visibility") not in (None, "list"):
-            continue
-        seen.add(slug)
-        models.append(
-            ACPModelOption(
-                name=slug,
-                description=str(item.get("display_name") or slug),
-                is_default=(slug == target_default),
-            )
-        )
-
-    if target_default and target_default not in seen:
-        models.insert(
-            0,
-            ACPModelOption(
-                name=target_default,
-                description=target_default,
-                is_default=True,
-            ),
-        )
-    elif models and not any(m.is_default for m in models):
-        models[0].is_default = True
-
-    if not models and explicit_current:
-        return [
-            ACPModelOption(
-                name=explicit_current,
-                description=explicit_current,
-                is_default=True,
-            )
-        ]
-
-    return models[:8]
-
-
 def _local_fallback_models(
     tool_name: str, current_model: Optional[str] = None
 ) -> list[ACPModelOption]:
     """Return local model options for providers without reliable live model lists."""
-    if tool_name == "codex":
-        return _codex_models_from_local_cache(current_model)
     if current_model:
         return [
             ACPModelOption(
@@ -329,19 +256,12 @@ def fetch_acp_models(
         if cached:
             logger.debug("[ACP] using cached probe for %s (%d models)", tool_name, len(cached))
             return _mark_default(cached, current_model)
-        if tool_name == "codex":
-            fallback = _local_fallback_models(tool_name, current_model)
-            if fallback:
-                logger.info(
-                    "[ACP] using local %s model cache (%d models) before live probe",
-                    tool_name,
-                    len(fallback),
-                )
-                return fallback
         if _is_negatively_cached(tool_name, cwd):
             logger.debug(
                 "[ACP] negative-cache hit for %s, skipping live probe", tool_name
             )
+            if tool_name == "codex":
+                return []
             fallback = _local_fallback_models(tool_name, current_model)
             return fallback if fallback else []
 
@@ -350,6 +270,8 @@ def fetch_acp_models(
         )
         if models:
             return _mark_default(models, current_model)
+        if tool_name == "codex":
+            return []
         fallback = _local_fallback_models(tool_name, current_model)
         return fallback if fallback else []
 

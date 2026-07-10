@@ -110,6 +110,71 @@ async def _drain_loop_callbacks(rounds: int = 3) -> None:
         await asyncio.sleep(0)
 
 
+async def _call_set_session_config_option_method(
+    method: Callable[..., Any],
+    *,
+    session_id: str,
+    model_id: str,
+) -> None:
+    """Call generated ACP config-option setters across SDK spelling variants."""
+    try:
+        await method(session_id=session_id, config_id="model", value=model_id)
+        return
+    except TypeError as first_error:
+        try:
+            await method(session_id=session_id, option_id="model", value=model_id)
+            return
+        except TypeError:
+            raise first_error
+
+
+async def _set_session_model_config_option(conn: object, *, session_id: str, model_id: str) -> bool | None:
+    """Set ACP model through session/set_config_option when that protocol is available.
+
+    Returns True when the request was sent successfully, None when no config-option
+    path is available on this SDK/connection. Any raised exception means the new
+    protocol was available but failed, and callers should fail-close instead of
+    trying the old session/set_model RPC.
+    """
+    for name in ("set_config_option", "setConfigOption", "set_session_config_option", "setSessionConfigOption"):
+        method = getattr(conn, name, None)
+        if callable(method):
+            await _call_set_session_config_option_method(
+                method,
+                session_id=session_id,
+                model_id=model_id,
+            )
+            return True
+
+    raw_conn = getattr(conn, "_conn", None)
+    if raw_conn is None:
+        return None
+
+    try:
+        import acp.schema as acp_schema
+        from acp.client.connection import AGENT_METHODS
+        from acp.schema import SetSessionConfigOptionResponse
+        from acp.utils import request_model_from_dict
+    except Exception:
+        logger.debug("ACP SDK does not expose set_config_option low-level helpers", exc_info=True)
+        return None
+
+    await request_model_from_dict(
+        raw_conn,
+        AGENT_METHODS["session_set_config_option"],
+        (
+            getattr(acp_schema, "SetSessionConfigOptionSelectRequest", None)
+            or getattr(acp_schema, "SetSessionConfigOptionRequest")
+        )(
+            config_id="model",
+            session_id=session_id,
+            value=model_id,
+        ),
+        SetSessionConfigOptionResponse,
+    )
+    return True
+
+
 class ACPSession:
     """Single ACP session — manages one agent process's full lifecycle.
 
@@ -366,11 +431,35 @@ class ACPSession:
     async def set_model(self, model_id: str) -> bool:
         """Switch the model for this session via ACP protocol.
 
-        Calls session/setModel on the running agent. Returns True on success.
-        Falls back gracefully if the agent doesn't support the method.
+        Newer ACP adapters expose models as session config options and expect
+        ``session/set_config_option`` with ``configId=model``. Use that protocol
+        first and fail-close if it is present but rejected. Only fall back to the
+        legacy ``session/set_model`` RPC when no config-option path exists.
         """
         if not self._conn or not self._session_id:
             raise RuntimeError("Session not started. Call start() first.")
+        try:
+            config_result = await _set_session_model_config_option(
+                self._conn,
+                session_id=self._session_id,
+                model_id=model_id,
+            )
+            if config_result is True:
+                logger.info(
+                    "[ACP:%s] Model switched via config option: %s (session=%s)",
+                    self._agent_cmd,
+                    model_id,
+                    self._session_id[:8],
+                )
+                return True
+        except Exception as e:
+            logger.warning(
+                "[ACP:%s] set_model via config option failed: %s",
+                self._agent_cmd,
+                get_error_detail(e),
+            )
+            return False
+
         try:
             await self._conn.set_session_model(model_id=model_id, session_id=self._session_id)
             logger.info("[ACP:%s] Model switched to: %s (session=%s)", self._agent_cmd, model_id, self._session_id[:8])

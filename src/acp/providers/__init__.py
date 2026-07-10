@@ -14,7 +14,7 @@ from ..provider import ACPProvider, ToolRegistry, tool_registry
 
 logger = logging.getLogger(__name__)
 
-CODEX_ACP_NPM_PACKAGE = "@zed-industries/codex-acp@0.14.0"
+CODEX_ACP_NPM_PACKAGE = "@agentclientprotocol/codex-acp@1.1.2"
 
 
 def _detect_model_arg_style(help_blob: str) -> str:
