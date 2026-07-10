@@ -481,7 +481,13 @@ def _reset_all_singletons():
         pass
     try:
         from src.thread.manager import _reset_thread_manager_for_testing
+        from src.thread import set_current_thread_id
+
         _reset_thread_manager_for_testing()
+        # The manager singleton and the request-scoped ContextVar are separate.
+        # Engine handler tests may bind a synthetic thread id; clear it so the
+        # next test cannot serialize a stale MagicMock into an unrelated card.
+        set_current_thread_id(None)
     except Exception:
         pass
     try:

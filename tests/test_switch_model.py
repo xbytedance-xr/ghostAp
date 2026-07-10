@@ -216,8 +216,9 @@ class TestSwitchModelACPPath(unittest.TestCase):
         project.project_name = "P1"
 
         with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
-            handler.switch_model("msg1", "chat1", "claude-3.7-sonnet", project=project)
+            result = handler.switch_model("msg1", "chat1", "claude-3.7-sonnet", project=project)
 
+        assert result is True
         fake_session.set_model.assert_called_once_with("claude-3.7-sonnet")
         mgr_mock.end_session.assert_not_called()
         handler.reply_card.assert_called_once()
@@ -252,8 +253,9 @@ class TestSwitchModelFallbackPath(unittest.TestCase):
         project.project_name = "P1"
 
         with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
-            handler.switch_model("msg1", "chat1", "gpt-5.2", project=project)
+            result = handler.switch_model("msg1", "chat1", "gpt-5.2", project=project)
 
+        assert result is True
         mgr_mock.end_session.assert_called_once_with("chat1", project_id="p1")
         mgr_mock.ensure_session.assert_called_once()
         call_kwargs = mgr_mock.ensure_session.call_args
@@ -289,10 +291,23 @@ class TestSwitchModelNoSession(unittest.TestCase):
         mgr_mock.ensure_session.return_value = MagicMock()
 
         with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
-            handler.switch_model("msg1", "chat1", "gpt-5.2")
+            result = handler.switch_model("msg1", "chat1", "gpt-5.2")
 
+        assert result is True
         mgr_mock.end_session.assert_not_called()
         mgr_mock.ensure_session.assert_called_once()
+
+    def test_restart_failure_returns_false(self):
+        handler = _make_coco_handler()
+        mgr_mock = MagicMock()
+        mgr_mock.get_session.return_value = None
+        mgr_mock.ensure_session.side_effect = RuntimeError("startup failed")
+
+        with patch.object(handler, "_get_session_manager", return_value=mgr_mock):
+            result = handler.switch_model("msg1", "chat1", "gpt-5.2")
+
+        assert result is False
+        handler.reply_error.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -354,3 +369,24 @@ class TestEnterModeWithAcpModelRouting(unittest.TestCase):
         handler.reply_error.assert_called_once()
         msg = handler.reply_error.call_args[0][1]
         assert "unknown_tool" in msg
+
+    def test_passes_explicit_thread_id_and_returns_handler_failure(self):
+        handler = _make_system_handler(is_coco_mode=False)
+        handler.ctx.handlers["coco"].enter_mode.return_value = False
+
+        result = handler._enter_mode_with_acp_model(
+            "msg1",
+            "chat1",
+            "coco",
+            "gpt-5.2",
+            thread_id="thread-1",
+        )
+
+        assert result is False
+        handler.ctx.handlers["coco"].enter_mode.assert_called_once_with(
+            "msg1",
+            "chat1",
+            project=None,
+            silent=True,
+            thread_id="thread-1",
+        )

@@ -705,6 +705,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         tool_name: str,
         model_name: Optional[str],
         project: Optional["ProjectContext"] = None,
+        thread_id: Optional[str] = None,
     ) -> bool:
         target_project = project or self.project_manager.get_active_project(chat_id)
         if target_project:
@@ -732,11 +733,23 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             _project_id = target_project.project_id if target_project else None
             mode_checker = getattr(self.mode_manager, _mode_check, None)
             if callable(mode_checker) and mode_checker(chat_id, project_id=_project_id) and hasattr(handler, "switch_model"):
-                handler.switch_model(message_id, chat_id, model_name, project=target_project)
+                return bool(
+                    handler.switch_model(
+                        message_id,
+                        chat_id,
+                        model_name,
+                        project=target_project,
+                    )
+                )
             else:
                 # silent=True: model selection card already informs the user, no need for redundant "已开启" notification
-                handler.enter_mode(message_id, chat_id, project=target_project, silent=True)
-            return True
+                enter_kwargs = {
+                    "project": target_project,
+                    "silent": True,
+                }
+                if thread_id is not None:
+                    enter_kwargs["thread_id"] = thread_id
+                return bool(handler.enter_mode(message_id, chat_id, **enter_kwargs))
 
         self.reply_error(message_id, UI_TEXT["system_acp_unsupported_tool"].format(tool_name=tool_name))
         return False

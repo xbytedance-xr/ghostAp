@@ -208,7 +208,7 @@ class ProgrammingModeHandler(BaseHandler):
     def enter_mode(
         self, message_id: str, chat_id: str, silent: bool = False, project: Optional["ProjectContext"] = None,
         thread_id: Optional[str] = None,
-    ):
+    ) -> bool:
         from ...thread import get_current_thread_id
 
         project_id = project.project_id if project else None
@@ -224,7 +224,12 @@ class ProgrammingModeHandler(BaseHandler):
                         UI_TEXT["mode_already_in_msg"].format(name=self.mode_name, info=info)
                     ),
                 )
-            return
+            return bool(
+                self._get_session_manager().get_session(
+                    chat_id,
+                    project_id=project_id,
+                )
+            )
 
         previous_mode = self.mode_manager.get_mode(chat_id, project_id=project_id)
 
@@ -249,7 +254,7 @@ class ProgrammingModeHandler(BaseHandler):
             if not valid:
                 if not silent:
                     self.reply_text(message_id, UI_TEXT["mode_invalid_project_path"].format(msg=path_msg))
-                return
+                return False
 
         startup_timeout = getattr(self.settings, "acp_startup_timeout", 20)
         agent_type_override = None
@@ -317,7 +322,7 @@ class ProgrammingModeHandler(BaseHandler):
                         title=UI_TEXT["mode_startup_timeout_title"].format(name=self.mode_name),
                         origin_message_id=message_id,
                     )
-            return
+            return False
         except Exception as e:
             logger.warning(
                 "[%s] enter_mode session startup failed (silent=%s): %s",
@@ -359,7 +364,7 @@ class ProgrammingModeHandler(BaseHandler):
                         title=UI_TEXT["mode_startup_fail_title"].format(name=self.mode_name),
                         origin_message_id=message_id,
                     )
-            return
+            return False
 
         degraded_marker = getattr(session, "_degraded_to", "")
         is_ttadk_degraded = bool(
@@ -408,7 +413,7 @@ class ProgrammingModeHandler(BaseHandler):
         except Exception:
             logger.debug("best-effort TTADK degrade notification failed", exc_info=True)
         if is_ttadk_degraded:
-            return
+            return False
 
         if not thread_id:
             self._enter_mode_on_manager(chat_id, project_id=project_id)
@@ -482,6 +487,7 @@ class ProgrammingModeHandler(BaseHandler):
                 reason=f"enter_{self.mode_name.lower()}_mode",
                 chat_id=chat_id,
             )
+        return True
 
     # ------------------------------------------------------------------
     # switch_model — live model switch for an active session
@@ -492,7 +498,7 @@ class ProgrammingModeHandler(BaseHandler):
         chat_id: str,
         model_name: Optional[str],
         project: Optional["ProjectContext"] = None,
-    ) -> None:
+    ) -> bool:
         """Switch the model for the active programming session.
 
         Strategy:
@@ -530,7 +536,7 @@ class ProgrammingModeHandler(BaseHandler):
                             banner=banner,
                         )
                         self.reply_card(message_id, card_content)
-                        return
+                        return True
                 except Exception as e:
                     logger.warning("[%s] ACP set_model failed, will restart session: %s", self.mode_name, get_error_detail(e))
 
@@ -559,10 +565,12 @@ class ProgrammingModeHandler(BaseHandler):
                 banner=banner,
             )
             self.reply_card(message_id, card_content)
+            return True
         except Exception as e:
             from ...utils.errors import log_exception
             log_exception(logger, f"切换 {self.mode_name} 模型失败", e)
             self.reply_error(message_id, UI_TEXT["mode_model_switch_error"].format(name=self.mode_name, error=get_error_detail(e)))
+            return False
 
     # ------------------------------------------------------------------
     # Thread context registration

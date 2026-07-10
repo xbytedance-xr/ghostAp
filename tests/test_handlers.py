@@ -1355,8 +1355,9 @@ class TestTopLevelProgrammingState:
         project.project_name = "test"
         project.project_id = "test_id"
 
-        h.enter_mode("m1", "c1", project=project)
+        result = h.enter_mode("m1", "c1", project=project)
 
+        assert result is True
         ctx.mode_manager.enter_programming_mode.assert_called_once_with("c1", InteractionMode.COCO, project_id="test_id")
         ctx.coco_manager.ensure_session.assert_called_once()
         h.add_reaction.assert_called_once()
@@ -1365,6 +1366,21 @@ class TestTopLevelProgrammingState:
         assert "编程模式已开启" in call_args or "已开启" in call_args
         h.record_mode_transition.assert_called_once()
         assert "enter_coco_mode" in str(h.record_mode_transition.call_args)
+
+    @patch("src.thread.get_current_thread_id", return_value=None)
+    def test_enter_mode_activation_result_is_false_when_session_start_fails(self, mock_tid):
+        h, ctx = self._make_coco_pending()
+        ctx.coco_manager.ensure_session.side_effect = RuntimeError("startup failed")
+        project = MagicMock()
+        project.coco_session_snapshot = None
+        project.root_path = "/tmp"
+        project.project_name = "test"
+        project.project_id = "test_id"
+
+        result = h.enter_mode("m1", "c1", project=project, silent=True)
+
+        assert result is False
+        ctx.mode_manager.enter_programming_mode.assert_not_called()
 
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_enter_mode_thread_enabled_already_in_mode(self, mock_tid):
