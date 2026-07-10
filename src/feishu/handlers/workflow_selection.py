@@ -9,10 +9,32 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from ...card.render import model_cascade
+
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def workflow_model_name_is_available(
+    model_name: str,
+    available_models: list[dict[str, Any]],
+) -> bool:
+    """Return whether a model value is one exposed by the Workflow picker."""
+    target = str(model_name or "").strip()
+    if not target:
+        return False
+    if any(
+        target == str(model.get("name") or "").strip()
+        for model in available_models or []
+    ):
+        return True
+    return any(
+        target == str(variant.get("name") or "").strip()
+        for group in model_cascade.build_model_groups(available_models or [])
+        for variant in group.get("variants", [])
+    )
 
 
 class WorkflowSelectionMixin:
@@ -167,8 +189,7 @@ class WorkflowSelectionMixin:
         # Validate model_name against allowed models for this tool
         if not use_default and model_name:
             available_models = self._get_workflow_models_for_tool(tool_name, root_path)
-            model_names = [m.get("name") for m in available_models] if available_models else []
-            if model_name not in model_names:
+            if not workflow_model_name_is_available(model_name, available_models):
                 logger.warning(
                     "[workflow] Rejected unknown model_name=%s for tool=%s at handle_workflow_orchestrator_select_model",
                     model_name,
@@ -553,8 +574,7 @@ class WorkflowSelectionMixin:
         # Validate model_name against allowed models for this tool
         if not use_default and model_name:
             available_models = self._get_workflow_models_for_tool(tool_name, root_path)
-            model_names = [m.get("name") for m in available_models] if available_models else []
-            if model_name not in model_names:
+            if not workflow_model_name_is_available(model_name, available_models):
                 logger.warning(
                     "[workflow] Rejected unknown model_name=%s for tool=%s at handle_workflow_review_select_model",
                     model_name,
@@ -885,4 +905,3 @@ class WorkflowSelectionMixin:
             selected_tools=all_selected if all_selected else None,
             engine=engine,
         )
-

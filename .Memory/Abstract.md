@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-10
+- **WF复合模型白名单修复** — Workflow 三级卡已合法生成 Traex `gpt-5.6-sol/max/xhigh`，确认回调却只按顶层裸模型名校验，导致 Profile/Effort 复合值被误报“无效的模型名称”；现允许集合精确覆盖裸名、显式 selection variants 和 adapter 声明的 reasoning effort 组合，任意未声明后缀仍拒绝。真实 Traex 26 模型发现确认目标值 allowed，Workflow 全量 949 passed → [详细记录](2026-07-10.md)
 - **Traex三级模型选择恢复** — adapter 改为分离 `model`/`reasoning_effort` 后，GhostAP 只读裸模型且启动前规范化吞掉 Profile/Effort；现以 live 模型白名单 + 本机 metadata Profile + live Effort 三方校验恢复模型/Profile/Effort 三级选择，标准/max 分别写裸 key/隐藏 max key，再显式写 Effort，普通/Workflow/Worktree/Spec/Slock/Deep 共享语义。真实 `c_o_new_thinking/max/max` turn 落盘 `model_backend_variant=max`、`reasoning_effort=max`；全量 9849 passed → [详细记录](2026-07-10.md)
 - **Codex模型/Effort下拉恢复** — 官方 adapter 把 `model` 与 `reasoning_effort` 分离后，旧级联只读 model 导致 `/codex` 退回按钮且 effort 未下发；现逐模型探测精确 Effort 能力，普通 `/codex`/`/model` 与 `/wf` 恢复模型族+Effort 下拉，复合值在 Codex ACP 边界拆成双 config option，缓存/失效状态/session 复用/fail-close 全收口。真实 adapter 返回 7 模型能力并确认 turn/start 收到 model+effort；全量 9824 passed → [详细记录](2026-07-10.md)
 - **Codex ACP迁移收口** — 补齐官方 adapter 首次选模（`new_session` 后 config option fail-close）、ACP 0.11 permission/file/terminal 回调签名与 `restart.sh --version` 预热；真实 `gpt-5.6-sol` smoke OK，全量 9853 tests 0 failed → [详细记录](2026-07-10.md)

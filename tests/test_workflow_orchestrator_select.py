@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.feishu.handlers.workflow import WorkflowHandler
 from src.workflow_engine.constants import (
     DEFAULT_ORCHESTRATOR_AGENT,
@@ -939,7 +941,89 @@ def test_valid_tool_name_accepted_in_select_model():
     handler._reply_workflow_error.assert_not_called()
 
 
-def test_invalid_model_name_rejected():
+@pytest.mark.parametrize(
+    ("tool_name", "available_models", "model_name"),
+    [
+        (
+            "traex",
+            [
+                {
+                    "name": "gpt-5.6-sol",
+                    "display_name": "GPT-5.6-Sol",
+                    "description": "GPT-5.6-Sol",
+                    "is_default": True,
+                    "selection_variants": [
+                        {
+                            "name": "gpt-5.6-sol/max/xhigh",
+                            "profile": "max",
+                            "effort": "xhigh",
+                            "display_name": "GPT-5.6-Sol · max · xhigh",
+                            "is_variant_default": False,
+                        }
+                    ],
+                }
+            ],
+            "gpt-5.6-sol/max/xhigh",
+        ),
+        (
+            "codex",
+            [
+                {
+                    "name": "gpt-5.6-sol",
+                    "display_name": "GPT-5.6-Sol",
+                    "description": "GPT-5.6-Sol",
+                    "is_default": True,
+                    "reasoning_efforts": ["high", "xhigh"],
+                    "adapted_reasoning_effort": "high",
+                }
+            ],
+            "gpt-5.6-sol/xhigh",
+        ),
+    ],
+    ids=("traex-explicit-variant", "codex-reasoning-effort"),
+)
+def test_generated_composite_model_name_accepted(
+    tool_name,
+    available_models,
+    model_name,
+):
+    handler, _mock_project, _mock_engine = _build_orchestrator_handler_with_project()
+    handler._send_combined_selection_card = MagicMock()
+    handler._validate_tools_against_registry = MagicMock(
+        return_value=([tool_name], [])
+    )
+    handler._get_workflow_models_for_tool = MagicMock(
+        return_value=available_models
+    )
+
+    value = {
+        "action": "workflow_orchestrator_select_model",
+        "tool_name": tool_name,
+        "display_name": tool_name.title(),
+        "model_name": model_name,
+        "chat_id": "chat_1",
+        "project_id": "proj_1",
+        "engine_session_key": "sess_abc",
+    }
+
+    with patch("src.thread.get_current_sender_id", return_value="user_1"):
+        handler.handle_workflow_orchestrator_select_model(
+            message_id="msg_1",
+            chat_id="chat_1",
+            project_id="proj_1",
+            value=value,
+        )
+
+    handler._send_combined_selection_card.assert_called_once()
+    handler._reply_workflow_error.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["invalid_model", "gpt-4/max/evil"],
+    ids=("unknown-family", "unadvertised-variant"),
+)
+def test_invalid_model_name_rejected(model_name):
     """测试无效的 model_name 被拒绝。"""
     handler, mock_project, mock_engine = _build_orchestrator_handler_with_project()
 
@@ -957,7 +1041,7 @@ def test_invalid_model_name_rejected():
         "action": "workflow_orchestrator_select_model",
         "tool_name": "coco",
         "display_name": "Coco",
-        "model_name": "invalid_model",  # 无效模型
+        "model_name": model_name,
         "chat_id": "chat_1",
         "project_id": "proj_1",
         "engine_session_key": "sess_abc",

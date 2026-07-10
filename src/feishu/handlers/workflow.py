@@ -39,7 +39,10 @@ def _workflow_pending_statuses():
 
 
 from .workflow_script import WorkflowScriptMixin  # noqa: E402
-from .workflow_selection import WorkflowSelectionMixin  # noqa: E402
+from .workflow_selection import (  # noqa: E402
+    WorkflowSelectionMixin,
+    workflow_model_name_is_available,
+)
 
 
 class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHandler):
@@ -2034,8 +2037,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         # Validate model_name against allowed models for this tool
         if not use_default and model_name:
             available_models = self._get_workflow_models_for_tool(tool_name, root_path)
-            model_names = [m.get("name") for m in available_models] if available_models else []
-            if model_name not in model_names:
+            if not workflow_model_name_is_available(model_name, available_models):
                 logger.warning(
                     "[workflow] Rejected unknown model_name=%s for tool=%s at handle_workflow_orchestrator_select_model",
                     model_name,
@@ -2422,8 +2424,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         # Validate model_name against allowed models for this tool
         if not use_default and model_name:
             available_models = self._get_workflow_models_for_tool(tool_name, root_path)
-            model_names = [m.get("name") for m in available_models] if available_models else []
-            if model_name not in model_names:
+            if not workflow_model_name_is_available(model_name, available_models):
                 logger.warning(
                     "[workflow] Rejected unknown model_name=%s for tool=%s at handle_workflow_review_select_model",
                     model_name,
