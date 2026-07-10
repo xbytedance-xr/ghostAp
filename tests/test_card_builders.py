@@ -448,6 +448,55 @@ def test_acp_model_flow_status_cards_keep_refresh_and_ready_actions():
     }
 
 
+def test_acp_programming_initializing_card_keeps_selected_tool_and_model():
+    _, card_json = CardBuilder.build_acp_programming_initializing_card(
+        "codex",
+        "gpt-5.6-sol",
+        project_id="p1",
+        thread_root_id="thread-1",
+    )
+
+    card = json.loads(card_json)
+    rendered = json.dumps(card, ensure_ascii=False)
+    assert "正在初始化" in card["header"]["title"]["content"]
+    assert "codex" in rendered
+    assert "gpt-5.6-sol" in rendered
+    assert _collect_buttons(card) == []
+
+
+def test_acp_programming_failed_card_exposes_retry_and_model_selection_actions():
+    _, card_json = CardBuilder.build_acp_programming_failed_card(
+        "codex",
+        "gpt-5.6-sol",
+        "执行超时",
+        project_id="p1",
+        thread_root_id="thread-1",
+    )
+
+    card = json.loads(card_json)
+    rendered = json.dumps(card, ensure_ascii=False)
+    assert "初始化失败" in card["header"]["title"]["content"]
+    assert "执行超时" in rendered
+    buttons = _collect_buttons(card)
+    assert [button["value"]["action"] for button in buttons] == [
+        "select_acp_model",
+        "refresh_acp_models",
+    ]
+    assert buttons[0]["value"] == {
+        "action": "select_acp_model",
+        "tool_name": "codex",
+        "model_name": "gpt-5.6-sol",
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+    assert buttons[1]["value"] == {
+        "action": "refresh_acp_models",
+        "tool_name": "codex",
+        "project_id": "p1",
+        "thread_root_id": "thread-1",
+    }
+
+
 def test_system_error_card_uses_unified_error_visual_contract():
     """BaseHandler/SystemBuilder error card should share summary/details/retry visual contract."""
     msg_type, card_json = SystemBuilder.build_error_card(

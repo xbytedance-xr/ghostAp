@@ -503,6 +503,36 @@ class CardBuilder:
         )
 
     @staticmethod
+    def build_acp_programming_initializing_card(
+        tool_name: str,
+        model_name: Optional[str],
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_acp_programming_initializing_card(
+            tool_name,
+            model_name,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+        )
+
+    @staticmethod
+    def build_acp_programming_failed_card(
+        tool_name: str,
+        model_name: Optional[str],
+        reason: str,
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_acp_programming_failed_card(
+            tool_name,
+            model_name,
+            reason,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+        )
+
+    @staticmethod
     def build_spec_review_agent_select_card(
         *,
         tools: list[dict],

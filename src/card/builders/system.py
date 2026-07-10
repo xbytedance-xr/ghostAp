@@ -1533,6 +1533,98 @@ class SystemBuilder:
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
+    def build_acp_programming_initializing_card(
+        tool_name: str,
+        model_name: Optional[str],
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build the immediate frame shown while the selected ACP session starts."""
+        _ = project_id, thread_root_id
+        model_label = model_name or UI_TEXT["system_acp_default_model_option"]
+        elements = [
+            {
+                "tag": "markdown",
+                "content": UI_TEXT["system_acp_programming_initializing_body"].format(
+                    tool=tool_name,
+                    model=model_label,
+                ),
+            }
+        ]
+        card = CoreBuilder._wrap_card(
+            UI_TEXT["system_acp_programming_initializing_title"].format(tool=tool_name),
+            "blue",
+            elements,
+        )
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
+    def build_acp_programming_failed_card(
+        tool_name: str,
+        model_name: Optional[str],
+        reason: str,
+        project_id: Optional[str] = None,
+        thread_root_id: Optional[str] = None,
+    ) -> tuple[str, str]:
+        """Build a retryable terminal frame after ACP session startup fails."""
+        model_label = model_name or UI_TEXT["system_acp_default_model_option"]
+        retry_value = {
+            "action": action_ids.SELECT_ACP_MODEL,
+            "tool_name": tool_name,
+            "model_name": model_name or DEFAULT_MODEL_OPTION_VALUE,
+            "project_id": project_id,
+            "thread_root_id": thread_root_id,
+        }
+        if model_name is None:
+            retry_value["use_default_model"] = True
+        elements = [
+            {
+                "tag": "markdown",
+                "content": UI_TEXT["system_acp_programming_failed_body"].format(
+                    tool=tool_name,
+                    model=model_label,
+                    reason=reason,
+                ),
+            },
+            {"tag": "hr"},
+        ]
+        elements.extend(
+            build_responsive_layout(
+                [
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": UI_TEXT["system_acp_retry_activation_btn"],
+                        },
+                        "type": "danger",
+                        "value": retry_value,
+                    },
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": UI_TEXT["system_acp_back_to_models_btn"],
+                        },
+                        "type": "default",
+                        "value": {
+                            "action": action_ids.REFRESH_ACP_MODELS,
+                            "tool_name": tool_name,
+                            "project_id": project_id,
+                            "thread_root_id": thread_root_id,
+                        },
+                    },
+                ]
+            )
+        )
+        card = CoreBuilder._wrap_card(
+            UI_TEXT["system_acp_programming_failed_title"].format(tool=tool_name),
+            "red",
+            elements,
+        )
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
     def build_command_menu_card(project: Optional[ProjectContext] = None) -> tuple[str, str]:
         """Build a mobile-friendly command menu card."""
         project_id = project.project_id if project else None
