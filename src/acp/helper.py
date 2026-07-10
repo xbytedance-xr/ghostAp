@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 from acp.stdio import spawn_agent_process
 
 from ..config import get_settings
-from ..ttadk.models import ACPModelOption, ACPToolOption
+from ..ttadk.models import ACPModelOption, ACPModelVariantOption, ACPToolOption
 from ..utils.async_helpers import safe_wait_for
 from ..utils.text import get_acp_result_header_text
 from .client import GhostAPClient
@@ -50,6 +50,7 @@ _ACP_NEG_CACHE_TTL = 45  # remember "no models / timed out" briefly to avoid re-
 _acp_neg_cache: dict[tuple[str, str], float] = {}
 # Single-flight registry: key -> Event signalling the in-flight probe finished.
 _acp_probe_inflight: dict[tuple[str, str], threading.Event] = {}
+_acp_probe_generation: dict[tuple[str, str], int] = {}
 
 
 def _probe_key(tool_name: str, cwd: Optional[str]) -> tuple[str, str]:
@@ -62,11 +63,45 @@ def _copy_models(models: list[ACPModelOption]) -> list[ACPModelOption]:
     return [dataclasses.replace(m) for m in models]
 
 
+def get_acp_model_cache_generation(
+    tool_name: str,
+    cwd: Optional[str] = None,
+) -> int:
+    key = _probe_key(tool_name, cwd)
+    with _acp_probe_cache_lock:
+        return _acp_probe_generation.get(key, 0)
+
+
+def invalidate_acp_model_cache(
+    tool_name: str,
+    cwd: Optional[str] = None,
+) -> None:
+    key = _probe_key(tool_name, cwd)
+    with _acp_probe_cache_lock:
+        _acp_probe_cache.pop(key, None)
+        _acp_neg_cache.pop(key, None)
+        _acp_probe_generation[key] = _acp_probe_generation.get(key, 0) + 1
+
+
 def _mark_default(models: list[ACPModelOption], current_model: Optional[str]) -> list[ACPModelOption]:
     """Re-mark is_default on a per-caller copy according to current_model."""
     if current_model:
         selected = str(current_model or "").strip()
         matched_model = next((m for m in models if m.name == selected), None)
+        if matched_model is None:
+            matched_model = next(
+                (
+                    m
+                    for m in models
+                    if any(
+                        variant.name == selected
+                        for variant in (
+                            getattr(m, "selection_variants", ()) or ()
+                        )
+                    )
+                ),
+                None,
+            )
         if matched_model is None:
             matched_model = next(
                 (
@@ -577,6 +612,12 @@ async def probe_acp_models(
         ) as (conn, _proc):
             await conn.initialize(protocol_version=1)
             resp = await conn.new_session(cwd=(cwd or str(Path.cwd())))
+            if tool_name == "traex":
+                return await _extract_traex_model_capabilities(
+                    conn,
+                    resp,
+                    current_model=current_model,
+                )
             if tool_name == "codex":
                 return await _extract_codex_model_capabilities(
                     conn,
@@ -665,6 +706,171 @@ def _iter_config_select_options(root: Optional[object]) -> list[object]:
         else:
             flattened.append(option)
     return flattened
+
+
+async def _extract_traex_model_capabilities(
+    conn: object,
+    resp: object,
+    *,
+    current_model: Optional[str],
+    metadata_path: Optional[Path] = None,
+) -> list[ACPModelOption]:
+    from .model_selection import CODEX_REASONING_EFFORTS
+    from .traex_selection import (
+        TraexProfileMetadata,
+        compose_traex_model_selection,
+        load_traex_model_metadata,
+        split_traex_model_selection,
+    )
+
+    model_root = _find_config_option(resp, option_id="model", category="model")
+    session_id = str(getattr(resp, "session_id", "") or "").strip()
+    set_config_option = getattr(conn, "set_config_option", None)
+    if model_root is None or not session_id or not callable(set_config_option):
+        return []
+
+    metadata_by_name = {}
+    for metadata in load_traex_model_metadata(metadata_path):
+        metadata_by_name[metadata.config_name] = metadata
+        metadata_by_name[metadata.slug] = metadata
+
+    requested_model, _profile, _effort = split_traex_model_selection(
+        current_model
+    )
+    adapter_current = str(
+        getattr(model_root, "current_value", "") or ""
+    ).strip()
+    target_default = requested_model or adapter_current
+    models: list[ACPModelOption] = []
+    seen: set[str] = set()
+
+    for option in _iter_config_select_options(model_root):
+        model_id = str(getattr(option, "value", "") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        metadata = metadata_by_name.get(model_id)
+        profile_options: tuple[TraexProfileMetadata, ...]
+        if metadata is not None:
+            profile_options = metadata.profiles
+        else:
+            profile_options = (
+                TraexProfileMetadata(
+                    profile="standard",
+                    backend_model_value=model_id,
+                ),
+            )
+
+        variants: list[ACPModelVariantOption] = []
+        for profile in profile_options:
+            try:
+                changed = await set_config_option(
+                    session_id=session_id,
+                    config_id="model",
+                    value=profile.backend_model_value,
+                )
+            except Exception:
+                logger.warning(
+                    "[ACP] traex capability probe rejected model=%s profile=%s",
+                    model_id,
+                    profile.profile,
+                    exc_info=True,
+                )
+                continue
+
+            reasoning_root = _find_config_option(
+                changed,
+                option_id="reasoning_effort",
+                category="thought_level",
+            )
+            live_efforts = tuple(
+                value
+                for value in (
+                    str(getattr(item, "value", "") or "").strip().lower()
+                    for item in _iter_config_select_options(reasoning_root)
+                )
+                if value in CODEX_REASONING_EFFORTS
+            )
+            if profile.reasoning_efforts:
+                efforts = tuple(
+                    value
+                    for value in profile.reasoning_efforts
+                    if value in live_efforts
+                )
+            else:
+                efforts = live_efforts
+
+            adapter_effort = str(
+                getattr(reasoning_root, "current_value", "") or ""
+            ).strip().lower()
+            default_effort = (
+                adapter_effort
+                if adapter_effort in efforts
+                else (
+                    profile.default_effort
+                    if profile.default_effort in efforts
+                    else (efforts[0] if efforts else None)
+                )
+            )
+            if efforts:
+                for effort in efforts:
+                    selection_name = compose_traex_model_selection(
+                        model_id,
+                        profile.profile,
+                        effort,
+                    )
+                    variants.append(
+                        ACPModelVariantOption(
+                            name=selection_name,
+                            profile=profile.profile,
+                            effort=effort,
+                            display_name=(
+                                f"{getattr(option, 'name', None) or model_id}"
+                                f" · {profile.profile} · {effort}"
+                            ),
+                            is_variant_default=(effort == default_effort),
+                        )
+                    )
+            else:
+                selection_name = compose_traex_model_selection(
+                    model_id,
+                    profile.profile,
+                    None,
+                )
+                variants.append(
+                    ACPModelVariantOption(
+                        name=selection_name,
+                        profile=profile.profile,
+                        display_name=(
+                            f"{getattr(option, 'name', None) or model_id}"
+                            f" · {profile.profile}"
+                        ),
+                        is_variant_default=True,
+                    )
+                )
+
+        if not variants:
+            continue
+        models.append(
+            ACPModelOption(
+                name=model_id,
+                description=str(
+                    getattr(option, "name", "")
+                    or getattr(option, "description", "")
+                    or model_id
+                ).strip(),
+                is_default=(
+                    target_default in {model_id, getattr(metadata, "slug", "")}
+                ),
+                selection_variants=tuple(variants),
+            )
+        )
+
+    logger.debug(
+        "[ACP] extracted %d Traex models with profile capabilities",
+        len(models),
+    )
+    return models
 
 
 async def _extract_codex_model_capabilities(

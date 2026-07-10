@@ -739,7 +739,10 @@ def test_probe_acp_models_falls_back_to_config_options(monkeypatch):
     assert models[0].is_default is True
 
 
-def test_probe_acp_models_initializes_lazy_providers_for_traex(monkeypatch):
+def test_probe_acp_models_initializes_lazy_providers_for_traex(
+    monkeypatch,
+    tmp_path,
+):
     """Traex model probing must not depend on some earlier code path having
     already initialized the ACP provider registry."""
     from src.acp.helper import probe_acp_models
@@ -758,6 +761,7 @@ def test_probe_acp_models_initializes_lazy_providers_for_traex(monkeypatch):
             self.description = ""
 
     class FakeRoot:
+        id = "model"
         category = "model"
         current_value = "c_o_new_thinking"
         options = [
@@ -768,15 +772,31 @@ def test_probe_acp_models_initializes_lazy_providers_for_traex(monkeypatch):
     class FakeConfigOption:
         root = FakeRoot()
 
+    class FakeReasoningRoot:
+        id = "reasoning_effort"
+        category = "thought_level"
+        current_value = "high"
+        options = [
+            FakeOption("Low", "low"),
+            FakeOption("High", "high"),
+        ]
+
+    class FakeReasoningConfigOption:
+        root = FakeReasoningRoot()
+
     class FakeResponse:
+        session_id = "session-1"
         models = FakeModels()
-        config_options = [FakeConfigOption()]
+        config_options = [FakeConfigOption(), FakeReasoningConfigOption()]
 
     class FakeConn:
         async def initialize(self, protocol_version):
             return None
 
         async def new_session(self, cwd):
+            return FakeResponse()
+
+        async def set_config_option(self, **_kwargs):
             return FakeResponse()
 
     class FakeSpawn:
@@ -792,11 +812,16 @@ def test_probe_acp_models_initializes_lazy_providers_for_traex(monkeypatch):
         return FakeSpawn()
 
     monkeypatch.setattr("src.acp.helper.spawn_agent_process", fake_spawn_agent_process)
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
 
     models = asyncio.run(probe_acp_models("traex", cwd="/tmp/ghostap"))
 
     assert [m.name for m in models] == ["c_o_new_thinking", "gpt-5.5"]
     assert [m.name for m in models if m.is_default] == ["c_o_new_thinking"]
+    assert all(
+        {variant.profile for variant in model.selection_variants} == {"standard"}
+        for model in models
+    )
 
 
 def test_probe_codex_models_reads_exact_efforts_for_each_model(monkeypatch):
@@ -1081,3 +1106,170 @@ def test_probe_codex_models_filters_unknown_future_efforts(monkeypatch):
     models = asyncio.run(probe_acp_models("codex", cwd="/tmp/ghostap"))
 
     assert models[0].reasoning_efforts == ("high",)
+
+
+# ---------------------------------------------------------------------------
+# Traex model/Profile/Effort capability extraction
+# ---------------------------------------------------------------------------
+
+
+def _traex_select_root(config_id, current_value, values):
+    root = SimpleNamespace(
+        id=config_id,
+        category="model" if config_id == "model" else "thought_level",
+        current_value=current_value,
+        options=[SimpleNamespace(name=value, value=value) for value in values],
+    )
+    return SimpleNamespace(root=root)
+
+
+def _traex_config_response(
+    *,
+    session_id="session-1",
+    current_model="c_o_new_thinking",
+    efforts=("low", "medium", "high", "max"),
+):
+    return SimpleNamespace(
+        session_id=session_id,
+        config_options=[
+            _traex_select_root(
+                "model",
+                current_model,
+                ("c_o_new_thinking",),
+            ),
+            _traex_select_root("reasoning_effort", efforts[-1], efforts),
+        ],
+    )
+
+
+def _write_traex_capability_cache(tmp_path):
+    levels = [{"effort": value} for value in ("low", "medium", "high", "max")]
+    cache = tmp_path / "models_cache.json"
+    cache.write_text(
+        json.dumps({
+            "models": [
+                {
+                    "slug": "Test-O-New-Thinking",
+                    "config_name": "c_o_new_thinking",
+                    "default_reasoning_level": "high",
+                    "supported_reasoning_levels": levels,
+                    "business_metadata": {
+                        "variants": {
+                            "standard_key": "c_o_new_thinking__dev",
+                            "standard_default_reasoning_level": "high",
+                            "standard_supported_reasoning_levels": levels,
+                            "max_key": "c_o_new_thinking__max",
+                            "max_default_reasoning_level": "high",
+                            "max_supported_reasoning_levels": levels,
+                        }
+                    },
+                }
+            ]
+        }),
+        encoding="utf-8",
+    )
+    return cache
+
+
+class _FakeTraexCapabilityConnection:
+    def __init__(self):
+        self.writes = []
+
+    async def set_config_option(self, *, session_id, config_id, value):
+        self.writes.append((config_id, value))
+        assert session_id == "session-1"
+        assert config_id == "model"
+        return _traex_config_response()
+
+
+def test_extract_traex_capabilities_builds_profile_effort_variants(tmp_path):
+    from src.acp.helper import _extract_traex_model_capabilities
+
+    conn = _FakeTraexCapabilityConnection()
+    models = asyncio.run(
+        _extract_traex_model_capabilities(
+            conn,
+            _traex_config_response(),
+            current_model=None,
+            metadata_path=_write_traex_capability_cache(tmp_path),
+        )
+    )
+
+    assert len(models) == 1
+    target = models[0]
+    assert target.name == "c_o_new_thinking"
+    assert {variant.name for variant in target.selection_variants} == {
+        f"c_o_new_thinking/{profile}/{effort}"
+        for profile in ("standard", "max")
+        for effort in ("low", "medium", "high", "max")
+    }
+    assert {
+        (variant.profile, variant.effort)
+        for variant in target.selection_variants
+        if variant.is_variant_default
+    } == {("standard", "max"), ("max", "max")}
+    assert conn.writes == [
+        ("model", "c_o_new_thinking"),
+        ("model", "c_o_new_thinking__max"),
+    ]
+
+
+def test_extract_traex_capabilities_without_cache_only_uses_standard_profile(
+    tmp_path,
+):
+    from src.acp.helper import _extract_traex_model_capabilities
+
+    conn = _FakeTraexCapabilityConnection()
+    models = asyncio.run(
+        _extract_traex_model_capabilities(
+            conn,
+            _traex_config_response(),
+            current_model=None,
+            metadata_path=tmp_path / "missing.json",
+        )
+    )
+
+    assert models
+    assert {variant.profile for variant in models[0].selection_variants} == {
+        "standard"
+    }
+    assert conn.writes == [("model", "c_o_new_thinking")]
+
+
+def test_mark_default_matches_traex_composite_variant():
+    from src.acp.helper import _mark_default
+    from src.ttadk.models import ACPModelOption, ACPModelVariantOption
+
+    models = [
+        ACPModelOption(
+            name="c_o_new_thinking",
+            selection_variants=(
+                ACPModelVariantOption(
+                    name="c_o_new_thinking/max/max",
+                    profile="max",
+                    effort="max",
+                ),
+            ),
+        )
+    ]
+
+    marked = _mark_default(models, "c_o_new_thinking/max/max")
+
+    assert marked[0].is_default is True
+
+
+def test_invalidate_acp_model_cache_clears_entries_and_increments_generation():
+    from src.acp import helper
+    from src.ttadk.models import ACPModelOption
+
+    key = helper._probe_key("traex", "/repo")
+    with helper._acp_probe_cache_lock:
+        helper._acp_probe_cache[key] = (0.0, [ACPModelOption(name="old")])
+        helper._acp_neg_cache[key] = 0.0
+    before = helper.get_acp_model_cache_generation("traex", "/repo")
+
+    helper.invalidate_acp_model_cache("traex", "/repo")
+
+    assert key not in helper._acp_probe_cache
+    assert key not in helper._acp_neg_cache
+    assert helper.get_acp_model_cache_generation("traex", "/repo") == before + 1
