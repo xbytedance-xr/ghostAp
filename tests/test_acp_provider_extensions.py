@@ -96,14 +96,14 @@ def test_codex_provider_serve_command_model_style_short(mock_probe):
 
 @patch("src.acp.providers.shutil.which")
 @patch("src.acp.sync_adapter._probe_acp_serve_help")
-def test_codex_provider_falls_back_to_official_codex_acp_when_native_serve_missing(mock_probe, mock_which):
+def test_codex_provider_falls_back_to_official_codex_acp_without_zed_config_arg(mock_probe, mock_which):
     mock_probe.return_value = (False, 2, "", "error: unrecognized subcommand 'serve'")
     mock_which.return_value = "/usr/bin/npx"
 
     cmd, args = CodexProvider().get_serve_command("gpt-5")
 
     assert cmd == "npx"
-    assert args == ["--yes", CODEX_ACP_NPM_PACKAGE, "-c", 'model="gpt-5"']
+    assert args == ["--yes", CODEX_ACP_NPM_PACKAGE]
 
 
 @patch("src.acp.providers.shutil.which")
@@ -127,7 +127,7 @@ def test_resolve_agent_spec_uses_registered_codex_provider_fallback(mock_probe, 
     cmd, args = resolve_agent_spec("codex", model_name="gpt-5")
 
     assert cmd == "npx"
-    assert args == ["--yes", CODEX_ACP_NPM_PACKAGE, "-c", 'model="gpt-5"']
+    assert args == ["--yes", CODEX_ACP_NPM_PACKAGE]
 
 
 def test_gemini_provider_name():

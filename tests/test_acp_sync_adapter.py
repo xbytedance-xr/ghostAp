@@ -5,11 +5,67 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from src.acp import diagnostics as diag
 from src.acp import sync_adapter as sa
+
+
+@pytest.mark.asyncio
+async def test_official_codex_startup_applies_explicit_model_before_ready(monkeypatch):
+    """The official adapter ignores Zed CLI flags, so startup must set its config option."""
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "codex"
+    session._agent_cmd = "npx"
+    session._agent_args = ["--yes", "@agentclientprotocol/codex-acp@1.1.2"]
+    session._model_name = "gpt-5.6-sol"
+    session._cwd = "/tmp"
+    fake_acp_session = AsyncMock()
+    fake_acp_session.start.return_value = "session-1"
+    fake_acp_session.set_model.return_value = True
+    monkeypatch.setattr(sa, "ACPSession", lambda **_kwargs: fake_acp_session)
+
+    assert await session._start_session() == "session-1"
+
+    fake_acp_session.set_model.assert_awaited_once_with("gpt-5.6-sol")
+
+
+@pytest.mark.asyncio
+async def test_official_codex_startup_closes_and_fails_when_selected_model_is_rejected(monkeypatch):
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "codex"
+    session._agent_cmd = "npx"
+    session._agent_args = ["--yes", "@agentclientprotocol/codex-acp@1.1.2"]
+    session._model_name = "gpt-5.6-sol"
+    session._cwd = "/tmp"
+    fake_acp_session = AsyncMock()
+    fake_acp_session.start.return_value = "session-1"
+    fake_acp_session.set_model.return_value = False
+    monkeypatch.setattr(sa, "ACPSession", lambda **_kwargs: fake_acp_session)
+
+    with pytest.raises(RuntimeError, match="gpt-5.6-sol"):
+        await session._start_session()
+
+    fake_acp_session.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_official_codex_startup_keeps_default_without_redundant_model_rpc(monkeypatch):
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "codex"
+    session._agent_cmd = "npx"
+    session._agent_args = ["--yes", "@agentclientprotocol/codex-acp@1.1.2"]
+    session._model_name = None
+    session._cwd = "/tmp"
+    fake_acp_session = AsyncMock()
+    fake_acp_session.start.return_value = "session-1"
+    monkeypatch.setattr(sa, "ACPSession", lambda **_kwargs: fake_acp_session)
+
+    assert await session._start_session() == "session-1"
+
+    fake_acp_session.set_model.assert_not_awaited()
 
 
 def test_sync_adapter_startup_fail_log_has_err_type_and_err_repr(monkeypatch, caplog):

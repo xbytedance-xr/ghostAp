@@ -315,9 +315,11 @@ class CodexACPProvider(GenericACPProvider):
     def get_fallback_command(self, model_name: Optional[str] = None) -> Optional[tuple[str, list[str]]]:
         if not self._fallback_available():
             return None
-        args = ["--yes", self._fallback_package]
-        args = _apply_model_args(args, model_name, "config_model", None)
-        return "npx", args
+        # The official adapter is an ACP stdio server, not a Codex CLI wrapper.
+        # It ignores Zed's historical ``-c model=...`` argv convention; the
+        # selected model is applied through session/set_config_option after
+        # new_session by SyncACPSession.
+        return "npx", ["--yes", self._fallback_package]
 
 
 def _make_custom_help_checker_with_cache_handle(

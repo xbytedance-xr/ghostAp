@@ -1562,6 +1562,15 @@ class SyncACPSession:
         except (TimeoutError, OSError, RuntimeError):
             return False
 
+    def _uses_official_codex_acp(self) -> bool:
+        """Whether this session was started through the official Codex ACP fallback."""
+        if (self._agent_type or "").strip().lower() != "codex":
+            return False
+        return any(
+            "@agentclientprotocol/codex-acp" in str(arg)
+            for arg in (self._agent_args or [])
+        )
+
     async def _start_session(self) -> str:
         env_override = None
         try:
@@ -1598,7 +1607,21 @@ class SyncACPSession:
         self._acp_session = ACPSession(
             agent_cmd=self._agent_cmd, agent_args=self._agent_args, cwd=self._cwd, env=env_override
         )
-        return await self._acp_session.start()
+        session_id = await self._acp_session.start()
+
+        # The official adapter intentionally does not parse Codex CLI ``-c``
+        # arguments. Apply an explicit selection over ACP before exposing this
+        # session as ready; otherwise a model card can claim one model while the
+        # first prompt silently uses the user's default model.
+        if self._uses_official_codex_acp() and self._model_name:
+            applied = await self._acp_session.set_model(self._model_name)
+            if not applied:
+                with contextlib.suppress(Exception):
+                    await self._acp_session.close()
+                raise RuntimeError(
+                    f"Codex ACP rejected selected model: {self._model_name}"
+                )
+        return session_id
 
     def load_session(self, session_id: str) -> None:
         """Load an existing session (for resume)."""
