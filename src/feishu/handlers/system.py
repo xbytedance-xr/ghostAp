@@ -16,6 +16,7 @@ from ...card.builders.project import ProjectBuilder
 from ...card.ui_text import UI_TEXT
 from ...coco_model import get_coco_model_manager
 from ...tasking import TaskPriority, TaskSpec
+from ...utils.errors import safe_error_message
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
 from ..slash_command_parser import CommandMatch
@@ -1013,7 +1014,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         tool_name: str,
         model_name: Optional[str],
         project: Optional["ProjectContext"] = None,
-    ):
+    ) -> None:
         tool = (tool_name or "").strip().lower()
         use_default_model = model_name is None
         model = None if use_default_model else (model_name or "").strip()
@@ -1033,26 +1034,131 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         if handler and hasattr(handler, "current_model"):
             handler.current_model = model
 
-        entered = self._enter_mode_with_acp_model(message_id, chat_id, tool, model, target_project)
-        if entered:
-            from ...thread import get_current_thread_id
+        from ...thread import get_current_thread_id
+
+        raw_thread_id = get_current_thread_id()
+        thread_root_id = raw_thread_id.strip() if isinstance(raw_thread_id, str) and raw_thread_id.strip() else None
+        project_id = self._project_id(target_project)
+        _, initializing_card = CardBuilder.build_acp_programming_initializing_card(
+            tool,
+            model,
+            project_id=project_id,
+            thread_root_id=thread_root_id,
+        )
+        self.update_card(message_id, initializing_card)
+
+        spec = TaskSpec(
+            chat_id=chat_id,
+            name="activate_acp_model",
+            task_type="acp_model_activation",
+            project_id=project_id,
+            message_id=message_id,
+            origin_message_id=message_id,
+            priority=TaskPriority.HIGH,
+        )
+
+        def _run_activation(_ctx) -> bool:
+            if not self._is_current_acp_selection(target_project, tool, model):
+                logger.info(
+                    "[ACP] skip stale model activation chat=%s project=%s tool=%s model=%s",
+                    chat_id,
+                    project_id or "-",
+                    tool,
+                    model or "<default>",
+                )
+                return False
+
+            try:
+                entered = self._enter_mode_with_acp_model(
+                    message_id,
+                    chat_id,
+                    tool,
+                    model,
+                    target_project,
+                    thread_id=thread_root_id,
+                )
+                failure_reason = UI_TEXT["system_acp_activation_failed_safe"]
+            except Exception as exc:
+                logger.exception(
+                    "[ACP] background model activation failed chat=%s project=%s tool=%s model=%s",
+                    chat_id,
+                    project_id or "-",
+                    tool,
+                    model or "<default>",
+                )
+                entered = False
+                failure_reason = safe_error_message(exc)
+
+            # A later selection owns the card and project state. Never let this
+            # older task overwrite it or forward a prompt under the wrong model.
+            if not self._is_current_acp_selection(target_project, tool, model):
+                return False
+
+            if not entered:
+                _, failed_card = CardBuilder.build_acp_programming_failed_card(
+                    tool,
+                    model,
+                    failure_reason,
+                    project_id=project_id,
+                    thread_root_id=thread_root_id,
+                )
+                self.update_card(message_id, failed_card)
+                return False
+
             _, ready_card = CardBuilder.build_acp_programming_ready_card(
                 tool,
                 model,
-                project_id=(target_project.project_id if target_project else None),
-                thread_root_id=get_current_thread_id(),
+                project_id=project_id,
+                thread_root_id=thread_root_id,
             )
             self.update_card(message_id, ready_card)
 
-        # If we entered the mode and a prompt was stashed (project-chat default
-        # Coco flow), forward it to the mode handler as the first requirement.
-        if entered and pending and handler and hasattr(handler, "handle_message"):
-            try:
-                handler.handle_message(
-                    message_id, chat_id, pending, target_project,
-                )
-            except Exception as e:
-                logger.warning("forwarding pending prompt failed: %s", str(e))
+            # Project-chat selection may carry the user's first requirement.
+            # The activation task owns the popped value and forwards it once,
+            # only after the selected session is actually ready.
+            if pending and handler and hasattr(handler, "handle_message"):
+                try:
+                    handler.handle_message(
+                        message_id,
+                        chat_id,
+                        pending,
+                        target_project,
+                    )
+                except Exception:
+                    logger.exception("forwarding pending prompt failed after ACP activation")
+            return True
+
+        try:
+            self.scheduler.submit(spec, _run_activation)
+        except Exception as exc:
+            logger.exception(
+                "[ACP] failed to schedule model activation chat=%s project=%s tool=%s",
+                chat_id,
+                project_id or "-",
+                tool,
+            )
+            _, failed_card = CardBuilder.build_acp_programming_failed_card(
+                tool,
+                model,
+                safe_error_message(exc),
+                project_id=project_id,
+                thread_root_id=thread_root_id,
+            )
+            self.update_card(message_id, failed_card)
+
+    @staticmethod
+    def _is_current_acp_selection(
+        project: Optional["ProjectContext"],
+        tool_name: str,
+        model_name: Optional[str],
+    ) -> bool:
+        """Return whether an activation task still owns the project selection."""
+        if project is None:
+            return True
+        current_tool = str(getattr(project, "acp_tool_name", "") or "").strip().lower()
+        current_model_value = getattr(project, "acp_model_name", None)
+        current_model = str(current_model_value).strip() if current_model_value is not None else None
+        return current_tool == tool_name and current_model == model_name
 
     # ------------------------------------------------------------------
     # /model command — list/switch models for current ACP tool

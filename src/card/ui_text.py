@@ -197,6 +197,7 @@ UI_TEXT = {
     "system_acp_programming_ready_body": "`{tool}` 已使用 `{model}` 进入编程模式。\n\n现在可以直接在当前会话发送需求。",
     "system_acp_programming_failed_title": "⚠️ {tool} 编程模式初始化失败",
     "system_acp_programming_failed_body": "模型选择已保存，但 ACP 会话未能启动。\n\n**工具**：`{tool}`\n**模型**：`{model}`\n\n**原因**：{reason}",
+    "system_acp_activation_failed_safe": "ACP 会话启动失败，请重试",
     "system_acp_retry_activation_btn": "重试初始化",
     "system_acp_back_to_models_btn": "返回模型选择",
     "system_acp_switch_model_btn": "切换模型",

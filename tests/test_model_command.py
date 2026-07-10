@@ -315,42 +315,76 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
     def setUp(self):
         self.handler = _make_handler()
 
+    def _capture_activation(self):
+        submitted = []
+
+        def capture_submit(spec, fn):
+            submitted.append((spec, fn))
+            return SimpleNamespace(run_id="run-1")
+
+        self.handler.scheduler.submit.side_effect = capture_submit
+        return submitted
+
+    @staticmethod
+    def _run_activation(submitted):
+        assert len(submitted) == 1
+        return submitted[0][1](MagicMock())
+
     def test_default_model_selection_does_not_store_fixed_model(self):
         self.handler.settings.thread_programming_enabled = False
+        submitted = self._capture_activation()
         project = MagicMock()
         project.project_id = "ghostap"
         codex_handler = self.handler.get_handler("codex")
+        codex_handler.enter_mode.return_value = True
 
         self.handler.handle_select_acp_model("msg1", "chat1", "codex", None, project)
 
         self.assertEqual(project.acp_tool_name, "codex")
         self.assertIsNone(project.acp_model_name)
         self.assertIsNone(codex_handler.current_model)
+        codex_handler.enter_mode.assert_not_called()
+        self.assertEqual(submitted[0][0].task_type, "acp_model_activation")
+        self.assertEqual(submitted[0][0].project_id, "ghostap")
+        initializing = json.loads(self.handler.update_card.call_args_list[0].args[1])
+        self.assertIn("正在初始化", initializing["header"]["title"]["content"])
+
+        self._run_activation(submitted)
+
         codex_handler.enter_mode.assert_called_once_with(
             "msg1", "chat1", project=project, silent=True
         )
-        self.handler.update_card.assert_called_once()
-        ready_card = json.loads(self.handler.update_card.call_args[0][1])
+        ready_card = json.loads(self.handler.update_card.call_args_list[-1].args[1])
         self.assertIn("编程模式已就绪", ready_card["header"]["title"]["content"])
         self.assertIn("使用默认模型", json.dumps(ready_card, ensure_ascii=False))
 
     def test_traex_default_model_selection_enters_traex_mode(self):
         self.handler.settings.thread_programming_enabled = False
+        submitted = self._capture_activation()
         project = MagicMock()
         project.project_id = "ghostap"
         traex_handler = self.handler.get_handler("traex")
+        traex_handler.enter_mode.return_value = True
 
         self.handler.handle_select_acp_model("msg1", "chat1", "traex", None, project)
 
         self.assertEqual(project.acp_tool_name, "traex")
         self.assertIsNone(project.acp_model_name)
         self.assertIsNone(traex_handler.current_model)
+        traex_handler.enter_mode.assert_not_called()
+
+        self._run_activation(submitted)
+
         traex_handler.enter_mode.assert_called_once_with(
             "msg1", "chat1", project=project, silent=True
         )
-        self.handler.update_card.assert_called_once()
+        self.assertIn(
+            "编程模式已就绪",
+            json.loads(self.handler.update_card.call_args_list[-1].args[1])["header"]["title"]["content"],
+        )
 
     def test_default_model_selection_clears_stale_tool_snapshot(self):
+        self._capture_activation()
         project = SimpleNamespace(
             project_id="ghostap",
             acp_tool_name=None,
@@ -368,15 +402,18 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         self.assertIsNone(project.coco_session_snapshot)
 
     def test_model_selection_patches_model_card_to_ready_state(self):
+        submitted = self._capture_activation()
         project = MagicMock()
         project.project_id = "ghostap"
 
         with patch.object(self.handler, "_enter_mode_with_acp_model", return_value=True):
             self.handler.handle_select_acp_model("model-card-msg", "chat1", "coco", "gpt-5.5", project)
+            self.handler._enter_mode_with_acp_model.assert_not_called()
 
-        self.handler.update_card.assert_called_once()
-        assert self.handler.update_card.call_args[0][0] == "model-card-msg"
-        ready_card = json.loads(self.handler.update_card.call_args[0][1])
+            self._run_activation(submitted)
+
+        assert self.handler.update_card.call_args_list[-1].args[0] == "model-card-msg"
+        ready_card = json.loads(self.handler.update_card.call_args_list[-1].args[1])
         self.assertIn("coco 编程模式已就绪", ready_card["header"]["title"]["content"])
         text = json.dumps(ready_card, ensure_ascii=False)
         self.assertIn("gpt-5.5", text)
@@ -385,6 +422,7 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
     def test_pending_prompt_uses_top_level_programming_mode(self):
         self.handler.settings.thread_programming_enabled = True
         self.handler._stash_pending_prompt("chat1", "coco", "这个项目是干什么的")
+        submitted = self._capture_activation()
 
         project = MagicMock()
         project.project_id = "ghostap"
@@ -395,12 +433,14 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         coco_handler = self.handler.get_handler("coco")
         coco_handler.mode_name = "Coco"
         coco_handler.mode_emoji = "💭"
-        coco_handler._get_session_manager.return_value.get_session.return_value = MagicMock()
+        coco_handler.enter_mode.return_value = True
 
         with patch("src.thread.get_current_thread_id", return_value=None):
             self.handler.handle_select_acp_model("msg1", "chat1", "coco", "gpt-5.2", project)
 
         self.handler.reply_card.assert_not_called()
+        coco_handler.handle_message.assert_not_called()
+        self._run_activation(submitted)
         coco_handler.enter_mode.assert_called_once_with(
             "msg1",
             "chat1",
@@ -419,6 +459,7 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         让 handle_message 内部自己负责 silent recovery + 真正 session_fail_msg。"""
         self.handler.settings.thread_programming_enabled = True
         self.handler._stash_pending_prompt("chat1", "coco", "目标拉平")
+        submitted = self._capture_activation()
 
         project = MagicMock()
         project.project_id = "ghostap"
@@ -429,12 +470,21 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         coco_handler = self.handler.get_handler("coco")
         coco_handler.mode_name = "Coco"
         coco_handler.mode_emoji = "💭"
-        coco_handler._get_session_manager.return_value.get_session.return_value = MagicMock()
+        coco_handler.enter_mode.return_value = True
 
         # 已在 thread 中：上层 dispatch 守卫被跳过，进 fall-through
         with patch("src.thread.get_current_thread_id", return_value="existing_thread"):
             self.handler.handle_select_acp_model("msg1", "chat1", "coco", "doubao", project)
 
+        coco_handler.handle_message.assert_not_called()
+        self._run_activation(submitted)
+        coco_handler.enter_mode.assert_called_once_with(
+            "msg1",
+            "chat1",
+            project=project,
+            silent=True,
+            thread_id="existing_thread",
+        )
         coco_handler.handle_message.assert_called_once_with(
             "msg1", "chat1", "目标拉平", project,
         )
@@ -448,6 +498,7 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         """
         self.handler.settings.thread_programming_enabled = True
         self.handler._stash_pending_prompt("chat1", "coco", "目标拉平")
+        submitted = self._capture_activation()
 
         project = MagicMock()
         project.project_id = "ghostap"
@@ -458,12 +509,94 @@ class TestHandleSelectAcpModelPendingPrompt(unittest.TestCase):
         coco_handler = self.handler.get_handler("coco")
         coco_handler.mode_name = "Coco"
         coco_handler.mode_emoji = "💭"
-        coco_handler._get_session_manager.return_value.get_session.return_value = None
+        coco_handler.enter_mode.return_value = True
 
         with patch("src.thread.get_current_thread_id", return_value=None):
             self.handler.handle_select_acp_model("msg1", "chat1", "coco", "doubao", project)
 
         coco_handler.reply_card.assert_not_called()
+        coco_handler.handle_message.assert_not_called()
+        self._run_activation(submitted)
         coco_handler.handle_message.assert_called_once_with(
             "msg1", "chat1", "目标拉平", project,
         )
+
+    def test_activation_failure_patches_failed_card_without_forwarding_pending_prompt(self):
+        submitted = self._capture_activation()
+        self.handler._stash_pending_prompt("chat1", "codex", "修复问题")
+        project = SimpleNamespace(
+            project_id="ghostap",
+            acp_tool_name=None,
+            acp_model_name=None,
+            codex_session_snapshot=None,
+        )
+        codex_handler = self.handler.get_handler("codex")
+
+        with patch.object(self.handler, "_enter_mode_with_acp_model", return_value=False):
+            self.handler.handle_select_acp_model("card1", "chat1", "codex", "gpt-5.6-sol", project)
+            result = self._run_activation(submitted)
+
+        assert result is False
+        failed = json.loads(self.handler.update_card.call_args_list[-1].args[1])
+        assert "初始化失败" in failed["header"]["title"]["content"]
+        assert "ACP 会话启动失败" in json.dumps(failed, ensure_ascii=False)
+        codex_handler.handle_message.assert_not_called()
+
+    def test_activation_exception_uses_safe_error_message(self):
+        submitted = self._capture_activation()
+        project = SimpleNamespace(
+            project_id="ghostap",
+            acp_tool_name=None,
+            acp_model_name=None,
+            codex_session_snapshot=None,
+        )
+
+        with patch.object(
+            self.handler,
+            "_enter_mode_with_acp_model",
+            side_effect=TimeoutError("secret path /tmp/private"),
+        ):
+            self.handler.handle_select_acp_model("card1", "chat1", "codex", "gpt", project)
+            result = self._run_activation(submitted)
+
+        assert result is False
+        failed_text = json.dumps(
+            json.loads(self.handler.update_card.call_args_list[-1].args[1]),
+            ensure_ascii=False,
+        )
+        assert "执行超时" in failed_text
+        assert "/tmp/private" not in failed_text
+
+    def test_stale_activation_does_not_start_or_overwrite_new_selection(self):
+        submitted = self._capture_activation()
+        project = SimpleNamespace(
+            project_id="ghostap",
+            acp_tool_name=None,
+            acp_model_name=None,
+            codex_session_snapshot=None,
+        )
+
+        with patch.object(self.handler, "_enter_mode_with_acp_model") as enter:
+            self.handler.handle_select_acp_model("card1", "chat1", "codex", "old", project)
+            project.acp_model_name = "new"
+            update_count = self.handler.update_card.call_count
+            result = self._run_activation(submitted)
+
+        assert result is False
+        enter.assert_not_called()
+        assert self.handler.update_card.call_count == update_count
+
+    def test_scheduler_submission_failure_patches_failed_card(self):
+        self.handler.scheduler.submit.side_effect = RuntimeError("queue unavailable")
+        project = SimpleNamespace(
+            project_id="ghostap",
+            acp_tool_name=None,
+            acp_model_name=None,
+            codex_session_snapshot=None,
+        )
+
+        self.handler.handle_select_acp_model("card1", "chat1", "codex", "gpt", project)
+
+        assert self.handler.update_card.call_count == 2
+        failed = json.loads(self.handler.update_card.call_args_list[-1].args[1])
+        assert "初始化失败" in failed["header"]["title"]["content"]
