@@ -1571,6 +1571,9 @@ class SyncACPSession:
             for arg in (self._agent_args or [])
         )
 
+    def _uses_traex_acp(self) -> bool:
+        return (self._agent_type or "").strip().lower() == "traex"
+
     async def _apply_official_codex_selection(self, selection: str) -> bool:
         """Apply a persisted Codex model/Effort selection over ACP config options."""
         if not self._acp_session:
@@ -1588,6 +1591,33 @@ class SyncACPSession:
             await self._acp_session.set_config_option(
                 "reasoning_effort",
                 reasoning_effort,
+            )
+        )
+
+    async def _apply_traex_selection(self, selection: str) -> bool:
+        if not self._acp_session:
+            return False
+        from .traex_selection import resolve_traex_runtime_selection
+
+        try:
+            resolved = resolve_traex_runtime_selection(selection)
+        except ValueError as exc:
+            logger.warning(
+                "[ACP:TRAEX] invalid model selection: %s",
+                get_error_detail(exc),
+            )
+            return False
+        if not await self._acp_session.set_config_option(
+            "model",
+            resolved.backend_model_value,
+        ):
+            return False
+        if resolved.effort is None:
+            return True
+        return bool(
+            await self._acp_session.set_config_option(
+                "reasoning_effort",
+                resolved.effort,
             )
         )
 
@@ -1640,6 +1670,14 @@ class SyncACPSession:
                     await self._acp_session.close()
                 raise RuntimeError(
                     f"Codex ACP rejected selected model: {self._model_name}"
+                )
+        if self._uses_traex_acp() and self._model_name:
+            applied = await self._apply_traex_selection(self._model_name)
+            if not applied:
+                with contextlib.suppress(Exception):
+                    await self._acp_session.close()
+                raise RuntimeError(
+                    f"Traex ACP rejected selected model: {self._model_name}"
                 )
         return session_id
 
@@ -1797,7 +1835,9 @@ class SyncACPSession:
         if not self._acp_session or not self._loop:
             return False
         try:
-            if self._uses_official_codex_acp():
+            if self._uses_traex_acp():
+                operation = self._apply_traex_selection(model_id)
+            elif self._uses_official_codex_acp():
                 operation = self._apply_official_codex_selection(model_id)
             else:
                 operation = self._acp_session.set_model(model_id)

@@ -53,7 +53,11 @@ def _session_matches_requested_model(
 
 def _normalize_manager_acp_model(agent_type: str, model_name: Optional[str]) -> Optional[str]:
     agent = (agent_type or "").strip().lower()
-    if not model_name or agent == "claude" or agent.startswith("ttadk_"):
+    if (
+        not model_name
+        or agent in {"claude", "traex"}
+        or agent.startswith("ttadk_")
+    ):
         return model_name
     try:
         from .providers import normalize_acp_model_name

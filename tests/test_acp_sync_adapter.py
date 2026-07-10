@@ -108,6 +108,68 @@ async def test_official_codex_startup_keeps_default_without_redundant_model_rpc(
     fake_acp_session.set_model.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_traex_startup_applies_profile_and_reasoning_effort(monkeypatch):
+    from src.acp.traex_selection import TraexRuntimeSelection
+
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "traex"
+    session._agent_cmd = "traex"
+    session._agent_args = ["acp", "serve"]
+    session._model_name = "c_o_new_thinking/max/max"
+    session._cwd = "/tmp"
+    fake_acp_session = AsyncMock()
+    fake_acp_session.start.return_value = "session-1"
+    fake_acp_session.set_config_option.return_value = True
+    monkeypatch.setattr(sa, "ACPSession", lambda **_kwargs: fake_acp_session)
+    monkeypatch.setattr(
+        "src.acp.traex_selection.resolve_traex_runtime_selection",
+        lambda _selection: TraexRuntimeSelection(
+            model_id="c_o_new_thinking",
+            backend_model_value="c_o_new_thinking__max",
+            profile="max",
+            effort="max",
+        ),
+    )
+
+    assert await session._start_session() == "session-1"
+
+    assert fake_acp_session.set_config_option.await_args_list == [
+        call("model", "c_o_new_thinking__max"),
+        call("reasoning_effort", "max"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_traex_startup_closes_when_effort_is_rejected(monkeypatch):
+    from src.acp.traex_selection import TraexRuntimeSelection
+
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "traex"
+    session._agent_cmd = "traex"
+    session._agent_args = ["acp", "serve"]
+    session._model_name = "c_o_new_thinking/max/max"
+    session._cwd = "/tmp"
+    fake_acp_session = AsyncMock()
+    fake_acp_session.start.return_value = "session-1"
+    fake_acp_session.set_config_option.side_effect = [True, False]
+    monkeypatch.setattr(sa, "ACPSession", lambda **_kwargs: fake_acp_session)
+    monkeypatch.setattr(
+        "src.acp.traex_selection.resolve_traex_runtime_selection",
+        lambda _selection: TraexRuntimeSelection(
+            model_id="c_o_new_thinking",
+            backend_model_value="c_o_new_thinking__max",
+            profile="max",
+            effort="max",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="Traex ACP rejected"):
+        await session._start_session()
+
+    fake_acp_session.close.assert_awaited_once()
+
+
 def test_sync_adapter_startup_fail_log_has_err_type_and_err_repr(monkeypatch, caplog):
     """防回归：sync_adapter 启动失败且 str(err)=='' 时日志仍可定位。"""
 

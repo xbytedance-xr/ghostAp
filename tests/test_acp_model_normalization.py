@@ -62,7 +62,7 @@ def test_normalize_codex_model_name_preserves_composite_selection_for_acp_bounda
     assert normalize_acp_model_name("codex", "gpt-5.6-sol/max") == "gpt-5.6-sol/max"
 
 
-def test_traex_switch_model_uses_normalized_backend_model():
+def test_traex_switch_model_preserves_composite_selection_for_session():
     from src.feishu.handlers.programming import TraexModeHandler
 
     ctx = MagicMock()
@@ -90,19 +90,16 @@ def test_traex_switch_model_uses_normalized_backend_model():
 
     with (
         patch.object(handler, "_get_session_manager", return_value=mgr_mock),
-        patch(
-            "src.feishu.handlers.programming.normalize_acp_model_name",
-            return_value="Test-O-New-Thinking",
-        ) as normalize,
+        patch("src.feishu.handlers.programming.normalize_acp_model_name") as normalize,
     ):
         handler.switch_model("msg1", "chat1", "c_o_new_thinking/max/max", project=project)
 
-    normalize.assert_called_once_with("traex", "c_o_new_thinking/max/max")
-    fake_session.set_model.assert_called_once_with("Test-O-New-Thinking")
+    normalize.assert_not_called()
+    fake_session.set_model.assert_called_once_with("c_o_new_thinking/max/max")
     mgr_mock.end_session.assert_not_called()
 
 
-def test_create_engine_session_normalizes_traex_model_before_start(monkeypatch):
+def test_create_engine_session_preserves_traex_selection_until_start(monkeypatch):
     from src.agent_session import factory
 
     calls: dict[str, object] = {}
@@ -118,13 +115,8 @@ def test_create_engine_session_normalizes_traex_model_before_start(monkeypatch):
 
     monkeypatch.setattr(factory, "get_settings", lambda: _Settings())
     monkeypatch.setattr("src.acp.sync_adapter.start_session_with_retry", fake_start_session_with_retry)
-    monkeypatch.setattr(
-        factory,
-        "normalize_acp_model_name",
-        lambda agent_type, model_name: "Test-O-New-Thinking"
-        if agent_type == "traex"
-        else model_name,
-    )
+    normalize = MagicMock(return_value="Test-O-New-Thinking")
+    monkeypatch.setattr(factory, "normalize_acp_model_name", normalize)
     monkeypatch.setattr(factory, "ModelFailureAwareSession", lambda inner, **_: inner)
 
     result = factory.create_engine_session(
@@ -134,4 +126,14 @@ def test_create_engine_session_normalizes_traex_model_before_start(monkeypatch):
     )
 
     assert result is fake_session
-    assert calls["model_name"] == "Test-O-New-Thinking"
+    assert calls["model_name"] == "c_o_new_thinking/max/max"
+    normalize.assert_not_called()
+
+
+def test_acp_manager_preserves_traex_selection_until_sync_session():
+    from src.acp.manager import _normalize_manager_acp_model
+
+    assert _normalize_manager_acp_model(
+        "traex",
+        "c_o_new_thinking/max/max",
+    ) == "c_o_new_thinking/max/max"

@@ -187,6 +187,84 @@ class TestSyncACPSessionSetModel(unittest.TestCase):
         ]
         assert s._model_name == "gpt-5.6-sol/ultra"
 
+    def test_traex_set_model_applies_profile_then_effort(self):
+        from src.acp.sync_adapter import SyncACPSession
+        from src.acp.traex_selection import TraexRuntimeSelection
+
+        s = SyncACPSession.__new__(SyncACPSession)
+        s._agent_type = "traex"
+        s._agent_args = ["acp", "serve"]
+        s._model_name = "c_o_new_thinking/standard/high"
+        s._acp_session = MagicMock()
+        s._acp_session.set_config_option = AsyncMock(return_value=True)
+        s._loop = MagicMock()
+
+        def run_immediately(coroutine, _loop):
+            result = asyncio.run(coroutine)
+            future = MagicMock()
+            future.result.return_value = result
+            return future
+
+        with (
+            patch(
+                "src.acp.traex_selection.resolve_traex_runtime_selection",
+                return_value=TraexRuntimeSelection(
+                    model_id="c_o_new_thinking",
+                    backend_model_value="c_o_new_thinking__max",
+                    profile="max",
+                    effort="max",
+                ),
+            ),
+            patch(
+                "src.acp.sync_adapter.asyncio.run_coroutine_threadsafe",
+                side_effect=run_immediately,
+            ),
+        ):
+            assert s.set_model("c_o_new_thinking/max/max") is True
+
+        assert s._acp_session.set_config_option.await_args_list == [
+            unittest.mock.call("model", "c_o_new_thinking__max"),
+            unittest.mock.call("reasoning_effort", "max"),
+        ]
+        assert s._model_name == "c_o_new_thinking/max/max"
+
+    def test_traex_set_model_keeps_old_selection_when_effort_is_rejected(self):
+        from src.acp.sync_adapter import SyncACPSession
+        from src.acp.traex_selection import TraexRuntimeSelection
+
+        s = SyncACPSession.__new__(SyncACPSession)
+        s._agent_type = "traex"
+        s._agent_args = ["acp", "serve"]
+        s._model_name = "c_o_new_thinking/standard/high"
+        s._acp_session = MagicMock()
+        s._acp_session.set_config_option = AsyncMock(side_effect=[True, False])
+        s._loop = MagicMock()
+
+        def run_immediately(coroutine, _loop):
+            result = asyncio.run(coroutine)
+            future = MagicMock()
+            future.result.return_value = result
+            return future
+
+        with (
+            patch(
+                "src.acp.traex_selection.resolve_traex_runtime_selection",
+                return_value=TraexRuntimeSelection(
+                    model_id="c_o_new_thinking",
+                    backend_model_value="c_o_new_thinking__max",
+                    profile="max",
+                    effort="max",
+                ),
+            ),
+            patch(
+                "src.acp.sync_adapter.asyncio.run_coroutine_threadsafe",
+                side_effect=run_immediately,
+            ),
+        ):
+            assert s.set_model("c_o_new_thinking/max/max") is False
+
+        assert s._model_name == "c_o_new_thinking/standard/high"
+
 
 # ---------------------------------------------------------------------------
 # ACPSessionManager.ensure_session() — model mismatch restart for non-TTADK

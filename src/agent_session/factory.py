@@ -26,7 +26,11 @@ def _normalize_acp_startup_model(agent_type: str, model_name: Optional[str]) -> 
     boundary so Deep/Spec/Review/Slock share the same normalization.
     """
     agent = (agent_type or "").strip().lower()
-    if not model_name or agent == "claude" or agent.startswith("ttadk_"):
+    if (
+        not model_name
+        or agent in {"claude", "traex"}
+        or agent.startswith("ttadk_")
+    ):
         return model_name
     normalized = normalize_acp_model_name(agent, model_name)
     if normalized != model_name:

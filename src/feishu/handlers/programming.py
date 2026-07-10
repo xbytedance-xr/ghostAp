@@ -510,7 +510,11 @@ class ProgrammingModeHandler(BaseHandler):
         project_id = project.project_id if project else None
         cwd = (project.root_path if project else None) or self.get_working_dir(chat_id)
         mgr = self._get_session_manager()
-        backend_model_name = normalize_acp_model_name(self.mode_key, model_name)
+        backend_model_name = (
+            model_name
+            if self.mode_key == "traex"
+            else normalize_acp_model_name(self.mode_key, model_name)
+        )
         if backend_model_name != model_name:
             logger.info(
                 "[%s] Normalized selected model for backend: selected=%s backend=%s",
