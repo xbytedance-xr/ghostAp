@@ -8,10 +8,13 @@ Validates:
 """
 
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.card.actions.dispatch import WORKFLOW_SELECT_TOOL
 from src.workflow_engine.models import WorkflowProject, WorkflowStatus
+
+_ACTION_REGISTRY_PATH = Path(__file__).resolve().parents[1] / "src" / "feishu" / "action_registry.py"
 
 
 class TestWorkflowToolSelectAction(unittest.TestCase):
@@ -227,8 +230,7 @@ class TestWorkflowActionRegistrations(unittest.TestCase):
         self.assertEqual(action_ids.WORKFLOW_CONFIRM_TOOLS, "workflow_confirm_tools")
 
         # Check it's registered in action_registry.py by reading the source file
-        with open("/home/jiataorui/work/ghostAp/src/feishu/action_registry.py", "r", encoding="utf-8") as f:
-            source = f.read()
+        source = _ACTION_REGISTRY_PATH.read_text(encoding="utf-8")
         self.assertIn("WORKFLOW_CONFIRM_TOOLS", source)
         self.assertIn("_handle_workflow_confirm_tools", source)
 
@@ -240,8 +242,7 @@ class TestWorkflowActionRegistrations(unittest.TestCase):
         self.assertEqual(action_ids.WORKFLOW_REGENERATE_SCRIPT, "workflow_regenerate_script")
 
         # Check it's registered in action_registry.py by reading the source file
-        with open("/home/jiataorui/work/ghostAp/src/feishu/action_registry.py", "r", encoding="utf-8") as f:
-            source = f.read()
+        source = _ACTION_REGISTRY_PATH.read_text(encoding="utf-8")
         self.assertIn("WORKFLOW_REGENERATE_SCRIPT", source)
         self.assertIn("_handle_workflow_regenerate_script", source)
 

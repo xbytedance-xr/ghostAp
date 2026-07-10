@@ -443,9 +443,12 @@ class TestLabelToAgentMap(unittest.TestCase):
         errors: list[Exception] = []
         stop = threading.Event()
 
-        def producer(i: int):
+        writer_count = 8
+
+        def producer(worker: int):
             try:
-                mgr.on_agent_started(f"p-{i}", "coco", "p1")
+                for i in range(worker, N, writer_count):
+                    mgr.on_agent_started(f"p-{i}", "coco", "p1")
             except Exception as exc:
                 errors.append(exc)
 
@@ -460,16 +463,15 @@ class TestLabelToAgentMap(unittest.TestCase):
             except Exception as exc:
                 errors.append(exc)
 
-        prods = [threading.Thread(target=producer, args=(i,)) for i in range(N)]
         reader_thread = threading.Thread(target=reader)
+        producers = [threading.Thread(target=producer, args=(worker,)) for worker in range(writer_count)]
         reader_thread.start()
         try:
-            for t in prods:
-                t.start()
-            for t in prods:
-                t.join(timeout=5.0)
-            alive_producers = [t.name for t in prods if t.is_alive()]
-            self.assertEqual(alive_producers, [])
+            for thread in producers:
+                thread.start()
+            for thread in producers:
+                thread.join(timeout=5.0)
+            self.assertEqual([thread.name for thread in producers if thread.is_alive()], [])
         finally:
             stop.set()
             reader_thread.join(timeout=5.0)
