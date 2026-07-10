@@ -65,8 +65,39 @@ def _copy_models(models: list[ACPModelOption]) -> list[ACPModelOption]:
 def _mark_default(models: list[ACPModelOption], current_model: Optional[str]) -> list[ACPModelOption]:
     """Re-mark is_default on a per-caller copy according to current_model."""
     if current_model:
+        selected = str(current_model or "").strip()
+        matched_model = next((m for m in models if m.name == selected), None)
+        if matched_model is None:
+            matched_model = next(
+                (
+                    m
+                    for m in models
+                    if any(
+                        selected == f"{m.name}/{effort}"
+                        for effort in (
+                            getattr(m, "reasoning_efforts", ()) or ()
+                        )
+                    )
+                ),
+                None,
+            )
+        if matched_model is None:
+            from .model_selection import split_codex_model_selection
+
+            base_model, _effort = split_codex_model_selection(selected)
+            matched_model = next(
+                (
+                    m
+                    for m in models
+                    if m.name == base_model
+                    and bool(getattr(m, "reasoning_efforts", ()) or ())
+                ),
+                None,
+            )
+        if matched_model is None:
+            return models
         for m in models:
-            m.is_default = (m.name == current_model)
+            m.is_default = m is matched_model
     return models
 
 
@@ -182,7 +213,6 @@ def _probe_models_blocking(
 def _fetch_non_coco_models_singleflight(
     tool_name: str,
     cwd: Optional[str],
-    current_model: Optional[str],
     probe_timeout: Optional[float],
 ) -> list[ACPModelOption]:
     """Coalesce concurrent probes for one (tool, cwd): leader probes, waiters reuse.
@@ -215,7 +245,7 @@ def _fetch_non_coco_models_singleflight(
 
     # Leader: run the probe once and publish the result to waiters.
     try:
-        models = _probe_models_blocking(tool_name, cwd, current_model, probe_timeout)
+        models = _probe_models_blocking(tool_name, cwd, None, probe_timeout)
         if models:
             _set_cached_probe(tool_name, models, cwd)
             return _copy_models(models)
@@ -266,7 +296,7 @@ def fetch_acp_models(
             return fallback if fallback else []
 
         models = _fetch_non_coco_models_singleflight(
-            tool_name, cwd, current_model, probe_timeout
+            tool_name, cwd, probe_timeout
         )
         if models:
             return _mark_default(models, current_model)
@@ -547,6 +577,13 @@ async def probe_acp_models(
         ) as (conn, _proc):
             await conn.initialize(protocol_version=1)
             resp = await conn.new_session(cwd=(cwd or str(Path.cwd())))
+            if tool_name == "codex":
+                return await _extract_codex_model_capabilities(
+                    conn,
+                    resp,
+                    current_model=current_model,
+                )
+
             models_state = getattr(resp, "models", None)
             available = list(getattr(models_state, "available_models", []) or [])
             raw_current_id = str(
@@ -594,6 +631,164 @@ async def probe_acp_models(
             "[ACP] fetch models failed: tool=%s err=%s", tool_name, get_error_detail(e)
         )
         return []
+
+
+def _config_option_roots(resp: object) -> list[object]:
+    return [
+        getattr(option, "root", option)
+        for option in (getattr(resp, "config_options", None) or [])
+    ]
+
+
+def _find_config_option(
+    resp: object,
+    *,
+    option_id: str,
+    category: Optional[str] = None,
+) -> Optional[object]:
+    for root in _config_option_roots(resp):
+        root_id = str(getattr(root, "id", "") or "").strip()
+        root_category = str(getattr(root, "category", "") or "").strip()
+        if root_id == option_id or (category and root_category == category):
+            return root
+    return None
+
+
+def _iter_config_select_options(root: Optional[object]) -> list[object]:
+    if root is None:
+        return []
+    flattened: list[object] = []
+    for option in (getattr(root, "options", None) or []):
+        nested = getattr(option, "options", None)
+        if nested is not None:
+            flattened.extend(list(nested or []))
+        else:
+            flattened.append(option)
+    return flattened
+
+
+async def _extract_codex_model_capabilities(
+    conn: object,
+    resp: object,
+    *,
+    current_model: Optional[str],
+) -> list[ACPModelOption]:
+    """Read the official Codex adapter's model-specific Effort matrix."""
+    from .model_selection import (
+        CODEX_REASONING_EFFORTS,
+        split_codex_model_selection,
+    )
+
+    model_root = _find_config_option(resp, option_id="model", category="model")
+    reasoning_root = _find_config_option(
+        resp,
+        option_id="reasoning_effort",
+        category="thought_level",
+    )
+    if model_root is None or reasoning_root is None:
+        return []
+
+    selected_model, _selected_effort = split_codex_model_selection(current_model)
+    adapter_current = str(getattr(model_root, "current_value", "") or "").strip()
+    adapter_effort = str(
+        getattr(reasoning_root, "current_value", "") or ""
+    ).strip()
+    target_default = selected_model or adapter_current
+    session_id = str(getattr(resp, "session_id", "") or "").strip()
+    if not session_id or not adapter_current or not adapter_effort:
+        return []
+
+    items: list[ACPModelOption] = []
+    seen: set[str] = set()
+    set_config_option = getattr(conn, "set_config_option", None)
+    if not callable(set_config_option):
+        return []
+
+    for option in _iter_config_select_options(model_root):
+        model_id = str(getattr(option, "value", "") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        try:
+            await set_config_option(
+                session_id=session_id,
+                config_id="model",
+                value=adapter_current,
+            )
+            await set_config_option(
+                session_id=session_id,
+                config_id="reasoning_effort",
+                value=adapter_effort,
+            )
+            changed = await set_config_option(
+                session_id=session_id,
+                config_id="model",
+                value=model_id,
+            )
+        except Exception:
+            logger.warning(
+                "[ACP] codex capability probe rejected model=%s",
+                model_id,
+                exc_info=True,
+            )
+            continue
+
+        current_reasoning = _find_config_option(
+            changed,
+            option_id="reasoning_effort",
+            category="thought_level",
+        )
+        efforts = tuple(
+            value
+            for value in (
+                str(getattr(effort, "value", "") or "").strip()
+                for effort in _iter_config_select_options(current_reasoning)
+            )
+            if value in CODEX_REASONING_EFFORTS
+        )
+        raw_efforts = tuple(
+            str(getattr(effort, "value", "") or "").strip()
+            for effort in _iter_config_select_options(current_reasoning)
+        )
+        unknown_efforts = sorted(
+            {value for value in raw_efforts if value}
+            - CODEX_REASONING_EFFORTS
+        )
+        if unknown_efforts:
+            logger.warning(
+                "[ACP] ignoring unsupported Codex reasoning efforts: model=%s efforts=%s",
+                model_id,
+                unknown_efforts,
+            )
+        adapted_effort = str(
+            getattr(current_reasoning, "current_value", "") or ""
+        ).strip() or None
+        if not efforts or adapted_effort not in efforts:
+            logger.warning(
+                "[ACP] codex capability probe returned no valid efforts: model=%s",
+                model_id,
+            )
+            continue
+
+        seen.add(model_id)
+        items.append(
+            ACPModelOption(
+                name=model_id,
+                description=str(
+                    getattr(option, "name", "")
+                    or getattr(option, "description", "")
+                    or model_id
+                ).strip(),
+                is_default=(model_id == target_default),
+                reasoning_efforts=efforts,
+                adapted_reasoning_effort=adapted_effort,
+            )
+        )
+
+    logger.debug(
+        "[ACP] extracted %d Codex models with reasoning effort capabilities",
+        len(items),
+    )
+    return items
 
 
 def _extract_models_from_config_options(

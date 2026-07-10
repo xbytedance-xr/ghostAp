@@ -114,22 +114,29 @@ async def _call_set_session_config_option_method(
     method: Callable[..., Any],
     *,
     session_id: str,
-    model_id: str,
+    config_id: str,
+    value: str,
 ) -> None:
     """Call generated ACP config-option setters across SDK spelling variants."""
     try:
-        await method(session_id=session_id, config_id="model", value=model_id)
+        await method(session_id=session_id, config_id=config_id, value=value)
         return
     except TypeError as first_error:
         try:
-            await method(session_id=session_id, option_id="model", value=model_id)
+            await method(session_id=session_id, option_id=config_id, value=value)
             return
         except TypeError:
             raise first_error
 
 
-async def _set_session_model_config_option(conn: object, *, session_id: str, model_id: str) -> bool | None:
-    """Set ACP model through session/set_config_option when that protocol is available.
+async def _set_session_config_option(
+    conn: object,
+    *,
+    session_id: str,
+    config_id: str,
+    value: str,
+) -> bool | None:
+    """Set an ACP session config option when that protocol is available.
 
     Returns True when the request was sent successfully, None when no config-option
     path is available on this SDK/connection. Any raised exception means the new
@@ -142,7 +149,8 @@ async def _set_session_model_config_option(conn: object, *, session_id: str, mod
             await _call_set_session_config_option_method(
                 method,
                 session_id=session_id,
-                model_id=model_id,
+                config_id=config_id,
+                value=value,
             )
             return True
 
@@ -166,9 +174,9 @@ async def _set_session_model_config_option(conn: object, *, session_id: str, mod
             getattr(acp_schema, "SetSessionConfigOptionSelectRequest", None)
             or getattr(acp_schema, "SetSessionConfigOptionRequest")
         )(
-            config_id="model",
+            config_id=config_id,
             session_id=session_id,
-            value=model_id,
+            value=value,
         ),
         SetSessionConfigOptionResponse,
     )
@@ -428,6 +436,39 @@ class ACPSession:
 
         return result
 
+    async def set_config_option(self, config_id: str, value: str) -> bool:
+        """Set one ACP session config option without legacy RPC fallback."""
+        if not self._conn or not self._session_id:
+            raise RuntimeError("Session not started. Call start() first.")
+        option_id = str(config_id or "").strip()
+        option_value = str(value or "").strip()
+        if not option_id or not option_value:
+            return False
+        try:
+            config_result = await _set_session_config_option(
+                self._conn,
+                session_id=self._session_id,
+                config_id=option_id,
+                value=option_value,
+            )
+            if config_result is True:
+                logger.info(
+                    "[ACP:%s] Config option applied: config_id=%s (session=%s)",
+                    self._agent_cmd,
+                    option_id,
+                    self._session_id[:8],
+                )
+                return True
+            return False
+        except Exception as e:
+            logger.warning(
+                "[ACP:%s] set_config_option failed: config_id=%s err=%s",
+                self._agent_cmd,
+                option_id,
+                get_error_detail(e),
+            )
+            return False
+
     async def set_model(self, model_id: str) -> bool:
         """Switch the model for this session via ACP protocol.
 
@@ -439,10 +480,11 @@ class ACPSession:
         if not self._conn or not self._session_id:
             raise RuntimeError("Session not started. Call start() first.")
         try:
-            config_result = await _set_session_model_config_option(
+            config_result = await _set_session_config_option(
                 self._conn,
                 session_id=self._session_id,
-                model_id=model_id,
+                config_id="model",
+                value=model_id,
             )
             if config_result is True:
                 logger.info(

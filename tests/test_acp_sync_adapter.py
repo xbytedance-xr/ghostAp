@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -30,6 +30,46 @@ async def test_official_codex_startup_applies_explicit_model_before_ready(monkey
     assert await session._start_session() == "session-1"
 
     fake_acp_session.set_model.assert_awaited_once_with("gpt-5.6-sol")
+
+
+@pytest.mark.asyncio
+async def test_official_codex_startup_applies_model_and_reasoning_effort(monkeypatch):
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "codex"
+    session._agent_cmd = "npx"
+    session._agent_args = ["--yes", "@agentclientprotocol/codex-acp@1.1.2"]
+    session._model_name = "gpt-5.6-sol/max"
+    session._cwd = "/tmp"
+    fake_acp_session = AsyncMock()
+    fake_acp_session.start.return_value = "session-1"
+    fake_acp_session.set_config_option.return_value = True
+    monkeypatch.setattr(sa, "ACPSession", lambda **_kwargs: fake_acp_session)
+
+    assert await session._start_session() == "session-1"
+
+    assert fake_acp_session.set_config_option.await_args_list == [
+        call("model", "gpt-5.6-sol"),
+        call("reasoning_effort", "max"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_official_codex_startup_closes_when_reasoning_effort_is_rejected(monkeypatch):
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "codex"
+    session._agent_cmd = "npx"
+    session._agent_args = ["--yes", "@agentclientprotocol/codex-acp@1.1.2"]
+    session._model_name = "gpt-5.6-sol/ultra"
+    session._cwd = "/tmp"
+    fake_acp_session = AsyncMock()
+    fake_acp_session.start.return_value = "session-1"
+    fake_acp_session.set_config_option.side_effect = [True, False]
+    monkeypatch.setattr(sa, "ACPSession", lambda **_kwargs: fake_acp_session)
+
+    with pytest.raises(RuntimeError, match="gpt-5.6-sol/ultra"):
+        await session._start_session()
+
+    fake_acp_session.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

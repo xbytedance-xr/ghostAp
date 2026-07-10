@@ -96,3 +96,48 @@ def test_workflow_ttdak_model_selection_does_not_force_refresh(monkeypatch):
 
     assert calls == [("doubao", "ttadk", "/repo", False)]
     assert models == [{"name": "doubao-seed", "display_name": "doubao-seed", "description": ""}]
+
+
+def test_workflow_codex_model_lookup_preserves_effort_capabilities_and_cache(
+    monkeypatch,
+):
+    from src.feishu.handlers.workflow import WorkflowHandler
+
+    calls = 0
+
+    class FakeDiscovery:
+        def get_models_for_tool(self, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return [
+                {
+                    "name": "gpt-5.6-sol",
+                    "display_name": "GPT-5.6-Sol",
+                    "description": "Latest frontier model",
+                    "is_default": True,
+                    "reasoning_efforts": ["low", "high", "max", "ultra"],
+                    "adapted_reasoning_effort": "high",
+                }
+            ]
+
+    monkeypatch.setattr(
+        "src.worktree_engine.tool_discovery.WorktreeToolDiscovery",
+        FakeDiscovery,
+    )
+
+    handler = WorkflowHandler.__new__(WorkflowHandler)
+    first = handler._get_workflow_models_for_tool("codex", "/repo")
+    first[0]["reasoning_efforts"].append("mutated")
+    second = handler._get_workflow_models_for_tool("codex", "/repo")
+
+    assert calls == 1
+    assert second == [
+        {
+            "name": "gpt-5.6-sol",
+            "display_name": "GPT-5.6-Sol",
+            "description": "Latest frontier model",
+            "is_default": True,
+            "reasoning_efforts": ["low", "high", "max", "ultra"],
+            "adapted_reasoning_effort": "high",
+        }
+    ]

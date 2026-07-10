@@ -169,7 +169,47 @@
       </div>
     </div>
 
-    <!-- Case 2: Coco — no splittable variants, falls back to button list -->
+    <!-- Case 2: Codex — adapter-backed model × exact reasoning effort -->
+    <div class="card">
+      <div class="header">Codex 模型选择</div>
+      <div class="body">
+        <div class="prompt">请为 <strong>codex</strong> 选择模型与推理强度：</div>
+        <div class="section">
+          <label for="codex-group">模型族</label>
+          <select id="codex-group" class="remembered">
+            <option>gpt-5.5</option>
+            <option selected>gpt-5.6-sol</option>
+            <option>gpt-5.6-terra</option>
+            <option>gpt-5.6-luna</option>
+          </select>
+
+          <label for="codex-effort">Effort</label>
+          <select id="codex-effort" class="remembered">
+            <option>low</option>
+            <option>medium</option>
+            <option selected>high</option>
+            <option>xhigh</option>
+            <option>max</option>
+            <option>ultra</option>
+          </select>
+
+          <div class="selected">
+            adapter 精确能力：<code>gpt-5.6-sol/high</code>
+            <span class="badge">model + reasoning_effort</span>
+          </div>
+
+          <div class="button-row">
+            <button class="primary">确认此模型: gpt-5.6-sol/high</button>
+          </div>
+          <p class="hint">
+            不同模型仅展示官方 Codex ACP 返回的 Effort；例如 GPT-5.5 不显示 max/ultra。
+            确认后会分别设置 model 与 reasoning_effort。
+          </p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Case 3: Coco — no splittable variants, falls back to button list -->
     <div class="card">
       <div class="header">Coco 模型选择</div>
       <div class="body">

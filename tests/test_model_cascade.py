@@ -185,6 +185,126 @@ def test_cascade_pending_overrides_default_selection():
     assert by_action[action_ids.SELECT_ACP_MODEL_GROUP] == "c_o_new_thinking"
 
 
+def _codex_models() -> list[dict]:
+    return [
+        {
+            "name": "gpt-5.5",
+            "display_name": "GPT-5.5",
+            "reasoning_efforts": ("low", "medium", "high", "xhigh"),
+            "adapted_reasoning_effort": "high",
+        },
+        {
+            "name": "gpt-5.6-sol",
+            "display_name": "GPT-5.6-Sol",
+            "reasoning_efforts": (
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+                "ultra",
+            ),
+            "adapted_reasoning_effort": "high",
+        },
+    ]
+
+
+def test_codex_capabilities_render_effort_dropdown_without_profile():
+    _, card_json = SystemBuilder.build_acp_model_cascade_card(
+        _codex_models(),
+        "codex",
+        project_id="p1",
+        current_model="gpt-5.6-sol/max",
+    )
+
+    card = json.loads(card_json)
+    by_action = {
+        select["value"]["action"]: select
+        for select in _walk_selects(card)
+    }
+
+    assert action_ids.SELECT_ACP_MODEL_GROUP in by_action
+    assert action_ids.SELECT_ACP_MODEL_PROFILE not in by_action
+    effort_select = by_action[action_ids.SELECT_ACP_MODEL_EFFORT]
+    assert effort_select["initial_option"] == "max"
+    assert [option["value"] for option in effort_select["options"]] == [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    ]
+
+
+def test_codex_low_reasoning_efforts_are_ordered_before_low():
+    groups = model_cascade.build_model_groups(
+        [
+            {
+                "name": "gpt-5.4-mini",
+                "reasoning_efforts": ("high", "low", "minimal", "none"),
+                "adapted_reasoning_effort": "minimal",
+            }
+        ]
+    )
+
+    assert model_cascade.ordered_unique(
+        (variant["effort"] for variant in groups[0]["variants"]),
+        kind="effort",
+    ) == ["none", "minimal", "low", "high"]
+
+
+def test_codex_max_is_effort_and_old_bare_model_uses_adapter_default_effort():
+    groups = model_cascade.build_model_groups(_codex_models())
+
+    assert model_cascade.resolve_default_selection(
+        groups,
+        "gpt-5.6-sol/max",
+    ) == ("gpt-5.6-sol", "standard", "max")
+    assert model_cascade.resolve_default_selection(
+        groups,
+        "gpt-5.6-sol",
+    ) == ("gpt-5.6-sol", "standard", "high")
+
+
+def test_codex_pending_group_uses_that_models_default_effort():
+    _, card_json = SystemBuilder.build_acp_model_cascade_card(
+        _codex_models(),
+        "codex",
+        project_id="p1",
+        current_model="gpt-5.6-sol/max",
+        pending_group="gpt-5.5",
+    )
+
+    card = json.loads(card_json)
+    by_action = {
+        select["value"]["action"]: select
+        for select in _walk_selects(card)
+    }
+    assert by_action[action_ids.SELECT_ACP_MODEL_GROUP]["initial_option"] == "gpt-5.5"
+    assert by_action[action_ids.SELECT_ACP_MODEL_EFFORT]["initial_option"] == "high"
+
+
+def test_codex_stale_current_selection_falls_back_to_adapter_default():
+    models = _codex_models()
+    models[1]["is_default"] = True
+
+    _, card_json = SystemBuilder.build_acp_model_cascade_card(
+        models,
+        "codex",
+        project_id="p1",
+        current_model="removed-model/max",
+    )
+
+    card = json.loads(card_json)
+    by_action = {
+        select["value"]["action"]: select
+        for select in _walk_selects(card)
+    }
+    assert by_action[action_ids.SELECT_ACP_MODEL_GROUP]["initial_option"] == "gpt-5.6-sol"
+    assert by_action[action_ids.SELECT_ACP_MODEL_EFFORT]["initial_option"] == "high"
+
+
 # ---------------------------------------------------------------------------
 # Redraw handler: dropdown change repaints, does NOT enter mode
 # ---------------------------------------------------------------------------

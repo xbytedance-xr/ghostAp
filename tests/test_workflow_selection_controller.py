@@ -562,6 +562,138 @@ class TestOrchestratorCombinedCard:
         concrete_model_names = {a["model_name"] for a in concrete_model_actions}
         assert concrete_model_names == {"openrouter-3o/low"}
 
+    def test_codex_reasoning_capabilities_render_workflow_effort_dropdown(self):
+        ctrl = _basic_controller()
+        ctrl.select_tool("codex", is_review=False)
+        ctrl.set_model_group("codex", "gpt-5.6-sol", is_review=False)
+        ctrl.set_model_effort("codex", "ultra", is_review=False)
+        models = [
+            {
+                "name": "gpt-5.6-sol",
+                "display_name": "GPT-5.6-Sol",
+                "reasoning_efforts": [
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max",
+                    "ultra",
+                ],
+                "adapted_reasoning_effort": "high",
+            }
+        ]
+
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "codex", "display_name": "Codex"}],
+            available_models=models,
+            session_key="sess_abc",
+            chat_id="chat_1",
+            project_id="proj_1",
+        )
+
+        effort_select = next(
+            select
+            for select in _find_tags(card, "select_static")
+            if select.get("value", {}).get("action")
+            == "workflow_orchestrator_select_model_effort"
+        )
+        assert effort_select["initial_option"] == "ultra"
+
+        model_actions = _find_actions(card, "workflow_orchestrator_select_model")
+        selected = next(action for action in model_actions if action.get("model_name"))
+        assert selected["model_name"] == "gpt-5.6-sol/ultra"
+        assert selected["model_profile"] == "standard"
+        assert selected["model_effort"] == "ultra"
+
+    def test_codex_workflow_uses_adapter_default_model_and_effort(self):
+        ctrl = _basic_controller()
+        ctrl.select_tool("codex", is_review=False)
+        models = [
+            {
+                "name": "gpt-5.5",
+                "display_name": "GPT-5.5",
+                "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+                "adapted_reasoning_effort": "high",
+                "is_default": False,
+            },
+            {
+                "name": "gpt-5.6-sol",
+                "display_name": "GPT-5.6-Sol",
+                "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+                "adapted_reasoning_effort": "high",
+                "is_default": True,
+            },
+        ]
+
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "codex", "display_name": "Codex"}],
+            available_models=models,
+            session_key="sess_abc",
+            chat_id="chat_1",
+            project_id="proj_1",
+        )
+
+        selects = _find_tags(card, "select_static")
+        group_select = next(
+            select
+            for select in selects
+            if select.get("value", {}).get("action")
+            == "workflow_orchestrator_select_model_group"
+        )
+        effort_select = next(
+            select
+            for select in selects
+            if select.get("value", {}).get("action")
+            == "workflow_orchestrator_select_model_effort"
+        )
+        assert group_select["initial_option"] == "gpt-5.6-sol"
+        assert effort_select["initial_option"] == "high"
+
+        model_actions = _find_actions(card, "workflow_orchestrator_select_model")
+        selected = next(action for action in model_actions if action.get("model_name"))
+        assert selected["model_name"] == "gpt-5.6-sol/high"
+
+    def test_codex_workflow_changed_group_uses_group_default_effort(self):
+        ctrl = _basic_controller()
+        ctrl.select_tool("codex", is_review=False)
+        ctrl.set_model_group("codex", "gpt-5.5", is_review=False)
+        models = [
+            {
+                "name": "gpt-5.5",
+                "display_name": "GPT-5.5",
+                "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+                "adapted_reasoning_effort": "high",
+                "is_default": False,
+            },
+            {
+                "name": "gpt-5.6-sol",
+                "display_name": "GPT-5.6-Sol",
+                "reasoning_efforts": ["low", "medium", "high", "xhigh", "max"],
+                "adapted_reasoning_effort": "high",
+                "is_default": True,
+            },
+        ]
+
+        card = ctrl.build_orchestrator_combined_card(
+            available_tools=[{"tool_name": "codex", "display_name": "Codex"}],
+            available_models=models,
+            session_key="sess_abc",
+            chat_id="chat_1",
+            project_id="proj_1",
+        )
+
+        effort_select = next(
+            select
+            for select in _find_tags(card, "select_static")
+            if select.get("value", {}).get("action")
+            == "workflow_orchestrator_select_model_effort"
+        )
+        assert effort_select["initial_option"] == "high"
+
+        model_actions = _find_actions(card, "workflow_orchestrator_select_model")
+        selected = next(action for action in model_actions if action.get("model_name"))
+        assert selected["model_name"] == "gpt-5.5/high"
+
     def test_pending_tool_model_panel_stays_under_payload_budget_with_many_tools(self):
         import json
 

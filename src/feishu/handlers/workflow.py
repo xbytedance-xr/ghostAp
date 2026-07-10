@@ -2768,6 +2768,18 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
         root_path = str(root_path or "")
         if not tool_name:
             return []
+
+        def _copy_models(items: list[dict]) -> list[dict]:
+            copied: list[dict] = []
+            for item in items:
+                clone = dict(item)
+                if "reasoning_efforts" in clone:
+                    clone["reasoning_efforts"] = list(
+                        clone.get("reasoning_efforts") or []
+                    )
+                copied.append(clone)
+            return copied
+
         now = time.monotonic()
         cache: dict[tuple[str, str, str], tuple[float, list[dict]]] = getattr(
             self,
@@ -2787,7 +2799,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                             len(cached_models),
                             (time.monotonic() - now) * 1000,
                         )
-                        return [dict(m) for m in cached_models]
+                        return _copy_models(cached_models)
                     cache.pop((cached_tool, cached_root, _cached_provider), None)
         self._workflow_model_cache = cache
 
@@ -2804,11 +2816,30 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                 cwd=root_path,
                 force_refresh=False,
             )
-            normalized = [
-                {"name": m.get("name", ""), "display_name": m.get("display_name", m.get("name", "")), "description": m.get("description", "")}
-                for m in models if m.get("name")
-            ] if models else []
-            cache[(tool_name, root_path, provider)] = (now, [dict(m) for m in normalized])
+            normalized = []
+            for model in (models or []):
+                if not model.get("name"):
+                    continue
+                item = {
+                    "name": model.get("name", ""),
+                    "display_name": model.get(
+                        "display_name",
+                        model.get("name", ""),
+                    ),
+                    "description": model.get("description", ""),
+                }
+                reasoning_efforts = list(model.get("reasoning_efforts") or [])
+                if reasoning_efforts:
+                    item["is_default"] = bool(model.get("is_default"))
+                    item["reasoning_efforts"] = reasoning_efforts
+                    item["adapted_reasoning_effort"] = model.get(
+                        "adapted_reasoning_effort"
+                    )
+                normalized.append(item)
+            cache[(tool_name, root_path, provider)] = (
+                now,
+                _copy_models(normalized),
+            )
             logger.info(
                 "[workflow] model_lookup tool=%s provider=%s count=%d duration_ms=%.1f cached=false",
                 tool_name,
@@ -2816,7 +2847,7 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
                 len(normalized),
                 (time.monotonic() - started) * 1000,
             )
-            return normalized
+            return _copy_models(normalized)
         except Exception:
             logger.debug("[workflow] model lookup failed for tool=%s", tool_name, exc_info=True)
             return []

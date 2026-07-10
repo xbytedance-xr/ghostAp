@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+from types import SimpleNamespace
 
 import src.acp.helper as _helper_mod
 from src.acp.helper import fetch_acp_models
@@ -402,6 +403,144 @@ def test_fetch_acp_models_cache_hit_returns_independent_copies(monkeypatch):
     assert [m.name for m in cached if m.is_default] == ["alpha"]
 
 
+def test_first_probe_current_model_does_not_poison_shared_default_cache(monkeypatch):
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    seen_probe_current_models: list[str | None] = []
+
+    async def probe(_tool_name, _cwd, current_model):
+        seen_probe_current_models.append(current_model)
+        return [
+            ACPModelOption(name="provider-default", is_default=True),
+            ACPModelOption(name="project-current", is_default=False),
+        ]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe)
+
+    project_models = fetch_acp_models(
+        "aiden",
+        cwd="/tmp/ghostap",
+        current_model="project-current",
+        probe_timeout=1.0,
+    )
+    default_models = fetch_acp_models("aiden", cwd="/tmp/ghostap")
+
+    assert seen_probe_current_models == [None]
+    assert [model.name for model in project_models if model.is_default] == [
+        "project-current"
+    ]
+    assert [model.name for model in default_models if model.is_default] == [
+        "provider-default"
+    ]
+
+
+def test_fetch_codex_models_marks_composite_current_model_by_base(monkeypatch):
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    async def probe(_tool_name, _cwd, _current_model):
+        return [
+            ACPModelOption(
+                name="gpt-5.6-sol",
+                description="GPT-5.6-Sol",
+                is_default=True,
+                reasoning_efforts=("low", "high", "max"),
+                adapted_reasoning_effort="high",
+            ),
+            ACPModelOption(
+                name="gpt-5.5",
+                description="GPT-5.5",
+                is_default=False,
+                reasoning_efforts=("low", "high"),
+                adapted_reasoning_effort="high",
+            ),
+        ]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe)
+
+    fetch_acp_models("codex", cwd="/tmp/ghostap", probe_timeout=1.0)
+    models = fetch_acp_models(
+        "codex",
+        cwd="/tmp/ghostap",
+        current_model="gpt-5.6-sol/max",
+    )
+
+    assert [model.name for model in models if model.is_default] == [
+        "gpt-5.6-sol"
+    ]
+
+
+def test_unknown_current_model_keeps_provider_default(monkeypatch):
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    async def probe(_tool_name, _cwd, _current_model):
+        return [
+            ACPModelOption(name="provider-default", is_default=True),
+            ACPModelOption(name="other", is_default=False),
+        ]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe)
+
+    models = fetch_acp_models(
+        "aiden",
+        cwd="/tmp/ghostap",
+        current_model="removed-model",
+        probe_timeout=1.0,
+    )
+
+    assert [model.name for model in models if model.is_default] == [
+        "provider-default"
+    ]
+
+
+def test_removed_effort_keeps_existing_base_model_selected(monkeypatch):
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    async def probe(_tool_name, _cwd, _current_model):
+        return [
+            ACPModelOption(
+                name="gpt-5.5",
+                is_default=True,
+                reasoning_efforts=("low", "high"),
+                adapted_reasoning_effort="high",
+            ),
+            ACPModelOption(
+                name="gpt-5.6-sol",
+                is_default=False,
+                reasoning_efforts=("low", "high", "max"),
+                adapted_reasoning_effort="high",
+            ),
+        ]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe)
+
+    models = fetch_acp_models(
+        "codex",
+        cwd="/tmp/ghostap",
+        current_model="gpt-5.6-sol/ultra",
+        probe_timeout=1.0,
+    )
+
+    assert [model.name for model in models if model.is_default] == [
+        "gpt-5.6-sol"
+    ]
+
+
 def test_fetch_acp_models_different_cwd_probed_separately(monkeypatch):
     """Cache/single-flight are keyed by (tool, cwd), so distinct cwds probe
     independently."""
@@ -458,7 +597,7 @@ def test_fetch_codex_models_prefers_adapter_probe_over_local_codex_cache(monkeyp
     async def fake_probe(tool_name, cwd, current_model):
         assert tool_name == "codex"
         assert cwd == "/repo"
-        assert current_model == "gpt-5.6-sol"
+        assert current_model is None
         return [
             ACPModelOption(
                 name="gpt-5.6-sol",
@@ -658,3 +797,287 @@ def test_probe_acp_models_initializes_lazy_providers_for_traex(monkeypatch):
 
     assert [m.name for m in models] == ["c_o_new_thinking", "gpt-5.5"]
     assert [m.name for m in models if m.is_default] == ["c_o_new_thinking"]
+
+
+def test_probe_codex_models_reads_exact_efforts_for_each_model(monkeypatch):
+    from src.acp.helper import probe_acp_models
+
+    class FakeOption:
+        def __init__(self, name, value):
+            self.name = name
+            self.value = value
+            self.description = ""
+
+    class FakeRoot:
+        def __init__(self, option_id, category, current_value, options):
+            self.id = option_id
+            self.category = category
+            self.current_value = current_value
+            self.options = options
+
+    class FakeConfigOption:
+        def __init__(self, root):
+            self.root = root
+
+    model_options = [
+        FakeOption("GPT-5.5", "gpt-5.5"),
+        FakeOption("GPT-5.6-Sol", "gpt-5.6-sol"),
+    ]
+
+    def response(model, efforts):
+        return SimpleNamespace(
+            models=None,
+            config_options=[
+                FakeConfigOption(
+                    FakeRoot("model", "model", model, model_options)
+                ),
+                FakeConfigOption(
+                    FakeRoot(
+                        "reasoning_effort",
+                        "thought_level",
+                        "high",
+                        [FakeOption(value, value) for value in efforts],
+                    )
+                ),
+            ],
+        )
+
+    initial_response = response(
+        "gpt-5.6-sol",
+        ["low", "medium", "high", "xhigh", "max", "ultra"],
+    )
+    per_model = {
+        "gpt-5.5": response(
+            "gpt-5.5",
+            ["low", "medium", "high", "xhigh"],
+        ),
+        "gpt-5.6-sol": initial_response,
+    }
+
+    class FakeConn:
+        current_model = "gpt-5.6-sol"
+
+        async def initialize(self, protocol_version):
+            return None
+
+        async def new_session(self, cwd):
+            return initial_response
+
+        async def set_config_option(self, *, session_id, config_id, value):
+            assert session_id == "session-1"
+            if config_id == "reasoning_effort":
+                assert value == "high"
+            else:
+                assert config_id == "model"
+                self.current_model = value
+            return per_model[self.current_model]
+
+    initial_response.session_id = "session-1"
+    for item in per_model.values():
+        item.session_id = "session-1"
+
+    class FakeSpawn:
+        async def __aenter__(self):
+            return FakeConn(), object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "src.acp.helper.spawn_agent_process",
+        lambda *_args, **_kwargs: FakeSpawn(),
+    )
+
+    models = asyncio.run(probe_acp_models("codex", cwd="/tmp/ghostap"))
+
+    assert [model.name for model in models] == ["gpt-5.5", "gpt-5.6-sol"]
+    assert models[0].reasoning_efforts == ("low", "medium", "high", "xhigh")
+    assert models[1].reasoning_efforts == (
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+    )
+    assert models[1].adapted_reasoning_effort == "high"
+    assert models[1].is_default is True
+
+
+def test_probe_codex_models_resets_initial_selection_before_each_capability_read(
+    monkeypatch,
+):
+    from src.acp.helper import probe_acp_models
+
+    class FakeOption:
+        def __init__(self, value):
+            self.name = value
+            self.value = value
+            self.description = ""
+
+    class FakeRoot:
+        def __init__(self, option_id, category, current_value, options):
+            self.id = option_id
+            self.category = category
+            self.current_value = current_value
+            self.options = [FakeOption(value) for value in options]
+
+    class FakeConfigOption:
+        def __init__(self, root):
+            self.root = root
+
+    def response(model, effort, supported):
+        return SimpleNamespace(
+            session_id="session-1",
+            config_options=[
+                FakeConfigOption(
+                    FakeRoot(
+                        "model",
+                        "model",
+                        model,
+                        ["model-a", "model-b"],
+                    )
+                ),
+                FakeConfigOption(
+                    FakeRoot(
+                        "reasoning_effort",
+                        "thought_level",
+                        effort,
+                        supported,
+                    )
+                ),
+            ],
+        )
+
+    class FakeConn:
+        current_model = "model-a"
+        current_effort = "ultra"
+        calls = []
+
+        async def initialize(self, protocol_version):
+            return None
+
+        async def new_session(self, cwd):
+            return response(
+                self.current_model,
+                self.current_effort,
+                ["high", "ultra"],
+            )
+
+        async def set_config_option(self, *, session_id, config_id, value):
+            self.calls.append((config_id, value))
+            if config_id == "model":
+                self.current_model = value
+                supported = (
+                    ["high", "ultra"]
+                    if value == "model-a"
+                    else ["medium", "high"]
+                )
+                if self.current_effort not in supported:
+                    self.current_effort = "medium"
+            else:
+                self.current_effort = value
+                supported = (
+                    ["high", "ultra"]
+                    if self.current_model == "model-a"
+                    else ["medium", "high"]
+                )
+            return response(
+                self.current_model,
+                self.current_effort,
+                supported,
+            )
+
+    connection = FakeConn()
+
+    class FakeSpawn:
+        async def __aenter__(self):
+            return connection, object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "src.acp.helper.spawn_agent_process",
+        lambda *_args, **_kwargs: FakeSpawn(),
+    )
+
+    models = asyncio.run(probe_acp_models("codex", cwd="/tmp/ghostap"))
+
+    assert [model.adapted_reasoning_effort for model in models] == [
+        "ultra",
+        "medium",
+    ]
+    assert connection.calls == [
+        ("model", "model-a"),
+        ("reasoning_effort", "ultra"),
+        ("model", "model-a"),
+        ("model", "model-a"),
+        ("reasoning_effort", "ultra"),
+        ("model", "model-b"),
+    ]
+
+
+def test_probe_codex_models_filters_unknown_future_efforts(monkeypatch):
+    from src.acp.helper import probe_acp_models
+
+    class FakeOption:
+        def __init__(self, value):
+            self.name = value
+            self.value = value
+            self.description = ""
+
+    class FakeRoot:
+        def __init__(self, option_id, category, current_value, options):
+            self.id = option_id
+            self.category = category
+            self.current_value = current_value
+            self.options = [FakeOption(value) for value in options]
+
+    class FakeConfigOption:
+        def __init__(self, root):
+            self.root = root
+
+    def response():
+        return SimpleNamespace(
+            session_id="session-1",
+            config_options=[
+                FakeConfigOption(
+                    FakeRoot("model", "model", "model-a", ["model-a"])
+                ),
+                FakeConfigOption(
+                    FakeRoot(
+                        "reasoning_effort",
+                        "thought_level",
+                        "high",
+                        ["high", "future-effort"],
+                    )
+                ),
+            ],
+        )
+
+    class FakeConn:
+        async def initialize(self, protocol_version):
+            return None
+
+        async def new_session(self, cwd):
+            return response()
+
+        async def set_config_option(self, **_kwargs):
+            return response()
+
+    class FakeSpawn:
+        async def __aenter__(self):
+            return FakeConn(), object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(
+        "src.acp.helper.spawn_agent_process",
+        lambda *_args, **_kwargs: FakeSpawn(),
+    )
+
+    models = asyncio.run(probe_acp_models("codex", cwd="/tmp/ghostap"))
+
+    assert models[0].reasoning_efforts == ("high",)

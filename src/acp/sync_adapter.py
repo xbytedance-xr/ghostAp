@@ -1571,6 +1571,26 @@ class SyncACPSession:
             for arg in (self._agent_args or [])
         )
 
+    async def _apply_official_codex_selection(self, selection: str) -> bool:
+        """Apply a persisted Codex model/Effort selection over ACP config options."""
+        if not self._acp_session:
+            return False
+        from .model_selection import split_codex_model_selection
+
+        model_id, reasoning_effort = split_codex_model_selection(selection)
+        if not model_id:
+            return False
+        if reasoning_effort is None:
+            return bool(await self._acp_session.set_model(model_id))
+        if not await self._acp_session.set_config_option("model", model_id):
+            return False
+        return bool(
+            await self._acp_session.set_config_option(
+                "reasoning_effort",
+                reasoning_effort,
+            )
+        )
+
     async def _start_session(self) -> str:
         env_override = None
         try:
@@ -1614,7 +1634,7 @@ class SyncACPSession:
         # session as ready; otherwise a model card can claim one model while the
         # first prompt silently uses the user's default model.
         if self._uses_official_codex_acp() and self._model_name:
-            applied = await self._acp_session.set_model(self._model_name)
+            applied = await self._apply_official_codex_selection(self._model_name)
             if not applied:
                 with contextlib.suppress(Exception):
                     await self._acp_session.close()
@@ -1777,11 +1797,18 @@ class SyncACPSession:
         if not self._acp_session or not self._loop:
             return False
         try:
+            if self._uses_official_codex_acp():
+                operation = self._apply_official_codex_selection(model_id)
+            else:
+                operation = self._acp_session.set_model(model_id)
             future = asyncio.run_coroutine_threadsafe(
-                self._acp_session.set_model(model_id),
+                operation,
                 self._loop,
             )
-            return bool(future.result(timeout=float(timeout or 10.0)))
+            applied = bool(future.result(timeout=float(timeout or 10.0)))
+            if applied:
+                self._model_name = str(model_id or "").strip() or None
+            return applied
         except (TimeoutError, OSError, RuntimeError) as e:
             logger.warning("[ACP] set_model failed: %s", get_error_detail(e), exc_info=True)
             return False

@@ -850,6 +850,8 @@ class ACPModelOption:
     description: str = ""
     is_default: bool = False
     supports_1m: bool = False
+    reasoning_efforts: tuple[str, ...] = ()
+    adapted_reasoning_effort: Optional[str] = None
 
 
 @dataclass(frozen=True)

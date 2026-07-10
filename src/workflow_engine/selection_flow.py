@@ -718,9 +718,20 @@ class SelectionFlowController:
             elements.append({"tag": "markdown", "content": "_未配置额外模型列表；请选择默认模型。_"})
             return
 
+        default_group, default_profile, default_effort = (
+            model_cascade.resolve_default_selection(groups, None)
+        )
         group_keys = [g["key"] for g in groups]
-        selected_group_key = self.pending_model_group if self.pending_model_group in group_keys else group_keys[0]
+        if self.pending_model_group in group_keys:
+            selected_group_key = self.pending_model_group
+        elif default_group in group_keys:
+            selected_group_key = default_group
+        else:
+            selected_group_key = group_keys[0]
         selected_group = next(g for g in groups if g["key"] == selected_group_key)
+        group_default_profile, group_default_effort = (
+            model_cascade.resolve_group_default_selection(selected_group)
+        )
         group_action = (
             WORKFLOW_REVIEW_SELECT_MODEL_GROUP
             if is_review
@@ -749,11 +760,17 @@ class SelectionFlowController:
 
         variants = list(selected_group["variants"])
         profiles = self._ordered_unique((v["profile"] for v in variants), kind="profile")
-        selected_profile = (
-            self.pending_model_profile
-            if self.pending_model_profile in profiles
-            else profiles[0]
+        profile_default = (
+            default_profile
+            if selected_group_key == default_group
+            else group_default_profile
         )
+        if self.pending_model_profile in profiles:
+            selected_profile = self.pending_model_profile
+        elif profile_default in profiles:
+            selected_profile = profile_default
+        else:
+            selected_profile = profiles[0]
         if len(profiles) > 1:
             profile_action = (
                 WORKFLOW_REVIEW_SELECT_MODEL_PROFILE
@@ -784,11 +801,22 @@ class SelectionFlowController:
 
         profile_variants = [v for v in variants if v["profile"] == selected_profile]
         efforts = self._ordered_unique((v["effort"] for v in profile_variants), kind="effort")
-        selected_effort = (
-            self.pending_model_effort
-            if self.pending_model_effort in efforts
-            else efforts[0]
+        effort_default = (
+            default_effort
+            if selected_group_key == default_group
+            and selected_profile == default_profile
+            else (
+                group_default_effort
+                if selected_profile == group_default_profile
+                else None
+            )
         )
+        if self.pending_model_effort in efforts:
+            selected_effort = self.pending_model_effort
+        elif effort_default in efforts:
+            selected_effort = effort_default
+        else:
+            selected_effort = efforts[0]
         if len(efforts) > 1:
             effort_action = (
                 WORKFLOW_REVIEW_SELECT_MODEL_EFFORT

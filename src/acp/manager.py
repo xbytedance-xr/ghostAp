@@ -36,6 +36,21 @@ from .telemetry import (
 logger = logging.getLogger(__name__)
 
 
+def _session_matches_requested_model(
+    session: object,
+    model_name: str,
+) -> bool:
+    """Compare model state without assuming it is encoded in process argv."""
+    requested = str(model_name or "").strip()
+    if not requested:
+        return True
+    active_model = getattr(session, "_model_name", None)
+    if isinstance(active_model, str) and active_model.strip():
+        return active_model.strip() == requested
+    existing_args = getattr(session, "_agent_args", None)
+    return requested in " ".join(existing_args or [])
+
+
 def _normalize_manager_acp_model(agent_type: str, model_name: Optional[str]) -> Optional[str]:
     agent = (agent_type or "").strip().lower()
     if not model_name or agent == "claude" or agent.startswith("ttadk_"):
@@ -612,11 +627,9 @@ class ACPSessionManager:
                             _safe_end_session(lambda _: True)
                             existing = None
                 else:
-                    existing_args = getattr(existing, "_agent_args", None)
-                    args_text = " ".join(existing_args or [])
-                    if model_name not in args_text:
+                    if not _session_matches_requested_model(existing, model_name):
                         logger.info(
-                            "[ACP:%s] Model changed (missing %s), restarting: key=%s",
+                            "[ACP:%s] Model changed (%s), restarting: key=%s",
                             self._agent_type.upper(),
                             model_name,
                             key[-16:],
@@ -651,11 +664,9 @@ class ACPSessionManager:
         # Model mismatch check for non-TTADK sessions (when no agent_type_override).
         # Ensures that calling ensure_session() with a different model_name triggers a restart.
         if existing and not agent_type_override and model_name:
-            existing_args = getattr(existing, "_agent_args", None)
-            args_text = " ".join(existing_args or [])
-            if model_name not in args_text:
+            if not _session_matches_requested_model(existing, model_name):
                 logger.info(
-                    "[ACP:%s] Model changed (missing %s in args), restarting: key=%s",
+                    "[ACP:%s] Model changed (%s), restarting: key=%s",
                     self._agent_type.upper(),
                     model_name,
                     key[-16:],

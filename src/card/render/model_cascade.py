@@ -36,7 +36,17 @@ from typing import Any, Callable, Iterable, Optional
 # variant dimensions rather than part of the base name.
 VARIANT_TOKENS = {"low", "medium", "high", "xhigh", "max"}
 PROFILE_ORDER = {"standard": 0, "max": 1}
-EFFORT_ORDER = {"default": 0, "low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
+EFFORT_ORDER = {
+    "default": 0,
+    "none": 1,
+    "minimal": 2,
+    "low": 3,
+    "medium": 4,
+    "high": 5,
+    "xhigh": 6,
+    "max": 7,
+    "ultra": 8,
+}
 
 _SELECT_LABEL_MAX_CHARS = 72
 _BUTTON_LABEL_MAX_CHARS = 40
@@ -90,6 +100,37 @@ def build_model_groups(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not name:
             continue
         display = str(model.get("display_name") or name).strip() or name
+        reasoning_efforts = tuple(
+            str(effort or "").strip().lower()
+            for effort in (model.get("reasoning_efforts") or ())
+            if str(effort or "").strip()
+        )
+        if reasoning_efforts:
+            adapted_effort = str(
+                model.get("adapted_reasoning_effort") or ""
+            ).strip().lower()
+            if adapted_effort not in reasoning_efforts:
+                adapted_effort = reasoning_efforts[0]
+            if name not in groups:
+                groups[name] = {
+                    "key": name,
+                    "label": display,
+                    "variants": [],
+                }
+                order.append(name)
+            for effort in reasoning_efforts:
+                groups[name]["variants"].append({
+                    "name": f"{name}/{effort}",
+                    "display_name": f"{display} · {effort}",
+                    "profile": "standard",
+                    "effort": effort,
+                    "tokens": (effort,),
+                    "is_variant_default": effort == adapted_effort,
+                    "is_default": bool(model.get("is_default"))
+                    and effort == adapted_effort,
+                })
+            continue
+
         base, tokens = split_model_variant(name)
         profile, effort = dimensions_from_tokens(tokens)
         if base not in groups:
@@ -107,6 +148,8 @@ def build_model_groups(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "profile": profile,
             "effort": effort,
             "tokens": tokens,
+            "is_variant_default": bool(model.get("is_variant_default")),
+            "is_default": bool(model.get("is_default")),
         })
     return [groups[key] for key in order]
 
@@ -154,13 +197,34 @@ def resolve_default_selection(
     list item).
     """
     name = str(current_model or "").strip()
-    if not name or not groups:
+    if not groups:
         return None, None, None
+    if name:
+        for group in groups:
+            for variant in group.get("variants", []):
+                if str(variant.get("name")) == name:
+                    return group["key"], variant["profile"], variant["effort"]
+        for group in groups:
+            if str(group.get("key")) != name:
+                continue
+            for variant in group.get("variants", []):
+                if variant.get("is_variant_default"):
+                    return group["key"], variant["profile"], variant["effort"]
     for group in groups:
         for variant in group.get("variants", []):
-            if str(variant.get("name")) == name:
+            if variant.get("is_default"):
                 return group["key"], variant["profile"], variant["effort"]
     return None, None, None
+
+
+def resolve_group_default_selection(
+    group: dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
+    """Return the adapter-declared default profile/Effort for one group."""
+    for variant in group.get("variants", []):
+        if variant.get("is_variant_default"):
+            return variant["profile"], variant["effort"]
+    return None, None
 
 
 def _clamp(text: str, limit: int) -> str:
@@ -210,6 +274,8 @@ def has_cascade_variants(models: list[dict[str, Any]]) -> bool:
     plain button list (single-group / few models) is the better fit.
     """
     for model in models or []:
+        if model.get("reasoning_efforts"):
+            return True
         _base, tokens = split_model_variant(str(model.get("name") or ""))
         if tokens:
             return True
@@ -281,6 +347,9 @@ def build_model_cascade_elements(
     else:
         selected_group_key = group_keys[0]
     selected_group = next(g for g in groups if g["key"] == selected_group_key)
+    group_default_profile, group_default_effort = (
+        resolve_group_default_selection(selected_group)
+    )
 
     group_value = value_builder(group_action, {})
     elements.append({"tag": "markdown", "content": "**模型族**"})
@@ -296,7 +365,11 @@ def build_model_cascade_elements(
     variants = list(selected_group["variants"])
     profiles = ordered_unique((v["profile"] for v in variants), kind="profile")
     # Only honor default profile/effort when they belong to the resolved group.
-    profile_default = default_profile if selected_group_key == default_group else None
+    profile_default = (
+        default_profile
+        if selected_group_key == default_group
+        else group_default_profile
+    )
     if pending_profile in profiles:
         selected_profile = pending_profile
     elif profile_default in profiles:
@@ -321,7 +394,11 @@ def build_model_cascade_elements(
     effort_default = (
         default_effort
         if (selected_group_key == default_group and selected_profile == default_profile)
-        else None
+        else (
+            group_default_effort
+            if selected_profile == group_default_profile
+            else None
+        )
     )
     if pending_effort in efforts:
         selected_effort = pending_effort

@@ -1295,16 +1295,33 @@ class SystemBuilder:
                 m_name = str(model.get("name") or "").strip()
                 m_disp = model.get("display_name") or m_name
                 m_desc = model.get("description", "")
+                reasoning_efforts = tuple(model.get("reasoning_efforts") or ())
+                adapted_reasoning_effort = model.get(
+                    "adapted_reasoning_effort"
+                )
+                is_default = bool(model.get("is_default"))
             else:
                 m_name = str(getattr(model, "name", None) or model or "").strip()
                 m_disp = getattr(model, "display_name", None) or getattr(model, "friendly_name", None) or m_name
                 m_desc = getattr(model, "description", "")
+                reasoning_efforts = tuple(
+                    getattr(model, "reasoning_efforts", ()) or ()
+                )
+                adapted_reasoning_effort = getattr(
+                    model,
+                    "adapted_reasoning_effort",
+                    None,
+                )
+                is_default = bool(getattr(model, "is_default", False))
             if not m_name:
                 continue
             norm_models.append({
                 "name": m_name,
                 "display_name": str(m_disp or m_name),
                 "description": str(m_desc or ""),
+                "reasoning_efforts": reasoning_efforts,
+                "adapted_reasoning_effort": adapted_reasoning_effort,
+                "is_default": is_default,
             })
 
         # No splittable variants → nothing to cascade; reuse the button card so

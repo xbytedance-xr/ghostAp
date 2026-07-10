@@ -31,6 +31,37 @@ def test_normalize_acp_model_name_resolves_traex_compound_variant(mock_run, tmp_
         assert normalize_acp_model_name("traex", "c_o_new_thinking/max/max") == "Test-O-New-Thinking"
 
 
+def test_codex_model_selection_round_trips_reasoning_effort():
+    from src.acp.model_selection import (
+        compose_codex_model_selection,
+        split_codex_model_selection,
+    )
+
+    assert split_codex_model_selection("gpt-5.6-sol") == ("gpt-5.6-sol", None)
+    assert split_codex_model_selection("gpt-5.6-sol/high") == ("gpt-5.6-sol", "high")
+    assert split_codex_model_selection("gpt-5.6-sol/max") == ("gpt-5.6-sol", "max")
+    assert split_codex_model_selection("gpt-5.6-sol/ultra") == ("gpt-5.6-sol", "ultra")
+    assert split_codex_model_selection("gpt-5.4-mini/minimal") == (
+        "gpt-5.4-mini",
+        "minimal",
+    )
+    assert split_codex_model_selection("gpt-5.4-mini/none") == (
+        "gpt-5.4-mini",
+        "none",
+    )
+    assert split_codex_model_selection("anthropic/claude-sonnet") == (
+        "anthropic/claude-sonnet",
+        None,
+    )
+    assert compose_codex_model_selection("gpt-5.6-sol", "ultra") == "gpt-5.6-sol/ultra"
+
+
+def test_normalize_codex_model_name_preserves_composite_selection_for_acp_boundary():
+    from src.acp.providers import normalize_acp_model_name
+
+    assert normalize_acp_model_name("codex", "gpt-5.6-sol/max") == "gpt-5.6-sol/max"
+
+
 def test_traex_switch_model_uses_normalized_backend_model():
     from src.feishu.handlers.programming import TraexModeHandler
 

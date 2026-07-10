@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-10
+- **Codex模型/Effort下拉恢复** — 官方 adapter 把 `model` 与 `reasoning_effort` 分离后，旧级联只读 model 导致 `/codex` 退回按钮且 effort 未下发；现逐模型探测精确 Effort 能力，普通 `/codex`/`/model` 与 `/wf` 恢复模型族+Effort 下拉，复合值在 Codex ACP 边界拆成双 config option，缓存/失效状态/session 复用/fail-close 全收口。真实 adapter 返回 7 模型能力并确认 turn/start 收到 model+effort；全量 9824 passed → [详细记录](2026-07-10.md)
 - **Codex ACP迁移收口** — 补齐官方 adapter 首次选模（`new_session` 后 config option fail-close）、ACP 0.11 permission/file/terminal 回调签名与 `restart.sh --version` 预热；真实 `gpt-5.6-sol` smoke OK，全量 9853 tests 0 failed → [详细记录](2026-07-10.md)
 - **Codex ACP官方迁移** — `/codex` 事故根因是 UI 读取本机 Codex `models_cache.json` 暴露 `gpt-5.6-sol`，实际 fallback 仍跑旧 `@zed-industries/codex-acp@0.14.0` 且 Python ACP SDK 0.8 只会旧 `session/set_model`；已迁到官方 `@agentclientprotocol/codex-acp@1.1.2` + `agent-client-protocol==0.11.0`，Codex 模型列表只信任 adapter config_options/探测，失败返回空列表 fail-close，选模改 `set_config_option(config_id="model")` 且失败不再降级旧 RPC。全量 9793 passed、ruff/validate/diff-check 通过 → [详细记录](2026-07-10.md)
 - **普通ACP选模异步激活** — 最终确认模型原先同步等待 ACP 启动两次超时（20s+30s），且 `silent=True` 吞异常后 helper 无条件返回 true，失败仍误显“已就绪”；现改为立即 PATCH“初始化中”并交 `TaskScheduler` 项目串行后台启动，真实 success bool 决定 ready/失败重试卡，pending 仅成功后转发，旧选择任务不覆盖新状态。扩展 375 + 全量 9789 passed，ruff/validate/diff-check 通过 → [详细记录](2026-07-10.md)

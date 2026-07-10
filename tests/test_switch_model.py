@@ -93,6 +93,29 @@ class TestACPSessionSetModel(unittest.IsolatedAsyncioTestCase):
         session._conn.set_session_model.assert_not_awaited()
         assert result is False
 
+    async def test_set_config_option_uses_requested_config_id(self):
+        from src.acp.session import ACPSession
+
+        session = ACPSession.__new__(ACPSession)
+        session._agent_cmd = "npx"
+        session._conn = AsyncMock()
+        session._session_id = "sess-abc123"
+
+        with self.assertLogs("src.acp.session", level="INFO") as logs:
+            result = await session.set_config_option(
+                "future_sensitive_option",
+                "secret-value",
+            )
+
+        session._conn.set_config_option.assert_awaited_once_with(
+            session_id="sess-abc123",
+            config_id="future_sensitive_option",
+            value="secret-value",
+        )
+        assert result is True
+        assert "future_sensitive_option" in "\n".join(logs.output)
+        assert "secret-value" not in "\n".join(logs.output)
+
     async def test_set_model_raises_when_not_started(self):
         from src.acp.session import ACPSession
 
@@ -134,6 +157,35 @@ class TestSyncACPSessionSetModel(unittest.TestCase):
         s._loop = None
         result = s.set_model("gpt-5.2")
         assert result is False
+
+    def test_official_codex_set_model_applies_composite_selection(self):
+        from src.acp.sync_adapter import SyncACPSession
+
+        s = SyncACPSession.__new__(SyncACPSession)
+        s._agent_type = "codex"
+        s._agent_args = ["--yes", "@agentclientprotocol/codex-acp@1.1.2"]
+        s._model_name = "gpt-5.6-sol/high"
+        s._acp_session = MagicMock()
+        s._acp_session.set_config_option = AsyncMock(return_value=True)
+        s._loop = MagicMock()
+
+        def run_immediately(coroutine, _loop):
+            result = asyncio.run(coroutine)
+            future = MagicMock()
+            future.result.return_value = result
+            return future
+
+        with patch(
+            "src.acp.sync_adapter.asyncio.run_coroutine_threadsafe",
+            side_effect=run_immediately,
+        ):
+            assert s.set_model("gpt-5.6-sol/ultra") is True
+
+        assert s._acp_session.set_config_option.await_args_list == [
+            unittest.mock.call("model", "gpt-5.6-sol"),
+            unittest.mock.call("reasoning_effort", "ultra"),
+        ]
+        assert s._model_name == "gpt-5.6-sol/ultra"
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +261,38 @@ class TestEnsureSessionModelMismatch(unittest.TestCase):
                 "chat1",
                 cwd="/tmp",
                 model_name="gpt-5.2",  # same model
+            )
+
+        mock_start.assert_not_called()
+        assert result is fake_session
+
+    def test_official_codex_composite_model_reuses_matching_session(self):
+        import time
+
+        from src.acp.manager import ACPSessionManager
+
+        mgr = self._make_manager()
+        mgr._agent_type = "codex"
+
+        fake_session = MagicMock()
+        fake_session.last_active = time.time()
+        fake_session.session_id = "codex-sess"
+        fake_session._agent_type = "codex"
+        fake_session._agent_args = [
+            "--yes",
+            "@agentclientprotocol/codex-acp@1.1.2",
+        ]
+        fake_session._model_name = "gpt-5.6-sol/max"
+        fake_session.is_server_running.return_value = True
+
+        key = ACPSessionManager._session_key("chat1")
+        mgr._sessions[key] = fake_session
+
+        with patch.object(mgr, "start_session") as mock_start:
+            result = mgr.ensure_session(
+                "chat1",
+                cwd="/tmp",
+                model_name="gpt-5.6-sol/max",
             )
 
         mock_start.assert_not_called()

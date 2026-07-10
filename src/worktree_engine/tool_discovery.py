@@ -197,15 +197,26 @@ class WorktreeToolDiscovery:
                 # quota/load metadata ("Model load: 14%, Quota: 48% used,
                 # resets weekly, …") which is useful as secondary info but
                 # must NOT be promoted into the visible name slot.
-                return [
-                    {
-                        "name": m.name,
-                        "display_name": m.name,
-                        "description": m.description or "",
-                        "is_default": m.is_default,
+                models: list[dict] = []
+                for model in acp_models:
+                    item = {
+                        "name": model.name,
+                        "display_name": model.name,
+                        "description": model.description or "",
+                        "is_default": model.is_default,
                     }
-                    for m in acp_models
-                ]
+                    reasoning_efforts = list(
+                        getattr(model, "reasoning_efforts", ()) or ()
+                    )
+                    if reasoning_efforts:
+                        item["reasoning_efforts"] = reasoning_efforts
+                        item["adapted_reasoning_effort"] = getattr(
+                            model,
+                            "adapted_reasoning_effort",
+                            None,
+                        )
+                    models.append(item)
+                return models
             except Exception:
                 return []
 

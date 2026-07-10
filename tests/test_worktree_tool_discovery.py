@@ -325,3 +325,35 @@ def test_get_models_acp_returns_model_dicts():
     assert len(result) == 2
     assert result[0]["name"] == "gpt-4o"
     assert result[0]["is_default"] is True
+
+
+def test_get_models_acp_preserves_codex_effort_capabilities_without_expansion():
+    from src.ttadk.models import ACPModelOption
+
+    discovery = WorktreeToolDiscovery()
+    mock_models = [
+        ACPModelOption(
+            name="gpt-5.6-sol",
+            description="GPT-5.6-Sol",
+            is_default=True,
+            reasoning_efforts=("low", "high", "max", "ultra"),
+            adapted_reasoning_effort="high",
+        )
+    ]
+
+    with patch(
+        "src.worktree_engine.tool_discovery.fetch_acp_models",
+        return_value=mock_models,
+    ):
+        result = discovery.get_models_for_tool("codex", provider="acp")
+
+    assert result == [
+        {
+            "name": "gpt-5.6-sol",
+            "display_name": "gpt-5.6-sol",
+            "description": "GPT-5.6-Sol",
+            "is_default": True,
+            "reasoning_efforts": ["low", "high", "max", "ultra"],
+            "adapted_reasoning_effort": "high",
+        }
+    ]
