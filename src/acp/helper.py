@@ -1,4 +1,5 @@
 
+import dataclasses
 import json
 import logging
 import threading
@@ -24,31 +25,97 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Generic ACP model probe cache for non-coco tools (Aiden, Codex, Gemini…).
-# Key: tool_name, Value: (timestamp, model_list).  TTL aligned with CocoModelManager.
+#
+# Three coordinated layers, all keyed by (tool_name, cwd) and guarded by a
+# single leaf lock:
+#   * positive cache  — a successful probe result, reused for _ACP_PROBE_CACHE_TTL.
+#   * negative cache  — remembers a recent empty/timed-out probe so a stuck tool
+#                       (e.g. claude, which lacks ACP serve support and burns the
+#                       full probe timeout every call) is not re-probed on every
+#                       card click for _ACP_NEG_CACHE_TTL seconds.
+#   * single-flight   — coalesces concurrent probes for the same key: the first
+#                       thread runs the real probe, the rest wait on an Event and
+#                       reuse the leader's result instead of each spawning their
+#                       own `<tool> acp serve` subprocess (the "thundering herd"
+#                       behind duplicate model_lookup log lines).
+#
+# Callers may mark a per-request default via `current_model`, so every value
+# handed out is a deep-ish copy (fresh ACPModelOption instances); the shared
+# cached objects are never mutated across callers.
 # ---------------------------------------------------------------------------
-_acp_probe_cache: dict[str, tuple[float, list[ACPModelOption]]] = {}
+_acp_probe_cache: dict[tuple[str, str], tuple[float, list[ACPModelOption]]] = {}
 _acp_probe_cache_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _ACP_PROBE_CACHE_TTL = 300  # 5 minutes
+_ACP_NEG_CACHE_TTL = 45  # remember "no models / timed out" briefly to avoid re-probing
+
+# Negative cache: key -> timestamp of the failed probe.
+_acp_neg_cache: dict[tuple[str, str], float] = {}
+# Single-flight registry: key -> Event signalling the in-flight probe finished.
+_acp_probe_inflight: dict[tuple[str, str], threading.Event] = {}
 
 
-def _get_cached_probe(tool_name: str) -> list[ACPModelOption]:
-    """Return cached probe result if within TTL, else empty list."""
+def _probe_key(tool_name: str, cwd: Optional[str]) -> tuple[str, str]:
+    """Normalized cache/single-flight key shared by all three layers."""
+    return (str(tool_name or ""), str(cwd or ""))
+
+
+def _copy_models(models: list[ACPModelOption]) -> list[ACPModelOption]:
+    """Return fresh ACPModelOption instances so callers never mutate shared cache."""
+    return [dataclasses.replace(m) for m in models]
+
+
+def _mark_default(models: list[ACPModelOption], current_model: Optional[str]) -> list[ACPModelOption]:
+    """Re-mark is_default on a per-caller copy according to current_model."""
+    if current_model:
+        for m in models:
+            m.is_default = (m.name == current_model)
+    return models
+
+
+def _get_cached_probe(tool_name: str, cwd: Optional[str] = None) -> list[ACPModelOption]:
+    """Return a copy of the cached probe result if within TTL, else empty list."""
+    key = _probe_key(tool_name, cwd)
     with _acp_probe_cache_lock:
-        entry = _acp_probe_cache.get(tool_name)
+        entry = _acp_probe_cache.get(key)
     if not entry:
         return []
     ts, models = entry
     if (_time.time() - ts) > _ACP_PROBE_CACHE_TTL:
         return []
-    return list(models)
+    return _copy_models(models)
 
 
-def _set_cached_probe(tool_name: str, models: list[ACPModelOption]) -> None:
-    """Store a successful probe result in cache."""
+def _is_negatively_cached(tool_name: str, cwd: Optional[str] = None) -> bool:
+    """True when a recent probe returned nothing and the neg-cache is still fresh."""
+    key = _probe_key(tool_name, cwd)
+    with _acp_probe_cache_lock:
+        ts = _acp_neg_cache.get(key)
+    if ts is None:
+        return False
+    if (_time.time() - ts) > _ACP_NEG_CACHE_TTL:
+        with _acp_probe_cache_lock:
+            # Drop only if unchanged, so a concurrent refresh isn't clobbered.
+            if _acp_neg_cache.get(key) == ts:
+                _acp_neg_cache.pop(key, None)
+        return False
+    return True
+
+
+def _set_cached_probe(tool_name: str, models: list[ACPModelOption], cwd: Optional[str] = None) -> None:
+    """Store a successful probe result and clear any stale negative marker."""
+    key = _probe_key(tool_name, cwd)
     if not models:
         return
     with _acp_probe_cache_lock:
-        _acp_probe_cache[tool_name] = (_time.time(), list(models))
+        _acp_probe_cache[key] = (_time.time(), _copy_models(models))
+        _acp_neg_cache.pop(key, None)
+
+
+def _set_negative_probe(tool_name: str, cwd: Optional[str] = None) -> None:
+    """Remember that a probe just returned nothing (empty/timeout)."""
+    key = _probe_key(tool_name, cwd)
+    with _acp_probe_cache_lock:
+        _acp_neg_cache[key] = _time.time()
 
 
 def _read_codex_current_model() -> str:
@@ -163,6 +230,76 @@ def list_acp_tools() -> list[ACPToolOption]:
     return out
 
 
+def _probe_models_blocking(
+    tool_name: str,
+    cwd: Optional[str],
+    current_model: Optional[str],
+    probe_timeout: Optional[float],
+) -> list[ACPModelOption]:
+    """Run the real ACP model probe synchronously; return [] on timeout/failure."""
+    try:
+        timeout_s = _resolve_acp_model_probe_timeout(probe_timeout)
+        from src.utils.async_helpers import run_async
+        return run_async(
+            safe_wait_for(
+                probe_acp_models(tool_name, cwd, current_model),
+                timeout=timeout_s,
+                action=f"ACP {tool_name} 模型探测",
+            )
+        ) or []
+    except Exception:
+        logger.warning("[ACP] probe models failed for %s, will fallback", tool_name, exc_info=True)
+        return []
+
+
+def _fetch_non_coco_models_singleflight(
+    tool_name: str,
+    cwd: Optional[str],
+    current_model: Optional[str],
+    probe_timeout: Optional[float],
+) -> list[ACPModelOption]:
+    """Coalesce concurrent probes for one (tool, cwd): leader probes, waiters reuse.
+
+    Returns fresh ACPModelOption copies (never shared cache objects). On any
+    failure/timeout an empty list is returned and a negative-cache marker is set
+    so the caller can degrade to a local fallback without re-probing.
+    """
+    key = _probe_key(tool_name, cwd)
+    is_leader = False
+    with _acp_probe_cache_lock:
+        event = _acp_probe_inflight.get(key)
+        if event is None:
+            event = threading.Event()
+            _acp_probe_inflight[key] = event
+            is_leader = True
+
+    if not is_leader:
+        # Waiter: block on the leader instead of spawning a duplicate subprocess.
+        wait_budget = _resolve_acp_model_probe_timeout(probe_timeout) + 5.0
+        if event.wait(timeout=wait_budget):
+            cached = _get_cached_probe(tool_name, cwd)  # already a copy
+            if cached:
+                logger.debug(
+                    "[ACP] single-flight reuse for %s (%d models)", tool_name, len(cached)
+                )
+                return cached
+        # Leader produced nothing (or is stuck): degrade via caller's fallback.
+        return []
+
+    # Leader: run the probe once and publish the result to waiters.
+    try:
+        models = _probe_models_blocking(tool_name, cwd, current_model, probe_timeout)
+        if models:
+            _set_cached_probe(tool_name, models, cwd)
+            return _copy_models(models)
+        _set_negative_probe(tool_name, cwd)
+        return []
+    finally:
+        with _acp_probe_cache_lock:
+            _acp_probe_inflight.pop(key, None)
+        event.set()
+
+
 def fetch_acp_models(
     tool_name: str,
     cwd: Optional[str],
@@ -176,19 +313,22 @@ def fetch_acp_models(
     A successful probe there is cached for 5 minutes, so subsequent /wt and
     /model clicks reuse the real ACP model list instead of degrading to the
     6-entry static ``DEFAULT_MODELS`` fallback.
+
+    For non-Coco tools the live probe is guarded by three layers (positive
+    cache, negative cache, single-flight) so concurrent card clicks and the
+    background pre-heat thread never spawn duplicate ``<tool> acp serve``
+    subprocesses, and a tool that cannot serve ACP (e.g. claude) is not
+    re-probed on every interaction.
     """
     if tool_name == "coco":
         cached = _coco_models_from_manager(current_model)
         if cached:
             return cached
     else:
-        cached = _get_cached_probe(tool_name)
+        cached = _get_cached_probe(tool_name, cwd)
         if cached:
             logger.debug("[ACP] using cached probe for %s (%d models)", tool_name, len(cached))
-            if current_model:
-                for m in cached:
-                    m.is_default = (m.name == current_model)
-            return cached
+            return _mark_default(cached, current_model)
         if tool_name == "codex":
             fallback = _local_fallback_models(tool_name, current_model)
             if fallback:
@@ -198,55 +338,53 @@ def fetch_acp_models(
                     len(fallback),
                 )
                 return fallback
-
-    try:
-        timeout_s = _resolve_acp_model_probe_timeout(probe_timeout)
-        from src.utils.async_helpers import run_async
-        models = run_async(
-            safe_wait_for(
-                probe_acp_models(tool_name, cwd, current_model),
-                timeout=timeout_s,
-                action=f"ACP {tool_name} 模型探测",
+        if _is_negatively_cached(tool_name, cwd):
+            logger.debug(
+                "[ACP] negative-cache hit for %s, skipping live probe", tool_name
             )
-        )
-    except Exception:
-        logger.warning("[ACP] probe models failed for %s, will fallback", tool_name, exc_info=True)
-        models = []
+            fallback = _local_fallback_models(tool_name, current_model)
+            return fallback if fallback else []
 
+        models = _fetch_non_coco_models_singleflight(
+            tool_name, cwd, current_model, probe_timeout
+        )
+        if models:
+            return _mark_default(models, current_model)
+        fallback = _local_fallback_models(tool_name, current_model)
+        return fallback if fallback else []
+
+    # --- Coco-only path (unchanged): probe directly, then degrade via manager. ---
+    models = _probe_models_blocking(tool_name, cwd, current_model, probe_timeout)
     if models:
-        # Cache successful probe for non-coco tools
-        if tool_name != "coco":
-            _set_cached_probe(tool_name, models)
         return models
 
     # Fallback for coco — try CocoModelManager again (probe inside it may have
     # populated cache concurrently) before degrading to DEFAULT_MODELS.
-    if tool_name == "coco":
-        cached = _coco_models_from_manager(current_model)
-        if cached:
-            return cached
-        try:
-            from ..coco_model.manager import DEFAULT_MODELS
+    cached = _coco_models_from_manager(current_model)
+    if cached:
+        return cached
+    try:
+        from ..coco_model.manager import DEFAULT_MODELS
 
-            logger.warning(
-                "[ACP] coco ACP probe returned no models, falling back to %d static DEFAULT_MODELS",
-                len(DEFAULT_MODELS),
+        logger.warning(
+            "[ACP] coco ACP probe returned no models, falling back to %d static DEFAULT_MODELS",
+            len(DEFAULT_MODELS),
+        )
+        target_default = _coco_target_default(current_model)
+        return [
+            ACPModelOption(
+                name=m.name,
+                description=m.description,
+                is_default=bool(
+                    (target_default and m.name == target_default)
+                    or getattr(m, "is_default", False)
+                ),
             )
-            target_default = _coco_target_default(current_model)
-            return [
-                ACPModelOption(
-                    name=m.name,
-                    description=m.description,
-                    is_default=bool(
-                        (target_default and m.name == target_default)
-                        or getattr(m, "is_default", False)
-                    ),
-                )
-                for m in DEFAULT_MODELS
-                if getattr(m, "name", "")
-            ]
-        except Exception:
-            logger.warning("[ACP] coco model fallback failed", exc_info=True)
+            for m in DEFAULT_MODELS
+            if getattr(m, "name", "")
+        ]
+    except Exception:
+        logger.warning("[ACP] coco model fallback failed", exc_info=True)
 
     fallback = _local_fallback_models(tool_name, current_model)
     if fallback:

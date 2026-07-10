@@ -2780,6 +2780,13 @@ class WorkflowHandler(WorkflowSelectionMixin, WorkflowScriptMixin, BaseEngineHan
             for (cached_tool, cached_root, _cached_provider), (cached_at, cached_models) in list(cache.items()):
                 if cached_tool == tool_name and cached_root == root_path:
                     if now - cached_at <= _WORKFLOW_MODEL_CACHE_TTL_S:
+                        logger.info(
+                            "[workflow] model_lookup tool=%s provider=%s count=%d duration_ms=%.1f cached=true",
+                            tool_name,
+                            _cached_provider,
+                            len(cached_models),
+                            (time.monotonic() - now) * 1000,
+                        )
                         return [dict(m) for m in cached_models]
                     cache.pop((cached_tool, cached_root, _cached_provider), None)
         self._workflow_model_cache = cache

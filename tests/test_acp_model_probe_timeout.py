@@ -183,13 +183,15 @@ def test_fetch_acp_models_non_coco_caches_successful_probe(monkeypatch):
     monkeypatch.setattr("src.acp.helper.probe_acp_models", fake_probe)
     # Clear cache before test
     _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
 
     models = fetch_acp_models("aiden", cwd="/tmp/ghostap", current_model="model-a")
 
     assert [m.name for m in models] == ["model-a", "model-b"]
-    # Verify cache was populated
-    assert "aiden" in _helper_mod._acp_probe_cache
-    _ts, cached_models = _helper_mod._acp_probe_cache["aiden"]
+    # Verify cache was populated (keyed by (tool, cwd))
+    key = _helper_mod._probe_key("aiden", "/tmp/ghostap")
+    assert key in _helper_mod._acp_probe_cache
+    _ts, cached_models = _helper_mod._acp_probe_cache[key]
     assert [m.name for m in cached_models] == ["model-a", "model-b"]
 
 
@@ -199,7 +201,8 @@ def test_fetch_acp_models_non_coco_uses_cache_on_probe_failure(monkeypatch):
 
     # Pre-populate cache
     _helper_mod._acp_probe_cache.clear()
-    _helper_mod._acp_probe_cache["codex"] = (
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_cache[_helper_mod._probe_key("codex", "/tmp/ghostap")] = (
         _helper_mod._time.time(),
         [
             ACPModelOption(name="cached-1", description="C1", is_default=True),
@@ -225,8 +228,9 @@ def test_fetch_acp_models_non_coco_expired_cache_not_used(monkeypatch):
 
     # Pre-populate cache with expired entry (TTL + 10s ago)
     _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
     expired_ts = _helper_mod._time.time() - _helper_mod._ACP_PROBE_CACHE_TTL - 10
-    _helper_mod._acp_probe_cache["gemini"] = (
+    _helper_mod._acp_probe_cache[_helper_mod._probe_key("gemini", "/tmp/ghostap")] = (
         expired_ts,
         [ACPModelOption(name="old-model", description="Old", is_default=True)],
     )
@@ -241,6 +245,176 @@ def test_fetch_acp_models_non_coco_expired_cache_not_used(monkeypatch):
     # Should not return expired cache; should fall back to current_model only
     assert [m.name for m in models] == ["fallback-model"]
     assert models[0].is_default is True
+
+
+# ---------------------------------------------------------------------------
+# Single-flight coalescing + negative cache tests
+# (the fix for "model selection is slow": concurrent probes were not
+#  de-duplicated, and a tool that times out every time — e.g. claude — was
+#  re-probed on every card click)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_acp_models_concurrent_probes_coalesce_to_single_call(monkeypatch):
+    """Concurrent lookups for the same (tool, cwd) run the probe only once."""
+    import threading
+
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    call_count = 0
+    release = threading.Event()
+
+    async def slow_probe(_tool_name, _cwd, _current_model):
+        nonlocal call_count
+        call_count += 1
+        # Hold the leader here so the other threads pile up as waiters.
+        release.wait(timeout=5)
+        return [ACPModelOption(name="m-1", description="M1", is_default=True)]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", slow_probe)
+
+    results: list[list] = []
+    results_lock = threading.Lock()
+
+    def worker():
+        models = fetch_acp_models("aiden", cwd="/tmp/ghostap", probe_timeout=5.0)
+        with results_lock:
+            results.append(models)
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    # Give the leader a moment to enter the probe, then let it finish.
+    time.sleep(0.2)
+    release.set()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert call_count == 1, f"probe should run once, ran {call_count} times"
+    assert len(results) == 5
+    for r in results:
+        assert [m.name for m in r] == ["m-1"]
+
+
+def test_fetch_acp_models_negative_cache_skips_reprobe(monkeypatch):
+    """After an empty/timed-out probe, the tool is not re-probed within TTL."""
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    call_count = 0
+
+    async def empty_probe(_tool_name, _cwd, _current_model):
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", empty_probe)
+
+    first = fetch_acp_models("claude", cwd="/tmp/ghostap", probe_timeout=1.0)
+    second = fetch_acp_models("claude", cwd="/tmp/ghostap", probe_timeout=1.0)
+    # A current_model on a neg-cache hit degrades to that model (no live probe).
+    third = fetch_acp_models("claude", cwd="/tmp/ghostap", current_model="x", probe_timeout=1.0)
+
+    assert first == []
+    assert second == []
+    assert [m.name for m in third] == ["x"]
+    # Only the first call should have hit the live probe; the rest are served
+    # by the negative cache.
+    assert call_count == 1, f"expected 1 live probe, got {call_count}"
+
+
+def test_fetch_acp_models_negative_cache_expires_and_reprobes(monkeypatch):
+    """Once the negative-cache TTL passes, the tool is probed again."""
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    call_count = 0
+
+    async def probe(_tool_name, _cwd, _current_model):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return []
+        return [ACPModelOption(name="recovered", description="R", is_default=True)]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe)
+
+    assert fetch_acp_models("gemini", cwd="/tmp/ghostap", probe_timeout=1.0) == []
+    # Force the negative-cache entry to look expired.
+    key = _helper_mod._probe_key("gemini", "/tmp/ghostap")
+    _helper_mod._acp_neg_cache[key] = (
+        _helper_mod._time.time() - _helper_mod._ACP_NEG_CACHE_TTL - 1
+    )
+
+    models = fetch_acp_models("gemini", cwd="/tmp/ghostap", probe_timeout=1.0)
+    assert [m.name for m in models] == ["recovered"]
+    assert call_count == 2
+
+
+def test_fetch_acp_models_cache_hit_returns_independent_copies(monkeypatch):
+    """A cache hit must not let one caller's is_default leak into the cache
+    or into another caller's list."""
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    async def probe(_tool_name, _cwd, _current_model):
+        return [
+            ACPModelOption(name="alpha", description="A", is_default=True),
+            ACPModelOption(name="beta", description="B", is_default=False),
+        ]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe)
+
+    # Prime the cache.
+    fetch_acp_models("aiden", cwd="/tmp/ghostap", probe_timeout=1.0)
+
+    a = fetch_acp_models("aiden", cwd="/tmp/ghostap", current_model="beta")
+    b = fetch_acp_models("aiden", cwd="/tmp/ghostap", current_model="alpha")
+
+    assert [m.name for m in a if m.is_default] == ["beta"]
+    assert [m.name for m in b if m.is_default] == ["alpha"]
+    # The two result lists are independent objects.
+    assert a[0] is not b[0]
+    # The shared cache entry is untouched by per-caller default marking.
+    key = _helper_mod._probe_key("aiden", "/tmp/ghostap")
+    _ts, cached = _helper_mod._acp_probe_cache[key]
+    assert [m.name for m in cached if m.is_default] == ["alpha"]
+
+
+def test_fetch_acp_models_different_cwd_probed_separately(monkeypatch):
+    """Cache/single-flight are keyed by (tool, cwd), so distinct cwds probe
+    independently."""
+    from src.ttadk.models import ACPModelOption
+
+    _helper_mod._acp_probe_cache.clear()
+    _helper_mod._acp_neg_cache.clear()
+    _helper_mod._acp_probe_inflight.clear()
+
+    seen_cwds: list[str] = []
+
+    async def probe(_tool_name, cwd, _current_model):
+        seen_cwds.append(cwd)
+        return [ACPModelOption(name=f"m-{cwd}", description="M", is_default=True)]
+
+    monkeypatch.setattr("src.acp.helper.probe_acp_models", probe)
+
+    fetch_acp_models("aiden", cwd="/repo/a", probe_timeout=1.0)
+    fetch_acp_models("aiden", cwd="/repo/b", probe_timeout=1.0)
+    # Repeat first cwd — should be served from cache, not re-probed.
+    fetch_acp_models("aiden", cwd="/repo/a", probe_timeout=1.0)
+
+    assert seen_cwds == ["/repo/a", "/repo/b"]
 
 
 # ---------------------------------------------------------------------------
