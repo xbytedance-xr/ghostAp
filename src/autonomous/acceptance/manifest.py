@@ -24,13 +24,6 @@ class EvidenceLevel(str, Enum):
     SOAK_STATISTICAL = "soak_statistical"
 
 
-_EVIDENCE_RANK = {
-    EvidenceLevel.UNIT_CONTRACT: 1,
-    EvidenceLevel.INTEGRATION: 2,
-    EvidenceLevel.CHAOS_SECURITY: 3,
-    EvidenceLevel.TENANT_E2E: 4,
-    EvidenceLevel.SOAK_STATISTICAL: 5,
-}
 _REQUIRED_FIELDS = {
     "id",
     "phase",
@@ -42,6 +35,8 @@ _REQUIRED_FIELDS = {
     "environment",
     "status",
 }
+_METADATA_FIELDS = ("owner", "selector", "threshold", "environment")
+_PLACEHOLDER_VALUES = frozenset({"tbd", "todo"})
 
 
 @dataclass(frozen=True)
@@ -71,15 +66,24 @@ class AcceptanceGate:
             for line in source_lines
         ):
             raise ValueError(f"invalid source_lines for gate {record['id']}")
+        metadata: dict[str, str] = {}
+        for field_name in _METADATA_FIELDS:
+            raw_value = record[field_name]
+            if not isinstance(raw_value, str):
+                raise ValueError(f"invalid {field_name} for gate {record['id']}")
+            value = raw_value.strip()
+            if not value or value.casefold() in _PLACEHOLDER_VALUES:
+                raise ValueError(f"invalid {field_name} for gate {record['id']}")
+            metadata[field_name] = value
         return cls(
             id=str(record["id"]),
             phase=str(record["phase"]),
             source_lines=source_lines,
-            owner=str(record["owner"]),
-            selector=str(record["selector"]),
-            threshold=str(record["threshold"]),
+            owner=metadata["owner"],
+            selector=metadata["selector"],
+            threshold=metadata["threshold"],
             evidence_level=EvidenceLevel(record["evidence_level"]),
-            environment=str(record["environment"]),
+            environment=metadata["environment"],
             status=GateStatus(record["status"]),
         )
 
@@ -166,6 +170,6 @@ class AcceptanceManifest:
             actual_level = EvidenceLevel(artifact["evidence_level"])
         except (KeyError, ValueError):
             return False
-        if _EVIDENCE_RANK[actual_level] < _EVIDENCE_RANK[gate.evidence_level]:
+        if actual_level is not gate.evidence_level:
             return False
         return artifact.get("environment") == gate.environment

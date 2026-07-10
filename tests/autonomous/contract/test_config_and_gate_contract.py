@@ -60,7 +60,16 @@ def test_write_modes_fail_closed_without_anchor_and_sandbox(settings: Settings) 
     status = derive_effective_autonomy(settings, {})
 
     assert status.mode is EffectiveAutonomy.ASSIST
-    assert {"anchor", "worker_sandbox", "oracle_sandbox"} <= set(status.blockers)
+    assert set(status.blockers) == {
+        "journal",
+        "anchor",
+        "worker_sandbox",
+        "oracle_sandbox",
+        "brokers",
+        "p0_gates",
+        "write_enabled",
+        "manager_acl",
+    }
 
 
 def test_manager_only_reaches_supervised_with_required_attestations(settings: Settings) -> None:
@@ -138,3 +147,52 @@ def test_bounded_mode_requires_a_standing_order(settings: Settings) -> None:
 
     assert supervised.mode is EffectiveAutonomy.SUPERVISED
     assert bounded.mode is EffectiveAutonomy.BOUNDED_AUTONOMOUS
+
+
+def test_attestations_must_be_literal_booleans(settings: Settings) -> None:
+    settings.autonomous_deployment_mode = "manager_only"
+    settings.autonomous_write_enabled = True
+    settings.autonomous_manager_acl = "ou_manager"
+    settings.autonomous_anchor_provider = "verified-cas"
+
+    status = derive_effective_autonomy(
+        settings,
+        {
+            "journal": "false",
+            "anchor": 1,
+            "worker_sandbox": True,
+            "oracle_sandbox": True,
+            "brokers": True,
+            "p0_gates": True,
+            "standing_order": "false",
+        },
+    )
+
+    assert status.mode is EffectiveAutonomy.ASSIST
+    assert {"journal", "anchor"} <= set(status.blockers)
+    assert status.attestations["journal"] is False
+    assert status.attestations["anchor"] is False
+    assert status.attestations["standing_order"] is False
+
+
+def test_any_p0_forces_offline_assist(settings: Settings) -> None:
+    settings.autonomous_deployment_mode = "manager_only"
+    settings.autonomous_write_enabled = True
+    settings.autonomous_manager_acl = "ou_manager"
+    settings.autonomous_anchor_provider = "verified-cas"
+
+    status = derive_effective_autonomy(
+        settings,
+        {
+            "journal": True,
+            "anchor": True,
+            "worker_sandbox": True,
+            "oracle_sandbox": True,
+            "brokers": True,
+            "p0_gates": False,
+            "standing_order": True,
+        },
+    )
+
+    assert status.mode is EffectiveAutonomy.ASSIST
+    assert status.blockers == ("p0_gates",)
