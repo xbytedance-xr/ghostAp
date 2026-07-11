@@ -1,4 +1,4 @@
-"""Tool Broker, Capability Registry, and Dispatch Gate."""
+"""Tool Broker, Model Broker, Capability Registry, and Dispatch Gate."""
 
 from .capability_registry import (
     AdapterHashMismatch,
@@ -17,10 +17,22 @@ from .dispatch_gate import (
     PreparedEffect,
     StaleEpoch,
 )
+from .model_broker import (
+    AuthorizationInvalid,
+    BudgetExhausted,
+    ModelBroker,
+    ModelCall,
+    ModelCallResult,
+    ModelCallState,
+    RateLimited,
+    RateLimiter,
+)
 from .tool_broker import CapabilityRegistry, DispatchRequest, DispatchResult, ToolBroker
 
 __all__ = [
     "AdapterHashMismatch",
+    "AuthorizationInvalid",
+    "BudgetExhausted",
     "CapabilityRegistry",
     "DispatchEpoch",
     "DispatchGate",
@@ -31,7 +43,13 @@ __all__ = [
     "DuplicateCapability",
     "EffectNotPrepared",
     "ImmutableCapabilityRegistry",
+    "ModelBroker",
+    "ModelCall",
+    "ModelCallResult",
+    "ModelCallState",
     "PreparedEffect",
+    "RateLimited",
+    "RateLimiter",
     "StaleEpoch",
     "ToolBroker",
     "UnknownCapability",
