@@ -112,7 +112,7 @@ GhostAP 有两个独立的维度：
 
 - SMART 是默认聊天/项目状态，可直接路由简单意图或类 shell 命令。
 - 普通工具入口如 `/coco`、`/codex`、`/aiden`、`/claude`、`/gemini` 和 `/ttadk` 设置持久聊天+项目编程状态，直到 `/exit`。
-- Deep、Spec、Worktree、Workflow 和 Autonomous 是作用于飞书话题/根线程的引擎策略；它们不得替换聊天+项目编程状态。
+- Deep、Spec、Worktree 和 Workflow 是作用于飞书话题/根线程的引擎策略；它们不得替换聊天+项目编程状态。Autonomous 同理。
 - SMART 中的类 shell 文本必须保持 shell 执行，包括 `./restart.sh rr` 等命令，而不是被项目聊天自由文本编程路由窃取。
 
 ## 卡片与 UI 规则
