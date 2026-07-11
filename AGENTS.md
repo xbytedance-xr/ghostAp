@@ -66,11 +66,44 @@ uv run python -m pytest tests/test_acp_client.py -q
 - `src/slock_engine/task_queue.py`：任务队列管理。
 - `src/slock_engine/safe_error.py`：安全错误消息工具（从 `src/utils/errors` 重导出）。
 
+## 自主工作系统 (`src/autonomous/`)
+
+v5 自主系统使用 Journal-backed 持久化架构取代 Slock 内存执行核心。关键规则：
+
+- **Journal 是唯一事实源**。所有状态变更通过 `JournalWriter.write_event()` 记录。投影和快照可从 Journal 重放重建。
+- **域对象冻结**。`domain/` 下的 dataclass 都是 `frozen=True`，状态变更使用 `dataclasses.replace()` 而非赋值。
+- **Effect 在派发前必须锚定**。PREPARED 和 EXECUTING 帧必须 fsync 并锚定后才能发起外部调用。
+- **终态需要 finalization**。Run 在有未解决 Effect 或未处置已提交 Effect 时不能进入终态。
+- **默认拒绝**。Policy 层对所有操作默认拒绝，需显式授权。
+- **Assist 不写入**。`assist` 模式下系统只读，R4 风险始终拒绝。
+- **飞书 SDK 使用官方包**。消息/卡片投递使用 `lark-oapi`，WebSocket 事件订阅使用 `lark-channel-sdk`。不要手写 HTTP 调用。
+- **员工创建通过飞书交互**。用户在聊天中通过交互式卡片选择角色/工具/模型来创建员工。
+
+关键模块入口：
+
+- `src/autonomous/bootstrap.py`：生产组装根，初始化 lark-oapi 客户端。
+- `src/autonomous/coordinator.py`：Goal/Run 生命周期编排。
+- `src/autonomous/planner.py`：计划编译。
+- `src/autonomous/domain/state_machine.py`：纯状态转换函数（`transition_run/plan/step/effect`）。
+- `src/autonomous/journal/writer.py`：单写入者，fsync + flock。
+- `src/autonomous/broker/dispatch_gate.py`：线性化派发门。
+- `src/autonomous/manager/feishu_adapter.py`：使用 lark-oapi 的飞书投递适配器。
+- `src/autonomous/manager/cards.py`：交互式卡片模板（员工创建、进度、审批）。
+- `src/autonomous/supervisor/supervisor.py`：系统启动/恢复/关闭。
+- `src/autonomous/migration/slock_compat.py`：Slock 兼容层（4 种模式）。
+
+测试命令：
+
+```bash
+uv run pytest tests/autonomous/ -q          # 577+ 测试
+uv run ruff check src/autonomous/           # 0 错误
+```
+
 ## 策略与传输
 
 GhostAP 有两个独立的维度：
 
-- 执行策略：普通编程、Deep、Spec、Worktree 和 Workflow。
+- 执行策略：普通编程、Deep、Spec、Worktree、Workflow 和 Autonomous。
 - 工具传输：ACP 直接模式、shell CLI 桥接模式和 TTADK CLI 桥接。
 
 保持这些维度分离。新的编程功能通常应在 Coco、Claude、Aiden、Codex、Gemini 和 TTADK 上工作，除非用户明确限定范围或后端不支持。
@@ -79,7 +112,7 @@ GhostAP 有两个独立的维度：
 
 - SMART 是默认聊天/项目状态，可直接路由简单意图或类 shell 命令。
 - 普通工具入口如 `/coco`、`/codex`、`/aiden`、`/claude`、`/gemini` 和 `/ttadk` 设置持久聊天+项目编程状态，直到 `/exit`。
-- Deep、Spec、Worktree 和 Workflow 是作用于飞书话题/根线程的引擎策略；它们不得替换聊天+项目编程状态。
+- Deep、Spec、Worktree、Workflow 和 Autonomous 是作用于飞书话题/根线程的引擎策略；它们不得替换聊天+项目编程状态。
 - SMART 中的类 shell 文本必须保持 shell 执行，包括 `./restart.sh rr` 等命令，而不是被项目聊天自由文本编程路由窃取。
 
 ## 卡片与 UI 规则
