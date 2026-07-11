@@ -232,6 +232,26 @@ def test_cancel_with_unresolved_effect_enters_reconciliation_pending() -> None:
     assert updated.target_terminal_state is RunState.CANCELED
 
 
+def test_cancel_drained_without_context_rejected() -> None:
+    run = Run(state=RunState.CANCELLING)
+    with pytest.raises(TransitionRejected, match="durable context"):
+        transition_run(run, RunEvent.CANCEL_DRAINED)
+
+
+def test_cancel_drained_to_terminal_requires_finalization_record() -> None:
+    run = Run(state=RunState.CANCELLING)
+    with pytest.raises(TransitionRejected, match="finalization record"):
+        transition_run(
+            run,
+            RunEvent.CANCEL_DRAINED,
+            context=RunTransitionContext(
+                run_id=run.run_id,
+                plan_epoch=run.plan_epoch,
+                source_sequence=1,
+            ),
+        )
+
+
 def test_reconciliation_finalizes_to_recorded_target_only_when_clear() -> None:
     run = Run(
         state=RunState.RECONCILIATION_PENDING,
@@ -247,6 +267,7 @@ def test_reconciliation_finalizes_to_recorded_target_only_when_clear() -> None:
                 plan_epoch=run.plan_epoch,
                 source_sequence=1,
                 unresolved_effect_ids=("effect_1",),
+                finalization_record_id="finalization_1",
             ),
         )
 
@@ -257,9 +278,36 @@ def test_reconciliation_finalizes_to_recorded_target_only_when_clear() -> None:
             run_id=run.run_id,
             plan_epoch=run.plan_epoch,
             source_sequence=1,
+            finalization_record_id="finalization_1",
         ),
     )
     assert updated.state is RunState.FAILED
+
+
+def test_reconciliation_without_context_rejected() -> None:
+    run = Run(
+        state=RunState.RECONCILIATION_PENDING,
+        target_terminal_state=RunState.FAILED,
+    )
+    with pytest.raises(TransitionRejected, match="durable context"):
+        transition_run(run, RunEvent.RECONCILIATION_COMPLETED)
+
+
+def test_reconciliation_requires_finalization_record() -> None:
+    run = Run(
+        state=RunState.RECONCILIATION_PENDING,
+        target_terminal_state=RunState.FAILED,
+    )
+    with pytest.raises(TransitionRejected, match="finalization record"):
+        transition_run(
+            run,
+            RunEvent.RECONCILIATION_COMPLETED,
+            context=RunTransitionContext(
+                run_id=run.run_id,
+                plan_epoch=run.plan_epoch,
+                source_sequence=1,
+            ),
+        )
 
 
 def test_replan_cannot_delete_or_weaken_criteria() -> None:
@@ -307,6 +355,10 @@ def test_effect_disposition_requires_compatible_effect_state() -> None:
             created_at=0,
             _validated=True,
         )
+
+    # Bare constructor (no args) must also be blocked
+    with pytest.raises(TypeError):
+        EffectDisposition()  # type: ignore[call-arg]
 
     with pytest.raises(ValueError, match="unresolved"):
         EffectDisposition.create(

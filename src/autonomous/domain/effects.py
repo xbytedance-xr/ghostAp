@@ -170,7 +170,11 @@ class Effect:
                 data.get("created_at", 0),
                 "created_at",
             ),
-            committed_at=data.get("committed_at"),
+            committed_at=(
+                strict_float(data["committed_at"], "committed_at")
+                if data.get("committed_at") is not None
+                else None
+            ),
             evidence_hash=strict_str(
                 data.get("evidence_hash", ""),
                 "evidence_hash",
@@ -437,6 +441,12 @@ class EffectDisposition:
     disposition: EffectDispositionType
     actor_principal_id: str
     created_at: float
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError(
+            "EffectDisposition cannot be constructed directly; use .create() or .from_dict()"
+        )
+
     @classmethod
     def _build(
         cls,

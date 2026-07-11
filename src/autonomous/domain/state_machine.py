@@ -299,22 +299,17 @@ def transition_run(
     emitted: tuple[str, ...] = ()
     target: RunState
     target_terminal_state = run.target_terminal_state
-    facts = context or RunTransitionContext(
-        run_id=run.run_id,
-        plan_epoch=run.plan_epoch,
-        source_sequence=0,
-    )
     if context is not None and (
-        facts.run_id != run.run_id
-        or facts.plan_epoch != run.plan_epoch
-        or facts.source_sequence < 1
+        context.run_id != run.run_id
+        or context.plan_epoch != run.plan_epoch
+        or context.source_sequence < 1
     ):
         raise TransitionRejected(
             "run transition context is not bound to current run and plan"
         )
-    unresolved_effect_ids = facts.unresolved_effect_ids
+    unresolved_effect_ids = context.unresolved_effect_ids if context else ()
     undisposed_committed_effect_ids = (
-        facts.undisposed_committed_effect_ids
+        context.undisposed_committed_effect_ids if context else ()
     )
 
     if event in {RunEvent.VERIFICATION_PASSED, RunEvent.HUMAN_ACCEPTED}:
@@ -339,24 +334,24 @@ def transition_run(
             raise TransitionRejected(
                 "committed Effect disposition is required before success"
             )
-        if facts.criteria_verified is not True:
+        if context.criteria_verified is not True:
             raise TransitionRejected("all criteria must be verified before success")
-        if not facts.finalization_record_id:
+        if not context.finalization_record_id:
             raise TransitionRejected(
                 "finalization record is required before success"
             )
         if (
             event is RunEvent.VERIFICATION_PASSED
-            and not facts.verification_attestation_ids
+            and not context.verification_attestation_ids
         ):
             raise TransitionRejected(
                 "verification attestation is required before success"
             )
         if event is RunEvent.HUMAN_ACCEPTED and (
-            not facts.human_acceptance_decision_id
-            or not facts.actor_principal_id
-            or facts.decision_nonce_consumed is not True
-            or facts.decision_epoch_valid is not True
+            not context.human_acceptance_decision_id
+            or not context.actor_principal_id
+            or context.decision_nonce_consumed is not True
+            or context.decision_epoch_valid is not True
         ):
             raise TransitionRejected(
                 "authenticated human acceptance decision is required"
@@ -403,12 +398,20 @@ def transition_run(
             raise TransitionRejected(
                 f"illegal run transition: {source.value} + {event.value}"
             )
+        if context is None:
+            raise TransitionRejected(
+                "durable context is required for cancel drain finalization"
+            )
         target_terminal_state = target_terminal_state or RunState.CANCELED
         if unresolved_effect_ids or undisposed_committed_effect_ids:
             target = RunState.RECONCILIATION_PENDING
             guard = "effects require reconciliation before terminal state"
             emitted = ("reconciliation.requested",)
         else:
+            if not context.finalization_record_id:
+                raise TransitionRejected(
+                    "finalization record is required before terminal state"
+                )
             target = target_terminal_state
             guard = "dispatch drained and effects finalized"
             emitted = ("run.terminal_report_required",)
@@ -418,10 +421,18 @@ def transition_run(
             raise TransitionRejected(
                 f"illegal run transition: {source.value} + {event.value}"
             )
+        if context is None:
+            raise TransitionRejected(
+                "durable context is required for reconciliation completion"
+            )
         if unresolved_effect_ids or undisposed_committed_effect_ids:
             raise TransitionRejected("reconciliation is not complete")
         if run.target_terminal_state is None:
             raise TransitionRejected("reconciliation target terminal state is missing")
+        if not context.finalization_record_id:
+            raise TransitionRejected(
+                "finalization record is required before terminal state"
+            )
         target = run.target_terminal_state
         target_terminal_state = None
         guard = "all effects reconciled and disposed"
