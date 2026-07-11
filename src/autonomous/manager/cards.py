@@ -1,0 +1,215 @@
+"""Canonical Feishu interactive cards for the autonomous Manager.
+
+All cards follow the pattern: structured JSON templates rendered
+with dynamic data. Uses lark-oapi card schema.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def build_employee_creation_card(
+    *,
+    available_roles: list[str] | None = None,
+    available_tools: list[str] | None = None,
+    available_models: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build interactive card for creating a new employee via Feishu chat.
+
+    Users select role, tool, model from dropdowns and confirm.
+    """
+    roles = available_roles or ["coder", "reviewer", "planner", "tester", "researcher"]
+    tools = available_tools or ["coco", "claude", "codex", "aiden", "gemini", "ttadk"]
+    models = available_models or ["gpt-4o", "claude-sonnet", "gemini-pro", "deepseek-v3"]
+
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Create New Employee"},
+            "template": "blue",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": "Configure a new autonomous employee for your team:",
+                },
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "select_static",
+                        "placeholder": {"tag": "plain_text", "content": "Select Role"},
+                        "options": [
+                            {"text": {"tag": "plain_text", "content": r}, "value": r}
+                            for r in roles
+                        ],
+                        "value": {"key": "employee_role"},
+                    },
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "select_static",
+                        "placeholder": {"tag": "plain_text", "content": "Select Tool"},
+                        "options": [
+                            {"text": {"tag": "plain_text", "content": t}, "value": t}
+                            for t in tools
+                        ],
+                        "value": {"key": "employee_tool"},
+                    },
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "select_static",
+                        "placeholder": {"tag": "plain_text", "content": "Select Model"},
+                        "options": [
+                            {"text": {"tag": "plain_text", "content": m}, "value": m}
+                            for m in models
+                        ],
+                        "value": {"key": "employee_model"},
+                    },
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Create Employee"},
+                        "type": "primary",
+                        "value": {"action": "create_employee"},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Cancel"},
+                        "type": "default",
+                        "value": {"action": "cancel"},
+                    },
+                ],
+            },
+        ],
+    }
+
+
+def build_employee_created_card(
+    *,
+    employee_id: str,
+    name: str,
+    role: str,
+    tool: str,
+    model: str,
+    worker_type: str,
+) -> dict[str, Any]:
+    """Build confirmation card after employee creation."""
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Employee Created"},
+            "template": "green",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**ID:** {employee_id}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Name:** {name}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Role:** {role}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Tool:** {tool}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Model:** {model}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Type:** {worker_type}"}},
+                ],
+            },
+            {
+                "tag": "note",
+                "elements": [
+                    {"tag": "plain_text", "content": "Employee is now active and ready to accept work."},
+                ],
+            },
+        ],
+    }
+
+
+def build_goal_progress_card(
+    *,
+    goal_id: str,
+    description: str,
+    state: str,
+    run_id: str = "",
+    step_progress: str = "",
+) -> dict[str, Any]:
+    """Build progress card for goal execution."""
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": f"Goal: {description[:40]}"},
+            "template": "wathet" if state == "executing" else "blue",
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Goal:** {goal_id}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**State:** {state}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Run:** {run_id or 'N/A'}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Progress:** {step_progress or 'Starting...'}"}},
+                ],
+            },
+        ],
+    }
+
+
+def build_approval_card(
+    *,
+    approval_id: str,
+    description: str,
+    risk_level: str,
+    effect_summary: str,
+) -> dict[str, Any]:
+    """Build approval request card."""
+    template = "red" if risk_level in ("r3", "r4") else "orange"
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Approval Required"},
+            "template": template,
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": f"**Action:** {description}"},
+            },
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Risk:** {risk_level.upper()}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**Effect:** {effect_summary}"}},
+                ],
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Approve"},
+                        "type": "primary",
+                        "value": {"action": "approve", "approval_id": approval_id},
+                    },
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": "Reject"},
+                        "type": "danger",
+                        "value": {"action": "reject", "approval_id": approval_id},
+                    },
+                ],
+            },
+        ],
+    }
