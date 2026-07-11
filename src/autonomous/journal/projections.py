@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterator
 
 from ..domain.effects import Effect
 from ..domain.enums import (
     EffectState,
     GoalState,
-    GoalType,
     PlanState,
     RunState,
     StepState,
 )
-from ..domain.goals import GoalDefinition, GoalSpec, Run
+from ..domain.goals import GoalDefinition, Run
 from ..domain.plans import Plan, PlanStep
 from .frame import JournalEvent, TransactionFrame
 

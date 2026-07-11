@@ -15,10 +15,10 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 from ..domain.enums import GoalState, GoalType, RunState
-from ..domain.goals import EpochSet, GoalDefinition, GoalSpec, Run
+from ..domain.goals import GoalDefinition, GoalSpec, Run
 from ..domain.ids import new_id
 from ..journal.frame import JournalEvent
 from ..journal.projections import InboxRecord, ProjectionState, apply_frame

@@ -11,18 +11,15 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
-from ..broker.model_broker import ModelBroker, ModelCallResult
-from ..broker.tool_broker import DispatchRequest, DispatchResult, ToolBroker
+from ..broker.model_broker import ModelBroker
+from ..broker.tool_broker import DispatchRequest, ToolBroker
 from ..domain import (
-    Attempt,
     EpochSet,
     GoalActivationAuthorization,
     TurnOutputType,
-    new_id,
 )
-
 
 # ---------------------------------------------------------------------------
 # Data classes

@@ -11,17 +11,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-from ..domain.control import GoalActivationAuthorization, Principal
 from ..domain.enums import AutonomyMode, RiskLevel
 from ..domain.goals import EpochSet
 from ..domain.ids import new_id
-from .authorization import (
-    AuthorizationDenied,
-    AuthorizationEnvelope,
-    AuthorizationResult,
-    ControlAuthorizationGate,
-    Operation,
-)
 from .kill_switch import KillSwitch
 
 

@@ -11,7 +11,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Optional, Protocol
+from typing import Optional, Protocol
 
 from ..domain import (
     Effect,

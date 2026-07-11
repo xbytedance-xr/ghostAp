@@ -7,11 +7,11 @@ and reliable timeout handling via process-group SIGKILL.
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
-import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 

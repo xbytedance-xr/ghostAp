@@ -9,16 +9,13 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 from ..models import (
-    AutonomyMode,
     CapabilityDescriptor,
     Effect,
     EffectState,
     EpochSet,
-    RiskLevel,
-    _new_id,
 )
 
 

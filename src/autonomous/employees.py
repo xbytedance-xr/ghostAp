@@ -8,7 +8,6 @@ from enum import Enum
 from typing import Any, Protocol
 
 from .domain.ids import new_id
-from .domain.employees import EmployeeDefinition, WorkerRuntime
 
 
 class WorkerType(str, Enum):

@@ -7,16 +7,14 @@ never from callback payloads.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, FrozenSet, Mapping, Optional, Sequence
+from typing import Any, Optional, Sequence
 
-from ..domain.control import GoalActivationAuthorization, Principal
-from ..domain.ids import canonical_hash, freeze, new_id, thaw
+from ..domain.control import Principal
+from ..domain.ids import canonical_hash, new_id
 
 
 class Operation(str, Enum):

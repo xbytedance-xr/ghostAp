@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Protocol
 
-from ..domain import RunState, new_id
+from ..domain import new_id
 
 logger = logging.getLogger(__name__)
 

@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..domain.effects import CapabilityDescriptor, Effect, EffectState
-from ..domain.enums import RiskLevel
 from ..domain.ids import new_id
 
 
@@ -197,18 +196,13 @@ class DispatchGate:
 
             self._active_dispatches[effect_instance_id] = prepared.effect.run_id
 
-            executing_effect = replace(
-                prepared.effect,
-                state=EffectState.EXECUTING,
-                active_dispatch=True,
-            )
             self._record_frame_fn(
                 "effect.executing",
                 {"effect_instance_id": effect_instance_id},
             )
 
         try:
-            result = await adapter_fn(parameters)
+            await adapter_fn(parameters)
             committed_at = time.time()
 
             self._record_frame_fn(

@@ -5,10 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from ..domain.effects import CapabilityDescriptor
-from ..domain.ids import canonical_hash
 
 
 class AdapterProtocol(Protocol):

@@ -1,11 +1,5 @@
 """Durable Scheduler - persistent ready queue, leases, retries, backpressure."""
 
-from .scheduler import (
-    DurableScheduler,
-    LeaseGrant,
-    QueueEntry,
-    SchedulerStats,
-)
 from .activities import (
     Activity,
     ActivityCheckpoint,
@@ -14,6 +8,12 @@ from .activities import (
     ActivityState,
     ActivityType,
     StaleLease,
+)
+from .scheduler import (
+    DurableScheduler,
+    LeaseGrant,
+    QueueEntry,
+    SchedulerStats,
 )
 
 __all__ = [

@@ -210,7 +210,7 @@ class ActivityExecutor:
             ActivityState.FAILED,
             ActivityState.CANCELED,
         ):
-            raise ValueError(f"cannot cancel terminal activity")
+            raise ValueError("cannot cancel terminal activity")
         activity.state = ActivityState.CANCELED
         activity.completed_at = time.time()
         activity.aggregate_version += 1
@@ -228,7 +228,7 @@ class ActivityExecutor:
             ActivityState.CANCELED,
             ActivityState.TIMED_OUT,
         ):
-            raise ValueError(f"cannot timeout terminal activity")
+            raise ValueError("cannot timeout terminal activity")
         activity.state = ActivityState.TIMED_OUT
         activity.completed_at = time.time()
         activity.aggregate_version += 1

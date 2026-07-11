@@ -11,7 +11,6 @@ import time
 from typing import Optional
 
 from ..domain.control import BudgetEntry, BudgetEntryState, BudgetLedger
-from ..domain.ids import new_id
 
 
 class BudgetError(Exception):

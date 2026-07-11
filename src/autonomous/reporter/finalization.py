@@ -13,11 +13,8 @@ from typing import Optional, Protocol
 
 from ..domain import (
     Effect,
-    EffectDispositionType,
-    EffectState,
     new_id,
 )
-
 
 # ---------------------------------------------------------------------------
 # Journal protocol
@@ -232,8 +229,6 @@ class Finalization:
         record = self._records.get(record_id)
         if record is None:
             return []
-        dispositioned_ids = {d.effect_id for d in record.dispositions}
-        # We only know total count, not IDs - caller must track
         return []
 
     def is_timed_out(self, record_id: str) -> bool:

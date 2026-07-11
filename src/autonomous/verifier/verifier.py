@@ -11,7 +11,7 @@ import asyncio
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional, Protocol
+from typing import Optional, Protocol
 
 from ..domain import (
     Evidence,
@@ -20,7 +20,6 @@ from ..domain import (
     VerificationResult,
     new_id,
 )
-
 
 # ---------------------------------------------------------------------------
 # Journal protocol

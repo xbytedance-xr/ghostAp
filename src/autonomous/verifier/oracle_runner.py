@@ -11,12 +11,10 @@ runtime. It must not have access to the execution context or model calls.
 from __future__ import annotations
 
 import hashlib
-import json
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-from ..runtime.runner import RunResult, SandboxRunner
+from ..runtime.runner import SandboxRunner
 
 
 @dataclass

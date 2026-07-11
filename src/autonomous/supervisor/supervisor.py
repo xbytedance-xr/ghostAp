@@ -14,7 +14,7 @@ import signal
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional, Protocol
+from typing import Optional, Protocol
 
 from ..domain import new_id
 

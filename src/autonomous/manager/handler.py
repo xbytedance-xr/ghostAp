@@ -8,21 +8,14 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from ..models import (
     AutonomyMode,
-    GoalCriterion,
     GoalDefinition,
     GoalSpec,
     GoalState,
-    GoalType,
-    OracleType,
-    Plan,
-    PlanStep,
-    ProgressSnapshot,
-    Run,
     RunState,
 )
 
@@ -225,11 +218,6 @@ class ManagerHandler:
         if not run:
             return CommandResult(success=False, message=f"Run not found: {run_id}")
 
-        snapshot = ProgressSnapshot(
-            run_id=run.run_id,
-            run_state=run.state,
-            plan_version=run.plan_epoch,
-        )
         return CommandResult(
             success=True,
             message=f"Run: {run.run_id}\n"
