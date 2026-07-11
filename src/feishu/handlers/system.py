@@ -582,13 +582,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         project: "Optional[ProjectContext]" = None,
     ) -> None:
         """Route autonomous system commands (/goal, /employee, /goals, etc.)."""
-        import asyncio
-        import json
-        from ...autonomous.bootstrap import AutonomousContainer
-        from ...autonomous.manager.cards import (
-            build_employee_creation_card,
-            build_employee_created_card,
-        )
+        from ...autonomous.manager.cards import build_employee_creation_card
         from ...thread import get_current_sender_id
 
         sender_id = get_current_sender_id() or ""

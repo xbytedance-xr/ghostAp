@@ -1,12 +1,51 @@
 """Canonical Feishu interactive cards for the autonomous Manager.
 
 All cards follow the pattern: structured JSON templates rendered
-with dynamic data. Uses lark-oapi card schema.
+with dynamic data. Reuses the project's shared tool/model discovery
+from src/workflow_engine/tool_registry (same source as /wf, Deep, Spec).
 """
 
 from __future__ import annotations
 
 from typing import Any
+
+
+def _discover_tools() -> list[str]:
+    """Get available tools using the same discovery as Workflow/Deep/Spec."""
+    try:
+        from ...workflow_engine.tool_registry import get_available_tools
+        tools = get_available_tools(require_available=True)
+        if tools:
+            return list(tools.keys())
+    except Exception:
+        pass
+    try:
+        from ...acp.providers import get_providers
+        providers = get_providers()
+        if providers:
+            return list(providers.keys())
+    except Exception:
+        pass
+    return ["coco", "claude", "codex", "aiden", "gemini", "traex"]
+
+
+def _discover_models_for_tool(tool_name: str) -> list[str]:
+    """Get available models for a tool using ACP provider model discovery."""
+    try:
+        from ...acp.providers import get_providers
+        providers = get_providers()
+        provider = providers.get(tool_name)
+        if provider and hasattr(provider, "get_models"):
+            models = provider.get_models()
+            if models:
+                return [m.name if hasattr(m, "name") else str(m) for m in models]
+        if provider and hasattr(provider, "default_model"):
+            dm = provider.default_model
+            if dm:
+                return [dm]
+    except Exception:
+        pass
+    return []
 
 
 def build_employee_creation_card(
@@ -17,11 +56,13 @@ def build_employee_creation_card(
 ) -> dict[str, Any]:
     """Build interactive card for creating a new employee via Feishu chat.
 
-    Users select role, tool, model from dropdowns and confirm.
+    Tool/model lists are discovered from the same ACP provider registry
+    that Deep, Spec, Worktree, and Workflow use. Falls back to static
+    defaults only when discovery fails.
     """
     roles = available_roles or ["coder", "reviewer", "planner", "tester", "researcher"]
-    tools = available_tools or ["coco", "claude", "codex", "aiden", "gemini", "ttadk"]
-    models = available_models or ["gpt-4o", "claude-sonnet", "gemini-pro", "deepseek-v3"]
+    tools = available_tools or _discover_tools()
+    models = available_models or _get_all_models(tools)
 
     return {
         "config": {"wide_screen_mode": True},
@@ -70,10 +111,13 @@ def build_employee_creation_card(
                 "actions": [
                     {
                         "tag": "select_static",
-                        "placeholder": {"tag": "plain_text", "content": "Select Model"},
+                        "placeholder": {"tag": "plain_text", "content": "Select Model (or use tool default)"},
                         "options": [
-                            {"text": {"tag": "plain_text", "content": m}, "value": m}
-                            for m in models
+                            {"text": {"tag": "plain_text", "content": "Auto (tool default)"}, "value": "__auto__"},
+                            *[
+                                {"text": {"tag": "plain_text", "content": m}, "value": m}
+                                for m in models
+                            ],
                         ],
                         "value": {"key": "employee_model"},
                     },
@@ -98,6 +142,18 @@ def build_employee_creation_card(
             },
         ],
     }
+
+
+def _get_all_models(tools: list[str]) -> list[str]:
+    """Collect unique models from all discovered tools."""
+    seen: set[str] = set()
+    models: list[str] = []
+    for tool in tools:
+        for m in _discover_models_for_tool(tool):
+            if m not in seen:
+                seen.add(m)
+                models.append(m)
+    return models
 
 
 def build_employee_created_card(
