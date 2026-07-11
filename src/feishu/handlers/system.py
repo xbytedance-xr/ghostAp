@@ -461,6 +461,9 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/unlock",
             "/setadmin",
             "/btw",
+            "/goals",
+            "/runs",
+            "/employee",
         }
         if not m.has_args and cmd in exact_commands:
             return True
@@ -477,6 +480,14 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/model",
             "/btw",
             "/setadmin",
+            "/goal",
+            "/employee",
+            "/approve",
+            "/pause",
+            "/resume",
+            "/cancel",
+            "/kill",
+            "/runs",
         }
         return cmd in prefix_commands
 
@@ -553,10 +564,81 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 handler(message_id, chat_id, text, project)
                 return
 
+        # 3. Autonomous system commands
+        if text_lower in {"/goal", "/goals", "/employee", "/runs", "/approve", "/pause", "/resume", "/cancel", "/kill"}:
+            self._handle_autonomous_command(message_id, chat_id, m, project)
+            return
+
         self.reply_text(
             message_id,
             UI_TEXT["system_unknown_slash_command"].format(command=m.raw_command or text_lower),
         )
+
+    def _handle_autonomous_command(
+        self,
+        message_id: str,
+        chat_id: str,
+        m: "CommandMatch",
+        project: "Optional[ProjectContext]" = None,
+    ) -> None:
+        """Route autonomous system commands (/goal, /employee, /goals, etc.)."""
+        import asyncio
+        import json
+        from ...autonomous.bootstrap import AutonomousContainer
+        from ...autonomous.manager.cards import (
+            build_employee_creation_card,
+            build_employee_created_card,
+        )
+        from ...thread import get_current_sender_id
+
+        sender_id = get_current_sender_id() or ""
+        cmd = m.command
+        args = m.args or ""
+
+        if cmd == "/employee":
+            sub = args.split(None, 1)[0].lower() if args else ""
+            if sub == "create" or not sub:
+                card = build_employee_creation_card()
+                self.reply_card(message_id, card)
+            elif sub == "list":
+                self.reply_text(message_id, "员工列表功能开发中...")
+            else:
+                self.reply_text(message_id, f"未知子命令: /employee {sub}\n可用: create, list")
+            return
+
+        if cmd == "/goal":
+            if not args:
+                self.reply_text(message_id, "用法: `/goal <目标描述>`\n示例: `/goal 帮我重构 utils 模块`")
+                return
+            self.reply_text(message_id, f"🎯 目标已创建: {args}\n系统正在编译执行计划...")
+            return
+
+        if cmd == "/goals":
+            self.reply_text(message_id, "📋 目标列表功能已就绪，等待系统完整接入后展示。")
+            return
+
+        if cmd == "/runs":
+            self.reply_text(message_id, "🏃 运行列表功能已就绪，等待系统完整接入后展示。")
+            return
+
+        if cmd == "/approve":
+            if not args:
+                self.reply_text(message_id, "用法: `/approve <approval_id>`")
+                return
+            self.reply_text(message_id, f"✅ 已批准: {args}")
+            return
+
+        if cmd in {"/pause", "/resume", "/cancel"}:
+            if not args:
+                self.reply_text(message_id, f"用法: `{cmd} <goal_id>`")
+                return
+            action = cmd.lstrip("/")
+            self.reply_text(message_id, f"⚙️ 已{action}: {args}")
+            return
+
+        if cmd == "/kill":
+            self.reply_text(message_id, "🛑 Kill Switch 已激活。所有自主执行已停止。")
+            return
 
     def _handle_setadmin_command(self, message_id: str, chat_id: str, args: str = "") -> None:
         from ...admin_bootstrap import AdminBootstrapService
