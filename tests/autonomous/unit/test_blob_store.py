@@ -13,7 +13,9 @@ from src.autonomous.journal.blob_store import (
     BlobAuthenticationError,
     BlobFormatError,
     BlobIntegrityError,
+    BlobMissingError,
     BlobPublishError,
+    BlobReadError,
     BlobRef,
     BlobStore,
     InvalidEncryptionKeyError,
@@ -61,6 +63,23 @@ def test_new_store_fsyncs_parent_directory(
     make_store(root)
 
     assert calls == [tmp_path]
+
+
+def test_nested_store_fsyncs_each_new_directory_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "one" / "two" / "blobs"
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        blob_store_module,
+        "_fsync_directory",
+        lambda path: calls.append(Path(path)),
+    )
+
+    make_store(root)
+
+    assert calls == [tmp_path, tmp_path / "one", tmp_path / "one" / "two"]
 
 
 def rewrite_envelope(root: Path, ref: BlobRef, **changes: object) -> BlobRef:
@@ -241,6 +260,31 @@ def test_conflicting_blobref_hash_aliases_are_rejected() -> None:
         )
 
 
+def test_from_dict_rejects_conflicting_hash_aliases() -> None:
+    with pytest.raises(ValueError, match="conflicting blob hash"):
+        BlobRef.from_dict(
+            {
+                "blob_hash": "a" * 64,
+                "blob_id": "b" * 64,
+                "ciphertext_hash": "a" * 64,
+                "payload_hash": "c" * 64,
+                "labels_hash": "d" * 64,
+                "key_ref": "key",
+            }
+        )
+
+
+def test_blobref_rejects_nested_or_non_string_labels() -> None:
+    with pytest.raises(ValueError, match="labels"):
+        BlobRef(
+            blob_hash="a" * 64,
+            payload_hash="b" * 64,
+            labels_hash="c" * 64,
+            labels={"nested": {"secret": "value"}},  # type: ignore[dict-item]
+            key_ref="key",
+        )
+
+
 def test_blob_hash_tampering_fails_before_decryption(tmp_path: Path) -> None:
     root = tmp_path / "blobs"
     store = make_store(root)
@@ -407,7 +451,21 @@ def test_read_permission_error_is_not_reported_as_missing(
 
     monkeypatch.setattr(Path, "read_bytes", fail)
 
-    with pytest.raises(BlobIntegrityError, match="read failed"):
+    with pytest.raises(BlobReadError, match="read failed"):
+        store.read(ref)
+
+
+def test_missing_blob_has_explicit_error_type(tmp_path: Path) -> None:
+    store = make_store(tmp_path / "blobs")
+    ref = BlobRef(
+        blob_hash="a" * 64,
+        payload_hash="b" * 64,
+        labels_hash=hashlib.sha256(b"{}").hexdigest(),
+        labels={},
+        key_ref=KEY_REF,
+    )
+
+    with pytest.raises(BlobMissingError):
         store.read(ref)
 
 

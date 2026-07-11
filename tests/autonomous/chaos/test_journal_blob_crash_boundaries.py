@@ -86,7 +86,8 @@ def test_real_blob_publish_failure_never_produces_a_journal_frame(
     boundary: str,
 ) -> None:
     base_dir = tmp_path / "journal"
-    writer = open_writer(base_dir, MemoryAnchor())
+    anchor = MemoryAnchor()
+    writer = open_writer(base_dir, anchor)
     store = BlobStore(
         tmp_path / "blobs",
         AesGcmEncryptionProvider(lambda _key_ref: BLOB_KEY),
@@ -105,8 +106,47 @@ def test_real_blob_publish_failure_never_produces_a_journal_frame(
         )
         writer.commit([blob_event(ref)], {"run_1": 0})
 
-    assert list(writer.replay(from_sequence=1)) == []
     writer.close()
+    restarted = open_writer(base_dir, anchor, writer_epoch=8)
+    assert list(restarted.replay(from_sequence=1)) == []
+    restarted.close()
+
+
+def test_published_blob_and_frame_survive_real_writer_restart(tmp_path: Path) -> None:
+    base_dir = tmp_path / "journal"
+    blob_dir = tmp_path / "blobs"
+    anchor = MemoryAnchor()
+    store = BlobStore(
+        blob_dir,
+        AesGcmEncryptionProvider(lambda _key_ref: BLOB_KEY),
+    )
+
+    def validate(ref: BlobRef) -> bool:
+        try:
+            return store.read(ref) == b"sensitive model output"
+        except Exception:
+            return False
+
+    ref = store.stage_and_publish(
+        b"sensitive model output",
+        labels={"purpose": "evidence"},
+        key_ref="tenant-key-v1",
+    )
+    writer = open_writer(base_dir, anchor, blob_ref_validator=validate)
+    writer.commit([blob_event(ref)], {"run_1": 0})
+    writer.close()
+
+    restarted = open_writer(
+        base_dir,
+        anchor,
+        writer_epoch=8,
+        blob_ref_validator=validate,
+    )
+    frames = list(restarted.replay(from_sequence=1))
+    restarted.close()
+
+    assert len(frames) == 1
+    assert frames[0].events[0].payload["blob_ref"]["blob_id"] == ref.blob_id
 
 
 def test_published_blob_must_validate_before_blobref_frame_commit(

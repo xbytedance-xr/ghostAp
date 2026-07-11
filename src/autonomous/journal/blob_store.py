@@ -34,6 +34,14 @@ class BlobIntegrityError(BlobError):
     """The content address or plaintext hash does not match."""
 
 
+class BlobMissingError(BlobIntegrityError):
+    """The referenced blob does not exist."""
+
+
+class BlobReadError(BlobIntegrityError):
+    """The referenced blob exists but could not be read."""
+
+
 class BlobAuthenticationError(BlobError):
     """Authenticated decryption failed."""
 
@@ -100,6 +108,21 @@ def _fsync_directory(directory: Path) -> None:
         os.close(fd)
 
 
+def _mkdir_durable(directory: Path) -> None:
+    missing: list[Path] = []
+    current = directory
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    if not current.is_dir():
+        raise BlobPublishError(f"blob parent is not a directory: {current}")
+    for path in reversed(missing):
+        path.mkdir(mode=0o700)
+        path.chmod(0o700)
+        _fsync_directory(path.parent)
+    directory.chmod(0o700)
+
+
 @dataclass(frozen=True)
 class BlobRef:
     """Immutable reference to one encrypted content-addressed blob."""
@@ -135,6 +158,12 @@ class BlobRef:
             raise ValueError("blob hash is required")
         if not payload_hash:
             raise ValueError("payload hash is required")
+        labels = dict(self.labels or {})
+        if any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in labels.items()
+        ):
+            raise ValueError("labels must contain only string keys and values")
         object.__setattr__(self, "blob_hash", blob_hash)
         object.__setattr__(self, "blob_id", blob_hash)
         object.__setattr__(self, "ciphertext_hash", blob_hash)
@@ -143,7 +172,7 @@ class BlobRef:
         object.__setattr__(
             self,
             "labels",
-            MappingProxyType(dict(self.labels or {})),
+            MappingProxyType(labels),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -161,15 +190,11 @@ class BlobRef:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BlobRef:
         return cls(
-            blob_hash=str(
-                value.get("blob_hash")
-                or value.get("blob_id")
-                or value.get("ciphertext_hash")
-                or ""
-            ),
-            payload_hash=str(
-                value.get("payload_hash") or value.get("content_hash") or ""
-            ),
+            blob_hash=str(value.get("blob_hash") or ""),
+            blob_id=str(value.get("blob_id") or ""),
+            ciphertext_hash=str(value.get("ciphertext_hash") or ""),
+            payload_hash=str(value.get("payload_hash") or ""),
+            content_hash=str(value.get("content_hash") or ""),
             labels_hash=str(value.get("labels_hash") or ""),
             key_ref=str(value.get("key_ref") or ""),
             size=int(value.get("size") or 0),
@@ -261,11 +286,7 @@ class BlobStore:
     def __init__(self, root: str | Path, encryption: EncryptionProvider) -> None:
         self.root = Path(root)
         self.encryption = encryption
-        root_existed = self.root.exists()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.root.chmod(0o700)
-        if not root_existed:
-            _fsync_directory(self.root.parent)
+        _mkdir_durable(self.root)
 
     def stage_and_publish(
         self,
@@ -279,10 +300,12 @@ class BlobStore:
             raise TypeError("labels must be a mapping")
         if not isinstance(key_ref, str) or not key_ref:
             raise ValueError("key_ref must be a non-empty string")
-        labels_value = {
-            str(key): str(value)
+        if any(
+            not isinstance(key, str) or not isinstance(value, str)
             for key, value in labels.items()
-        }
+        ):
+            raise ValueError("labels must contain only string keys and values")
+        labels_value = dict(labels)
         labels_hash = _sha256(_canonical_json(labels_value))
         payload_hash = _sha256(payload)
         nonce = _random_nonce()
@@ -380,9 +403,9 @@ class BlobStore:
         try:
             raw = path.read_bytes()
         except FileNotFoundError as exc:
-            raise BlobIntegrityError("blob is missing") from exc
+            raise BlobMissingError("blob is missing") from exc
         except OSError as exc:
-            raise BlobIntegrityError(f"blob read failed: {exc}") from exc
+            raise BlobReadError(f"blob read failed: {exc}") from exc
         if _sha256(raw) != ref.blob_hash:
             raise BlobIntegrityError("blob hash mismatch")
         try:
