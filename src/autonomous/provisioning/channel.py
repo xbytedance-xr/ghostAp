@@ -85,11 +85,12 @@ class ChannelConnectionManager:
             if existing and existing.state in (ChannelState.CONNECTED, ChannelState.CONNECTING):
                 return existing
             self._generation += 1
+            current_gen = self._generation
             status = ChannelStatus(
                 agent_id=agent_id,
                 app_id=app_id,
                 state=ChannelState.CONNECTING,
-                generation=self._generation,
+                generation=current_gen,
             )
             self._channels[agent_id] = status
         try:
@@ -98,16 +99,23 @@ class ChannelConnectionManager:
                 app_id=app_id,
                 app_secret=secret,
                 on_message=lambda msg: on_message(agent_id, msg),
-                on_disconnect=lambda: self._on_disconnect(agent_id),
+                on_disconnect=lambda gen=current_gen: self._on_disconnect(agent_id, gen),
             )
             with self._lock:
+                if status.generation != current_gen or status.state == ChannelState.STOPPED:
+                    try:
+                        self._sdk.disconnect(connection)
+                    except Exception:
+                        pass
+                    return status
                 status.state = ChannelState.CONNECTED
                 status.connected_at = time.time()
                 self._connections[agent_id] = connection
         except Exception as exc:
             with self._lock:
-                status.state = ChannelState.DISCONNECTED
-                status.error = str(exc)[:500]
+                if status.generation == current_gen:
+                    status.state = ChannelState.DISCONNECTED
+                    status.error = str(exc)[:500]
         return status
 
     def stop(self, agent_id: str) -> ChannelStatus | None:
@@ -143,10 +151,12 @@ class ChannelConnectionManager:
             if s.state == ChannelState.CONNECTED
         ]
 
-    def _on_disconnect(self, agent_id: str) -> None:
+    def _on_disconnect(self, agent_id: str, generation: int) -> None:
         with self._lock:
             status = self._channels.get(agent_id)
             if status is None or status.state == ChannelState.STOPPED:
+                return
+            if status.generation != generation:
                 return
             status.state = ChannelState.DISCONNECTED
             status.reconnect_count += 1

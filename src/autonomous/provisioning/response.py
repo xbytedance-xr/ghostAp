@@ -65,9 +65,11 @@ class EmployeeDeliveryPort(Protocol):
 
 
 class EmployeeResponseChannel:
-    """Durable outbox ensuring employees respond with their own bot identity.
+    """In-memory outbox ensuring employees respond with their own bot identity.
 
     Contract: main bot delivery count for employee responses must be 0.
+    Note: this outbox is NOT durable across restarts. Journal-backed
+    persistence is deferred until Channel SDK integration is live.
     """
 
     def __init__(

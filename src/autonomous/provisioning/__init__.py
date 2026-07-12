@@ -167,6 +167,7 @@ class HireSaga:
         self._vault = vault
         self._journal = journal
         self._active_sagas: dict[str, SagaState] = {}
+        self._pending_names: dict[str, str] = {}
 
     def initiate(self, intent: HireIntent) -> SagaState:
         """Start a new hire saga. Generates creation link."""
@@ -174,6 +175,16 @@ class HireSaga:
             existing = self._active_sagas[intent.intent_id]
             if not existing.is_terminal:
                 return existing
+        name_key = f"{intent.tenant_key}|{intent.employee_name.lower()}"
+        existing_intent = self._pending_names.get(name_key)
+        if existing_intent and existing_intent != intent.intent_id:
+            existing_saga = self._active_sagas.get(existing_intent)
+            if existing_saga and not existing_saga.is_terminal:
+                state = SagaState(intent=intent)
+                state.phase = SagaPhase.FAILED
+                state.error = "hire already in progress for this name"
+                return state
+        self._pending_names[name_key] = intent.intent_id
         state = SagaState(intent=intent)
         state.attempts += 1
         try:

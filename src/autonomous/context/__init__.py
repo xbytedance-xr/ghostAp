@@ -270,14 +270,22 @@ class EmployeeThreadContext:
             l2 = ""
             remaining = budget - l1_tokens - group_tokens
             if remaining <= 0:
-                return thread[-10:], group[:5], l1[:1000], "", True
+                current = [m for m in thread if m.is_current]
+                return current or thread[-10:], group[:5], l1[:1000], "", True
+        current_msg = next((m for m in thread if m.is_current), None)
         kept: list[ContextMessage] = []
         used = 0
+        if current_msg:
+            current_tokens = int(len(current_msg.text) * self._config.tokens_per_char)
+            kept.append(current_msg)
+            used += current_tokens
         for msg in reversed(thread):
+            if msg.is_current:
+                continue
             msg_tokens = int(len(msg.text) * self._config.tokens_per_char)
             if used + msg_tokens > remaining:
                 break
             kept.append(msg)
             used += msg_tokens
-        kept.reverse()
+        kept.sort(key=lambda m: m.timestamp)
         return kept, group, l1, l2, True

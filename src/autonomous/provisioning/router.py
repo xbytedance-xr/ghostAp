@@ -160,12 +160,28 @@ class EmployeeMessageRouter:
         finally:
             with self._lock:
                 self._active.pop(message.agent_id, None)
+                next_msg = self._queues.get(message.agent_id, [])
+                if next_msg:
+                    queued = next_msg.pop(0)
+                else:
+                    queued = None
+            if queued is not None:
+                self._dispatch_queued(queued, tool=tool, model=model, effort=effort)
 
     def drain_queue(self, agent_id: str) -> InboundMessage | None:
         """Pop next queued message for processing."""
         with self._lock:
             queue = self._queues.get(agent_id, [])
             return queue.pop(0) if queue else None
+
+    def _dispatch_queued(
+        self, message: InboundMessage, *, tool: str, model: str, effort: str
+    ) -> None:
+        """Execute a queued message (best-effort, errors logged)."""
+        try:
+            self.route(message, tool=tool, model=model, effort=effort)
+        except Exception as exc:
+            logger.warning("queued dispatch failed for %s: %s", message.agent_id, exc)
 
     def queue_depth(self, agent_id: str) -> int:
         with self._lock:
