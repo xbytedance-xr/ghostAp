@@ -82,3 +82,35 @@ def test_bot_principal_never_serializes_secret() -> None:
     assert payload["credential_ref"] == "cred_1"
     assert "app_secret" not in payload
     assert BotPrincipal.from_dict(payload) == principal
+
+
+def test_bot_principal_direct_construction_requires_agent_binding() -> None:
+    with pytest.raises(ValueError, match="agent_id"):
+        BotPrincipal(bot_principal_id="bot_1", agent_id="")
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        {},
+        {"agent_id": ""},
+        {"employee_id": ""},
+    ],
+)
+def test_bot_principal_deserialization_rejects_missing_or_empty_binding(
+    binding: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError, match="agent_id"):
+        BotPrincipal.from_dict({"bot_principal_id": "bot_1", **binding})
+
+
+def test_bot_principal_accepts_legacy_employee_id_binding() -> None:
+    principal = BotPrincipal.from_dict(
+        {
+            "bot_principal_id": "bot_1",
+            "employee_id": "agt_legacy",
+        }
+    )
+
+    assert principal.agent_id == "agt_legacy"
+    assert principal.to_dict()["agent_id"] == "agt_legacy"

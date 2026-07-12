@@ -144,6 +144,8 @@ class BotPrincipal:
     aggregate_version: int = 0
 
     def __post_init__(self) -> None:
+        if not self.agent_id:
+            raise ValueError("BotPrincipal agent_id is required")
         object.__setattr__(self, "scopes", tuple(self.scopes))
 
     def to_dict(self) -> dict[str, Any]:
