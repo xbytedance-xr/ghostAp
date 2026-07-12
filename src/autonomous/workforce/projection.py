@@ -22,6 +22,7 @@ from ..domain import (
 )
 from ..journal.frame import JournalEvent
 from ..journal.writer import AnchorMismatchError, CommitState
+from .authority import AuthorityMode, AuthoritySnapshot
 
 if TYPE_CHECKING:
     from ..journal.projections import ProjectionState
@@ -38,6 +39,17 @@ class WorkforceProjectionState:
     legacy_agent_aliases: dict[str, str] = field(default_factory=dict)
     legacy_source_hashes: dict[str, str] = field(default_factory=dict)
     authority_epoch: int = 0
+    authority_mode: AuthorityMode = AuthorityMode.LEGACY_WRITE
+    authority_cutover_sequence: int = 0
+
+    def authority_snapshot(self) -> AuthoritySnapshot:
+        """Return the replayable writer-authority view for mutation guards."""
+
+        return AuthoritySnapshot(
+            epoch=self.authority_epoch,
+            mode=self.authority_mode,
+            cutover_sequence=self.authority_cutover_sequence,
+        )
 
 
 _WORKFORCE_EVENTS = frozenset(
@@ -311,10 +323,28 @@ def _destroy_credential(state: WorkforceProjectionState, event: JournalEvent) ->
 
 
 def _cutover_authority(state: WorkforceProjectionState, event: JournalEvent) -> None:
+    if event.aggregate_id != "workforce_authority":
+        raise _projection_error("authority cutover aggregate is invalid")
+    required = {"authority_epoch", "authority_mode", "cutover_sequence"}
+    if set(event.payload) != required:
+        raise _projection_error("authority cutover payload fields are invalid")
     epoch = event.payload.get("authority_epoch")
     if isinstance(epoch, bool) or not isinstance(epoch, int) or epoch <= state.authority_epoch:
         raise _projection_error("authority_epoch must increase")
+    try:
+        mode = AuthorityMode(event.payload["authority_mode"])
+    except (KeyError, ValueError, TypeError) as exc:
+        raise _projection_error("authority_mode is invalid") from exc
+    cutover_sequence = event.payload.get("cutover_sequence")
+    if (
+        isinstance(cutover_sequence, bool)
+        or not isinstance(cutover_sequence, int)
+        or cutover_sequence < state.authority_cutover_sequence
+    ):
+        raise _projection_error("cutover_sequence must not decrease")
     state.authority_epoch = epoch
+    state.authority_mode = mode
+    state.authority_cutover_sequence = cutover_sequence
 
 
 _APPLIERS = {

@@ -227,6 +227,41 @@ def test_vault_finds_orphan_receipt_and_rewraps_to_active_key(tmp_path) -> None:
     assert rotated.resolve(receipt.credential_ref, agent_id="agt_1", app_id="cli_1") == "secret"
 
 
+def test_vault_authenticates_key_id_even_when_key_bytes_match(tmp_path) -> None:
+    root = tmp_path / "credentials"
+    keys = {"old": _key(1), "new": _key(1)}
+    old = CredentialVault(root, CredentialKeyring(keys=keys, active_key_id="old"))
+    receipt = _put(old)
+    _rewrite_envelope(receipt.path, "key_id", "new")
+    reader = CredentialVault(root, CredentialKeyring(keys=keys, active_key_id="new"))
+
+    with pytest.raises(CredentialVaultError):
+        reader.resolve(receipt.credential_ref, agent_id="agt_1", app_id="cli_1")
+
+
+def test_vault_rewrap_uses_old_then_new_key_id_aad_with_same_key_bytes(
+    tmp_path,
+) -> None:
+    root = tmp_path / "credentials"
+    keys = {"old": _key(1), "new": _key(1)}
+    old = CredentialVault(root, CredentialKeyring(keys=keys, active_key_id="old"))
+    receipt = _put(old)
+    rotated = CredentialVault(root, CredentialKeyring(keys=keys, active_key_id="new"))
+
+    rewrapped = rotated.rewrap(
+        receipt.credential_ref,
+        agent_id="agt_1",
+        app_id="cli_1",
+    )
+
+    assert rewrapped.key_id == "new"
+    assert rotated.resolve(
+        receipt.credential_ref,
+        agent_id="agt_1",
+        app_id="cli_1",
+    ) == "secret"
+
+
 def test_destroy_is_idempotent_and_removes_secret(tmp_path) -> None:
     vault = _vault(tmp_path)
     receipt = _put(vault)

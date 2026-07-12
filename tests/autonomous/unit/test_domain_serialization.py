@@ -154,7 +154,7 @@ def test_principal_employee_capability_and_progress_are_isolated() -> None:
         app_open_ids={"manager": "ou_manager"},
     )
     employee = EmployeeDefinition(
-        agent_id="employee_1",
+        agent_id="agt_1",
         tenant_key="tenant_1",
         owner_principal_id=principal.principal_id,
         capabilities=("code.read@1.0",),

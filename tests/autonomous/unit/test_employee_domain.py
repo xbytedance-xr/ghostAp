@@ -63,6 +63,22 @@ def test_employee_domain_is_frozen_and_transitions_use_replace() -> None:
     assert replace(employee, state=EmployeeState.ACTIVE).state is EmployeeState.ACTIVE
 
 
+@pytest.mark.parametrize("agent_id", ["", "legacy_1", "agt_"])
+def test_employee_direct_construction_requires_canonical_agent_id(
+    agent_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="agent_id"):
+        EmployeeDefinition(agent_id=agent_id)
+
+
+@pytest.mark.parametrize("agent_id", ["", "legacy_1", "agt_"])
+def test_employee_deserialization_requires_canonical_agent_id(
+    agent_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="agent_id"):
+        EmployeeDefinition.from_dict({"agent_id": agent_id})
+
+
 def test_visible_employee_requires_tenant_and_owner() -> None:
     with pytest.raises(ValueError, match="tenant_key"):
         EmployeeDefinition(name="Atlas", worker_type=WorkerType.VISIBLE)

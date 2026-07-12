@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.workforce.authority import (
     AuthorityMode,
     AuthoritySnapshot,
@@ -13,6 +14,11 @@ from src.autonomous.workforce.authority import (
 )
 from src.slock_engine.agent_registry import AgentRegistry, MoveResult
 from src.slock_engine.models import AgentIdentity
+from tests.autonomous.workforce_helpers import (
+    commit_events,
+    make_writer,
+    replay_state,
+)
 
 
 def test_v5_cutover_rejects_legacy_registry_mutation_before_memory_change(
@@ -66,7 +72,42 @@ def test_shadow_read_allows_legacy_write_only_at_matching_epoch() -> None:
         guard.assert_writable("queued update", validated_epoch=3)
 
 
-def test_cutover_discards_blocked_worker_write_and_ghost_memory(tmp_path) -> None:
+def test_registry_cutover_uses_replayable_projection_snapshot_provider(
+    tmp_path,
+) -> None:
+    writer = make_writer(tmp_path)
+    state = replay_state(writer)
+    guard = LegacyMutationGuard(state.authority_snapshot, expected_epoch=0)
+    registry = AgentRegistry(str(tmp_path / "legacy"), mutation_guard=guard)
+    registry._persist_thread = MagicMock(is_alive=lambda: True)
+    registry.register(AgentIdentity(agent_id="legacy_1", name="Accepted"))
+
+    def durable_advance() -> AuthoritySnapshot:
+        commit_events(
+            writer,
+            state,
+            JournalEvent(
+                event_type="authority.cutover",
+                aggregate_id="workforce_authority",
+                payload={
+                    "authority_epoch": 1,
+                    "authority_mode": "v5_write",
+                    "cutover_sequence": 41,
+                },
+            ),
+        )
+        return state.authority_snapshot()
+
+    result = registry.cutover_authority(durable_advance)
+
+    assert result == AuthoritySnapshot(1, AuthorityMode.V5_WRITE, 41)
+    assert replay_state(writer).authority_snapshot() == result
+    assert (
+        tmp_path / "legacy" / "agents" / "legacy_1" / "identity.json"
+    ).exists()
+
+
+def test_cutover_flushes_accepted_blocked_worker_write_before_advancing(tmp_path) -> None:
     current = AuthoritySnapshot(epoch=1, mode=AuthorityMode.LEGACY_WRITE)
     guard = LegacyMutationGuard(lambda: current, expected_epoch=1)
     registry = AgentRegistry(str(tmp_path), mutation_guard=guard)
@@ -97,11 +138,63 @@ def test_cutover_discards_blocked_worker_write_and_ghost_memory(tmp_path) -> Non
         return current
 
     registry.cutover_authority(advance)
-    assert registry.get("legacy_1") is None
+    assert registry.get("legacy_1") is not None
+    assert (tmp_path / "agents" / "legacy_1" / "identity.json").exists()
     release_worker.set()
     worker.join(timeout=2)
 
     assert not worker.is_alive()
+
+
+def test_cutover_advance_failure_preserves_queue_memory_and_old_authority(
+    tmp_path,
+) -> None:
+    current = AuthoritySnapshot(epoch=1, mode=AuthorityMode.LEGACY_WRITE)
+    guard = LegacyMutationGuard(lambda: current, expected_epoch=1)
+    registry = AgentRegistry(str(tmp_path), mutation_guard=guard)
+    registry._persist_thread = MagicMock(is_alive=lambda: True)
+    registry.register(AgentIdentity(agent_id="legacy_1", name="Accepted"))
+
+    def fail_advance() -> AuthoritySnapshot:
+        raise RuntimeError("journal unavailable")
+
+    with pytest.raises(RuntimeError, match="journal unavailable"):
+        registry.cutover_authority(fail_advance)
+
+    assert current.epoch == 1
+    assert registry.get("legacy_1") is not None
+    assert len(registry._persist_queue) == 1
+    assert (tmp_path / "agents" / "legacy_1" / "identity.json").exists()
+
+
+def test_cutover_flush_failure_preserves_queue_memory_and_old_authority(
+    tmp_path,
+) -> None:
+    current = AuthoritySnapshot(epoch=1, mode=AuthorityMode.LEGACY_WRITE)
+    guard = LegacyMutationGuard(lambda: current, expected_epoch=1)
+    registry = AgentRegistry(str(tmp_path), mutation_guard=guard)
+    registry._persist_thread = MagicMock(is_alive=lambda: True)
+    registry.register(AgentIdentity(agent_id="legacy_1", name="Accepted"))
+    advanced = False
+
+    def advance() -> AuthoritySnapshot:
+        nonlocal advanced, current
+        advanced = True
+        current = AuthoritySnapshot(epoch=2, mode=AuthorityMode.V5_WRITE)
+        return current
+
+    with patch.object(
+        registry,
+        "_write_agent_to_disk",
+        side_effect=OSError("disk full"),
+    ):
+        with pytest.raises(OSError, match="disk full"):
+            registry.cutover_authority(advance)
+
+    assert not advanced
+    assert current.epoch == 1
+    assert registry.get("legacy_1") is not None
+    assert len(registry._persist_queue) == 1
     assert not (tmp_path / "agents" / "legacy_1" / "identity.json").exists()
 
 

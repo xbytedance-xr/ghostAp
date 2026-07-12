@@ -37,6 +37,7 @@ _ENVELOPE_FIELDS = frozenset(
 )
 _IDENTITY_FIELDS = (
     "credential_ref",
+    "key_id",
     "agent_id",
     "app_id",
     "hire_intent_id",
@@ -224,6 +225,7 @@ class CredentialVault:
                 raise ValueError
             identity = {
                 "credential_ref": credential_ref,
+                "key_id": envelope["key_id"],
                 "agent_id": agent_id,
                 "app_id": app_id,
                 "hire_intent_id": envelope["hire_intent_id"],
@@ -351,6 +353,7 @@ class CredentialVault:
     ) -> dict[str, Any]:
         identity = {
             "credential_ref": credential_ref,
+            "key_id": key_id,
             "agent_id": agent_id,
             "app_id": app_id,
             "hire_intent_id": hire_intent_id,
@@ -365,7 +368,6 @@ class CredentialVault:
         return {
             "schema_version": 1,
             **identity,
-            "key_id": key_id,
             "nonce": base64.urlsafe_b64encode(nonce).decode(),
             "ciphertext": base64.urlsafe_b64encode(ciphertext).decode(),
             "ciphertext_sha256": hashlib.sha256(ciphertext).hexdigest(),

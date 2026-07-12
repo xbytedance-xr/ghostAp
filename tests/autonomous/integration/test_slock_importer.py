@@ -119,7 +119,11 @@ async def test_authenticated_bulk_verify_counts_durable_agent_once(tmp_path) -> 
     legacy = LegacyEntity(
         "agent",
         "legacy_1",
-        {"name": "Legacy", "tenant_key": "tenant_1"},
+        {
+            "name": "Legacy",
+            "tenant_key": "tenant_1",
+            "owner_principal_id": "ou_admin",
+        },
     )
 
     result = await importer.apply(importer.plan([legacy]))
@@ -128,6 +132,39 @@ async def test_authenticated_bulk_verify_counts_durable_agent_once(tmp_path) -> 
     assert result.created_count == 1
     assert report.hashes_match
     assert report.total_migrated == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tenant_key", None),
+        ("tenant_key", ""),
+        ("tenant_key", 7),
+        ("owner_principal_id", None),
+        ("owner_principal_id", ""),
+        ("owner_principal_id", 7),
+    ],
+)
+def test_authenticated_import_requires_tenant_and_owner_before_journal_write(
+    tmp_path,
+    field: str,
+    value: object,
+) -> None:
+    writer = make_writer(tmp_path)
+    state = replay_state(writer)
+    data: dict[str, object] = {
+        "name": "Legacy",
+        "tenant_key": "tenant_1",
+        "owner_principal_id": "ou_admin",
+    }
+    data[field] = value
+    importer = SlockImporter(writer=writer, state=state)
+
+    with pytest.raises(ValueError, match=field):
+        importer.import_agent(LegacyEntity("agent", "legacy_1", data))
+
+    assert writer.get_last_frame() is None
+    assert state.cursor_sequence == 0
 
 
 @pytest.mark.parametrize(

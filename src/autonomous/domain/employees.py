@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from .enums import EmployeeIdOrigin, EmployeeState, WorkerType
 from .ids import freeze, new_id, strict_float, strict_int, strict_str, thaw
+
+_AGENT_ID_PATTERN = re.compile(r"agt_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,11 @@ class EmployeeDefinition:
     aggregate_version: int = 0
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.agent_id, str)
+            or _AGENT_ID_PATTERN.fullmatch(self.agent_id) is None
+        ):
+            raise ValueError("agent_id must be canonical")
         if self.worker_type is WorkerType.VISIBLE:
             if not self.tenant_key:
                 raise ValueError("visible employee requires tenant_key")

@@ -140,6 +140,11 @@ class SlockImporter:
             raise ValueError("import_agent requires canonical agent entity type")
         if self._writer is None or self._state is None:
             raise ValueError("authenticated writer+state mode is required")
+        tenant_key = self._required_identity_value(entity.data, "tenant_key")
+        owner_principal_id = self._required_identity_value(
+            entity.data,
+            "owner_principal_id",
+        )
 
         alias_owner = self._state.legacy_agent_aliases.get(entity.legacy_id)
         hash_owner = self._state.legacy_source_hashes.get(entity.source_hash)
@@ -157,10 +162,8 @@ class SlockImporter:
             aggregate_id=agent_id,
             payload={
                 "agent_id": agent_id,
-                "tenant_key": str(data.get("tenant_key", "")),
-                "owner_principal_id": str(
-                    data.get("owner_principal_id", "")
-                ),
+                "tenant_key": tenant_key,
+                "owner_principal_id": owner_principal_id,
                 "name": str(data.get("name", "")),
                 "emoji": str(data.get("emoji", "🤖")),
                 "tool": str(data.get("agent_type", data.get("tool", ""))),
@@ -193,6 +196,13 @@ class SlockImporter:
         validate_workforce_events(self._state, events)
         commit_workforce_events(self._writer, self._state, events)
         return self._state.employees[agent_id]
+
+    @staticmethod
+    def _required_identity_value(data: dict[str, Any], field_name: str) -> str:
+        value = data.get(field_name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{field_name} must be a non-empty string")
+        return value
 
     async def apply(self, plan: ImportPlan) -> ImportResult:
         result = ImportResult()

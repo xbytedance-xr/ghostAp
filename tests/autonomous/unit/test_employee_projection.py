@@ -11,6 +11,7 @@ from src.autonomous.journal.projections import (
     ProjectionState,
     apply_event,
 )
+from src.autonomous.workforce.authority import AuthorityMode, AuthoritySnapshot
 from src.autonomous.workforce.projection import (
     EmployeeIdentityMaterializer,
     validate_workforce_events,
@@ -332,7 +333,7 @@ def test_profile_membership_manifest_and_credential_events_replay(tmp_path) -> N
     assert replayed.bot_principals["bot_1"].credential_ref == ""
 
 
-def test_legacy_alias_source_hash_and_authority_epoch_are_unique(tmp_path) -> None:
+def test_legacy_alias_and_authority_snapshot_replay_exactly(tmp_path) -> None:
     writer = make_writer(tmp_path)
     state = ProjectionState()
     commit_events(writer, state, employee_created())
@@ -354,13 +355,72 @@ def test_legacy_alias_source_hash_and_authority_epoch_are_unique(tmp_path) -> No
         JournalEvent(
             event_type="authority.cutover",
             aggregate_id="workforce_authority",
-            payload={"authority_epoch": 7},
+            payload={
+                "authority_epoch": 7,
+                "authority_mode": "v5_write",
+                "cutover_sequence": 91,
+            },
         ),
     )
 
     assert state.legacy_agent_aliases["codex:default:Atlas"] == "agt_1"
     assert state.legacy_source_hashes["sha256:legacy-source"] == "agt_1"
-    assert state.authority_epoch == 7
+    expected = AuthoritySnapshot(7, AuthorityMode.V5_WRITE, 91)
+    assert state.authority_snapshot() == expected
+    assert replay_state(writer).authority_snapshot() == expected
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"authority_epoch": 1, "authority_mode": "v5_write"},
+        {
+            "authority_epoch": True,
+            "authority_mode": "v5_write",
+            "cutover_sequence": 1,
+        },
+        {
+            "authority_epoch": 1,
+            "authority_mode": "unknown",
+            "cutover_sequence": 1,
+        },
+        {
+            "authority_epoch": 1,
+            "authority_mode": "v5_write",
+            "cutover_sequence": -1,
+        },
+        {
+            "authority_epoch": 1,
+            "authority_mode": "v5_write",
+            "cutover_sequence": 1,
+            "extra": "rejected",
+        },
+    ],
+)
+def test_authority_cutover_payload_is_strict_and_does_not_advance(
+    tmp_path,
+    payload: dict,
+) -> None:
+    writer = make_writer(tmp_path)
+    state = ProjectionState()
+
+    with pytest.raises(ProjectionError):
+        commit_events(
+            writer,
+            state,
+            JournalEvent(
+                event_type="authority.cutover",
+                aggregate_id="workforce_authority",
+                payload=payload,
+            ),
+        )
+
+    assert state.authority_snapshot() == AuthoritySnapshot(
+        0,
+        AuthorityMode.LEGACY_WRITE,
+        0,
+    )
+    assert writer.get_last_frame() is None
 
 
 def test_archived_employee_keeps_name_tombstone(tmp_path) -> None:
@@ -445,7 +505,8 @@ def test_materializer_allowlist_excludes_nested_app_secret(tmp_path) -> None:
 def test_materializer_rejects_agent_id_path_escape(tmp_path) -> None:
     state = ProjectionState()
     apply_event(state, employee_created())
-    unsafe = replace(state.employees.pop("agt_1"), agent_id="../escape")
+    unsafe = state.employees.pop("agt_1")
+    object.__setattr__(unsafe, "agent_id", "../escape")
     state.employees["../escape"] = unsafe
 
     with pytest.raises(ProjectionError, match="safe path component"):

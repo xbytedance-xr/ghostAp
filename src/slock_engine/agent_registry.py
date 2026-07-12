@@ -97,6 +97,7 @@ class AgentRegistry:
         self._loaded = False
         self._persist_queue: list[_PersistRequest] = []
         self._inflight_requests: list[_PersistRequest] = []
+        self._admission_open = True
         self._persist_thread: Optional[threading.Thread] = None
 
     @classmethod
@@ -167,6 +168,7 @@ class AgentRegistry:
             synchronous_request = None
             previous: dict | None = None
             with self._lock:
+                self._assert_admission_open()
                 self._ensure_loaded()
                 # Uniqueness check: (channel_id, name) must be unique
                 if agent.name and agent.owner_group:
@@ -272,6 +274,7 @@ class AgentRegistry:
         """Remove an agent from registry and delete its identity file."""
         with self._mutation_guard.write_lease("remove"):
             with self._lock:
+                self._assert_admission_open()
                 self._ensure_loaded()
                 if agent_id not in self._agents:
                     return False
@@ -300,6 +303,7 @@ class AgentRegistry:
             synchronous_request = None
             previous: dict | None = None
             with self._lock:
+                self._assert_admission_open()
                 self._ensure_loaded()
                 if agent.agent_id not in self._agents:
                     return False
@@ -328,6 +332,7 @@ class AgentRegistry:
         """
         with self._mutation_guard.write_lease("move_agent") as validated_epoch:
             with self._lock:
+                self._assert_admission_open()
                 self._ensure_loaded()
                 agent = self._agents.get(agent_id)
                 if agent is None:
@@ -395,18 +400,40 @@ class AgentRegistry:
         self,
         advance: Callable[[], AuthoritySnapshot],
     ) -> AuthoritySnapshot:
-        """Discard unpersisted legacy state, then advance writer authority."""
+        """Flush every accepted legacy write before durable authority advance."""
 
-        def discard_and_advance() -> AuthoritySnapshot:
+        def drain_and_advance() -> AuthoritySnapshot:
             with self._lock:
+                self._admission_open = False
                 pending = tuple(
-                    [*self._persist_queue, *self._inflight_requests]
+                    [*self._inflight_requests, *self._persist_queue]
                 )
-                self._persist_queue.clear()
-                self._restore_requests_from_disk(pending)
-                return advance()
+            try:
+                for request in pending:
+                    self._write_agent_to_disk(request.agent)
+                snapshot = advance()
+                with self._lock:
+                    pending_ids = {id(request) for request in pending}
+                    self._persist_queue = [
+                        request
+                        for request in self._persist_queue
+                        if id(request) not in pending_ids
+                    ]
+                    self._inflight_requests = [
+                        request
+                        for request in self._inflight_requests
+                        if id(request) not in pending_ids
+                    ]
+                return snapshot
+            finally:
+                with self._lock:
+                    self._admission_open = True
 
-        return self._mutation_guard.cutover(discard_and_advance)
+        return self._mutation_guard.cutover(drain_and_advance)
+
+    def _assert_admission_open(self) -> None:
+        if not self._admission_open:
+            raise RuntimeError("legacy registry admission is closed for cutover")
 
     def _restore_requests_from_disk(
         self,
