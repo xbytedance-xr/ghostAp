@@ -9,10 +9,12 @@ import json
 import os
 import re
 import secrets
-from dataclasses import dataclass
-from datetime import UTC, datetime
+import stat
+import weakref
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, TracebackType
 from typing import Any, Mapping
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -85,7 +87,7 @@ def _reject_duplicate_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 class CredentialKeyring:
     """Validated rotation set containing one active AES-256 key."""
 
-    keys: Mapping[str, str | bytes]
+    keys: Mapping[str, str | bytes] = field(repr=False)
     active_key_id: str
 
     def __post_init__(self) -> None:
@@ -144,7 +146,29 @@ class CredentialVault:
     def __init__(self, root: str | Path, keyring: CredentialKeyring) -> None:
         self._root = Path(root).expanduser()
         self._keyring = keyring
-        self._ensure_root()
+        self._root_fd = self._open_root(self._root)
+        self._root_finalizer = weakref.finalize(self, os.close, self._root_fd)
+
+    def __enter__(self) -> CredentialVault:
+        """Return this open Vault for context-managed use."""
+        if not self._root_finalizer.alive:
+            raise CredentialVaultConfigurationError()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the held root directory capability."""
+        self.close()
+
+    def close(self) -> None:
+        """Idempotently release the held root directory descriptor."""
+        if self._root_finalizer.alive:
+            self._root_finalizer()
+            self._root_fd = -1
 
     def put(
         self,
@@ -167,7 +191,7 @@ class CredentialVault:
                 attempt_id=attempt_id,
                 created_at=datetime.now(UTC).isoformat(),
             )
-            self._atomic_write(self._path(credential_ref), envelope)
+            self._atomic_write(self._filename(credential_ref), envelope)
             return self._receipt(envelope)
         except Exception as exc:
             if isinstance(exc, CredentialVaultError):
@@ -212,7 +236,7 @@ class CredentialVault:
                 attempt_id=current["attempt_id"],
                 created_at=current["created_at"],
             )
-            self._atomic_write(self._path(credential_ref), envelope)
+            self._atomic_write(self._filename(credential_ref), envelope)
             return self._receipt(envelope)
         except Exception:
             raise CredentialVaultError(credential_ref) from None
@@ -220,21 +244,27 @@ class CredentialVault:
     def destroy(self, credential_ref: str) -> bool:
         """Idempotently remove a credential and durably record the deletion."""
         try:
-            path = self._path(credential_ref)
+            filename = self._filename(credential_ref)
             try:
-                path.unlink()
+                os.unlink(filename, dir_fd=self._root_fd)
             except FileNotFoundError:
-                return False
+                removed = False
+            else:
+                removed = True
             self._fsync_directory()
-            return True
+            return removed
         except Exception:
             raise CredentialVaultError(credential_ref) from None
 
     def find_orphan_receipts(self, live_credential_refs: set[str]) -> list[CredentialReceipt]:
         """Return stored receipts that no current employee record references."""
         receipts: list[CredentialReceipt] = []
-        for path in sorted(self._root.glob("cred_*.json")):
-            credential_ref = path.stem
+        for filename in sorted(os.listdir(self._root_fd)):
+            if not filename.endswith(".json"):
+                continue
+            credential_ref = filename.removesuffix(".json")
+            if not _CREDENTIAL_REF_RE.fullmatch(credential_ref):
+                continue
             if credential_ref not in live_credential_refs:
                 receipts.append(self._receipt(self._read_envelope(credential_ref)))
         return receipts
@@ -244,14 +274,50 @@ class CredentialVault:
         digest = hashlib.sha256(f"{hire_intent_id}|{attempt_id}".encode()).hexdigest()
         return f"cred_{digest}"
 
-    def _ensure_root(self) -> None:
-        self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(self._root, 0o700)
+    @staticmethod
+    def _open_root(root: Path) -> int:
+        parts = root.parts[1:] if root.is_absolute() else root.parts
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise CredentialVaultConfigurationError()
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = -1
+        try:
+            descriptor = os.open("/" if root.is_absolute() else ".", flags)
+            for part in parts:
+                try:
+                    child = os.open(part, flags, dir_fd=descriptor)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    child = os.open(part, flags, dir_fd=descriptor)
+                child_stat = os.fstat(child)
+                if not stat.S_ISDIR(child_stat.st_mode):
+                    os.close(child)
+                    raise CredentialVaultConfigurationError()
+                os.close(descriptor)
+                descriptor = child
+            os.fchmod(descriptor, 0o700)
+            return descriptor
+        except Exception:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise CredentialVaultConfigurationError() from None
 
-    def _path(self, credential_ref: str) -> Path:
+    @staticmethod
+    def _filename(credential_ref: str) -> str:
         if not _CREDENTIAL_REF_RE.fullmatch(credential_ref):
             raise CredentialVaultError(credential_ref)
-        return self._root / f"{credential_ref}.json"
+        return f"{credential_ref}.json"
+
+    def _path(self, credential_ref: str) -> Path:
+        return self._root / self._filename(credential_ref)
 
     def _encrypt_envelope(
         self,
@@ -300,21 +366,45 @@ class CredentialVault:
         return base64.b64decode(value, altchars=b"-_", validate=True)
 
     def _read_envelope(self, credential_ref: str) -> dict[str, Any]:
-        path = self._path(credential_ref)
+        filename = self._filename(credential_ref)
+        descriptor: int | None = None
         try:
-            envelope = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_object)
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(filename, flags, dir_fd=self._root_fd)
+            file_stat = os.fstat(descriptor)
+            if not stat.S_ISREG(file_stat.st_mode) or stat.S_IMODE(file_stat.st_mode) != 0o600:
+                raise ValueError
+            with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+                descriptor = None
+                envelope = json.load(stream, object_pairs_hook=_reject_duplicate_object)
             if not isinstance(envelope, dict) or set(envelope) != _ENVELOPE_FIELDS:
                 raise ValueError
-            if envelope["schema_version"] != 1 or envelope["credential_ref"] != credential_ref:
+            if type(envelope["schema_version"]) is not int or envelope["schema_version"] != 1:
                 raise ValueError
             string_fields = _ENVELOPE_FIELDS - {"schema_version"}
-            if any(not isinstance(envelope[field], str) for field in string_fields):
+            if any(not isinstance(envelope[field], str) or not envelope[field] for field in string_fields):
+                raise ValueError
+            if envelope["credential_ref"] != credential_ref:
                 raise ValueError
             if self._derive_ref(envelope["hire_intent_id"], envelope["attempt_id"]) != credential_ref:
+                raise ValueError
+            nonce = self._decode_envelope_bytes(envelope["nonce"])
+            ciphertext = self._decode_envelope_bytes(envelope["ciphertext"])
+            if len(nonce) != 12 or not ciphertext:
+                raise ValueError
+            if not re.fullmatch(r"[0-9a-f]{64}", envelope["ciphertext_sha256"]):
+                raise ValueError
+            if hashlib.sha256(ciphertext).hexdigest() != envelope["ciphertext_sha256"]:
+                raise ValueError
+            created_at = datetime.fromisoformat(envelope["created_at"])
+            if created_at.tzinfo is None or created_at.utcoffset() != timedelta(0):
                 raise ValueError
             return envelope
         except Exception:
             raise CredentialVaultError(credential_ref) from None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
 
     def _receipt(self, envelope: Mapping[str, Any]) -> CredentialReceipt:
         credential_ref = envelope["credential_ref"]
@@ -329,31 +419,32 @@ class CredentialVault:
             path=self._path(credential_ref),
         )
 
-    def _atomic_write(self, path: Path, envelope: Mapping[str, Any]) -> None:
-        temporary = self._root / f".{path.name}.{secrets.token_hex(8)}.tmp"
+    def _atomic_write(self, filename: str, envelope: Mapping[str, Any]) -> None:
+        temporary = f".{filename}.{secrets.token_hex(8)}.tmp"
         descriptor: int | None = None
         try:
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+            descriptor = os.open(temporary, flags, 0o600, dir_fd=self._root_fd)
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 descriptor = None
                 json.dump(envelope, stream, sort_keys=True, separators=(",", ":"))
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, path)
+            os.replace(
+                temporary,
+                filename,
+                src_dir_fd=self._root_fd,
+                dst_dir_fd=self._root_fd,
+            )
             self._fsync_directory()
         finally:
             if descriptor is not None:
                 os.close(descriptor)
             try:
-                temporary.unlink()
+                os.unlink(temporary, dir_fd=self._root_fd)
             except FileNotFoundError:
                 pass
 
     def _fsync_directory(self) -> None:
-        flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-        descriptor = os.open(self._root, flags)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        os.fsync(self._root_fd)

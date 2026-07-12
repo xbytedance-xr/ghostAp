@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,12 @@ def _put(vault: CredentialVault, *, secret: str = "secret"):
     )
 
 
+def _rewrite_envelope(path: Path, field: str, value) -> None:
+    envelope = json.loads(path.read_text())
+    envelope[field] = value
+    path.write_text(json.dumps(envelope))
+
+
 def test_keyring_parses_versioned_rotation_set_and_rejects_missing_active() -> None:
     settings = _settings(
         json.dumps({"version": 1, "keys": {"old": _key(1), "new": _key(2)}}),
@@ -52,6 +59,16 @@ def test_keyring_parses_versioned_rotation_set_and_rejects_missing_active() -> N
     settings.autonomous_credential_active_key_id = "absent"
     with pytest.raises(CredentialVaultConfigurationError):
         CredentialKeyring.from_settings(settings)
+
+
+def test_keyring_repr_redacts_encoded_and_decoded_key_material() -> None:
+    encoded = _key(7)
+    decoded_repr = repr(bytes([7]) * 32)
+
+    keyring = CredentialKeyring(keys={"k1": encoded}, active_key_id="k1")
+
+    assert encoded not in repr(keyring)
+    assert decoded_repr not in repr(keyring)
 
 
 @pytest.mark.parametrize(
@@ -167,6 +184,109 @@ def test_destroy_is_idempotent_and_removes_secret(tmp_path) -> None:
     assert vault.destroy(receipt.credential_ref) is True
     assert vault.destroy(receipt.credential_ref) is False
     assert not receipt.path.exists()
+
+
+def test_destroy_fsyncs_directory_when_credential_is_already_absent(tmp_path, monkeypatch) -> None:
+    vault = _vault(tmp_path)
+    credential_ref = "cred_" + "0" * 64
+    fsynced: list[int] = []
+    real_fsync = os.fsync
+
+    def counting_fsync(descriptor: int) -> None:
+        fsynced.append(descriptor)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", counting_fsync)
+
+    assert vault.destroy(credential_ref) is False
+    assert fsynced == [vault._root_fd]
+
+
+def test_vault_rejects_root_symlink(tmp_path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    root = tmp_path / "credentials"
+    root.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(CredentialVaultConfigurationError):
+        CredentialVault(root, CredentialKeyring(keys={"k1": _key(1)}, active_key_id="k1"))
+
+
+def test_vault_rejects_leaf_envelope_symlink(tmp_path) -> None:
+    vault = _vault(tmp_path)
+    receipt = _put(vault)
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(receipt.path.read_bytes())
+    outside.chmod(0o600)
+    receipt.path.unlink()
+    receipt.path.symlink_to(outside)
+
+    with pytest.raises(CredentialVaultError):
+        vault.resolve(receipt.credential_ref, agent_id="agt_1", app_id="cli_1")
+
+
+def test_vault_root_swap_does_not_redirect_operations(tmp_path) -> None:
+    root = tmp_path / "credentials"
+    vault = CredentialVault(root, CredentialKeyring(keys={"k1": _key(1)}, active_key_id="k1"))
+    anchored_root = tmp_path / "anchored-credentials"
+    root.rename(anchored_root)
+    root.mkdir()
+
+    receipt = _put(vault)
+    filename = f"{receipt.credential_ref}.json"
+
+    assert (anchored_root / filename).is_file()
+    assert not (root / filename).exists()
+    assert vault.resolve(receipt.credential_ref, agent_id="agt_1", app_id="cli_1") == "secret"
+
+
+def test_vault_close_is_idempotent_and_context_managed(tmp_path) -> None:
+    vault = _vault(tmp_path)
+    descriptor = vault._root_fd
+
+    with vault as entered:
+        assert entered is vault
+
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
+    vault.close()
+
+
+@pytest.mark.parametrize("schema_version", [True, 1.0])
+def test_orphan_scan_rejects_non_integer_schema_versions(tmp_path, schema_version) -> None:
+    vault = _vault(tmp_path)
+    receipt = _put(vault)
+    _rewrite_envelope(receipt.path, "schema_version", schema_version)
+
+    with pytest.raises(CredentialVaultError):
+        vault.find_orphan_receipts(set())
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("nonce", "not-base64!"),
+        ("nonce", base64.urlsafe_b64encode(b"short").decode()),
+        ("ciphertext", "not-base64!"),
+        ("ciphertext", ""),
+        ("ciphertext_sha256", "A" * 64),
+        ("ciphertext_sha256", "0" * 63),
+        ("created_at", "not-a-timestamp"),
+        ("created_at", "2026-07-12T00:00:00"),
+        ("key_id", ""),
+        ("agent_id", ""),
+        ("app_id", ""),
+        ("hire_intent_id", ""),
+        ("attempt_id", ""),
+    ],
+)
+def test_orphan_scan_rejects_malformed_envelope_fields(tmp_path, field: str, value: object) -> None:
+    vault = _vault(tmp_path)
+    receipt = _put(vault)
+    _rewrite_envelope(receipt.path, field, value)
+
+    with pytest.raises(CredentialVaultError):
+        vault.find_orphan_receipts(set())
 
 
 def test_vault_rejects_credential_ref_path_traversal(tmp_path) -> None:
