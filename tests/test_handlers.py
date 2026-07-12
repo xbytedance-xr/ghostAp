@@ -2968,7 +2968,7 @@ class TestHelpCardLockAlwaysVisible:
         )
         assert "Slock" in card_json or "slock" in card_json
         assert "/slock" in card_json
-        assert "/new-role" in card_json
+        assert "/hire" in card_json or "/role add" in card_json
         assert "/task status" in card_json
 
     def test_lock_section_present_when_no_admin_ids(self):

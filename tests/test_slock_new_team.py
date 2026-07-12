@@ -146,7 +146,7 @@ class TestCreateTeamHappyPath:
         welcome_card = json.loads(new_group_args[1])
         welcome_blob = json.dumps(welcome_card, ensure_ascii=False)
         assert "TestTeam" in welcome_blob
-        assert "/new-role" in welcome_blob
+        assert "/hire" in welcome_blob or "/role add" in welcome_blob
         assert welcome_card["schema"] == "2.0"
 
         # 7. Confirmation card sent to original group with a direct group jump button

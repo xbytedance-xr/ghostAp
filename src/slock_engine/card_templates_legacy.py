@@ -427,15 +427,16 @@ def build_team_created_card(
 def build_welcome_card(*, team_name: str) -> dict:
     """Build a welcome card sent inside the newly created Slock team group."""
     content = (
-        f"🎭 **Slock 协作团队「{team_name}」已就绪**\n\n"
-        "💬 **直接说就行**:\n"
-        "• 「创建一个编码角色」 — 创建虚拟 Agent\n"
-        "• 「看看谁在」 — 查看所有角色\n"
-        "• 「把代码审查交给 reviewer」 — 分配任务\n"
-        "• 「看看任务进度」 — 查看任务看板\n"
-        "• 「让 coder 和 reviewer 讨论一下」 — 触发讨论\n\n"
-        "---\n"
-        "📎 *也支持斜杠命令*: `/new-role`、`/role list`、`/task assign`、`/memory @角色名`、`/discuss 主题`、`/slock help`"
+        f"🎭 **协作团队「{team_name}」已就绪**\n\n"
+        "团队已开启自主工作模式，员工 Agent 会自动响应群内消息。\n\n"
+        "**快速开始:**\n"
+        "• `/hire <名字>` — 雇佣新员工（选工具+模型）\n"
+        "• `/role add` — 添加已有员工到本群\n"
+        "• `/role list` — 查看群内员工\n"
+        "• `/goal <描述>` — 创建自主目标\n"
+        "• 直接 @员工名 发消息 — 指定员工执行任务\n\n"
+        "**管理命令:**\n"
+        "`/role remove <名字>` · `/task status` · `/slock status` · `/team dissolve`"
     )
     elements: list[dict] = [{"tag": "markdown", "content": content}]
     return _build_card_wrapper(

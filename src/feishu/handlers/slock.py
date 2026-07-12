@@ -2275,10 +2275,16 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
 
         # Try cascade card (with effort/thinking dropdown) for tools with many variants
-        from ...card.render.model_cascade import has_cascade_variants
         value_extra = {"role_name": role_name, "global_hire": is_global}
 
-        if has_cascade_variants(models):
+        # has_cascade_variants expects dicts; models are ACPModelOption objects
+        # Use build_acp_model_cascade_card which handles both formats internally
+        has_variants = any(
+            getattr(m, "selection_variants", None) or getattr(m, "reasoning_efforts", None)
+            for m in (models or [])
+        )
+
+        if has_variants:
             _, card_content = CardBuilder.build_acp_model_cascade_card(
                 models,
                 tool_name,
