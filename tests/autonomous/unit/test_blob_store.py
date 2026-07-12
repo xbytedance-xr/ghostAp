@@ -442,14 +442,10 @@ def test_read_permission_error_is_not_reported_as_missing(
     root = tmp_path / "blobs"
     store = make_store(root)
     ref = store.stage_and_publish(PAYLOAD, LABELS, KEY_REF)
-    original = Path.read_bytes
+    def fail(_filename: str) -> bytes:
+        raise PermissionError("denied")
 
-    def fail(path: Path) -> bytes:
-        if path == blob_path(root, ref):
-            raise PermissionError("denied")
-        return original(path)
-
-    monkeypatch.setattr(Path, "read_bytes", fail)
+    monkeypatch.setattr(store, "_read_leaf_bytes", fail)
 
     with pytest.raises(BlobReadError, match="read failed"):
         store.read(ref)

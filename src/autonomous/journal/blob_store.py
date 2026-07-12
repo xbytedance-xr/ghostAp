@@ -8,11 +8,11 @@ import json
 import os
 import secrets
 import stat
-import tempfile
+import weakref
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, TracebackType
 from typing import Any, Protocol
 
 from Crypto.Cipher import AES
@@ -84,20 +84,48 @@ def _random_nonce() -> bytes:
     return secrets.token_bytes(12)
 
 
-def _write_bytes(path: Path, value: bytes) -> None:
-    with open(path, "xb") as file:
-        os.chmod(path, 0o600)
-        file.write(value)
-        file.flush()
+def _write_bytes(
+    path: str | Path,
+    value: bytes,
+    *,
+    dir_fd: int | None = None,
+) -> None:
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600, dir_fd=dir_fd)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=False) as file:
+            file.write(value)
+            file.flush()
+    finally:
+        os.close(descriptor)
 
 
-def _fsync_file(path: Path) -> None:
-    with open(path, "rb") as file:
-        os.fsync(file.fileno())
+def _fsync_file(path: str | Path, *, dir_fd: int | None = None) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, dir_fd=dir_fd)
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise BlobIntegrityError("blob temporary is not a regular file")
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
-def _atomic_replace(source: Path, target: Path) -> None:
-    os.replace(source, target)
+def _atomic_replace(
+    source: str | Path,
+    target: str | Path,
+    *,
+    dir_fd: int | None = None,
+) -> None:
+    os.replace(source, target, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -284,9 +312,36 @@ class BlobStore:
     """Durably publish and read encrypted content-addressed blobs."""
 
     def __init__(self, root: str | Path, encryption: EncryptionProvider) -> None:
-        self.root = Path(root)
+        self.root = Path(root).expanduser()
         self.encryption = encryption
-        _mkdir_durable(self.root)
+        self._root_fd = self._open_root(self.root)
+        self._root_identity = os.fstat(self._root_fd)
+        self._root_finalizer = weakref.finalize(self, os.close, self._root_fd)
+
+    def __enter__(self) -> BlobStore:
+        self._require_open()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    @property
+    def closed(self) -> bool:
+        return not self._root_finalizer.alive
+
+    def close(self) -> None:
+        if self._root_finalizer.alive:
+            self._root_finalizer()
+            self._root_fd = -1
+
+    def _require_open(self) -> None:
+        if self.closed:
+            raise BlobIntegrityError("blob store is closed")
 
     def stage_and_publish(
         self,
@@ -294,6 +349,7 @@ class BlobStore:
         labels: Mapping[str, str],
         key_ref: str,
     ) -> BlobRef:
+        self._require_open()
         if not isinstance(payload, bytes):
             raise TypeError("payload must be bytes")
         if not isinstance(labels, Mapping):
@@ -337,44 +393,41 @@ class BlobStore:
             size=len(payload),
             labels=labels_value,
         )
-        target = self.root / f"{blob_hash}.blob"
-        fd, raw_temp = tempfile.mkstemp(
-            prefix=".blob-",
-            suffix=".tmp",
-            dir=self.root,
-        )
-        os.close(fd)
-        temp = Path(raw_temp)
-        temp.unlink()
+        target = f"{blob_hash}.blob"
+        temporary = f".blob-{secrets.token_hex(16)}.tmp"
         try:
-            _write_bytes(temp, envelope)
-            _fsync_file(temp)
-            if target.is_symlink():
-                raise BlobIntegrityError(
-                    "existing content address is not a regular file"
+            _write_bytes(temporary, envelope, dir_fd=self._root_fd)
+            _fsync_file(temporary, dir_fd=self._root_fd)
+            try:
+                target_stat = os.stat(
+                    target,
+                    dir_fd=self._root_fd,
+                    follow_symlinks=False,
                 )
-            if target.exists():
-                target_stat = target.stat(follow_symlinks=False)
+            except FileNotFoundError:
+                target_stat = None
+            if target_stat is not None:
                 if not stat.S_ISREG(target_stat.st_mode):
                     raise BlobIntegrityError(
                         "existing content address is not a regular file"
                     )
-                if target.read_bytes() != envelope:
+                if self._read_leaf_bytes(target) != envelope:
                     raise BlobIntegrityError(
                         "existing content address contains different bytes"
                     )
-                temp.unlink(missing_ok=True)
-                _fsync_directory(self.root)
+                os.unlink(temporary, dir_fd=self._root_fd)
+                self._fsync_root()
                 return ref
-            _atomic_replace(temp, target)
-            target.chmod(0o600)
-            _fsync_directory(self.root)
+            _atomic_replace(temporary, target, dir_fd=self._root_fd)
+            descriptor = self._open_leaf(target)
+            os.close(descriptor)
+            self._fsync_root()
             return ref
         except BlobError:
-            temp.unlink(missing_ok=True)
+            self._unlink_if_present(temporary)
             raise
         except Exception as exc:
-            temp.unlink(missing_ok=True)
+            self._unlink_if_present(temporary)
             boundary = next(
                 (
                     name
@@ -388,9 +441,10 @@ class BlobStore:
                 ),
                 "blob publish",
             )
-            raise BlobPublishError(f"{boundary} failed: {exc}") from exc
+            raise BlobPublishError(f"{boundary} failed") from None
 
     def read(self, ref: BlobRef) -> bytes:
+        self._require_open()
         if not isinstance(ref, BlobRef):
             raise TypeError("ref must be BlobRef")
         if not _is_sha256(ref.blob_hash):
@@ -399,9 +453,9 @@ class BlobStore:
             raise BlobIntegrityError("payload hash is not sha256 hex")
         if not _is_sha256(ref.labels_hash):
             raise BlobIntegrityError("labels hash is not sha256 hex")
-        path = self.root / f"{ref.blob_hash}.blob"
+        filename = f"{ref.blob_hash}.blob"
         try:
-            raw = path.read_bytes()
+            raw = self._read_leaf_bytes(filename)
         except FileNotFoundError as exc:
             raise BlobMissingError("blob is missing") from exc
         except OSError as exc:
@@ -426,7 +480,10 @@ class BlobStore:
             raise BlobFormatError("invalid blob envelope fields")
         if envelope["magic"] != BLOB_MAGIC:
             raise BlobFormatError("invalid blob magic")
-        if envelope["schema_version"] != BLOB_SCHEMA_VERSION:
+        if (
+            type(envelope["schema_version"]) is not int
+            or envelope["schema_version"] != BLOB_SCHEMA_VERSION
+        ):
             raise BlobFormatError("unsupported blob schema")
         if envelope["key_ref"] != ref.key_ref:
             raise BlobIntegrityError("key_ref mismatch")
@@ -459,13 +516,165 @@ class BlobStore:
         return plaintext
 
     def cleanup_orphan_temps(self) -> int:
+        self._require_open()
         removed = 0
-        for path in self.root.glob(".blob-*.tmp"):
+        for filename in os.listdir(self._root_fd):
+            if not filename.startswith(".blob-") or not filename.endswith(".tmp"):
+                continue
             try:
-                path.unlink()
+                os.unlink(filename, dir_fd=self._root_fd)
                 removed += 1
             except FileNotFoundError:
                 continue
         if removed:
-            _fsync_directory(self.root)
+            self._fsync_root()
         return removed
+
+    def iter_blob_ids(self) -> tuple[str, ...]:
+        """Return owned content-address IDs without parsing encrypted labels."""
+        self._require_open()
+        blob_ids: list[str] = []
+        for filename in sorted(os.listdir(self._root_fd)):
+            if not filename.endswith(".blob"):
+                continue
+            blob_id = filename.removesuffix(".blob")
+            if not _is_sha256(blob_id):
+                continue
+            descriptor = self._open_leaf(filename)
+            os.close(descriptor)
+            blob_ids.append(blob_id)
+        return tuple(blob_ids)
+
+    def quarantine_blob(self, blob_id: str) -> Path:
+        """Move one owned blob into the private quarantine directory."""
+        self._require_open()
+        if not _is_sha256(blob_id):
+            raise BlobIntegrityError("blob id is not sha256 hex")
+        filename = f"{blob_id}.blob"
+        descriptor = self._open_leaf(filename)
+        os.close(descriptor)
+        quarantine_fd = self._open_child_directory("quarantine")
+        try:
+            try:
+                os.stat(filename, dir_fd=quarantine_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise BlobIntegrityError("quarantine target already exists")
+            os.replace(
+                filename,
+                filename,
+                src_dir_fd=self._root_fd,
+                dst_dir_fd=quarantine_fd,
+            )
+            os.fsync(quarantine_fd)
+            self._fsync_root()
+        finally:
+            os.close(quarantine_fd)
+        return self.root / "quarantine" / filename
+
+    @staticmethod
+    def _open_root(root: Path) -> int:
+        parts = root.parts[1:] if root.is_absolute() else root.parts
+        if not parts or any(part in {"", ".", ".."} for part in parts):
+            raise BlobPublishError("invalid blob root")
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = -1
+        try:
+            current_path = Path("/") if root.is_absolute() else Path(".")
+            descriptor = os.open(str(current_path), flags)
+            for part in parts:
+                try:
+                    child = os.open(part, flags, dir_fd=descriptor)
+                except FileNotFoundError:
+                    try:
+                        os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                    except FileExistsError:
+                        pass
+                    os.fsync(descriptor)
+                    _fsync_directory(current_path)
+                    child = os.open(part, flags, dir_fd=descriptor)
+                child_stat = os.fstat(child)
+                if not stat.S_ISDIR(child_stat.st_mode):
+                    os.close(child)
+                    raise BlobPublishError("blob root is not a directory")
+                os.close(descriptor)
+                descriptor = child
+                current_path /= part
+            os.fchmod(descriptor, 0o700)
+            return descriptor
+        except Exception:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise BlobPublishError("failed to open blob root") from None
+
+    def _open_leaf(self, filename: str) -> int:
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(filename, flags, dir_fd=self._root_fd)
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            raise BlobIntegrityError("blob leaf is not a safe regular file") from exc
+        leaf_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(leaf_stat.st_mode)
+            or stat.S_IMODE(leaf_stat.st_mode) != 0o600
+        ):
+            os.close(descriptor)
+            raise BlobIntegrityError("blob leaf must be a regular 0600 file")
+        return descriptor
+
+    def _read_leaf_bytes(self, filename: str) -> bytes:
+        descriptor = self._open_leaf(filename)
+        try:
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+        finally:
+            os.close(descriptor)
+
+    def _open_child_directory(self, name: str) -> int:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=self._root_fd)
+            os.fsync(self._root_fd)
+        except FileExistsError:
+            pass
+        try:
+            descriptor = os.open(name, flags, dir_fd=self._root_fd)
+            os.fchmod(descriptor, 0o700)
+            return descriptor
+        except Exception:
+            raise BlobIntegrityError("invalid blob quarantine directory") from None
+
+    def _unlink_if_present(self, filename: str) -> None:
+        try:
+            os.unlink(filename, dir_fd=self._root_fd)
+        except (FileNotFoundError, OSError):
+            pass
+
+    def _fsync_root(self) -> None:
+        os.fsync(self._root_fd)
+        try:
+            current = os.stat(self.root, follow_symlinks=False)
+        except OSError:
+            return
+        if (
+            current.st_dev == self._root_identity.st_dev
+            and current.st_ino == self._root_identity.st_ino
+        ):
+            _fsync_directory(self.root)

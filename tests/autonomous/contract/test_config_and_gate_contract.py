@@ -42,6 +42,33 @@ def test_employee_credential_settings_default_fail_closed_and_redact(settings: S
     assert keyring_json not in repr(configured)
 
 
+def test_employee_data_settings_default_fail_closed_and_redact(settings: Settings) -> None:
+    assert settings.autonomous_data_keys.get_secret_value() == ""
+    assert settings.autonomous_data_active_key_id == ""
+    assert settings.autonomous_data_blob_dir == "~/.ghostap/autonomy/data-blobs"
+    assert settings.autonomous_history_timezone == "UTC"
+    assert settings.autonomous_history_max_range_days == 31
+    assert settings.autonomous_history_page_size == 50
+
+    encoded = base64.urlsafe_b64encode(bytes([9]) * 32).decode()
+    keyring_json = json.dumps({"version": 1, "keys": {"data-v1": encoded}})
+    configured = Settings(
+        _env_file=None,
+        autonomous_data_keys=keyring_json,
+        autonomous_data_active_key_id="data-v1",
+    )
+    assert keyring_json not in repr(configured)
+
+
+def test_employee_data_settings_validate_timezone_and_query_bounds() -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, autonomous_history_timezone="Mars/Olympus")
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, autonomous_history_max_range_days=0)
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, autonomous_history_page_size=201)
+
+
 def test_autonomous_settings_are_fail_closed_by_default(settings: Settings) -> None:
     assert settings.autonomous_deployment_mode == AutonomousDeploymentMode.OFF
     assert settings.autonomous_compatibility_mode == "legacy"

@@ -98,7 +98,7 @@ def test_real_blob_publish_failure_never_produces_a_journal_frame(
 
     monkeypatch.setattr(blob_store_module, boundary, fail)
 
-    with pytest.raises(Exception, match="injected"):
+    with pytest.raises(Exception, match=boundary):
         ref = store.stage_and_publish(
             b"sensitive model output",
             labels={"purpose": "evidence"},

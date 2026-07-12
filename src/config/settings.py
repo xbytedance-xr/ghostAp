@@ -5,6 +5,7 @@ import os
 import shlex
 import warnings
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -626,6 +627,12 @@ class Settings(BaseSettings):
     autonomous_credential_dir: str = "~/.ghostap/slock/credentials"
     autonomous_credential_keys: SecretStr = SecretStr("")
     autonomous_credential_active_key_id: str = ""
+    autonomous_data_keys: SecretStr = SecretStr("")
+    autonomous_data_active_key_id: str = ""
+    autonomous_data_blob_dir: str = "~/.ghostap/autonomy/data-blobs"
+    autonomous_history_timezone: str = "UTC"
+    autonomous_history_max_range_days: int = Field(default=31, ge=1, le=366)
+    autonomous_history_page_size: int = Field(default=50, ge=1, le=200)
     autonomous_manager_acl: str = ""
     autonomous_anchor_provider: str = ""
     autonomous_sandbox_required: bool = True
@@ -636,6 +643,15 @@ class Settings(BaseSettings):
     autonomous_goal_queue_limit: int = Field(default=1000, ge=1)
     autonomous_run_queue_limit: int = Field(default=100, ge=1)
     autonomous_visible_employee_limit: int = Field(default=0, ge=0)
+
+    @field_validator("autonomous_history_timezone")
+    @classmethod
+    def _validate_autonomous_history_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (TypeError, ZoneInfoNotFoundError) as exc:
+            raise ValueError("autonomous_history_timezone must be a valid IANA timezone") from exc
+        return value
 
     # ------------------------------------------------------------------
     # 授权白名单（安全加固 A2）
