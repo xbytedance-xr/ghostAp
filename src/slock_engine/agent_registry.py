@@ -402,34 +402,42 @@ class AgentRegistry:
     ) -> AuthoritySnapshot:
         """Flush every accepted legacy write before durable authority advance."""
 
+        pending: tuple[_PersistRequest, ...] = ()
+
         def drain_and_advance() -> AuthoritySnapshot:
+            nonlocal pending
             with self._lock:
                 self._admission_open = False
                 pending = tuple(
                     [*self._inflight_requests, *self._persist_queue]
                 )
-            try:
-                for request in pending:
-                    self._write_agent_to_disk(request.agent)
-                snapshot = advance()
-                with self._lock:
-                    pending_ids = {id(request) for request in pending}
-                    self._persist_queue = [
-                        request
-                        for request in self._persist_queue
-                        if id(request) not in pending_ids
-                    ]
-                    self._inflight_requests = [
-                        request
-                        for request in self._inflight_requests
-                        if id(request) not in pending_ids
-                    ]
-                return snapshot
-            finally:
-                with self._lock:
-                    self._admission_open = True
+            for request in pending:
+                self._write_agent_to_disk(request.agent)
+            return advance()
 
-        return self._mutation_guard.cutover(drain_and_advance)
+        def clear_flushed_requests() -> None:
+            with self._lock:
+                pending_ids = {id(request) for request in pending}
+                self._persist_queue = [
+                    request
+                    for request in self._persist_queue
+                    if id(request) not in pending_ids
+                ]
+                self._inflight_requests = [
+                    request
+                    for request in self._inflight_requests
+                    if id(request) not in pending_ids
+                ]
+
+        def reopen_admission() -> None:
+            with self._lock:
+                self._admission_open = True
+
+        return self._mutation_guard.cutover(
+            drain_and_advance,
+            on_success=clear_flushed_requests,
+            on_finish=reopen_admission,
+        )
 
     def _assert_admission_open(self) -> None:
         if not self._admission_open:

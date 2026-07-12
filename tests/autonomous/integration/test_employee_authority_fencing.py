@@ -167,6 +167,34 @@ def test_cutover_advance_failure_preserves_queue_memory_and_old_authority(
     assert (tmp_path / "agents" / "legacy_1" / "identity.json").exists()
 
 
+@pytest.mark.parametrize("failure", ["unpublished", "non_increasing"])
+def test_cutover_validation_failure_preserves_accepted_queue(
+    tmp_path,
+    failure: str,
+) -> None:
+    current = AuthoritySnapshot(epoch=1, mode=AuthorityMode.LEGACY_WRITE)
+    guard = LegacyMutationGuard(lambda: current, expected_epoch=1)
+    registry = AgentRegistry(str(tmp_path), mutation_guard=guard)
+    registry._persist_thread = MagicMock(is_alive=lambda: True)
+    registry.register(AgentIdentity(agent_id="legacy_1", name="Accepted"))
+
+    def invalid_advance() -> AuthoritySnapshot:
+        if failure == "unpublished":
+            return AuthoritySnapshot(epoch=2, mode=AuthorityMode.V5_WRITE)
+        return current
+
+    error = RuntimeError if failure == "unpublished" else ValueError
+    with pytest.raises(error):
+        registry.cutover_authority(invalid_advance)
+
+    assert current == AuthoritySnapshot(1, AuthorityMode.LEGACY_WRITE, 0)
+    assert registry.get("legacy_1") is not None
+    assert len(registry._persist_queue) == 1
+    assert registry._inflight_requests == []
+    assert registry._admission_open is True
+    assert (tmp_path / "agents" / "legacy_1" / "identity.json").exists()
+
+
 def test_cutover_flush_failure_preserves_queue_memory_and_old_authority(
     tmp_path,
 ) -> None:

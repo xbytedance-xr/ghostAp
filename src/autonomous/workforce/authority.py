@@ -69,18 +69,29 @@ class LegacyMutationGuard:
     def cutover(
         self,
         advance: Callable[[], AuthoritySnapshot],
+        *,
+        on_success: Callable[[], None] | None = None,
+        on_finish: Callable[[], None] | None = None,
     ) -> AuthoritySnapshot:
         """Wait for legacy writes, then advance authority under the same lock."""
 
         with self._serialization_lock:
-            before = self._snapshot_provider()
-            after = advance()
-            observed = self._snapshot_provider()
-            if after != observed:
-                raise RuntimeError("authority cutover callback did not publish snapshot")
-            if after.epoch <= before.epoch:
-                raise ValueError("authority cutover must increase epoch")
-            return after
+            try:
+                before = self._snapshot_provider()
+                after = advance()
+                observed = self._snapshot_provider()
+                if after != observed:
+                    raise RuntimeError(
+                        "authority cutover callback did not publish snapshot"
+                    )
+                if after.epoch <= before.epoch:
+                    raise ValueError("authority cutover must increase epoch")
+                if on_success is not None:
+                    on_success()
+                return after
+            finally:
+                if on_finish is not None:
+                    on_finish()
 
     def _assert_writable(
         self,
