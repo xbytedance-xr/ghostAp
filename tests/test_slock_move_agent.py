@@ -25,7 +25,7 @@ def storage(tmp_path):
     """Create isolated storage with shared base path."""
     base = str(tmp_path / "slock_move_test")
     return {
-        "registry": AgentRegistry(base_path=base),
+        "registry": AgentRegistry.legacy(base_path=base),
         "memory": MemoryManager(base_path=base),
     }
 
@@ -173,7 +173,7 @@ class TestMoveAgentUpdatesChannelMembership:
         registry.move_agent(agent.agent_id, "disk-src", "disk-dst")
 
         # Load fresh registry from same base path
-        fresh = AgentRegistry(base_path=registry.base_path)
+        fresh = AgentRegistry.legacy(base_path=registry.base_path)
         loaded = fresh.get("move-disk-001")
         assert loaded is not None
         assert loaded.owner_group == "disk-dst"
@@ -877,7 +877,7 @@ class TestSystemPromptConsistentAfterMove:
         registry.move_agent(agent.agent_id, "team-a", "team-b")
 
         # Load from fresh registry + memory (simulating target engine)
-        fresh_registry = AgentRegistry(base_path=registry.base_path)
+        fresh_registry = AgentRegistry.legacy(base_path=registry.base_path)
         fresh_memory = MemoryManager(base_path=memory_mgr.base_path)
 
         agent_after = fresh_registry.get(agent.agent_id)
@@ -904,8 +904,8 @@ class TestCrossEngineRegistryRefresh:
         """Target registry doesn't see agent until refresh_agent is called."""
         base = storage["registry"].base_path
 
-        source_registry = AgentRegistry(base_path=base)
-        target_registry = AgentRegistry(base_path=base)
+        source_registry = AgentRegistry.legacy(base_path=base)
+        target_registry = AgentRegistry.legacy(base_path=base)
 
         agent = _make_agent("cross-001", owner_group="src-group")
         source_registry.register(agent)
@@ -934,8 +934,8 @@ class TestCrossEngineRegistryRefresh:
         """After refresh, member_groups reflect the move."""
         base = storage["registry"].base_path
 
-        source = AgentRegistry(base_path=base)
-        target = AgentRegistry(base_path=base)
+        source = AgentRegistry.legacy(base_path=base)
+        target = AgentRegistry.legacy(base_path=base)
 
         agent = _make_agent("cross-002", owner_group="alpha")
         source.register(agent)
@@ -993,7 +993,7 @@ class TestL1MemoryLoadableFromTargetEngine:
     def test_l1_memory_identical_from_independent_manager(self, storage):
         """Target engine's MemoryManager reads same L1 content post-move."""
         base = storage["registry"].base_path
-        source_registry = AgentRegistry(base_path=base)
+        source_registry = AgentRegistry.legacy(base_path=base)
         source_memory = MemoryManager(base_path=base)
 
         agent = _make_agent("l1-target-001", owner_group="origin")
@@ -1020,7 +1020,7 @@ class TestL1MemoryLoadableFromTargetEngine:
     def test_l1_memory_survives_context_append_after_move(self, storage):
         """Migration record appended post-move is visible from target engine."""
         base = storage["registry"].base_path
-        source_registry = AgentRegistry(base_path=base)
+        source_registry = AgentRegistry.legacy(base_path=base)
         source_memory = MemoryManager(base_path=base)
 
         agent = _make_agent("l1-target-002", owner_group="team-x")
@@ -1077,7 +1077,7 @@ class TestBuildAgentPromptConsistentAfterCrossEngineMove:
         """Target engine prompt matches source pre-move prompt (no migration record)."""
         base = storage["registry"].base_path
 
-        source_reg = AgentRegistry(base_path=base)
+        source_reg = AgentRegistry.legacy(base_path=base)
         source_mem = MemoryManager(base_path=base)
 
         agent = _make_agent("prompt-cross-001", owner_group="eng-1")
@@ -1098,7 +1098,7 @@ class TestBuildAgentPromptConsistentAfterCrossEngineMove:
         source_reg.move_agent(agent.agent_id, "eng-1", "eng-2")
 
         # Target engine loads
-        target_reg = AgentRegistry(base_path=base)
+        target_reg = AgentRegistry.legacy(base_path=base)
         target_mem = MemoryManager(base_path=base)
 
         target_reg.refresh_agent(agent.agent_id)
@@ -1114,7 +1114,7 @@ class TestBuildAgentPromptConsistentAfterCrossEngineMove:
         """After migration record append, only that record differs in prompt."""
         base = storage["registry"].base_path
 
-        source_reg = AgentRegistry(base_path=base)
+        source_reg = AgentRegistry.legacy(base_path=base)
         source_mem = MemoryManager(base_path=base)
 
         agent = _make_agent("prompt-cross-002", owner_group="team-src")
@@ -1137,7 +1137,7 @@ class TestBuildAgentPromptConsistentAfterCrossEngineMove:
         source_mem.update_agent_context(agent.agent_id, migration)
 
         # Target engine loads
-        target_reg = AgentRegistry(base_path=base)
+        target_reg = AgentRegistry.legacy(base_path=base)
         target_mem = MemoryManager(base_path=base)
         target_reg.refresh_agent(agent.agent_id)
 
@@ -1392,7 +1392,7 @@ class TestL1MemoryFullyLoadableFromIndependentManager:
     def test_fresh_manager_reads_complete_memory(self, storage, tmp_path):
         """After move, independent MemoryManager loads role+knowledge+context."""
         base = str(tmp_path / "slock_move_test")
-        registry = AgentRegistry(base_path=base)
+        registry = AgentRegistry.legacy(base_path=base)
         memory = MemoryManager(base_path=base)
 
         agent = _make_agent("l1-full-001", owner_group="src-full")
@@ -1411,7 +1411,7 @@ class TestL1MemoryFullyLoadableFromIndependentManager:
         assert success.success
 
         # Simulate target engine: completely new instances
-        target_registry = AgentRegistry(base_path=base)
+        target_registry = AgentRegistry.legacy(base_path=base)
         target_memory = MemoryManager(base_path=base)
         refreshed = target_registry.refresh_agent(agent.agent_id)
         assert refreshed is not None
@@ -1426,7 +1426,7 @@ class TestL1MemoryFullyLoadableFromIndependentManager:
     def test_migration_record_appended_and_visible_to_target(self, tmp_path):
         """After move + context update, target engine sees migration record."""
         base = str(tmp_path / "slock_migration_record")
-        registry = AgentRegistry(base_path=base)
+        registry = AgentRegistry.legacy(base_path=base)
         memory = MemoryManager(base_path=base)
 
         agent = _make_agent("l1-mig-001", owner_group="src-mig")
@@ -1474,7 +1474,7 @@ class TestSystemPromptIdenticalAfterMoveStrengthened:
     def test_prompt_sections_identical_except_context(self, tmp_path):
         """Move + migration record: role/knowledge/system_prompt identical."""
         base = str(tmp_path / "slock_prompt_consistency")
-        registry = AgentRegistry(base_path=base)
+        registry = AgentRegistry.legacy(base_path=base)
         memory = MemoryManager(base_path=base)
 
         agent = _make_agent("prompt-001", owner_group="team-before")
@@ -1497,7 +1497,7 @@ class TestSystemPromptIdenticalAfterMoveStrengthened:
         memory.update_agent_context(agent.agent_id, migration)
 
         # Target loads
-        target_reg = AgentRegistry(base_path=base)
+        target_reg = AgentRegistry.legacy(base_path=base)
         target_mem = MemoryManager(base_path=base)
         target_reg.refresh_agent(agent.agent_id)
 
@@ -1556,7 +1556,7 @@ class TestL1MemoryLoadableAfterCrossEngineMove:
         base = str(tmp_path / "cross_engine_prompt")
 
         # Source engine components
-        source_registry = AgentRegistry(base_path=base)
+        source_registry = AgentRegistry.legacy(base_path=base)
         source_memory = MemoryManager(base_path=base)
 
         agent = _make_agent("cross-prompt-001", owner_group="src-engine")
@@ -1583,7 +1583,7 @@ class TestL1MemoryLoadableAfterCrossEngineMove:
         source_memory.update_agent_context(agent.agent_id, migration_record)
 
         # Target engine components (completely independent instances)
-        target_registry = AgentRegistry(base_path=base)
+        target_registry = AgentRegistry.legacy(base_path=base)
         target_memory = MemoryManager(base_path=base)
 
         # Refresh to discover the moved agent
@@ -1616,7 +1616,7 @@ class TestL1MemoryLoadableAfterCrossEngineMove:
         from new MemoryManager. Assert all fields match."""
         base = str(tmp_path / "independent_memory_managers")
 
-        source_registry = AgentRegistry(base_path=base)
+        source_registry = AgentRegistry.legacy(base_path=base)
         source_memory = MemoryManager(base_path=base)
 
         agent = _make_agent("cross-mem-001", owner_group="mem-src")
@@ -1656,7 +1656,7 @@ class TestPersonaConsistencyAfterMove:
         disk. Assert every field is identical."""
         base = str(tmp_path / "persona_consistency")
 
-        registry = AgentRegistry(base_path=base)
+        registry = AgentRegistry.legacy(base_path=base)
 
         agent = AgentIdentity(
             agent_id="persona-full-001",
@@ -1677,7 +1677,7 @@ class TestPersonaConsistencyAfterMove:
         assert success.success
 
         # Reload from disk via fresh registry
-        fresh_registry = AgentRegistry(base_path=base)
+        fresh_registry = AgentRegistry.legacy(base_path=base)
         loaded = fresh_registry.get(agent.agent_id)
 
         assert loaded is not None
@@ -1698,7 +1698,7 @@ class TestPersonaConsistencyAfterMove:
         from fresh MemoryManager. Assert it's identical."""
         base = str(tmp_path / "skill_profile_preserve")
 
-        registry = AgentRegistry(base_path=base)
+        registry = AgentRegistry.legacy(base_path=base)
         memory = MemoryManager(base_path=base)
 
         agent = _make_agent("skill-persona-001", owner_group="skill-src")
@@ -1862,7 +1862,7 @@ class TestEndToEndMoveWithRedactAndPersonaConsistency:
         memory_mgr.redact_active_context_for_move("e2e-agent-001", self.SOURCE, self.TARGET)
 
         # Simulate target engine refresh
-        target_registry = AgentRegistry(base_path=registry.base_path)
+        target_registry = AgentRegistry.legacy(base_path=registry.base_path)
         refreshed = target_registry.refresh_agent("e2e-agent-001")
         assert refreshed is not None
         assert refreshed.owner_group == self.TARGET

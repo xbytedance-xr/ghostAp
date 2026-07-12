@@ -312,7 +312,7 @@ class SlockEngine(BaseEngine):
 
         # Core subsystems
         storage_base_path = memory_base_path or default_slock_storage_base()
-        self._registry = AgentRegistry(base_path=storage_base_path)
+        self._registry = AgentRegistry.legacy(base_path=storage_base_path)
         self._memory = MemoryManager(base_path=storage_base_path)
         self._channel_trust_rules: dict[str, dict[str, str]] = {}
         self._settings = get_settings()

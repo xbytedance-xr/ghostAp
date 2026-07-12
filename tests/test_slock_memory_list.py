@@ -30,7 +30,7 @@ def mm(tmp_path):
 @pytest.fixture()
 def registry(tmp_path):
     """Create an AgentRegistry rooted at a temporary directory."""
-    return AgentRegistry(base_path=str(tmp_path))
+    return AgentRegistry.legacy(base_path=str(tmp_path))
 
 
 class TestGetAgentMemorySummary:

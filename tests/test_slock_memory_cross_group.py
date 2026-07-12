@@ -188,7 +188,7 @@ class TestRegistryCrossGroupIntegration:
     def storage(self, tmp_path):
         base = str(tmp_path / "slock_int")
         return {
-            "registry": AgentRegistry(base_path=base),
+            "registry": AgentRegistry.legacy(base_path=base),
             "memory": MemoryManager(base_path=base),
         }
 
@@ -272,7 +272,7 @@ class TestRegistryCrossGroupIntegration:
             registry._persist_thread.join(timeout=2)
 
         # Create fresh registry from same disk path
-        fresh = AgentRegistry(base_path=registry.base_path)
+        fresh = AgentRegistry.legacy(base_path=registry.base_path)
         reloaded = fresh.get("int-agent-disk")
         assert reloaded is not None
         assert "grp-X" in reloaded.member_groups
@@ -291,7 +291,7 @@ class TestL1MemorySurvivesGroupRemoval:
     def storage(self, tmp_path):
         base = str(tmp_path / "slock_boundary")
         return {
-            "registry": AgentRegistry(base_path=base),
+            "registry": AgentRegistry.legacy(base_path=base),
             "memory": MemoryManager(base_path=base),
         }
 

@@ -23,7 +23,7 @@ def storage(tmp_path):
     """Create isolated storage."""
     base = str(tmp_path / "slock_concurrency")
     return {
-        "registry": AgentRegistry(base_path=base),
+        "registry": AgentRegistry.legacy(base_path=base),
         "memory": MemoryManager(base_path=base),
     }
 

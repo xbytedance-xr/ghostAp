@@ -5,12 +5,10 @@ from __future__ import annotations
 import pytest
 
 from src.autonomous.migration.slock_importer import (
-    ImportPlan,
-    ImportResult,
     LegacyEntity,
     SlockImporter,
-    VerificationReport,
 )
+from tests.autonomous.workforce_helpers import make_writer, replay_state
 
 
 class FakeJournal:
@@ -44,6 +42,54 @@ def legacy_data() -> dict:
             {"plan_id": "plan_1", "steps": ["code", "test", "review"]},
         ],
     }
+
+
+def test_scan_canonicalizes_legacy_workers_to_agents(
+    importer: SlockImporter, legacy_data: dict
+) -> None:
+    entities = importer.scan(legacy_data)
+    assert next(e for e in entities if e.legacy_id == "agent_1").entity_type == "agent"
+
+
+def test_importer_generates_random_id_and_durable_alias(tmp_path) -> None:
+    writer = make_writer(tmp_path)
+    legacy = LegacyEntity(
+        entity_type="agent",
+        legacy_id="legacy_1",
+        data={
+            "name": "Legacy",
+            "agent_type": "codex",
+            "model_name": "gpt-5.6-sol",
+            "owner_group": "oc_team",
+            "tenant_key": "tenant_1",
+            "owner_principal_id": "ou_admin",
+        },
+    )
+    importer = SlockImporter(writer=writer, state=replay_state(writer))
+
+    first = importer.import_agent(legacy)
+    replayed = replay_state(writer)
+    second = SlockImporter(writer=writer, state=replayed).import_agent(legacy)
+
+    assert first.agent_id.startswith("agt_")
+    assert first.agent_id != legacy.legacy_id
+    assert replayed.legacy_agent_aliases[legacy.legacy_id] == first.agent_id
+    assert replayed.legacy_source_hashes[legacy.source_hash] == first.agent_id
+    assert second.agent_id == first.agent_id
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {},
+        {"writer": object()},
+        {"state": object()},
+        {"journal": FakeJournal(), "writer": object(), "state": object()},
+    ],
+)
+def test_importer_requires_exactly_one_authority_mode(kwargs: dict) -> None:
+    with pytest.raises(ValueError):
+        SlockImporter(**kwargs)
 
 
 @pytest.mark.asyncio

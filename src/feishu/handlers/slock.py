@@ -133,7 +133,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         """Get a global AgentRegistry for /hire without requiring an active engine."""
         from ...slock_engine.agent_registry import AgentRegistry
         if not hasattr(self, '_global_registry'):
-            self._global_registry = AgentRegistry()
+            self._global_registry = AgentRegistry.legacy()
         return self._global_registry
 
     def _get_engine_name_prefix(self) -> str:

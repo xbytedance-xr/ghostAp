@@ -15,6 +15,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from src.autonomous.workforce.authority import (
+    AuthorityMode,
+    AuthoritySnapshot,
+    LegacyMutationGuard,
+    StaleAuthorityEpoch,
+)
+
 from .memory_manager import default_slock_storage_base
 from .models import AgentIdentity
 
@@ -63,6 +70,13 @@ class MoveOutcome:
         return self.status == MoveResult.SUCCESS
 
 
+@dataclass(frozen=True)
+class _PersistRequest:
+    operation: str
+    agent: AgentIdentity
+    validated_epoch: int
+
+
 class AgentRegistry:
     """Thread-safe registry for slock agent identities.
 
@@ -70,13 +84,34 @@ class AgentRegistry:
         {base_path}/agents/{agent_id}/identity.json
     """
 
-    def __init__(self, base_path: str = ""):
+    def __init__(
+        self,
+        base_path: str,
+        *,
+        mutation_guard: LegacyMutationGuard,
+    ):
         self._base_path = base_path or default_slock_storage_base()
+        self._mutation_guard = mutation_guard
         self._agents: dict[str, AgentIdentity] = {}
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._loaded = False
-        self._persist_queue: list[AgentIdentity] = []
+        self._persist_queue: list[_PersistRequest] = []
         self._persist_thread: Optional[threading.Thread] = None
+
+    @classmethod
+    def legacy(cls, base_path: str = "") -> AgentRegistry:
+        """Build an explicitly legacy-writable compatibility registry."""
+        snapshot = AuthoritySnapshot(
+            epoch=0,
+            mode=AuthorityMode.LEGACY_WRITE,
+        )
+        return cls(
+            base_path or default_slock_storage_base(),
+            mutation_guard=LegacyMutationGuard(
+                lambda: snapshot,
+                expected_epoch=0,
+            ),
+        )
 
     @property
     def base_path(self) -> str:
@@ -140,13 +175,14 @@ class AgentRegistry:
                         raise DuplicateAgentNameError(
                             f"Agent name '{agent.name}' already exists in channel {agent.owner_group}"
                         )
+            validated_epoch = self._mutation_guard.assert_writable("register")
             existing = self._agents.get(agent.agent_id)
             if existing is not None:
                 agent = self._merge_agent(existing, agent)
             else:
                 agent = self._normalize_groups(agent)
             self._agents[agent.agent_id] = agent
-            self._persist(agent)
+            self._persist("register", agent, validated_epoch)
         return agent
 
     def get(self, agent_id: str) -> Optional[AgentIdentity]:
@@ -223,10 +259,15 @@ class AgentRegistry:
             self._ensure_loaded()
             if agent_id not in self._agents:
                 return False
+            validated_epoch = self._mutation_guard.assert_writable("remove")
             del self._agents[agent_id]
             identity_file = self._agent_file(agent_id)
             if os.path.exists(identity_file):
                 try:
+                    self._mutation_guard.assert_writable(
+                        "remove persistence",
+                        validated_epoch=validated_epoch,
+                    )
                     os.remove(identity_file)
                 except OSError as e:
                     logger.warning("Failed to remove identity file for %s: %s", agent_id, str(e))
@@ -245,8 +286,9 @@ class AgentRegistry:
             self._ensure_loaded()
             if agent.agent_id not in self._agents:
                 return False
+            validated_epoch = self._mutation_guard.assert_writable("update")
             self._agents[agent.agent_id] = agent
-            self._persist(agent)
+            self._persist("update", agent, validated_epoch)
             return True
 
     def move_agent(self, agent_id: str, source_channel_id: str, target_channel_id: str) -> MoveOutcome:
@@ -264,6 +306,7 @@ class AgentRegistry:
             # Verify agent belongs to source channel
             if not self._belongs_to_channel(agent, source_channel_id):
                 return MoveOutcome(status=MoveResult.NOT_IN_SOURCE)
+            validated_epoch = self._mutation_guard.assert_writable("move_agent")
             # Snapshot for rollback
             snapshot = agent.to_dict()
             # Mutate in-place
@@ -274,7 +317,13 @@ class AgentRegistry:
             agent.owner_group = target_channel_id
             # Persist — rollback on failure (synchronous for atomicity guarantee)
             try:
-                self._write_agent_to_disk(agent)
+                self._persist_request(
+                    self._make_persist_request(
+                        "move_agent",
+                        agent,
+                        validated_epoch=validated_epoch,
+                    )
+                )
             except OSError as e:
                 # Rollback: restore agent fields from snapshot
                 agent.member_groups = snapshot.get("member_groups", [])
@@ -298,7 +347,28 @@ class AgentRegistry:
 
     MAX_PERSIST_QUEUE_SIZE: int = 256
 
-    def _persist(self, agent: AgentIdentity) -> None:
+    def _make_persist_request(
+        self,
+        operation: str,
+        agent: AgentIdentity,
+        *,
+        validated_epoch: int,
+    ) -> _PersistRequest:
+        return _PersistRequest(operation, agent, validated_epoch)
+
+    def _persist_request(self, request: _PersistRequest) -> None:
+        self._mutation_guard.assert_writable(
+            f"{request.operation} persistence",
+            validated_epoch=request.validated_epoch,
+        )
+        self._write_agent_to_disk(request.agent)
+
+    def _persist(
+        self,
+        operation: str,
+        agent: AgentIdentity,
+        validated_epoch: int,
+    ) -> None:
         """Schedule agent identity write to background thread (caller must hold _lock).
 
         Backpressure: when the queue exceeds MAX_PERSIST_QUEUE_SIZE, falls back to
@@ -310,10 +380,22 @@ class AgentRegistry:
                 "persist_queue at capacity (%d), falling back to synchronous write for agent %s",
                 self.MAX_PERSIST_QUEUE_SIZE, agent.agent_id,
             )
-            self._write_agent_to_disk(agent)
+            self._persist_request(
+                self._make_persist_request(
+                    operation,
+                    agent,
+                    validated_epoch=validated_epoch,
+                )
+            )
             return
 
-        self._persist_queue.append(agent)
+        self._persist_queue.append(
+            self._make_persist_request(
+                operation,
+                agent,
+                validated_epoch=validated_epoch,
+            )
+        )
         if self._persist_thread is None or not self._persist_thread.is_alive():
             self._persist_thread = threading.Thread(
                 target=self._flush_persist_queue,
@@ -330,8 +412,11 @@ class AgentRegistry:
                     return
                 batch = list(self._persist_queue)
                 self._persist_queue.clear()
-            for agent in batch:
-                self._write_agent_to_disk(agent)
+            for request in batch:
+                try:
+                    self._persist_request(request)
+                except StaleAuthorityEpoch as exc:
+                    logger.warning("Discarded stale registry write: %s", exc)
 
     def _write_agent_to_disk(self, agent: AgentIdentity) -> None:
         """Write a single agent identity to disk (atomic)."""

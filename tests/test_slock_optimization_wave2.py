@@ -314,7 +314,7 @@ class TestAgentRegistryEnhancements:
         return AgentIdentity(**defaults)
 
     def test_duplicate_name_same_channel_raises(self, tmp_path):
-        reg = AgentRegistry(base_path=str(tmp_path))
+        reg = AgentRegistry.legacy(base_path=str(tmp_path))
         reg.register(self._make_agent(agent_id="a1", name="Alice", owner_group="g1"))
         # Wait for background persist to complete
         if reg._persist_thread:
@@ -324,7 +324,7 @@ class TestAgentRegistryEnhancements:
             reg.register(self._make_agent(agent_id="a2", name="Alice", owner_group="g1"))
 
     def test_duplicate_name_different_channel_ok(self, tmp_path):
-        reg = AgentRegistry(base_path=str(tmp_path))
+        reg = AgentRegistry.legacy(base_path=str(tmp_path))
         reg.register(self._make_agent(agent_id="a1", name="Alice", owner_group="g1"))
         if reg._persist_thread:
             reg._persist_thread.join(timeout=2)
@@ -334,7 +334,7 @@ class TestAgentRegistryEnhancements:
         assert agent.agent_id == "a2"
 
     def test_duplicate_name_case_insensitive(self, tmp_path):
-        reg = AgentRegistry(base_path=str(tmp_path))
+        reg = AgentRegistry.legacy(base_path=str(tmp_path))
         reg.register(self._make_agent(agent_id="a1", name="Alice", owner_group="g1"))
         if reg._persist_thread:
             reg._persist_thread.join(timeout=2)
@@ -344,7 +344,7 @@ class TestAgentRegistryEnhancements:
 
     def test_lazy_load_from_disk(self, tmp_path):
         # Register agent with first registry instance
-        reg1 = AgentRegistry(base_path=str(tmp_path))
+        reg1 = AgentRegistry.legacy(base_path=str(tmp_path))
         agent = self._make_agent(agent_id="lazy_agent", name="LazyBob", owner_group="g1")
         reg1.register(agent)
         # Ensure background persist completes
@@ -352,7 +352,7 @@ class TestAgentRegistryEnhancements:
             reg1._persist_thread.join(timeout=2)
 
         # Create a new fresh registry pointing to the same path
-        reg2 = AgentRegistry(base_path=str(tmp_path))
+        reg2 = AgentRegistry.legacy(base_path=str(tmp_path))
         # The new registry has NOT loaded all agents yet (_loaded = False)
         # Calling get should trigger on-demand single load
         found = reg2.get("lazy_agent")
@@ -360,7 +360,7 @@ class TestAgentRegistryEnhancements:
         assert found.name == "LazyBob"
 
     def test_remove_cleans_directory(self, tmp_path):
-        reg = AgentRegistry(base_path=str(tmp_path))
+        reg = AgentRegistry.legacy(base_path=str(tmp_path))
         agent = self._make_agent(agent_id="cleanup_agent", name="Cleanup", owner_group="g1")
         reg.register(agent)
         # Ensure background persist completes

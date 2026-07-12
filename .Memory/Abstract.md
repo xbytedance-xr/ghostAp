@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-12
+- **员工Registry权限栅栏** — tenant只读投影、legacy epoch双检与Journal持久别名导入 → [详细记录](2026-07-12.md)
 - **Journal员工身份投影** — 双aggregate原子Bot绑定、预提交隔离校验与可重建无密身份文件 → [详细记录](2026-07-12.md)
 - **Vault文件边界加固** — dir-fd/no-follow containment、严格叶文件/Envelope校验与销毁持久化 → [详细记录](2026-07-12.md)
 - **员工凭证Vault轮换** — AES-GCM 原子密文存储、严格版本化Keyring与安全轮换/销毁边界 → [详细记录](2026-07-12.md)

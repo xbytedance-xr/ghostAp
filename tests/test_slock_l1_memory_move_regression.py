@@ -39,7 +39,7 @@ def storage(tmp_path):
     base_path = tmp_path / "slock_data"
     base_path.mkdir()
     return {
-        "registry": AgentRegistry(base_path=str(base_path)),
+        "registry": AgentRegistry.legacy(base_path=str(base_path)),
         "memory": MemoryManager(base_path=str(base_path)),
         "base_path": str(base_path),
     }
@@ -140,7 +140,7 @@ class TestSystemPromptConsistencyAfterMove:
         registry.move_agent("agent_002", self.SOURCE_GROUP, self.TARGET_GROUP)
 
         # Reload from a fresh registry instance
-        fresh_registry = AgentRegistry(base_path=storage["base_path"])
+        fresh_registry = AgentRegistry.legacy(base_path=storage["base_path"])
         reloaded_agent = fresh_registry.get("agent_002")
 
         assert reloaded_agent is not None, "Agent should be retrievable after move"

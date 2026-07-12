@@ -726,7 +726,7 @@ class TestSlockMentionRouting:
 class TestSlockAgentRegistryCrossTeam:
     def test_same_agent_id_can_join_multiple_groups_without_losing_original_team(self, tmp_path):
         """Agent identity follows the agent across teams while membership includes both groups."""
-        registry = AgentRegistry(base_path=str(tmp_path))
+        registry = AgentRegistry.legacy(base_path=str(tmp_path))
         first = AgentIdentity(
             agent_id="codex:o3-pro:Coder",
             name="Coder",

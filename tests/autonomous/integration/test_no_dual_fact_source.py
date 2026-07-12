@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.autonomous.migration.slock_compat import (
     CompatibilityMode,
     SlockCompatLayer,

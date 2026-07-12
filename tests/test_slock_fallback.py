@@ -136,7 +136,7 @@ class TestPersistBackpressure:
         """When persist queue is full, _persist falls back to synchronous write."""
         from src.slock_engine.agent_registry import AgentRegistry
 
-        registry = AgentRegistry(base_path=str(tmp_path / "slock"))
+        registry = AgentRegistry.legacy(base_path=str(tmp_path / "slock"))
         agent = AgentIdentity(
             agent_id="test:default:abc123",
             name="test_agent",
@@ -153,14 +153,14 @@ class TestPersistBackpressure:
         # _persist should now write synchronously
         with patch.object(registry, "_write_agent_to_disk") as mock_write:
             with registry._lock:
-                registry._persist(agent)
+                registry._persist("test", agent, validated_epoch=0)
             mock_write.assert_called_once_with(agent)
 
     def test_normal_persist_queues(self, tmp_path):
         """Under normal conditions, _persist appends to queue."""
         from src.slock_engine.agent_registry import AgentRegistry
 
-        registry = AgentRegistry(base_path=str(tmp_path / "slock"))
+        registry = AgentRegistry.legacy(base_path=str(tmp_path / "slock"))
         agent = AgentIdentity(
             agent_id="test:default:xyz789",
             name="normal_agent",
@@ -173,7 +173,7 @@ class TestPersistBackpressure:
 
         initial_len = len(registry._persist_queue)
         with registry._lock:
-            registry._persist(agent)
+            registry._persist("test", agent, validated_epoch=0)
         assert len(registry._persist_queue) == initial_len + 1
 
 
