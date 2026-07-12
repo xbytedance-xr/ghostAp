@@ -351,10 +351,17 @@ UI_TEXT = {
     "system_help_section_slock": "🎭 Slock · 飞书群内多 Agent 协作",
     "system_help_section_slock_body": (
         "**直接在群里发任务即可，Agent 自动处理。** 无需任何前置命令。\n\n"
-        "**运维/高级配置:**\n"
-        "`/slock` · 手动激活  ·  `/slock status` · 查看状态  ·  `/slock stop` · 停止团队\n"
-        "`/role list` · 查看角色  ·  `/new-role <名称>` · 创建自定义角色\n"
-        "`/task status` · 任务看板  ·  `/slocks` · 查询所有 Slock 群"
+        "**创建团队:**\n"
+        "`/new-team <团队名>` · 创建飞书协作群并激活 Slock\n\n"
+        "**员工管理:**\n"
+        "`/hire <名字>` · 雇佣新员工（全局）\n"
+        "`/role add [名字]` · 添加员工到当前群（不跟名字弹出选择）\n"
+        "`/role remove <名字>` · 从群中移除员工\n"
+        "`/role list` · 查看群内角色  ·  `/role info <名字>` · 查看详情\n\n"
+        "**运维:**\n"
+        "`/slock` · 手动激活  ·  `/slock status` · 查看状态  ·  `/slock stop` · 停止\n"
+        "`/task status` · 任务看板  ·  `/slocks` · 查询所有 Slock 群\n"
+        "`/team dissolve <名>` · 解散团队"
     ),
     "system_help_section_hire": "👤 数字员工 · 雇佣与管理",
     "system_help_section_hire_body": (
