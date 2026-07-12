@@ -6,7 +6,7 @@ import shlex
 import warnings
 from typing import Literal
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.autonomous.config import AutonomousDeploymentMode
@@ -623,6 +623,9 @@ class Settings(BaseSettings):
     autonomous_journal_dir: str = "~/.ghostap/autonomy/journal"
     autonomous_snapshot_dir: str = "~/.ghostap/autonomy/snapshots"
     autonomous_blob_dir: str = "~/.ghostap/autonomy/blobs"
+    autonomous_credential_dir: str = "~/.ghostap/slock/credentials"
+    autonomous_credential_keys: SecretStr = SecretStr("")
+    autonomous_credential_active_key_id: str = ""
     autonomous_manager_acl: str = ""
     autonomous_anchor_provider: str = ""
     autonomous_sandbox_required: bool = True

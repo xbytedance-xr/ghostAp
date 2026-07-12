@@ -1,3 +1,5 @@
+import base64
+import json
 import tomllib
 from pathlib import Path
 
@@ -21,6 +23,23 @@ def test_locked_lark_dependencies() -> None:
 
     assert "lark-oapi==1.6.5" in project["project"]["dependencies"]
     assert "lark-channel-sdk==1.1.0" in project["project"]["dependencies"]
+    assert "cryptography==49.0.0" in project["project"]["dependencies"]
+
+
+def test_employee_credential_settings_default_fail_closed_and_redact(settings: Settings) -> None:
+    empty = settings
+    assert empty.autonomous_credential_dir == "~/.ghostap/slock/credentials"
+    assert empty.autonomous_credential_keys.get_secret_value() == ""
+    assert empty.autonomous_credential_active_key_id == ""
+
+    encoded = base64.urlsafe_b64encode(bytes([7]) * 32).decode()
+    keyring_json = json.dumps({"version": 1, "keys": {"k1": encoded}})
+    configured = Settings(
+        _env_file=None,
+        autonomous_credential_keys=keyring_json,
+        autonomous_credential_active_key_id="k1",
+    )
+    assert keyring_json not in repr(configured)
 
 
 def test_autonomous_settings_are_fail_closed_by_default(settings: Settings) -> None:
