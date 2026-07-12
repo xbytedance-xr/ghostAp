@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from src.slock_engine.memory_manager import default_slock_storage_base
 from src.slock_engine.models import AgentIdentity
 
-from ..domain import EmployeeDefinition
+from ..domain import EmployeeDefinition, EmployeeState
 
 if TYPE_CHECKING:
     from ..journal.projections import ProjectionState
@@ -33,8 +33,13 @@ class ProjectedAgentRegistry:
         )
 
     def get(self, tenant_key: str, agent_id: str) -> EmployeeDefinition | None:
+        self._require_tenant(tenant_key)
         employee = self._state.employees.get(agent_id)
-        if employee is None or employee.tenant_key != tenant_key:
+        if (
+            employee is None
+            or employee.tenant_key != tenant_key
+            or employee.state is EmployeeState.ARCHIVED
+        ):
             return None
         return employee
 
@@ -44,11 +49,13 @@ class ProjectedAgentRegistry:
         name: str,
         channel_id: str | None = None,
     ) -> EmployeeDefinition | None:
+        self._require_tenant(tenant_key)
         normalized = name.casefold()
         matches = [
             employee
             for employee in self._state.employees.values()
             if employee.tenant_key == tenant_key
+            and employee.state is not EmployeeState.ARCHIVED
             and employee.name.casefold() == normalized
             and (
                 channel_id is None
@@ -66,10 +73,12 @@ class ProjectedAgentRegistry:
         tenant_key: str,
         channel_id: str | None = None,
     ) -> list[EmployeeDefinition]:
+        self._require_tenant(tenant_key)
         return [
             employee
             for employee in self._state.employees.values()
             if employee.tenant_key == tenant_key
+            and employee.state is not EmployeeState.ARCHIVED
             and (
                 channel_id is None
                 or channel_id in employee.member_groups
@@ -81,6 +90,7 @@ class ProjectedAgentRegistry:
         tenant_key: str,
         agent_id: str,
     ) -> AgentIdentity | None:
+        self._require_tenant(tenant_key)
         employee = self.get(tenant_key, agent_id)
         if employee is None:
             return None
@@ -103,3 +113,8 @@ class ProjectedAgentRegistry:
             created_at=employee.created_at,
             personality_traits=list(employee.personality_traits),
         )
+
+    @staticmethod
+    def _require_tenant(tenant_key: str) -> None:
+        if not tenant_key:
+            raise ValueError("tenant_key is required")

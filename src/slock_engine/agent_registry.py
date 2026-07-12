@@ -13,7 +13,7 @@ import re
 import threading
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
+from typing import Callable, Optional
 
 from src.autonomous.workforce.authority import (
     AuthorityMode,
@@ -96,6 +96,7 @@ class AgentRegistry:
         self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._loaded = False
         self._persist_queue: list[_PersistRequest] = []
+        self._inflight_requests: list[_PersistRequest] = []
         self._persist_thread: Optional[threading.Thread] = None
 
     @classmethod
@@ -162,27 +163,34 @@ class AgentRegistry:
 
     def register(self, agent: AgentIdentity) -> AgentIdentity:
         """Register a new agent and persist to disk."""
-        with self._lock:
-            self._ensure_loaded()
-            # Uniqueness check: (channel_id, name) must be unique
-            if agent.name and agent.owner_group:
-                for existing_agent in self._agents.values():
-                    if (
-                        existing_agent.agent_id != agent.agent_id
-                        and existing_agent.name.lower() == agent.name.lower()
-                        and self._belongs_to_channel(existing_agent, agent.owner_group)
-                    ):
-                        raise DuplicateAgentNameError(
-                            f"Agent name '{agent.name}' already exists in channel {agent.owner_group}"
-                        )
-            validated_epoch = self._mutation_guard.assert_writable("register")
-            existing = self._agents.get(agent.agent_id)
-            if existing is not None:
-                agent = self._merge_agent(existing, agent)
-            else:
-                agent = self._normalize_groups(agent)
-            self._agents[agent.agent_id] = agent
-            self._persist("register", agent, validated_epoch)
+        with self._mutation_guard.write_lease("register") as validated_epoch:
+            synchronous_request = None
+            with self._lock:
+                self._ensure_loaded()
+                # Uniqueness check: (channel_id, name) must be unique
+                if agent.name and agent.owner_group:
+                    for existing_agent in self._agents.values():
+                        if (
+                            existing_agent.agent_id != agent.agent_id
+                            and existing_agent.name.lower() == agent.name.lower()
+                            and self._belongs_to_channel(existing_agent, agent.owner_group)
+                        ):
+                            raise DuplicateAgentNameError(
+                                f"Agent name '{agent.name}' already exists in channel {agent.owner_group}"
+                            )
+                existing = self._agents.get(agent.agent_id)
+                if existing is not None:
+                    agent = self._merge_agent(existing, agent)
+                else:
+                    agent = self._normalize_groups(agent)
+                self._agents[agent.agent_id] = agent
+                synchronous_request = self._persist(
+                    "register",
+                    agent,
+                    validated_epoch,
+                )
+            if synchronous_request is not None:
+                self._persist_request(synchronous_request)
         return agent
 
     def get(self, agent_id: str) -> Optional[AgentIdentity]:
@@ -255,40 +263,43 @@ class AgentRegistry:
 
     def remove(self, agent_id: str) -> bool:
         """Remove an agent from registry and delete its identity file."""
-        with self._lock:
-            self._ensure_loaded()
-            if agent_id not in self._agents:
-                return False
-            validated_epoch = self._mutation_guard.assert_writable("remove")
-            del self._agents[agent_id]
-            identity_file = self._agent_file(agent_id)
-            if os.path.exists(identity_file):
+        with self._mutation_guard.write_lease("remove"):
+            with self._lock:
+                self._ensure_loaded()
+                if agent_id not in self._agents:
+                    return False
+                del self._agents[agent_id]
+                identity_file = self._agent_file(agent_id)
+                if os.path.exists(identity_file):
+                    try:
+                        os.remove(identity_file)
+                    except OSError as e:
+                        logger.warning("Failed to remove identity file for %s: %s", agent_id, str(e))
+                # Clean up empty agent directory
+                agent_dir = os.path.dirname(identity_file)
                 try:
-                    self._mutation_guard.assert_writable(
-                        "remove persistence",
-                        validated_epoch=validated_epoch,
-                    )
-                    os.remove(identity_file)
-                except OSError as e:
-                    logger.warning("Failed to remove identity file for %s: %s", agent_id, str(e))
-            # Clean up empty agent directory
-            agent_dir = os.path.dirname(identity_file)
-            try:
-                if os.path.isdir(agent_dir) and not os.listdir(agent_dir):
-                    os.rmdir(agent_dir)
-            except OSError:
-                pass  # Directory not empty or permission issue — skip silently
-            return True
+                    if os.path.isdir(agent_dir) and not os.listdir(agent_dir):
+                        os.rmdir(agent_dir)
+                except OSError:
+                    pass  # Directory not empty or permission issue — skip silently
+                return True
 
     def update(self, agent: AgentIdentity) -> bool:
         """Update an existing agent's identity."""
-        with self._lock:
-            self._ensure_loaded()
-            if agent.agent_id not in self._agents:
-                return False
-            validated_epoch = self._mutation_guard.assert_writable("update")
-            self._agents[agent.agent_id] = agent
-            self._persist("update", agent, validated_epoch)
+        with self._mutation_guard.write_lease("update") as validated_epoch:
+            synchronous_request = None
+            with self._lock:
+                self._ensure_loaded()
+                if agent.agent_id not in self._agents:
+                    return False
+                self._agents[agent.agent_id] = agent
+                synchronous_request = self._persist(
+                    "update",
+                    agent,
+                    validated_epoch,
+                )
+            if synchronous_request is not None:
+                self._persist_request(synchronous_request)
             return True
 
     def move_agent(self, agent_id: str, source_channel_id: str, target_channel_id: str) -> MoveOutcome:
@@ -298,36 +309,36 @@ class AgentRegistry:
         rolls back if persistence fails. Returns a structured MoveOutcome
         with explicit error codes.
         """
-        with self._lock:
-            self._ensure_loaded()
-            agent = self._agents.get(agent_id)
-            if agent is None:
-                return MoveOutcome(status=MoveResult.NOT_FOUND)
-            # Verify agent belongs to source channel
-            if not self._belongs_to_channel(agent, source_channel_id):
-                return MoveOutcome(status=MoveResult.NOT_IN_SOURCE)
-            validated_epoch = self._mutation_guard.assert_writable("move_agent")
-            # Snapshot for rollback
-            snapshot = agent.to_dict()
-            # Mutate in-place
-            groups = [g for g in (agent.member_groups or []) if g != source_channel_id]
-            if target_channel_id not in groups:
-                groups.append(target_channel_id)
-            agent.member_groups = groups
-            agent.owner_group = target_channel_id
+        with self._mutation_guard.write_lease("move_agent") as validated_epoch:
+            with self._lock:
+                self._ensure_loaded()
+                agent = self._agents.get(agent_id)
+                if agent is None:
+                    return MoveOutcome(status=MoveResult.NOT_FOUND)
+                # Verify agent belongs to source channel
+                if not self._belongs_to_channel(agent, source_channel_id):
+                    return MoveOutcome(status=MoveResult.NOT_IN_SOURCE)
+                # Snapshot for rollback
+                snapshot = agent.to_dict()
+                # Mutate in-place
+                groups = [g for g in (agent.member_groups or []) if g != source_channel_id]
+                if target_channel_id not in groups:
+                    groups.append(target_channel_id)
+                agent.member_groups = groups
+                agent.owner_group = target_channel_id
+                request = self._make_persist_request(
+                    "move_agent",
+                    agent,
+                    validated_epoch=validated_epoch,
+                )
             # Persist — rollback on failure (synchronous for atomicity guarantee)
             try:
-                self._persist_request(
-                    self._make_persist_request(
-                        "move_agent",
-                        agent,
-                        validated_epoch=validated_epoch,
-                    )
-                )
+                self._persist_request(request)
             except OSError as e:
-                # Rollback: restore agent fields from snapshot
-                agent.member_groups = snapshot.get("member_groups", [])
-                agent.owner_group = snapshot.get("owner_group", "")
+                with self._lock:
+                    # Rollback: restore agent fields from snapshot
+                    agent.member_groups = snapshot.get("member_groups", [])
+                    agent.owner_group = snapshot.get("owner_group", "")
                 logger.warning(
                     "move_agent: persist failed, rolled back agent=%s error=%s",
                     agent_id, str(e),
@@ -357,18 +368,56 @@ class AgentRegistry:
         return _PersistRequest(operation, agent, validated_epoch)
 
     def _persist_request(self, request: _PersistRequest) -> None:
-        self._mutation_guard.assert_writable(
+        with self._mutation_guard.write_lease(
             f"{request.operation} persistence",
             validated_epoch=request.validated_epoch,
-        )
-        self._write_agent_to_disk(request.agent)
+        ):
+            self._write_agent_to_disk(request.agent)
+
+    def cutover_authority(
+        self,
+        advance: Callable[[], AuthoritySnapshot],
+    ) -> AuthoritySnapshot:
+        """Discard unpersisted legacy state, then advance writer authority."""
+
+        def discard_and_advance() -> AuthoritySnapshot:
+            with self._lock:
+                pending = tuple(
+                    [*self._persist_queue, *self._inflight_requests]
+                )
+                self._persist_queue.clear()
+                self._restore_requests_from_disk(pending)
+                return advance()
+
+        return self._mutation_guard.cutover(discard_and_advance)
+
+    def _restore_requests_from_disk(
+        self,
+        requests: tuple[_PersistRequest, ...],
+    ) -> None:
+        for agent_id in dict.fromkeys(
+            request.agent.agent_id for request in requests
+        ):
+            identity_file = self._agent_file(agent_id)
+            if not os.path.isfile(identity_file):
+                self._agents.pop(agent_id, None)
+                continue
+            try:
+                with open(identity_file, "r", encoding="utf-8") as file:
+                    self._agents[agent_id] = AgentIdentity.from_dict(
+                        json.load(file)
+                    )
+            except (OSError, ValueError, TypeError) as exc:
+                raise RuntimeError(
+                    f"cannot restore legacy agent before cutover: {agent_id}"
+                ) from exc
 
     def _persist(
         self,
         operation: str,
         agent: AgentIdentity,
         validated_epoch: int,
-    ) -> None:
+    ) -> _PersistRequest | None:
         """Schedule agent identity write to background thread (caller must hold _lock).
 
         Backpressure: when the queue exceeds MAX_PERSIST_QUEUE_SIZE, falls back to
@@ -380,14 +429,11 @@ class AgentRegistry:
                 "persist_queue at capacity (%d), falling back to synchronous write for agent %s",
                 self.MAX_PERSIST_QUEUE_SIZE, agent.agent_id,
             )
-            self._persist_request(
-                self._make_persist_request(
-                    operation,
-                    agent,
-                    validated_epoch=validated_epoch,
-                )
+            return self._make_persist_request(
+                operation,
+                agent,
+                validated_epoch=validated_epoch,
             )
-            return
 
         self._persist_queue.append(
             self._make_persist_request(
@@ -403,6 +449,7 @@ class AgentRegistry:
                 daemon=True,
             )
             self._persist_thread.start()
+        return None
 
     def _flush_persist_queue(self) -> None:
         """Background worker: drain persist queue and write to disk."""
@@ -412,11 +459,19 @@ class AgentRegistry:
                     return
                 batch = list(self._persist_queue)
                 self._persist_queue.clear()
+                self._inflight_requests.extend(batch)
             for request in batch:
                 try:
                     self._persist_request(request)
                 except StaleAuthorityEpoch as exc:
                     logger.warning("Discarded stale registry write: %s", exc)
+                finally:
+                    with self._lock:
+                        self._inflight_requests = [
+                            item
+                            for item in self._inflight_requests
+                            if item is not request
+                        ]
 
     def _write_agent_to_disk(self, agent: AgentIdentity) -> None:
         """Write a single agent identity to disk (atomic)."""

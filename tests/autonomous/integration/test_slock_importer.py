@@ -51,6 +51,32 @@ def test_scan_canonicalizes_legacy_workers_to_agents(
     assert next(e for e in entities if e.legacy_id == "agent_1").entity_type == "agent"
 
 
+def test_source_hash_is_canonical_for_nested_data() -> None:
+    first = LegacyEntity(
+        "agent",
+        "legacy_1",
+        {"profile": {"effort": "high", "model": "gpt"}, "name": "A"},
+    )
+    reordered = LegacyEntity(
+        "agent",
+        "legacy_1",
+        {"name": "A", "profile": {"model": "gpt", "effort": "high"}},
+    )
+    changed = LegacyEntity(
+        "agent",
+        "legacy_1",
+        {"name": "A", "profile": {"model": "gpt", "effort": "low"}},
+    )
+
+    assert first.source_hash == reordered.source_hash
+    assert first.source_hash != changed.source_hash
+
+
+def test_source_hash_rejects_non_finite_data() -> None:
+    with pytest.raises(ValueError):
+        LegacyEntity("agent", "legacy_1", {"temperature": float("nan")})
+
+
 def test_importer_generates_random_id_and_durable_alias(tmp_path) -> None:
     writer = make_writer(tmp_path)
     legacy = LegacyEntity(
@@ -76,6 +102,24 @@ def test_importer_generates_random_id_and_durable_alias(tmp_path) -> None:
     assert replayed.legacy_agent_aliases[legacy.legacy_id] == first.agent_id
     assert replayed.legacy_source_hashes[legacy.source_hash] == first.agent_id
     assert second.agent_id == first.agent_id
+
+
+@pytest.mark.asyncio
+async def test_authenticated_bulk_verify_counts_durable_agent_once(tmp_path) -> None:
+    writer = make_writer(tmp_path)
+    importer = SlockImporter(writer=writer, state=replay_state(writer))
+    legacy = LegacyEntity(
+        "agent",
+        "legacy_1",
+        {"name": "Legacy", "tenant_key": "tenant_1"},
+    )
+
+    result = await importer.apply(importer.plan([legacy]))
+    report = importer.verify([legacy])
+
+    assert result.created_count == 1
+    assert report.hashes_match
+    assert report.total_migrated == 1
 
 
 @pytest.mark.parametrize(

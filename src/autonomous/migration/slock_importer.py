@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
 
 from ..domain import EmployeeDefinition
-from ..domain.ids import new_id
+from ..domain.ids import canonical_hash, new_id
 from ..journal.frame import JournalEvent
 from ..journal.projections import ProjectionState
 from ..journal.writer import JournalWriter
@@ -39,8 +38,13 @@ class LegacyEntity:
 
     def __post_init__(self) -> None:
         if not self.source_hash:
-            content = f"{self.entity_type}:{self.legacy_id}:{sorted(self.data.items())}"
-            self.source_hash = hashlib.sha256(content.encode()).hexdigest()[:24]
+            self.source_hash = canonical_hash(
+                {
+                    "entity_type": self.entity_type,
+                    "legacy_id": self.legacy_id,
+                    "data": self.data,
+                }
+            )[:24]
 
 
 @dataclass
@@ -224,8 +228,11 @@ class SlockImporter:
                             "source_hash": entity.source_hash,
                         },
                     )
-                self._imported[entity.legacy_id] = new_id_val
-                self._source_hashes[entity.legacy_id] = entity.source_hash
+                if not (
+                    entity.entity_type == "agent" and self._writer is not None
+                ):
+                    self._imported[entity.legacy_id] = new_id_val
+                    self._source_hashes[entity.legacy_id] = entity.source_hash
                 result.id_mappings[entity.legacy_id] = new_id_val
                 result.created_count += 1
             except Exception as exc:
@@ -243,12 +250,10 @@ class SlockImporter:
             for legacy_id, source_hash in self._source_hashes.items()
         ]
         report.total_legacy = len(check_entities)
-        durable_count = (
-            len(self._state.legacy_agent_aliases)
-            if self._state is not None
-            else 0
-        )
-        report.total_migrated = len(self._imported) + durable_count
+        migrated_legacy_ids = set(self._imported)
+        if self._state is not None:
+            migrated_legacy_ids.update(self._state.legacy_agent_aliases)
+        report.total_migrated = len(migrated_legacy_ids)
         for raw_entity in check_entities:
             entity = self._canonicalize_entity(raw_entity)
             mapped = self._durable_mapping(entity) or self._imported.get(

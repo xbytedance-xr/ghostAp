@@ -153,7 +153,9 @@ class TestPersistBackpressure:
         # _persist should now write synchronously
         with patch.object(registry, "_write_agent_to_disk") as mock_write:
             with registry._lock:
-                registry._persist("test", agent, validated_epoch=0)
+                request = registry._persist("test", agent, validated_epoch=0)
+            assert request is not None
+            registry._persist_request(request)
             mock_write.assert_called_once_with(agent)
 
     def test_normal_persist_queues(self, tmp_path):
@@ -173,7 +175,8 @@ class TestPersistBackpressure:
 
         initial_len = len(registry._persist_queue)
         with registry._lock:
-            registry._persist("test", agent, validated_epoch=0)
+            request = registry._persist("test", agent, validated_epoch=0)
+        assert request is None
         assert len(registry._persist_queue) == initial_len + 1
 
 

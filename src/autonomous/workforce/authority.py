@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
+from typing import Iterator
 
 
 class AuthorityMode(str, Enum):
@@ -40,12 +43,49 @@ class LegacyMutationGuard:
     ) -> None:
         self._snapshot_provider = snapshot_provider
         self._expected_epoch = expected_epoch
+        self._serialization_lock = threading.RLock()
 
     def assert_writable(
         self,
         operation: str,
         *,
         validated_epoch: int | None = None,
+    ) -> int:
+        with self._serialization_lock:
+            return self._assert_writable(operation, validated_epoch)
+
+    @contextmanager
+    def write_lease(
+        self,
+        operation: str,
+        *,
+        validated_epoch: int | None = None,
+    ) -> Iterator[int]:
+        """Linearize validation and the complete legacy mutation."""
+
+        with self._serialization_lock:
+            yield self._assert_writable(operation, validated_epoch)
+
+    def cutover(
+        self,
+        advance: Callable[[], AuthoritySnapshot],
+    ) -> AuthoritySnapshot:
+        """Wait for legacy writes, then advance authority under the same lock."""
+
+        with self._serialization_lock:
+            before = self._snapshot_provider()
+            after = advance()
+            observed = self._snapshot_provider()
+            if after != observed:
+                raise RuntimeError("authority cutover callback did not publish snapshot")
+            if after.epoch <= before.epoch:
+                raise ValueError("authority cutover must increase epoch")
+            return after
+
+    def _assert_writable(
+        self,
+        operation: str,
+        validated_epoch: int | None,
     ) -> int:
         snapshot = self._snapshot_provider()
         expected = (
