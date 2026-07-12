@@ -32,6 +32,7 @@ class SlockCommandAction(Enum):
     ROLE_INFO = "role_info"
     ROLE_INFO_USAGE = "role_info_usage"
     ROLE_MOVE = "role_move"
+    ROLE_ADD = "role_add"
 
     # Task management
     TASK_LIST = "task_list"
@@ -286,6 +287,8 @@ def _parse_role_subcommand(args: str) -> SlockCommand:
         return SlockCommand(action=SlockCommandAction.ROLE_LIST)
     elif subcmd == "remove":
         return SlockCommand(action=SlockCommandAction.ROLE_REMOVE, target=sub_args)
+    elif subcmd in ("add", "involve"):
+        return SlockCommand(action=SlockCommandAction.ROLE_ADD, target=sub_args)
     elif subcmd == "info":
         if sub_args:
             return SlockCommand(action=SlockCommandAction.ROLE_INFO, target=sub_args)

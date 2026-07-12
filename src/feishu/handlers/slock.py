@@ -237,6 +237,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             SlockCommandAction.ROLE_LIST: lambda: self.list_roles(message_id, chat_id, project),
             SlockCommandAction.ROLE_REMOVE: lambda: self.remove_role(message_id, chat_id, cmd.target, project),
             SlockCommandAction.ROLE_MOVE: lambda: self.move_role(message_id, chat_id, cmd.target, cmd.args, project),
+            SlockCommandAction.ROLE_ADD: lambda: self.add_role_to_group(message_id, chat_id, cmd.target, project),
             SlockCommandAction.ROLE_INFO: lambda: self.show_role_info(message_id, chat_id, cmd.target, project),
             SlockCommandAction.TASK_LIST: lambda: self.list_tasks(message_id, chat_id, project),
             SlockCommandAction.TASK_STATUS: lambda: self.show_task_status(message_id, chat_id, project),
@@ -2442,6 +2443,69 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         engine.registry.remove(agent.agent_id)
         self.reply_text(message_id, f"✅ 角色 **{agent.emoji} {agent.name}** 已移除")
+
+    def add_role_to_group(
+        self,
+        message_id: str,
+        chat_id: str,
+        agent_name: str = "",
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Add an existing employee to the current group.
+
+        If agent_name is empty, show a dropdown of available agents.
+        """
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id)
+        if not engine:
+            self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
+            return
+
+        registry = self._get_global_registry()
+
+        if not agent_name:
+            # Show dropdown of all agents not already in this group
+            all_agents = registry.list_agents()
+            current_ids = {a.agent_id for a in engine.registry.list_agents(channel_id=chat_id)}
+            available = [a for a in all_agents if a.agent_id not in current_ids]
+
+            if not available:
+                self.reply_text(message_id, "没有可加入的员工。使用 `/hire <名字>` 先雇佣。")
+                return
+
+            options = [
+                {"text": {"tag": "plain_text", "content": f"{a.emoji} {a.name} ({a.agent_type})"}, "value": a.agent_id}
+                for a in available[:20]
+            ]
+            card = {
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "选择要加入的员工"}, "template": "blue"},
+                "elements": [
+                    {
+                        "tag": "action",
+                        "actions": [{
+                            "tag": "select_static",
+                            "placeholder": {"tag": "plain_text", "content": "选择员工"},
+                            "options": options,
+                            "value": {"action": "slock_role_add_select", "chat_id": chat_id},
+                        }],
+                    },
+                ],
+            }
+            self.reply_card(message_id, card)
+            return
+
+        # Find agent by name
+        agent = registry.find_by_name(agent_name)
+        if not agent:
+            self.reply_text(message_id, f"未找到员工: `{agent_name}`\n使用 `/hire {agent_name}` 先雇佣")
+            return
+
+        # Add to current group
+        if chat_id not in agent.member_groups:
+            agent.member_groups.append(chat_id)
+        engine.registry.register(agent)
+        self.reply_text(message_id, f"✅ **{agent.emoji} {agent.name}** 已加入当前群")
 
     def move_role(
         self,

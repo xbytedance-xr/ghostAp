@@ -2252,6 +2252,21 @@ class SlockEngine(BaseEngine):
             if callbacks and callbacks.on_agent_done:
                 callbacks.on_agent_done(agent, result or "")
 
+            # Persist execution record to agent's local history log
+            try:
+                self._memory.append_execution_record(
+                    agent_id,
+                    task_id=task_id or "",
+                    chat_id=getattr(self._channel, "chat_id", ""),
+                    role="assistant",
+                    content=result or "",
+                    tool_name=agent.agent_type,
+                    model_name=agent.model_name,
+                    success=True,
+                )
+            except Exception:
+                logger.debug("failed to persist execution record for %s", agent_id, exc_info=True)
+
             # Mark progress complete and remove tracking
             if progress_tracker:
                 progress_tracker.update(

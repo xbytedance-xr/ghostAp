@@ -585,6 +585,94 @@ class MemoryManager:
         return data if isinstance(data, dict) else {}
 
     # ------------------------------------------------------------------
+    # Execution History Log (append-only JSONL per agent)
+    # ------------------------------------------------------------------
+
+    def _execution_log_path(self, agent_id: str) -> str:
+        safe_id = self._sanitize_path_component(agent_id)
+        return self._safe_path("agents", safe_id, "execution_history.jsonl")
+
+    def append_execution_record(
+        self,
+        agent_id: str,
+        *,
+        task_id: str = "",
+        message_id: str = "",
+        chat_id: str = "",
+        role: str = "assistant",
+        content: str = "",
+        tool_calls: list[dict] | None = None,
+        tool_name: str = "",
+        model_name: str = "",
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        duration_ms: int = 0,
+        success: bool = True,
+        error: str = "",
+    ) -> None:
+        """Append an execution record to the agent's history log.
+
+        Format mirrors codex/hermes conversation history:
+        one JSONL line per turn with full context.
+        """
+        import json
+
+        record = {
+            "ts": time.time(),
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "role": role,
+            "content": content,
+            "tool_calls": tool_calls or [],
+            "tool_name": tool_name,
+            "model_name": model_name,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "duration_ms": duration_ms,
+            "success": success,
+            "error": error,
+        }
+        path = self._execution_log_path(agent_id)
+        with self._get_agent_lock(agent_id):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    def read_execution_history(
+        self,
+        agent_id: str,
+        *,
+        limit: int = 50,
+        task_id: str = "",
+    ) -> list[dict]:
+        """Read recent execution records for an agent.
+
+        Returns most recent `limit` records, optionally filtered by task_id.
+        """
+        import json
+
+        path = self._execution_log_path(agent_id)
+        with self._get_agent_lock(agent_id):
+            if not os.path.exists(path):
+                return []
+            records: list[dict] = []
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        if task_id and record.get("task_id") != task_id:
+                            continue
+                        records.append(record)
+                    except json.JSONDecodeError:
+                        continue
+            return records[-limit:]
+
+    # ------------------------------------------------------------------
     # L2: Group Shared Memory
     # ------------------------------------------------------------------
 
