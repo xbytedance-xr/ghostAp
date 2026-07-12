@@ -17,8 +17,13 @@ def _write_marker(storage_base_path: str, channel_id: str, data: dict) -> str:
     channel_dir = os.path.join(storage_base_path, "groups", channel_id)
     os.makedirs(channel_dir, exist_ok=True)
     marker_path = os.path.join(channel_dir, ".slock_channel.json")
+    marker_data = dict(data)
+    marker_data.setdefault(
+        "root_path",
+        os.path.dirname(os.path.dirname(storage_base_path)),
+    )
     with open(marker_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+        json.dump(marker_data, f, ensure_ascii=False)
     return marker_path
 
 
@@ -79,8 +84,72 @@ class TestRestoreFromDiskHappyPath:
         assert first == 1
         assert second == 0  # already managed, skipped
 
+    def test_restore_uses_persisted_project_root_instead_of_process_fallback(self, tmp_path):
+        fallback_root = tmp_path / "process_cwd"
+        project_root = tmp_path / "team_project"
+        fallback_root.mkdir()
+        project_root.mkdir()
+        storage_base = str(tmp_path / "ghostap_config" / "slock")
+        _write_marker(storage_base, "oc_chat_1", {
+            "channel_id": "oc_chat_1",
+            "team_name": "Alpha",
+            "name": "Alpha Group",
+            "root_path": str(project_root),
+        })
+
+        manager = SlockEngineManager(storage_base_path=storage_base)
+        assert manager.restore_from_disk(str(fallback_root)) == 1
+
+        engine = manager.get_activated_engine("oc_chat_1")
+        assert engine is not None
+        assert engine.root_path == str(project_root.resolve())
+
 
 class TestRestoreFromDiskErrorHandling:
+    def test_skips_non_lark_chat_id_test_marker(self, tmp_path):
+        root = str(tmp_path)
+        storage_base = str(tmp_path / "ghostap_config" / "slock")
+        _write_marker(storage_base, "test_chat_007", {
+            "channel_id": "test_chat_007",
+            "team_name": "TestTeam",
+            "name": "test",
+        })
+
+        manager = SlockEngineManager(storage_base_path=storage_base)
+        restored = manager.restore_from_disk(root)
+
+        assert restored == 0
+        assert manager.is_managed_chat("test_chat_007") is False
+
+    def test_skips_marker_whose_channel_id_does_not_match_directory(self, tmp_path):
+        root = str(tmp_path)
+        storage_base = str(tmp_path / "ghostap_config" / "slock")
+        _write_marker(storage_base, "oc_safe", {
+            "channel_id": "oc_other",
+            "team_name": "Mismatch",
+            "name": "Mismatch",
+        })
+
+        manager = SlockEngineManager(storage_base_path=storage_base)
+
+        assert manager.restore_from_disk(root) == 0
+        assert manager.is_managed_chat("oc_other") is False
+
+    def test_skips_unavailable_persisted_project_instead_of_using_fallback(self, tmp_path):
+        fallback_root = tmp_path / "process_cwd"
+        fallback_root.mkdir()
+        storage_base = str(tmp_path / "ghostap_config" / "slock")
+        _write_marker(storage_base, "oc_missing_project", {
+            "channel_id": "oc_missing_project",
+            "team_name": "Missing",
+            "name": "Missing",
+            "root_path": str(tmp_path / "does_not_exist"),
+        })
+        manager = SlockEngineManager(storage_base_path=storage_base)
+
+        assert manager.restore_from_disk(str(fallback_root)) == 0
+        assert manager.is_managed_chat("oc_missing_project") is False
+
     def test_skips_corrupted_marker(self, tmp_path):
         root = str(tmp_path)
         storage_base = str(tmp_path / "ghostap_config" / "slock")

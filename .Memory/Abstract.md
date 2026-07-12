@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-12
+- **引擎路由恢复+Slock假群清理** — flat post/image 与命令优先级恢复 Deep/Spec/WT/WF 原策略，Autonomous 假成功 fail-close；隔离并防复发 7 个 Slock 测试群 → [详细记录](2026-07-12.md)
 ## 2026-07-10
 - **Slock→Autonomous重构(v5)** — 完整实现五层自主工作架构：Goal Control + Durable Runtime + Agent Runtime + Safety Control + Feishu Interaction；新建 `src/autonomous/`（24文件），含 Journal hash chain、Scheduler lease、Agent turn protocol、Policy risk matrix、Tool Broker idempotent dispatch、Verifier Oracle、Reporter outbox、Supervisor process model、Manager Bot 12条命令；42 tests passed → [详细记录](2026-07-10.md)
 - **WF复合模型白名单修复** — Workflow 三级卡已合法生成 Traex `gpt-5.6-sol/max/xhigh`，确认回调却只按顶层裸模型名校验，导致 Profile/Effort 复合值被误报“无效的模型名称”；现允许集合精确覆盖裸名、显式 selection variants 和 adapter 声明的 reasoning effort 组合，任意未声明后缀仍拒绝。真实 Traex 26 模型发现确认目标值 allowed，Workflow 全量 949 passed → [详细记录](2026-07-10.md)

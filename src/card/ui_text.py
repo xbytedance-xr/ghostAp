@@ -76,6 +76,7 @@ UI_TEXT = {
     # System Commands
     "system_help_deep_prompt": "💭 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`",
     "system_help_project_section": "\n\n📋 **项目管理命令**\n• `/projects` - 查看项目看板\n• `/new 名称 路径` - 创建新项目\n• `/switch 名称` - 切换项目\n• `/status` - 查看所有引擎任务状态（Deep/Spec）\n• `/status <task_id>` - 查看指定任务详情\n• `/diff` - 查看最近两次版本变更（Diff 报告）",
+    "system_autonomous_unavailable": "⚠️ 自主工作系统尚未接入当前消息调度器，本次命令未执行。",
     "system_new_project_usage": "用法: `/new 项目名 [路径]`",
     "system_close_project_usage": "用法: `/close <项目名>`\n例如: `/close myApp`",
     "system_setadmin_bootstrap_success": "✅ 已完成管理员初始化。当前发送者已写入 `.env`，并成为唯一 Bot 管理员。",
@@ -591,6 +592,7 @@ UI_TEXT = {
     # ── ws_client Prompts ──
     "ws_session_fail_msg": "⚠️ {name} 会话启动失败，已退回智能模式，请重新发送 /{cmd} 重试",
     "ws_topic_hint_msg": "💡 当前对话已在编程模式中，直接发送需求即可\n\n如需切换工具，请先发送 `/exit` 回到智能模式，再发送 `/codex`、`/coco` 等命令",
+    "ws_topic_project_unavailable": "⚠️ 当前引擎话题绑定的项目不可用，本次消息未执行。请先通过 `/projects` 恢复项目关联。",
     "topic_engine_switch_blocked": "当前话题已绑定 {current} 模式，不能直接切换到 {requested}。\n\n请先停止当前话题任务，或在主对话中新开一个话题启动 {requested}。",
     "topic_engine_exit_msg": "👋 已退出当前话题的 {engine} 模式\n\n这个话题后续消息将回到智能模式。",
     "ws_exit_deferred_msg": "✅ 已收到 /exit，将在当前任务完成后退出（不中断执行）",

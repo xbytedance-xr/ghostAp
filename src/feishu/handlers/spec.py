@@ -26,6 +26,7 @@ from ...tasking import TaskPriority, TaskSpec
 from ...utils.errors import fmt_error, get_error_detail
 from ...utils.text import generate_task_id
 from ..emoji import EmojiReaction
+from ..slash_command_parser import SlashCommandParser
 from .base import CardActionContext
 from .engine_base import BaseEngineHandler
 
@@ -282,43 +283,42 @@ class SpecHandler(BaseEngineHandler):
     # Command router
     # ------------------------------------------------------------------
     def handle_spec_command(self, message_id: str, chat_id: str, text: str, project: Optional["ProjectContext"] = None):
-        text_lower = text.lower().strip()
+        match = SlashCommandParser.parse(text)
+        command = match.command if match else ""
+        args = match.args if match else ""
 
-        if text_lower == "/spec_recover":
+        if command == "/spec_recover" and not args:
             self.show_recoverable_tasks(message_id, chat_id)
-        elif text_lower.startswith("/spec_recover "):
-            task_id = text[len("/spec_recover ") :].strip()
-            self.recover_spec_task(message_id, chat_id, task_id, project)
-        elif text_lower == "/spec_status" or text_lower.startswith("/spec_status "):
+        elif command == "/spec_recover":
+            self.recover_spec_task(message_id, chat_id, args, project)
+        elif command == "/spec_status":
             self.show_spec_status(message_id, chat_id, project)
-        elif text_lower == "/spec_history" or text_lower.startswith("/spec_history"):
+        elif command == "/spec_history":
             self.show_spec_history(message_id, chat_id, text, project)
-        elif text_lower == "/spec_metrics" or text_lower.startswith("/spec_metrics"):
+        elif command == "/spec_metrics":
             self.show_spec_metrics(message_id, chat_id, text, project)
-        elif text_lower == "/spec_config" or text_lower.startswith("/spec_config"):
+        elif command == "/spec_config":
             self.show_spec_config(message_id, chat_id, project)
-        elif text_lower == "/spec_export":
+        elif command == "/spec_export":
             self.export_spec_report(message_id, chat_id, project)
-        elif text_lower == "/spec_save":
+        elif command == "/spec_save":
             self.save_spec_state(message_id, chat_id, project)
-        elif text_lower == "/stop_spec" or text_lower.startswith("/stop_spec "):
+        elif command == "/stop_spec":
             self.stop_spec_engine(message_id, chat_id, project)
-        elif text_lower == "/spec_pause":
+        elif command == "/spec_pause":
             self.pause_spec_engine(message_id, chat_id, project)
-        elif text_lower == "/spec_resume":
+        elif command == "/spec_resume":
             self.resume_spec_engine(message_id, chat_id, project)
-        elif text_lower.startswith("/spec_guide "):
-            guide_message = text[len("/spec_guide ") :].strip()
-            self.update_spec_guidance(message_id, chat_id, guide_message, project)
-        elif text_lower == "/spec_guide":
+        elif command == "/spec_guide" and args:
+            self.update_spec_guidance(message_id, chat_id, args, project)
+        elif command == "/spec_guide":
             self.reply_text(
                 message_id,
                 UI_TEXT["spec_cmd_guide_usage"],
             )
-        elif text_lower.startswith("/spec "):
-            requirement = text[6:].strip()
-            self.start_spec_engine(message_id, chat_id, requirement, project)
-        elif text_lower == "/spec":
+        elif command == "/spec" and args:
+            self.start_spec_engine(message_id, chat_id, args, project)
+        elif command == "/spec":
             self.reply_text(
                 message_id,
                 UI_TEXT["spec_cmd_help_usage"],

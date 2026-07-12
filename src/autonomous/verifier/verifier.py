@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
+from ...utils.async_helpers import safe_wait_for
 from ..domain import (
     Evidence,
     GoalCriterion,
@@ -139,8 +140,10 @@ class OracleRunner:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
+            stdout_bytes, stderr_bytes = await safe_wait_for(
+                proc.communicate(),
+                timeout=timeout,
+                action="verification command",
             )
         except asyncio.TimeoutError:
             proc.kill()

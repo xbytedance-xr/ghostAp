@@ -11,6 +11,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Optional
 
+from ...card.shared import build_responsive_layout
 from ...slock_engine.slash_commands import is_slock_command
 from ...utils.errors import safe_error_message
 from ...utils.redact import redact_sensitive
@@ -1923,26 +1924,46 @@ class SlockTaskMixin:
                 self.send_text_to_chat(chat_id, "⚠️ 当前没有活跃团队可解散。")
                 return
             team_name = engine.channel.team_name or engine.channel.name or "当前团队"
+            channel_id = engine.channel.channel_id
             import json as _json
+            buttons = [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "确认解散"},
+                    "type": "danger",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "slock_confirm_dissolve",
+                        "team_name": team_name,
+                        "channel_id": channel_id,
+                        "project_id": project_id,
+                    }}],
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "取消"},
+                    "type": "default",
+                    "behaviors": [{"type": "callback", "value": {
+                        "action": "slock_noop", "channel_id": channel_id,
+                    }}],
+                },
+            ]
             confirm_card = {
                 "schema": "2.0",
                 "config": {"wide_screen_mode": True},
                 "header": {"title": {"tag": "plain_text", "content": "⚠️ 确认解散团队"}, "template": "red"},
                 "body": {"elements": [
                     {"tag": "markdown", "content": f"即将解散团队 **{team_name}**，此操作将：\n- 停止所有 Agent\n- 删除飞书群\n- 清除运行时状态\n\n确认继续？"},
-                    {"tag": "action", "actions": [
-                        {"tag": "button", "text": {"tag": "plain_text", "content": "确认解散"},
-                         "type": "danger",
-                         "value": {"action": "slock_confirm_dissolve", "team_name": team_name, "project_id": project_id},
-                         "action_type": "slock_confirm_dissolve"},
-                        {"tag": "button", "text": {"tag": "plain_text", "content": "取消"},
-                         "type": "default",
-                         "value": {"action": "noop"},
-                         "action_type": "slock_noop"},
-                    ]},
+                    *build_responsive_layout(buttons),
                 ]},
             }
-            self.send_card_to_chat(chat_id, _json.dumps(confirm_card, ensure_ascii=False))
+            sent_message_id = self.send_card_to_chat(
+                chat_id, _json.dumps(confirm_card, ensure_ascii=False)
+            )
+            if not sent_message_id:
+                self.send_text_to_chat(
+                    chat_id,
+                    "⚠️ 解散确认卡发送失败，未执行解散。请重新打开 `/slock` 控制台后再试。",
+                )
             return
 
         # --- Task 23: Discuss routing ---

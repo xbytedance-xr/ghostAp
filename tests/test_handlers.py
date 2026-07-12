@@ -26,7 +26,9 @@ from src.feishu.handlers.programming import (
     build_programming_session_callbacks,
 )
 from src.feishu.handlers.project import ProjectHandler
+from src.feishu.handlers.spec import SpecHandler
 from src.feishu.handlers.system import SystemHandler
+from src.feishu.handlers.workflow import WorkflowHandler
 from src.feishu.handlers.worktree import WorktreeHandler
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.mode.manager import InteractionMode
@@ -260,6 +262,65 @@ class TestBaseEngineHandlerTemplateEntrypoints:
         assert h.status_calls == [("msg-1", "chat-1", project)]
 
 
+class TestTopicEngineProjectResolution:
+    @pytest.mark.parametrize("handler_type", [DeepHandler, SpecHandler, WorkflowHandler])
+    def test_engine_handler_auto_creates_missing_project(self, handler_type):
+        ctx = _make_handler_context()
+        project = SimpleNamespace(project_id="p1", project_name="GhostAP", root_path="/repo")
+        ctx.project_manager.get_or_create_project_for_path.return_value = (project, True)
+        handler = handler_type(ctx)
+        handler.get_working_dir = MagicMock(return_value="/repo")
+        handler.reply_error = MagicMock()
+
+        resolved = handler._ensure_project("m1", "c1", None)
+
+        assert resolved is project
+        ctx.project_manager.get_or_create_project_for_path.assert_called_once_with("/repo", "c1")
+        handler.reply_error.assert_not_called()
+
+    @pytest.mark.parametrize("handler_type", [DeepHandler, SpecHandler, WorkflowHandler])
+    def test_engine_handler_reports_project_creation_failure(self, handler_type):
+        ctx = _make_handler_context()
+        ctx.project_manager.get_or_create_project_for_path.side_effect = RuntimeError(
+            "workspace unavailable"
+        )
+        handler = handler_type(ctx)
+        handler.get_working_dir = MagicMock(return_value="/repo")
+        handler.reply_error = MagicMock()
+
+        resolved = handler._ensure_project("m1", "c1", None)
+
+        assert resolved is None
+        handler.reply_error.assert_called_once()
+        assert handler.reply_error.call_args.kwargs["title"] == "创建项目失败"
+
+    def test_worktree_handler_recovers_active_project_before_validating_goal(self):
+        ctx = _make_handler_context()
+        project = SimpleNamespace(project_id="p1", project_name="GhostAP", root_path="/repo")
+        ctx.project_manager.get_active_project.return_value = project
+        handler = WorktreeHandler(ctx)
+        handler.reply_text = MagicMock()
+        handler.reply_error = MagicMock()
+
+        handler.handle_worktree_execute("m1", "c1", "", project=None)
+
+        ctx.project_manager.get_active_project.assert_called_once_with("c1")
+        handler.reply_text.assert_called_once()
+        handler.reply_error.assert_not_called()
+
+    def test_worktree_handler_rejects_missing_active_project(self):
+        ctx = _make_handler_context()
+        ctx.project_manager.get_active_project.return_value = None
+        handler = WorktreeHandler(ctx)
+        handler.reply_text = MagicMock()
+        handler.reply_error = MagicMock()
+
+        handler.handle_worktree_execute("m1", "c1", "继续执行", project=None)
+
+        handler.reply_error.assert_called_once()
+        handler.reply_text.assert_not_called()
+
+
 class TestHandlerContextDependencyView:
     def test_dependency_view_exposes_narrow_core_services_without_removing_fields(self):
         ctx = _make_handler_context()
@@ -295,6 +356,20 @@ class TestSystemHandlerPredicates:
         assert SystemHandler.is_deep_command("/stop_deep") is True
         assert SystemHandler.is_deep_command("/help") is False
         assert SystemHandler.is_deep_command("deep") is False
+
+    @pytest.mark.parametrize(
+        ("text", "predicate", "expected"),
+        [
+            ("/deepfake goal", SystemHandler.is_deep_command, False),
+            ("/deep\tgoal", SystemHandler.is_deep_command, True),
+            ("/spec\tgoal", SystemHandler.is_spec_command, True),
+            ("/wf\ngoal", SystemHandler.is_workflow_command, True),
+        ],
+    )
+    def test_engine_command_predicates_follow_slash_parser_tokenization(
+        self, text, predicate, expected
+    ):
+        assert predicate(text) is expected
 
     def test_interceptable_commands(self):
         m = SlashCommandParser.parse
@@ -433,6 +508,37 @@ class TestSystemHandlerRouting:
         h.reply_text.assert_called_once()
         assert "未知命令" in h.reply_text.call_args.args[1]
         h.show_full_help.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "/goal 重构认证模块",
+            "/goals",
+            "/run goal_1",
+            "/runs",
+            "/approvals",
+            "/decisions",
+            "/approve approval_1",
+        ],
+    )
+    def test_unwired_autonomous_commands_fail_closed_without_false_success(self, text):
+        h = self._make()
+        h.reply_text = MagicMock()
+        h.reply_card = MagicMock()
+
+        h.handle_intercepted_command(
+            "m1",
+            "c1",
+            text,
+            None,
+            command_match=SlashCommandParser.parse(text),
+        )
+
+        h.reply_text.assert_called_once()
+        response = h.reply_text.call_args.args[1]
+        assert "未接入" in response
+        assert "未执行" in response
+        h.reply_card.assert_not_called()
 
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_btw_forwards_to_active_programming_handler(self, _):
@@ -2179,8 +2285,6 @@ class TestSpecHandlerLockIntegration:
     """AC-19: start_spec_engine wraps execution in _with_repo_lock."""
 
     def _make_spec_handler(self):
-        from src.feishu.handlers.spec import SpecHandler
-
         ctx = _make_handler_context()
         h = SpecHandler(ctx)
         h.reply_text = MagicMock()

@@ -97,6 +97,7 @@ class TestCreateTeamHappyPath:
 
         # Set up root_path for workspace verification
         root_path = str(tmp_path / "project_root")
+        os.makedirs(root_path)
         handler.get_working_dir.return_value = root_path
 
         # Mock LarkChatClient
@@ -217,8 +218,128 @@ class TestCreateTeamHappyPath:
 
         MockLarkChatClient.return_value.delete_chat.assert_called_once_with("oc_team")
         assert manager.is_managed_chat("oc_team") is False
+        marker = tmp_path / "slock_memory" / "groups" / "oc_team" / ".slock_channel.json"
+        assert not marker.exists()
         handler.reply_text.assert_called_once()
         assert "已解散" in handler.reply_text.call_args[0][1]
+
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_dissolve_team_keeps_runtime_when_marker_archive_fails(
+        self, MockLarkChatClient, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        handler._check_slock_permission = MagicMock(return_value=True)
+        manager = ctx.slock_engine_manager
+        engine = manager.get_or_create("oc_team", str(tmp_path / "root"), engine_name="Slock")
+        engine.activate_channel(
+            SlockChannel(channel_id="oc_team", name="Alpha [Slock]", team_name="Alpha")
+        )
+        manager.register_managed_chat("oc_team")
+        manager.archive_managed_chat_marker = MagicMock(side_effect=OSError("disk full"))
+
+        handler.dissolve_team("msg-dissolve", "oc_owner", "Alpha")
+
+        assert manager.is_managed_chat("oc_team") is True
+        assert manager.get_activated_engine("oc_team") is engine
+        MockLarkChatClient.return_value.delete_chat.assert_not_called()
+        assert "未解散" in handler.reply_text.call_args.args[1]
+
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_dissolve_team_restores_marker_when_runtime_teardown_fails(
+        self, MockLarkChatClient, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        handler._check_slock_permission = MagicMock(return_value=True)
+        manager = ctx.slock_engine_manager
+        engine = manager.get_or_create("oc_team", str(tmp_path / "root"), engine_name="Slock")
+        engine.activate_channel(
+            SlockChannel(channel_id="oc_team", name="Alpha [Slock]", team_name="Alpha")
+        )
+        manager.register_managed_chat("oc_team")
+        real_restore = manager.restore_archived_chat_marker
+        manager.restore_archived_chat_marker = MagicMock(side_effect=real_restore)
+        manager.remove = MagicMock(side_effect=RuntimeError("cleanup failed"))
+
+        handler.dissolve_team("msg-dissolve", "oc_owner", "Alpha")
+
+        manager.restore_archived_chat_marker.assert_called_once()
+        marker = tmp_path / "slock_memory" / "groups" / "oc_team" / ".slock_channel.json"
+        assert marker.exists()
+        assert manager.is_managed_chat("oc_team") is True
+        assert manager.get_activated_engine("oc_team") is not engine
+        MockLarkChatClient.return_value.delete_chat.assert_not_called()
+        assert "未完整解散" in handler.reply_text.call_args.args[1]
+
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_dissolve_team_restores_local_team_when_feishu_delete_fails(
+        self, MockLarkChatClient, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        handler._check_slock_permission = MagicMock(return_value=True)
+        manager = ctx.slock_engine_manager
+        engine = manager.get_or_create("oc_team", str(tmp_path / "root"), engine_name="Slock")
+        engine.activate_channel(
+            SlockChannel(channel_id="oc_team", name="Alpha [Slock]", team_name="Alpha")
+        )
+        manager.register_managed_chat("oc_team")
+        MockLarkChatClient.return_value.delete_chat.return_value = False
+
+        handler.dissolve_team("msg-dissolve", "oc_owner", "Alpha")
+
+        assert manager.is_managed_chat("oc_team") is True
+        assert manager.get_activated_engine("oc_team") is not None
+        marker = tmp_path / "slock_memory" / "groups" / "oc_team" / ".slock_channel.json"
+        assert marker.exists()
+        assert "未解散" in handler.reply_text.call_args.args[1]
+
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_dissolve_team_does_not_revive_ghost_when_delete_result_is_unknown(
+        self, MockLarkChatClient, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        handler._check_slock_permission = MagicMock(return_value=True)
+        manager = ctx.slock_engine_manager
+        engine = manager.get_or_create("oc_team", str(tmp_path / "root"), engine_name="Slock")
+        engine.activate_channel(
+            SlockChannel(channel_id="oc_team", name="Alpha [Slock]", team_name="Alpha")
+        )
+        manager.register_managed_chat("oc_team")
+        MockLarkChatClient.return_value.delete_chat.return_value = None
+
+        handler.dissolve_team("msg-dissolve", "oc_owner", "Alpha")
+
+        assert manager.is_managed_chat("oc_team") is False
+        marker = tmp_path / "slock_memory" / "groups" / "oc_team" / ".slock_channel.json"
+        assert not marker.exists()
+        assert "人工确认" in handler.reply_text.call_args.args[1]
+
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_duplicate_dissolve_is_rejected_by_per_chat_claim(
+        self, MockLarkChatClient, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        handler._check_slock_permission = MagicMock(return_value=True)
+        manager = ctx.slock_engine_manager
+        engine = manager.get_or_create("oc_team", str(tmp_path / "root"), engine_name="Slock")
+        engine.activate_channel(
+            SlockChannel(channel_id="oc_team", name="Alpha [Slock]", team_name="Alpha")
+        )
+        manager.register_managed_chat("oc_team")
+        assert manager.claim_dissolve("oc_team") is True
+
+        try:
+            handler.dissolve_team("msg-dissolve", "oc_owner", "Alpha")
+        finally:
+            manager.release_dissolve("oc_team")
+
+        MockLarkChatClient.return_value.delete_chat.assert_not_called()
+        assert manager.is_managed_chat("oc_team") is True
+        assert "重复提交" in handler.reply_text.call_args.args[1]
 
 
 # ==================================================================
@@ -262,6 +383,7 @@ class TestCreateTeamRollback:
         mock_lark.create_chat.return_value = _FakeCreateChatResult(
             chat_id="oc_to_delete", name="BadTeam"
         )
+        mock_lark.delete_chat.return_value = True
 
         # Force engine activation to fail
         ctx.slock_engine_manager.get_or_create = MagicMock(
@@ -276,7 +398,98 @@ class TestCreateTeamRollback:
         # Error reported to user
         handler.reply_text.assert_called_once()
         err_text = handler.reply_text.call_args[0][1]
-        assert "激活失败已回滚" in err_text
+        assert "飞书群已删除" in err_text
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_welcome_card_failure_falls_back_without_rolling_back_team(
+        self, MockLarkChatClient, mock_sender, mock_session, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        mock_lark = MockLarkChatClient.return_value
+        mock_lark.create_chat.return_value = _FakeCreateChatResult(
+            chat_id="oc_partial", name="PartialTeam"
+        )
+        handler.send_card_to_chat.return_value = None
+
+        handler.create_team("msg1", "oc_origin", "PartialTeam")
+
+        assert ctx.slock_engine_manager.is_managed_chat("oc_partial") is True
+        marker = tmp_path / "slock_memory" / "groups" / "oc_partial" / ".slock_channel.json"
+        assert marker.exists()
+        mock_lark.delete_chat.assert_not_called()
+        handler.send_text_to_chat.assert_called_once()
+        assert "欢迎卡发送失败" in handler.send_text_to_chat.call_args.args[1]
+
+    @patch("src.slock_engine.engine.create_engine_session")
+    @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_origin_confirmation_card_failure_falls_back_to_text(
+        self, MockLarkChatClient, mock_sender, mock_session, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        mock_lark = MockLarkChatClient.return_value
+        mock_lark.create_chat.return_value = _FakeCreateChatResult(
+            chat_id="oc_created", name="CreatedTeam"
+        )
+        handler.send_card_to_chat.return_value = "om_welcome"
+        handler.reply_card.return_value = None
+
+        handler.create_team("msg1", "oc_origin", "CreatedTeam")
+
+        assert ctx.slock_engine_manager.is_managed_chat("oc_created") is True
+        mock_lark.delete_chat.assert_not_called()
+        assert "团队已创建" in handler.reply_text.call_args.args[1]
+
+    @pytest.mark.parametrize("delete_result", [False, None])
+    @patch("src.slock_engine.engine.create_engine_session")
+    @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_failed_rollback_persistently_blocks_same_team_name(
+        self, MockLarkChatClient, mock_sender, mock_session, delete_result, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        mock_lark = MockLarkChatClient.return_value
+        mock_lark.create_chat.return_value = _FakeCreateChatResult(
+            chat_id="oc_residual", name="ResidualTeam"
+        )
+        mock_lark.delete_chat.return_value = delete_result
+        ctx.slock_engine_manager.get_or_create = MagicMock(
+            side_effect=RuntimeError("Engine init failed")
+        )
+
+        handler.create_team("msg1", "oc_origin", "ResidualTeam")
+
+        assert ctx.slock_engine_manager.reserve_team_name("residualteam") is False
+        restarted = SlockEngineManager(
+            storage_base_path=str(tmp_path / "slock_memory")
+        )
+        assert restarted.reserve_team_name("ResidualTeam") is False
+        records = list((tmp_path / "slock_memory" / "pending_cleanup").glob("*.json"))
+        assert len(records) == 1
+
+    @patch("src.thread.manager.get_current_sender_id", return_value="ou_sender123")
+    @patch("src.project_chat.lark_chat_client.LarkChatClient")
+    def test_duplicate_active_team_name_is_rejected_before_creating_group(
+        self, MockLarkChatClient, mock_sender, tmp_path
+    ):
+        ctx = _make_handler_ctx(tmp_path)
+        handler = _make_slock_handler(ctx)
+        manager = ctx.slock_engine_manager
+        engine = manager.get_or_create("oc_existing", str(tmp_path), engine_name="Slock")
+        engine.activate_channel(
+            SlockChannel(channel_id="oc_existing", name="Alpha [Slock]", team_name="Alpha")
+        )
+        manager.register_managed_chat("oc_existing")
+
+        handler.create_team("msg1", "oc_origin", "alpha")
+
+        MockLarkChatClient.return_value.create_chat.assert_not_called()
+        assert "已存在" in handler.reply_text.call_args.args[1]
 
     def test_empty_name_shows_usage(self, tmp_path):
         ctx = _make_handler_ctx(tmp_path)
@@ -379,6 +592,7 @@ class TestTeamAdminCommands:
         handler = _make_slock_handler(ctx)
         manager = ctx.slock_engine_manager
         root_path = str(tmp_path / "project_root")
+        os.makedirs(root_path)
 
         for chat_id, team_name in [("oc_alpha", "Alpha"), ("oc_beta", "Beta")]:
             engine = manager.get_or_create(chat_id, root_path, engine_name="Slock")
@@ -404,6 +618,7 @@ class TestTeamAdminCommands:
         ctx = _make_handler_ctx(tmp_path)
         handler = _make_slock_handler(ctx)
         root_path = str(tmp_path / "project_root")
+        os.makedirs(root_path)
         engine = ctx.slock_engine_manager.get_or_create("oc_alpha", root_path, engine_name="Slock")
         engine.activate_channel(SlockChannel(channel_id="oc_alpha", name="Alpha Chat", team_name="Alpha"))
         engine.get_status_card = MagicMock(return_value={"header": {"title": {"content": "Alpha"}}})
@@ -493,6 +708,7 @@ class TestRestartSurvival:
         handler = _make_slock_handler(ctx)
 
         root_path = str(tmp_path / "project_root")
+        os.makedirs(root_path)
         handler.get_working_dir.return_value = root_path
 
         mock_lark = MockLarkChatClient.return_value
@@ -558,6 +774,7 @@ class TestOwnerIdPersistence:
         """After restart, restore_from_disk recovers owner_id from marker."""
         storage_path = str(tmp_path / "slock_mem")
         root_path = str(tmp_path / "project_root")
+        os.makedirs(root_path)
 
         # Step 1: Create and activate with owner_id
         manager1 = SlockEngineManager(storage_base_path=storage_path)
@@ -664,6 +881,7 @@ class TestMarkerMerge:
         """After merge fills owner_id, restore_from_disk correctly recovers it."""
         storage_path = str(tmp_path / "slock_mem")
         root_path = str(tmp_path / "project_root")
+        os.makedirs(root_path)
 
         manager1 = SlockEngineManager(storage_base_path=storage_path)
         engine1 = manager1.get_or_create("oc_merge3", root_path, engine_name="Slock")

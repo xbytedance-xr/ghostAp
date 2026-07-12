@@ -114,7 +114,7 @@ class JournalWriter:
         self._writer_epoch = writer_epoch
         self._fs_ops = fs_ops or DefaultFileSystemOperations()
         self._blob_ref_validator = blob_ref_validator
-        self._mutex = threading.Lock()
+        self._mutex = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closed = False
         self._write_disabled = False
         self._lock_file = open(self.lock_path, "a+b")

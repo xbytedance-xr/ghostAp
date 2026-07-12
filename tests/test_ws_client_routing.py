@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.agent.intent_recognizer import IntentResult, IntentType, TaskStep
+from src.feishu.image_handler import FeishuImageHandler, ImageDownloadResult
+from src.feishu.slash_command_parser import SlashCommandParser
 from src.feishu.ws_client import FeishuWSClient
 from src.mode import InteractionMode
 from src.project import ProjectContext
@@ -104,6 +106,36 @@ def test_handle_message_spec_command_routing(mock_ws_client: FeishuWSClient):
     assert ":control:" in spec.queue_key
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/deep 恢复自主执行逻辑",
+        "/spec 恢复规格闭环",
+        "/wt 恢复隔离执行",
+        "/wf 恢复工作流编排",
+    ],
+)
+def test_handle_message_flat_post_engine_command_uses_system_priority(
+    mock_ws_client: FeishuWSClient,
+    text: str,
+):
+    """Flat rich-post slash commands must be classified before scheduler enqueue."""
+    content_rows = [
+        [{"tag": "text", "text": text, "style": []}],
+        [{"tag": "img", "image_key": "img_v3_evidence"}],
+    ]
+    msg = create_mock_message("", message_type="post")
+    msg.event.message.content = json.dumps(
+        {"title": "", "content": content_rows, "content_v2": []}
+    )
+
+    mock_ws_client._handle_message(msg)
+
+    spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert spec.priority is TaskPriority.HIGH
+    assert spec.is_system_command is True
+
+
 def test_handle_message_plain_message_does_not_fallback_to_recent_engine_topic(mock_ws_client: FeishuWSClient):
     """Plain chat messages must not continue a topic-bound engine without root_id."""
     mock_ws_client.settings.thread_programming_enabled = True
@@ -161,6 +193,7 @@ def test_dispatch_message_logic_worktree_topic_bypasses_project_chat_default(moc
     project = ProjectContext("proj_1", "GhostAP", "/tmp")
     mock_ws_client._project_manager.find_by_bound_chat_id = MagicMock(return_value=project)
     mock_ws_client._process_with_intent = MagicMock()
+    mock_ws_client._reply_text = MagicMock()
     mock_ws_client._handle_worktree_execute = MagicMock()
     mock_ws_client._message_dispatcher._handle_enter_coco = MagicMock()
 
@@ -211,6 +244,80 @@ def test_project_chat_programming_mode_is_not_stolen_by_slock_managed_chat(mock_
 
 
 @pytest.mark.parametrize(
+    "text",
+    [
+        "/deep 深入完成复杂任务",
+        "/spec 按规格迭代直到收敛",
+        "/wt 在隔离分支实现任务",
+        "/wf 编排多个代理完成任务",
+    ],
+)
+def test_explicit_engine_commands_override_persistent_programming_mode(
+    mock_ws_client: FeishuWSClient,
+    text: str,
+):
+    """An explicit engine request must never become normal Traex conversation."""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._process_with_intent = MagicMock()
+    mock_ws_client._traex_handler = MagicMock()
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_engine",
+        "chat_456",
+        text,
+        project,
+        "traex",
+        command_match=SlashCommandParser.parse(text),
+    )
+
+    mock_ws_client._process_with_intent.assert_called_once()
+    mock_ws_client._traex_handler.handle_message.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "programming_mode",
+    ["coco", "claude", "aiden", "codex", "gemini", "traex", "ttadk"],
+)
+@pytest.mark.parametrize(
+    ("text", "expected_handler"),
+    [
+        ("/deep 深入完成复杂任务", "_handle_deep_command"),
+        ("/spec 按规格迭代直到收敛", "_handle_spec_command"),
+        ("/wt 在隔离分支实现任务", "worktree"),
+        ("/wf 编排多个代理完成任务", "_handle_workflow_command"),
+    ],
+)
+def test_explicit_engine_command_reaches_its_final_handler_in_every_programming_mode(
+    mock_ws_client: FeishuWSClient,
+    programming_mode: str,
+    text: str,
+    expected_handler: str,
+):
+    """Persistent programming state may not consume any explicit engine command."""
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    mock_ws_client._get_mode_handler = MagicMock()
+
+    if expected_handler == "worktree":
+        mock_ws_client._worktree_handler.handle_worktree_command_match = MagicMock()
+        target = mock_ws_client._worktree_handler.handle_worktree_command_match
+    else:
+        target = MagicMock()
+        setattr(mock_ws_client, expected_handler, target)
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_engine_final",
+        "chat_456",
+        text,
+        project,
+        programming_mode,
+        command_match=SlashCommandParser.parse(text),
+    )
+
+    assert target.call_count == 1
+    mock_ws_client._get_mode_handler.assert_not_called()
+
+
+@pytest.mark.parametrize(
     ("engine", "expected_method"),
     [
         ("deep", "_start_deep_engine"),
@@ -245,6 +352,81 @@ def test_deep_and_spec_topic_plain_text_keeps_engine_strategy(
     mock_ws_client._process_with_intent.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("engine", "expected_method"),
+    [
+        ("worktree", "_handle_worktree_execute"),
+        ("deep", "_start_deep_engine"),
+        ("spec", "_start_spec_engine"),
+        ("workflow", "_workflow_handler.handle_message"),
+    ],
+)
+@pytest.mark.parametrize("has_slash_command", [False, True])
+def test_topic_engine_without_resolved_project_never_falls_back_to_smart(
+    mock_ws_client: FeishuWSClient,
+    engine: str,
+    expected_method: str,
+    has_slash_command: bool,
+):
+    """A topic-owned engine resolves/rejects its project instead of changing strategy."""
+    mock_ws_client._process_with_intent = MagicMock()
+    mock_ws_client._reply_text = MagicMock()
+    if expected_method == "_workflow_handler.handle_message":
+        mock_ws_client._workflow_handler.handle_message = MagicMock()
+        target = mock_ws_client._workflow_handler.handle_message
+    else:
+        target = MagicMock()
+        setattr(mock_ws_client, expected_method, target)
+
+    slash_text = {
+        "worktree": "/wt 继续执行",
+        "deep": "/deep 继续执行",
+        "spec": "/spec 继续执行",
+        "workflow": "/wf 继续执行",
+    }[engine]
+    text = slash_text if has_slash_command else "继续执行"
+    command_match = SlashCommandParser.parse(text) if has_slash_command else None
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_missing_project",
+        "chat_456",
+        text,
+        None,
+        engine,
+        command_match=command_match,
+    )
+
+    target.assert_not_called()
+    mock_ws_client._reply_text.assert_called_once()
+    assert "未执行" in mock_ws_client._reply_text.call_args.args[1]
+    mock_ws_client._process_with_intent.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["/projects", "/status", "/help", "/deep_status --all", "/stop_deep --all"],
+)
+def test_missing_topic_project_allows_safe_recovery_and_diagnostics_commands(
+    mock_ws_client: FeishuWSClient,
+    text: str,
+):
+    mock_ws_client._process_with_intent = MagicMock()
+    mock_ws_client._reply_text = MagicMock()
+    command_match = SlashCommandParser.parse(text)
+
+    mock_ws_client._dispatch_message_logic(
+        "msg_recover",
+        "chat_456",
+        text,
+        None,
+        "deep",
+        command_match=command_match,
+    )
+
+    mock_ws_client._process_with_intent.assert_called_once()
+    mock_ws_client._reply_text.assert_not_called()
+
+
 def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
     """Test that an ongoing mode (auto_enter_mode) directly forwards to the respective handler."""
     msg = create_mock_message("hello")
@@ -268,6 +450,74 @@ def test_process_message_async_auto_enter_mode(mock_ws_client: FeishuWSClient):
     mock_coco_handler.handle_message.assert_called_once_with(
         "msg_123", "chat_456", "hello", project
     )
+
+
+def test_flat_post_engine_command_reaches_dispatch_with_command_and_image(
+    mock_ws_client: FeishuWSClient,
+):
+    """The production flat post shape must preserve slash routing at ingress."""
+    content_rows = [
+        [{"tag": "text", "text": "/deep 恢复自主执行逻辑", "style": []}],
+        [{"tag": "img", "image_key": "img_v3_evidence"}],
+    ]
+    msg = create_mock_message("", message_type="post")
+    msg.event.message.content = json.dumps(
+        {"title": "", "content": content_rows, "content_v2": content_rows}
+    )
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    image_handler = FeishuImageHandler(MagicMock(), MagicMock())
+    image_handler.download_images = MagicMock(
+        return_value=ImageDownloadResult(saved_paths=["/tmp/evidence.png"])
+    )
+    mock_ws_client._get_image_handler = MagicMock(return_value=image_handler)
+    mock_ws_client._validate_message = MagicMock(return_value=True)
+    mock_ws_client._resolve_message_context = MagicMock(return_value=(project, "traex"))
+    mock_ws_client._dispatch_message_logic = MagicMock()
+
+    mock_ws_client._process_message_async(msg)
+
+    args = mock_ws_client._dispatch_message_logic.call_args.args
+    kwargs = mock_ws_client._dispatch_message_logic.call_args.kwargs
+    assert args[0] == "msg_123"
+    assert args[1] == "chat_456"
+    assert args[3] is project
+    assert args[2].startswith("/deep 恢复自主执行逻辑")
+    assert "/tmp/evidence.png" in args[2]
+    assert args[4] == "traex"
+    assert kwargs["command_match"].command == "/deep"
+
+
+def test_flat_post_worktree_command_preserves_downloaded_image_in_goal(
+    mock_ws_client: FeishuWSClient,
+):
+    """Worktree consumes CommandMatch.args, which must include downloaded evidence."""
+    content_rows = [
+        [{"tag": "text", "text": "/wt 根据截图修复问题", "style": []}],
+        [{"tag": "img", "image_key": "img_v3_worktree_evidence"}],
+    ]
+    msg = create_mock_message("", message_type="post")
+    msg.event.message.content = json.dumps(
+        {"title": "", "content": content_rows, "content_v2": content_rows}
+    )
+    project = ProjectContext("proj_1", "GhostAP", "/tmp")
+    image_handler = FeishuImageHandler(MagicMock(), MagicMock())
+    image_handler.download_images = MagicMock(
+        return_value=ImageDownloadResult(saved_paths=["/tmp/worktree-evidence.png"])
+    )
+    mock_ws_client._get_image_handler = MagicMock(return_value=image_handler)
+    mock_ws_client._validate_message = MagicMock(return_value=True)
+    mock_ws_client._resolve_message_context = MagicMock(return_value=(project, "traex"))
+    mock_ws_client._worktree_handler.handle_worktree_command_match = MagicMock()
+
+    mock_ws_client._process_message_async(msg)
+
+    target = mock_ws_client._worktree_handler.handle_worktree_command_match
+    target.assert_called_once()
+    command_match = target.call_args.args[2]
+    assert command_match.command == "/worktree"
+    assert command_match.args.startswith("根据截图修复问题")
+    assert "/tmp/worktree-evidence.png" in command_match.args
+    assert target.call_args.kwargs["project"] is project
 
 
 def test_topic_bound_worktree_blocks_spec_switch_command(mock_ws_client: FeishuWSClient):
@@ -503,5 +753,3 @@ class TestChatLockInterceptFallback:
         args = handler.reply_text.call_args[0]
         assert args[0] == "msg_1"
         assert "🔒" in args[1] or "locked" in args[1].lower() or "锁定" in args[1]
-
-

@@ -7,7 +7,7 @@ GhostAP 是一个飞书/Lark 机器人服务，用聊天界面驱动本地项目
 - **远程 Shell**：在当前项目目录执行命令，带超时、输出截断、黑名单和可选白名单。
 - **多工具编程会话**：支持 Coco、Claude、Aiden、Codex、Gemini、Traex、TTADK 和 TUI2ACP 等后端，普通会话可持续多轮对话。
 - **长任务引擎**：Deep、Spec、Worktree、Workflow 和 Slock 覆盖从单次自主执行到结构化闭环、并行 worktree 和群内多 Agent 协作。
-- **自主工作系统（v5）**：基于持久化 Journal 的数字员工自主执行平台，支持目标管理、计划编排、效果追踪、安全门禁和飞书交互式员工创建。
+- **自主工作内核（v5，生产接线中）**：基于持久化 Journal 实现目标、计划、效果追踪和安全门禁；当前飞书控制入口尚未接入执行运行时。
 - **飞书卡片进度**：任务状态、计划、工具调用、模型选择和错误诊断通过卡片持续更新。
 - **多项目隔离**：每个聊天可绑定不同项目目录；会话、线程上下文、锁和持久化状态按项目隔离。
 - **并发保护**：包含 chat 锁、repo 锁、任务调度队列和锁顺序检查，避免多个聊天同时改同一个仓库。
@@ -18,7 +18,7 @@ GhostAP 把“执行策略”和“工具传输”拆开：
 
 | 维度 | 说明 |
 | --- | --- |
-| 执行策略 | Smart、Shell、普通编程、Deep、Spec、Worktree、Workflow、Slock、Autonomous |
+| 执行策略 | Smart、Shell、普通编程、Deep、Spec、Worktree、Workflow、Slock；Autonomous 内核尚未接入生产消息控制面 |
 | 工具传输 | ACP 直接模式、Shell CLI 桥接、TTADK CLI 桥接 |
 
 普通工具入口会设置聊天 + 项目的持续模式，直到 `/exit`。Deep、Spec、Worktree 和 Workflow 是作用在话题/根线程上的任务引擎，不会替换普通编程模式。Smart 是默认模式；当 `DEFAULT_ACP_TOOL` 留空时，未匹配的自由文本会按 Shell 命令处理。
@@ -139,37 +139,32 @@ Shell 不需要单独入口；在 Smart 模式中直接发送 `ls`、`git status
 
 | 命令 | 作用 |
 | --- | --- |
+| `/hire <名字>` | 雇佣新数字员工（全局，不需要先建群） |
+| `/hire <名字> --tool codex --model o3-pro --prompt <约束>` | 带参数雇佣 |
 | `/goal <描述>` | 创建新的自主目标并启动执行 |
 | `/goals` | 列出当前租户的所有目标 |
-| `/run <goal_id>` | 启动目标的执行 Run |
 | `/runs` | 列出所有运行中的 Run |
-| `/status <run_id>` | 查看 Run 进度 |
 | `/approve <id>` | 批准待审批操作 |
-| `/employee create` | 通过交互式卡片创建新的数字员工 |
-| `/employee list` | 列出所有活跃员工 |
-| `/kill` | 激活紧急停止（管理员） |
-| `/pause <goal_id>` | 暂停目标 |
-| `/resume <goal_id>` | 恢复目标 |
-| `/cancel <goal_id>` | 取消目标 |
 
-**创建数字员工流程：**
+**雇佣数字员工流程（/hire）：**
 
-1. 发送 `/employee create`，机器人弹出交互式卡片
-2. 在卡片中选择：角色（coder/reviewer/planner/tester/researcher）、工具（coco/claude/codex/aiden/gemini/ttadk）、模型
-3. 点击「Create Employee」确认
-4. 系统创建员工并返回确认卡片，员工立即可接受工作分配
+1. 发送 `/hire 小明` — 弹出工具选择卡片（复用 ACP 工具发现，与 Deep/Spec/Workflow 一致）
+2. 选择工具（traex/coco/claude/codex/gemini）— 弹出模型选择卡片（复用 ACP 模型发现）
+3. 选择模型 — 员工创建完成，作为飞书 bot 智能体注册到本地
 
-**安全等级：**
+可选参数直接写在命令行跳过卡片交互：
+```
+/hire 小明 --tool codex --model o3-pro --role coder --prompt “专注后端开发，注重代码质量”
+```
 
-自主系统根据配置的 `AUTONOMOUS_DEPLOYMENT_MODE` 决定实际能力：
+员工创建后：
+- 本地持久化为 `identity.json`（名字、工具、模型、约束、记忆路径）
+- 可被邀请加入 slock 群组参与协作
+- 群内可通过 @员工名 分配任务
+- 如不设 `--prompt` 约束，后续通过交互慢慢养成记忆
 
-| 模式 | 行为 |
-| --- | --- |
-| `off` | 自主系统不加载 |
-| `assist` | 只读，不执行写操作 |
-| `manager_only` | 单 Manager 控制，需审批高风险操作 |
-| `supervised` | 多员工协作，人工在环审批 |
-| `bounded_autonomous` | 有限自主，满足全部安全门禁后生效 |
+**注：** `/goal`、`/runs`、`/approve` 等自主内核命令已接入路由但尚未连接生产运行时，
+会明确回复”未接入”状态，不会伪造成功。`/status` 保留为 Deep/Spec 诊断命令。
 
 Workflow 使用三步流程：选择主编排 Agent、选择评审 Agent 或 Auto、确认后自动生成并执行脚本。内置原语包括 `agent()`、`sequence()`、`fanout()`、`verify()`、`generate()`、`tournament()`、`loop()` 和 `race()`，并由运行时限制总 agent 数、嵌套深度和危险脚本能力。
 

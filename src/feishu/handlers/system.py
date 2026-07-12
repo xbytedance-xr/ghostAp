@@ -23,7 +23,7 @@ from ...tasking import TaskPriority, TaskSpec
 from ...utils.errors import safe_error_message
 from ..emoji import EmojiReaction
 from ..message_formatter import FeishuMessageFormatter as fmt
-from ..slash_command_parser import CommandMatch
+from ..slash_command_parser import CommandMatch, SlashCommandParser
 from .base import BaseHandler
 from .lock_commands import LockCommandsMixin
 from .ttadk_commands import TTADKCommandsMixin
@@ -49,6 +49,19 @@ class _SystemSubcommands:
 
 class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
     """Help, exit, shell, directory, and intercepted-command handling."""
+
+    # `/status` remains the established Deep/Spec diagnostics command. The
+    # dormant Autonomous manager's conflicting `/status` spelling is not
+    # advertised until that runtime is composed into production.
+    _UNWIRED_AUTONOMOUS_COMMANDS = frozenset({
+        "/goal",
+        "/goals",
+        "/run",
+        "/runs",
+        "/approve",
+        "/approvals",
+        "/decisions",
+    })
 
     def __init__(self, ctx: "HandlerContext") -> None:
         super().__init__(ctx)
@@ -277,13 +290,13 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
 
     @staticmethod
     def is_deep_command(text: str) -> bool:
-        text_lower = text.lower().strip()
-        return text_lower.startswith("/deep") or text_lower.startswith("/stop_deep")
+        match = SlashCommandParser.parse(text)
+        return bool(match and match.command in {"/deep", "/deep_status", "/deep_update", "/stop_deep"})
 
     @staticmethod
     def is_spec_command(text: str) -> bool:
-        text_lower = text.lower().strip()
-        spec_prefixes = (
+        match = SlashCommandParser.parse(text)
+        spec_commands = {
             "/spec",
             "/stop_spec",
             "/spec_status",
@@ -296,13 +309,15 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/spec_recover",
             "/spec_guide",
             "/spec_export",
-        )
-        return any(text_lower == cmd or text_lower.startswith(f"{cmd} ") for cmd in spec_prefixes)
+        }
+        return bool(match and match.command in spec_commands)
 
     @staticmethod
     def is_workflow_command(text: str) -> bool:
-        from ...workflow_engine.commands import is_workflow_command
-        return is_workflow_command(text)
+        from ...workflow_engine.commands import TOPIC_ENGINE_COMMANDS
+
+        match = SlashCommandParser.parse(text)
+        return bool(match and match.command in TOPIC_ENGINE_COMMANDS)
 
     @staticmethod
     def _looks_like_local_executable_path(first_word: str) -> bool:
@@ -463,8 +478,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/btw",
             "/goals",
             "/runs",
-            "/employee",
         }
+        exact_commands.update(SystemHandler._UNWIRED_AUTONOMOUS_COMMANDS)
         if not m.has_args and cmd in exact_commands:
             return True
         prefix_commands = {
@@ -481,14 +496,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/btw",
             "/setadmin",
             "/goal",
-            "/employee",
             "/approve",
-            "/pause",
-            "/resume",
-            "/cancel",
-            "/kill",
             "/runs",
         }
+        prefix_commands.update(SystemHandler._UNWIRED_AUTONOMOUS_COMMANDS)
         return cmd in prefix_commands
 
     # ------------------------------------------------------------------
@@ -565,7 +576,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 return
 
         # 3. Autonomous system commands
-        if text_lower in {"/goal", "/goals", "/employee", "/runs", "/approve", "/pause", "/resume", "/cancel", "/kill"}:
+        if text_lower in self._UNWIRED_AUTONOMOUS_COMMANDS:
             self._handle_autonomous_command(message_id, chat_id, m, project)
             return
 
@@ -581,58 +592,8 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         m: "CommandMatch",
         project: "Optional[ProjectContext]" = None,
     ) -> None:
-        """Route autonomous system commands (/goal, /employee, /goals, etc.)."""
-        from ...autonomous.manager.cards import build_employee_creation_card
-        from ...thread import get_current_sender_id
-
-        sender_id = get_current_sender_id() or ""
-        cmd = m.command
-        args = m.args or ""
-
-        if cmd == "/employee":
-            sub = args.split(None, 1)[0].lower() if args else ""
-            if sub == "create" or not sub:
-                card = build_employee_creation_card()
-                self.reply_card(message_id, card)
-            elif sub == "list":
-                self.reply_text(message_id, "员工列表功能开发中...")
-            else:
-                self.reply_text(message_id, f"未知子命令: /employee {sub}\n可用: create, list")
-            return
-
-        if cmd == "/goal":
-            if not args:
-                self.reply_text(message_id, "用法: `/goal <目标描述>`\n示例: `/goal 帮我重构 utils 模块`")
-                return
-            self.reply_text(message_id, f"🎯 目标已创建: {args}\n系统正在编译执行计划...")
-            return
-
-        if cmd == "/goals":
-            self.reply_text(message_id, "📋 目标列表功能已就绪，等待系统完整接入后展示。")
-            return
-
-        if cmd == "/runs":
-            self.reply_text(message_id, "🏃 运行列表功能已就绪，等待系统完整接入后展示。")
-            return
-
-        if cmd == "/approve":
-            if not args:
-                self.reply_text(message_id, "用法: `/approve <approval_id>`")
-                return
-            self.reply_text(message_id, f"✅ 已批准: {args}")
-            return
-
-        if cmd in {"/pause", "/resume", "/cancel"}:
-            if not args:
-                self.reply_text(message_id, f"用法: `{cmd} <goal_id>`")
-                return
-            action = cmd.lstrip("/")
-            self.reply_text(message_id, f"⚙️ 已{action}: {args}")
-            return
-
-        if cmd == "/kill":
-            self.reply_text(message_id, "🛑 Kill Switch 已激活。所有自主执行已停止。")
-            return
+        """Fail closed until the autonomous runtime is wired into this dispatcher."""
+        self.reply_text(message_id, UI_TEXT["system_autonomous_unavailable"])
 
     def _handle_setadmin_command(self, message_id: str, chat_id: str, args: str = "") -> None:
         from ...admin_bootstrap import AdminBootstrapService
@@ -1345,26 +1306,26 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
         current_mode = self.mode_manager.get_mode(chat_id, project_id=_pid)
 
         thread_id = get_current_thread_id()
-        if thread_id and current_mode == InteractionMode.SMART:
+        if thread_id:
             thread_ctx = get_thread_manager().get(thread_id)
-            if thread_ctx and thread_ctx.mode != "smart":
-                if thread_ctx.mode in {"worktree", "deep", "spec", "workflow"}:
-                    removed = get_thread_manager().remove(thread_ctx.thread_root_id)
-                    set_current_thread_id(None)
-                    engine_name = {
-                        "worktree": "WT",
-                        "deep": "Deep",
-                        "spec": "Spec",
-                        "workflow": "WF",
-                    }.get(thread_ctx.mode, thread_ctx.mode)
-                    if removed:
-                        self.reply_text(
-                            message_id,
-                            UI_TEXT["topic_engine_exit_msg"].format(engine=engine_name),
-                        )
-                    else:
-                        self.reply_text(message_id, UI_TEXT["system_already_in_mode"])
-                    return
+            if thread_ctx and thread_ctx.mode in {"worktree", "deep", "spec", "workflow"}:
+                removed = get_thread_manager().remove(thread_ctx.thread_root_id)
+                set_current_thread_id(None)
+                engine_name = {
+                    "worktree": "WT",
+                    "deep": "Deep",
+                    "spec": "Spec",
+                    "workflow": "WF",
+                }.get(thread_ctx.mode, thread_ctx.mode)
+                if removed:
+                    self.reply_text(
+                        message_id,
+                        UI_TEXT["topic_engine_exit_msg"].format(engine=engine_name),
+                    )
+                else:
+                    self.reply_text(message_id, UI_TEXT["system_already_in_mode"])
+                return
+            if thread_ctx and thread_ctx.mode != "smart" and current_mode == InteractionMode.SMART:
                 try:
                     current_mode = InteractionMode(thread_ctx.mode)
                 except ValueError:

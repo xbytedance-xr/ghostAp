@@ -1062,41 +1062,24 @@ class FeishuWSClient:
         block behind long-running Coco/Claude programming tasks on the project
         queue.  This includes ``/stop_deep``, ``/exit``, ``/spec_status``, etc.
         """
+        text = self._extract_text_from_message(data)
+        if not text:
+            return False
+        return text.startswith("/") or self._is_exit_command(text)
+
+    def _extract_text_from_message(self, data: P2ImMessageReceiveV1) -> str:
+        """Extract message text with the same parser used by async dispatch."""
         try:
             message = data.event.message
             content_str = message.content
             if not content_str:
-                return False
-            import json
-
-            content = json.loads(content_str)
-            text = content.get("text", "").strip()
-            if text.startswith("@"):
-                parts = text.split(None, 1)
-                text = parts[1].strip() if len(parts) > 1 else ""
-            if not text:
-                return False
-            # All /command messages are system commands
-            if text.startswith("/"):
-                return True
-            # Also detect exit keywords (Chinese)
-            return self._is_exit_command(text)
-        except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
-            return False
-
-    def _extract_text_from_message(self, data: P2ImMessageReceiveV1) -> str:
-        """Extract plain text from a Feishu message event (for early routing)."""
-        try:
-            content_str = data.event.message.content
-            if not content_str:
                 return ""
-            content = json.loads(content_str)
-            text = content.get("text", "").strip()
-            if text.startswith("@"):
-                parts = text.split(None, 1)
-                text = parts[1].strip() if len(parts) > 1 else ""
-            return text
-        except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
+            parsed = self._get_image_handler().parse_message(
+                message.message_type,
+                content_str,
+            )
+            return self._clean_at_text(parsed.text)
+        except (AttributeError, KeyError, TypeError, ValueError):
             return ""
 
     @staticmethod
@@ -1224,6 +1207,13 @@ class FeishuWSClient:
                 project, auto_enter_mode, text, is_image_only = self._handle_image_content(
                     message, parse_result.image_keys, text, request_id, task_ctx
                 )
+                # Downloaded image references are part of the effective prompt.
+                # Refresh slash args so consumers such as Worktree receive the
+                # same evidence-rich goal as text-based engine handlers.
+                if command_match is not None:
+                    enriched_match = SlashCommandParser.parse(text)
+                    if enriched_match is not None and enriched_match.command == command_match.command:
+                        command_match = enriched_match
             else:
                 # 4. Resolve Context (if no images to drive it)
                 project, auto_enter_mode = self._resolve_message_context(message)
@@ -1238,8 +1228,14 @@ class FeishuWSClient:
                     if _tctx and _tctx.mode and _tctx.mode != "smart":
                         auto_enter_mode = _tctx.mode
                         set_current_thread_id(_tctx.thread_root_id)
-                        if not project:
-                            project = self._project_manager.get_project_for_chat(_tctx.project_id, chat_id) or self._project_manager.get_active_project(chat_id)
+                        thread_project = self._project_manager.get_project_for_chat(
+                            _tctx.project_id,
+                            chat_id,
+                        )
+                        if _tctx.mode in {"worktree", "deep", "spec", "workflow"}:
+                            project = thread_project
+                        elif not project:
+                            project = thread_project or self._project_manager.get_active_project(chat_id)
                         logger.info(
                             "[Thread] Safety-net resolved mode: root=%s canonical=%s mode=%s",
                             _root[:12], _tctx.thread_root_id[:12], auto_enter_mode,
@@ -1396,7 +1392,7 @@ class FeishuWSClient:
                 set_current_thread_id(thread_ctx.thread_root_id)
                 auto_enter_mode = thread_ctx.mode if thread_ctx.mode != "smart" else None
                 project = self._project_manager.get_project_for_chat(thread_ctx.project_id, chat_id)
-                if not project:
+                if not project and thread_ctx.mode not in {"worktree", "deep", "spec", "workflow"}:
                     project = self._project_manager.get_active_project(chat_id)
                 logger.info(
                     "[Thread] Resolved context: msg_root=%s canonical=%s project=%s mode=%s project_found=%s",
@@ -1513,6 +1509,40 @@ class FeishuWSClient:
             except Exception:
                 command_match = None
 
+        missing_topic_project_safe_commands = {
+            "/help",
+            "/projects",
+            "/project",
+            "/status",
+            "/exit",
+            "/quit",
+        }
+        command = command_match.command if command_match is not None else ""
+        args = command_match.args.lower() if command_match is not None else ""
+        is_global_deep_stop = command == "/stop_deep" and args in {"all", "-a", "--all"}
+        is_global_deep_status = command == "/deep_status" and args in {"all", "-a", "--all"}
+        is_missing_topic_exit = self._is_exit_command(text)
+        can_recover_missing_topic = (
+            command in missing_topic_project_safe_commands
+            or is_global_deep_stop
+            or is_global_deep_status
+            or is_missing_topic_exit
+        )
+        if (
+            auto_enter_mode in {"worktree", "deep", "spec", "workflow"}
+            and project is None
+            and not can_recover_missing_topic
+        ):
+            self._reply_text(message_id, UI_TEXT["ws_topic_project_unavailable"])
+            return
+        if (
+            auto_enter_mode in {"worktree", "deep", "spec", "workflow"}
+            and project is None
+            and is_missing_topic_exit
+        ):
+            self._exit_current_mode(message_id, chat_id, project=None)
+            return
+
         if auto_enter_mode:
             if self._reply_if_topic_engine_switch_blocked(
                 message_id,
@@ -1565,7 +1595,11 @@ class FeishuWSClient:
                     UI_TEXT["ws_topic_hint_msg"],
                 )
                 return
-            if self._is_deep_command(text) or self._is_spec_command(text):
+            if (
+                self._is_deep_command(text)
+                or self._is_spec_command(text)
+                or self._is_workflow_command(text)
+            ):
                 self._process_with_intent(
                     message_id,
                     chat_id,
@@ -1578,17 +1612,6 @@ class FeishuWSClient:
                 return
         if auto_enter_mode in {"worktree", "deep", "spec", "workflow"}:
             if command_match is not None:
-                self._process_with_intent(
-                    message_id,
-                    chat_id,
-                    text,
-                    project,
-                    command_match=command_match,
-                    shell_fast_tracked=shell_fast_tracked,
-                    chat_type=chat_type,
-                )
-                return
-            if project is None:
                 self._process_with_intent(
                     message_id,
                     chat_id,

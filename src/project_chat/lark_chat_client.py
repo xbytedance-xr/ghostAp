@@ -102,25 +102,39 @@ class LarkChatClient:
         except Exception as e:
             logger.warning("add_managers(%s) exception: %s", chat_id[:12], e)
 
-    def delete_chat(self, chat_id: str) -> None:
+    def delete_chat(self, chat_id: str) -> bool | None:
         """Delete a Feishu group chat (best-effort, for rollback).
 
-        Does NOT raise on failure — only logs warning.
+        Does not raise; returns whether Feishu confirmed deletion.
         """
         from lark_oapi.api.im.v1 import DeleteChatRequest
 
-        client = self._api_client_factory()
-        request = DeleteChatRequest.builder().chat_id(chat_id).build()
-
         try:
+            client = self._api_client_factory()
+            request = DeleteChatRequest.builder().chat_id(chat_id).build()
             response = client.im.v1.chat.delete(request)
             if not response.success():
+                message = str(response.msg or "").strip().casefold()
+                already_absent = any(
+                    marker in message
+                    for marker in (
+                        "not found",
+                        "not exist",
+                        "does not exist",
+                        "already deleted",
+                        "不存在",
+                        "已删除",
+                    )
+                )
                 logger.warning(
                     "delete_chat(%s) failed: [%s] %s",
                     chat_id[:12], response.code, response.msg,
                 )
+                return True if already_absent else False
+            return True
         except Exception as e:
             logger.warning("delete_chat(%s) exception: %s", chat_id[:12], e)
+            return None
 
     def patch_description(self, chat_id: str, description: str) -> None:
         """Update group chat description (best-effort)."""

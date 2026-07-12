@@ -336,11 +336,21 @@ class TestWorkflowModeStateIsolation(unittest.TestCase):
         mock_thread_ctx.thread_root_id = "thread_456"
         mock_thread_ctx.project_id = self.project_id
 
-        with patch.object(self.mode_manager, "exit_to_smart"):
-            # For topic engines, exit should NOT call exit_to_smart on the mode manager
-            # Instead, it should clear the topic binding
-            # Let's verify the mode manager's state is unchanged
-            pass
+        thread_manager = MagicMock()
+        thread_manager.get.return_value = mock_thread_ctx
+        thread_manager.remove.return_value = mock_thread_ctx
+        with (
+            patch("src.thread.get_current_thread_id", return_value="thread_456"),
+            patch("src.thread.get_thread_manager", return_value=thread_manager),
+            patch("src.thread.set_current_thread_id") as clear_thread,
+            patch.object(self.mode_manager, "exit_to_smart") as exit_to_smart,
+        ):
+            system_handler.exit_current_mode("msg_exit", self.chat_id, project=None)
+
+        thread_manager.remove.assert_called_once_with("thread_456")
+        clear_thread.assert_called_once_with(None)
+        exit_to_smart.assert_not_called()
+        system_handler.reply_text.assert_called_once()
 
         # The key assertion: chat mode remains COCO
         self.assertEqual(
@@ -946,11 +956,7 @@ class TestWorkflowTopicRoutingAC22(unittest.TestCase):
         client._process_with_intent.assert_called_once()
 
     def test_workflow_topic_routing_no_project(self):
-        """AC22: Workflow topic 路由仅在有 project 时生效。
-
-        When project is None, the message should go through
-        _process_with_intent instead of being routed to workflow handler.
-        """
+        """Workflow topic fails closed when its bound project is unavailable."""
         client = self._make_client_with_mocks()
 
         client._dispatch_message_logic(
@@ -962,9 +968,9 @@ class TestWorkflowTopicRoutingAC22(unittest.TestCase):
             command_match=None,
         )
 
-        # Should go to intent recognition, NOT workflow handler
         client._workflow_handler.handle_message.assert_not_called()
-        client._process_with_intent.assert_called_once()
+        client._reply_text.assert_called_once()
+        client._process_with_intent.assert_not_called()
 
     def test_workflow_topic_routing_wrong_mode(self):
         """AC22: Workflow topic 路由仅在 auto_enter_mode='workflow' 时生效。

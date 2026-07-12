@@ -59,15 +59,32 @@ class TestDeleteChat:
         response.success.return_value = True
         mock_api_client.im.v1.chat.delete.return_value = response
 
-        # Should not raise
-        chat_client.delete_chat("oc_test_chat_123")
+        assert chat_client.delete_chat("oc_test_chat_123") is True
 
-    def test_delete_chat_failure_logs_warning(self, chat_client, mock_api_client):
+    def test_delete_chat_already_absent_is_terminal_success(self, chat_client, mock_api_client):
         response = MagicMock()
         response.success.return_value = False
         response.code = 230099
         response.msg = "chat not found"
         mock_api_client.im.v1.chat.delete.return_value = response
 
-        # delete_chat is best-effort for rollback, should not raise
-        chat_client.delete_chat("oc_test_chat_123")
+        assert chat_client.delete_chat("oc_test_chat_123") is True
+
+    def test_delete_chat_definite_failure_returns_false(self, chat_client, mock_api_client):
+        response = MagicMock()
+        response.success.return_value = False
+        response.code = 230001
+        response.msg = "permission denied"
+        mock_api_client.im.v1.chat.delete.return_value = response
+
+        assert chat_client.delete_chat("oc_test_chat_123") is False
+
+    def test_delete_chat_exception_returns_unknown(self, chat_client, mock_api_client):
+        mock_api_client.im.v1.chat.delete.side_effect = TimeoutError("response lost")
+
+        assert chat_client.delete_chat("oc_test_chat_123") is None
+
+    def test_delete_chat_factory_exception_returns_unknown(self):
+        client = LarkChatClient(api_client_factory=MagicMock(side_effect=RuntimeError("factory down")))
+
+        assert client.delete_chat("oc_test_chat_123") is None

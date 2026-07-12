@@ -36,7 +36,7 @@ class MemoryAnchor:
 
     def __init__(self) -> None:
         self._state = AnchorState()
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def read(self) -> AnchorState:
         with self._lock:

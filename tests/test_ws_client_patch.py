@@ -340,6 +340,7 @@ class TestCardActionHandler(unittest.TestCase):
             def _make_data(text):
                 data = MagicMock()
                 data.event.message.content = json.dumps({"text": text})
+                data.event.message.message_type = "text"
                 return data
 
             # Previously blocked commands — now should be system commands
@@ -714,6 +715,8 @@ class TestCardActionHandler(unittest.TestCase):
 
             assert client._build_control_queue_key(chat_id="c1", project_id="p1", text="/coco") == "c1:control:p1"
             assert client._build_control_queue_key(chat_id="c1", project_id="p1", text="/spec do x") == "c1:control:p1"
+            assert client._build_control_queue_key(chat_id="c1", project_id="p1", text="/spec\tdo x") == "c1:control:p1"
+            assert client._build_control_queue_key(chat_id="c1", project_id="p1", text="/wf\ndo x") == "c1:control:p1"
             assert client._build_control_queue_key(chat_id="c1", project_id=None, text="/spec_status") == "c1:control:default"
             assert client._build_control_queue_key(chat_id="c1", project_id="p1", text="ls -la") is None
 
@@ -1192,6 +1195,28 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         self.assertEqual(auto_mode, "coco")
         self.assertEqual(project, fallback_project)
 
+    def test_engine_topic_does_not_fallback_to_unrelated_active_project(self):
+        client = self._make_client()
+        client.settings = MagicMock()
+        client.settings.thread_programming_enabled = True
+
+        from src.thread.models import ThreadContext
+        thread_ctx = ThreadContext(
+            thread_root_id="root1", chat_id="c1", project_id="missing", mode="deep",
+        )
+        client._thread_manager = MagicMock()
+        client._thread_manager.get.return_value = thread_ctx
+        client._project_manager = MagicMock()
+        client._project_manager.get_project_for_chat.return_value = None
+
+        message = MagicMock(message_id="m1", chat_id="c1", root_id="root1", parent_id=None)
+
+        project, auto_mode = client._resolve_message_context(message)
+
+        self.assertEqual(auto_mode, "deep")
+        self.assertIsNone(project)
+        client._project_manager.get_active_project.assert_not_called()
+
     def test_resolve_context_smart_mode_returns_none_auto_enter(self):
         """thread_ctx.mode='smart' 时 auto_enter_mode 应为 None，但不再 fall through"""
         client = self._make_client()
@@ -1272,6 +1297,45 @@ class TestThreadModeRetentionRobust(unittest.TestCase):
         call_args = client._dispatch_message_logic.call_args
         actual_auto_mode = call_args[0][4] if len(call_args[0]) > 4 else call_args[1].get("auto_enter_mode")
         self.assertEqual(actual_auto_mode, "coco")
+
+    def test_engine_safety_net_discards_unrelated_initial_project(self):
+        client = self._make_client()
+        client.settings = MagicMock(
+            thread_programming_enabled=True,
+            allowed_chat_ids=set(),
+            allowed_user_ids=set(),
+        )
+        from src.thread.models import ThreadContext
+        client._thread_manager = MagicMock()
+        client._thread_manager.get.return_value = ThreadContext(
+            thread_root_id="root1",
+            chat_id="c1",
+            project_id="missing",
+            mode="deep",
+        )
+        unrelated = MagicMock(project_id="unrelated")
+        client._project_manager = MagicMock()
+        client._project_manager.get_project_for_chat.return_value = None
+        client._project_manager.get_active_project.return_value = unrelated
+        client._validate_message = MagicMock(return_value=True)
+        parse_result = MagicMock(text="继续执行", image_keys=[])
+        client._get_image_handler = MagicMock()
+        client._get_image_handler.return_value.parse_message.return_value = parse_result
+        client._clean_at_text = MagicMock(return_value="继续执行")
+        client._resolve_message_context = MagicMock(return_value=(unrelated, None))
+        client._dispatch_message_logic = MagicMock()
+
+        data = MagicMock()
+        data.event.message.message_id = "m2"
+        data.event.message.chat_id = "c1"
+        data.event.message.root_id = "root1"
+        data.event.message.create_time = None
+        client._process_message_async(data)
+
+        args = client._dispatch_message_logic.call_args.args
+        self.assertIsNone(args[3])
+        self.assertEqual(args[4], "deep")
+        client._project_manager.get_active_project.assert_not_called()
 
     def test_all_modes_resolve_from_thread_ctx(self):
         """所有编程模式 (coco/claude/aiden/codex/gemini/traex/ttadk) 都能从 thread_ctx 正确解析"""

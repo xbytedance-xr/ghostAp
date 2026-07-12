@@ -31,5 +31,6 @@
 | B032 | 2026-05-20 | Slock 重启后缺少 `IN_REVIEW` 孤儿任务恢复/降级策略，崩溃恢复语义需明确 | Medium | Slock audit | ⏳ Open | - |
 | B033 | 2026-05-20 | Slock `AgentRegistry._ensure_loaded` 首次访问全量扫描 agent 目录，agent 数量增长后启动/首次访问延迟线性增长 | Medium | Slock audit | ⏳ Open | - |
 | B034 | 2026-05-20 | Slock `MemoryManager` L1/L2/L3 共用单锁，4 Agent 并行时内存读写串行化；可按层/路径拆锁并保留原子 RMW 语义 | Medium | Slock audit | ⏳ Open | - |
+| B035 | 2026-07-12 | Autonomous 生产 composition 尚未把 Manager/Admission/Coordinator 注入飞书 dispatcher；当前 `manager/handler.py` 仍引用旧 Admission API，并存在直接修改 frozen 域对象的遗留路径。命令入口已 fail-closed，后续应按 Journal/Projection/Coordinator 当前契约重新接线，不得恢复旧兼容 API | Medium | recent-change restoration audit | ⏳ Open | - |
 
 > **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。

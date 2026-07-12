@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -95,35 +96,105 @@ class FeishuImageHandler:
         except json.JSONDecodeError:
             return ImageParseResult(text=content_str, image_keys=[])
 
-        # 按优先级查找语言版本：zh_cn -> en_us -> 第一个可用的
-        post_data = None
-        for lang in ("zh_cn", "en_us"):
-            if lang in content_dict:
-                post_data = content_dict[lang]
-                break
-        if post_data is None and content_dict:
-            post_data = next(iter(content_dict.values()), None)
-
-        if not post_data or "content" not in post_data:
+        post_data = self._select_post_data(content_dict)
+        if not post_data:
             return ImageParseResult(text="", image_keys=[])
 
-        text_parts = []
-        image_keys = []
+        candidates = []
+        for key in ("content", "content_v2"):
+            rows = post_data.get(key)
+            if isinstance(rows, list) and rows not in candidates:
+                candidates.append(rows)
 
-        for row in post_data["content"]:
-            for element in row:
-                tag = element.get("tag", "")
-                if tag == "text":
-                    t = element.get("text", "")
-                    if t:
-                        text_parts.append(t)
-                elif tag == "img":
-                    img_key = element.get("image_key", "")
-                    if img_key:
-                        image_keys.append(img_key)
+        parsed_candidates = []
+        for content_rows in candidates:
+            text_rows = []
+            image_keys = []
+            for row in content_rows:
+                if not isinstance(row, list):
+                    continue
+                row_text_parts = []
+                for element in row:
+                    if not isinstance(element, dict):
+                        continue
+                    tag = element.get("tag", "")
+                    if tag == "text":
+                        t = element.get("text", "")
+                        if t:
+                            row_text_parts.append(t)
+                    elif tag == "img":
+                        img_key = element.get("image_key", "")
+                        if img_key:
+                            image_keys.append(img_key)
+                if row_text_parts:
+                    text_rows.append("".join(row_text_parts))
+            parsed_candidates.append(("\n".join(text_rows), image_keys))
 
-        combined_text = " ".join(text_parts).strip()
-        return ImageParseResult(text=combined_text, image_keys=image_keys)
+        text = self._merge_mirrored_texts([parts[0] for parts in parsed_candidates])
+        image_keys = self._merge_mirrored_values([parts[1] for parts in parsed_candidates])
+        return ImageParseResult(
+            text=text.strip(),
+            image_keys=image_keys,
+        )
+
+    @staticmethod
+    def _merge_mirrored_texts(candidates: list[str]) -> str:
+        """Prefer supersets and retain distinct partial text without mirror duplication."""
+        selected = ""
+        selected_normalized = ""
+        for text in candidates:
+            if not text:
+                continue
+            normalized = " ".join(text.split())
+            if not selected:
+                selected = text
+                selected_normalized = normalized
+            elif normalized == selected_normalized or normalized in selected_normalized:
+                continue
+            elif selected_normalized in normalized:
+                selected = text
+                selected_normalized = normalized
+            else:
+                selected = f"{selected}\n{text}"
+                selected_normalized = " ".join(selected.split())
+        return selected
+
+    @staticmethod
+    def _merge_mirrored_values(candidates: list[list[str]]) -> list[str]:
+        """Merge representations while preserving repeats within either body."""
+        merged: list[str] = []
+        merged_counts: Counter[str] = Counter()
+        for values in candidates:
+            candidate_counts: Counter[str] = Counter()
+            for value in values:
+                candidate_counts[value] += 1
+                if candidate_counts[value] > merged_counts[value]:
+                    merged.append(value)
+            merged_counts |= candidate_counts
+        return merged
+
+    @staticmethod
+    def _select_post_data(content_dict: object) -> Optional[dict]:
+        """Resolve official flat and legacy localized post bodies."""
+        if not isinstance(content_dict, dict):
+            return None
+
+        if "content" in content_dict or "content_v2" in content_dict:
+            return content_dict
+
+        for lang in ("zh_cn", "en_us"):
+            candidate = content_dict.get(lang)
+            if isinstance(candidate, dict) and (
+                "content" in candidate or "content_v2" in candidate
+            ):
+                return candidate
+
+        for candidate in content_dict.values():
+            if isinstance(candidate, dict) and (
+                "content" in candidate or "content_v2" in candidate
+            ):
+                return candidate
+        return None
 
     def download_images(
         self,

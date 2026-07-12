@@ -99,6 +99,7 @@ _ALIASES: dict[str, str] = {
     "/nt": "/new-team",
     "/s": "/slock",
     "/p": "/plan",
+    "/h": "/hire",
 }
 
 
@@ -107,7 +108,7 @@ def get_all_command_prefixes() -> set[str]:
 
     Useful for validating command fix suggestions in card actions.
     """
-    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/council", "/role", "/task", "/team", "/plan"}
+    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/hire", "/council", "/role", "/task", "/team", "/plan"}
     return canonical | set(_ALIASES.keys())
 
 
@@ -152,8 +153,8 @@ def parse_slock_command(text: str) -> SlockCommand:
             return SlockCommand(action=SlockCommandAction.NEW_TEAM, args=remainder)
         return SlockCommand(action=SlockCommandAction.NEW_TEAM_MISSING_NAME)
 
-    # /new-role <name>
-    if cmd == "/new-role":
+    # /new-role <name> or /hire <name>
+    if cmd in ("/new-role", "/hire"):
         if remainder:
             return SlockCommand(action=SlockCommandAction.NEW_ROLE, args=remainder)
         return SlockCommand(action=SlockCommandAction.NEW_ROLE_MISSING_NAME)
@@ -441,8 +442,8 @@ def is_slock_command(
         cmd_word = _ALIASES[cmd_word]
         normalized = f"{cmd_word} {parts[1]}" if len(parts) > 1 else cmd_word
 
-    # Always capture /slock and /new-team regardless of chat state
-    if normalized.startswith(("/slock", "/new-team")):
+    # Always capture /slock, /new-team, and /hire regardless of chat state
+    if normalized.startswith(("/slock", "/new-team", "/hire")):
         return SlockCommandResult(is_command=True)
 
     # Global management commands: /team and /role operate across all teams

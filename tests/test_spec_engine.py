@@ -2365,6 +2365,16 @@ class TestSpecHandler:
         handler.handle_spec_command("mid", "cid", "/spec Build login", None)
         handler.start_spec_engine.assert_called_once()
 
+    def test_handle_spec_command_accepts_any_slash_whitespace(self):
+        handler = self._make_handler()
+        handler.start_spec_engine = MagicMock()
+
+        handler.handle_spec_command("mid", "cid", "/spec\tBuild login", None)
+
+        handler.start_spec_engine.assert_called_once_with(
+            "mid", "cid", "Build login", None
+        )
+
     def test_handle_spec_command_routing_status(self):
         handler = self._make_handler()
         handler.show_spec_status = MagicMock()

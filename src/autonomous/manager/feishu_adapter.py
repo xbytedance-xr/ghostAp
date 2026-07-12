@@ -19,6 +19,8 @@ from lark_oapi.api.im.v1 import (
     ReplyMessageRequestBody,
 )
 
+from ...utils.errors import get_error_detail
+
 logger = logging.getLogger(__name__)
 
 
@@ -131,8 +133,9 @@ class FeishuAdapter:
                 error=f"code={response.code}, msg={response.msg}",
             )
         except Exception as exc:
-            logger.error("Failed to send message: %s", exc)
-            return DeliveryResult(success=False, error=str(exc))
+            detail = get_error_detail(exc)
+            logger.error("Failed to send message: %s", detail)
+            return DeliveryResult(success=False, error=detail)
 
     async def reply_message(
         self,
@@ -162,8 +165,9 @@ class FeishuAdapter:
                 error=f"code={response.code}, msg={response.msg}",
             )
         except Exception as exc:
-            logger.error("Failed to reply message: %s", exc)
-            return DeliveryResult(success=False, error=str(exc))
+            detail = get_error_detail(exc)
+            logger.error("Failed to reply message: %s", detail)
+            return DeliveryResult(success=False, error=detail)
 
     async def send_card(
         self,
@@ -205,5 +209,6 @@ class FeishuAdapter:
                 error=f"code={response.code}, msg={response.msg}",
             )
         except Exception as exc:
-            logger.error("Failed to update card: %s", exc)
-            return DeliveryResult(success=False, error=str(exc))
+            detail = get_error_detail(exc)
+            logger.error("Failed to update card: %s", detail)
+            return DeliveryResult(success=False, error=detail)

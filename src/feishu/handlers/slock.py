@@ -7,13 +7,13 @@ import json
 import logging
 import shlex
 import threading
-import time
 from numbers import Real
 from typing import TYPE_CHECKING, Optional
 
 from ...acp.helper import fetch_acp_models
 from ...card import CardBuilder
 from ...card.actions import dispatch as action_ids
+from ...card.shared import build_responsive_layout
 from ...model_selection import is_default_model_option
 from ...slock_engine.exceptions import ExecutorQueueFullError, TaskQueueFullError
 from ...slock_engine.models import SlockChannel
@@ -129,6 +129,13 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     def _get_engine_manager(self):
         return self.ctx.slock_engine_manager
 
+    def _get_global_registry(self):
+        """Get a global AgentRegistry for /hire without requiring an active engine."""
+        from ...slock_engine.agent_registry import AgentRegistry
+        if not hasattr(self, '_global_registry'):
+            self._global_registry = AgentRegistry()
+        return self._global_registry
+
     def _get_engine_name_prefix(self) -> str:
         return "Slock"
 
@@ -215,6 +222,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     ):
         """Route slock-related commands to the appropriate handler method."""
         cmd = parse_slock_command(text)
+        is_hire = text.strip().lower().startswith("/hire") or text.strip().lower().startswith("/h ")
 
         dispatch: dict[SlockCommandAction, callable] = {
             SlockCommandAction.ACTIVATE: lambda: self.activate_slock(message_id, chat_id, cmd.args, project),
@@ -225,7 +233,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             SlockCommandAction.TEAM_LIST: lambda: self.list_teams(message_id, chat_id, project),
             SlockCommandAction.TEAM_STATUS: lambda: self.show_team_status(message_id, chat_id, cmd.target, project),
             SlockCommandAction.TEAM_DISSOLVE: lambda: self.dissolve_team(message_id, chat_id, cmd.target, project),
-            SlockCommandAction.NEW_ROLE: lambda: self.create_role(message_id, chat_id, cmd.args, project),
+            SlockCommandAction.NEW_ROLE: lambda: self.create_role(message_id, chat_id, cmd.args, project, global_hire=is_hire),
             SlockCommandAction.ROLE_LIST: lambda: self.list_roles(message_id, chat_id, project),
             SlockCommandAction.ROLE_REMOVE: lambda: self.remove_role(message_id, chat_id, cmd.target, project),
             SlockCommandAction.ROLE_MOVE: lambda: self.move_role(message_id, chat_id, cmd.target, cmd.args, project),
@@ -1629,6 +1637,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         settings = self.ctx.settings
         group_name = self._format_slock_group_name(name, getattr(settings, "slock_team_name_suffix", "[Slock]"))
+        manager = self._get_engine_manager()
+        if not manager.reserve_team_name(name):
+            self.reply_text(message_id, f"❌ 团队名称 **{name}** 已存在或正在创建，请换一个名称。")
+            return
 
         # Step 1: Create Feishu group
         lark_client = LarkChatClient(api_client_factory=self.ctx.api_client_factory)
@@ -1642,9 +1654,13 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             from src.utils.errors import redact_sensitive
             logger.error("create_team: 建群失败 name=%s err=%s", name, redact_sensitive(str(e)))
             self.reply_text(message_id, f"❌ 创建团队群失败: {safe_error_message(e)}")
+            manager.release_team_name(name)
             return
 
         new_chat_id = result.chat_id
+        engine = None
+        root_path = ""
+        release_reservation = True
 
         try:
             # Step 2: Promote sender to group manager
@@ -1652,7 +1668,6 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
             # Step 3: Initialize slock engine for the new group
             root_path = project.root_path if project else self.get_working_dir(chat_id)
-            manager = self._get_engine_manager()
             engine_name = self.get_engine_name(
                 new_chat_id, project_id=(project.project_id if project else None)
             )
@@ -1683,7 +1698,18 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             from ...slock_engine.card_templates import build_welcome_card
 
             welcome_card = build_welcome_card(team_name=name)
-            self.send_card_to_chat(new_chat_id, json.dumps(welcome_card, ensure_ascii=False))
+            try:
+                welcome_message_id = self.send_card_to_chat(
+                    new_chat_id, json.dumps(welcome_card, ensure_ascii=False)
+                )
+            except Exception:
+                logger.exception("create_team: welcome card delivery raised chat=%s", new_chat_id)
+                welcome_message_id = None
+            if not welcome_message_id:
+                self.send_text_to_chat(
+                    new_chat_id,
+                    f"⚠️ 欢迎卡发送失败，但团队 **{name}** 已创建。可发送 `/slock` 打开控制台。",
+                )
 
             # Step 7: Send confirmation with jump link in original group
             from ...slock_engine.card_templates import build_team_created_card
@@ -1693,14 +1719,52 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 group_name=group_name,
                 channel_id=new_chat_id,
             )
-            self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            try:
+                confirmation_message_id = self.reply_card(
+                    message_id, json.dumps(card, ensure_ascii=False)
+                )
+            except Exception:
+                logger.exception("create_team: confirmation card delivery raised chat=%s", new_chat_id)
+                confirmation_message_id = None
+            if not confirmation_message_id:
+                self.reply_text(
+                    message_id,
+                    f"✅ 团队已创建：**{name}**（群 ID: `{new_chat_id}`）。确认卡发送失败，请在飞书群列表中打开该群。",
+                )
 
         except Exception as e:
-            # Rollback: delete the created group on any activation failure
             from src.utils.errors import redact_sensitive
             logger.error("create_team: 激活失败, 回滚建群 chat=%s err=%s", new_chat_id, redact_sensitive(str(e)))
-            lark_client.delete_chat(new_chat_id)
-            self.reply_text(message_id, f"❌ 团队激活失败已回滚: {safe_error_message(e)}")
+            local_rollback_ok = True
+            if engine is not None:
+                try:
+                    manager.archive_managed_chat_marker(new_chat_id)
+                    engine.deactivate()
+                    manager.unregister_managed_chat(new_chat_id)
+                    manager.remove(new_chat_id, root_path)
+                except Exception:
+                    local_rollback_ok = False
+                    logger.exception("create_team: 本地回滚失败 chat=%s", new_chat_id)
+            delete_result = lark_client.delete_chat(new_chat_id)
+            detail = safe_error_message(e)
+            local_state = "本地状态已回滚" if local_rollback_ok else "本地状态回滚失败"
+            if delete_result is True:
+                self.reply_text(message_id, f"❌ 团队激活失败，飞书群已删除，{local_state}: {detail}")
+            elif delete_result is False:
+                persisted = manager.block_team_name_for_cleanup(
+                    name, new_chat_id, "delete_rejected"
+                )
+                release_reservation = persisted
+                self.reply_text(message_id, f"⚠️ 团队激活失败，{local_state}，但飞书群删除失败，请手动删除: {detail}")
+            else:
+                persisted = manager.block_team_name_for_cleanup(
+                    name, new_chat_id, "delete_unknown"
+                )
+                release_reservation = persisted
+                self.reply_text(message_id, f"⚠️ 团队激活失败，{local_state}；飞书删群结果未知，请人工确认: {detail}")
+        finally:
+            if release_reservation:
+                manager.release_team_name(name)
 
     @staticmethod
     def _format_slock_group_name(name: str, suffix: str = "[Slock]") -> str:
@@ -1776,20 +1840,85 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
 
         target_chat_id = engine.channel.channel_id
+        if not manager.claim_dissolve(target_chat_id):
+            self.reply_text(message_id, "⚠️ 该团队正在解散，请勿重复提交。")
+            return
+        try:
+            self._dissolve_team_claimed(message_id, manager, engine)
+        finally:
+            manager.release_dissolve(target_chat_id)
+
+    def _dissolve_team_claimed(self, message_id: str, manager, engine) -> None:
+        """Run one serialized local+Feishu dissolve transaction."""
+        target_chat_id = engine.channel.channel_id
         team_name = engine.channel.team_name or engine.channel.name or target_chat_id
-        engine.deactivate()
-        manager.unregister_managed_chat(target_chat_id)
-        manager.remove(target_chat_id, engine.root_path)
+        channel_snapshot = engine.channel
+        root_path = engine.root_path
+        try:
+            archived_marker = manager.archive_managed_chat_marker(target_chat_id)
+        except (OSError, ValueError) as e:
+            logger.error(
+                "dissolve_team: 归档本地 marker 失败 chat=%s err=%s",
+                target_chat_id,
+                redact_sensitive(str(e)),
+            )
+            self.reply_text(
+                message_id,
+                f"❌ 团队 **{team_name}** 未解散：本地状态归档失败，请重试。",
+            )
+            return
+        if archived_marker is None:
+            self.reply_text(
+                message_id,
+                f"❌ 团队 **{team_name}** 缺少活动 marker，未执行删群以避免重复操作。",
+            )
+            return
+
+        def _restore_local_team() -> bool:
+            try:
+                if archived_marker:
+                    manager.restore_archived_chat_marker(target_chat_id, archived_marker)
+                manager.discard_engine_for_recovery(target_chat_id, root_path)
+                restored_engine = manager.get_or_create(target_chat_id, root_path, engine_name="Slock")
+                restored_engine.activate_channel(channel_snapshot)
+                manager.register_managed_chat(target_chat_id)
+                return True
+            except Exception:
+                logger.exception("dissolve_team: 本地团队补偿恢复失败 chat=%s", target_chat_id)
+                return False
+
+        try:
+            engine.deactivate()
+            manager.unregister_managed_chat(target_chat_id)
+            manager.remove(target_chat_id, root_path)
+        except Exception as e:
+            _restore_local_team()
+            logger.error(
+                "dissolve_team: 本地运行时拆除失败 chat=%s err=%s",
+                target_chat_id,
+                redact_sensitive(str(e)),
+            )
+            self.reply_text(message_id, f"❌ 团队 **{team_name}** 未完整解散，请重试。")
+            return
         from ...project_chat.lark_chat_client import LarkChatClient
 
         lark_client = LarkChatClient(api_client_factory=self.ctx.api_client_factory)
-        try:
-            lark_client.delete_chat(target_chat_id)
-        except Exception as e:
-            logger.error("dissolve_team: 解散飞书群失败 chat=%s err=%s", target_chat_id, redact_sensitive(str(e)))
+        delete_result = lark_client.delete_chat(target_chat_id)
+        if delete_result is False:
+            restored = _restore_local_team()
             self.reply_text(
                 message_id,
-                f"⚠️ 团队 **{team_name}** 本地运行时已停止，但解散飞书群失败: {safe_error_message(e)}",
+                (
+                    f"❌ 团队 **{team_name}** 未解散：飞书删群失败，本地团队已恢复，请重试。"
+                    if restored
+                    else f"⚠️ 团队 **{team_name}** 飞书删群失败，且本地恢复失败，请人工处理。"
+                ),
+            )
+            return
+        if delete_result is None:
+            self.reply_text(
+                message_id,
+                f"⚠️ 团队 **{team_name}** 的飞书删群结果未知；本地已停止且不会自动恢复，请人工确认群状态。",
             )
             return
 
@@ -1829,29 +1958,34 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     )
 
     def create_role(
-        self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None
+        self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None,
+        *, global_hire: bool = False,
     ):
         """Create a new virtual agent role.
 
         Supports parameter syntax:
+            /hire <name> [--tool <type>] [--model <model>] [--emoji <e>] [--role <role>] [--prompt <text>]
             /new-role <name> [--tool <type>] [--model <model>] [--emoji <e>] [--role <role>] [--prompt <text>]
+
+        When global_hire=True, the agent is registered at service level
+        without requiring an active slock group. It can be invited to groups later.
         """
         if not name:
             self.reply_text(
                 message_id,
-                "请提供角色名称\n\n用法: `/new-role <角色名称>` [--tool codex] [--model o3-pro] "
-                "[--emoji 🔧] [--role coder] [--prompt <text>]",
+                "请提供员工名称\n\n用法: `/hire <名称>` [--tool codex] [--model o3-pro] "
+                "[--emoji 🔧] [--role coder] [--prompt <约束描述>]",
             )
             return
 
         manager = self._get_engine_manager()
-        engine = manager.get_activated_engine(chat_id)
-        if not engine:
+        engine = manager.get_activated_engine(chat_id) if not global_hire else None
+        if not global_hire and not engine:
             self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
             return
 
         # Permission gate: only admin or channel owner may create roles.
-        if not self._check_slock_permission(engine, message_id, chat_id):
+        if not global_hire and not self._check_slock_permission(engine, message_id, chat_id):
             return
 
         # Parse optional arguments from the name/args string
@@ -1935,7 +2069,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         fork_source: AgentIdentity | None = None
         if fork_name:
-            fork_source = engine.registry.find_by_name(fork_name, channel_id=chat_id) or engine.registry.find_by_name(fork_name)
+            registry = engine.registry if engine else self._get_global_registry()
+            fork_source = registry.find_by_name(fork_name, channel_id=chat_id) or registry.find_by_name(fork_name)
             if not isinstance(fork_source, AgentIdentity):
                 self.reply_text(message_id, f"❌ 未找到可 fork 的角色: `{fork_name}`")
                 return
@@ -1978,12 +2113,14 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         # Assign unique emoji if not explicitly provided
         if not emoji_explicit:
             from ...slock_engine.role_bootstrap import pick_unique_emoji
-            used_emojis = {a.emoji for a in engine.registry.list_agents() if hasattr(a, 'emoji')}
+            registry = engine.registry if engine else self._get_global_registry()
+            used_emojis = {a.emoji for a in registry.list_agents() if hasattr(a, 'emoji')}
             emoji = pick_unique_emoji(role, used_emojis)
 
         runtime_agent_type = self._resolve_slock_runtime_agent_type(tool_type)
         agent_id = f"{runtime_agent_type}:{model_name or 'default'}:{role_name}"
-        existing_raw = engine.registry.get(agent_id)
+        registry = engine.registry if engine else self._get_global_registry()
+        existing_raw = registry.get(agent_id)
         existing_agent = existing_raw if isinstance(existing_raw, AgentIdentity) else None
         if existing_agent and not system_prompt:
             system_prompt = existing_agent.system_prompt
@@ -1993,7 +2130,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 role=role,
                 tool_type=tool_type,
                 model_name=model_name,
-                team_name=(engine.channel.team_name if engine.channel else chat_id),
+                team_name=(engine.channel.team_name if engine and engine.channel else chat_id),
             )
 
         # Determine personality traits: explicit --traits overrides default role mapping
@@ -4028,47 +4165,23 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         # --- Tasks 26-28: Dissolve confirmation & undo ---
         if action_type == "slock_confirm_dissolve":
             team_name = str(value.get("team_name") or "")
+            target_chat_id = str(value.get("channel_id") or "")
             manager = self._get_engine_manager()
-            engine = manager.find_team(team_name) if team_name else manager.get_activated_engine(open_chat_id)
+            engine = (
+                manager.get_activated_engine(target_chat_id)
+                if target_chat_id and target_chat_id == open_chat_id
+                else None
+            )
             if engine and engine.channel:
                 if not self._check_slock_permission(engine, open_message_id, open_chat_id):
                     return
-                # Save snapshot for undo (30s TTL)
-                from src.slock_engine.models import TeamSnapshot
-                snapshot = TeamSnapshot(
-                    channel_id=engine.channel.channel_id,
-                    team_name=engine.channel.team_name or engine.channel.name or "",
-                    owner_id=engine.channel.owner_id or "",
-                    channel=engine.channel,
-                    agent_ids=[a.agent_id for a in engine.registry.list_agents(channel_id=engine.channel.channel_id)],
-                )
-                if not hasattr(self, "_dissolve_snapshots"):
-                    self._dissolve_snapshots: dict[str, TeamSnapshot] = {}
-                self._dissolve_snapshots[snapshot.channel_id] = snapshot
-
-                target_chat_id = engine.channel.channel_id
-                engine.deactivate()
-                manager.unregister_managed_chat(target_chat_id)
-                manager.remove(target_chat_id, engine.root_path)
-                self.send_text_to_chat(
-                    open_chat_id,
-                    f"✅ 团队 **{snapshot.team_name}** 已解散。30 秒内可点击撤销恢复。",
-                )
+                self.dissolve_team(open_message_id, open_chat_id, target_chat_id)
             else:
                 self.send_text_to_chat(open_chat_id, "⚠️ 未找到目标团队。")
             return
 
         if action_type == "slock_undo_dissolve":
-            channel_id = str(value.get("channel_id") or "")
-            snapshots = getattr(self, "_dissolve_snapshots", {})
-            snapshot = snapshots.pop(channel_id, None) if channel_id else None
-            if snapshot and (time.time() - snapshot.created_at) <= 30:
-                self.send_text_to_chat(
-                    open_chat_id,
-                    f"↩️ 团队 **{snapshot.team_name}** 解散已撤销（本地状态恢复）。如飞书群已删除需手动重建。",
-                )
-            else:
-                self.send_text_to_chat(open_chat_id, "⚠️ 撤销已过期或快照不存在。")
+            self.send_text_to_chat(open_chat_id, "⚠️ 解散会删除飞书群，当前操作不可撤销。")
             return
 
         # --- Task 24: Form submissions from command panel ---
@@ -4461,26 +4574,50 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 self.send_text_to_chat(chat_id, "⚠️ 当前没有活跃团队可解散。")
                 return
             team_name = engine.channel.team_name or engine.channel.name or "当前团队"
+            channel_id = engine.channel.channel_id
             import json as _json
+            buttons = [
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "确认解散"},
+                    "type": "danger",
+                    "behaviors": [{
+                        "type": "callback",
+                        "value": {
+                            "action": "slock_confirm_dissolve",
+                            "team_name": team_name,
+                            "channel_id": channel_id,
+                            "project_id": project_id,
+                        },
+                    }],
+                },
+                {
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": "取消"},
+                    "type": "default",
+                    "behaviors": [{
+                        "type": "callback",
+                        "value": {"action": "slock_noop", "channel_id": channel_id},
+                    }],
+                },
+            ]
             confirm_card = {
                 "schema": "2.0",
                 "config": {"wide_screen_mode": True},
                 "header": {"title": {"tag": "plain_text", "content": "⚠️ 确认解散团队"}, "template": "red"},
                 "body": {"elements": [
                     {"tag": "markdown", "content": f"即将解散团队 **{team_name}**，此操作将：\n- 停止所有 Agent\n- 删除飞书群\n- 清除运行时状态\n\n确认继续？"},
-                    {"tag": "action", "actions": [
-                        {"tag": "button", "text": {"tag": "plain_text", "content": "确认解散"},
-                         "type": "danger",
-                         "value": {"action": "slock_confirm_dissolve", "team_name": team_name, "project_id": project_id},
-                         "action_type": "slock_confirm_dissolve"},
-                        {"tag": "button", "text": {"tag": "plain_text", "content": "取消"},
-                         "type": "default",
-                         "value": {"action": "noop"},
-                         "action_type": "slock_noop"},
-                    ]},
+                    *build_responsive_layout(buttons),
                 ]},
             }
-            self.send_card_to_chat(chat_id, _json.dumps(confirm_card, ensure_ascii=False))
+            sent_message_id = self.send_card_to_chat(
+                chat_id, _json.dumps(confirm_card, ensure_ascii=False)
+            )
+            if not sent_message_id:
+                self.send_text_to_chat(
+                    chat_id,
+                    "⚠️ 解散确认卡发送失败，未执行解散。请重新打开 `/slock` 控制台后再试。",
+                )
             return
 
         # --- Task 23: Discuss routing ---

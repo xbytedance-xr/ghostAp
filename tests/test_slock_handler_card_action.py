@@ -6,6 +6,7 @@ sub-command handler methods.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 
@@ -95,6 +96,41 @@ class TestSlockCmdPanelRouting:
         )
         handler.project_manager.get_project_for_chat.assert_called_once_with("proj1", "chat1")
         handler.list_teams.assert_called_once_with("msg1", "chat1", mock_project)
+
+    def test_dissolve_confirmation_uses_schema2_columns_and_bound_channel(self):
+        handler = self._make_handler()
+        engine = MagicMock()
+        engine.channel.team_name = "Alpha"
+        engine.channel.channel_id = "oc_team"
+        handler._get_engine_manager.return_value.get_activated_engine.return_value = engine
+        handler._check_slock_permission.return_value = True
+        handler.send_card_to_chat.return_value = "om_card"
+
+        handler._dispatch_cmd_panel_action(
+            "msg1", "oc_team", "slock_cmd_dissolve_team", {"project_id": "proj1"}
+        )
+
+        card = json.loads(handler.send_card_to_chat.call_args.args[1])
+        blob = json.dumps(card, ensure_ascii=False)
+        assert '"tag": "action"' not in blob
+        assert '"tag": "column_set"' in blob
+        assert '"channel_id": "oc_team"' in blob
+        assert '"type": "callback"' in blob
+
+    def test_dissolve_confirmation_card_failure_falls_back_to_text(self):
+        handler = self._make_handler()
+        engine = MagicMock()
+        engine.channel.team_name = "Alpha"
+        engine.channel.channel_id = "oc_team"
+        handler._get_engine_manager.return_value.get_activated_engine.return_value = engine
+        handler._check_slock_permission.return_value = True
+        handler.send_card_to_chat.return_value = None
+
+        handler._dispatch_cmd_panel_action(
+            "msg1", "oc_team", "slock_cmd_dissolve_team", {}
+        )
+
+        assert "确认卡发送失败" in handler.send_text_to_chat.call_args.args[1]
 
 
 class TestHandleCardActionCmdPrefix:
@@ -191,6 +227,45 @@ class TestHandleCardActionNewHandlers:
         handler.handle_card_action("msg1", "chat1", "slock_confirm_dissolve", {"team_name": "x"})
         handler.send_text_to_chat.assert_called_once()
         assert "未找到" in handler.send_text_to_chat.call_args[0][1]
+
+    def test_confirm_dissolve_delegates_to_real_group_deletion_flow(self):
+        handler = self._make_handler()
+        manager = handler._get_engine_manager.return_value
+        engine = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler.dissolve_team = MagicMock()
+
+        handler.handle_card_action(
+            "msg1",
+            "oc_team",
+            "slock_confirm_dissolve",
+            {"team_name": "Alpha", "channel_id": "oc_team"},
+        )
+
+        handler.dissolve_team.assert_called_once_with("msg1", "oc_team", "oc_team")
+
+    def test_confirm_dissolve_rejects_stale_or_forwarded_channel_id(self):
+        handler = self._make_handler()
+        handler.dissolve_team = MagicMock()
+
+        handler.handle_card_action(
+            "msg1",
+            "oc_current",
+            "slock_confirm_dissolve",
+            {"team_name": "Alpha", "channel_id": "oc_other"},
+        )
+
+        handler.dissolve_team.assert_not_called()
+        assert "未找到" in handler.send_text_to_chat.call_args.args[1]
+
+    def test_undo_dissolve_does_not_claim_false_restore(self):
+        handler = self._make_handler()
+
+        handler.handle_card_action(
+            "msg1", "chat1", "slock_undo_dissolve", {"channel_id": "oc_team"}
+        )
+
+        assert "不可撤销" in handler.send_text_to_chat.call_args.args[1]
 
 
 class TestDispatchCmdPanelDiscuss:

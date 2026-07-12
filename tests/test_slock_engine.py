@@ -265,7 +265,12 @@ class TestSlockEngine:
         """Activation creates the auditable team workspace described by the design doc."""
         mock_create_session.return_value = None
         root_path = str(tmp_path / "project_root")
-        engine = SlockEngine(chat_id="chat_workspace", root_path=root_path)
+        storage_path = str(tmp_path / "slock_storage")
+        engine = SlockEngine(
+            chat_id="chat_workspace",
+            root_path=root_path,
+            memory_base_path=storage_path,
+        )
         ch = SlockChannel(channel_id="ch_workspace", name="Workspace", team_name="WorkspaceTeam")
 
         engine.activate_channel(ch)
@@ -283,7 +288,11 @@ class TestSlockEngine:
     def test_activate_channel_seeds_global_agent_templates(self, mock_create_session, tmp_path):
         """Activation seeds the global Agent template market, including onboarding."""
         mock_create_session.return_value = None
-        engine = SlockEngine(chat_id="chat_templates", root_path=str(tmp_path))
+        engine = SlockEngine(
+            chat_id="chat_templates",
+            root_path=str(tmp_path),
+            memory_base_path=str(tmp_path / "slock_storage"),
+        )
         ch = SlockChannel(channel_id="ch_templates", name="Templates", team_name="TemplateTeam")
 
         engine.activate_channel(ch)

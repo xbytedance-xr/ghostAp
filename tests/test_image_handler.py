@@ -136,6 +136,127 @@ class TestParsePostMessage:
         assert result.text == "请看这张图"
         assert result.image_keys == ["img_v2_abc"]
 
+    def test_parse_flat_production_post_with_engine_command_and_image(self, handler):
+        content_rows = [
+            [
+                {
+                    "tag": "text",
+                    "text": "/deep 分析最近一天的改动并恢复原来的执行逻辑",
+                    "style": [],
+                }
+            ],
+            [
+                {
+                    "tag": "img",
+                    "image_key": "img_v3_production_evidence",
+                    "width": 712,
+                    "height": 1384,
+                }
+            ],
+        ]
+        content = json.dumps(
+            {
+                "title": "",
+                "content": content_rows,
+                "content_v2": content_rows,
+            }
+        )
+
+        result = handler.parse_message("post", content)
+
+        assert result.text == "/deep 分析最近一天的改动并恢复原来的执行逻辑"
+        assert result.image_keys == ["img_v3_production_evidence"]
+
+    def test_parse_post_falls_back_to_content_v2_when_content_is_empty(self, handler):
+        rows = [
+            [{"tag": "text", "text": "/wf\n继续执行", "style": []}],
+            [{"tag": "img", "image_key": "img_v3_content_v2"}],
+        ]
+
+        result = handler.parse_message(
+            "post",
+            json.dumps({"title": "", "content": [], "content_v2": rows}),
+        )
+
+        assert result.text == "/wf\n继续执行"
+        assert result.image_keys == ["img_v3_content_v2"]
+
+    def test_parse_post_merges_partial_content_and_content_v2_evidence(self, handler):
+        result = handler.parse_message(
+            "post",
+            json.dumps(
+                {
+                    "content": [[{"tag": "text", "text": "/deep inspect"}]],
+                    "content_v2": [
+                        [{"tag": "text", "text": "/deep inspect"}],
+                        [{"tag": "img", "image_key": "img_v3_only_in_v2"}],
+                    ],
+                }
+            ),
+        )
+
+        assert result.text == "/deep inspect"
+        assert result.image_keys == ["img_v3_only_in_v2"]
+
+    def test_parse_post_preserves_repeated_elements_within_one_representation(self, handler):
+        repeated = [
+            [{"tag": "text", "text": "echo"}, {"tag": "text", "text": "echo"}],
+            [{"tag": "img", "image_key": "img_same"}, {"tag": "img", "image_key": "img_same"}],
+        ]
+
+        result = handler.parse_message(
+            "post",
+            json.dumps({"content": repeated, "content_v2": repeated}),
+        )
+
+        assert result.text == "echoecho"
+        assert result.image_keys == ["img_same", "img_same"]
+
+    def test_parse_post_does_not_concatenate_mirrored_text_segmentations(self, handler):
+        result = handler.parse_message(
+            "post",
+            json.dumps(
+                {
+                    "content": [[{"tag": "text", "text": "/deep inspect"}]],
+                    "content_v2": [[
+                        {"tag": "text", "text": "/deep "},
+                        {"tag": "text", "text": "inspect"},
+                    ]],
+                }
+            ),
+        )
+
+        assert result.text == "/deep inspect"
+
+    def test_parse_post_preserves_slash_across_style_split_text_nodes(self, handler):
+        result = handler.parse_message(
+            "post",
+            json.dumps(
+                {
+                    "content": [[{"tag": "text", "text": "/deep inspect"}]],
+                    "content_v2": [[
+                        {"tag": "text", "text": "/"},
+                        {"tag": "text", "text": "deep inspect"},
+                    ]],
+                }
+            ),
+        )
+
+        assert result.text == "/deep inspect"
+
+    def test_parse_post_uses_complete_text_superset_from_content_v2(self, handler):
+        result = handler.parse_message(
+            "post",
+            json.dumps(
+                {
+                    "content": [[{"tag": "text", "text": "/deep inspect"}]],
+                    "content_v2": [[{"tag": "text", "text": "/deep inspect and fix"}]],
+                }
+            ),
+        )
+
+        assert result.text == "/deep inspect and fix"
+
     def test_parse_multiple_rows(self, handler):
         content = self._build_post(
             [
@@ -145,7 +266,7 @@ class TestParsePostMessage:
             ]
         )
         result = handler.parse_message("post", content)
-        assert result.text == "第一行 第二行"
+        assert result.text == "第一行\n第二行"
         assert result.image_keys == ["img_1", "img_2"]
 
     def test_parse_multiple_images(self, handler):
