@@ -240,8 +240,16 @@ class TestCreateRoleDefaults:
         manager.get_activated_engine.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
-        models = [MagicMock(name="model", description="fast")]
-        models[0].name = "gpt-5"
+        models = [
+            SimpleNamespace(
+                name="gpt-5",
+                description="fast",
+                reasoning_efforts=("high", "xhigh"),
+                adapted_reasoning_effort="high",
+                selection_variants=(),
+                is_default=True,
+            )
+        ]
         with patch("src.feishu.handlers.slock.fetch_acp_models", return_value=models):
             handler.handle_new_role_select_tool(
                 "msg_1",
@@ -259,8 +267,59 @@ class TestCreateRoleDefaults:
         assert any(
             v.get("action") == "slock_new_role_select_model"
             and v.get("tool_name") == "codex"
-            and v.get("model_name") == "gpt-5"
+            and v.get("model_name") == "gpt-5/high"
+            and v.get("role_name") == "SimpleAgent"
             for v in values
+        )
+        assert {
+            "slock_new_role_select_model_group",
+            "slock_new_role_select_model_effort",
+        }.issubset({v.get("action") for v in values})
+
+    def test_model_cascade_change_repaints_slock_flow_without_creating_role(self):
+        """Changing effort keeps the employee payload and waits for confirmation."""
+        handler = self._make_handler()
+        handler.update_card = MagicMock(return_value=True)
+        handler.create_role = MagicMock()
+        engine = self._make_engine()
+
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+        models = [
+            SimpleNamespace(
+                name="gpt-5",
+                description="fast",
+                reasoning_efforts=("high", "xhigh"),
+                adapted_reasoning_effort="high",
+                selection_variants=(),
+                is_default=True,
+            )
+        ]
+
+        with patch("src.feishu.handlers.slock.fetch_acp_models", return_value=models):
+            handler.handle_new_role_model_cascade_select(
+                "msg_1",
+                "chat_test",
+                {
+                    "action": "slock_new_role_select_model_effort",
+                    "role_name": "SimpleAgent",
+                    "tool_name": "codex",
+                    "model_group": "gpt-5",
+                    "model_profile": "standard",
+                    "_option": "xhigh",
+                },
+            )
+
+        handler.create_role.assert_not_called()
+        handler.update_card.assert_called_once()
+        card = json.loads(handler.update_card.call_args[0][1])
+        values = _collect_card_values(card)
+        assert any(
+            value.get("action") == "slock_new_role_select_model"
+            and value.get("model_name") == "gpt-5/xhigh"
+            and value.get("role_name") == "SimpleAgent"
+            for value in values
         )
 
     def test_select_ttadk_tool_is_rejected_without_acp_models(self):

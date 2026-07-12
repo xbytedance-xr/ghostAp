@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Optional
 
 from src.mode.manager import InteractionMode
 
+from .actions import dispatch as action_ids
 from .builders.core import CoreBuilder
 from .builders.deep import DeepBuilder
 from .builders.project import ProjectBuilder
@@ -451,6 +452,12 @@ class CardBuilder:
         pending_profile: Optional[str] = None,
         pending_effort: Optional[str] = None,
         context_markdown: Optional[str] = None,
+        group_action: str = action_ids.SELECT_ACP_MODEL_GROUP,
+        profile_action: str = action_ids.SELECT_ACP_MODEL_PROFILE,
+        effort_action: str = action_ids.SELECT_ACP_MODEL_EFFORT,
+        select_action: str = action_ids.SELECT_ACP_MODEL,
+        refresh_action: str = action_ids.REFRESH_ACP_MODELS,
+        value_extra: Optional[dict] = None,
     ) -> tuple[str, str]:
         return SystemBuilder.build_acp_model_cascade_card(
             models,
@@ -462,6 +469,12 @@ class CardBuilder:
             pending_profile=pending_profile,
             pending_effort=pending_effort,
             context_markdown=context_markdown,
+            group_action=group_action,
+            profile_action=profile_action,
+            effort_action=effort_action,
+            select_action=select_action,
+            refresh_action=refresh_action,
+            value_extra=value_extra,
         )
 
     @staticmethod

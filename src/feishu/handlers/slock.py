@@ -2272,6 +2272,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
 
         cwd = getattr(project, "root_path", None) or (getattr(engine, "root_path", None) if engine else None) or self.get_working_dir(chat_id)
+        try:
+            model_page = int(value.get("model_page", 0) or 0)
+        except (TypeError, ValueError):
+            model_page = 0
         models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
 
         # Try cascade card (with effort/thinking dropdown) for tools with many variants
@@ -2290,12 +2294,14 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 tool_name,
                 project_id=(project.project_id if project else value.get("project_id")),
                 context_markdown=f"员工: **{role_name}** · 选择模型和思考深度",
+                group_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_GROUP,
+                profile_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE,
+                effort_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT,
+                select_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
+                refresh_action=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
+                value_extra=value_extra,
             )
         else:
-            try:
-                model_page = int(value.get("model_page", 0) or 0)
-            except (TypeError, ValueError):
-                model_page = 0
             _, card_content = CardBuilder.build_acp_model_select_card(
                 models,
                 tool_name,
@@ -2311,6 +2317,70 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         if model_page and self.update_card(message_id, card_content):
             return
         self.reply_card(message_id, card_content)
+
+    def handle_new_role_model_cascade_select(
+        self,
+        message_id: str,
+        chat_id: str,
+        value: dict,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Repaint the employee model cascade without finalizing the role."""
+
+        role_name = str(value.get("role_name") or "").strip()
+        tool_name = str(value.get("tool_name") or "").strip().lower()
+        if not role_name or tool_name not in self.TOOL_TYPE_ROLE_MAP:
+            self.reply_text(message_id, "请选择有效的员工工具和模型")
+            return
+
+        action = str(value.get("action") or "")
+        selected = str(value.get("_option") or "").strip()
+        pending_group = value.get("model_group")
+        pending_profile = value.get("model_profile")
+        pending_effort = value.get("model_effort")
+        if action == action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_GROUP:
+            pending_group = selected or pending_group
+            pending_profile = None
+            pending_effort = None
+        elif action == action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE:
+            pending_profile = selected or pending_profile
+            pending_effort = None
+        elif action == action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT:
+            pending_effort = selected or pending_effort
+        else:
+            self.reply_text(message_id, "请选择有效的模型选项")
+            return
+
+        is_global = bool(value.get("global_hire"))
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id) if not is_global else None
+        if not is_global and not engine:
+            self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
+            return
+
+        cwd = (
+            getattr(project, "root_path", None)
+            or (getattr(engine, "root_path", None) if engine else None)
+            or self.get_working_dir(chat_id)
+        )
+        models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
+        value_extra = {"role_name": role_name, "global_hire": is_global}
+        _, card_content = CardBuilder.build_acp_model_cascade_card(
+            models,
+            tool_name,
+            project_id=(project.project_id if project else value.get("project_id")),
+            pending_group=pending_group,
+            pending_profile=pending_profile,
+            pending_effort=pending_effort,
+            context_markdown=f"员工: **{role_name}** · 选择模型和思考深度",
+            group_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_GROUP,
+            profile_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE,
+            effort_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT,
+            select_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
+            refresh_action=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
+            value_extra=value_extra,
+        )
+        self.update_card(message_id, card_content)
 
     def handle_new_role_select_model(
         self,

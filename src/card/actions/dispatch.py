@@ -169,6 +169,9 @@ SHOW_TUI2ACP_MENU = "show_tui2acp_menu"  # Show tui2acp adapter selection menu
 # ---------------------------------------------------------------------------
 SLOCK_NEW_ROLE_SELECT_TOOL = "slock_new_role_select_tool"  # Select a tool while creating a Slock role
 SLOCK_NEW_ROLE_SELECT_MODEL = "slock_new_role_select_model"  # Select a model and create the Slock role
+SLOCK_NEW_ROLE_SELECT_MODEL_GROUP = "slock_new_role_select_model_group"
+SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE = "slock_new_role_select_model_profile"
+SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT = "slock_new_role_select_model_effort"
 
 # ---------------------------------------------------------------------------
 # Lock actions

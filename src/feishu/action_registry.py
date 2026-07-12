@@ -517,6 +517,17 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         ),
         exact=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
     )
+    for action in (
+        action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_GROUP,
+        action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE,
+        action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT,
+    ):
+        client._register_action(
+            lambda mid, cid, pid, val: client._slock_handler.handle_new_role_model_cascade_select(
+                mid, cid, val, _resolve_project(client, pid, cid)
+            ),
+            exact=action,
+        )
 
     # System
     client._register_action(

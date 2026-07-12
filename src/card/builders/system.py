@@ -1306,6 +1306,12 @@ class SystemBuilder:
         pending_profile: Optional[str] = None,
         pending_effort: Optional[str] = None,
         context_markdown: Optional[str] = None,
+        group_action: str = action_ids.SELECT_ACP_MODEL_GROUP,
+        profile_action: str = action_ids.SELECT_ACP_MODEL_PROFILE,
+        effort_action: str = action_ids.SELECT_ACP_MODEL_EFFORT,
+        select_action: str = action_ids.SELECT_ACP_MODEL,
+        refresh_action: str = action_ids.REFRESH_ACP_MODELS,
+        value_extra: Optional[dict] = None,
     ) -> tuple[str, str]:
         """Build a cascade (family × profile × effort) ACP model-select card.
 
@@ -1396,6 +1402,10 @@ class SystemBuilder:
                 project_id,
                 current_model=current_model,
                 thread_root_id=thread_root_id,
+                action_name=select_action,
+                value_extra=value_extra,
+                context_markdown=context_markdown,
+                refresh_action_name=refresh_action,
             )
 
         def _value_builder(action: str, extra: dict) -> dict:
@@ -1406,6 +1416,8 @@ class SystemBuilder:
                 "thread_root_id": thread_root_id,
             }
             value.update(extra)
+            if value_extra:
+                value.update(value_extra)
             return value
 
         elements: list[dict] = [
@@ -1421,11 +1433,11 @@ class SystemBuilder:
             build_model_cascade_elements(
                 models=norm_models,
                 value_builder=_value_builder,
-                group_action=action_ids.SELECT_ACP_MODEL_GROUP,
-                profile_action=action_ids.SELECT_ACP_MODEL_PROFILE,
-                effort_action=action_ids.SELECT_ACP_MODEL_EFFORT,
-                select_action=action_ids.SELECT_ACP_MODEL,
-                default_action=action_ids.SELECT_ACP_MODEL,
+                group_action=group_action,
+                profile_action=profile_action,
+                effort_action=effort_action,
+                select_action=select_action,
+                default_action=select_action,
                 pending_group=pending_group,
                 pending_profile=pending_profile,
                 pending_effort=pending_effort,
@@ -1436,11 +1448,13 @@ class SystemBuilder:
 
         # Refresh button (re-probe models), consistent with the button card.
         refresh_value = {
-            "action": action_ids.REFRESH_ACP_MODELS,
+            "action": refresh_action,
             "tool_name": tool_name,
             "project_id": project_id,
             "thread_root_id": thread_root_id,
         }
+        if value_extra:
+            refresh_value.update(value_extra)
         elements.append({"tag": "hr"})
         elements.extend(
             build_responsive_layout(
