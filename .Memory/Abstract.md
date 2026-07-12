@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-12
+- **Agent部门Foundation计划** — 员工域/Vault/Journal投影/Authority栅栏拆为四个TDD任务并完成独立阻断审查 → [详细记录](2026-07-12.md)
 - **生产级Agent部门设计** — Journal SSOT + 加密Vault + 每员工Channel子进程 + 可恢复Hire/Fire Saga，九项模块与发布门禁完成grill收敛 → [详细记录](2026-07-12.md)
 - **Slock员工级联回调恢复** — `/hire` Profile/Effort 级联不再因未初始化分页变量崩溃，专用 action 与员工 payload 全程保留，确认才创建角色 → [详细记录](2026-07-12.md)
 - **引擎路由恢复+Slock假群清理** — flat post/image 与命令优先级恢复 Deep/Spec/WT/WF 原策略，Autonomous 假成功 fail-close；隔离并防复发 7 个 Slock 测试群 → [详细记录](2026-07-12.md)
