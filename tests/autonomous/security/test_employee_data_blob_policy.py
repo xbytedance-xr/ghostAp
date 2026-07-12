@@ -124,6 +124,35 @@ def test_exact_label_policy_rejects_extra_cross_resource_and_secret_keys(
         store.close()
 
 
+@pytest.mark.parametrize(
+    ("purpose", "resource_id"),
+    [
+        ("execution_history", "data_0123456789abcdef"),
+        ("reasoning", "hist_" + "a" * 64),
+    ],
+)
+def test_label_validation_binds_purpose_to_resource_shape(
+    tmp_path: Path,
+    purpose: str,
+    resource_id: str,
+) -> None:
+    labels = {
+        "tenant_key": "tenant_1",
+        "owner_principal_id": "principal_1",
+        "classification": "restricted",
+        "purpose": purpose,
+        "resource_id": resource_id,
+        "schema_version": "1",
+    }
+    store = _store(tmp_path / "blobs")
+    try:
+        ref = store.stage_and_publish(b"payload", labels, "k1")
+        with pytest.raises(ValueError, match="resource_id"):
+            validate_blob_ref_labels(ref, labels)
+    finally:
+        store.close()
+
+
 def _store(root: Path) -> BlobStore:
     return BlobStore(root, AesGcmEncryptionProvider(lambda _ref: bytes([4]) * 32))
 

@@ -223,6 +223,10 @@ class SafeExecutionSummary:
     def __str__(self) -> str:
         return self.text
 
+    @property
+    def status(self) -> str:
+        return self.text.split(";", 1)[0].removeprefix("status=")
+
 
 @dataclass(frozen=True)
 class ExecutionAttemptContext:
@@ -372,6 +376,8 @@ class ExecutionHistoryRecordV1:
             raise ValueError("invalid terminal status")
         if not isinstance(self.safe_summary, SafeExecutionSummary):
             raise ValueError("safe_summary must be trusted")
+        if self.safe_summary.status != self.status:
+            raise ValueError("safe_summary status does not match record status")
         prompt = _strict_int(self.prompt_tokens, "prompt_tokens")
         completion = _strict_int(self.completion_tokens, "completion_tokens")
         total = _strict_int(self.total_tokens, "total_tokens")

@@ -274,6 +274,33 @@ def test_from_dict_rejects_conflicting_hash_aliases() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("change", "value"),
+    [
+        ("unknown", "field"),
+        ("size", True),
+        ("payload_hash", 7),
+        ("key_ref", 9),
+        ("labels", []),
+    ],
+)
+def test_blobref_from_dict_rejects_unknown_fields_and_type_coercion(
+    change: str,
+    value: object,
+) -> None:
+    raw = BlobRef(
+        blob_hash="a" * 64,
+        payload_hash="b" * 64,
+        labels_hash="c" * 64,
+        key_ref="key",
+        size=3,
+        labels={"tenant": "one"},
+    ).to_dict()
+    raw[change] = value
+    with pytest.raises(ValueError):
+        BlobRef.from_dict(raw)
+
+
 def test_blobref_rejects_nested_or_non_string_labels() -> None:
     with pytest.raises(ValueError, match="labels"):
         BlobRef(

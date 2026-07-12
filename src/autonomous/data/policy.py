@@ -98,6 +98,12 @@ def validate_blob_ref_labels(ref: BlobRef, expected: Mapping[str, str]) -> None:
         purpose=expected["purpose"],
         resource_id=expected["resource_id"],
     )
+    resource_id = canonical["resource_id"]
+    if canonical["purpose"] == "execution_history":
+        if re.fullmatch(r"hist_[0-9a-f]{64}", resource_id) is None:
+            raise ValueError("resource_id does not match history purpose")
+    elif re.fullmatch(r"data_[0-9a-f]{16}", resource_id) is None:
+        raise ValueError("resource_id does not match document purpose")
     if dict(expected) != canonical or dict(ref.labels or {}) != canonical:
         raise ValueError("BlobRef labels do not match metadata")
     for name in ("blob_hash", "payload_hash", "labels_hash"):

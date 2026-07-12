@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +18,11 @@ from src.autonomous.journal.frame import JournalEvent
 
 HMAC_KEY = b"journal-blob-chaos-test-key-at-least-32-bytes"
 BLOB_KEY = b"0123456789abcdef0123456789abcdef"
+
+
+def labels_hash(labels: dict[str, str]) -> str:
+    encoded = json.dumps(labels, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def blob_event(blob_ref: BlobRef) -> JournalEvent:
@@ -164,12 +171,14 @@ def test_published_blob_must_validate_before_blobref_frame_commit(
         return blob_id in published
 
     writer = open_writer(base_dir, anchor, blob_ref_validator=validate)
+    labels = {"purpose": "evidence"}
     ref = BlobRef(
         blob_id=blob_id,
         content_hash="a" * 64,
         ciphertext_hash=blob_id,
         size=22,
-        labels={"purpose": "evidence"},
+        labels=labels,
+        labels_hash=labels_hash(labels),
         key_ref="tenant-key-v1",
     )
 
@@ -198,12 +207,14 @@ def test_missing_blob_referenced_by_valid_frame_fails_closed_on_restart(
             blob_id = getattr(blob_ref, "ciphertext_hash")
         return blob_id in existing
 
+    labels = {"purpose": "tool_result"}
     ref = BlobRef(
         blob_id=blob_id,
         content_hash="c" * 64,
         ciphertext_hash=blob_id,
         size=19,
-        labels={"purpose": "tool_result"},
+        labels=labels,
+        labels_hash=labels_hash(labels),
         key_ref="tenant-key-v1",
     )
     writer = open_writer(base_dir, anchor, blob_ref_validator=validate)

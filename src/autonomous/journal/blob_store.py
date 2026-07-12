@@ -217,16 +217,75 @@ class BlobRef:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> BlobRef:
+        if not isinstance(value, Mapping):
+            raise ValueError("blob reference must be a mapping")
+        blob_aliases = [
+            item
+            for item in (
+                value.get("blob_hash"),
+                value.get("blob_id"),
+                value.get("ciphertext_hash"),
+            )
+            if item
+        ]
+        payload_aliases = [
+            item
+            for item in (value.get("payload_hash"), value.get("content_hash"))
+            if item
+        ]
+        if any(not isinstance(item, str) for item in (*blob_aliases, *payload_aliases)):
+            raise ValueError("blob hash aliases must be strings")
+        if len(set(blob_aliases)) > 1:
+            raise ValueError("conflicting blob hash aliases")
+        if len(set(payload_aliases)) > 1:
+            raise ValueError("conflicting payload hash aliases")
+        required = {
+            "blob_id",
+            "content_hash",
+            "ciphertext_hash",
+            "payload_hash",
+            "labels_hash",
+            "size",
+            "labels",
+            "key_ref",
+        }
+        if set(value) != required:
+            raise ValueError("invalid blob reference fields")
+        for field_name in (
+            "blob_id",
+            "content_hash",
+            "ciphertext_hash",
+            "payload_hash",
+            "labels_hash",
+        ):
+            if not _is_sha256(value[field_name]):
+                raise ValueError(f"invalid {field_name}")
+        if value["blob_id"] != value["ciphertext_hash"]:
+            raise ValueError("conflicting blob hash aliases")
+        if value["content_hash"] != value["payload_hash"]:
+            raise ValueError("conflicting payload hash aliases")
+        if not isinstance(value["key_ref"], str) or not value["key_ref"]:
+            raise ValueError("invalid key_ref")
+        size = value["size"]
+        if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+            raise ValueError("invalid blob size")
+        labels = value["labels"]
+        if not isinstance(labels, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in labels.items()
+        ):
+            raise ValueError("invalid blob labels")
+        if _sha256(_canonical_json(labels)) != value["labels_hash"]:
+            raise ValueError("blob labels hash mismatch")
         return cls(
-            blob_hash=str(value.get("blob_hash") or ""),
-            blob_id=str(value.get("blob_id") or ""),
-            ciphertext_hash=str(value.get("ciphertext_hash") or ""),
-            payload_hash=str(value.get("payload_hash") or ""),
-            content_hash=str(value.get("content_hash") or ""),
-            labels_hash=str(value.get("labels_hash") or ""),
-            key_ref=str(value.get("key_ref") or ""),
-            size=int(value.get("size") or 0),
-            labels=value.get("labels") if isinstance(value.get("labels"), Mapping) else {},
+            blob_id=value["blob_id"],
+            ciphertext_hash=value["ciphertext_hash"],
+            payload_hash=value["payload_hash"],
+            content_hash=value["content_hash"],
+            labels_hash=value["labels_hash"],
+            key_ref=value["key_ref"],
+            size=size,
+            labels=labels,
         )
 
 
