@@ -133,6 +133,56 @@ def test_vault_writes_exact_envelope_and_non_secret_deterministic_ref(tmp_path) 
     ).hexdigest()
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid_value"),
+    [
+        (field, invalid_value)
+        for field in (
+            "agent_id",
+            "app_id",
+            "hire_intent_id",
+            "attempt_id",
+            "app_secret",
+        )
+        for invalid_value in ("", None, 7)
+    ],
+)
+def test_vault_put_rejects_values_the_reader_would_reject_without_writing(
+    tmp_path,
+    field: str,
+    invalid_value: object,
+) -> None:
+    vault = _vault(tmp_path)
+    values: dict[str, object] = {
+        "agent_id": "agt_1",
+        "app_id": "cli_1",
+        "app_secret": "secret-that-must-not-leak",
+        "hire_intent_id": "hire_1",
+        "attempt_id": "attempt_1",
+    }
+    values[field] = invalid_value
+
+    with pytest.raises(CredentialVaultError) as raised:
+        vault.put(**values)
+
+    assert str(raised.value) == "CredentialVaultError:invalid-input"
+    assert "secret-that-must-not-leak" not in str(raised.value)
+    assert list((tmp_path / "credentials").glob("*.json")) == []
+
+
+def test_vault_put_output_immediately_resolves_and_orphan_scans(tmp_path) -> None:
+    vault = _vault(tmp_path)
+
+    receipt = _put(vault, secret="producer-parser-secret")
+
+    assert vault.resolve(
+        receipt.credential_ref,
+        agent_id=receipt.agent_id,
+        app_id=receipt.app_id,
+    ) == "producer-parser-secret"
+    assert vault.find_orphan_receipts(set()) == [receipt]
+
+
 def test_vault_rejects_wrong_associated_identity(tmp_path) -> None:
     vault = _vault(tmp_path)
     receipt = _put(vault)

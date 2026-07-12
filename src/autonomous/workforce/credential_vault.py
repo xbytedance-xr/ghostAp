@@ -43,6 +43,7 @@ _IDENTITY_FIELDS = (
     "attempt_id",
 )
 _CREDENTIAL_REF_RE = re.compile(r"cred_[0-9a-f]{64}\Z")
+_INVALID_INPUT_REF = "invalid-input"
 
 
 class CredentialVaultConfigurationError(ValueError):
@@ -128,7 +129,12 @@ class CredentialKeyring:
 
 @dataclass(frozen=True)
 class CredentialReceipt:
-    """Non-secret proof that a credential envelope was persisted."""
+    """Non-secret proof that a credential envelope was persisted.
+
+    ``path`` is informational only. It reflects the configured root pathname
+    and can become stale after that directory is renamed; Vault I/O remains
+    anchored to the verified root directory descriptor and never trusts it.
+    """
 
     credential_ref: str
     key_id: str
@@ -179,6 +185,13 @@ class CredentialVault:
         attempt_id: str,
     ) -> CredentialReceipt:
         """Encrypt and durably store an application secret."""
+        self._validate_put_values(
+            agent_id=agent_id,
+            app_id=app_id,
+            app_secret=app_secret,
+            hire_intent_id=hire_intent_id,
+            attempt_id=attempt_id,
+        )
         credential_ref = self._derive_ref(hire_intent_id, attempt_id)
         try:
             envelope = self._encrypt_envelope(
@@ -268,6 +281,11 @@ class CredentialVault:
             if credential_ref not in live_credential_refs:
                 receipts.append(self._receipt(self._read_envelope(credential_ref)))
         return receipts
+
+    @staticmethod
+    def _validate_put_values(**values: object) -> None:
+        if any(not isinstance(value, str) or not value for value in values.values()):
+            raise CredentialVaultError(_INVALID_INPUT_REF)
 
     @staticmethod
     def _derive_ref(hire_intent_id: str, attempt_id: str) -> str:
