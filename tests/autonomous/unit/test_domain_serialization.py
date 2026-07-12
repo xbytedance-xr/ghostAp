@@ -154,7 +154,7 @@ def test_principal_employee_capability_and_progress_are_isolated() -> None:
         app_open_ids={"manager": "ou_manager"},
     )
     employee = EmployeeDefinition(
-        employee_id="employee_1",
+        agent_id="employee_1",
         tenant_key="tenant_1",
         owner_principal_id=principal.principal_id,
         capabilities=("code.read@1.0",),
@@ -216,6 +216,7 @@ def test_remaining_public_aggregates_round_trip() -> None:
     bot = BotPrincipal(
         bot_principal_id="bot_1",
         tenant_key="tenant_1",
+        agent_id="employee_1",
         app_id="cli_app",
         credential_ref="keychain://bot_1",
         scopes=("im:message",),
