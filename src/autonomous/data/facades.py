@@ -66,6 +66,7 @@ class EmployeeDocumentMaterializer:
         doc_path = self.resolve_path(agent_id, kind, source_id)
         target = doc_path.absolute
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._cleanup_stale_temps(target.parent, target.stem)
         temp_name = f".{target.stem}-{secrets.token_hex(8)}.tmp"
         temp_path = target.parent / temp_name
         flags = (
@@ -138,6 +139,16 @@ class EmployeeDocumentMaterializer:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    @staticmethod
+    def _cleanup_stale_temps(directory: Path, stem: str) -> None:
+        prefix = f".{stem}-"
+        for entry in directory.iterdir():
+            if entry.name.startswith(prefix) and entry.name.endswith(".tmp"):
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass
 
 
 class EmployeeMemoryFacade:

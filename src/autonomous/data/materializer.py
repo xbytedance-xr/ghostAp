@@ -64,6 +64,7 @@ class DailyHistoryMaterializer:
         content_hash = hashlib.sha256(content).hexdigest()
         history_dir = self._root / agent_id / "history"
         history_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._cleanup_stale_temps(history_dir, day)
         target = history_dir / f"{day}.jsonl"
         temp_name = f".{day}-{secrets.token_hex(8)}.tmp"
         temp_path = history_dir / temp_name
@@ -165,3 +166,14 @@ class DailyHistoryMaterializer:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+    @staticmethod
+    def _cleanup_stale_temps(directory: Path, day: str) -> None:
+        """Remove leftover .tmp files from a prior crashed materialization."""
+        prefix = f".{day}-"
+        for entry in directory.iterdir():
+            if entry.name.startswith(prefix) and entry.name.endswith(".tmp"):
+                try:
+                    entry.unlink()
+                except OSError:
+                    pass

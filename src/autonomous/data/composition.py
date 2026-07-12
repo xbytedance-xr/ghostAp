@@ -152,6 +152,28 @@ class EmployeeDataComposition:
         self.state.cursor_hash = fresh.cursor_hash
         self.history_materializer.materialize_all(self.state)
 
+    def gc_unreferenced_blobs(self) -> int:
+        """Quarantine blobs not referenced by any projected record or document."""
+        live_ids: set[str] = set()
+        for record in self.state.history_records.values():
+            blob_id = record.blob_ref.get("blob_id", "")
+            if blob_id:
+                live_ids.add(blob_id)
+        for doc in self.state.employee_documents.values():
+            blob_id = doc.blob_ref.get("blob_id", "")
+            if blob_id:
+                live_ids.add(blob_id)
+        all_ids = set(self.service._blob_store.iter_blob_ids())
+        orphans = all_ids - live_ids
+        quarantined = 0
+        for blob_id in orphans:
+            try:
+                self.service._blob_store.quarantine_blob(blob_id)
+                quarantined += 1
+            except Exception:
+                pass
+        return quarantined
+
 
 def build_employee_data_composition(
     *,
