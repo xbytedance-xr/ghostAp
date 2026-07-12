@@ -165,6 +165,7 @@ class AgentRegistry:
         """Register a new agent and persist to disk."""
         with self._mutation_guard.write_lease("register") as validated_epoch:
             synchronous_request = None
+            previous: dict | None = None
             with self._lock:
                 self._ensure_loaded()
                 # Uniqueness check: (channel_id, name) must be unique
@@ -180,6 +181,7 @@ class AgentRegistry:
                             )
                 existing = self._agents.get(agent.agent_id)
                 if existing is not None:
+                    previous = existing.to_dict()
                     agent = self._merge_agent(existing, agent)
                 else:
                     agent = self._normalize_groups(agent)
@@ -190,7 +192,12 @@ class AgentRegistry:
                     validated_epoch,
                 )
             if synchronous_request is not None:
-                self._persist_request(synchronous_request)
+                try:
+                    self._persist_request(synchronous_request)
+                except OSError:
+                    with self._lock:
+                        self._restore_cached_snapshot(agent.agent_id, previous)
+                    raise
         return agent
 
     def get(self, agent_id: str) -> Optional[AgentIdentity]:
@@ -268,13 +275,16 @@ class AgentRegistry:
                 self._ensure_loaded()
                 if agent_id not in self._agents:
                     return False
+                previous = self._agents[agent_id].to_dict()
                 del self._agents[agent_id]
                 identity_file = self._agent_file(agent_id)
                 if os.path.exists(identity_file):
                     try:
                         os.remove(identity_file)
                     except OSError as e:
+                        self._restore_cached_snapshot(agent_id, previous)
                         logger.warning("Failed to remove identity file for %s: %s", agent_id, str(e))
+                        return False
                 # Clean up empty agent directory
                 agent_dir = os.path.dirname(identity_file)
                 try:
@@ -288,10 +298,12 @@ class AgentRegistry:
         """Update an existing agent's identity."""
         with self._mutation_guard.write_lease("update") as validated_epoch:
             synchronous_request = None
+            previous: dict | None = None
             with self._lock:
                 self._ensure_loaded()
                 if agent.agent_id not in self._agents:
                     return False
+                previous = self._agents[agent.agent_id].to_dict()
                 self._agents[agent.agent_id] = agent
                 synchronous_request = self._persist(
                     "update",
@@ -299,7 +311,12 @@ class AgentRegistry:
                     validated_epoch,
                 )
             if synchronous_request is not None:
-                self._persist_request(synchronous_request)
+                try:
+                    self._persist_request(synchronous_request)
+                except OSError:
+                    with self._lock:
+                        self._restore_cached_snapshot(agent.agent_id, previous)
+                    raise
             return True
 
     def move_agent(self, agent_id: str, source_channel_id: str, target_channel_id: str) -> MoveOutcome:
@@ -412,6 +429,16 @@ class AgentRegistry:
                     f"cannot restore legacy agent before cutover: {agent_id}"
                 ) from exc
 
+    def _restore_cached_snapshot(
+        self,
+        agent_id: str,
+        snapshot: dict | None,
+    ) -> None:
+        if snapshot is None:
+            self._agents.pop(agent_id, None)
+            return
+        self._agents[agent_id] = AgentIdentity.from_dict(snapshot)
+
     def _persist(
         self,
         operation: str,
@@ -461,29 +488,39 @@ class AgentRegistry:
                 self._persist_queue.clear()
                 self._inflight_requests.extend(batch)
             for request in batch:
+                reconciled = True
                 try:
                     self._persist_request(request)
                 except StaleAuthorityEpoch as exc:
                     logger.warning("Discarded stale registry write: %s", exc)
-                finally:
+                except OSError as exc:
+                    logger.warning(
+                        "Failed background registry write for %s: %s",
+                        request.agent.agent_id,
+                        exc,
+                    )
                     with self._lock:
-                        self._inflight_requests = [
-                            item
-                            for item in self._inflight_requests
-                            if item is not request
-                        ]
+                        try:
+                            self._restore_requests_from_disk((request,))
+                        except RuntimeError:
+                            reconciled = False
+                finally:
+                    if reconciled:
+                        with self._lock:
+                            self._inflight_requests = [
+                                item
+                                for item in self._inflight_requests
+                                if item is not request
+                            ]
 
     def _write_agent_to_disk(self, agent: AgentIdentity) -> None:
         """Write a single agent identity to disk (atomic)."""
         identity_file = self._agent_file(agent.agent_id)
-        try:
-            os.makedirs(os.path.dirname(identity_file), exist_ok=True)
-            tmp_path = identity_file + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(agent.to_dict(), f, ensure_ascii=False, indent=2)
-            os.replace(tmp_path, identity_file)
-        except OSError as e:
-            logger.warning("Failed to persist agent %s: %s", agent.agent_id, str(e))
+        os.makedirs(os.path.dirname(identity_file), exist_ok=True)
+        tmp_path = identity_file + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(agent.to_dict(), f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, identity_file)
 
     def refresh_agent(self, agent_id: str) -> Optional[AgentIdentity]:
         """Re-read a single agent's identity from disk and update the in-memory cache.

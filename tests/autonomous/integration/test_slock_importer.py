@@ -103,6 +103,14 @@ def test_importer_generates_random_id_and_durable_alias(tmp_path) -> None:
     assert replayed.legacy_source_hashes[legacy.source_hash] == first.agent_id
     assert second.agent_id == first.agent_id
 
+    changed = LegacyEntity(
+        entity_type="agent",
+        legacy_id="legacy_1",
+        data={**legacy.data, "model_name": "different-model"},
+    )
+    with pytest.raises(ValueError, match="source hash changed"):
+        SlockImporter(writer=writer, state=replayed).import_agent(changed)
+
 
 @pytest.mark.asyncio
 async def test_authenticated_bulk_verify_counts_durable_agent_once(tmp_path) -> None:
