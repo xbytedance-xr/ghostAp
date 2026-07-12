@@ -1912,6 +1912,10 @@ class SystemBuilder:
                 UI_TEXT["system_help_section_slock"],
                 UI_TEXT["system_help_section_slock_body"]
             ),
+            (
+                UI_TEXT["system_help_section_hire"],
+                UI_TEXT["system_help_section_hire_body"]
+            ),
         ]
 
         # F-12: Only show lock section when lock feature is enabled

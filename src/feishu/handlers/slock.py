@@ -2244,39 +2244,58 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         value: dict,
         project: Optional["ProjectContext"] = None,
     ) -> None:
-        """Handle `/new-role` tool selection and show the ACP model picker."""
+        """Handle `/hire` or `/new-role` tool selection and show the ACP model picker.
+
+        Uses cascade card (with effort/thinking dropdown) when the tool has
+        enough model variants (same UX as /traex model selection).
+        Falls back to paginated buttons for simpler tools.
+        """
 
         role_name = str(value.get("role_name") or "").strip()
         tool_name = str(value.get("tool_name") or "").strip().lower()
         if not role_name or not tool_name:
-            self.reply_text(message_id, "请选择有效的 Slock 角色工具")
+            self.reply_text(message_id, "请选择有效的工具")
             return
         if tool_name not in self.TOOL_TYPE_ROLE_MAP:
-            self.reply_text(message_id, f"请选择有效的 Slock 角色工具: `{tool_name}`")
+            self.reply_text(message_id, f"请选择有效的工具: `{tool_name}`")
             return
 
+        is_global = bool(value.get("global_hire"))
         manager = self._get_engine_manager()
-        engine = manager.get_activated_engine(chat_id)
-        if not engine:
+        engine = manager.get_activated_engine(chat_id) if not is_global else None
+        if not is_global and not engine:
             self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
             return
 
-        cwd = getattr(project, "root_path", None) or getattr(engine, "root_path", None) or self.get_working_dir(chat_id)
-        try:
-            model_page = int(value.get("model_page", 0) or 0)
-        except (TypeError, ValueError):
-            model_page = 0
+        cwd = getattr(project, "root_path", None) or (getattr(engine, "root_path", None) if engine else None) or self.get_working_dir(chat_id)
         models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
-        _, card_content = CardBuilder.build_acp_model_select_card(
-            models,
-            tool_name,
-            project_id=(project.project_id if project else value.get("project_id")),
-            action_name=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
-            value_extra={"role_name": role_name},
-            context_markdown=f"角色: **{role_name}**",
-            refresh_action_name=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
-            model_page=model_page,
-        )
+
+        # Try cascade card (with effort/thinking dropdown) for tools with many variants
+        from ...card.render.model_cascade import has_cascade_variants
+        value_extra = {"role_name": role_name, "global_hire": is_global}
+
+        if has_cascade_variants(models):
+            _, card_content = CardBuilder.build_acp_model_cascade_card(
+                models,
+                tool_name,
+                project_id=(project.project_id if project else value.get("project_id")),
+                context_markdown=f"员工: **{role_name}** · 选择模型和思考深度",
+            )
+        else:
+            try:
+                model_page = int(value.get("model_page", 0) or 0)
+            except (TypeError, ValueError):
+                model_page = 0
+            _, card_content = CardBuilder.build_acp_model_select_card(
+                models,
+                tool_name,
+                project_id=(project.project_id if project else value.get("project_id")),
+                action_name=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
+                value_extra=value_extra,
+                context_markdown=f"员工: **{role_name}**",
+                refresh_action_name=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
+                model_page=model_page,
+            )
         # When the click carries a page change, update the existing card in
         # place; the initial tool selection (page 0) replies a fresh card.
         if model_page and self.update_card(message_id, card_content):

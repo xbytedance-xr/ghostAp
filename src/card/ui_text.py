@@ -356,6 +356,14 @@ UI_TEXT = {
         "`/role list` · 查看角色  ·  `/new-role <名称>` · 创建自定义角色\n"
         "`/task status` · 任务看板  ·  `/slocks` · 查询所有 Slock 群"
     ),
+    "system_help_section_hire": "👤 数字员工 · 雇佣与管理",
+    "system_help_section_hire_body": (
+        "`/hire <名字>` · 雇佣新员工（弹出工具+模型选择）\n"
+        "`/hire <名字> --tool codex --model o3-pro` · 带参数直接创建\n"
+        "`/hire <名字> --prompt \"约束描述\"` · 设定员工身份约束\n"
+        "员工创建后存储在本地，可被邀请到 Slock 群参与协作\n"
+        "群内 @员工名 即可分配任务"
+    ),
     "system_help_tips": (
         "**💡 使用提示**\n"
         "1. 发送 `/menu` 打开完整快捷菜单\n"
