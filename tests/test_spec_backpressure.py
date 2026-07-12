@@ -23,6 +23,7 @@ def test_spec_backpressure(mock_scheduler_cls):
     data = MagicMock()
     data.event.message.message_id = "msg1"
     data.event.message.chat_id = "chat1"
+    data.event.message.message_type = "text"
     data.event.message.content = json.dumps({"text": "/spec do something"})
 
     client._handle_message(data)

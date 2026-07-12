@@ -443,7 +443,9 @@ def is_slock_command(
         normalized = f"{cmd_word} {parts[1]}" if len(parts) > 1 else cmd_word
 
     # Always capture /slock, /new-team, and /hire regardless of chat state
-    if normalized.startswith(("/slock", "/new-team", "/hire")):
+    # Use exact first-token match to avoid prefix collisions (e.g. /hireling)
+    first_token = normalized.split(None, 1)[0] if normalized else ""
+    if first_token in ("/slock", "/slocks", "/new-team", "/hire"):
         return SlockCommandResult(is_command=True)
 
     # Global management commands: /team and /role operate across all teams

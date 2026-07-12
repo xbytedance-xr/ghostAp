@@ -1916,9 +1916,12 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             )
             return
         if delete_result is None:
+            manager = self._get_engine_manager()
+            manager.block_team_name_for_cleanup(team_name, target_chat_id, "unknown")
             self.reply_text(
                 message_id,
-                f"⚠️ 团队 **{team_name}** 的飞书删群结果未知；本地已停止且不会自动恢复，请人工确认群状态。",
+                f"⚠️ 团队 **{team_name}** 的飞书删群结果未知；本地已停止且不会自动恢复，请人工确认群状态。\n"
+                f"同名团队创建已阻止，直到人工处理完成。",
             )
             return
 
