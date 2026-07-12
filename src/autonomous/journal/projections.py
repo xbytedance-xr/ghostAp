@@ -15,6 +15,7 @@ from ..domain.enums import (
 )
 from ..domain.goals import GoalDefinition, Run
 from ..domain.plans import Plan, PlanStep
+from ..workforce.projection import WorkforceProjectionState
 from .frame import JournalEvent, TransactionFrame
 
 
@@ -38,7 +39,7 @@ class InboxRecord:
 
 
 @dataclass
-class ProjectionState:
+class ProjectionState(WorkforceProjectionState):
     """Complete materialized state from journal replay."""
 
     goals: dict[str, GoalDefinition] = field(default_factory=dict)
@@ -408,6 +409,10 @@ def apply_event(state: ProjectionState, event: JournalEvent) -> None:
 
     Unknown event types are silently skipped (forward-compatible).
     """
+    from ..workforce.projection import apply_workforce_event
+
+    if apply_workforce_event(state, event):
+        return
     reducer = _REDUCERS.get(event.event_type)
     if reducer is not None:
         reducer(state, event)
@@ -415,8 +420,19 @@ def apply_event(state: ProjectionState, event: JournalEvent) -> None:
 
 def apply_frame(state: ProjectionState, frame: TransactionFrame) -> None:
     """Apply all events in a transaction frame to the projection state."""
+    from ..workforce.projection import (
+        normalize_workforce_aggregate_versions,
+        validate_workforce_frame_events,
+    )
+
+    validate_workforce_frame_events(frame.events)
     for event in frame.events:
         apply_event(state, event)
+    normalize_workforce_aggregate_versions(
+        state,
+        frame.aggregate_versions,
+        frame.events,
+    )
     state.cursor_sequence = frame.sequence
     state.cursor_hash = frame.frame_hash
 

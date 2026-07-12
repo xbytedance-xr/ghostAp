@@ -7,6 +7,13 @@ from .credential_vault import (
     CredentialVaultConfigurationError,
     CredentialVaultError,
 )
+from .projection import (
+    EmployeeIdentityMaterializer,
+    WorkforceProjectionState,
+    apply_workforce_event,
+    commit_workforce_events,
+    validate_workforce_events,
+)
 
 __all__ = [
     "CredentialKeyring",
@@ -14,4 +21,9 @@ __all__ = [
     "CredentialVault",
     "CredentialVaultConfigurationError",
     "CredentialVaultError",
+    "EmployeeIdentityMaterializer",
+    "WorkforceProjectionState",
+    "apply_workforce_event",
+    "commit_workforce_events",
+    "validate_workforce_events",
 ]

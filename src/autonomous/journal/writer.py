@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterator, Protocol, Sequence
+from typing import Any, Iterable, Iterator, Protocol, Sequence
 
 from .anchor import AnchorProvider, AnchorState
 from .blob_store import BlobRef
@@ -309,6 +309,9 @@ class JournalWriter:
         self,
         events: Sequence[JournalEvent],
         expected_versions: dict[str, int],
+        *,
+        expected_head_sequence: int | None = None,
+        expected_head_hash: str | None = None,
     ) -> CommitResult:
         self._ensure_writable()
         event_values = tuple(events)
@@ -319,6 +322,15 @@ class JournalWriter:
         self._validate_blob_refs(event_values)
         with self._mutex:
             self._ensure_writable()
+            logical_head_hash = "" if self._sequence == 0 else self._previous_hash
+            if (
+                expected_head_sequence is not None
+                and expected_head_sequence != self._sequence
+            ) or (
+                expected_head_hash is not None
+                and expected_head_hash != logical_head_hash
+            ):
+                raise JournalIntegrityError("journal head mismatch")
             aggregate_ids = {event.aggregate_id for event in event_values}
             if set(expected_versions) != aggregate_ids:
                 raise JournalIntegrityError(
@@ -393,6 +405,19 @@ class JournalWriter:
     def get_last_frame(self) -> TransactionFrame | None:
         with self._mutex:
             return self._frames[-1] if self._frames else None
+
+    def get_aggregate_versions(
+        self,
+        aggregate_ids: Iterable[str],
+    ) -> dict[str, int]:
+        """Return an atomic snapshot of selected aggregate versions."""
+
+        ids = tuple(aggregate_ids)
+        with self._mutex:
+            return {
+                aggregate_id: self._aggregate_versions.get(aggregate_id, 0)
+                for aggregate_id in ids
+            }
 
     def verify_chain(self) -> tuple[bool, list[str]]:
         try:
