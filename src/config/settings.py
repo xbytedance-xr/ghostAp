@@ -745,6 +745,16 @@ class Settings(BaseSettings):
             raise ValueError("employee context/ingress numeric settings reject booleans")
         return value
 
+    @model_validator(mode="after")
+    def _validate_employee_queue_limit_order(self) -> "Settings":
+        if not (
+            self.autonomous_employee_queue_per_employee_limit
+            <= self.autonomous_employee_queue_per_team_limit
+            <= self.autonomous_employee_queue_global_limit
+        ):
+            raise ValueError("employee queue limits require per_employee <= per_team <= global")
+        return self
+
     @field_validator("autonomous_journal_hmac_key", mode="before")
     @classmethod
     def _validate_autonomous_journal_hmac_key(cls, value: object) -> SecretStr:

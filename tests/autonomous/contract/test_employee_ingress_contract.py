@@ -161,6 +161,52 @@ def test_encrypted_payload_is_deeply_immutable_canonical_and_secret_field_free()
     assert "app_secret" not in first.to_dict()
 
 
+@pytest.mark.parametrize(
+    "secret_key",
+    (
+        "client_secret",
+        "CLIENT-SECRET",
+        "clientSecret",
+        "api_key",
+        "API-KEY",
+        "private_key",
+        "PRIVATE-KEY",
+        "password",
+        "PASSWORD",
+    ),
+)
+def test_encrypted_payload_rejects_nested_secret_key_aliases(secret_key: str) -> None:
+    with pytest.raises(ValueError, match="secret"):
+        _payload(
+            normalized_parts=(
+                {
+                    "type": "post",
+                    "value": {"nested": {secret_key: "must-not-enter-payload"}},
+                },
+            )
+        )
+
+
+def test_encrypted_payload_allows_nonsecret_metadata_with_secret_words() -> None:
+    payload = _payload(
+        normalized_parts=(
+            {
+                "type": "post",
+                "value": {
+                    "password_policy": "required",
+                    "api-key-rotation-days": 30,
+                    "private_key_algorithm": "ed25519",
+                    "client_secret_name": "employee-channel",
+                    "authorization_type": "bearer",
+                    "access_token_expires_at": 1_700_000_000,
+                },
+            },
+        )
+    )
+
+    assert payload.normalized_parts[0]["value"]["password_policy"] == "required"
+
+
 def test_payload_rejects_oversize_content_and_attachment_metadata() -> None:
     with pytest.raises(ValueError, match="payload size"):
         _payload(normalized_parts=({"type": "text", "text": "x" * (256 * 1024)},))
@@ -352,6 +398,42 @@ def test_ingress_numeric_settings_reject_bounds_booleans_and_nan(
 ) -> None:
     with pytest.raises(ValueError):
         Settings(_env_file=None, **{field: value})
+
+
+@pytest.mark.parametrize(
+    "limits",
+    (
+        {
+            "autonomous_employee_queue_per_employee_limit": 33,
+            "autonomous_employee_queue_per_team_limit": 32,
+            "autonomous_employee_queue_global_limit": 128,
+        },
+        {
+            "autonomous_employee_queue_per_employee_limit": 8,
+            "autonomous_employee_queue_per_team_limit": 129,
+            "autonomous_employee_queue_global_limit": 128,
+        },
+    ),
+)
+def test_ingress_queue_settings_reject_non_monotonic_limits(
+    limits: dict[str, int],
+) -> None:
+    with pytest.raises(ValueError, match="per_employee.*per_team.*global"):
+        Settings(_env_file=None, **limits)
+
+
+@pytest.mark.parametrize("limit", (1, 8, 10_000))
+def test_ingress_queue_settings_allow_equal_boundary_limits(limit: int) -> None:
+    settings = Settings(
+        _env_file=None,
+        autonomous_employee_queue_per_employee_limit=limit,
+        autonomous_employee_queue_per_team_limit=limit,
+        autonomous_employee_queue_global_limit=limit,
+    )
+
+    assert settings.autonomous_employee_queue_per_employee_limit == limit
+    assert settings.autonomous_employee_queue_per_team_limit == limit
+    assert settings.autonomous_employee_queue_global_limit == limit
 
 
 def test_env_example_documents_ingress_settings() -> None:

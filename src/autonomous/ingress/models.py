@@ -30,6 +30,11 @@ _REASON_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 _FORBIDDEN_KEYS = frozenset(
     {
         "app_secret",
+        "client_secret",
+        "api_key",
+        "private_key",
+        "password",
+        "token",
         "access_token",
         "tenant_access_token",
         "refresh_token",
@@ -162,8 +167,9 @@ def _utc_timestamp(value: Any, name: str) -> str:
 def _validate_secret_key(key: Any, path: str) -> str:
     if not isinstance(key, str) or not key:
         raise ValueError(f"{path} keys must be non-empty strings")
-    normalized = key.casefold().replace("-", "_")
-    if normalized == "token" or any(secret in normalized for secret in _FORBIDDEN_KEYS):
+    snake_case = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
+    normalized = re.sub(r"[^a-z0-9]+", "_", snake_case.casefold()).strip("_")
+    if normalized in _FORBIDDEN_KEYS:
         raise ValueError(f"secret-bearing field is forbidden at {path}.{key}")
     return key
 
