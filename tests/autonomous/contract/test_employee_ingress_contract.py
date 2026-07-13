@@ -457,7 +457,7 @@ def test_env_example_documents_ingress_settings() -> None:
         assert f"{name}=" in env_example
 
 
-def test_phase3_manifest_is_local_strict_and_freezes_pending_ipc_selector() -> None:
+def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() -> None:
     manifest = Phase3ImplementationManifest.load(PHASE3_IMPLEMENTATION_MANIFEST_PATH)
 
     assert manifest.profile_id == "employee-durable-ingress-phase3-v1"
@@ -478,10 +478,10 @@ def test_phase3_manifest_is_local_strict_and_freezes_pending_ipc_selector() -> N
         "tests/autonomous/chaos/test_employee_ingress_recovery.py::"
         "test_ipc_ack_only_after_anchored_acceptance"
     )
-    assert ipc.selector_state == "pending"
+    assert ipc.selector_state == "collectable"
     assert ipc.artifact_kind == "employee_ingress_ipc_harness"
     assert ipc.artifact_profile_id != CAPABILITY_PROFILE_ID
-    assert not Path(ipc.selector.split("::", 1)[0]).exists()
+    assert Path(ipc.selector.split("::", 1)[0]).is_file()
 
 
 def test_phase3_manifest_rejects_duplicate_ids(tmp_path: Path) -> None:
@@ -580,7 +580,7 @@ def test_phase3_evidence_summary_must_bind_exact_pytest_nodeid() -> None:
         )
 
 
-def test_phase3_evidence_rejects_task2_pending_selector_and_sdk_substitution() -> None:
+def test_phase3_evidence_rejects_task2_sdk_substitution() -> None:
     manifest = Phase3ImplementationManifest.load(PHASE3_IMPLEMENTATION_MANIFEST_PATH)
     ipc = manifest.gate("EI-IPC-01")
     fake_ipc = ImplementationEvidenceResult.create(
@@ -599,7 +599,7 @@ def test_phase3_evidence_rejects_task2_pending_selector_and_sdk_substitution() -
         teardown="passed",
     )
 
-    with pytest.raises(ValueError, match="pending selector"):
+    with pytest.raises(ValueError, match="artifact profile"):
         manifest.evaluate(
             (fake_ipc,),
             expected_commit_sha="a" * 40,

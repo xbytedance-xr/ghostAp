@@ -32,7 +32,7 @@
       "artifact_kind": "employee_ingress_ipc_harness",
       "artifact_profile_id": "employee-ingress-ipc-v1",
       "sdk_wheel_sha256": null,
-      "selector_state": "pending",
+      "selector_state": "collectable",
       "status": "pending"
     }
   ]
