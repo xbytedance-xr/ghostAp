@@ -168,8 +168,12 @@
      - 已确认 SDK 的单帧 byte limit 缺口：超大单帧仍会进入 callback，因此 evidence
        强制 `requires_parent_payload_gate=true`；Task 3/7 未证明 parent wire non-200 与
        Inbox/Journal/Router/ACP 零副作用前，execution readiness 必须继续关闭
-     - Task 1 contracts/evidence 与 Task 2 durable Journal Inbox 尚未实现；Phase 3
-       仍未完成，`autonomous_visible_employee_limit` 保持 0
+     - 已完成 Task 1：六个 frozen exact-schema ingress 模型、递归 secret alias 拒绝、
+       restart-safe canonical dedup、1.5 秒 ACK/attachment/payload 配置、单员工≤团队≤全局
+       队列关系，以及独立 Phase 3 implementation evidence manifest 均已冻结
+     - `EI-IPC-01` 仍明确为 Task 2-owned PENDING，SDK wire evidence 不能替代 Journal
+       fsync/anchor 证据；Task 2 durable Journal Inbox 尚未实现，Phase 3 仍未完成，
+       `autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
        low-level dispatcher 黑盒验证消息和 CardAction 两条路径，任一路径不满足即

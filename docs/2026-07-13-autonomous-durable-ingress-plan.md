@@ -1,7 +1,7 @@
 # Autonomous Employee Durable Ingress and Slock Gateway Plan
 
-> **Status:** active; Task 0 capability gate is complete with a development-only
-> `CAPABLE_PINNED_ADAPTER` decision. Task 1 contracts are next. This plan does not
+> **Status:** active; Task 0 capability gate and Task 1 strict contracts are
+> complete. Task 2 Journal-backed Inbox is next. This plan does not
 > authorize raising `autonomous_visible_employee_limit` above `0`.
 
 **Goal:** Accept employee Bot events durably before the Feishu WebSocket ACK,
@@ -188,6 +188,16 @@ Commit: `test(autonomous): prove employee channel ack capability`
   assumption.
 
 Commit: `feat(autonomous): freeze durable employee ingress contracts`
+
+**Task 1 outcome (2026-07-13):** complete. Six frozen exact-schema ingress
+models now separate trusted worker binding from normalized untrusted content,
+reject secret-bearing aliases recursively, and freeze canonical restart-safe
+dedup without connection or generation. Strict settings cover the 1.5-second
+ACK deadline, payload/attachment ceilings, and monotonic employee/team/global
+queue limits. A dedicated development-only Phase 3 manifest binds exact
+selectors, commit, artifact, locked SDK wheel/capability artifact, and pytest
+phase summary; `EI-IPC-01` remains explicitly pending and cannot be satisfied by
+platform SDK evidence. This outcome does not provide Inbox durability.
 
 ## Task 2: Journal-backed employee Inbox and encrypted payloads
 
