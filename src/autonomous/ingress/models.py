@@ -27,6 +27,8 @@ _RFC3339_UTC_RE = re.compile(
 )
 _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _REASON_RE = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_RESOURCE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}\Z")
+_RESOURCE_TYPES = frozenset({"file", "image"})
 _FORBIDDEN_KEYS = frozenset(
     {
         "app_secret",
@@ -244,8 +246,23 @@ class EmployeeIngressPayload:
         for item in attachments:
             if not isinstance(item, Mapping) or set(item) != _ATTACHMENT_FIELDS:
                 raise ValueError("attachment descriptor has invalid fields")
-            for field_name in ("resource_type", "resource_id", "mime_type"):
-                _strict_str(item[field_name], f"attachment {field_name}")
+            resource_type = _strict_str(
+                item["resource_type"],
+                "attachment resource_type",
+            )
+            if resource_type not in _RESOURCE_TYPES:
+                raise ValueError("attachment resource_type is not supported")
+            resource_id = _strict_str(
+                item["resource_id"],
+                "attachment resource_id",
+                maximum=512,
+            )
+            if _RESOURCE_ID_RE.fullmatch(resource_id) is None:
+                raise ValueError("attachment resource_id must be an official SDK key")
+            expected_prefix = "img_" if resource_type == "image" else "file_"
+            if not resource_id.startswith(expected_prefix):
+                raise ValueError("attachment resource_id does not match resource_type")
+            _strict_str(item["mime_type"], "attachment mime_type", maximum=255)
             size = _strict_int(item["size_bytes"], "attachment size_bytes")
             if size > MAX_INGRESS_ATTACHMENT_BYTES:
                 raise ValueError("attachment exceeds maximum size")
