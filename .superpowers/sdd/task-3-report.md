@@ -62,16 +62,20 @@ boundedly reaps the worker.
   `os.write` produced no wire response after two seconds. It also reproduced a
   READY supervisor retaining an alive child after event-pipe EOF. Both failures
   now have process/real-wire regression selectors.
+- Final re-review found that JSON encoding accepts tuples as arrays while the
+  pre-encode secret scan traversed lists only. Nested tuple `APIKey` and
+  `AccessToken` fields now fail before `_encode`; legal tuple metadata still
+  round-trips as decoded JSON lists.
 
 ## GREEN Evidence
 
 Final scoped results:
 
 ```text
-fix-scoped contract + unit + process + bridge: 130 passed, 1 SDK warning
+fix-scoped contract + unit + process + bridge: 133 passed, 1 SDK warning
 ingress recovery/ACK chaos: 20 passed
 full production bridge fault suite: 17 passed, 1 SDK warning
-full tests/autonomous regression: 1406 passed, 2 skipped, 1 SDK warning
+full tests/autonomous regression: 1409 passed, 2 skipped, 1 SDK warning
 scoped ruff: all checks passed
 src/autonomous ruff: all checks passed
 docs references: 4 passed
@@ -135,7 +139,9 @@ matching ACK, one SDK connection, and exact anchor/acceptance identity.
   and missing trusted fallback correlation fails closed.
 - Ordinary IPC applies the same collapsed exact secret aliases as ingress
   models, rejecting nested camel/Pascal/hyphen variants without rejecting
-  `authorization_type`, token-expiry, or password-policy metadata.
+  `authorization_type`, token-expiry, or password-policy metadata. The scan
+  traverses exactly JSON array containers accepted by `_encode` (`list` and
+  `tuple`), without broad iterable traversal over strings, bytes, or mappings.
 - Outbound SEND is intentionally rejected by this inbound worker; outbound
   transport remains separate, with no second employee WS and no main-Bot
   fallback.

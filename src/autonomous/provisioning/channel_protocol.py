@@ -237,7 +237,7 @@ def _reject_secret_fields(value: Any) -> None:
             if collapsed in _FORBIDDEN_IPC_COLLAPSED_KEYS:
                 raise ProtocolError("credential material is forbidden on ordinary IPC")
             _reject_secret_fields(child)
-    elif isinstance(value, list):
+    elif isinstance(value, (list, tuple)):
         for child in value:
             _reject_secret_fields(child)
 

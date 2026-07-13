@@ -19,6 +19,7 @@ from src.autonomous.ingress.models import (
     IngressAcceptance,
 )
 from src.autonomous.ingress.service import EmployeeIngressService
+from src.autonomous.provisioning import channel_protocol as channel_protocol_module
 from src.autonomous.provisioning.channel_protocol import (
     MAX_FRAME_BYTES,
     ChannelFrame,
@@ -113,6 +114,61 @@ def test_ordinary_ipc_allows_non_secret_metadata_with_secret_words(
     )
 
     assert decode_frame(encode_frame(frame)) == frame
+
+
+@pytest.mark.parametrize("secret_key", ["APIKey", "AccessToken"])
+def test_ordinary_ipc_rejects_secret_inside_tuple_before_json_encode(
+    secret_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    encode_called = False
+
+    def reject_unexpected_encode(_value: object) -> bytes:
+        nonlocal encode_called
+        encode_called = True
+        raise AssertionError("secret-bearing tuple reached JSON encoder")
+
+    monkeypatch.setattr(channel_protocol_module, "_encode", reject_unexpected_encode)
+    frame = ChannelFrame(
+        FrameType.EVENT,
+        "agt_1",
+        1,
+        1,
+        {
+            "event": "fixture",
+            "data": ({"safe": ({secret_key: "sentinel"},)},),
+        },
+    )
+
+    with pytest.raises(ProtocolError, match="credential material"):
+        encode_frame(frame)
+    assert encode_called is False
+
+
+def test_ordinary_ipc_legal_tuple_metadata_round_trips_as_json_list() -> None:
+    frame = ChannelFrame(
+        FrameType.EVENT,
+        "agt_1",
+        1,
+        1,
+        {
+            "event": "fixture",
+            "data": (
+                {"authorization_type": "tenant"},
+                ({"access_token_expires_at": 3600},),
+            ),
+        },
+    )
+
+    decoded = decode_frame(encode_frame(frame))
+
+    assert decoded.payload == {
+        "event": "fixture",
+        "data": [
+            {"authorization_type": "tenant"},
+            [{"access_token_expires_at": 3600}],
+        ],
+    }
 
 
 def _transport_contract() -> tuple[
