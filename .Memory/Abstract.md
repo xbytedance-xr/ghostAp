@@ -2,7 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-13
-- **Task 4附件安全暂存** - 唯一叶身份、严格Journal状态机与可证明擦除恢复落地 → [2026-07-13.md](2026-07-13.md)
+- **Task 4附件安全暂存** - 稳定叶代际、严格Journal状态机与可证明擦除恢复落地 → [2026-07-13.md](2026-07-13.md)
 - **Task 3 tuple密钥终审** - 普通IPC在JSON编码前递归检查list/tuple，封堵数组容器secret绕过 → [2026-07-13.md](2026-07-13.md)
 - **Task 3 ACK bridge终审加固** - IPC背压有界失败、ACK三重绑定、EOF撤销READY与故障窗口闭环 → [2026-07-13.md](2026-07-13.md)
 - **Durable Ingress Task 3 ACK bridge** - low-level SDK callback 等 parent anchor、reconnect epoch fence、完整故障矩阵 → [2026-07-13.md](2026-07-13.md)

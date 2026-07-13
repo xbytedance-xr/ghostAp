@@ -313,6 +313,7 @@ class AttachmentStagingRecord:
     content_hashes: tuple[str, ...]
     leaf_identities: tuple[tuple[int, int] | None, ...]
     leaf_cleanup_states: tuple[str, ...]
+    leaf_cleanup_targets: tuple[tuple[int, int] | str | None, ...]
     parent_device: int | None = None
     parent_inode: int | None = None
     status: str = "started"
@@ -499,6 +500,7 @@ class AttachmentStagingService:
                     )
                     record = self._state.by_staging_id[staging_id]
                 self._call_fault("after_publish", record)
+                self._verify_staged_record_unlocked(record)
                 completed = JournalEvent(
                     event_type="employee.ingress.attachment_staging_completed",
                     aggregate_id=aggregate_id,
@@ -533,6 +535,16 @@ class AttachmentStagingService:
                     raise AttachmentStorageError("trusted attachment hash is invalid")
                 paths.append(self._root / relative)
             return tuple(paths)
+
+    def _verify_staged_record_unlocked(self, record: AttachmentStagingRecord) -> None:
+        if record.status != "started" or record.cleanup_state != "none":
+            raise AttachmentStateError("attachment staging is not live")
+        for index, (relative, expected_hash) in enumerate(
+            zip(record.relative_paths, record.content_hashes)
+        ):
+            content = self._read_trusted_unlocked(relative, record, index)
+            if hashlib.sha256(content).hexdigest() != expected_hash:
+                raise AttachmentStorageError("trusted attachment hash is invalid")
 
     def cleanup(self, staging_id: str) -> None:
         """Durably begin deletion before removing any owned server path."""
@@ -760,29 +772,68 @@ class AttachmentStagingService:
             fd = os.open(parts[-1], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
             file_stat = os.fstat(fd)
             expected_identity = record.leaf_identities[index]
-            if (
-                expected_identity is None
-                or (file_stat.st_dev, file_stat.st_ino) != expected_identity
-                or not stat.S_ISREG(file_stat.st_mode)
-                or stat.S_IMODE(file_stat.st_mode) != 0o600
-                or file_stat.st_uid != os.getuid()
-                or file_stat.st_nlink != 1
+            if expected_identity is None or not _trusted_leaf_stat_matches(
+                file_stat,
+                expected_identity,
             ):
                 raise AttachmentStorageError("trusted attachment leaf is invalid")
+            pre_read_generation = _trusted_leaf_generation(file_stat)
             _require_unique_exact_leaf(parent_fd, expected_identity, parts[-1])
             content = _read_at_most(fd, self._policy.max_file_bytes + 1)
             file_stat = os.fstat(fd)
+            post_read_generation = _trusted_leaf_generation(file_stat)
             if (
-                (file_stat.st_dev, file_stat.st_ino) != expected_identity
-                or file_stat.st_nlink != 1
+                not _trusted_leaf_stat_matches(file_stat, expected_identity)
+                or post_read_generation != pre_read_generation
             ):
                 raise AttachmentStorageError("trusted attachment leaf is invalid")
             _require_unique_exact_leaf(parent_fd, expected_identity, parts[-1])
+            self._verify_current_trusted_leaf_unlocked(
+                parts,
+                record,
+                index,
+                post_read_generation,
+            )
             return content
         except AttachmentStorageError:
             raise
         except OSError:
             raise AttachmentStorageError("trusted attachment cannot be opened") from None
+        finally:
+            if fd is not None:
+                os.close(fd)
+            os.close(parent_fd)
+
+    def _verify_current_trusted_leaf_unlocked(
+        self,
+        parts: tuple[str, ...],
+        record: AttachmentStagingRecord,
+        index: int,
+        expected_generation: tuple[int, ...],
+    ) -> None:
+        expected_identity = record.leaf_identities[index]
+        if expected_identity is None:
+            raise AttachmentStorageError("trusted attachment leaf is invalid")
+        parent_fd = self._open_directory_unlocked(parts[:-1], create=False)
+        fd: int | None = None
+        try:
+            self._verify_parent_identity(parent_fd, record)
+            fd = os.open(
+                parts[-1],
+                os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            current_stat = os.fstat(fd)
+            if (
+                not _trusted_leaf_stat_matches(current_stat, expected_identity)
+                or _trusted_leaf_generation(current_stat) != expected_generation
+            ):
+                raise AttachmentStorageError("trusted attachment leaf is invalid")
+            _require_unique_exact_leaf(parent_fd, expected_identity, parts[-1])
+        except AttachmentStorageError:
+            raise
+        except OSError:
+            raise AttachmentStorageError("trusted attachment cannot be reopened") from None
         finally:
             if fd is not None:
                 os.close(fd)
@@ -817,7 +868,12 @@ class AttachmentStagingService:
             # Publication is unreachable until this binding is anchored.
             for index, cleanup_state in enumerate(record.leaf_cleanup_states):
                 if cleanup_state == "none":
-                    self._commit_leaf_cleanup_event_unlocked(record, index, completed=False)
+                    self._commit_leaf_cleanup_event_unlocked(
+                        record,
+                        index,
+                        completed=False,
+                        target="absent",
+                    )
                     record = self._state.by_staging_id[record.staging_id]
                 if record.leaf_cleanup_states[index] == "started":
                     self._commit_leaf_cleanup_event_unlocked(record, index, completed=True)
@@ -836,6 +892,7 @@ class AttachmentStagingService:
                     self._remove_disposed_leaf_unlocked(
                         parent_fd,
                         identity=identity,
+                        cleanup_target=record.leaf_cleanup_targets[index],
                         temporary=temporary,
                         final=final,
                     )
@@ -874,31 +931,44 @@ class AttachmentStagingService:
         temporary: str,
         final: str,
     ) -> None:
-        if _leaf_lstat(parent_fd, final) is not None:
-            raise AttachmentStorageError("unbound attachment leaf is not trusted")
-        temp_stat = _leaf_lstat(parent_fd, temporary)
-        if temp_stat is None:
-            pass
-        elif (
-            not stat.S_ISREG(temp_stat.st_mode)
-            or stat.S_IMODE(temp_stat.st_mode) != 0o600
-            or temp_stat.st_uid != os.getuid()
-            or temp_stat.st_size != 0
-            or temp_stat.st_nlink != 1
-        ):
-            raise AttachmentStorageError("unbound attachment leaf is not trusted")
         cleanup_state = record.leaf_cleanup_states[index]
         if cleanup_state == "none":
-            self._commit_leaf_cleanup_event_unlocked(record, index, completed=False)
+            target = _observe_unbound_cleanup_target(parent_fd, temporary, final)
+            self._commit_leaf_cleanup_event_unlocked(
+                record,
+                index,
+                completed=False,
+                target=target,
+            )
             record = self._state.by_staging_id[record.staging_id]
             self._call_fault("after_unbound_leaf_cleanup_started", record)
             cleanup_state = record.leaf_cleanup_states[index]
         if cleanup_state == "started":
-            self._commit_leaf_cleanup_event_unlocked(record, index, completed=True)
-            record = self._state.by_staging_id[record.staging_id]
-        if temp_stat is not None:
-            os.unlink(temporary, dir_fd=parent_fd)
-            os.fsync(parent_fd)
+            target = record.leaf_cleanup_targets[index]
+            fd = _open_unbound_cleanup_target(parent_fd, temporary, final, target)
+            try:
+                _revalidate_unbound_cleanup_target(
+                    parent_fd,
+                    temporary,
+                    final,
+                    target,
+                    fd,
+                )
+                self._commit_leaf_cleanup_event_unlocked(record, index, completed=True)
+                record = self._state.by_staging_id[record.staging_id]
+                _revalidate_unbound_cleanup_target(
+                    parent_fd,
+                    temporary,
+                    final,
+                    target,
+                    fd,
+                )
+                if fd is not None:
+                    os.unlink(temporary, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+            finally:
+                if fd is not None:
+                    os.close(fd)
         self._call_fault(
             "after_leaf_unlink",
             self._state.by_staging_id[record.staging_id],
@@ -933,7 +1003,12 @@ class AttachmentStagingService:
             ):
                 raise AttachmentStorageError("attachment cleanup leaf identity changed")
             if record.leaf_cleanup_states[index] == "none":
-                self._commit_leaf_cleanup_event_unlocked(record, index, completed=False)
+                self._commit_leaf_cleanup_event_unlocked(
+                    record,
+                    index,
+                    completed=False,
+                    target=identity,
+                )
             os.ftruncate(fd, 0)
             os.fsync(fd)
             record = self._state.by_staging_id[record.staging_id]
@@ -951,6 +1026,7 @@ class AttachmentStagingService:
         self._remove_disposed_leaf_unlocked(
             parent_fd,
             identity=identity,
+            cleanup_target=identity,
             temporary=temporary,
             final=final,
         )
@@ -965,31 +1041,61 @@ class AttachmentStagingService:
         parent_fd: int,
         *,
         identity: tuple[int, int] | None,
+        cleanup_target: tuple[int, int] | str | None,
         temporary: str,
         final: str,
     ) -> None:
         if identity is None:
-            temp_stat = _leaf_lstat(parent_fd, temporary)
-            if _leaf_lstat(parent_fd, final) is not None:
-                raise AttachmentStorageError("unbound attachment leaf is not trusted")
-            if temp_stat is None:
-                return
-            if (
-                not stat.S_ISREG(temp_stat.st_mode)
-                or stat.S_IMODE(temp_stat.st_mode) != 0o600
-                or temp_stat.st_uid != os.getuid()
-                or temp_stat.st_size != 0
-                or temp_stat.st_nlink != 1
-            ):
-                raise AttachmentStorageError("unbound attachment leaf is not trusted")
-            os.unlink(temporary, dir_fd=parent_fd)
+            fd = _open_unbound_cleanup_target(
+                parent_fd,
+                temporary,
+                final,
+                cleanup_target,
+            )
+            try:
+                _revalidate_unbound_cleanup_target(
+                    parent_fd,
+                    temporary,
+                    final,
+                    cleanup_target,
+                    fd,
+                )
+                if fd is not None:
+                    os.unlink(temporary, dir_fd=parent_fd)
+            finally:
+                if fd is not None:
+                    os.close(fd)
             return
         name = _locate_exact_leaf(parent_fd, identity, temporary, final)
         if name is not None:
-            leaf_stat = _leaf_lstat(parent_fd, name)
-            if leaf_stat is None or leaf_stat.st_size != 0:
-                raise AttachmentStorageError("erased attachment leaf is not empty")
-            os.unlink(name, dir_fd=parent_fd)
+            fd: int | None = None
+            try:
+                fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+                leaf_stat = os.fstat(fd)
+                if (
+                    (leaf_stat.st_dev, leaf_stat.st_ino) != identity
+                    or not stat.S_ISREG(leaf_stat.st_mode)
+                    or leaf_stat.st_uid != os.getuid()
+                    or leaf_stat.st_size != 0
+                    or leaf_stat.st_nlink != 1
+                ):
+                    raise AttachmentStorageError("erased attachment leaf is not trusted")
+                _require_unique_exact_leaf(parent_fd, identity, name)
+                current = _leaf_lstat(parent_fd, name)
+                if (
+                    current is None
+                    or (current.st_dev, current.st_ino) != identity
+                    or current.st_nlink != 1
+                ):
+                    raise AttachmentStorageError("erased attachment leaf identity changed")
+                os.unlink(name, dir_fd=parent_fd)
+            finally:
+                if fd is not None:
+                    os.close(fd)
 
     def _commit_leaf_cleanup_event_unlocked(
         self,
@@ -997,12 +1103,30 @@ class AttachmentStagingService:
         index: int,
         *,
         completed: bool,
+        target: tuple[int, int] | str | None = None,
     ) -> None:
         suffix = "completed" if completed else "started"
+        payload: dict[str, object] = {
+            "staging_id": record.staging_id,
+            "index": index,
+        }
+        if not completed:
+            if target == "absent":
+                payload["target_kind"] = "absent"
+            elif isinstance(target, tuple) and len(target) == 2:
+                payload.update(
+                    {
+                        "target_kind": "identity",
+                        "target_device": target[0],
+                        "target_inode": target[1],
+                    }
+                )
+            else:
+                raise AttachmentStateError("attachment cleanup target is required")
         event = JournalEvent(
             event_type=f"employee.ingress.attachment_cleanup_leaf_{suffix}",
             aggregate_id=record.aggregate_id,
-            payload={"staging_id": record.staging_id, "index": index},
+            payload=payload,
         )
         self._commit_unlocked(record.aggregate_id, event)
 
@@ -1192,6 +1316,7 @@ def _apply_event(state: AttachmentStagingState, event: JournalEvent) -> None:
             content_hashes=hashes,
             leaf_identities=tuple(None for _ in relative_paths),
             leaf_cleanup_states=tuple("none" for _ in relative_paths),
+            leaf_cleanup_targets=tuple(None for _ in relative_paths),
         )
         expected_base = (
             tenant_storage_component(record.tenant_key),
@@ -1242,7 +1367,18 @@ def _apply_event(state: AttachmentStagingState, event: JournalEvent) -> None:
         "employee.ingress.attachment_cleanup_leaf_started",
         "employee.ingress.attachment_cleanup_leaf_completed",
     }:
-        if set(payload) != {"staging_id", "index"}:
+        is_started = event.event_type == "employee.ingress.attachment_cleanup_leaf_started"
+        base_fields = {"staging_id", "index"}
+        if is_started:
+            target_kind = payload.get("target_kind")
+            expected_fields = (
+                base_fields | {"target_kind"}
+                if target_kind == "absent"
+                else base_fields | {"target_kind", "target_device", "target_inode"}
+            )
+        else:
+            expected_fields = base_fields
+        if set(payload) != expected_fields:
             raise AttachmentStateError("invalid attachment leaf cleanup")
         staging_id = payload.get("staging_id")
         if not isinstance(staging_id, str) or staging_id not in state.by_staging_id:
@@ -1260,19 +1396,44 @@ def _apply_event(state: AttachmentStagingState, event: JournalEvent) -> None:
             or record.cleanup_state != "started"
         ):
             raise AttachmentStateError("attachment leaf cleanup cannot transition")
-        expected = (
-            "started"
-            if event.event_type == "employee.ingress.attachment_cleanup_leaf_completed"
-            else "none"
-        )
+        expected = "none" if is_started else "started"
         replacement = "completed" if expected == "started" else "started"
         if record.leaf_cleanup_states[index] != expected:
             raise AttachmentStateError("attachment leaf cleanup cannot transition")
+        cleanup_targets = list(record.leaf_cleanup_targets)
+        if is_started:
+            target_kind = payload.get("target_kind")
+            if target_kind == "absent":
+                target: tuple[int, int] | str = "absent"
+            elif target_kind == "identity":
+                target_device = payload.get("target_device")
+                target_inode = payload.get("target_inode")
+                if (
+                    isinstance(target_device, bool)
+                    or not isinstance(target_device, int)
+                    or target_device < 0
+                    or isinstance(target_inode, bool)
+                    or not isinstance(target_inode, int)
+                    or target_inode <= 0
+                ):
+                    raise AttachmentStateError("attachment cleanup target is invalid")
+                target = (target_device, target_inode)
+            else:
+                raise AttachmentStateError("attachment cleanup target is invalid")
+            bound_identity = record.leaf_identities[index]
+            if bound_identity is not None and target != bound_identity:
+                raise AttachmentStateError("attachment cleanup target mismatch")
+            if cleanup_targets[index] is not None:
+                raise AttachmentStateError("attachment cleanup target is already bound")
+            cleanup_targets[index] = target
+        elif cleanup_targets[index] is None:
+            raise AttachmentStateError("attachment cleanup target is not bound")
         cleanup_states = list(record.leaf_cleanup_states)
         cleanup_states[index] = replacement
         state.by_staging_id[staging_id] = replace(
             record,
             leaf_cleanup_states=tuple(cleanup_states),
+            leaf_cleanup_targets=tuple(cleanup_targets),
         )
         return
     if event.event_type == "employee.ingress.attachment_staging_leaf_prepared":
@@ -1443,6 +1604,122 @@ def _leaf_lstat(parent_fd: int, name: str) -> os.stat_result | None:
         return None
     except OSError:
         raise AttachmentStorageError("attachment leaf cannot be inspected") from None
+
+
+def _trusted_leaf_stat_matches(
+    file_stat: os.stat_result,
+    identity: tuple[int, int],
+) -> bool:
+    return (
+        (file_stat.st_dev, file_stat.st_ino) == identity
+        and stat.S_ISREG(file_stat.st_mode)
+        and stat.S_IMODE(file_stat.st_mode) == 0o600
+        and file_stat.st_uid == os.getuid()
+        and file_stat.st_nlink == 1
+    )
+
+
+def _trusted_leaf_generation(file_stat: os.stat_result) -> tuple[int, ...]:
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_mode,
+        file_stat.st_uid,
+        file_stat.st_nlink,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+        file_stat.st_ctime_ns,
+    )
+
+
+def _observe_unbound_cleanup_target(
+    parent_fd: int,
+    temporary: str,
+    final: str,
+) -> tuple[int, int] | str:
+    if _leaf_lstat(parent_fd, final) is not None:
+        raise AttachmentStorageError("unbound attachment leaf is not trusted")
+    temp_stat = _leaf_lstat(parent_fd, temporary)
+    if temp_stat is None:
+        return "absent"
+    if (
+        not stat.S_ISREG(temp_stat.st_mode)
+        or stat.S_IMODE(temp_stat.st_mode) != 0o600
+        or temp_stat.st_uid != os.getuid()
+        or temp_stat.st_size != 0
+        or temp_stat.st_nlink != 1
+    ):
+        raise AttachmentStorageError("unbound attachment leaf is not trusted")
+    return temp_stat.st_dev, temp_stat.st_ino
+
+
+def _open_unbound_cleanup_target(
+    parent_fd: int,
+    temporary: str,
+    final: str,
+    target: tuple[int, int] | str | None,
+) -> int | None:
+    if target == "absent":
+        _revalidate_unbound_cleanup_target(
+            parent_fd,
+            temporary,
+            final,
+            target,
+            None,
+        )
+        return None
+    if not isinstance(target, tuple) or len(target) != 2:
+        raise AttachmentStorageError("unbound attachment cleanup target is invalid")
+    try:
+        fd = os.open(
+            temporary,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError:
+        raise AttachmentStorageError("unbound attachment leaf is not trusted") from None
+    try:
+        _revalidate_unbound_cleanup_target(
+            parent_fd,
+            temporary,
+            final,
+            target,
+            fd,
+        )
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _revalidate_unbound_cleanup_target(
+    parent_fd: int,
+    temporary: str,
+    final: str,
+    target: tuple[int, int] | str | None,
+    fd: int | None,
+) -> None:
+    if _leaf_lstat(parent_fd, final) is not None:
+        raise AttachmentStorageError("unbound attachment leaf is not trusted")
+    temp_stat = _leaf_lstat(parent_fd, temporary)
+    if target == "absent":
+        if fd is not None or temp_stat is not None:
+            raise AttachmentStorageError("unbound attachment leaf is not trusted")
+        return
+    if not isinstance(target, tuple) or len(target) != 2 or fd is None:
+        raise AttachmentStorageError("unbound attachment cleanup target is invalid")
+    file_stat = os.fstat(fd)
+    if (
+        temp_stat is None
+        or (temp_stat.st_dev, temp_stat.st_ino) != target
+        or (file_stat.st_dev, file_stat.st_ino) != target
+        or not stat.S_ISREG(file_stat.st_mode)
+        or stat.S_IMODE(file_stat.st_mode) != 0o600
+        or file_stat.st_uid != os.getuid()
+        or file_stat.st_size != 0
+        or file_stat.st_nlink != 1
+    ):
+        raise AttachmentStorageError("unbound attachment leaf is not trusted")
 
 
 def _require_unique_exact_leaf(
