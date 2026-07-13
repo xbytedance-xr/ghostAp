@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-13
+- **Hire卡片DM权限修复** — 事件 provenance + Chat API chat_mode 原子回退，readiness 具体反馈且默认拒绝 → [详细记录](2026-07-13.md)
 - **真实Hire链路安全落地** — durable Saga、隔离Channel、Slash/激活接入；外部发布证明未就绪，limit仍为0 → [详细记录](2026-07-13.md)
 - **Hire安全边界+SDK升级** — `/hire` 禁止虚拟角色降级，官方1.7.1注册适配与真实readiness门禁落地，整体目标仍active → [详细记录](2026-07-13.md)
 ## 2026-07-12

@@ -19,6 +19,7 @@ from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 import lark_oapi as lark
+from lark_oapi.api.im.v1 import GetChatRequest
 from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
@@ -335,6 +336,11 @@ class FeishuWSClient:
             chat_lock_manager=_chat_lock_mgr,
             employee_hire_service=(
                 self._employee_department_runtime.hire_service
+                if self._employee_department_runtime is not None
+                else None
+            ),
+            employee_hire_readiness=(
+                self._employee_department_runtime.readiness
                 if self._employee_department_runtime is not None
                 else None
             ),
@@ -1044,6 +1050,22 @@ class FeishuWSClient:
             queue_key = f"{chat_id}:{queue_suffix}:t:{thread_root_id}"
 
         request_id = self._ensure_request_id(message_id, chat_id=chat_id, project_id=project_id)
+        try:
+            self._message_linker.register_origin(
+                message_id,
+                request_id=request_id,
+                chat_id=chat_id,
+                project_id=project_id,
+                chat_type=chat_type,
+                sender_id=_sender_id,
+                tenant_key=tenant_key,
+            )
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as e:
+            logger.debug(
+                "register trusted message origin failed: message_id=%s, err=%s",
+                message_id,
+                get_error_detail(e),
+            )
 
         with TraceContext(request_id):
             task_type = "spec_command" if is_spec else "feishu_message"
@@ -1865,9 +1887,6 @@ class FeishuWSClient:
             open_message_id = None
             open_chat_id = "unknown"
 
-        # Card actions: extract chat_type for p2p privilege detection
-        card_chat_type = getattr(getattr(data.event, "context", None), "chat_type", None)
-        card_is_p2p = card_chat_type == "p2p"
         _raw_tenant_key = getattr(getattr(data, "header", None), "tenant_key", None)
         tenant_key = _raw_tenant_key if isinstance(_raw_tenant_key, str) else ""
 
@@ -1944,12 +1963,22 @@ class FeishuWSClient:
                 project_id = None
 
         origin_message_id = None
+        origin_lookup_failed = False
         try:
             origin_message_id = self._message_linker.resolve_origin(reply_message_id=open_message_id)
         except (RuntimeError, OSError, TypeError, ValueError):
-            origin_message_id = None
+            origin_lookup_failed = True
         origin_message_id = origin_message_id or open_message_id
-        request_id = self._ensure_request_id(origin_message_id, chat_id=open_chat_id, project_id=project_id)
+        card_is_p2p = False
+        if not origin_lookup_failed:
+            card_is_p2p = self._resolve_card_is_p2p(
+                origin_message_id=origin_message_id,
+                open_chat_id=open_chat_id,
+                operator_id=operator_id,
+            )
+        # Provenance has already been resolved above. Request bookkeeping must
+        # not overwrite its trusted chat/operator fields after a rejected card.
+        request_id = self._ensure_request_id(origin_message_id, project_id=project_id)
 
         is_system = self._is_system_card_action(data)
 
@@ -1976,6 +2005,101 @@ class FeishuWSClient:
                     "link_task失败(card_action): origin=%s, run_id=%s, err=%s", origin_message_id, handle.run_id, e
                 )
         return None
+
+    def _resolve_card_is_p2p(
+        self,
+        *,
+        origin_message_id: str | None,
+        open_chat_id: str,
+        operator_id: str,
+    ) -> bool:
+        """Resolve card DM provenance without trusting callback payload fields.
+
+        Card callbacks do not carry a structural chat type. Prefer metadata
+        captured from ``im.message.receive_v1``; after a process restart, fall
+        back to the Chat API's ``chat_mode`` field. Any provenance mismatch or
+        lookup failure is denied.
+        """
+        if not origin_message_id:
+            return False
+        try:
+            origin = self._message_linker.query(origin_message_id)
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            logger.warning("failed to query card origin provenance", exc_info=True)
+            return False
+
+        if origin is not None:
+            stored_origin_message_id = origin.get("origin_message_id")
+            origin_chat_id = origin.get("chat_id")
+            origin_sender_id = origin.get("sender_id")
+            origin_chat_type = origin.get("chat_type")
+            if not all(
+                isinstance(value, str) and bool(value)
+                for value in (
+                    stored_origin_message_id,
+                    origin_chat_id,
+                    origin_sender_id,
+                    origin_chat_type,
+                )
+            ):
+                logger.warning("incomplete card origin provenance: chat=%s", str(open_chat_id)[:12])
+                return False
+            if stored_origin_message_id != origin_message_id:
+                logger.warning("card origin identity mismatch: chat=%s", str(open_chat_id)[:12])
+                return False
+            if origin_chat_id != open_chat_id:
+                logger.warning(
+                    "card origin chat mismatch: origin_chat=%s callback_chat=%s",
+                    str(origin_chat_id)[:12],
+                    str(open_chat_id)[:12],
+                )
+                return False
+
+            if origin_sender_id != operator_id:
+                logger.warning("card origin operator mismatch: chat=%s", str(open_chat_id)[:12])
+                return False
+            return origin_chat_type == "p2p"
+
+        if not isinstance(operator_id, str) or not operator_id:
+            return False
+        chat_mode = self._get_chat_mode(open_chat_id)
+        if chat_mode is None:
+            return False
+        try:
+            registered = self._message_linker.register_trusted_origin_if_absent(
+                origin_message_id,
+                chat_id=open_chat_id,
+                chat_type="topic_group" if chat_mode == "topic" else chat_mode,
+                sender_id=operator_id,
+            )
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            logger.warning("failed to persist Chat API provenance", exc_info=True)
+            return False
+        return registered is True and chat_mode == "p2p"
+
+    def _get_chat_mode(self, chat_id: str) -> str | None:
+        """Read structural chat mode from the official Chat API.
+
+        ``chat_type`` on this API is group visibility (private/public), so it
+        must never participate in DM authorization.
+        """
+        if not chat_id or chat_id == "unknown":
+            return None
+        try:
+            request = GetChatRequest.builder().chat_id(chat_id).build()
+            response = self._get_api_client().im.v1.chat.get(request)
+            if not response or not response.success() or not response.data:
+                logger.warning(
+                    "failed to resolve chat mode: chat=%s code=%s",
+                    chat_id[:12],
+                    getattr(response, "code", None),
+                )
+                return None
+            chat_mode = getattr(response.data, "chat_mode", None)
+            return chat_mode if chat_mode in {"p2p", "group", "topic"} else None
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            logger.warning("chat mode lookup failed: chat=%s", chat_id[:12], exc_info=True)
+            return None
 
     @classmethod
     def _card_action_dedup_fingerprint(cls, action: Any) -> str:

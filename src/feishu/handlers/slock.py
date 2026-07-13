@@ -2285,6 +2285,36 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         if tool not in self.TOOL_TYPE_ROLE_MAP:
             self.reply_text(message_id, f"❌ 无效的员工工具: `{tool}`")
             return
+        readiness_blockers = self._visible_hire_readiness_blockers()
+        if readiness_blockers:
+            blocker_labels = {
+                "visible_employee_limit": "autonomous_visible_employee_limit=0（可见员工发布开关未放行）",
+                "release_evidence": "QA release evidence（独立发布证明未就绪）",
+                "registration_notifier": "注册链接通知通道未就绪",
+                "main_bot_send_audit": "主 Bot 零代发审计未就绪",
+                "production_anchor": "生产 Journal anchor 未就绪",
+                "worker_sandbox": "员工进程 sandbox 证明未就绪",
+                "durable_configuration": "Journal/Vault 持久化配置未就绪",
+                "runtime_composition": "员工运行时组装失败",
+                "runtime_recovery": "员工运行时恢复尚未完成",
+                "credential_keyring": "员工凭证 Keyring 未就绪",
+                "admission_closed": "员工创建入口已关闭",
+                "closed": "员工运行时已关闭",
+                "not_composed": "员工运行时尚未组装",
+                "readiness_unavailable": "readiness 诊断未注入",
+                "readiness_probe": "readiness 诊断执行失败",
+                "readiness_invalid": "readiness 诊断返回无效",
+                "readiness_not_ready": "readiness 未就绪且未提供具体原因",
+            }
+            details = "；".join(
+                blocker_labels.get(blocker, f"{blocker}（未满足）")
+                for blocker in readiness_blockers
+            )
+            self.reply_text(
+                message_id,
+                f"独立飞书智能体创建被安全门禁阻断：{details}。已拒绝降级创建本地虚拟角色。",
+            )
+            return
         service = getattr(self.ctx, "employee_hire_service", None)
         if service is None:
             self.reply_text(
@@ -2307,6 +2337,29 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         except Exception as exc:
             logger.error("visible employee hire dispatch failed: %s", type(exc).__name__)
             self.reply_text(message_id, "独立飞书智能体创建启动失败，请查看安全日志后重试。")
+
+    def _visible_hire_readiness_blockers(self) -> tuple[str, ...]:
+        provider = getattr(self.ctx, "employee_hire_readiness", None)
+        if not callable(provider):
+            return ("readiness_unavailable",)
+        try:
+            readiness = provider()
+        except Exception:
+            logger.warning("visible employee readiness probe failed", exc_info=True)
+            return ("readiness_probe",)
+        blockers = getattr(readiness, "blockers", None)
+        if not isinstance(blockers, (tuple, list)):
+            return ("readiness_invalid",)
+        normalized = tuple(
+            blocker
+            for blocker in blockers
+            if isinstance(blocker, str) and blocker.strip()
+        )
+        if len(normalized) != len(blockers):
+            return ("readiness_invalid",)
+        if getattr(readiness, "ready", None) is not True:
+            return normalized or ("readiness_not_ready",)
+        return normalized
 
     def _visible_hire_requester(self, message_id: str) -> str | None:
         from ...thread.manager import get_current_is_p2p, get_current_sender_id

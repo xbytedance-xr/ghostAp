@@ -631,6 +631,31 @@ class TestMessageLinker:
         assert linker.query(run2)["origin_message_id"] == origin
         assert linker.query(request_id)["origin_message_id"] == origin
 
+    def test_trusted_origin_registration_is_atomic_and_rejects_partial_conflict(self):
+        linker = MessageLinker(ttl=60, max_size=100)
+        linker.register_origin("om_partial", request_id="req_partial", chat_id="chat_dm")
+
+        assert linker.register_trusted_origin_if_absent(
+            "om_partial",
+            chat_id="chat_dm",
+            sender_id="ou_admin",
+            chat_type="p2p",
+        ) is False
+        assert linker.query("om_partial")["sender_id"] is None
+
+        assert linker.register_trusted_origin_if_absent(
+            "om_fresh",
+            chat_id="chat_dm",
+            sender_id="ou_admin",
+            chat_type="p2p",
+        ) is True
+        assert linker.register_trusted_origin_if_absent(
+            "om_fresh",
+            chat_id="chat_other",
+            sender_id="ou_admin",
+            chat_type="p2p",
+        ) is False
+
 
 class TestEvictionCallbackOutsideLock:
     """AC-R01: on_eviction fires outside _lock — callback can safely use ProjectManager."""

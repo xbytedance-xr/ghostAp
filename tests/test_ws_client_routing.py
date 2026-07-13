@@ -72,6 +72,21 @@ def test_handle_message_system_command_routing(mock_ws_client: FeishuWSClient):
     # System commands should not block behind regular project tasks (often goes to control queue or no strict project queue)
 
 
+def test_handle_message_records_trusted_chat_origin(mock_ws_client: FeishuWSClient):
+    """Message events are the authoritative source for DM provenance."""
+    msg = create_mock_message("/hire 柳七月", message_id="msg_hire", chat_id="chat_dm")
+    msg.event.message.chat_type = "p2p"
+    msg.event.sender.sender_id.open_id = "ou_admin"
+
+    mock_ws_client._handle_message(msg)
+
+    origin = mock_ws_client._message_linker.query("msg_hire")
+    assert origin is not None
+    assert origin["chat_id"] == "chat_dm"
+    assert origin["chat_type"] == "p2p"
+    assert origin["sender_id"] == "ou_admin"
+
+
 def test_employee_department_runtime_is_wired_but_dormant_by_default(
     mock_ws_client: FeishuWSClient,
 ) -> None:
@@ -81,6 +96,9 @@ def test_employee_department_runtime_is_wired_but_dormant_by_default(
     assert runtime.hire_service is None
     assert runtime.readiness().blockers == ("visible_employee_limit",)
     assert mock_ws_client._handler_ctx.employee_hire_service is None
+    assert mock_ws_client._handler_ctx.employee_hire_readiness().blockers == (
+        "visible_employee_limit",
+    )
 
 
 def test_handle_message_shell_command_routing(mock_ws_client: FeishuWSClient):
@@ -733,6 +751,270 @@ def test_card_action_deduplication_and_routing(mock_ws_client: FeishuWSClient):
     assert args[2] == "chat_456"
     assert args[3] == "proj_1"
     assert args[4]["action"] == "show_status"
+
+
+def _card_action_data(*, event_id: str, message_id: str, chat_id: str, operator_id: str):
+    data = MagicMock()
+    data.header.event_id = event_id
+    data.header.event_type = "card.action.trigger"
+    data.header.tenant_key = "tenant_card"
+    data.event.context.open_message_id = message_id
+    data.event.context.open_chat_id = chat_id
+    # The official card callback context has no chat_type field.
+    del data.event.context.chat_type
+    data.event.action.tag = "button"
+    data.event.action.name = ""
+    data.event.action.value = {"action": "show_status"}
+    data.event.operator.open_id = operator_id
+    data.event.operator.user_id = None
+    data.event.operator.union_id = None
+    return data
+
+
+def test_card_action_restores_p2p_from_trusted_message_origin(mock_ws_client: FeishuWSClient):
+    """A DM selection flow must remain a DM after the callback hop."""
+    mock_ws_client._message_linker.register_origin(
+        "msg_origin",
+        request_id="req_hire",
+        chat_id="chat_dm",
+        chat_type="p2p",
+        sender_id="ou_admin",
+    )
+    mock_ws_client._message_linker.link_reply("msg_origin", "msg_card")
+    data = _card_action_data(
+        event_id="evt_hire_select",
+        message_id="msg_card",
+        chat_id="chat_dm",
+        operator_id="ou_admin",
+    )
+
+    mock_ws_client._handle_card_action(data)
+
+    spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert spec.origin_message_id == "msg_origin"
+    assert spec.is_p2p is True
+
+
+def test_card_action_fallback_uses_chat_mode_not_visibility_chat_type(
+    mock_ws_client: FeishuWSClient,
+):
+    """After an in-memory provenance miss, Chat API chat_mode is authoritative."""
+    response = MagicMock()
+    response.success.return_value = True
+    response.data.chat_mode = "p2p"
+    response.data.chat_type = "public"
+    api_client = MagicMock()
+    api_client.im.v1.chat.get.return_value = response
+    mock_ws_client._get_api_client = MagicMock(return_value=api_client)
+
+    data = _card_action_data(
+        event_id="evt_after_restart",
+        message_id="msg_card_after_restart",
+        chat_id="chat_dm",
+        operator_id="ou_admin",
+    )
+    mock_ws_client._handle_card_action(data)
+
+    spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert spec.is_p2p is True
+    request = api_client.im.v1.chat.get.call_args.args[0]
+    assert request.chat_id == "chat_dm"
+    fallback_origin = mock_ws_client._message_linker.query("msg_card_after_restart")
+    assert fallback_origin is not None
+    assert fallback_origin["chat_id"] == "chat_dm"
+    assert fallback_origin["sender_id"] == "ou_admin"
+    assert fallback_origin["chat_type"] == "p2p"
+
+    mock_ws_client._message_linker.link_reply(
+        "msg_card_after_restart",
+        "msg_next_hire_card",
+    )
+    api_client.im.v1.chat.get.reset_mock()
+    next_data = _card_action_data(
+        event_id="evt_after_restart_next_step",
+        message_id="msg_next_hire_card",
+        chat_id="chat_dm",
+        operator_id="ou_admin",
+    )
+    mock_ws_client._handle_card_action(next_data)
+
+    next_spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert next_spec.is_p2p is True
+    api_client.im.v1.chat.get.assert_not_called()
+
+
+def test_card_action_ignores_non_contract_callback_chat_type(mock_ws_client: FeishuWSClient):
+    """An injected callback context.chat_type must not grant DM privileges."""
+    response = MagicMock()
+    response.success.return_value = True
+    response.data.chat_mode = "group"
+    response.data.chat_type = "private"
+    api_client = MagicMock()
+    api_client.im.v1.chat.get.return_value = response
+    mock_ws_client._get_api_client = MagicMock(return_value=api_client)
+    data = _card_action_data(
+        event_id="evt_group",
+        message_id="msg_group_card",
+        chat_id="chat_group",
+        operator_id="ou_admin",
+    )
+    data.event.context.chat_type = "p2p"
+
+    mock_ws_client._handle_card_action(data)
+
+    spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert spec.is_p2p is False
+
+
+def test_card_action_cross_operator_provenance_fails_closed(mock_ws_client: FeishuWSClient):
+    mock_ws_client._message_linker.register_origin(
+        "msg_origin",
+        request_id="req_hire",
+        chat_id="chat_dm",
+        chat_type="p2p",
+        sender_id="ou_original_admin",
+    )
+    mock_ws_client._message_linker.link_reply("msg_origin", "msg_card")
+    mock_ws_client._get_api_client = MagicMock()
+    data = _card_action_data(
+        event_id="evt_other_operator",
+        message_id="msg_card",
+        chat_id="chat_dm",
+        operator_id="ou_other_admin",
+    )
+
+    mock_ws_client._handle_card_action(data)
+
+    spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert spec.is_p2p is False
+    mock_ws_client._get_api_client.assert_not_called()
+
+
+def test_card_action_partial_origin_provenance_fails_closed(mock_ws_client: FeishuWSClient):
+    mock_ws_client._message_linker.register_origin(
+        "msg_partial",
+        request_id="req_partial",
+        chat_id="chat_dm",
+    )
+    mock_ws_client._get_api_client = MagicMock()
+
+    assert mock_ws_client._resolve_card_is_p2p(
+        origin_message_id="msg_partial",
+        open_chat_id="chat_dm",
+        operator_id="ou_admin",
+    ) is False
+    mock_ws_client._get_api_client.assert_not_called()
+
+
+def test_card_action_origin_query_error_fails_closed(mock_ws_client: FeishuWSClient):
+    mock_ws_client._message_linker.query = MagicMock(side_effect=RuntimeError("cache unavailable"))
+    mock_ws_client._get_api_client = MagicMock()
+
+    assert mock_ws_client._resolve_card_is_p2p(
+        origin_message_id="msg_origin",
+        open_chat_id="chat_dm",
+        operator_id="ou_admin",
+    ) is False
+    mock_ws_client._get_api_client.assert_not_called()
+
+
+def test_card_action_origin_resolution_error_does_not_become_api_miss(
+    mock_ws_client: FeishuWSClient,
+):
+    mock_ws_client._message_linker.resolve_origin = MagicMock(
+        side_effect=OSError("origin index unavailable")
+    )
+    mock_ws_client._get_api_client = MagicMock()
+    data = _card_action_data(
+        event_id="evt_origin_index_error",
+        message_id="msg_card",
+        chat_id="chat_dm",
+        operator_id="ou_admin",
+    )
+
+    mock_ws_client._handle_card_action(data)
+
+    spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert spec.is_p2p is False
+    mock_ws_client._get_api_client.assert_not_called()
+
+
+def test_card_action_api_fallback_rejects_empty_operator(mock_ws_client: FeishuWSClient):
+    mock_ws_client._get_api_client = MagicMock()
+
+    assert mock_ws_client._resolve_card_is_p2p(
+        origin_message_id="msg_card",
+        open_chat_id="chat_dm",
+        operator_id="",
+    ) is False
+    mock_ws_client._get_api_client.assert_not_called()
+
+
+def test_card_action_api_fallback_requires_atomic_provenance_write(
+    mock_ws_client: FeishuWSClient,
+):
+    response = MagicMock()
+    response.success.return_value = True
+    response.data.chat_mode = "p2p"
+    api_client = MagicMock()
+    api_client.im.v1.chat.get.return_value = response
+    mock_ws_client._get_api_client = MagicMock(return_value=api_client)
+    mock_ws_client._message_linker = MagicMock()
+    mock_ws_client._message_linker.query.return_value = None
+    mock_ws_client._message_linker.register_trusted_origin_if_absent.return_value = None
+
+    assert mock_ws_client._resolve_card_is_p2p(
+        origin_message_id="msg_card",
+        open_chat_id="chat_dm",
+        operator_id="ou_admin",
+    ) is False
+
+
+def test_card_action_rejects_provenance_for_different_origin(
+    mock_ws_client: FeishuWSClient,
+):
+    mock_ws_client._message_linker = MagicMock()
+    mock_ws_client._message_linker.query.return_value = {
+        "origin_message_id": "msg_other_origin",
+        "chat_id": "chat_dm",
+        "sender_id": "ou_admin",
+        "chat_type": "p2p",
+    }
+    mock_ws_client._get_api_client = MagicMock()
+
+    assert mock_ws_client._resolve_card_is_p2p(
+        origin_message_id="msg_expected_origin",
+        open_chat_id="chat_dm",
+        operator_id="ou_admin",
+    ) is False
+    mock_ws_client._get_api_client.assert_not_called()
+
+
+def test_rejected_cross_chat_callback_cannot_rewrite_trusted_provenance(
+    mock_ws_client: FeishuWSClient,
+):
+    assert mock_ws_client._message_linker.register_trusted_origin_if_absent(
+        "msg_origin",
+        chat_id="chat_dm",
+        sender_id="ou_admin",
+        chat_type="p2p",
+    ) is True
+    mock_ws_client._message_linker.link_reply("msg_origin", "msg_card")
+    mock_ws_client._get_api_client = MagicMock()
+
+    for event_id in ("evt_cross_chat_1", "evt_cross_chat_2"):
+        data = _card_action_data(
+            event_id=event_id,
+            message_id="msg_card",
+            chat_id="chat_other",
+            operator_id="ou_admin",
+        )
+        mock_ws_client._handle_card_action(data)
+        spec, _ = mock_ws_client._scheduler.submit.call_args.args
+        assert spec.is_p2p is False
+        assert mock_ws_client._message_linker.query("msg_origin")["chat_id"] == "chat_dm"
+
+    mock_ws_client._get_api_client.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -95,6 +95,7 @@ class HandlerContext:
     repo_lock_manager: Optional["RepoLockManager"] = None
     chat_lock_manager: Optional["ChatLockManager"] = None
     employee_hire_service: Optional["EmployeeHireService"] = None
+    employee_hire_readiness: Optional[Callable[[], Any]] = None
 
     def dependency_view(self) -> HandlerDependencyView:
         """Return a minimal service view while keeping existing fields compatible."""

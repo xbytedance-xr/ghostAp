@@ -82,6 +82,9 @@ class MessageLinker:
         request_id: str | None = None,
         chat_id: str | None = None,
         project_id: str | None = None,
+        chat_type: str | None = None,
+        sender_id: str | None = None,
+        tenant_key: str | None = None,
     ) -> None:
         if not origin_message_id:
             return
@@ -92,6 +95,9 @@ class MessageLinker:
                 "request_id": None,
                 "chat_id": None,
                 "project_id": None,
+                "chat_type": None,
+                "sender_id": None,
+                "tenant_key": None,
                 "reply_message_ids": [],
                 "task_run_ids": [],
             }
@@ -102,6 +108,12 @@ class MessageLinker:
                 rec["chat_id"] = chat_id
             if project_id:
                 rec["project_id"] = project_id
+            if chat_type:
+                rec["chat_type"] = chat_type
+            if sender_id:
+                rec["sender_id"] = sender_id
+            if tenant_key:
+                rec["tenant_key"] = tenant_key
             self._origins[origin_message_id] = (rec, now)
             self._cleanup_unlocked(now)
 
@@ -117,6 +129,57 @@ class MessageLinker:
                 return None
             return rec.get("request_id")
 
+    def register_trusted_origin_if_absent(
+        self,
+        origin_message_id: str,
+        *,
+        chat_id: str,
+        sender_id: str,
+        chat_type: str,
+    ) -> bool:
+        """Atomically create a complete card provenance record.
+
+        This is intentionally compare-and-set: a partial or conflicting record
+        is never upgraded or overwritten by a Chat API fallback.
+        """
+        if not all(
+            isinstance(value, str) and bool(value)
+            for value in (origin_message_id, chat_id, sender_id, chat_type)
+        ):
+            return False
+        if chat_type not in {"p2p", "group", "topic_group"}:
+            return False
+        with self._lock:
+            now = time.time()
+            item = self._origins.get(origin_message_id)
+            if item is not None:
+                rec, timestamp = item
+                if now - timestamp > self._ttl:
+                    self._evict_origin_unlocked(origin_message_id)
+                else:
+                    return (
+                        rec.get("origin_message_id") == origin_message_id
+                        and rec.get("chat_id") == chat_id
+                        and rec.get("sender_id") == sender_id
+                        and rec.get("chat_type") == chat_type
+                    )
+            self._origins[origin_message_id] = (
+                {
+                    "origin_message_id": origin_message_id,
+                    "request_id": None,
+                    "chat_id": chat_id,
+                    "project_id": None,
+                    "chat_type": chat_type,
+                    "sender_id": sender_id,
+                    "tenant_key": None,
+                    "reply_message_ids": [],
+                    "task_run_ids": [],
+                },
+                now,
+            )
+            self._cleanup_unlocked(now)
+            return True
+
     def link_reply(self, origin_message_id: str, reply_message_id: str) -> None:
         if not origin_message_id or not reply_message_id:
             return
@@ -129,6 +192,9 @@ class MessageLinker:
                     "request_id": None,
                     "chat_id": None,
                     "project_id": None,
+                    "chat_type": None,
+                    "sender_id": None,
+                    "tenant_key": None,
                     "reply_message_ids": [],
                     "task_run_ids": [],
                 }
@@ -150,6 +216,9 @@ class MessageLinker:
                     "request_id": None,
                     "chat_id": None,
                     "project_id": None,
+                    "chat_type": None,
+                    "sender_id": None,
+                    "tenant_key": None,
                     "reply_message_ids": [],
                     "task_run_ids": [],
                 }

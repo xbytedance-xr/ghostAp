@@ -435,6 +435,7 @@ class TestCreateRoleDefaults:
     def test_global_hire_without_department_service_fails_closed(self):
         handler = self._make_handler()
         handler.ctx.employee_hire_service = None
+        handler.ctx.employee_hire_readiness = None
         handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
         handler._get_engine_manager = MagicMock()
         handler._get_global_registry = MagicMock()
@@ -454,12 +455,44 @@ class TestCreateRoleDefaults:
         handler._get_engine_manager.assert_not_called()
         handler._get_global_registry.assert_not_called()
         assert "独立飞书智能体" in handler.reply_text.call_args.args[1]
-        assert "尚未接入" in handler.reply_text.call_args.args[1]
+        assert "安全门禁" in handler.reply_text.call_args.args[1]
+        assert "readiness" in handler.reply_text.call_args.args[1]
+
+    def test_global_hire_reports_specific_runtime_readiness_blockers(self):
+        handler = self._make_handler()
+        handler.ctx.employee_hire_service = None
+        handler.ctx.employee_hire_readiness = MagicMock(
+            return_value=SimpleNamespace(
+                ready=False,
+                blockers=("visible_employee_limit", "release_evidence"),
+            )
+        )
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool codex --model gpt-5/high --effort high",
+                global_hire=True,
+            )
+
+        message = handler.reply_text.call_args.args[1]
+        assert "安全门禁" in message
+        assert "autonomous_visible_employee_limit=0" in message
+        assert "QA release evidence" in message
 
     def test_global_hire_dispatches_typed_request_without_legacy_registry(self):
         handler = self._make_handler()
         service = MagicMock()
         handler.ctx.employee_hire_service = service
+        handler.ctx.employee_hire_readiness = MagicMock(
+            return_value=SimpleNamespace(ready=True, blockers=())
+        )
         handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
         handler._get_engine_manager = MagicMock()
         handler._get_global_registry = MagicMock()
@@ -485,6 +518,38 @@ class TestCreateRoleDefaults:
         assert request.tenant_key == "tenant_a"
         handler._get_engine_manager.assert_not_called()
         handler._get_global_registry.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "readiness_provider",
+        [
+            None,
+            lambda: None,
+            lambda: SimpleNamespace(ready=False, blockers=()),
+            lambda: (_ for _ in ()).throw(RuntimeError("probe failed")),
+        ],
+        ids=["missing", "malformed", "not-ready-empty", "probe-error"],
+    )
+    def test_global_hire_readiness_is_fail_closed(self, readiness_provider):
+        handler = self._make_handler()
+        service = MagicMock()
+        handler.ctx.employee_hire_service = service
+        handler.ctx.employee_hire_readiness = readiness_provider
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool codex --model gpt-5/high --effort high",
+                global_hire=True,
+            )
+
+        service.start_hire.assert_not_called()
+        assert "安全门禁" in handler.reply_text.call_args.args[1]
 
     def test_unassigned_task_claim_competition_tries_next_agent_after_failed_claim(self):
         """Automatic assignment broadcasts the claim chance through ranked candidates."""
