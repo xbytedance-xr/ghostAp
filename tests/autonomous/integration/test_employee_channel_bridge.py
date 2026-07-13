@@ -138,11 +138,15 @@ class _ParentDurableAck:
         control_fd: int,
         service: EmployeeIngressService,
         write_ack: bool = True,
+        fail_ack_encode: bool = False,
+        fail_ack_write: bool = False,
     ) -> None:
         self._event_fd = event_fd
         self._control_fd = control_fd
         self._service = service
         self._write_ack = write_ack
+        self._fail_ack_encode = fail_ack_encode
+        self._fail_ack_write = fail_ack_write
         self.ingress_received = threading.Event()
         self.release_commit = threading.Event()
         self.cancel_commit = threading.Event()
@@ -258,6 +262,8 @@ class _ParentDurableAck:
                     if not self._write_ack:
                         continue
                     self._sequence += 1
+                    if self._fail_ack_encode:
+                        raise ValueError("injected post-anchor ACK encode failure")
                     response = encode_frame(
                         ChannelFrame(
                             FrameType.INGRESS_ACK,
@@ -272,11 +278,50 @@ class _ParentDurableAck:
                             },
                         )
                     )
+                    if self._fail_ack_write:
+                        fd, self._control_fd = self._control_fd, -1
+                        os.close(fd)
+                        os.write(fd, response)
                     os.write(self._control_fd, response)
                     self.ack_written.set()
                 except BaseException as exc:
                     self.failure = exc
                     self.failed.set()
+
+
+class _ReadyOnlyParent:
+    """Read READY, then retain the event pipe without draining INGRESS."""
+
+    def __init__(self, *, event_fd: int, control_fd: int) -> None:
+        self._event_fd = event_fd
+        self._control_fd = control_fd
+        self.ready = threading.Event()
+        self.release = threading.Event()
+        self.frame_types: list[FrameType] = []
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def close(self) -> None:
+        self.release.set()
+        for fd in (self._event_fd, self._control_fd):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._thread.join(timeout=1)
+
+    def _run(self) -> None:
+        with os.fdopen(self._event_fd, "rb", buffering=0) as stream:
+            self._event_fd = -1
+            raw = stream.readline(MAX_FRAME_BYTES + 1)
+            if raw:
+                frame = decode_frame(raw)
+                self.frame_types.append(frame.frame_type)
+                if frame.frame_type is FrameType.READY:
+                    self.ready.set()
+            self.release.wait(_WAIT_SECONDS)
 
 
 def _start_production_bridge(
@@ -290,6 +335,7 @@ def _start_production_bridge(
     generation: int = 3,
     post_ack_notify_fd: int | None = None,
     post_ack_release_fd: int | None = None,
+    fail_sdk_write: bool = False,
 ) -> subprocess.Popen[bytes]:
     if (post_ack_notify_fd is None) != (post_ack_release_fd is None):
         raise ValueError("post-ACK barrier FDs must be paired")
@@ -304,12 +350,27 @@ def _barrier_wait(self, pending, *, timeout):
     return ack
 worker.IngressAckMailbox.wait = _barrier_wait
 """
+    sdk_write_fault = ""
+    if fail_sdk_write:
+        sdk_write_fault = """
+from src.autonomous.ingress import sdk_capability as _sdk_capability
+_original_collect_identity = _sdk_capability.collect_sdk_distribution_identity
+def _collect_then_inject_sdk_write(*args, **kwargs):
+    identity = _original_collect_identity(*args, **kwargs)
+    from lark_channel.ws import Client as _InjectedSDKClient
+    async def _fail_post_callback_sdk_write(self, data):
+        raise OSError('injected post-callback SDK write failure')
+    _InjectedSDKClient._write_message = _fail_post_callback_sdk_write
+    return identity
+_sdk_capability.collect_sdk_distribution_identity = _collect_then_inject_sdk_write
+"""
     code = f"""
 import os
 import sys
 sys.path.insert(0, {str(Path.cwd())!r})
 from src.autonomous.provisioning import channel_worker as worker
 {barrier}
+{sdk_write_fault}
 worker.run_low_level_employee_channel(
     {bootstrap_r}, {control_r}, {event_w},
     domain={harness.domain!r},
@@ -361,6 +422,8 @@ def _bridge_delivery(
     write_ack: bool = True,
     generation: int = 3,
     harness_type: type[_WireHarness] = _WireHarness,
+    fail_ack_encode: bool = False,
+    fail_ack_write: bool = False,
 ):
     bootstrap_r, bootstrap_w = os.pipe()
     control_r, control_w = os.pipe()
@@ -371,6 +434,8 @@ def _bridge_delivery(
             control_fd=control_w,
             service=service,
             write_ack=write_ack,
+            fail_ack_encode=fail_ack_encode,
+            fail_ack_write=fail_ack_write,
         )
         process = _start_production_bridge(
             harness,
@@ -527,6 +592,48 @@ def test_oversized_single_frame_is_wire_500_with_zero_durable_side_effects(
 
 
 @pytest.mark.integration
+def test_event_pipe_backpressure_fails_wire_within_total_ack_budget(
+    tmp_path: Path,
+) -> None:
+    service, writer = _service(tmp_path)
+    payload = _message_payload()
+    payload["event"]["message"]["content"] = json.dumps(
+        {"text": "x" * (200 * 1024)}, separators=(",", ":")
+    )
+    bootstrap_r, bootstrap_w = os.pipe()
+    control_r, control_w = os.pipe()
+    event_r, event_w = os.pipe()
+    with _WireHarness(tmp_path, payload) as harness:
+        parent = _ReadyOnlyParent(event_fd=event_r, control_fd=control_w)
+        process = _start_production_bridge(
+            harness,
+            parent,  # type: ignore[arg-type]
+            bootstrap_w=bootstrap_w,
+            bootstrap_r=bootstrap_r,
+            control_r=control_r,
+            event_w=event_w,
+        )
+        try:
+            assert parent.ready.wait(_WAIT_SECONDS)
+            started = time.monotonic()
+            assert harness.response_received.wait(2.0)
+            elapsed = time.monotonic() - started
+            assert json.loads(harness.response_frame().payload)["code"] == 500
+            assert elapsed < 2.0
+            assert parent.frame_types == [FrameType.READY]
+            assert service.state.by_acceptance_id == {}
+            assert tuple(writer.replay()) == ()
+            assert process.poll() is None
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=2)
+            parent.close()
+            service.close()
+            writer.close()
+
+
+@pytest.mark.integration
 def test_parent_close_unblocks_pending_callback_and_replay_converges(
     tmp_path: Path,
 ) -> None:
@@ -678,6 +785,157 @@ def test_sdk_500_after_lost_ack_redelivers_to_one_duplicate_acceptance(
         assert len(tuple(writer.replay())) == 1
         assert first_parent.accept_invocations == 1
         assert replay_parent.accept_invocations == 1
+        assert first_parent.execution_calls == replay_parent.execution_calls == []
+    finally:
+        service.close()
+        writer.close()
+
+
+def _assert_post_anchor_parent_ack_failure_replays_duplicate(
+    tmp_path: Path,
+    *,
+    failure: str,
+) -> None:
+    service, writer = _service(tmp_path)
+    payload = _message_payload()
+    first_kwargs = {
+        "fail_ack_encode": failure == "encode",
+        "fail_ack_write": failure == "write",
+    }
+    try:
+        with _bridge_delivery(
+            tmp_path,
+            service,
+            payload,
+            **first_kwargs,
+        ) as (first_wire, first_parent, _first_process):
+            assert first_parent.ready.wait(_WAIT_SECONDS)
+            assert first_parent.ingress_received.wait(_WAIT_SECONDS)
+            first_parent.release_commit.set()
+            assert first_parent.anchored.wait(_WAIT_SECONDS)
+            assert first_parent.failed.wait(_WAIT_SECONDS)
+            assert first_wire.response_received.wait(_WAIT_SECONDS)
+            assert json.loads(first_wire.response_frame().payload)["code"] == 500
+            assert first_parent.accepted_ack.duplicate is False
+            first_acceptance = first_parent.accepted_ack.acceptance
+
+        with _bridge_delivery(tmp_path, service, payload, generation=4) as (
+            replay_wire,
+            replay_parent,
+            _replay_process,
+        ):
+            assert replay_parent.ready.wait(_WAIT_SECONDS)
+            assert replay_parent.ingress_received.wait(_WAIT_SECONDS)
+            replay_parent.release_commit.set()
+            assert replay_parent.ack_written.wait(_WAIT_SECONDS)
+            assert replay_wire.response_received.wait(_WAIT_SECONDS)
+            assert json.loads(replay_wire.response_frame().payload)["code"] == 200
+            assert replay_parent.accepted_ack.duplicate is True
+            assert replay_parent.accepted_ack.acceptance == first_acceptance
+
+        assert len(service.state.by_acceptance_id) == 1
+        assert len(tuple(writer.replay())) == 1
+        assert first_parent.accept_invocations == replay_parent.accept_invocations == 1
+        assert first_parent.execution_calls == replay_parent.execution_calls == []
+    finally:
+        service.close()
+        writer.close()
+
+
+@pytest.mark.integration
+def test_post_anchor_ack_encode_failure_is_wire_500_then_duplicate_replay(
+    tmp_path: Path,
+) -> None:
+    _assert_post_anchor_parent_ack_failure_replays_duplicate(
+        tmp_path,
+        failure="encode",
+    )
+
+
+@pytest.mark.integration
+def test_post_anchor_control_pipe_write_failure_is_wire_500_then_duplicate_replay(
+    tmp_path: Path,
+) -> None:
+    _assert_post_anchor_parent_ack_failure_replays_duplicate(
+        tmp_path,
+        failure="write",
+    )
+
+
+@pytest.mark.integration
+def test_post_callback_sdk_write_failure_has_no_wire_success_then_duplicate_replay(
+    tmp_path: Path,
+) -> None:
+    service, writer = _service(tmp_path)
+    payload = _message_payload()
+    bootstrap_r, bootstrap_w = os.pipe()
+    control_r, control_w = os.pipe()
+    event_r, event_w = os.pipe()
+    try:
+        with _WireHarness(tmp_path, payload, send_event_once=True) as first_wire:
+            first_parent = _ParentDurableAck(
+                event_fd=event_r,
+                control_fd=control_w,
+                service=service,
+            )
+            first_process = _start_production_bridge(
+                first_wire,
+                first_parent,
+                bootstrap_w=bootstrap_w,
+                bootstrap_r=bootstrap_r,
+                control_r=control_r,
+                event_w=event_w,
+                fail_sdk_write=True,
+            )
+            try:
+                ready = first_parent.ready.wait(_WAIT_SECONDS)
+                diagnostic = b""
+                if (
+                    not ready
+                    and first_process.poll() is not None
+                    and first_process.stderr is not None
+                ):
+                    diagnostic = first_process.stderr.read()
+                assert ready, (
+                    first_process.poll(),
+                    diagnostic.decode(errors="replace"),
+                )
+                assert first_parent.ingress_received.wait(_WAIT_SECONDS)
+                first_parent.release_commit.set()
+                assert first_parent.anchored.wait(_WAIT_SECONDS)
+                assert first_parent.ack_written.wait(_WAIT_SECONDS)
+                assert not first_wire.response_received.wait(0.5)
+                assert first_parent.accepted_ack.duplicate is False
+                first_acceptance = first_parent.accepted_ack.acceptance
+                assert first_parent.frame_types[:2] == [
+                    FrameType.READY,
+                    FrameType.INGRESS,
+                ]
+            finally:
+                if first_process.poll() is None:
+                    first_process.terminate()
+                first_process.wait(timeout=2)
+                first_parent.close()
+                assert first_parent.ingress_before_ready is False
+                assert first_parent.execution_calls == []
+
+        with _bridge_delivery(tmp_path, service, payload, generation=4) as (
+            replay_wire,
+            replay_parent,
+            _replay_process,
+        ):
+            assert replay_parent.ready.wait(_WAIT_SECONDS)
+            assert replay_parent.ingress_received.wait(_WAIT_SECONDS)
+            replay_parent.release_commit.set()
+            assert replay_parent.ack_written.wait(_WAIT_SECONDS)
+            assert replay_wire.response_received.wait(_WAIT_SECONDS)
+            assert json.loads(replay_wire.response_frame().payload)["code"] == 200
+            assert replay_parent.accepted_ack.duplicate is True
+            assert replay_parent.accepted_ack.acceptance == first_acceptance
+
+        assert len(service.state.by_acceptance_id) == 1
+        assert len(tuple(writer.replay())) == 1
+        assert first_parent.accept_invocations == replay_parent.accept_invocations == 1
         assert first_parent.execution_calls == replay_parent.execution_calls == []
     finally:
         service.close()

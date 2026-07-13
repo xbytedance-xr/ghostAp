@@ -7,7 +7,9 @@ import ctypes
 import dataclasses
 import json
 import os
+import queue
 import resource
+import select
 import sys
 import threading
 import time
@@ -51,6 +53,8 @@ class _PendingIngressAck:
     generation: int
     connection_id: str
     semantic_digest: str
+    envelope_id: str
+    dedup_key: str
     completed: threading.Event = field(default_factory=threading.Event)
     ack: EmployeeIngressAck | None = None
     closed: bool = False
@@ -73,6 +77,8 @@ class IngressAckMailbox:
         generation: int,
         connection_id: str,
         semantic_digest: str,
+        envelope_id: str,
+        dedup_key: str,
     ) -> _PendingIngressAck:
         pending = _PendingIngressAck(
             request_id=request_id,
@@ -81,6 +87,8 @@ class IngressAckMailbox:
             generation=generation,
             connection_id=connection_id,
             semantic_digest=semantic_digest,
+            envelope_id=envelope_id,
+            dedup_key=dedup_key,
         )
         with self._lock:
             if self._closed:
@@ -103,6 +111,8 @@ class IngressAckMailbox:
                 or ack.channel_generation != pending.generation
                 or ack.connection_id != pending.connection_id
                 or ack.semantic_digest != pending.semantic_digest
+                or ack.acceptance.envelope_id != pending.envelope_id
+                or ack.acceptance.dedup_key != pending.dedup_key
             ):
                 return False
             pending.ack = ack
@@ -149,6 +159,14 @@ class IngressAckMailbox:
             for item in pending:
                 item.closed = True
                 item.completed.set()
+
+    def cancel(self, pending: _PendingIngressAck) -> None:
+        """Remove one request that could not be emitted to the parent."""
+        with self._lock:
+            if self._pending.get(pending.request_id) is pending:
+                self._pending.pop(pending.request_id, None)
+            pending.closed = True
+            pending.completed.set()
 
 
 class _ConnectionAdmission:
@@ -215,6 +233,8 @@ class _ConnectionAdmission:
         generation: int,
         connection_id: str,
         semantic_digest: str,
+        envelope_id: str,
+        dedup_key: str,
     ) -> _PendingIngressAck:
         with self._condition:
             if (
@@ -230,6 +250,8 @@ class _ConnectionAdmission:
                 generation=generation,
                 connection_id=connection_id,
                 semantic_digest=semantic_digest,
+                envelope_id=envelope_id,
+                dedup_key=dedup_key,
             )
 
 
@@ -334,18 +356,25 @@ def run_low_level_employee_channel(
             generation=bootstrap.generation,
             connection_id=connection_id,
             semantic_digest=metadata.semantic_digest,
+            envelope_id=metadata.envelope_id,
+            dedup_key=metadata.dedup_key,
         )
-        emitter.emit(
-            FrameType.INGRESS,
-            {
-                "request_id": request_id,
-                "app_id": bootstrap.app_id,
-                "connection_id": connection_id,
-                "metadata": metadata.to_dict(),
-                "payload": payload.to_dict(),
-                "action_correlation": correlation,
-            },
-        )
+        try:
+            emitter.emit(
+                FrameType.INGRESS,
+                {
+                    "request_id": request_id,
+                    "app_id": bootstrap.app_id,
+                    "connection_id": connection_id,
+                    "metadata": metadata.to_dict(),
+                    "payload": payload.to_dict(),
+                    "action_correlation": correlation,
+                },
+                deadline=deadline,
+            )
+        except BaseException:
+            mailbox.cancel(pending)
+            raise
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             mailbox.wait(pending, timeout=0.0)
@@ -408,6 +437,7 @@ def run_low_level_employee_channel(
     finally:
         stop_requested.set()
         mailbox.close()
+        emitter.close()
 
 
 def _strict_sdk_security_config() -> Any:
@@ -543,13 +573,10 @@ def _emit_nonblocking(
     event_name: str,
     data: dict[str, Any],
 ) -> None:
-    try:
-        emitter.emit(
-            FrameType.EVENT,
-            {"event": event_name, "data": _json_safe(data)},
-        )
-    except Exception:
-        return
+    emitter.try_emit(
+        FrameType.EVENT,
+        {"event": event_name, "data": _json_safe(data)},
+    )
 
 
 def _normalize_sdk_ingress(
@@ -688,27 +715,178 @@ def apply_process_hardening() -> None:
         raise WorkerSecurityError("privilege hardening failed")
 
 
+@dataclass(slots=True)
+class _EmitRequest:
+    frame_type: FrameType
+    payload: dict[str, Any]
+    deadline: float
+    required: bool
+    completed: threading.Event = field(default_factory=threading.Event)
+    error: BaseException | None = None
+
+
 class _FrameEmitter:
+    """Single-owner, deadline-bounded NDJSON writer for the child event pipe."""
+
+    _DEFAULT_TIMEOUT_SECONDS = 10.0
+    _QUEUE_CAPACITY = 128
+
     def __init__(self, fd: int, agent_id: str, generation: int) -> None:
         self._fd = fd
         self._agent_id = agent_id
         self._generation = generation
         self._sequence = 0
-        self._lock = threading.Lock()
+        self._requests: queue.Queue[_EmitRequest | None] = queue.Queue(
+            maxsize=self._QUEUE_CAPACITY
+        )
+        self._state_lock = threading.Lock()
+        self._failed: BaseException | None = None
+        self._closed = False
+        os.set_blocking(fd, False)
+        self._writer = threading.Thread(
+            target=self._write_loop,
+            name=f"employee-channel-emitter-{agent_id}-{generation}",
+            daemon=True,
+        )
+        self._writer.start()
 
-    def emit(self, frame_type: FrameType, payload: dict[str, Any]) -> None:
-        with self._lock:
-            self._sequence += 1
-            raw = encode_frame(
-                ChannelFrame(
-                    frame_type=frame_type,
-                    agent_id=self._agent_id,
-                    generation=self._generation,
-                    sequence=self._sequence,
-                    payload=_json_safe(payload),
-                )
+    def emit(
+        self,
+        frame_type: FrameType,
+        payload: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> None:
+        if deadline is None:
+            deadline = time.monotonic() + self._DEFAULT_TIMEOUT_SECONDS
+        request = _EmitRequest(frame_type, payload, deadline, True)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            error = TimeoutError("employee Channel IPC emit timed out")
+            self._fail(error)
+            raise error
+        self._raise_if_unavailable()
+        try:
+            self._requests.put(request, timeout=remaining)
+        except queue.Full as exc:
+            error = TimeoutError("employee Channel IPC emitter queue timed out")
+            self._fail(error)
+            raise error from exc
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not request.completed.wait(remaining):
+            error = TimeoutError("employee Channel IPC emit timed out")
+            self._fail(error)
+            raise error
+        if request.error is not None:
+            raise request.error
+
+    def try_emit(self, frame_type: FrameType, payload: dict[str, Any]) -> bool:
+        """Queue a best-effort notification without blocking its SDK callback."""
+        with self._state_lock:
+            if self._closed or self._failed is not None:
+                return False
+        request = _EmitRequest(
+            frame_type,
+            payload,
+            time.monotonic(),
+            False,
+        )
+        try:
+            self._requests.put_nowait(request)
+        except queue.Full:
+            self._fail(BufferError("employee Channel IPC emitter queue full"))
+            return False
+        return True
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+        try:
+            self._requests.put_nowait(None)
+        except queue.Full:
+            pass
+        try:
+            os.close(self._fd)
+        except OSError:
+            pass
+
+    def _raise_if_unavailable(self) -> None:
+        with self._state_lock:
+            if self._failed is not None:
+                raise EOFError("employee Channel IPC emitter failed") from self._failed
+            if self._closed:
+                raise EOFError("employee Channel IPC emitter closed")
+
+    def _write_loop(self) -> None:
+        while True:
+            request = self._requests.get()
+            if request is None:
+                return
+            try:
+                self._write_request(request)
+            except BaseException as exc:
+                request.error = exc
+                self._fail(exc)
+                return
+            finally:
+                request.completed.set()
+
+    def _write_request(self, request: _EmitRequest) -> None:
+        self._raise_if_unavailable()
+        self._sequence += 1
+        raw = encode_frame(
+            ChannelFrame(
+                frame_type=request.frame_type,
+                agent_id=self._agent_id,
+                generation=self._generation,
+                sequence=self._sequence,
+                payload=_json_safe(request.payload),
             )
-            _write_all(self._fd, raw)
+        )
+        view = memoryview(raw)
+        bytes_written = 0
+        while view:
+            try:
+                written = os.write(self._fd, view)
+            except BlockingIOError:
+                written = 0
+            if written > 0:
+                bytes_written += written
+                view = view[written:]
+                continue
+            if not request.required and bytes_written == 0:
+                raise BlockingIOError(
+                    "employee Channel IPC notification could not be emitted"
+                )
+            remaining = request.deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("employee Channel IPC emit timed out")
+            _, writable, _ = select.select([], [self._fd], [], remaining)
+            if not writable:
+                raise TimeoutError("employee Channel IPC emit timed out")
+
+    def _fail(self, error: BaseException) -> None:
+        with self._state_lock:
+            if self._failed is None:
+                self._failed = error
+            already_closed = self._closed
+            self._closed = True
+        if not already_closed:
+            try:
+                os.close(self._fd)
+            except OSError:
+                pass
+        while True:
+            try:
+                queued = self._requests.get_nowait()
+            except queue.Empty:
+                return
+            if queued is None:
+                continue
+            queued.error = EOFError("employee Channel IPC emitter failed")
+            queued.completed.set()
 
 
 def register_channel_handlers(channel: Any, emit: Callable[[str, Any], None]) -> None:
@@ -856,7 +1034,10 @@ async def _run(bootstrap_fd: int, control_fd: int, event_fd: int) -> None:
                         connection_id=connection_id,
                     )
     finally:
-        await channel.disconnect()
+        try:
+            await channel.disconnect()
+        finally:
+            emitter.close()
 
 
 async def _handle_send(
@@ -915,15 +1096,6 @@ def _json_safe(value: Any) -> Any:
             if not str(key).startswith("_")
         }
     return {"type": type(value).__name__}
-
-
-def _write_all(fd: int, raw: bytes) -> None:
-    view = memoryview(raw)
-    while view:
-        written = os.write(fd, view)
-        if written <= 0:
-            raise BrokenPipeError("worker IPC closed")
-        view = view[written:]
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -19,6 +19,12 @@ concurrency. Reconnect rotates a GhostAP connection ID, cancels old mailbox
 ownership, ignores late ACKs from the old connection, and does not admit a new
 callback until an observed WSS connection has emitted READY.
 
+The final review closes four additional boundaries: child-to-parent IPC emit is
+inside the same 1.5-second callback deadline; a single nonblocking emitter owns
+all child event-pipe writes; ACK acceptance is bound to envelope, dedup key, and
+semantic digest; and any READY/STARTING event-pipe EOF revokes readiness and
+boundedly reaps the worker.
+
 ## Changed Files
 
 - `src/autonomous/provisioning/channel_protocol.py`
@@ -30,6 +36,7 @@ callback until an observed WSS connection has emitted READY.
 - `tests/autonomous/contract/test_employee_channel_contract.py`
 - `tests/autonomous/contract/test_employee_ingress_contract.py`
 - `tests/autonomous/unit/test_employee_channel_ack_mailbox.py`
+- `tests/autonomous/unit/test_employee_channel_emitter.py`
 - `tests/autonomous/integration/test_employee_channel_process.py`
 - `tests/autonomous/integration/test_employee_channel_bridge.py`
 
@@ -51,16 +58,20 @@ callback until an observed WSS connection has emitted READY.
   Connection admission is now condition-locked: stale pending waits are
   cancelled, each reconnect gets a new connection ID, and READY emission plus
   admission publication is atomic and ordered before INGRESS.
+- Final review reproduced a real full-pipe callback hang: the old blocking
+  `os.write` produced no wire response after two seconds. It also reproduced a
+  READY supervisor retaining an alive child after event-pipe EOF. Both failures
+  now have process/real-wire regression selectors.
 
 ## GREEN Evidence
 
 Final scoped results:
 
 ```text
-contract + unit + process + reconnect wire selector: 102 passed, 1 SDK warning
+fix-scoped contract + unit + process + bridge: 130 passed, 1 SDK warning
 ingress recovery/ACK chaos: 20 passed
-full production bridge fault suite: 13 passed, 1 SDK warning
-full tests/autonomous regression: 1390 passed, 2 skipped, 1 SDK warning
+full production bridge fault suite: 17 passed, 1 SDK warning
+full tests/autonomous regression: 1406 passed, 2 skipped, 1 SDK warning
 scoped ruff: all checks passed
 src/autonomous ruff: all checks passed
 docs references: 4 passed
@@ -94,6 +105,10 @@ Router attempt or ACP call; therefore their expected count is zero here.
 | Pending callback plus STOP/reconnect/generation rotation | `test_stop_during_pending_callback_then_generation_rotation_is_fenced`, reconnect selector above, `test_stale_observer_emits_no_ready_and_current_ready_precedes_ingress` | STOP unblocks with 500; generation 4 owns its ACK; old reconnect pending is cancelled; stale observer emits zero READY; new READY precedes new INGRESS. |
 | Concurrent ACK/STOP/SEND | `test_parent_control_ack_stop_send_share_one_noninterleaving_writer` | Three concurrent fragmented writes decode as three complete strict frames with unique monotonic sequence numbers and correct types; runtime remains READY until an actual STOP is sent. |
 | SDK 500 then platform redelivery | `test_sdk_500_after_lost_ack_redelivers_to_one_duplicate_acceptance` | First response is 500 within total ACK budget after an anchored but lost ACK; redelivery is 200 duplicate; one projection record and one Journal frame. |
+| Child event-pipe backpressure | `test_event_pipe_backpressure_fails_wire_within_total_ack_budget`, `test_partial_frame_timeout_closes_emitter_and_rejects_future_frames` | A real full pipe no longer blocks the callback: response is wire 500 within the total budget, zero durable side effects, and a partial NDJSON write closes the emitter so no later frame can interleave. |
+| Parent post-anchor ACK encode/write failures | `test_post_anchor_ack_encode_failure_is_wire_500_then_duplicate_replay`, `test_post_anchor_control_pipe_write_failure_is_wire_500_then_duplicate_replay` | Each first delivery is wire 500 after exactly one anchor; replay returns duplicate 200 for the identical acceptance; READY precedes INGRESS and Router/ACP calls remain zero. |
+| Callback completes; official SDK response write fails | `test_post_callback_sdk_write_failure_has_no_wire_success_then_duplicate_replay` | Fault injection is after the synchronous callback and before the SDK wire write; first delivery has no wire success but exactly one anchor, and replay returns duplicate 200 for the same acceptance. |
+| READY worker loses event-pipe ownership | `test_ready_event_pipe_eof_revokes_readiness_and_reaps_live_worker` | Supervisor changes READY to FAILED with `ready_at=None`, fails pending work, closes control, and boundedly terminates/reaps the still-alive child without joining the reader thread from itself. |
 
 The two frozen implementation-evidence gates are:
 
@@ -118,6 +133,9 @@ matching ACK, one SDK connection, and exact anchor/acceptance identity.
 - The controlled SDK identity gate runs before `lark_channel` import.
 - Card correlation never trusts `action.value`; real P2 event identity is used,
   and missing trusted fallback correlation fails closed.
+- Ordinary IPC applies the same collapsed exact secret aliases as ingress
+  models, rejecting nested camel/Pascal/hyphen variants without rejecting
+  `authorization_type`, token-expiry, or password-policy metadata.
 - Outbound SEND is intentionally rejected by this inbound worker; outbound
   transport remains separate, with no second employee WS and no main-Bot
   fallback.

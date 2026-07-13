@@ -38,7 +38,7 @@
     {
       "id": "EI-BRIDGE-MESSAGE-01",
       "selector": "tests/autonomous/integration/test_employee_channel_bridge.py::test_message_wire_response_waits_for_durable_parent_ack",
-      "evidence_level": "chaos_security",
+      "evidence_level": "integration",
       "environment": "local_channel_wire_harness",
       "artifact_kind": "employee_channel_bridge",
       "artifact_profile_id": "employee-channel-bridge-v1",
@@ -49,7 +49,7 @@
     {
       "id": "EI-BRIDGE-CARD-01",
       "selector": "tests/autonomous/integration/test_employee_channel_bridge.py::test_card_action_wire_response_waits_for_durable_parent_ack",
-      "evidence_level": "chaos_security",
+      "evidence_level": "integration",
       "environment": "local_channel_wire_harness",
       "artifact_kind": "employee_channel_bridge",
       "artifact_profile_id": "employee-channel-bridge-v1",

@@ -566,17 +566,47 @@ class EmployeeChannelSupervisor:
         finally:
             runtime.event_fd = -1
             exit_code = runtime.process.poll()
+            should_reap = False
             with self._lock:
-                if not runtime.stopping and runtime.status.state is ChannelProcessState.STARTING:
+                active = runtime.status.state in {
+                    ChannelProcessState.STARTING,
+                    ChannelProcessState.READY,
+                }
+                if not runtime.stopping and active:
+                    runtime.stopping = True
+                    crashed = exit_code is not None
                     runtime.status = replace(
                         runtime.status,
-                        state=ChannelProcessState.CRASHED,
+                        state=(
+                            ChannelProcessState.CRASHED
+                            if crashed
+                            else ChannelProcessState.FAILED
+                        ),
+                        ready_at=None,
                         stopped_at=time.time(),
                         exit_code=exit_code,
-                        error_code="worker-exited-before-ready",
+                        error_code=(
+                            "worker-exited-before-ready"
+                            if crashed
+                            and runtime.status.state is ChannelProcessState.STARTING
+                            else "worker-exited"
+                            if crashed
+                            else "event-pipe-closed"
+                        ),
                     )
                     self._fail_pending_sends(runtime)
                     runtime.ready.set()
+                    should_reap = not crashed
+            if should_reap:
+                _close_fd(runtime.control_fd)
+                runtime.control_fd = -1
+                self._wait_or_terminate(runtime)
+                with self._lock:
+                    runtime.status = replace(
+                        runtime.status,
+                        stopped_at=time.time(),
+                        exit_code=runtime.process.poll(),
+                    )
 
     def _accept_frame(self, runtime: _Runtime, frame: ChannelFrame) -> None:
         if frame.frame_type is FrameType.READY:

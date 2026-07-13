@@ -468,7 +468,15 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         "EI-BRIDGE-MESSAGE-01",
         "EI-BRIDGE-CARD-01",
     )
-    assert all(gate.evidence_level == "chaos_security" for gate in manifest.gates)
+    assert {
+        gate.id: gate.evidence_level for gate in manifest.gates
+    } == {
+        "EI-PLATFORM-MESSAGE-01": "chaos_security",
+        "EI-PLATFORM-CARD-01": "chaos_security",
+        "EI-IPC-01": "chaos_security",
+        "EI-BRIDGE-MESSAGE-01": "integration",
+        "EI-BRIDGE-CARD-01": "integration",
+    }
     assert manifest.gate("EI-PLATFORM-MESSAGE-01").selector.endswith(
         "::test_message_wire_response_waits_for_parent_anchor"
     )

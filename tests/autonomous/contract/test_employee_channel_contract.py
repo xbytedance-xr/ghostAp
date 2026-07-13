@@ -78,6 +78,43 @@ def test_protocol_round_trips_a_strict_versioned_ndjson_frame() -> None:
     assert decode_frame(encoded) == frame
 
 
+@pytest.mark.parametrize(
+    "secret_key",
+    ["AccessToken", "APIKey", "ClientSecret", "private-key", "PASSWORD"],
+)
+def test_ordinary_ipc_recursively_rejects_collapsed_secret_aliases(
+    secret_key: str,
+) -> None:
+    frame = ChannelFrame(
+        FrameType.EVENT,
+        "agt_1",
+        1,
+        1,
+        {"event": "fixture", "data": {"nested": {secret_key: "sentinel"}}},
+    )
+
+    with pytest.raises(ProtocolError, match="credential material"):
+        encode_frame(frame)
+
+
+@pytest.mark.parametrize(
+    "ordinary_key",
+    ["authorization_type", "access_token_expires_at", "password_policy"],
+)
+def test_ordinary_ipc_allows_non_secret_metadata_with_secret_words(
+    ordinary_key: str,
+) -> None:
+    frame = ChannelFrame(
+        FrameType.EVENT,
+        "agt_1",
+        1,
+        1,
+        {"event": "fixture", "data": {"nested": {ordinary_key: "safe"}}},
+    )
+
+    assert decode_frame(encode_frame(frame)) == frame
+
+
 def _transport_contract() -> tuple[
     EmployeeIngressMetadata,
     EmployeeIngressPayload,

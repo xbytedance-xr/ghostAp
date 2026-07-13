@@ -132,7 +132,12 @@ class Phase3ImplementationGate:
         selector = _strict_text(self.selector, "selector")
         if "::" not in selector or not selector.startswith("tests/autonomous/"):
             raise ValueError(f"invalid selector for {self.id}")
-        if self.evidence_level != "chaos_security":
+        expected_evidence_level = (
+            "integration"
+            if self.artifact_kind == "employee_channel_bridge"
+            else "chaos_security"
+        )
+        if self.evidence_level != expected_evidence_level:
             raise ValueError(f"invalid evidence_level for {self.id}")
         _strict_text(self.environment, "environment")
         _strict_text(self.artifact_kind, "artifact_kind")

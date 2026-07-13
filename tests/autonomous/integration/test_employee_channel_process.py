@@ -80,6 +80,11 @@ def _worker(tmp_path: Path, *, behavior: str = "normal") -> Path:
                            'connection_id': 'conn-fixture',
                            'pid': os.getpid()}})
             emit('EVENT', {{'event': 'health-fixture', 'data': {{'pid': os.getpid()}}}})
+            if {behavior!r} == 'event_eof_alive':
+                time.sleep(0.1)
+                os.close(event_fd)
+                time.sleep(5)
+                raise SystemExit(0)
             control = os.fdopen(control_fd, 'rb', buffering=0)
             while True:
                 line = control.readline()
@@ -288,6 +293,38 @@ def test_clean_stop_and_crash_detection(tmp_path: Path) -> None:
         assert status.exit_code == 23
     finally:
         crashing.close()
+
+
+def test_ready_event_pipe_eof_revokes_readiness_and_reaps_live_worker(
+    tmp_path: Path,
+) -> None:
+    supervisor, _secret, _calls = _supervisor(
+        tmp_path,
+        behavior="event_eof_alive",
+    )
+    try:
+        initial = supervisor.start("agt_eof", "cli_eof", "cred_eof", 1, lambda _: None)
+        runtime = supervisor._runtimes["agt_eof"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            status = supervisor.status("agt_eof")
+            if (
+                status is not None
+                and status.state is ChannelProcessState.FAILED
+                and runtime.process.poll() is not None
+            ):
+                break
+            time.sleep(0.01)
+
+        assert initial.state is ChannelProcessState.READY
+        assert status is not None
+        assert status.state is ChannelProcessState.FAILED
+        assert status.ready_at is None
+        assert status.error_code == "event-pipe-closed"
+        assert runtime.process.poll() is not None
+        assert runtime.pending_sends == {}
+    finally:
+        supervisor.close()
 
 
 def test_stale_generation_frames_are_rejected_and_events_are_delivered(tmp_path: Path) -> None:

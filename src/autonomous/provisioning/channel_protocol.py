@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
@@ -36,7 +37,15 @@ _FORBIDDEN_IPC_KEYS = {
     "tenant_access_token",
     "refresh_token",
     "authorization",
+    "client_secret",
+    "api_key",
+    "private_key",
+    "password",
+    "token",
 }
+_FORBIDDEN_IPC_COLLAPSED_KEYS = frozenset(
+    re.sub(r"[^a-z0-9]", "", key.casefold()) for key in _FORBIDDEN_IPC_KEYS
+)
 
 
 class ProtocolError(ValueError):
@@ -220,7 +229,12 @@ def _validate_bootstrap_ingress(bootstrap: ChannelBootstrap) -> None:
 def _reject_secret_fields(value: Any) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
-            if isinstance(key, str) and key.lower() in _FORBIDDEN_IPC_KEYS:
+            collapsed = (
+                re.sub(r"[^a-z0-9]", "", key.casefold())
+                if isinstance(key, str)
+                else ""
+            )
+            if collapsed in _FORBIDDEN_IPC_COLLAPSED_KEYS:
                 raise ProtocolError("credential material is forbidden on ordinary IPC")
             _reject_secret_fields(child)
     elif isinstance(value, list):
