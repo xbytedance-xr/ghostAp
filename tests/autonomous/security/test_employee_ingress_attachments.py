@@ -190,6 +190,7 @@ def _staging_reducer_events(api):
             target_kind="identity",
             target_device=1,
             target_inode=3,
+            target_path="temporary",
         ),
         "cleanup_leaf_completed": event(
             "employee.ingress.attachment_cleanup_leaf_completed",
@@ -1117,6 +1118,82 @@ def test_unbound_cleanup_target_rejects_replacement_after_started_anchor(
     recovered_writer.close()
 
 
+def test_unbound_identity_cleanup_recovers_crash_after_preaggregate_leaf_step(
+    api,
+    tmp_path,
+) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+
+    def crash_before_binding(stage: str, _record: object) -> None:
+        if stage == "after_empty_leaf_fsync":
+            raise _Crash
+
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=crash_before_binding,
+        name_factory=lambda: "unboundunlinkcrash",
+    )
+    with pytest.raises(_Crash):
+        service.stage(_request(api, (_descriptor(api),)))
+    crashed = next(iter(service.state.by_staging_id.values()))
+    temporary = tmp_path / "staging" / crashed.temporary_paths[0]
+    service.close()
+    writer.close()
+
+    def crash_after_leaf_step(stage: str, _record: object) -> None:
+        if stage == "after_leaf_tombstone_ready":
+            raise _Crash
+
+    cleanup_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    cleanup, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=cleanup_writer,
+        fault_hook=crash_after_leaf_step,
+    )
+    with pytest.raises(_Crash):
+        cleanup.recover()
+    interrupted = cleanup.state.by_staging_id[crashed.staging_id]
+    assert interrupted.cleanup_state == "started"
+    assert interrupted.leaf_cleanup_states == ("completed",)
+    assert temporary.read_bytes() == b""
+    cleanup.close()
+    cleanup_writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=3,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    assert recovered.recover() == 1
+    record = recovered.state.by_staging_id[crashed.staging_id]
+    assert record.cleanup_state == "completed"
+    recovered.close()
+    recovered_writer.close()
+
+
 def test_restart_recovers_failure_anchored_before_cleanup_started(api, tmp_path) -> None:
     anchor = FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
@@ -1316,7 +1393,7 @@ def test_restart_recovers_cleanup_interrupted_after_durable_start(api, tmp_path)
     recovered_writer.close()
 
 
-def test_restart_completes_cleanup_after_erased_leaf_unlink_crash(api, tmp_path) -> None:
+def test_restart_completes_cleanup_after_erased_leaf_tombstone_crash(api, tmp_path) -> None:
     anchor = FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
         tmp_path / "journal",
@@ -1328,7 +1405,7 @@ def test_restart_completes_cleanup_after_erased_leaf_unlink_crash(api, tmp_path)
 
     def crash(stage: str, _record: object) -> None:
         nonlocal crashed_once
-        if stage == "after_leaf_unlink" and not crashed_once:
+        if stage == "after_leaf_tombstone_ready" and not crashed_once:
             crashed_once = True
             raise _Crash
 
@@ -1345,7 +1422,9 @@ def test_restart_completes_cleanup_after_erased_leaf_unlink_crash(api, tmp_path)
     crashed = service.state.by_staging_id[completed.staging_id]
     assert crashed.cleanup_state == "started"
     assert crashed.leaf_cleanup_states == ("completed",)
-    assert not list((tmp_path / "staging").rglob("*.bin"))
+    tombstones = list((tmp_path / "staging").rglob("*.bin"))
+    assert len(tombstones) == 1
+    assert tombstones[0].read_bytes() == b""
     service.close()
     writer.close()
 
@@ -1440,6 +1519,144 @@ def test_restart_rejects_alias_added_after_leaf_erasure_completion(
     assert recovered.recover() == 1
     converged = recovered.state.by_staging_id[completed.staging_id]
     assert converged.cleanup_state == "completed"
+    assert not final.exists()
+    recovered.close()
+    recovered_writer.close()
+
+
+def test_restart_rejects_completed_leaf_displaced_to_external_alias(api, tmp_path) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+    outside_alias = tmp_path / "outside-displaced-completed-leaf.bin"
+
+    def displace_and_crash(stage: str, record: object) -> None:
+        if stage != "after_leaf_erased":
+            return
+        final = tmp_path / "staging" / record.relative_paths[0]
+        os.link(final, outside_alias)
+        final.unlink()
+        raise _Crash
+
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=displace_and_crash,
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    with pytest.raises(_Crash):
+        service.cleanup(completed.staging_id)
+    crashed = service.state.by_staging_id[completed.staging_id]
+    assert crashed.cleanup_state == "started"
+    assert crashed.leaf_cleanup_states == ("completed",)
+    assert outside_alias.read_bytes() == b""
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    with pytest.raises(api.AttachmentStorageError, match="leaf"):
+        recovered.recover()
+    blocked = recovered.state.by_staging_id[completed.staging_id]
+    assert blocked.cleanup_state == "started"
+    assert outside_alias.exists()
+    recovered.close()
+    recovered_writer.close()
+
+
+def test_aggregate_precommit_alias_keeps_cleanup_started(api, tmp_path) -> None:
+    outside_alias = tmp_path / "outside-preaggregate-hardlink.bin"
+    injected = False
+
+    def add_alias(stage: str, record: object) -> None:
+        nonlocal injected
+        if stage == "before_cleanup_completed" and not injected:
+            injected = True
+            final = tmp_path / "staging" / record.relative_paths[0]
+            os.link(final, outside_alias)
+
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        fault_hook=add_alias,
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+
+    with pytest.raises(api.AttachmentStorageError, match="leaf"):
+        service.cleanup(completed.staging_id)
+
+    blocked = service.state.by_staging_id[completed.staging_id]
+    assert blocked.cleanup_state == "started"
+    assert blocked.leaf_cleanup_states == ("completed",)
+    assert outside_alias.read_bytes() == b""
+    outside_alias.unlink()
+    service.cleanup(completed.staging_id)
+    assert service.state.by_staging_id[completed.staging_id].cleanup_state == "completed"
+    service.close()
+    writer.close()
+
+
+def test_crash_after_aggregate_cleanup_before_tombstone_reap_recovers(api, tmp_path) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+
+    def crash(stage: str, _record: object) -> None:
+        if stage == "after_cleanup_completed":
+            raise _Crash
+
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=crash,
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    final = service.trusted_paths(completed.staging_id)[0]
+    with pytest.raises(_Crash):
+        service.cleanup(completed.staging_id)
+    crashed = service.state.by_staging_id[completed.staging_id]
+    assert crashed.cleanup_state == "completed"
+    assert final.read_bytes() == b""
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    assert recovered.recover() == 0
+    assert recovered.state.by_staging_id[completed.staging_id].cleanup_state == "completed"
     assert not final.exists()
     recovered.close()
     recovered_writer.close()
