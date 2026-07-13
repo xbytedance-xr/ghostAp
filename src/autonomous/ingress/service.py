@@ -238,15 +238,25 @@ class EmployeeIngressService:
                 raise KeyError(acceptance_id)
             if record.disposition is not None:
                 raise IngressConflictError("ingress disposition already recorded")
+            draft = IngressDisposition(
+                schema_version=1,
+                disposition_id=f"dsp_{uuid.uuid4().hex}",
+                acceptance_id=acceptance_id,
+                state=state,
+                reason_code=reason_code,
+                journal_sequence=self._state.cursor_sequence + 1,
+                journal_frame_hash="0" * 64,
+                recorded_at=_utc_now(),
+            )
             event = JournalEvent(
                 event_type="employee.ingress.dispositioned",
                 aggregate_id=record.aggregate_id,
                 payload={
-                    "acceptance_id": acceptance_id,
-                    "disposition_id": f"dsp_{uuid.uuid4().hex}",
-                    "state": state,
-                    "reason_code": reason_code,
-                    "recorded_at": _utc_now(),
+                    "acceptance_id": draft.acceptance_id,
+                    "disposition_id": draft.disposition_id,
+                    "state": draft.state,
+                    "reason_code": draft.reason_code,
+                    "recorded_at": draft.recorded_at,
                 },
             )
             self._commit_unlocked(record.aggregate_id, event)
@@ -261,22 +271,24 @@ class EmployeeIngressService:
         with self._mutex, self._writer.transaction_guard():
             self._ensure_open_unlocked()
             self._synchronize_projection_unlocked()
+            present_blob_ids = set(self._blob_store.iter_blob_ids())
             candidates = tuple(
                 record
                 for record in self._state.by_acceptance_id.values()
-                if record.terminal and not record.payload_tombstoned
+                if record.terminal and record.blob_ref.blob_id in present_blob_ids
             )
             collected = 0
             for candidate in candidates:
-                event = JournalEvent(
-                    event_type="employee.ingress.payload_tombstoned",
-                    aggregate_id=candidate.aggregate_id,
-                    payload={
-                        "acceptance_id": candidate.acceptance.acceptance_id,
-                        "tombstoned_at": _utc_now(),
-                    },
-                )
-                self._commit_unlocked(candidate.aggregate_id, event)
+                if not candidate.payload_tombstoned:
+                    event = JournalEvent(
+                        event_type="employee.ingress.payload_tombstoned",
+                        aggregate_id=candidate.aggregate_id,
+                        payload={
+                            "acceptance_id": candidate.acceptance.acceptance_id,
+                            "tombstoned_at": _utc_now(),
+                        },
+                    )
+                    self._commit_unlocked(candidate.aggregate_id, event)
                 try:
                     self._blob_store.quarantine_blob(candidate.blob_ref.blob_id)
                 except BlobError:
@@ -290,19 +302,7 @@ class EmployeeIngressService:
         with self._mutex, self._writer.transaction_guard():
             self._ensure_open_unlocked()
             self._synchronize_projection_unlocked()
-            live_ids = {
-                record.blob_ref.blob_id
-                for record in self._state.by_acceptance_id.values()
-                if not record.payload_tombstoned
-            }
-            quarantined = 0
-            for blob_id in set(self._blob_store.iter_blob_ids()) - live_ids:
-                try:
-                    self._blob_store.quarantine_blob(blob_id)
-                except BlobError:
-                    continue
-                quarantined += 1
-            return quarantined
+            return self._quarantine_unreferenced_blobs_unlocked()
 
     def rebuild_projection(self) -> IngressProjectionState:
         """Replay Journal state and verify nonterminal blobs before admission."""
@@ -335,6 +335,7 @@ class EmployeeIngressService:
                 ):
                     fresh.closed_employees.add(record.employee_key)
             self._replace_state_unlocked(fresh)
+            self._quarantine_unreferenced_blobs_unlocked()
             return self._state
 
     def _ensure_open_unlocked(self) -> None:
@@ -454,6 +455,17 @@ class EmployeeIngressService:
                 self._blob_store.quarantine_blob(blob_id)
             except BlobError:
                 continue
+
+    def _quarantine_unreferenced_blobs_unlocked(self) -> int:
+        live_ids = {
+            record.blob_ref.blob_id
+            for record in self._state.by_acceptance_id.values()
+            if not record.payload_tombstoned
+        }
+        orphan_ids = set(self._blob_store.iter_blob_ids()) - live_ids
+        for blob_id in orphan_ids:
+            self._blob_store.quarantine_blob(blob_id)
+        return len(orphan_ids)
 
     def _quarantine_blob_unlocked(self, blob_ref: BlobRef) -> None:
         try:

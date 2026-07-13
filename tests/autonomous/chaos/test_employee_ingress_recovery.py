@@ -349,3 +349,138 @@ def test_orphan_quarantine_ignores_live_acceptance_and_collects_unanchored_blob(
     ).exists()
     service.close()
     writer.close()
+
+
+def test_restart_quarantines_blob_left_by_crash_before_journal_commit(
+    tmp_path: Path,
+) -> None:
+    anchor = MemoryAnchor()
+    service, writer, _store_value = _service(tmp_path, anchor=anchor)
+    payload = _payload()
+    with patch.object(writer, "commit", side_effect=SystemExit("crash")):
+        with pytest.raises(SystemExit, match="crash"):
+            service.accept(_metadata(payload), payload, request_id="req_1")
+
+    assert len(tuple(writer.replay())) == 0
+    assert len(tuple((tmp_path / "ingress-blobs").glob("*.blob"))) == 1
+    service.close()
+    writer.close()
+
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    service = EmployeeIngressService(
+        writer=writer,
+        blob_store=_store(tmp_path / "ingress-blobs"),
+        ingress_state=IngressProjectionState(),
+        active_key_id="k1",
+    )
+
+    assert service.state.by_acceptance_id == {}
+    assert not tuple((tmp_path / "ingress-blobs").glob("*.blob"))
+    assert len(tuple((tmp_path / "ingress-blobs" / "quarantine").glob("*.blob"))) == 1
+    service.close()
+    writer.close()
+
+
+def test_restart_retries_gc_after_tombstone_anchor_before_blob_quarantine(
+    tmp_path: Path,
+) -> None:
+    anchor = MemoryAnchor()
+    service, writer, store = _service(tmp_path, anchor=anchor)
+    payload = _payload()
+    ack = service.accept(_metadata(payload), payload, request_id="req_1")
+    service.record_disposition(
+        ack.acceptance.acceptance_id,
+        state="terminal",
+        reason_code="completed",
+    )
+    with patch.object(store, "quarantine_blob", side_effect=SystemExit("crash")):
+        with pytest.raises(SystemExit, match="crash"):
+            service.gc_terminal_payloads()
+
+    record = service.state.by_acceptance_id[ack.acceptance.acceptance_id]
+    assert record.payload_tombstoned is True
+    assert len(tuple((tmp_path / "ingress-blobs").glob("*.blob"))) == 1
+    service.close()
+    writer.close()
+
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    service = EmployeeIngressService(
+        writer=writer,
+        blob_store=_store(tmp_path / "ingress-blobs"),
+        ingress_state=IngressProjectionState(),
+        active_key_id="k1",
+    )
+
+    recovered = service.state.by_acceptance_id[ack.acceptance.acceptance_id]
+    assert recovered.payload_tombstoned is True
+    assert recovered.acceptance == ack.acceptance
+    assert not tuple((tmp_path / "ingress-blobs").glob("*.blob"))
+    assert len(tuple((tmp_path / "ingress-blobs" / "quarantine").glob("*.blob"))) == 1
+    service.close()
+    writer.close()
+
+
+@pytest.mark.parametrize(
+    ("state", "reason_code", "error"),
+    (
+        ("completed", "completed", "state"),
+        ("terminal", "Bad Reason", "reason_code"),
+    ),
+)
+def test_invalid_disposition_never_enters_journal_and_restart_replay_is_healthy(
+    tmp_path: Path,
+    state: str,
+    reason_code: str,
+    error: str,
+) -> None:
+    anchor = MemoryAnchor()
+    service, writer, _store_value = _service(tmp_path, anchor=anchor)
+    payload = _payload()
+    ack = service.accept(_metadata(payload), payload, request_id="req_1")
+    journal_before = writer.journal_path.read_bytes()
+
+    with pytest.raises(ValueError, match=error):
+        service.record_disposition(
+            ack.acceptance.acceptance_id,
+            state=state,
+            reason_code=reason_code,
+        )
+
+    assert writer.journal_path.read_bytes() == journal_before
+    assert len(tuple(writer.replay())) == 1
+    service.close()
+    writer.close()
+
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    service = EmployeeIngressService(
+        writer=writer,
+        blob_store=_store(tmp_path / "ingress-blobs"),
+        ingress_state=IngressProjectionState(),
+        active_key_id="k1",
+    )
+    replay = service.accept(
+        _metadata(payload, channel_generation=4, connection_id="conn_restart"),
+        payload,
+        request_id="req_2",
+    )
+
+    assert replay.duplicate is True
+    assert replay.acceptance == ack.acceptance
+    assert len(tuple(writer.replay())) == 1
+    service.close()
+    writer.close()

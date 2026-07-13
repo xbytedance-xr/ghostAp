@@ -112,3 +112,43 @@ git diff --check: passed
   not the full repository suite; the main thread owns full-suite aggregation.
 - Pytest conftest reported 18 already-running Node processes after selectors;
   no Task 2 test spawned Node, and the warning did not affect test results.
+
+## Review Block Resolution
+
+The Task 2 review identified two Important crash-consistency defects after the
+initial commit `1703b1e`.
+
+RED evidence:
+
+```bash
+uv --cache-dir /tmp/ghostap-uv-cache run python -m pytest \
+  tests/autonomous/chaos/test_employee_ingress_recovery.py \
+  -k 'restart_quarantines_blob_left or restart_retries_gc or invalid_disposition' -q
+```
+
+```text
+4 failed, 10 deselected
+- pre-commit process exit left an unreferenced Blob live across restart
+- post-tombstone process exit left the physical Blob live across restart
+- invalid disposition state and reason were anchored before reducer validation
+```
+
+Fixes:
+
+- The sole Ingress owner now reconciles its complete BlobStore live-set during
+  every projection rebuild/startup and strictly quarantines every unreferenced
+  Blob. Tombstoned records are not live Blob references.
+- Terminal GC now retries physical quarantine for already-tombstoned records
+  when the Blob is still present; it does not emit a second tombstone frame.
+- `record_disposition()` constructs a complete validated `IngressDisposition`
+  draft before creating or committing the Journal event. Invalid state/reason
+  leaves Journal bytes, anchor, writer health, and replay unchanged.
+
+GREEN evidence:
+
+```text
+review regressions: 4 passed, 10 deselected in 0.85s
+Task 2 plus adjacent Journal/Data: 189 passed in 4.39s
+ruff: All checks passed!
+git diff --check: passed
+```
