@@ -564,7 +564,7 @@ class AttachmentStagingService:
             for staging_id in tuple(sorted(self._state.by_staging_id)):
                 record = self._state.by_staging_id[staging_id]
                 if record.cleanup_state == "completed":
-                    self._reap_completed_tombstones_unlocked(record)
+                    self._observe_completed_tombstones_unlocked(record)
                     continue
                 needs_recovery = (
                     record.status == "started"
@@ -847,7 +847,7 @@ class AttachmentStagingService:
         if record is None:
             raise KeyError(staging_id)
         if record.cleanup_state == "completed":
-            self._reap_completed_tombstones_unlocked(record)
+            self._observe_completed_tombstones_unlocked(record)
             return
         if record.cleanup_state == "none":
             event = JournalEvent(
@@ -870,7 +870,7 @@ class AttachmentStagingService:
         self._commit_unlocked(record.aggregate_id, completed)
         record = self._state.by_staging_id[staging_id]
         self._call_fault("after_cleanup_completed", record)
-        self._reap_completed_tombstones_unlocked(record)
+        self._observe_completed_tombstones_unlocked(record)
 
     def _dispose_owned_paths_unlocked(self, record: AttachmentStagingRecord) -> None:
         if record.parent_device is None or record.parent_inode is None:
@@ -1115,11 +1115,11 @@ class AttachmentStagingService:
         finally:
             os.close(parent_fd)
 
-    def _reap_completed_tombstones_unlocked(
+    def _observe_completed_tombstones_unlocked(
         self,
         record: AttachmentStagingRecord,
     ) -> None:
-        """Best-effort reap after the durable aggregate cleanup boundary."""
+        """Best-effort verify completed tombstones without pathname mutation."""
 
         if (
             record.cleanup_state != "completed"
@@ -1139,7 +1139,6 @@ class AttachmentStagingService:
                     continue
                 temporary = _relative_parts(record.temporary_paths[index])[-1]
                 final = _relative_parts(record.relative_paths[index])[-1]
-                name = temporary if target[2] == "temporary" else final
                 try:
                     self._verify_disposed_leaf_unlocked(
                         parent_fd,
@@ -1147,8 +1146,6 @@ class AttachmentStagingService:
                         temporary=temporary,
                         final=final,
                     )
-                    os.unlink(name, dir_fd=parent_fd)
-                    os.fsync(parent_fd)
                 except (AttachmentError, OSError):
                     continue
         except (AttachmentError, OSError):

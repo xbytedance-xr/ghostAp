@@ -850,7 +850,9 @@ def test_crash_after_publish_leaves_owned_paths_for_restart_recovery(api, tmp_pa
     assert record.status == "failed"
     assert record.cleanup_state == "completed"
     assert recovered.trusted_paths(record.staging_id) == ()
-    assert list((tmp_path / "staging").rglob("*.bin")) == []
+    tombstones = list((tmp_path / "staging").rglob("*.bin"))
+    assert len(tombstones) == 1
+    assert tombstones[0].read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
@@ -930,7 +932,7 @@ def test_after_publish_multileaf_hardlink_never_anchors_completed(api, tmp_path)
     writer.close()
 
 
-def test_restart_cleans_zero_byte_temp_crashed_before_leaf_identity_anchor(
+def test_restart_preserves_zero_byte_temp_crashed_before_leaf_identity_anchor(
     api,
     tmp_path,
 ) -> None:
@@ -980,7 +982,7 @@ def test_restart_cleans_zero_byte_temp_crashed_before_leaf_identity_anchor(
     record = recovered.state.by_staging_id[crashed.staging_id]
     assert record.status == "failed"
     assert record.cleanup_state == "completed"
-    assert not temporary.exists()
+    assert temporary.read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
@@ -1113,7 +1115,7 @@ def test_unbound_cleanup_target_rejects_replacement_after_started_anchor(
     assert recovered.recover() == 1
     converged = recovered.state.by_staging_id[crashed.staging_id]
     assert converged.cleanup_state == "completed"
-    assert not temporary.exists()
+    assert temporary.read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
@@ -1261,7 +1263,9 @@ def test_restart_recovers_failure_anchored_before_cleanup_started(api, tmp_path)
     record = recovered.state.by_staging_id[crashed_record.staging_id]
     assert record.status == "failed"
     assert record.cleanup_state == "completed"
-    assert list((tmp_path / "staging").rglob("*.bin")) == []
+    tombstones = list((tmp_path / "staging").rglob("*.bin"))
+    assert len(tombstones) == 1
+    assert tombstones[0].read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
@@ -1388,7 +1392,9 @@ def test_restart_recovers_cleanup_interrupted_after_durable_start(api, tmp_path)
     assert record.status == "completed"
     assert record.cleanup_state == "completed"
     assert recovered.trusted_paths(record.staging_id) == ()
-    assert list((tmp_path / "staging").rglob("*.bin")) == []
+    tombstones = list((tmp_path / "staging").rglob("*.bin"))
+    assert len(tombstones) == 1
+    assert tombstones[0].read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
@@ -1519,7 +1525,7 @@ def test_restart_rejects_alias_added_after_leaf_erasure_completion(
     assert recovered.recover() == 1
     converged = recovered.state.by_staging_id[completed.staging_id]
     assert converged.cleanup_state == "completed"
-    assert not final.exists()
+    assert final.read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
@@ -1613,7 +1619,10 @@ def test_aggregate_precommit_alias_keeps_cleanup_started(api, tmp_path) -> None:
     writer.close()
 
 
-def test_crash_after_aggregate_cleanup_before_tombstone_reap_recovers(api, tmp_path) -> None:
+def test_crash_after_aggregate_cleanup_preserves_zero_tombstone_on_recovery(
+    api,
+    tmp_path,
+) -> None:
     anchor = FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
         tmp_path / "journal",
@@ -1657,7 +1666,81 @@ def test_crash_after_aggregate_cleanup_before_tombstone_reap_recovers(api, tmp_p
     )
     assert recovered.recover() == 0
     assert recovered.state.by_staging_id[completed.staging_id].cleanup_state == "completed"
-    assert not final.exists()
+    assert final.read_bytes() == b""
+    recovered.close()
+    recovered_writer.close()
+
+
+def test_completed_observer_never_unlinks_replacement_after_verified_tombstone_race(
+    api,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+
+    def crash(stage: str, _record: object) -> None:
+        if stage == "after_cleanup_completed":
+            raise _Crash
+
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=crash,
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    final = service.trusted_paths(completed.staging_id)[0]
+    with pytest.raises(_Crash):
+        service.cleanup(completed.staging_id)
+    assert final.read_bytes() == b""
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    original_verify = api.AttachmentStagingService._verify_disposed_leaf_unlocked
+    displaced = tmp_path / "verified-zero-tombstone.bin"
+    replacement = b"replacement-must-survive"
+    raced = False
+
+    def replace_after_verify(parent_fd: int, **kwargs: object) -> None:
+        nonlocal raced
+        original_verify(parent_fd, **kwargs)
+        if raced:
+            return
+        raced = True
+        final.rename(displaced)
+        final.write_bytes(replacement)
+        final.chmod(0o600)
+
+    monkeypatch.setattr(
+        api.AttachmentStagingService,
+        "_verify_disposed_leaf_unlocked",
+        staticmethod(replace_after_verify),
+    )
+
+    assert recovered.recover() == 0
+    assert raced
+    assert recovered.state.by_staging_id[completed.staging_id].cleanup_state == "completed"
+    assert final.read_bytes() == replacement
+    assert displaced.read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
@@ -1714,7 +1797,7 @@ def test_restart_repeats_exact_zeroing_after_truncate_before_leaf_completion(
     assert recovered.recover() == 1
     record = recovered.state.by_staging_id[completed.staging_id]
     assert record.cleanup_state == "completed"
-    assert not staged_path.exists()
+    assert staged_path.read_bytes() == b""
     recovered.close()
     recovered_writer.close()
 
