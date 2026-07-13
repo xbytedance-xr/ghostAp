@@ -666,6 +666,35 @@ class Settings(BaseSettings):
         allow_inf_nan=False,
     )
     autonomous_context_max_pages: int = Field(default=200, ge=1, le=10_000)
+    autonomous_employee_ingress_ack_timeout_seconds: float = Field(
+        default=1.5,
+        gt=0,
+        lt=3.0,
+        allow_inf_nan=False,
+    )
+    autonomous_employee_ingress_max_payload_bytes: int = Field(
+        default=256 * 1024,
+        ge=1,
+        le=256 * 1024,
+    )
+    autonomous_employee_ingress_max_attachment_count: int = Field(
+        default=10,
+        ge=1,
+        le=10,
+    )
+    autonomous_employee_ingress_max_attachment_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        ge=1,
+        le=20 * 1024 * 1024,
+    )
+    autonomous_employee_ingress_max_total_attachment_bytes: int = Field(
+        default=50 * 1024 * 1024,
+        ge=1,
+        le=50 * 1024 * 1024,
+    )
+    autonomous_employee_queue_per_employee_limit: int = Field(default=8, ge=1, le=10_000)
+    autonomous_employee_queue_per_team_limit: int = Field(default=32, ge=1, le=100_000)
+    autonomous_employee_queue_global_limit: int = Field(default=128, ge=1, le=1_000_000)
     autonomous_manager_acl: str = ""
     autonomous_anchor_provider: str = ""
     autonomous_anchor_path: str = "~/.ghostap/autonomy/journal.anchor"
@@ -700,12 +729,20 @@ class Settings(BaseSettings):
         "autonomous_group_context_page_size",
         "autonomous_context_fetch_timeout_seconds",
         "autonomous_context_max_pages",
+        "autonomous_employee_ingress_ack_timeout_seconds",
+        "autonomous_employee_ingress_max_payload_bytes",
+        "autonomous_employee_ingress_max_attachment_count",
+        "autonomous_employee_ingress_max_attachment_bytes",
+        "autonomous_employee_ingress_max_total_attachment_bytes",
+        "autonomous_employee_queue_per_employee_limit",
+        "autonomous_employee_queue_per_team_limit",
+        "autonomous_employee_queue_global_limit",
         mode="before",
     )
     @classmethod
     def _reject_boolean_context_settings(cls, value: object) -> object:
         if isinstance(value, bool):
-            raise ValueError("employee context numeric settings reject booleans")
+            raise ValueError("employee context/ingress numeric settings reject booleans")
         return value
 
     @field_validator("autonomous_journal_hmac_key", mode="before")

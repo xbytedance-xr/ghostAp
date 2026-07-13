@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-13
+- **Durable Ingress严格合约** — 冻结metadata/payload/ACK/attempt与本地EI证据，IPC selector保持pending → [详细记录](2026-07-13.md)
 - **Durable Ingress SDK门禁** — 19项真实wire selector锁定low-level ACK能力，单帧缺口强制parent gate，下一项为Task1 contracts → [详细记录](2026-07-13.md)
 - **Durable Ingress计划** — 纠正高层SDK提前ACK假设，冻结wire门禁、Inbox、Router与Slock Gateway任务 → [详细记录](2026-07-13.md)
 - **Thread Context阶段关闭** — 页间故障注入、跨域安全与重启确定性验证完成，下一项为durable ingress → [详细记录](2026-07-13.md)

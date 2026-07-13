@@ -286,12 +286,14 @@ Journal fsync。生产入口必须使用通过锁定版本黑盒测试的 low-le
 
 Channel child 的同步 callback 收到 `InboundMessage` 或 `CardActionEvent` 后：
 
-1. 以进程绑定的 employee ID 和 app ID 构造 `EmployeeEnvelope`。
-2. 通过 IPC 交主进程。
-3. 主进程写 Durable Inbox、fsync 并返回 ACK。
-4. 专用 ACK reader 收到与 request/envelope、employee/app/generation/connection 和 semantic
-   digest 完全匹配的 ACK 后，child callback 才能返回；随后 low-level client 才允许写平台
-   成功响应。超时或 NACK 必须让 callback 失败，触发非成功响应/平台重投。
+1. 把事件正文规范化为不携带 authority 的 `EmployeeIngressPayload`；employee、app、
+   generation 和 connection 只取自受信 worker binding，不能从事件 JSON 覆盖。
+2. 通过严格 IPC request 把规范化 payload 与 secret-free `EmployeeIngressMetadata` 交主进程。
+3. 主进程写 Durable Inbox、fsync/anchor，并返回 canonical `IngressAcceptance` 的 transport
+   `EmployeeIngressAck`；SDK-only platform capability evidence 不能替代该 IPC durability 证据。
+4. 专用 ACK reader 收到与 request/acceptance、employee/app/generation/connection 和 semantic
+   digest 完全匹配的 `EmployeeIngressAck` 后，child callback 才能返回；随后 low-level client
+   才允许写平台成功响应。超时或 NACK 必须让 callback 失败，触发非成功响应/平台重投。
 
 Dedup key 优先使用 `tenant + employee + event_id`；无 event ID 时使用 `tenant + employee + message_id + event_type + action identity`。
 
@@ -303,7 +305,9 @@ Ingress 在创建 task 前解析 sender principal，默认忽略自己和所有 
 
 ### 9.2 规范消息与附件
 
-`EmployeeEnvelope` 是带类型的 parts 列表，覆盖 text、post、image、file、reply/thread 和 card action：
+`EmployeeIngressPayload` 是加密保存的规范 parts 列表，覆盖 text、post、image、file、
+reply/thread 和 card action；`EmployeeIngressMetadata` 只保留受信 binding、规范安全索引、
+payload/attachment 大小与 digest：
 
 - 图片/文件由目标员工凭证通过 Channel SDK 下载；
 - 配置 MIME allowlist、单文件大小、总大小、数量和下载超时；

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "profile_id": "employee-durable-ingress-phase3-v1",
+  "gates": [
+    {
+      "id": "EI-PLATFORM-MESSAGE-01",
+      "selector": "tests/autonomous/contract/test_employee_channel_sdk_capability.py::test_message_wire_response_waits_for_parent_anchor",
+      "evidence_level": "chaos_security",
+      "environment": "local_pinned_wheel_wire_harness",
+      "artifact_kind": "employee_channel_sdk_capability",
+      "artifact_profile_id": "employee-channel-sdk-v1",
+      "sdk_wheel_sha256": "d5f094d697578c315d5ec02c1fe7cc6f779314f265e3335c6e0acd8ff4afceba",
+      "selector_state": "collectable",
+      "status": "pending"
+    },
+    {
+      "id": "EI-PLATFORM-CARD-01",
+      "selector": "tests/autonomous/contract/test_employee_channel_sdk_capability.py::test_card_action_wire_response_waits_for_parent_anchor",
+      "evidence_level": "chaos_security",
+      "environment": "local_pinned_wheel_wire_harness",
+      "artifact_kind": "employee_channel_sdk_capability",
+      "artifact_profile_id": "employee-channel-sdk-v1",
+      "sdk_wheel_sha256": "d5f094d697578c315d5ec02c1fe7cc6f779314f265e3335c6e0acd8ff4afceba",
+      "selector_state": "collectable",
+      "status": "pending"
+    },
+    {
+      "id": "EI-IPC-01",
+      "selector": "tests/autonomous/chaos/test_employee_ingress_recovery.py::test_ipc_ack_only_after_anchored_acceptance",
+      "evidence_level": "chaos_security",
+      "environment": "local_process_fsync_harness",
+      "artifact_kind": "employee_ingress_ipc_harness",
+      "artifact_profile_id": "employee-ingress-ipc-v1",
+      "sdk_wheel_sha256": null,
+      "selector_state": "pending",
+      "status": "pending"
+    }
+  ]
+}
