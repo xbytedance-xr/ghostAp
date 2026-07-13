@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-13
+- **Hire安全边界+SDK升级** — `/hire` 禁止虚拟角色降级，官方1.7.1注册适配与真实readiness门禁落地，整体目标仍active → [详细记录](2026-07-13.md)
 ## 2026-07-12
 - **员工数据严格契约** — 独立Keyring、History/L1严格模型与label policy落地，BlobStore升级dir-fd/no-follow及安全隔离API → [详细记录](2026-07-12.md)
 - **Agent部门数据面计划** — History/L1/skill/reasoning收敛为Blob+Journal+ACL+可恢复迁移，并纳入真实producer cutover → [详细记录](2026-07-12.md)

@@ -231,6 +231,48 @@ class TestCreateRoleDefaults:
         tool_names = {v.get("tool_name") for v in values if v.get("action") == "slock_new_role_select_tool"}
         assert tool_names == {"traex", "coco"}
 
+    def test_global_hire_name_only_preserves_flag_in_tool_card(self):
+        handler = self._make_handler()
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = None
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        with (
+            patch(
+                "src.workflow_engine.tool_registry.get_available_tools",
+                return_value={"codex": "代码实现"},
+            ),
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+        ):
+            handler.create_role(
+                "msg_1", "chat_test", "Atlas", global_hire=True
+            )
+
+        card = json.loads(handler.reply_card.call_args[0][1])
+        values = _collect_card_values(card)
+        tool_values = [
+            value
+            for value in values
+            if value.get("action") == "slock_new_role_select_tool"
+        ]
+        assert tool_values
+        assert all(value.get("global_hire") is True for value in tool_values)
+
+    def test_global_hire_tool_card_requires_admin_main_bot_dm(self):
+        handler = self._make_handler()
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_other"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+        ):
+            handler.create_role("msg_1", "chat_test", "Atlas", global_hire=True)
+
+        handler.reply_card.assert_not_called()
+        assert "仅允许配置管理员" in handler.reply_text.call_args.args[1]
+
     def test_select_tool_shows_model_selection_card_with_slock_action(self):
         """Tool choice reuses ACP model discovery but keeps the Slock create-role action."""
         handler = self._make_handler()
@@ -365,6 +407,81 @@ class TestCreateRoleDefaults:
         assert agent.agent_id == "codex:gpt-5:SimpleAgent"
         assert "Core Directives" in agent.system_prompt
         engine.memory.write_agent_memory.assert_called_once()
+
+    def test_global_hire_final_model_selection_preserves_flag(self):
+        handler = self._make_handler()
+        handler.create_role = MagicMock()
+
+        handler.handle_new_role_select_model(
+            "msg_1",
+            "chat_test",
+            {
+                "role_name": "Atlas",
+                "tool_name": "codex",
+                "model_name": "gpt-5/high",
+                "model_effort": "high",
+                "global_hire": True,
+            },
+        )
+
+        handler.create_role.assert_called_once_with(
+            "msg_1",
+            "chat_test",
+            "Atlas --tool codex --model gpt-5/high --effort high",
+            None,
+            global_hire=True,
+        )
+
+    def test_global_hire_without_department_service_fails_closed(self):
+        handler = self._make_handler()
+        handler.ctx.employee_hire_service = None
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+        handler._get_engine_manager = MagicMock()
+        handler._get_global_registry = MagicMock()
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool codex --model gpt-5/high --effort high",
+                global_hire=True,
+            )
+
+        handler._get_engine_manager.assert_not_called()
+        handler._get_global_registry.assert_not_called()
+        assert "独立飞书智能体" in handler.reply_text.call_args.args[1]
+        assert "尚未接入" in handler.reply_text.call_args.args[1]
+
+    def test_global_hire_dispatches_typed_request_without_legacy_registry(self):
+        handler = self._make_handler()
+        service = MagicMock()
+        handler.ctx.employee_hire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+        handler._get_engine_manager = MagicMock()
+        handler._get_global_registry = MagicMock()
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool codex --model gpt-5/high --effort high",
+                global_hire=True,
+            )
+
+        request = service.start_hire.call_args.args[0]
+        assert request.employee_name == "Atlas"
+        assert request.tool == "codex"
+        assert request.model == "gpt-5/high"
+        assert request.effort == "high"
+        assert request.requester_principal_id == "ou_admin"
+        handler._get_engine_manager.assert_not_called()
+        handler._get_global_registry.assert_not_called()
 
     def test_unassigned_task_claim_competition_tries_next_agent_after_failed_claim(self):
         """Automatic assignment broadcasts the claim chance through ranked candidates."""

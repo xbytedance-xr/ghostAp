@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
+    from ..autonomous.provisioning.hire_port import EmployeeHireService
     from ..chat_lock import ChatLockManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
     from ..mode import ModeManager
@@ -93,6 +94,7 @@ class HandlerContext:
     workflow_engine_manager: Optional["WorkflowEngineManager"] = None
     repo_lock_manager: Optional["RepoLockManager"] = None
     chat_lock_manager: Optional["ChatLockManager"] = None
+    employee_hire_service: Optional["EmployeeHireService"] = None
 
     def dependency_view(self) -> HandlerDependencyView:
         """Return a minimal service view while keeping existing fields compatible."""

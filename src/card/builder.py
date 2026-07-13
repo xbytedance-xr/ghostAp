@@ -404,8 +404,19 @@ class CardBuilder:
         return SystemBuilder.build_tui2acp_adapter_select_card(adapters, project_id=project_id, current_adapter=current_adapter)
 
     @staticmethod
-    def build_slock_role_tool_select_card(role_name: str, tools: list[dict], project_id: Optional[str] = None) -> tuple[str, str]:
-        return SystemBuilder.build_slock_role_tool_select_card(role_name, tools, project_id=project_id)
+    def build_slock_role_tool_select_card(
+        role_name: str,
+        tools: list[dict],
+        project_id: Optional[str] = None,
+        *,
+        value_extra: Optional[dict] = None,
+    ) -> tuple[str, str]:
+        return SystemBuilder.build_slock_role_tool_select_card(
+            role_name,
+            tools,
+            project_id=project_id,
+            value_extra=value_extra,
+        )
 
     @staticmethod
     def build_acp_model_select_card(

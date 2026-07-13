@@ -1965,14 +1965,14 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         self, message_id: str, chat_id: str, name: str = "", project: Optional["ProjectContext"] = None,
         *, global_hire: bool = False,
     ):
-        """Create a new virtual agent role.
+        """Create a Slock virtual role or dispatch an independent employee hire.
 
         Supports parameter syntax:
             /hire <name> [--tool <type>] [--model <model>] [--emoji <e>] [--role <role>] [--prompt <text>]
             /new-role <name> [--tool <type>] [--model <model>] [--emoji <e>] [--role <role>] [--prompt <text>]
 
-        When global_hire=True, the agent is registered at service level
-        without requiring an active slock group. It can be invited to groups later.
+        ``global_hire=True`` never writes the legacy registry. It dispatches to
+        the injected employee provisioning service or fails closed.
         """
         if not name:
             self.reply_text(
@@ -1982,15 +1982,18 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             )
             return
 
-        manager = self._get_engine_manager()
-        engine = manager.get_activated_engine(chat_id) if not global_hire else None
-        if not global_hire and not engine:
-            self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
-            return
-
-        # Permission gate: only admin or channel owner may create roles.
-        if not global_hire and not self._check_slock_permission(engine, message_id, chat_id):
-            return
+        engine = None
+        if global_hire:
+            if self._visible_hire_requester(message_id) is None:
+                return
+        else:
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(chat_id)
+            if not engine:
+                self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
+                return
+            if not self._check_slock_permission(engine, message_id, chat_id):
+                return
 
         # Parse optional arguments from the name/args string
         try:
@@ -2000,7 +2003,12 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         role_name = tokens[0] if tokens else name
         if len(tokens) == 1:
-            self.show_new_role_tool_selection(message_id, role_name, project)
+            self.show_new_role_tool_selection(
+                message_id,
+                role_name,
+                project,
+                global_hire=global_hire,
+            )
             return
 
         tool_type = "traex"
@@ -2011,6 +2019,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         template_name = ""
         fork_name = ""
         explicit_traits: str | None = None
+        effort = "default"
         tool_explicit = False
         model_explicit = False
         emoji_explicit = False
@@ -2026,6 +2035,9 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             elif tok == "--model" and i + 1 < len(tokens):
                 model_name = tokens[i + 1]
                 model_explicit = True
+                i += 2
+            elif tok == "--effort" and i + 1 < len(tokens):
+                effort = tokens[i + 1]
                 i += 2
             elif tok == "--emoji" and i + 1 < len(tokens):
                 emoji = tokens[i + 1]
@@ -2049,6 +2061,17 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 i += 2
             else:
                 i += 1
+
+        if global_hire:
+            self._start_visible_employee_hire(
+                message_id=message_id,
+                chat_id=chat_id,
+                employee_name=role_name,
+                tool=tool_type,
+                model=model_name,
+                effort=effort,
+            )
+            return
 
         # Validate tool_type against whitelist
         from ...slock_engine.models import AGENT_ROLE_COLORS, AgentIdentity, SlockMemory
@@ -2226,6 +2249,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         message_id: str,
         role_name: str,
         project: Optional["ProjectContext"] = None,
+        *,
+        global_hire: bool = False,
     ) -> None:
         """Show the first `/new-role` interactive step: choose a backing tool."""
 
@@ -2238,8 +2263,58 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             role_name,
             tool_options,
             project_id=(project.project_id if project else None),
+            value_extra={"global_hire": True} if global_hire else None,
         )
         self.reply_card(message_id, card_content)
+
+    def _start_visible_employee_hire(
+        self,
+        *,
+        message_id: str,
+        chat_id: str,
+        employee_name: str,
+        tool: str,
+        model: str,
+        effort: str,
+    ) -> None:
+        from ...autonomous.provisioning.hire_port import EmployeeHireRequest
+        requester_id = self._visible_hire_requester(message_id)
+        if requester_id is None:
+            return
+        if tool not in self.TOOL_TYPE_ROLE_MAP:
+            self.reply_text(message_id, f"❌ 无效的员工工具: `{tool}`")
+            return
+        service = getattr(self.ctx, "employee_hire_service", None)
+        if service is None:
+            self.reply_text(
+                message_id,
+                "独立飞书智能体创建尚未接入生产服务；已拒绝降级创建本地虚拟角色。",
+            )
+            return
+        request = EmployeeHireRequest(
+            employee_name=employee_name,
+            tool=tool,
+            model=model,
+            effort=effort,
+            chat_id=chat_id,
+            message_id=message_id,
+            requester_principal_id=requester_id,
+        )
+        try:
+            service.start_hire(request)
+        except Exception as exc:
+            logger.error("visible employee hire dispatch failed: %s", type(exc).__name__)
+            self.reply_text(message_id, "独立飞书智能体创建启动失败，请查看安全日志后重试。")
+
+    def _visible_hire_requester(self, message_id: str) -> str | None:
+        from ...thread.manager import get_current_is_p2p, get_current_sender_id
+
+        requester_id = get_current_sender_id() or ""
+        admin_ids = getattr(self.ctx.settings, "admin_user_ids", frozenset())
+        if not get_current_is_p2p() or not requester_id or requester_id not in admin_ids:
+            self.reply_text(message_id, "⛔ `/hire` 仅允许配置管理员在主 Bot 私聊中使用。")
+            return None
+        return requester_id
 
     def handle_new_role_select_tool(
         self,
@@ -2402,7 +2477,16 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         args = f"{shlex.quote(role_name)} --tool {shlex.quote(tool_name)}"
         if model_name:
             args += f" --model {shlex.quote(model_name)}"
-        self.create_role(message_id, chat_id, args, project)
+        effort = str(value.get("model_effort") or "").strip()
+        if effort:
+            args += f" --effort {shlex.quote(effort)}"
+        self.create_role(
+            message_id,
+            chat_id,
+            args,
+            project,
+            global_hire=bool(value.get("global_hire")),
+        )
 
     @staticmethod
     def _build_default_directive(

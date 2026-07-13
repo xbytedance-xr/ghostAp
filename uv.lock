@@ -441,7 +441,7 @@ requires-dist = [
     { name = "agent-client-protocol", specifier = ">=0.11.0" },
     { name = "cryptography", specifier = "==49.0.0" },
     { name = "lark-channel-sdk", specifier = "==1.1.0" },
-    { name = "lark-oapi", specifier = "==1.6.5" },
+    { name = "lark-oapi", specifier = "==1.7.1" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "pydantic-settings", specifier = ">=2.6.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
@@ -548,7 +548,7 @@ wheels = [
 
 [[package]]
 name = "lark-oapi"
-version = "1.6.5"
+version = "1.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -557,9 +557,9 @@ dependencies = [
     { name = "requests-toolbelt" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a1/6a/cfaa24851e05000a3bede7a3d30b834116d684d56738d08980da621e9c1a/lark_oapi-1.6.5.tar.gz", hash = "sha256:abf1fd348bd527502c70f2fe771c6fd37c2b8bbed188c9313596063864d43f59", size = 2079307, upload-time = "2026-05-14T06:00:44.608Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/57/d0/0d4abc5e6dce888d71683d84a8ceb6fa9b798c2766e0f070eaacbdca5770/lark_oapi-1.7.1.tar.gz", hash = "sha256:57dc4616010cb9355dba11be3cf9b571b1a088b13abc22baf233c7e3527dd396", size = 2282040, upload-time = "2026-07-08T06:21:40.23Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/28/a425593c6de71b80ad642ed8e624468a2848ea0e4ad7cb32a8380941fd7f/lark_oapi-1.6.5-py3-none-any.whl", hash = "sha256:a56fa548aebdae9c36ef0114fbbc6e5d004eb2e15398e11cf88a5737f0cf8641", size = 7143193, upload-time = "2026-05-14T06:00:39.816Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/32/3650ba9230ade1245fa8d6021c9fe8febd27c9b5fdec78ffa465dbbc962e/lark_oapi-1.7.1-py3-none-any.whl", hash = "sha256:16945576a8c783a10e50911c00e421c1212fde3a76b2c2a6a4879b8606c1af8f", size = 7807753, upload-time = "2026-07-08T06:21:30.818Z" },
 ]
 
 [[package]]

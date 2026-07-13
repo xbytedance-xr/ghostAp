@@ -38,17 +38,17 @@
     - Tenant-aware ProjectedAgentRegistry
     - Legacy/V5 authority cutover 与持久化失败恢复
     - Slock importer 随机 agt_ ID 和持久 alias/source hash
-  - Foundation 最终验证曾达到：
-    - tests/autonomous：722 passed
-    - Slock completion gate：59 passed
-    - Ruff、docs、src.main --validate 通过
+  - Foundation 历史里程碑已完成并保留。
   - Foundation 已推送过 dev，最终 Foundation HEAD 为：
     5de753ca9f12a3fc2140e2e633c43a4969cac278
-  - 数据面计划已经完成多轮 grill 审查并提交：
-    f1f3c51 docs(autonomous): plan employee data plane
-  - 当前本地 dev 可能比 origin/dev 领先至少该计划提交；先核验，不要假设它已经 push。
-  - 数据面 Task 1 尚未实现生产代码。
-  - `.superpowers/sdd/task-1-brief.md` 可能已生成，但它是忽略文件；如内容不对应 data plan Task 1，重新从计划提取。
+  - 2026-07-13 权威审计状态：
+    - 数据面 Task 1–6 已有 domain/service/projection/query/composition 模块与局部测试，但真实 Slock producer、handler 和 Supervisor 尚未接入，不能称为 production cutover。
+    - Thread Context、Hire/Fire、Channel、Slash、Router、Response 已有端口或内存脚手架，主要由 fake 单测覆盖；没有生产 composition、真实 Channel 子进程或真实租户证据。
+    - `lark-oapi` 已升级锁定到 `1.7.1`，官方 `register_app/aregister_app` 的 `app_preset/addons/create_only/app_id` 签名门禁和严格 `LarkAppRegistrar` 已实现。
+    - `/hire` 不再降级写入 `AgentRegistry.legacy()`；只允许配置管理员在主 Bot 私聊使用，并只派发到注入的 `EmployeeHireService`，未装配时明确 fail-close。`/new-role` 继续负责 Slock 虚拟角色。
+    - `AgentDepartmentBootstrap` 不再常量伪报 healthy；limit=0 是 dormant/unready，limit>0 必须六个具名组件探针全部通过。
+    - 当前本地自动化证据：`tests/autonomous/` 872 passed；这只证明本地合约，不替代真实租户或 50 Bot soak。
+    - acceptance manifest 仍全部 pending，且真实 `/hire` durable Saga、Vault/Journal binding、Channel/Slash/验证激活尚未形成闭环。
   - `autonomous_visible_employee_limit` 必须继续保持 0，直到 Provisioning、Channel 和真实租户门禁全部完成。
 
   完整最终目标：

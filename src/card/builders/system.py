@@ -1032,6 +1032,8 @@ class SystemBuilder:
         role_name: str,
         tools: list[dict],
         project_id: Optional[str] = None,
+        *,
+        value_extra: Optional[dict] = None,
     ) -> tuple[str, str]:
         """Build the first step of `/new-role`: choose the backing tool."""
 
@@ -1059,6 +1061,7 @@ class SystemBuilder:
                     text=SystemBuilder._mobile_safe_button_label(text),
                     button_type="primary" if name == "coco" else "default",
                     action={
+                        **dict(value_extra or {}),
                         "action": action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
                         "role_name": role,
                         "tool_name": name,

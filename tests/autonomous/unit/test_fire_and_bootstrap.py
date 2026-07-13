@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import pytest
-
 from src.autonomous.provisioning.bootstrap import (
     AgentDepartmentBootstrap,
-    DepartmentBootstrapResult,
 )
 from src.autonomous.provisioning.fire import (
     FirePhase,
     FireSaga,
-    FireState,
 )
 
 
@@ -126,8 +122,60 @@ class TestDepartmentBootstrap:
     def test_dormant_mode_when_limit_zero(self) -> None:
         bootstrap = AgentDepartmentBootstrap(settings=None, visible_employee_limit=0)
         result = bootstrap.start()
-        assert result.healthy
-        assert bootstrap.is_ready
+        assert result.dormant is True
+        assert result.healthy is False
+        assert bootstrap.is_ready is False
+
+    def test_nonzero_limit_without_component_probes_fails_closed(self) -> None:
+        bootstrap = AgentDepartmentBootstrap(settings=object(), visible_employee_limit=1)
+        result = bootstrap.start()
+        assert result.healthy is False
+        assert bootstrap.is_ready is False
+        assert "missing_component_probes" in result.errors
+
+    def test_all_component_probes_are_required_for_readiness(self) -> None:
+        names = {
+            "data_plane",
+            "context",
+            "provisioning",
+            "channel",
+            "router",
+            "response",
+        }
+        probes = {name: (lambda: True) for name in names}
+        probes["channel"] = lambda: False
+        bootstrap = AgentDepartmentBootstrap(
+            settings=object(),
+            visible_employee_limit=1,
+            component_probes=probes,
+        )
+
+        result = bootstrap.start()
+
+        assert result.channel_ready is False
+        assert result.healthy is False
+        assert bootstrap.is_ready is False
+
+    def test_all_component_probes_can_report_ready(self) -> None:
+        probes = {
+            name: (lambda: True)
+            for name in (
+                "data_plane",
+                "context",
+                "provisioning",
+                "channel",
+                "router",
+                "response",
+            )
+        }
+        bootstrap = AgentDepartmentBootstrap(
+            settings=object(),
+            visible_employee_limit=1,
+            component_probes=probes,
+        )
+        result = bootstrap.start()
+        assert result.healthy is True
+        assert bootstrap.is_ready is True
 
     def test_shutdown(self) -> None:
         bootstrap = AgentDepartmentBootstrap(settings=None, visible_employee_limit=0)
