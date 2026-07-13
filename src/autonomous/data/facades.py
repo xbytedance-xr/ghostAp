@@ -5,14 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, ContextManager
 
 from .models import DataKind
 from .projection import DataProjectionState
+
+_AGENT_ID_PATTERN = re.compile(r"agt_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
 
 @dataclass(frozen=True)
@@ -29,10 +34,17 @@ class EmployeeDocumentMaterializer:
     """Writes canonical employee documents from projection state."""
 
     def __init__(self, agents_root: str | Path) -> None:
-        self._root = Path(agents_root).expanduser()
+        self._root = Path(agents_root).expanduser().absolute()
         self._root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        root_fd = _open_root_fd(self._root)
+        os.close(root_fd)
+
+    @property
+    def root(self) -> Path:
+        return self._root
 
     def resolve_path(self, agent_id: str, kind: DataKind, source_id: str = "") -> DocumentPath:
+        _require_agent_id(agent_id)
         if kind is DataKind.L1_MEMORY:
             relative = "memory/MEMORY.md"
         elif kind is DataKind.MEMORY_SUMMARY:
@@ -64,25 +76,35 @@ class EmployeeDocumentMaterializer:
         if hashlib.sha256(content).hexdigest() != content_hash:
             raise ValueError("content hash verification failed")
         doc_path = self.resolve_path(agent_id, kind, source_id)
-        target = doc_path.absolute
-        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._cleanup_stale_temps(target.parent, target.stem)
-        temp_name = f".{target.stem}-{secrets.token_hex(8)}.tmp"
-        temp_path = target.parent / temp_name
-        flags = (
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        fd = os.open(str(temp_path), flags, 0o600)
-        try:
-            os.fchmod(fd, 0o600)
-            os.write(fd, content)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(str(temp_path), str(target))
-        self._fsync_dir(target.parent)
+        with _open_rooted_parent(
+            self._root,
+            _document_storage_relative(doc_path),
+            create=True,
+        ) as (parent_fd, filename):
+            stem = Path(filename).stem
+            self._cleanup_stale_temps(parent_fd, stem)
+            temp_name = f".{stem}-{secrets.token_hex(8)}.tmp"
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
+            try:
+                os.fchmod(fd, 0o600)
+                _write_all(fd, content)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(
+                temp_name,
+                filename,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            os.fsync(parent_fd)
         return doc_path
 
     def materialize_from_state(
@@ -120,33 +142,25 @@ class EmployeeDocumentMaterializer:
     def verify(self, agent_id: str, kind: DataKind, source_id: str, expected_hash: str) -> bool:
         """Check if file on disk matches expected content hash."""
         doc_path = self.resolve_path(agent_id, kind, source_id)
-        target = doc_path.absolute
-        if not target.exists():
-            return False
         try:
-            file_stat = os.stat(str(target), follow_symlinks=False)
-            if not stat.S_ISREG(file_stat.st_mode):
-                return False
-        except OSError:
+            content = _read_rooted_regular_bytes(
+                self._root,
+                _document_storage_relative(doc_path),
+                missing_ok=True,
+            )
+        except MemoryIntegrityError:
             return False
-        content = target.read_bytes()
+        if content is None:
+            return False
         return hashlib.sha256(content).hexdigest() == expected_hash
 
     @staticmethod
-    def _fsync_dir(path: Path) -> None:
-        fd = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-    @staticmethod
-    def _cleanup_stale_temps(directory: Path, stem: str) -> None:
+    def _cleanup_stale_temps(directory_fd: int, stem: str) -> None:
         prefix = f".{stem}-"
-        for entry in directory.iterdir():
-            if entry.name.startswith(prefix) and entry.name.endswith(".tmp"):
+        for name in os.listdir(directory_fd):
+            if name.startswith(prefix) and name.endswith(".tmp"):
                 try:
-                    entry.unlink()
+                    os.unlink(name, dir_fd=directory_fd)
                 except OSError:
                     pass
 
@@ -164,22 +178,42 @@ class EmployeeMemoryFacade:
         materializer: EmployeeDocumentMaterializer,
         state: DataProjectionState,
         legacy_base_path: str | Path | None = None,
+        projection_guard: Callable[[], ContextManager[Any]] | None = None,
     ) -> None:
         self._materializer = materializer
         self._state = state
         self._legacy_base = Path(legacy_base_path) if legacy_base_path else None
+        self._projection_guard = projection_guard or nullcontext
 
-    def read_l1(self, agent_id: str, tenant_key: str) -> str | None:
-        """Read full L1 memory. Canonical first, legacy fallback."""
-        canonical = self._read_canonical(agent_id, DataKind.L1_MEMORY, "l1_memory")
-        if canonical is not None:
-            return canonical
-        legacy = self._read_legacy_l1(agent_id)
-        if legacy is not None and canonical is not None:
-            raise MemoryConflictError(
-                f"canonical and legacy L1 both exist for {agent_id}"
+    def read_l1(
+        self,
+        agent_id: str,
+        tenant_key: str,
+        *,
+        allow_unscoped_legacy: bool = False,
+    ) -> str | None:
+        """Read tenant-owned L1, distinguishing absence from corruption."""
+        if not isinstance(tenant_key, str) or not tenant_key.strip():
+            raise MemoryAccessError("tenant_key is required")
+        with self._projection_guard():
+            canonical = self._read_projected_canonical(
+                tenant_key,
+                agent_id,
+                DataKind.L1_MEMORY,
+                "l1_memory",
             )
-        return legacy
+            legacy = self._read_legacy_l1(agent_id)
+            if canonical is not None and legacy is not None:
+                raise MemoryConflictError(
+                    f"canonical and legacy L1 both exist for {agent_id}"
+                )
+            if canonical is not None:
+                return canonical
+            if legacy is not None and not allow_unscoped_legacy:
+                raise MemoryConflictError(
+                    f"unscoped legacy L1 is not authorized for {agent_id}"
+                )
+            return legacy
 
     def read_memory_summary(
         self, agent_id: str, tenant_key: str, chat_id: str, thread_root_id: str = ""
@@ -189,7 +223,13 @@ class EmployeeMemoryFacade:
         source_id = EmployeeDataDocumentV1.memory_summary_source_id(
             chat_id=chat_id, thread_root_id=thread_root_id
         )
-        return self._read_canonical(agent_id, DataKind.MEMORY_SUMMARY, source_id)
+        with self._projection_guard():
+            return self._read_projected_canonical(
+                tenant_key,
+                agent_id,
+                DataKind.MEMORY_SUMMARY,
+                source_id,
+            )
 
     def read_skill_profile(self, agent_id: str) -> dict | None:
         """Read skill profile JSON."""
@@ -210,38 +250,317 @@ class EmployeeMemoryFacade:
 
     def _read_canonical(self, agent_id: str, kind: DataKind, source_id: str) -> str | None:
         doc_path = self._materializer.resolve_path(agent_id, kind, source_id)
-        target = doc_path.absolute
-        if not target.exists():
-            return None
         try:
-            return target.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+            return _read_rooted_regular_text(
+                self._materializer.root,
+                _document_storage_relative(doc_path),
+                missing_ok=True,
+            )
+        except MemoryIntegrityError:
             return None
+
+    def _read_projected_canonical(
+        self,
+        tenant_key: str,
+        agent_id: str,
+        kind: DataKind,
+        source_id: str,
+    ) -> str | None:
+        key = (tenant_key, agent_id, kind.value, source_id)
+        foreign = [
+            other_key
+            for other_key in self._state.latest_employee_document
+            if other_key[1:] == key[1:] and other_key[0] != tenant_key
+        ]
+        if foreign:
+            raise MemoryAccessError("document belongs to another tenant")
+        document_id = self._state.latest_employee_document.get(key)
+        doc_path = self._materializer.resolve_path(agent_id, kind, source_id)
+        if document_id is None:
+            if _rooted_path_exists(
+                self._materializer.root,
+                _document_storage_relative(doc_path),
+            ):
+                raise MemoryIntegrityError(
+                    "materialized document has no projected owner"
+                )
+            return None
+        metadata = self._state.employee_documents.get(document_id)
+        if metadata is None:
+            raise MemoryIntegrityError("latest document metadata is missing")
+        if (
+            metadata.tombstoned
+            or metadata.document_id != document_id
+            or metadata.tenant_key != tenant_key
+            or metadata.agent_id != agent_id
+            or metadata.kind is not kind
+            or metadata.source_id != source_id
+        ):
+            raise MemoryIntegrityError("projected document binding is invalid")
+        content = _read_rooted_regular_text(
+            self._materializer.root,
+            _document_storage_relative(doc_path),
+            missing_ok=False,
+        )
+        assert content is not None
+        if hashlib.sha256(content.encode("utf-8")).hexdigest() != metadata.content_hash:
+            raise MemoryIntegrityError("materialized document hash mismatch")
+        return content
 
     def _read_legacy_l1(self, agent_id: str) -> str | None:
         if self._legacy_base is None:
             return None
-        path = self._legacy_base / "agents" / agent_id / "memory" / "MEMORY.md"
-        if not path.exists():
-            path = self._legacy_base / "agents" / agent_id / "MEMORY.md"
-        if not path.exists():
+        _require_agent_id(agent_id)
+        candidates = (
+            f"agents/{agent_id}/memory/MEMORY.md",
+            f"agents/{agent_id}/MEMORY.md",
+        )
+        existing = [
+            relative
+            for relative in candidates
+            if _rooted_path_exists(self._legacy_base, relative)
+        ]
+        if len(existing) > 1:
+            raise MemoryConflictError("multiple legacy L1 files exist")
+        if not existing:
             return None
-        try:
-            return path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return None
+        return _read_rooted_regular_text(
+            self._legacy_base,
+            existing[0],
+            missing_ok=False,
+        )
 
     def _read_legacy_skill(self, agent_id: str) -> dict | None:
         if self._legacy_base is None:
             return None
-        path = self._legacy_base / "agents" / agent_id / "skill_profile.json"
-        if not path.exists():
-            return None
+        _require_agent_id(agent_id)
+        relative = f"agents/{agent_id}/skill_profile.json"
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            content = _read_rooted_regular_text(
+                self._legacy_base,
+                relative,
+                missing_ok=True,
+            )
+            return None if content is None else json.loads(content)
+        except (MemoryIntegrityError, json.JSONDecodeError):
             return None
 
 
 class MemoryConflictError(RuntimeError):
-    """Canonical and legacy memory both exist with different content."""
+    """Memory sources conflict or lack tenant-scoped authorization."""
+
+
+class MemoryAccessError(RuntimeError):
+    """Memory ownership cannot authorize this read."""
+
+
+class MemoryIntegrityError(RuntimeError):
+    """Projected and materialized memory do not form one valid document."""
+
+
+class _RootedPathMissing(FileNotFoundError):
+    pass
+
+
+def _write_all(fd: int, content: bytes) -> None:
+    view = memoryview(content)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise MemoryIntegrityError("memory file write failed")
+        view = view[written:]
+
+
+def _document_storage_relative(doc_path: DocumentPath) -> str:
+    return f"{doc_path.agent_id}/{doc_path.relative}"
+
+
+def _require_agent_id(agent_id: str) -> None:
+    if (
+        not isinstance(agent_id, str)
+        or _AGENT_ID_PATTERN.fullmatch(agent_id) is None
+    ):
+        raise MemoryAccessError("agent_id must be canonical")
+
+
+def _open_root_fd(root: Path) -> int:
+    flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(root, flags)
+    except FileNotFoundError:
+        raise _RootedPathMissing from None
+    except OSError:
+        raise MemoryIntegrityError("memory root is not trusted") from None
+    root_stat = os.fstat(fd)
+    if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_uid != os.getuid():
+        os.close(fd)
+        raise MemoryIntegrityError("memory root identity is invalid")
+    return fd
+
+
+def _relative_parts(relative: str) -> tuple[str, ...]:
+    parts = tuple(Path(relative).parts)
+    if (
+        not parts
+        or any(part in ("", ".", "..") or "/" in part for part in parts)
+        or Path(relative).is_absolute()
+    ):
+        raise MemoryIntegrityError("memory relative path is invalid")
+    return parts
+
+
+@contextmanager
+def _open_rooted_parent(
+    root: Path,
+    relative: str,
+    *,
+    create: bool,
+) -> Iterator[tuple[int, str]]:
+    parts = _relative_parts(relative)
+    opened: list[int] = []
+    try:
+        opened.append(_open_root_fd(root))
+        directory_flags = (
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        for component in parts[:-1]:
+            try:
+                child_fd = os.open(
+                    component,
+                    directory_flags,
+                    dir_fd=opened[-1],
+                )
+            except FileNotFoundError:
+                if not create:
+                    raise _RootedPathMissing from None
+                try:
+                    os.mkdir(component, 0o700, dir_fd=opened[-1])
+                except FileExistsError:
+                    pass
+                except OSError:
+                    raise MemoryIntegrityError(
+                        "memory parent directory cannot be created"
+                    ) from None
+                try:
+                    child_fd = os.open(
+                        component,
+                        directory_flags,
+                        dir_fd=opened[-1],
+                    )
+                except OSError:
+                    raise MemoryIntegrityError(
+                        "memory parent directory is not trusted"
+                    ) from None
+            except OSError:
+                raise MemoryIntegrityError(
+                    "memory parent directory is not trusted"
+                ) from None
+            child_stat = os.fstat(child_fd)
+            if (
+                not stat.S_ISDIR(child_stat.st_mode)
+                or child_stat.st_uid != os.getuid()
+            ):
+                os.close(child_fd)
+                raise MemoryIntegrityError(
+                    "memory parent directory identity is invalid"
+                )
+            opened.append(child_fd)
+        yield opened[-1], parts[-1]
+    finally:
+        for fd in reversed(opened):
+            os.close(fd)
+
+
+def _rooted_path_exists(root: Path, relative: str) -> bool:
+    try:
+        with _open_rooted_parent(root, relative, create=False) as (
+            parent_fd,
+            filename,
+        ):
+            try:
+                os.stat(filename, dir_fd=parent_fd, follow_symlinks=False)
+                return True
+            except FileNotFoundError:
+                return False
+            except OSError:
+                raise MemoryIntegrityError(
+                    "memory path inspection failed"
+                ) from None
+    except _RootedPathMissing:
+        return False
+
+
+def _read_rooted_regular_bytes(
+    root: Path,
+    relative: str,
+    *,
+    missing_ok: bool,
+) -> bytes | None:
+    try:
+        with _open_rooted_parent(root, relative, create=False) as (
+            parent_fd,
+            filename,
+        ):
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                fd = os.open(filename, flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                if missing_ok:
+                    return None
+                raise MemoryIntegrityError(
+                    "projected memory file is missing"
+                ) from None
+            except OSError:
+                raise MemoryIntegrityError("memory file open failed") from None
+            try:
+                file_stat = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(file_stat.st_mode)
+                    or file_stat.st_uid != os.getuid()
+                ):
+                    raise MemoryIntegrityError(
+                        "memory file identity is invalid"
+                    )
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(fd, 64 * 1024)
+                    if not chunk:
+                        return b"".join(chunks)
+                    chunks.append(chunk)
+            finally:
+                os.close(fd)
+    except _RootedPathMissing:
+        if missing_ok:
+            return None
+        raise MemoryIntegrityError("projected memory file is missing") from None
+
+
+def _read_rooted_regular_text(
+    root: Path,
+    relative: str,
+    *,
+    missing_ok: bool,
+) -> str | None:
+    content = _read_rooted_regular_bytes(
+        root,
+        relative,
+        missing_ok=missing_ok,
+    )
+    if content is None:
+        return None
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise MemoryIntegrityError("memory file is not valid UTF-8") from None

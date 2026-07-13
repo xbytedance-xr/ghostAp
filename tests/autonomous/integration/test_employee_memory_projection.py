@@ -12,10 +12,36 @@ import pytest
 from src.autonomous.data.facades import (
     EmployeeDocumentMaterializer,
     EmployeeMemoryFacade,
-    MemoryConflictError,
 )
 from src.autonomous.data.models import DataKind
 from src.autonomous.data.projection import DataProjectionState, DocumentMetadataRecord
+
+
+def _project_document(
+    state: DataProjectionState,
+    *,
+    tenant_key: str,
+    agent_id: str,
+    kind: DataKind,
+    source_id: str,
+    content_hash: str,
+) -> None:
+    document_id = f"data_{secrets.token_hex(8)}"
+    state.employee_documents[document_id] = DocumentMetadataRecord(
+        document_id=document_id,
+        tenant_key=tenant_key,
+        agent_id=agent_id,
+        owner_principal_id="owner_1",
+        kind=kind,
+        version=1,
+        source_id=source_id,
+        content_hash=content_hash,
+        content_type="text/markdown",
+        blob_ref={},
+    )
+    state.latest_employee_document[
+        (tenant_key, agent_id, kind.value, source_id)
+    ] = document_id
 
 
 class TestEmployeeDocumentMaterializer:
@@ -99,6 +125,14 @@ class TestEmployeeMemoryFacade:
         content_hash = hashlib.sha256(content).hexdigest()
         mat.materialize("agt_alpha", DataKind.L1_MEMORY, "l1_memory", content, content_hash)
         state = DataProjectionState()
+        _project_document(
+            state,
+            tenant_key="tenant_1",
+            agent_id="agt_alpha",
+            kind=DataKind.L1_MEMORY,
+            source_id="l1_memory",
+            content_hash=content_hash,
+        )
         facade = EmployeeMemoryFacade(
             materializer=mat,
             state=state,
@@ -118,7 +152,11 @@ class TestEmployeeMemoryFacade:
             state=state,
             legacy_base_path=tmp_path / "legacy",
         )
-        result = facade.read_l1("agt_beta", "tenant_1")
+        result = facade.read_l1(
+            "agt_beta",
+            "tenant_1",
+            allow_unscoped_legacy=True,
+        )
         assert result == "# Legacy Memory"
 
     def test_returns_none_when_no_memory_exists(self, tmp_path: Path) -> None:
@@ -158,6 +196,14 @@ class TestEmployeeMemoryFacade:
         content_hash = hashlib.sha256(content).hexdigest()
         mat.materialize("agt_alpha", DataKind.MEMORY_SUMMARY, source_id, content, content_hash)
         state = DataProjectionState()
+        _project_document(
+            state,
+            tenant_key="tenant_1",
+            agent_id="agt_alpha",
+            kind=DataKind.MEMORY_SUMMARY,
+            source_id=source_id,
+            content_hash=content_hash,
+        )
         facade = EmployeeMemoryFacade(materializer=mat, state=state)
         result = facade.read_memory_summary("agt_alpha", "tenant_1", "chat_1")
         assert result == "# Summary: agent helped with task"

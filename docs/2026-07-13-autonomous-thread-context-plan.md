@@ -272,6 +272,17 @@ Commit: `feat(autonomous): enforce thread context snapshots`
 
 ## Task 4: Memory service and authorized pre-execution contract
 
+**Status (2026-07-13): complete.** The implementation adds projected
+ACTIVE/visible employee and BotPrincipal authority, tenant-owned canonical L1,
+membership/chat-bound full Slock L2, current-sender/requester binding, and an
+immutable pre-execution input. Delegation now requires an injected atomic
+authority-fence callback; Task 4 deliberately does not pretend that the Phase 3
+durable attempt anchor exists. Canonical L1 uses root-relative dir-fd traversal
+with no-follow checks at every component, while data replay, Context reads,
+publishes, and Blob GC share service-owned projection locking. Three independent
+engineering, security, and quality reviews approved the final contracts. Task 5
+production ownership remains intentionally separate.
+
 **Tests first**
 
 - Add `tests/autonomous/integration/test_employee_context_service.py` for

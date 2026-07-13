@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-13
+- **员工Context授权门禁** — tenant L1/full-L2 ACL、requester绑定、原子authority fence与dir-fd/投影并发加固落地，下一项为production composition → [详细记录](2026-07-13.md)
 - **Thread Context稳定快照** — Thread/Group双观察、current边界、revision身份与整单元预算落地，下一项为L1/L2 ACL service → [详细记录](2026-07-13.md)
 - **员工Feishu上下文源** — 官方Get/List、员工凭据lease、严格分页/内容与关闭线性化落地，snapshot组装仍待接线 → [详细记录](2026-07-13.md)
 - **Thread Context严格契约** — 冻结scope/revision/watermark与严格预算配置落地，真实Feishu source仍待接线 → [详细记录](2026-07-13.md)

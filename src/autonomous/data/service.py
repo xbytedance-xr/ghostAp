@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -101,7 +103,7 @@ class EmployeeDataService:
         self._state = data_state
         self._active_key_id = active_key_id
         self._shard_timezone = shard_timezone
-        self._mutex = threading.Lock()
+        self._mutex = threading.RLock()
 
     @property
     def state(self) -> DataProjectionState:
@@ -113,6 +115,42 @@ class EmployeeDataService:
                 sequence=self._state.cursor_sequence,
                 logical_hash=self._state.cursor_hash,
             )
+
+    @contextmanager
+    def read_guard(self) -> Iterator[None]:
+        """Hold a consistent data projection view during an authorized read."""
+        with self._mutex:
+            yield
+
+    def rebuild_projection(self) -> DataProjectionState:
+        """Replay and atomically replace the live projection under one owner."""
+        with self._mutex:
+            fresh = self._replay_into_unlocked(DataProjectionState())
+            self._replace_state_unlocked(fresh)
+            return fresh
+
+    def quarantine_unreferenced_blobs(self) -> int:
+        """Quarantine orphan blobs against one locked projection snapshot."""
+        with self._mutex:
+            live_ids = {
+                blob_id
+                for record in self._state.history_records.values()
+                if (blob_id := record.blob_ref.get("blob_id", ""))
+            }
+            live_ids.update(
+                blob_id
+                for document in self._state.employee_documents.values()
+                if (blob_id := document.blob_ref.get("blob_id", ""))
+            )
+            orphan_ids = set(self._blob_store.iter_blob_ids()) - live_ids
+            quarantined = 0
+            for blob_id in orphan_ids:
+                try:
+                    self._blob_store.quarantine_blob(blob_id)
+                    quarantined += 1
+                except Exception:
+                    continue
+            return quarantined
 
     def start_attempt(self, context: ExecutionAttemptContext) -> AttemptResult:
         """Anchor an immutable attempt binding before ACP dispatch."""
@@ -273,6 +311,13 @@ class EmployeeDataService:
 
     def replay_into(self, state: DataProjectionState) -> DataProjectionState:
         """Full Journal replay populating a fresh state."""
+        with self._mutex:
+            return self._replay_into_unlocked(state)
+
+    def _replay_into_unlocked(
+        self,
+        state: DataProjectionState,
+    ) -> DataProjectionState:
         for frame in self._writer.replay():
             for event in frame.events:
                 if is_data_event(event.event_type):
@@ -285,6 +330,20 @@ class EmployeeDataService:
             state.cursor_sequence = frame.sequence
             state.cursor_hash = frame.frame_hash
         return state
+
+    def _replace_state_unlocked(self, fresh: DataProjectionState) -> None:
+        self._state.history_records = fresh.history_records
+        self._state.history_by_employee_day = fresh.history_by_employee_day
+        self._state.history_by_task = fresh.history_by_task
+        self._state.history_by_occurrence = fresh.history_by_occurrence
+        self._state.execution_attempts = fresh.execution_attempts
+        self._state.employee_documents = fresh.employee_documents
+        self._state.latest_employee_document = fresh.latest_employee_document
+        self._state.legacy_data_sources = fresh.legacy_data_sources
+        self._state.data_authority = fresh.data_authority
+        self._state.data_read_audits = fresh.data_read_audits
+        self._state.cursor_sequence = fresh.cursor_sequence
+        self._state.cursor_hash = fresh.cursor_hash
 
     def _apply_frame(self, result: CommitResult) -> None:
         frame = result.frame

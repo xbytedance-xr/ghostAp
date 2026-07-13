@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import secrets
+import threading
 from pathlib import Path
 
 import pytest
@@ -19,9 +20,8 @@ from src.autonomous.data.ports import (
     AuthenticatedExecutionTerminal,
     PublishEmployeeDocumentCommand,
 )
-from src.autonomous.data.projection import DataProjectionState
 from src.autonomous.data.query import AuthenticatedDataRequest, HistoryQuerySpec
-from src.autonomous.journal.writer import CommitState, JournalWriter
+from src.autonomous.journal.writer import JournalWriter
 
 
 class _InMemoryAnchor:
@@ -117,7 +117,7 @@ class TestFullComposition:
             thread_root_id="",
             requested_agent_id="agt_alpha",
         )
-        from datetime import date, timedelta
+        from datetime import date
         today = date.today().isoformat()
         result = composition.query.query(
             request,
@@ -202,3 +202,190 @@ class TestFullComposition:
             "agt_alpha", "tenant_1", "chat_1"
         )
         assert summary == "# Chat summary"
+
+    def test_rebuild_serializes_with_publish_without_losing_document(
+        self,
+        composition: EmployeeDataComposition,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        replay_entered = threading.Event()
+        release_replay = threading.Event()
+        publish_done = threading.Event()
+        errors: list[Exception] = []
+        original_replay = composition.service._writer.replay
+
+        def blocked_replay():
+            frames = tuple(original_replay())
+            replay_entered.set()
+            assert release_replay.wait(5)
+            return iter(frames)
+
+        monkeypatch.setattr(composition.service._writer, "replay", blocked_replay)
+
+        def rebuild() -> None:
+            try:
+                composition.rebuild_all()
+            except Exception as exc:
+                errors.append(exc)
+
+        command = PublishEmployeeDocumentCommand(
+            agent_id="agt_alpha",
+            tenant_key="tenant_1",
+            owner_principal_id="principal_owner",
+            kind=DataKind.L1_MEMORY,
+            source_id="l1_memory",
+            content=b"# Concurrent memory",
+            content_type="text/markdown",
+        )
+
+        def publish() -> None:
+            try:
+                composition.publish_document(command)
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                publish_done.set()
+
+        rebuild_thread = threading.Thread(target=rebuild)
+        publish_thread = threading.Thread(target=publish)
+        rebuild_thread.start()
+        assert replay_entered.wait(5)
+        publish_thread.start()
+        assert not publish_done.wait(0.1)
+        release_replay.set()
+        rebuild_thread.join(5)
+        publish_thread.join(5)
+
+        assert not rebuild_thread.is_alive()
+        assert not publish_thread.is_alive()
+        assert errors == []
+        assert composition.memory_facade.read_l1(
+            "agt_alpha",
+            "tenant_1",
+        ) == "# Concurrent memory"
+
+    def test_gc_serializes_with_inflight_publish_before_quarantine(
+        self,
+        composition: EmployeeDataComposition,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        commit_entered = threading.Event()
+        release_commit = threading.Event()
+        gc_done = threading.Event()
+        errors: list[Exception] = []
+        gc_results: list[int] = []
+        original_commit = composition.service._writer.commit
+
+        def blocked_commit(*args, **kwargs):
+            commit_entered.set()
+            assert release_commit.wait(5)
+            return original_commit(*args, **kwargs)
+
+        monkeypatch.setattr(composition.service._writer, "commit", blocked_commit)
+        command = PublishEmployeeDocumentCommand(
+            agent_id="agt_alpha",
+            tenant_key="tenant_1",
+            owner_principal_id="principal_owner",
+            kind=DataKind.L1_MEMORY,
+            source_id="l1_memory",
+            content=b"# GC-safe memory",
+            content_type="text/markdown",
+        )
+
+        def publish() -> None:
+            try:
+                composition.publish_document(command)
+            except Exception as exc:
+                errors.append(exc)
+
+        def collect() -> None:
+            try:
+                gc_results.append(composition.gc_unreferenced_blobs())
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                gc_done.set()
+
+        publish_thread = threading.Thread(target=publish)
+        gc_thread = threading.Thread(target=collect)
+        publish_thread.start()
+        assert commit_entered.wait(5)
+        gc_thread.start()
+        assert not gc_done.wait(0.1)
+        release_commit.set()
+        publish_thread.join(5)
+        gc_thread.join(5)
+
+        assert not publish_thread.is_alive()
+        assert not gc_thread.is_alive()
+        assert errors == []
+        assert gc_results == [0]
+        assert composition.memory_facade.read_l1(
+            "agt_alpha",
+            "tenant_1",
+        ) == "# GC-safe memory"
+
+    def test_context_read_waits_for_atomic_projection_rebuild(
+        self,
+        composition: EmployeeDataComposition,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        composition.publish_document(
+            PublishEmployeeDocumentCommand(
+                agent_id="agt_alpha",
+                tenant_key="tenant_1",
+                owner_principal_id="principal_owner",
+                kind=DataKind.L1_MEMORY,
+                source_id="l1_memory",
+                content=b"# Stable memory",
+                content_type="text/markdown",
+            )
+        )
+        replay_entered = threading.Event()
+        release_replay = threading.Event()
+        read_done = threading.Event()
+        values: list[str | None] = []
+        errors: list[Exception] = []
+        original_replay = composition.service._writer.replay
+
+        def blocked_replay():
+            frames = tuple(original_replay())
+            replay_entered.set()
+            assert release_replay.wait(5)
+            return iter(frames)
+
+        monkeypatch.setattr(composition.service._writer, "replay", blocked_replay)
+
+        def rebuild() -> None:
+            try:
+                composition.rebuild_all()
+            except Exception as exc:
+                errors.append(exc)
+
+        def read() -> None:
+            try:
+                values.append(
+                    composition.memory_facade.read_l1(
+                        "agt_alpha",
+                        "tenant_1",
+                    )
+                )
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                read_done.set()
+
+        rebuild_thread = threading.Thread(target=rebuild)
+        read_thread = threading.Thread(target=read)
+        rebuild_thread.start()
+        assert replay_entered.wait(5)
+        read_thread.start()
+        assert not read_done.wait(0.1)
+        release_replay.set()
+        rebuild_thread.join(5)
+        read_thread.join(5)
+
+        assert not rebuild_thread.is_alive()
+        assert not read_thread.is_alive()
+        assert errors == []
+        assert values == ["# Stable memory"]

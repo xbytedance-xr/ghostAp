@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.slock_engine.memory_manager import default_slock_storage_base
 from src.slock_engine.models import AgentIdentity
 
-from ..domain import EmployeeDefinition, EmployeeState
+from ..domain import BotPrincipal, EmployeeDefinition, EmployeeState, WorkerType
+from .projection import workforce_projection_guard
 
 if TYPE_CHECKING:
     from ..journal.projections import ProjectionState
@@ -16,6 +18,22 @@ if TYPE_CHECKING:
 
 class AmbiguousEmployeeName(LookupError):
     """More than one projected employee matched a scoped name lookup."""
+
+
+class ProjectedBindingError(RuntimeError):
+    """Projected employee/principal authority is internally inconsistent."""
+
+
+class ProjectedCredentialError(ProjectedBindingError):
+    """The projected employee credential is not usable."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedContextBinding:
+    employee: EmployeeDefinition
+    principal: BotPrincipal
+    projection_sequence: int
+    projection_hash: str
 
 
 class ProjectedAgentRegistry:
@@ -113,6 +131,52 @@ class ProjectedAgentRegistry:
             created_at=employee.created_at,
             personality_traits=list(employee.personality_traits),
         )
+
+    def context_binding(
+        self,
+        *,
+        tenant_key: str,
+        agent_id: str,
+        bot_principal_id: str,
+        app_id: str,
+        chat_id: str,
+    ) -> ProjectedContextBinding | None:
+        """Atomically resolve one ACTIVE visible employee execution binding."""
+        self._require_tenant(tenant_key)
+        with workforce_projection_guard():
+            employee = self._state.employees.get(agent_id)
+            if (
+                employee is None
+                or employee.tenant_key != tenant_key
+                or employee.state is not EmployeeState.ACTIVE
+                or employee.worker_type is not WorkerType.VISIBLE
+                or chat_id not in employee.member_groups
+            ):
+                return None
+            if employee.bot_principal_id != bot_principal_id:
+                return None
+            principal = self._state.bot_principals.get(bot_principal_id)
+            if principal is None:
+                raise ProjectedBindingError("missing projected bot principal")
+            if (
+                principal.tenant_key != tenant_key
+                or principal.agent_id != agent_id
+            ):
+                raise ProjectedBindingError(
+                    "projected bot principal binding mismatch"
+                )
+            if principal.app_id != app_id:
+                return None
+            if not principal.credential_ref:
+                raise ProjectedCredentialError(
+                    "projected credential is unavailable"
+                )
+            return ProjectedContextBinding(
+                employee=employee,
+                principal=principal,
+                projection_sequence=getattr(self._state, "cursor_sequence", 0),
+                projection_hash=getattr(self._state, "cursor_hash", ""),
+            )
 
     @staticmethod
     def _require_tenant(tenant_key: str) -> None:

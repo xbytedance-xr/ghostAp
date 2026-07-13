@@ -10,6 +10,7 @@ import stat
 import threading
 import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
@@ -85,6 +86,13 @@ _PROFILE_FIELDS = frozenset(
 _WORKFORCE_COMMIT_LOCK = threading.RLock()
 _AGENT_ID_PATTERN = re.compile(r"agt_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _BOT_PRINCIPAL_ID_PATTERN = re.compile(r"bot_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+
+
+@contextmanager
+def workforce_projection_guard():
+    """Serialize authority snapshots with workforce projection commits."""
+    with _WORKFORCE_COMMIT_LOCK:
+        yield
 
 
 def _projection_error(message: str) -> Exception:

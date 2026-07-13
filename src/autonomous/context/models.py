@@ -431,14 +431,158 @@ class ThreadContextConfig:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AuthorizedContextRequest:
+    """Authority-bound coordinates produced by the future durable ingress."""
+
+    tenant_key: str
+    agent_id: str
+    bot_principal_id: str
+    app_id: str
+    channel_generation: int
+    chat_id: str
+    thread_root_message_id: str
+    feishu_thread_id: str
+    current_message_id: str
+    requester_principal_id: str
+    system_prompt_token_reserve: int = 0
+    constraints_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.tenant_key, str)
+            or not self.tenant_key.strip()
+            or self.tenant_key != self.tenant_key.strip()
+        ):
+            raise ValueError("tenant_key is required")
+        _require_prefix(self.agent_id, "agent_id", "agt_")
+        _require_prefix(
+            self.bot_principal_id,
+            "bot_principal_id",
+            "bot_",
+        )
+        _require_prefix(self.app_id, "app_id", "cli_")
+        _require_prefix(self.chat_id, "chat_id", "oc_")
+        _require_prefix(
+            self.thread_root_message_id,
+            "thread_root_message_id",
+            "om_",
+        )
+        _require_prefix(
+            self.feishu_thread_id,
+            "feishu_thread_id",
+            "omt_",
+        )
+        _require_prefix(
+            self.current_message_id,
+            "current_message_id",
+            "om_",
+        )
+        if (
+            not isinstance(self.requester_principal_id, str)
+            or not self.requester_principal_id.strip()
+            or self.requester_principal_id != self.requester_principal_id.strip()
+        ):
+            raise ValueError("requester_principal_id is required")
+        if (
+            isinstance(self.channel_generation, bool)
+            or not isinstance(self.channel_generation, int)
+            or self.channel_generation <= 0
+        ):
+            raise ValueError("channel_generation must be a positive integer")
+        if (
+            isinstance(self.system_prompt_token_reserve, bool)
+            or not isinstance(self.system_prompt_token_reserve, int)
+            or self.system_prompt_token_reserve < 0
+        ):
+            raise ValueError(
+                "system_prompt_token_reserve must be a non-negative integer"
+            )
+        if not isinstance(self.constraints_digest, str) or (
+            self.constraints_digest
+            and re.fullmatch(r"[0-9a-f]{64}", self.constraints_digest) is None
+        ):
+            raise ValueError("constraints_digest must be a SHA-256 hex digest")
+        if self.system_prompt_token_reserve and not self.constraints_digest:
+            raise ValueError("non-zero reserve requires constraints_digest")
+
+    def to_message_scope(self) -> EmployeeMessageScope:
+        return EmployeeMessageScope(
+            tenant_key=self.tenant_key,
+            agent_id=self.agent_id,
+            bot_principal_id=self.bot_principal_id,
+            app_id=self.app_id,
+            chat_id=self.chat_id,
+            thread_root_message_id=self.thread_root_message_id,
+            current_message_id=self.current_message_id,
+            feishu_thread_id=self.feishu_thread_id,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeExecutionInput:
+    """One authorized, context-complete input for the delegated executor."""
+
+    request: AuthorizedContextRequest
+    tool: str
+    model: str
+    effort: str
+    context: AssembledContext
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.request, AuthorizedContextRequest):
+            raise TypeError("request must be AuthorizedContextRequest")
+        if not isinstance(self.context, AssembledContext):
+            raise TypeError("context must be AssembledContext")
+        for field_name in ("tool", "model", "effort"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} is required")
+        watermark = self.context.watermark
+        if watermark is None or (
+            watermark.tenant_key != self.request.tenant_key
+            or watermark.chat_id != self.request.chat_id
+            or watermark.thread_root_id
+            != self.request.thread_root_message_id
+            or watermark.feishu_thread_id != self.request.feishu_thread_id
+        ):
+            raise ValueError("context watermark authority mismatch")
+        current = [
+            message
+            for message in self.context.thread_messages
+            if message.is_current
+        ]
+        if (
+            len(current) != 1
+            or current[0].message_id != self.request.current_message_id
+        ):
+            raise ValueError("context current message mismatch")
+        current_message = current[0]
+        if (
+            current_message.sender_id != self.request.requester_principal_id
+            or current_message.sender_id_type != "open_id"
+            or current_message.sender_tenant_key != self.request.tenant_key
+        ):
+            raise ValueError("context requester identity mismatch")
+        if (
+            self.context.system_prompt_tokens_reserved
+            != self.request.system_prompt_token_reserve
+            or self.context.constraints_digest
+            != self.request.constraints_digest
+        ):
+            raise ValueError("context trusted reservation mismatch")
+
+
 __all__ = [
     "AssembledContext",
+    "AuthorizedContextRequest",
     "ContextLayer",
     "ContextLayerMetrics",
     "ContextMessage",
     "ContextUnavailableError",
     "ContextUnavailableReason",
     "EmployeeMessageScope",
+    "EmployeeExecutionInput",
     "MessageRevision",
     "MessageSourceError",
     "ThreadContextConfig",

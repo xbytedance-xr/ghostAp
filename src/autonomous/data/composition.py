@@ -136,43 +136,12 @@ class EmployeeDataComposition:
 
     def rebuild_all(self) -> None:
         """Full projection rebuild from Journal replay."""
-        fresh = DataProjectionState()
-        self.service.replay_into(fresh)
-        self.state.history_records = fresh.history_records
-        self.state.history_by_employee_day = fresh.history_by_employee_day
-        self.state.history_by_task = fresh.history_by_task
-        self.state.history_by_occurrence = fresh.history_by_occurrence
-        self.state.execution_attempts = fresh.execution_attempts
-        self.state.employee_documents = fresh.employee_documents
-        self.state.latest_employee_document = fresh.latest_employee_document
-        self.state.legacy_data_sources = fresh.legacy_data_sources
-        self.state.data_authority = fresh.data_authority
-        self.state.data_read_audits = fresh.data_read_audits
-        self.state.cursor_sequence = fresh.cursor_sequence
-        self.state.cursor_hash = fresh.cursor_hash
-        self.history_materializer.materialize_all(self.state)
+        snapshot = self.service.rebuild_projection()
+        self.history_materializer.materialize_all(snapshot)
 
     def gc_unreferenced_blobs(self) -> int:
         """Quarantine blobs not referenced by any projected record or document."""
-        live_ids: set[str] = set()
-        for record in self.state.history_records.values():
-            blob_id = record.blob_ref.get("blob_id", "")
-            if blob_id:
-                live_ids.add(blob_id)
-        for doc in self.state.employee_documents.values():
-            blob_id = doc.blob_ref.get("blob_id", "")
-            if blob_id:
-                live_ids.add(blob_id)
-        all_ids = set(self.service._blob_store.iter_blob_ids())
-        orphans = all_ids - live_ids
-        quarantined = 0
-        for blob_id in orphans:
-            try:
-                self.service._blob_store.quarantine_blob(blob_id)
-                quarantined += 1
-            except Exception:
-                pass
-        return quarantined
+        return self.service.quarantine_unreferenced_blobs()
 
 
 def build_employee_data_composition(
@@ -201,6 +170,7 @@ def build_employee_data_composition(
         materializer=doc_mat,
         state=state,
         legacy_base_path=legacy_base,
+        projection_guard=service.read_guard,
     )
     context_factory = EmployeeDataRequestContextFactory(
         admin_principal_ids=admin_principal_ids,
