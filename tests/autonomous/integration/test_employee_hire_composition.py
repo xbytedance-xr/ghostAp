@@ -7,6 +7,7 @@ import json
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from pydantic import SecretStr
 
 from src.autonomous.context import (
     AuthorizedContextRequest,
+    ContextLayer,
     ContextMessage,
     MessagePage,
     ResolvedThread,
@@ -226,6 +228,14 @@ class _GroupMemory:
         return ""
 
 
+class _StableGroupMemory(_GroupMemory):
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+    def read_group_memory(self, _chat_id):
+        return self.content
+
+
 class _RuntimeMessageSource:
     def __init__(self, scope) -> None:
         self.scope = scope
@@ -310,6 +320,85 @@ class _AssemblingContextSourceFactory(_ContextSourceFactory):
     def open(self, *, scope, principal):
         del principal
         yield _RuntimeMessageSource(scope)
+
+
+class _ReplayContextSource(_RuntimeMessageSource):
+    def __init__(self, scope, *, split_pages: bool) -> None:
+        super().__init__(scope)
+        self._split_pages = split_pages
+
+    def _thread_messages(self):
+        root = replace(
+            self._message(
+                self.scope.thread_root_message_id,
+                text="root-edited",
+                create_time=1_000,
+                position=0,
+                root_id="",
+                current=False,
+            ),
+            update_time_ms=1_500,
+            edited=True,
+        )
+        deleted = replace(
+            self._message(
+                "om_runtime_deleted",
+                text="",
+                create_time=1_800,
+                position=1,
+                root_id=self.scope.thread_root_message_id,
+                current=False,
+            ),
+            update_time_ms=2_200,
+            deleted=True,
+        )
+        current = self._message(
+            self.scope.current_message_id,
+            text="current",
+            create_time=3_000,
+            position=2,
+            root_id=self.scope.thread_root_message_id,
+            current=True,
+        )
+        return root, deleted, current
+
+    def list_thread_messages(self, *, page_token="", page_size=50):
+        del page_size
+        messages = self._thread_messages()
+        if self._split_pages:
+            if not page_token:
+                return MessagePage(messages[:2], True, "next")
+            assert page_token == "next"
+            return MessagePage(messages[2:], False)
+        assert not page_token
+        return MessagePage(messages, False)
+
+    def list_chat_messages(self, *, page_token="", page_size=20):
+        del page_token, page_size
+        root = self._thread_messages()[0]
+        group = self._message(
+            "om_runtime_group",
+            text="group",
+            create_time=2_500,
+            position=10,
+            root_id="",
+            current=False,
+        )
+        return MessagePage((group, root), False)
+
+
+class _ReplayContextSourceFactory(_ContextSourceFactory):
+    def __init__(self, *, split_pages: bool) -> None:
+        super().__init__()
+        self._split_pages = split_pages
+
+    @contextmanager
+    def open(self, *, scope, principal):
+        del principal
+        yield _ReplayContextSource(
+            scope,
+            split_pages=self._split_pages,
+        )
 
 
 class _FailingStartChannels(_Channels):
@@ -970,7 +1059,10 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
     tmp_path: Path,
 ) -> None:
     settings = _settings(tmp_path, limit=1, context_configured=True)
+    settings.autonomous_thread_context_max_chars = 22
     first_channels = _Channels()
+    first_source = _ReplayContextSourceFactory(split_pages=True)
+    group_memory = _StableGroupMemory("l2-memory")
     first = _runtime(
         settings,
         release_evidence_ready=True,
@@ -978,14 +1070,61 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
         channel_supervisor=first_channels,
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
-        context_source_factory=_ContextSourceFactory(),
-        group_memory_backend=_GroupMemory(),
+        context_source_factory=first_source,
+        group_memory_backend=group_memory,
     )
     active = _activate_employee(first, first_channels)
+    assert first._writer is not None
+    assert first.hire_service is not None
+    commit_workforce_events(
+        first._writer,
+        first.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=active.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    assert first.data_composition is not None
+    employee = first.hire_service.synchronize_projection().employees[
+        active.agent_id
+    ]
+    first.data_composition.publish_document(
+        PublishEmployeeDocumentCommand(
+            agent_id=active.agent_id,
+            tenant_key=active.tenant_key,
+            owner_principal_id=employee.owner_principal_id,
+            kind=DataKind.L1_MEMORY,
+            source_id="l1_memory",
+            content=b"l1-memory",
+            content_type="text/markdown",
+        )
+    )
+    assert first.data_composition.memory_facade.read_l1(
+        active.agent_id,
+        active.tenant_key,
+        allow_unscoped_legacy=False,
+    ) == "l1-memory"
+    context_request = AuthorizedContextRequest(
+        tenant_key=active.tenant_key,
+        agent_id=active.agent_id,
+        bot_principal_id=active.bot_principal_id,
+        app_id=active.app_id,
+        channel_generation=active.channel_generation,
+        chat_id="oc_employee_team",
+        thread_root_message_id="om_runtime_root",
+        feishu_thread_id="omt_runtime",
+        current_message_id="om_runtime_current",
+        requester_principal_id="ou_admin",
+    )
+    assert first.context_service is not None
+    before_restart = first.context_service.assemble(context_request)
     first.close()
 
     restarted_channels = _Channels()
-    restarted_source = _ContextSourceFactory()
+    restarted_source = _ReplayContextSourceFactory(split_pages=False)
     restarted = _runtime(
         settings,
         release_evidence_ready=True,
@@ -993,7 +1132,7 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
         context_source_factory=restarted_source,
-        group_memory_backend=_GroupMemory(),
+        group_memory_backend=_StableGroupMemory("l2-memory"),
     )
     assert restarted.hire_service is not None
     deadline = time.monotonic() + 7
@@ -1045,6 +1184,36 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
         projection.cursor_sequence,
         projection.cursor_hash,
     )
+    assert restarted.context_service is not None
+    after_restart = restarted.context_service.assemble(
+        replace(
+            context_request,
+            channel_generation=recovered.channel_generation,
+        )
+    )
+    assert after_restart.snapshot_hash == before_restart.snapshot_hash
+    assert after_restart.watermark == before_restart.watermark
+    assert after_restart.thread_messages == before_restart.thread_messages
+    assert after_restart.group_messages == before_restart.group_messages
+    assert after_restart.layer_metrics == before_restart.layer_metrics
+    assert after_restart.trimming_trace == before_restart.trimming_trace
+    assert [record.layer for record in after_restart.trimming_trace] == [
+        ContextLayer.L2_GROUP,
+        ContextLayer.L1_MEMORY,
+        ContextLayer.GROUP_RECENT,
+    ]
+    assert after_restart.l1_summary == ""
+    assert after_restart.l2_summary == ""
+    assert after_restart.group_messages == ()
+    deleted = next(
+        message
+        for message in after_restart.thread_messages
+        if message.message_id == "om_runtime_deleted"
+    )
+    assert deleted.deleted is True
+    assert deleted.text == ""
+    assert after_restart.thread_messages[0].edited is True
+    assert after_restart.thread_messages[0].text == "root-edited"
     restarted.close()
 
 

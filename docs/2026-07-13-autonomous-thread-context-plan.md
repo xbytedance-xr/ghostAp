@@ -402,6 +402,20 @@ Commit: `feat(autonomous): compose employee thread context`
 
 ## Task 6: Failure injection, regression, and phase handoff
 
+**Status (2026-07-13): complete.** Real service-to-execution fault injection now
+covers page-one-to-page-two insert/edit/delete mutations, deadline expiry,
+repeated SDK tokens, malformed successful SDK responses, memory failures,
+restart/repartition replay, two-key credential rotation with an in-flight
+source, and shutdown races. Security regression covers cross-scope returns,
+protected-current budget overflow, secret-safe errors, Manager-client
+isolation, and no-follow memory paths. Every mandatory failure reaches the
+typed `CONTEXT_UNAVAILABLE` gate with zero delegate/task/ACP calls. A restart
+test proves equal snapshot hash, watermark, layers, metrics, and trimming trace
+despite a different pagination partition. Engineering, security, and quality
+reviews approved the final implementation after the paging mutation test was
+strengthened to inject the change inside one traversal. Phase 2 is therefore
+closed; Phase 3 durable ingress remains the next milestone.
+
 **Tests first**
 
 - Add chaos cases for timeout, repeated token, new message during paging,
@@ -441,10 +455,10 @@ Commit: `test(autonomous): close thread context phase`
 
 ## Phase completion boundary
 
-This plan is complete only when Tasks 1-6 have fresh passing evidence and are
-pushed to `dev`. It proves the production Thread Context dependency and a typed
-contract fake for the future authority-bound pre-execution step; only Phase 3
-can prove the real gate. It does **not** prove durable employee ingress, the real
-Slock gateway, employee-owned response cards, team/stop/fire semantics, data
-producer cutover, external release trust, or real-tenant acceptance. Those
-remain active in `docs/goals.md` Phases 3-9.
+**Complete (2026-07-13).** Tasks 1-6 have fresh passing evidence and are shipped
+to `dev` by the phase-close commit. This proves the production Thread Context
+dependency and a typed contract for the future authority-bound pre-execution
+step; only Phase 3 can prove the real durable gate. It does **not** prove durable
+employee ingress, the real Slock gateway, employee-owned response cards,
+team/stop/fire semantics, data producer cutover, external release trust, or
+real-tenant acceptance. Those remain active in `docs/goals.md` Phases 3-9.

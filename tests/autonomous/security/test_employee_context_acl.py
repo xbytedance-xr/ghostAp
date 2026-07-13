@@ -240,6 +240,36 @@ def test_l1_rejects_legacy_by_default_and_any_dual_source(
         dual.read_l1("agt_1", "tenant_1", allow_unscoped_legacy=True)
 
 
+def test_canonical_path_nested_under_legacy_root_is_not_a_second_source(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "slock"
+    materializer = EmployeeDocumentMaterializer(base / "agents")
+    state = DataProjectionState()
+    content = b"canonical"
+    content_hash = hashlib.sha256(content).hexdigest()
+    _project_l1(state, content_hash=content_hash)
+    materializer.materialize(
+        "agt_1",
+        DataKind.L1_MEMORY,
+        "l1_memory",
+        content,
+        content_hash,
+    )
+    facade = EmployeeMemoryFacade(
+        materializer=materializer,
+        state=state,
+        legacy_base_path=base,
+    )
+
+    assert facade.read_l1("agt_1", "tenant_1") == "canonical"
+
+    distinct_legacy = base / "agents" / "agt_1" / "MEMORY.md"
+    distinct_legacy.write_text("legacy")
+    with pytest.raises(MemoryConflictError, match="both exist"):
+        facade.read_l1("agt_1", "tenant_1")
+
+
 def _request(**changes) -> AuthorizedContextRequest:
     values = {
         "tenant_key": "tenant_1",

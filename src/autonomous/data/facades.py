@@ -202,7 +202,15 @@ class EmployeeMemoryFacade:
                 DataKind.L1_MEMORY,
                 "l1_memory",
             )
-            legacy = self._read_legacy_l1(agent_id)
+            canonical_path = self._materializer.resolve_path(
+                agent_id,
+                DataKind.L1_MEMORY,
+                "l1_memory",
+            ).absolute
+            legacy = self._read_legacy_l1(
+                agent_id,
+                exclude_path=canonical_path,
+            )
             if canonical is not None and legacy is not None:
                 raise MemoryConflictError(
                     f"canonical and legacy L1 both exist for {agent_id}"
@@ -307,7 +315,12 @@ class EmployeeMemoryFacade:
             raise MemoryIntegrityError("materialized document hash mismatch")
         return content
 
-    def _read_legacy_l1(self, agent_id: str) -> str | None:
+    def _read_legacy_l1(
+        self,
+        agent_id: str,
+        *,
+        exclude_path: Path | None = None,
+    ) -> str | None:
         if self._legacy_base is None:
             return None
         _require_agent_id(agent_id)
@@ -318,6 +331,11 @@ class EmployeeMemoryFacade:
         existing = [
             relative
             for relative in candidates
+            if (
+                exclude_path is None
+                or (self._legacy_base / relative).absolute()
+                != exclude_path.absolute()
+            )
             if _rooted_path_exists(self._legacy_base, relative)
         ]
         if len(existing) > 1:

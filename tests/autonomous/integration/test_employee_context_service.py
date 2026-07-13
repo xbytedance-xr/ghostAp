@@ -16,6 +16,7 @@ from src.autonomous.context import (
     ContextUnavailableError,
     ContextUnavailableReason,
     EmployeeContextService,
+    ThreadContextConfig,
 )
 from src.autonomous.data.projection import JournalHead
 from src.autonomous.domain import (
@@ -172,6 +173,7 @@ def _composition(
     memory: _MemoryFacade | None = None,
     backend: _GroupBackend | None = None,
     source_factory: _SourceFactory | None = None,
+    config: ThreadContextConfig | None = None,
 ):
     workforce_state = state or _state()
 
@@ -204,6 +206,7 @@ def _composition(
         data_composition=data,
         group_memory_reader=group_reader,
         source_factory=source_factory,
+        config=config,
     )
     return SimpleNamespace(
         service=service,

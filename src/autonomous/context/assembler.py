@@ -200,6 +200,8 @@ class EmployeeThreadContext:
         current = messages[current_indexes[0]]
         if current.deleted or current.is_system or current.msg_type == "system":
             raise ContextUnavailableError(ContextUnavailableReason.CURRENT_MESSAGE)
+        if current.sender_tenant_key != scope.tenant_key:
+            raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
         prefix = messages[: current_indexes[0] + 1]
         if len(prefix) > self._config.max_thread_messages:
             raise ContextUnavailableError(ContextUnavailableReason.BUDGET)
