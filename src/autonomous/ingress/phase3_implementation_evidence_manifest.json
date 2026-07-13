@@ -34,6 +34,28 @@
       "sdk_wheel_sha256": null,
       "selector_state": "collectable",
       "status": "pending"
+    },
+    {
+      "id": "EI-BRIDGE-MESSAGE-01",
+      "selector": "tests/autonomous/integration/test_employee_channel_bridge.py::test_message_wire_response_waits_for_durable_parent_ack",
+      "evidence_level": "chaos_security",
+      "environment": "local_channel_wire_harness",
+      "artifact_kind": "employee_channel_bridge",
+      "artifact_profile_id": "employee-channel-bridge-v1",
+      "sdk_wheel_sha256": "d5f094d697578c315d5ec02c1fe7cc6f779314f265e3335c6e0acd8ff4afceba",
+      "selector_state": "collectable",
+      "status": "pending"
+    },
+    {
+      "id": "EI-BRIDGE-CARD-01",
+      "selector": "tests/autonomous/integration/test_employee_channel_bridge.py::test_card_action_wire_response_waits_for_durable_parent_ack",
+      "evidence_level": "chaos_security",
+      "environment": "local_channel_wire_harness",
+      "artifact_kind": "employee_channel_bridge",
+      "artifact_profile_id": "employee-channel-bridge-v1",
+      "sdk_wheel_sha256": "d5f094d697578c315d5ec02c1fe7cc6f779314f265e3335c6e0acd8ff4afceba",
+      "selector_state": "collectable",
+      "status": "pending"
     }
   ]
 }

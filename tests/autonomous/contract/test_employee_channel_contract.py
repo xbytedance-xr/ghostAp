@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import ast
 import asyncio
+import hashlib
 import inspect
 import json
 import sys
+import textwrap
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from src.autonomous.ingress.models import (
+    EmployeeIngressAck,
+    EmployeeIngressMetadata,
+    EmployeeIngressPayload,
+    IngressAcceptance,
+)
+from src.autonomous.ingress.service import EmployeeIngressService
 from src.autonomous.provisioning.channel_protocol import (
     MAX_FRAME_BYTES,
     ChannelFrame,
@@ -17,11 +28,39 @@ from src.autonomous.provisioning.channel_protocol import (
     encode_frame,
 )
 from src.autonomous.provisioning.channel_worker import (
+    _normalize_sdk_ingress,
     create_employee_channel,
     extract_raw_message_metadata,
     register_channel_handlers,
+    run_low_level_employee_channel,
+)
+from src.autonomous.provisioning.channel_worker import (
+    main as channel_worker_main,
 )
 from src.autonomous.supervisor.employee_channels import EmployeeChannelSupervisor
+
+
+def test_parent_durable_ingress_call_graph_excludes_router_and_acp_execution() -> None:
+    source = "\n".join(
+        textwrap.dedent(inspect.getsource(method))
+        for method in (
+            EmployeeChannelSupervisor._accept_ingress,
+            EmployeeIngressService.accept,
+        )
+    )
+    tree = ast.parse(source)
+    invoked = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, (ast.Attribute, ast.Name))
+    }
+
+    assert invoked.isdisjoint(
+        {"route", "execute", "start_session", "ensure_session", "_run_acp_session"}
+    )
+    assert "src.acp" not in source
+    assert "provisioning.router" not in source
 
 
 def test_protocol_round_trips_a_strict_versioned_ndjson_frame() -> None:
@@ -37,6 +76,147 @@ def test_protocol_round_trips_a_strict_versioned_ndjson_frame() -> None:
 
     assert encoded.endswith(b"\n")
     assert decode_frame(encoded) == frame
+
+
+def _transport_contract() -> tuple[
+    EmployeeIngressMetadata,
+    EmployeeIngressPayload,
+    EmployeeIngressAck,
+]:
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id="ing_channel_contract",
+        normalized_parts=({"kind": "text", "text": "hello"},),
+        attachment_descriptors=(),
+    )
+    digest = hashlib.sha256(payload.canonical_bytes).hexdigest()
+    metadata = EmployeeIngressMetadata(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        tenant_key="tenant_contract",
+        agent_id="agt_channel_contract",
+        bot_principal_id="bot_channel_contract",
+        app_id="cli_channel_contract",
+        channel_generation=7,
+        connection_id="conn_channel_contract",
+        event_id="evt_channel_contract",
+        message_id="om_channel_contract",
+        event_type="im.message.receive_v1",
+        action_identity="",
+        chat_id="oc_channel_contract",
+        thread_root_message_id="",
+        sender_principal_id="ou_sender",
+        received_at="2026-07-13T00:00:00Z",
+        semantic_digest=digest,
+        payload_sha256=payload.payload_sha256,
+        payload_size_bytes=payload.canonical_size_bytes,
+        attachment_count=0,
+        attachment_total_bytes=0,
+    )
+    acceptance = IngressAcceptance(
+        schema_version=1,
+        acceptance_id="acc_channel_contract",
+        envelope_id=payload.envelope_id,
+        dedup_key=metadata.dedup_key,
+        semantic_digest=metadata.semantic_digest,
+        journal_sequence=9,
+        journal_frame_hash="a" * 64,
+        accepted_at="2026-07-13T00:00:00Z",
+    )
+    ack = EmployeeIngressAck(
+        schema_version=1,
+        request_id="req_channel_contract",
+        acceptance=acceptance,
+        agent_id=metadata.agent_id,
+        app_id=metadata.app_id,
+        channel_generation=metadata.channel_generation,
+        connection_id=metadata.connection_id,
+        semantic_digest=metadata.semantic_digest,
+        duplicate=False,
+        acknowledged_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    )
+    return metadata, payload, ack
+
+
+def test_protocol_round_trips_strict_ingress_and_canonical_ack_frames() -> None:
+    metadata, payload, ack = _transport_contract()
+    ingress = ChannelFrame(
+        frame_type=FrameType.INGRESS,
+        agent_id=metadata.agent_id,
+        generation=metadata.channel_generation,
+        sequence=4,
+        payload={
+            "request_id": ack.request_id,
+            "app_id": metadata.app_id,
+            "connection_id": metadata.connection_id,
+            "metadata": metadata.to_dict(),
+            "payload": payload.to_dict(),
+            "action_correlation": None,
+        },
+    )
+    ingress_ack = ChannelFrame(
+        frame_type=FrameType.INGRESS_ACK,
+        agent_id=metadata.agent_id,
+        generation=metadata.channel_generation,
+        sequence=5,
+        payload={
+            "request_id": ack.request_id,
+            "app_id": ack.app_id,
+            "connection_id": ack.connection_id,
+            "ack": ack.to_dict(),
+        },
+    )
+
+    assert decode_frame(encode_frame(ingress)) == ingress
+    assert decode_frame(encode_frame(ingress_ack)) == ingress_ack
+
+
+@pytest.mark.parametrize(
+    ("frame_kind", "mutation"),
+    [
+        ("ingress", lambda value: value["payload"].update({"unknown": True})),
+        ("ingress", lambda value: value["payload"]["metadata"].update({"app_secret": "x"})),
+        ("ingress", lambda value: value.update({"generation": 8})),
+        ("ingress", lambda value: value["payload"].update({"connection_id": "conn_other"})),
+        ("ack", lambda value: value["payload"]["ack"].update({"request_id": "req_other"})),
+        ("ack", lambda value: value.update({"agent_id": "agt_other"})),
+        ("ack", lambda value: value.update({"generation": 8})),
+        ("ack", lambda value: value["payload"]["ack"].update({"connection_id": "conn_other"})),
+    ],
+)
+def test_protocol_rejects_malformed_stale_or_cross_owner_ingress_frames(
+    frame_kind: str,
+    mutation,
+) -> None:
+    metadata, payload, ack = _transport_contract()
+    value = {
+        "v": 1,
+        "type": "INGRESS" if frame_kind == "ingress" else "INGRESS_ACK",
+        "agent_id": metadata.agent_id,
+        "generation": metadata.channel_generation,
+        "sequence": 1,
+        "payload": (
+            {
+                "request_id": ack.request_id,
+                "app_id": metadata.app_id,
+                "connection_id": metadata.connection_id,
+                "metadata": metadata.to_dict(),
+                "payload": payload.to_dict(),
+                "action_correlation": None,
+            }
+            if frame_kind == "ingress"
+            else {
+                "request_id": ack.request_id,
+                "app_id": ack.app_id,
+                "connection_id": ack.connection_id,
+                "ack": ack.to_dict(),
+            }
+        ),
+    }
+    mutation(value)
+
+    with pytest.raises(ProtocolError):
+        decode_frame((json.dumps(value, separators=(",", ":")) + "\n").encode())
 
 
 @pytest.mark.parametrize(
@@ -174,3 +354,79 @@ def test_production_launch_contract_is_fixed_fresh_interpreter() -> None:
     assert contract.pass_fds == (41, 42, 43)
     assert "credential" not in " ".join(contract.argv).lower()
     assert contract.env == {"PYTHONUTF8": "1"}
+
+
+def test_production_worker_main_reaches_only_the_low_level_durable_bridge() -> None:
+    source = inspect.getsource(channel_worker_main)
+
+    assert "run_low_level_employee_channel" in source
+    assert "asyncio.run" not in source
+    assert "create_employee_channel" not in source
+
+
+def test_low_level_entry_hardens_before_credentials_or_sdk_import() -> None:
+    source = inspect.getsource(run_low_level_employee_channel)
+
+    assert source.index("apply_process_hardening()") < source.index(
+        "decode_bootstrap"
+    )
+    assert source.index("apply_process_hardening()") < source.index(
+        "from lark_channel"
+    )
+
+
+def test_card_action_never_self_attests_user_value_as_trusted_correlation() -> None:
+    from lark_channel.event.callback.model.p2_card_action_trigger import (
+        P2CardActionTrigger,
+    )
+
+    event = P2CardActionTrigger(
+        {
+            "schema": "2.0",
+            "header": {
+                "event_id": "external-event-id",
+                "event_type": "card.action.trigger",
+                "create_time": "1783900800000",
+                "app_id": "cli_contract",
+                "tenant_key": "tenant-contract",
+            },
+            "event": {
+                "operator": {"open_id": "ou_sender"},
+                "action": {
+                    "tag": "button",
+                    "value": {"correlation_id": "user-controlled"},
+                },
+                "context": {
+                    "open_message_id": "om_external",
+                    "open_chat_id": "oc_external",
+                },
+            },
+        }
+    )
+
+    metadata, _payload, correlation = _normalize_sdk_ingress(
+        event,
+        kind="card",
+        agent_id="agt_contract",
+        app_id="cli_contract",
+        generation=2,
+        connection_id="conn_contract",
+        tenant_key="tenant-contract",
+        bot_principal_id="bot_contract",
+    )
+
+    assert metadata.action_identity == ""
+    assert correlation is None
+
+    event.header.event_id = ""
+    with pytest.raises(ValueError, match="trusted event identity"):
+        _normalize_sdk_ingress(
+            event,
+            kind="card",
+            agent_id="agt_contract",
+            app_id="cli_contract",
+            generation=2,
+            connection_id="conn_contract",
+            tenant_key="tenant-contract",
+            bot_principal_id="bot_contract",
+        )

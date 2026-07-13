@@ -13,6 +13,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol
 
+from src.autonomous.ingress.models import (
+    EmployeeIngressAck,
+    EmployeeIngressMetadata,
+    EmployeeIngressPayload,
+)
+from src.autonomous.ingress.service import EmployeeIngressService
 from src.autonomous.provisioning.channel_protocol import (
     MAX_FRAME_BYTES,
     ChannelBootstrap,
@@ -117,12 +123,16 @@ class _Runtime:
     event_fd: int
     status: ChannelProcessStatus
     on_event: Callable[[dict[str, Any]], None]
+    tenant_key: str = ""
+    bot_principal_id: str = ""
+    requires_observed_connection: bool = False
     ready: threading.Event = field(default_factory=threading.Event)
     reader: threading.Thread | None = None
     stopping: bool = False
     outbound_sequence: int = 0
     inbound_sequence: int = 0
     pending_sends: dict[str, _PendingSend] = field(default_factory=dict)
+    control_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class EmployeeChannelSupervisor:
@@ -139,6 +149,9 @@ class EmployeeChannelSupervisor:
         launcher: Callable[..., subprocess.Popen[bytes]] | None = None,
         sandbox_attestor: SandboxAttestor | None = None,
         sandbox_prefix: tuple[str, ...] | None = None,
+        ingress_service: EmployeeIngressService | None = None,
+        ingress_binding_resolver: Callable[[str, str], tuple[str, str]] | None = None,
+        ingress_ack_timeout: float = 1.5,
     ) -> None:
         self._secret_resolver = secret_resolver
         self._ready_timeout = ready_timeout
@@ -149,6 +162,18 @@ class EmployeeChannelSupervisor:
             if worker_path is not None
             else Path(__file__).resolve().parents[1] / "provisioning" / "channel_worker.py"
         ).resolve()
+        self._production_worker = worker_path is None
+        if (ingress_service is None) != (ingress_binding_resolver is None):
+            raise ValueError("durable ingress service and binding resolver must be configured together")
+        if (
+            isinstance(ingress_ack_timeout, bool)
+            or not isinstance(ingress_ack_timeout, (int, float))
+            or not 0 < float(ingress_ack_timeout) < 3.0
+        ):
+            raise ValueError("invalid employee ingress ACK timeout")
+        self._ingress_service = ingress_service
+        self._ingress_binding_resolver = ingress_binding_resolver
+        self._ingress_ack_timeout = float(ingress_ack_timeout)
         self._launcher = launcher or subprocess.Popen
         self._sandbox_attestor = sandbox_attestor or attest_process_sandbox
         self._sandbox_prefix = (
@@ -238,6 +263,21 @@ class EmployeeChannelSupervisor:
     ) -> ChannelProcessStatus:
         """Launch, attest, bootstrap, and await READY for one employee."""
         self._validate_start(agent_id, app_id, credential_ref, generation, on_event)
+        if self._production_worker and self._ingress_service is None:
+            raise RuntimeError("durable employee ingress is not configured")
+        tenant_key = "tenant-test-unbound"
+        bot_principal_id = "bot_test_unbound"
+        if self._ingress_binding_resolver is not None:
+            tenant_key, bot_principal_id = self._ingress_binding_resolver(
+                agent_id, app_id
+            )
+            if (
+                not isinstance(tenant_key, str)
+                or not tenant_key
+                or not isinstance(bot_principal_id, str)
+                or not bot_principal_id.startswith("bot_")
+            ):
+                raise ValueError("invalid durable employee ingress binding")
         with self._lock:
             if self._closed:
                 raise RuntimeError("employee Channel supervisor is closed")
@@ -288,7 +328,16 @@ class EmployeeChannelSupervisor:
             pid=process.pid,
             state=ChannelProcessState.STARTING,
         )
-        runtime = _Runtime(process, control_w, event_r, status, on_event)
+        runtime = _Runtime(
+            process,
+            control_w,
+            event_r,
+            status,
+            on_event,
+            tenant_key=tenant_key,
+            bot_principal_id=bot_principal_id,
+            requires_observed_connection=self._production_worker,
+        )
         with self._lock:
             self._runtimes[agent_id] = runtime
             self._generation_high_watermark[agent_id] = generation
@@ -306,7 +355,17 @@ class EmployeeChannelSupervisor:
 
         try:
             secret = self._secret_resolver(credential_ref, agent_id, app_id)
-            bootstrap = encode_bootstrap(ChannelBootstrap(agent_id, app_id, generation, secret))
+            bootstrap = encode_bootstrap(
+                ChannelBootstrap(
+                    agent_id,
+                    app_id,
+                    generation,
+                    secret,
+                    tenant_key,
+                    bot_principal_id,
+                    self._ingress_ack_timeout,
+                )
+            )
         except Exception:
             _close_fd(bootstrap_w)
             self._fail_and_reap(runtime, "credential-resolution-failed")
@@ -526,6 +585,17 @@ class EmployeeChannelSupervisor:
                 with self._lock:
                     runtime.status = replace(runtime.status, error_code="invalid-ready")
                 return
+            connection = frame.payload.get("connection")
+            if runtime.requires_observed_connection and (
+                not isinstance(connection, dict)
+                or connection.get("observed") is not True
+                or connection.get("secure") is not True
+            ):
+                with self._lock:
+                    runtime.status = replace(
+                        runtime.status, error_code="unobserved-connection"
+                    )
+                return
             metadata = {key: value for key, value in frame.payload.items() if key != "identity"}
             with self._lock:
                 runtime.status = replace(
@@ -538,7 +608,18 @@ class EmployeeChannelSupervisor:
                 )
             runtime.ready.set()
             return
-        if frame.frame_type is FrameType.EVENT:
+        if frame.frame_type is FrameType.INGRESS:
+            self._accept_ingress(runtime, frame)
+        elif frame.frame_type is FrameType.EVENT:
+            if frame.payload.get("event") == "reconnecting":
+                with self._lock:
+                    runtime.status = replace(
+                        runtime.status,
+                        state=ChannelProcessState.STARTING,
+                        ready_at=None,
+                        error_code="channel-reconnecting",
+                    )
+                    runtime.ready.clear()
             try:
                 runtime.on_event(dict(frame.payload))
             except Exception:
@@ -588,24 +669,75 @@ class EmployeeChannelSupervisor:
                     ready_metadata={**runtime.status.ready_metadata, "health": dict(frame.payload)},
                 )
 
-    def _send_control(self, runtime: _Runtime, frame_type: FrameType, payload: dict[str, Any]) -> bool:
-        if runtime.control_fd < 0:
-            return False
-        runtime.outbound_sequence += 1
-        raw = encode_frame(
-            ChannelFrame(
-                frame_type,
-                runtime.status.agent_id,
-                runtime.status.generation,
-                runtime.outbound_sequence,
-                payload,
-            )
-        )
+    def _accept_ingress(self, runtime: _Runtime, frame: ChannelFrame) -> None:
+        service = self._ingress_service
         try:
-            _write_all(runtime.control_fd, raw)
-        except OSError:
-            return False
-        return True
+            metadata = EmployeeIngressMetadata.from_dict(frame.payload["metadata"])
+            payload = EmployeeIngressPayload.from_dict(frame.payload["payload"])
+            with self._lock:
+                current = self._runtimes.get(runtime.status.agent_id)
+                valid = (
+                    service is not None
+                    and current is runtime
+                    and runtime.status.state is ChannelProcessState.READY
+                    and metadata.tenant_key == runtime.tenant_key
+                    and metadata.agent_id == runtime.status.agent_id
+                    and metadata.bot_principal_id == runtime.bot_principal_id
+                    and metadata.app_id == runtime.status.app_id
+                    and metadata.channel_generation == runtime.status.generation
+                    and metadata.connection_id
+                    == runtime.status.ready_metadata.get("connection_id")
+                    and frame.payload["app_id"] == runtime.status.app_id
+                    and frame.payload["connection_id"] == metadata.connection_id
+                )
+            if not valid or service is None:
+                raise ValueError("employee ingress runtime binding mismatch")
+            ack = service.accept(
+                metadata,
+                payload,
+                request_id=frame.payload["request_id"],
+                action_correlation=frame.payload["action_correlation"],
+            )
+            if not isinstance(ack, EmployeeIngressAck):
+                raise TypeError("employee ingress service returned invalid ACK")
+            sent = self._send_control(
+                runtime,
+                FrameType.INGRESS_ACK,
+                {
+                    "request_id": ack.request_id,
+                    "app_id": ack.app_id,
+                    "connection_id": ack.connection_id,
+                    "ack": ack.to_dict(),
+                },
+            )
+            if not sent:
+                raise BrokenPipeError("employee ingress ACK pipe closed")
+        except Exception:
+            with self._lock:
+                runtime.status = replace(
+                    runtime.status,
+                    error_code="ingress-not-acknowledged",
+                )
+
+    def _send_control(self, runtime: _Runtime, frame_type: FrameType, payload: dict[str, Any]) -> bool:
+        with runtime.control_lock:
+            if runtime.control_fd < 0:
+                return False
+            runtime.outbound_sequence += 1
+            raw = encode_frame(
+                ChannelFrame(
+                    frame_type,
+                    runtime.status.agent_id,
+                    runtime.status.generation,
+                    runtime.outbound_sequence,
+                    payload,
+                )
+            )
+            try:
+                _write_all(runtime.control_fd, raw)
+            except OSError:
+                return False
+            return True
 
     def _fail_and_reap(self, runtime: _Runtime, error_code: str) -> None:
         runtime.stopping = True

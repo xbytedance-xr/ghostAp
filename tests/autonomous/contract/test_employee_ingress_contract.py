@@ -465,6 +465,8 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         "EI-PLATFORM-MESSAGE-01",
         "EI-PLATFORM-CARD-01",
         "EI-IPC-01",
+        "EI-BRIDGE-MESSAGE-01",
+        "EI-BRIDGE-CARD-01",
     )
     assert all(gate.evidence_level == "chaos_security" for gate in manifest.gates)
     assert manifest.gate("EI-PLATFORM-MESSAGE-01").selector.endswith(
@@ -482,6 +484,22 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
     assert ipc.artifact_kind == "employee_ingress_ipc_harness"
     assert ipc.artifact_profile_id != CAPABILITY_PROFILE_ID
     assert Path(ipc.selector.split("::", 1)[0]).is_file()
+    for gate_id, selector_name in (
+        (
+            "EI-BRIDGE-MESSAGE-01",
+            "test_message_wire_response_waits_for_durable_parent_ack",
+        ),
+        (
+            "EI-BRIDGE-CARD-01",
+            "test_card_action_wire_response_waits_for_durable_parent_ack",
+        ),
+    ):
+        gate = manifest.gate(gate_id)
+        assert gate.selector.endswith(f"::{selector_name}")
+        assert gate.environment == "local_channel_wire_harness"
+        assert gate.artifact_kind == "employee_channel_bridge"
+        assert gate.sdk_wheel_sha256 == LOCKED_LARK_CHANNEL_WHEEL_SHA256
+        assert Path(gate.selector.split("::", 1)[0]).is_file()
 
 
 def test_phase3_manifest_rejects_duplicate_ids(tmp_path: Path) -> None:
@@ -508,6 +526,8 @@ def test_phase3_evidence_binds_exact_selector_commit_artifacts_and_summary() -> 
     results = (
         _platform_result("EI-PLATFORM-MESSAGE-01"),
         _platform_result("EI-PLATFORM-CARD-01"),
+        _platform_result("EI-BRIDGE-MESSAGE-01"),
+        _platform_result("EI-BRIDGE-CARD-01"),
     )
 
     evaluation = manifest.evaluate(
@@ -521,6 +541,8 @@ def test_phase3_evidence_binds_exact_selector_commit_artifacts_and_summary() -> 
     assert evaluation.passed == (
         "EI-PLATFORM-MESSAGE-01",
         "EI-PLATFORM-CARD-01",
+        "EI-BRIDGE-MESSAGE-01",
+        "EI-BRIDGE-CARD-01",
     )
     assert evaluation.pending == ("EI-IPC-01",)
 

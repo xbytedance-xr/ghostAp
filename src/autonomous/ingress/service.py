@@ -15,7 +15,7 @@ from ..journal.blob_store import (
     BlobRef,
     BlobStore,
 )
-from ..journal.frame import JournalEvent
+from ..journal.frame import GENESIS_HASH, JournalEvent
 from ..journal.writer import CommitResult, CommitState, JournalWriter
 from .models import (
     EmployeeIngressAck,
@@ -310,7 +310,11 @@ class EmployeeIngressService:
         with self._mutex:
             self._ensure_open_unlocked()
             fresh = IngressProjectionState()
+            anchor = self._writer.anchor.read()
+            anchored_frame_hash = GENESIS_HASH
             for frame in self._writer.replay():
+                if frame.sequence > anchor.sequence:
+                    break
                 for event in frame.events:
                     if is_ingress_event(event.event_type):
                         reduce_ingress_event(
@@ -321,6 +325,11 @@ class EmployeeIngressService:
                         )
                 fresh.cursor_sequence = frame.sequence
                 fresh.cursor_hash = frame.frame_hash
+                anchored_frame_hash = frame.frame_hash
+            if anchored_frame_hash != anchor.frame_hash:
+                raise IngressWriteDisabledError(
+                    "ingress projection cannot verify the Journal anchor"
+                )
             for record in fresh.by_acceptance_id.values():
                 if record.terminal or record.payload_tombstoned:
                     continue
@@ -343,9 +352,9 @@ class EmployeeIngressService:
             raise IngressClosedError("employee ingress service is closed")
 
     def _synchronize_projection_unlocked(self) -> None:
-        last = self._writer.get_last_frame()
-        sequence = 0 if last is None else last.sequence
-        frame_hash = "" if last is None else last.frame_hash
+        anchor = self._writer.anchor.read()
+        sequence = anchor.sequence
+        frame_hash = "" if anchor.sequence == 0 else anchor.frame_hash
         if (self._state.cursor_sequence, self._state.cursor_hash) != (
             sequence,
             frame_hash,

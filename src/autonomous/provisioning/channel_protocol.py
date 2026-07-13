@@ -7,10 +7,26 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
+from src.autonomous.ingress.models import (
+    EmployeeIngressAck,
+    EmployeeIngressMetadata,
+    EmployeeIngressPayload,
+)
+
 PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 1024 * 1024
 _FRAME_KEYS = {"v", "type", "agent_id", "generation", "sequence", "payload"}
-_BOOTSTRAP_KEYS = {"v", "type", "agent_id", "app_id", "generation", "app_secret"}
+_BOOTSTRAP_KEYS = {
+    "v",
+    "type",
+    "agent_id",
+    "app_id",
+    "generation",
+    "app_secret",
+    "tenant_key",
+    "bot_principal_id",
+    "ack_timeout_seconds",
+}
 _FORBIDDEN_IPC_KEYS = {
     "app_secret",
     "credential_ref",
@@ -34,6 +50,8 @@ class FrameType(str, Enum):
     ERROR = "ERROR"
     STOP = "STOP"
     SEND = "SEND"
+    INGRESS = "INGRESS"
+    INGRESS_ACK = "INGRESS_ACK"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +69,9 @@ class ChannelBootstrap:
     app_id: str
     generation: int
     app_secret: str
+    tenant_key: str
+    bot_principal_id: str
+    ack_timeout_seconds: float
 
 
 def encode_frame(frame: ChannelFrame) -> bytes:
@@ -61,6 +82,7 @@ def encode_frame(frame: ChannelFrame) -> bytes:
     if not isinstance(frame.payload, dict):
         raise ProtocolError("payload must be an object")
     _reject_secret_fields(frame.payload)
+    _validate_typed_payload(frame)
     return _encode(
         {
             "v": PROTOCOL_VERSION,
@@ -94,7 +116,9 @@ def decode_frame(raw: bytes) -> ChannelFrame:
     if not isinstance(payload, dict):
         raise ProtocolError("payload must be an object")
     _reject_secret_fields(payload)
-    return ChannelFrame(frame_type, agent_id, generation, sequence, payload)
+    frame = ChannelFrame(frame_type, agent_id, generation, sequence, payload)
+    _validate_typed_payload(frame)
+    return frame
 
 
 def encode_bootstrap(bootstrap: ChannelBootstrap) -> bytes:
@@ -104,6 +128,7 @@ def encode_bootstrap(bootstrap: ChannelBootstrap) -> bytes:
         raise ProtocolError("invalid app_id")
     if not isinstance(bootstrap.app_secret, str) or not bootstrap.app_secret:
         raise ProtocolError("invalid app_secret")
+    _validate_bootstrap_ingress(bootstrap)
     return _encode(
         {
             "v": PROTOCOL_VERSION,
@@ -112,6 +137,9 @@ def encode_bootstrap(bootstrap: ChannelBootstrap) -> bytes:
             "app_id": bootstrap.app_id,
             "generation": bootstrap.generation,
             "app_secret": bootstrap.app_secret,
+            "tenant_key": bootstrap.tenant_key,
+            "bot_principal_id": bootstrap.bot_principal_id,
+            "ack_timeout_seconds": bootstrap.ack_timeout_seconds,
         }
     )
 
@@ -128,12 +156,16 @@ def decode_bootstrap(raw: bytes) -> ChannelBootstrap:
         app_id=value.get("app_id"),
         generation=value.get("generation"),
         app_secret=value.get("app_secret"),
+        tenant_key=value.get("tenant_key"),
+        bot_principal_id=value.get("bot_principal_id"),
+        ack_timeout_seconds=value.get("ack_timeout_seconds"),
     )
     _validate_identity(bootstrap.agent_id, bootstrap.generation)
     if not isinstance(bootstrap.app_id, str) or not bootstrap.app_id:
         raise ProtocolError("invalid app_id")
     if not isinstance(bootstrap.app_secret, str) or not bootstrap.app_secret:
         raise ProtocolError("invalid app_secret")
+    _validate_bootstrap_ingress(bootstrap)
     return bootstrap
 
 
@@ -168,6 +200,23 @@ def _validate_identity(agent_id: Any, generation: Any) -> None:
         raise ProtocolError("invalid generation")
 
 
+def _validate_bootstrap_ingress(bootstrap: ChannelBootstrap) -> None:
+    if not isinstance(bootstrap.tenant_key, str) or not bootstrap.tenant_key:
+        raise ProtocolError("invalid tenant_key")
+    if (
+        not isinstance(bootstrap.bot_principal_id, str)
+        or not bootstrap.bot_principal_id.startswith("bot_")
+    ):
+        raise ProtocolError("invalid bot_principal_id")
+    timeout = bootstrap.ack_timeout_seconds
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not 0 < float(timeout) < 3.0
+    ):
+        raise ProtocolError("invalid ack_timeout_seconds")
+
+
 def _reject_secret_fields(value: Any) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
@@ -177,3 +226,63 @@ def _reject_secret_fields(value: Any) -> None:
     elif isinstance(value, list):
         for child in value:
             _reject_secret_fields(child)
+
+
+def _validate_typed_payload(frame: ChannelFrame) -> None:
+    try:
+        if frame.frame_type is FrameType.INGRESS:
+            _validate_ingress_payload(frame)
+        elif frame.frame_type is FrameType.INGRESS_ACK:
+            _validate_ingress_ack_payload(frame)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ProtocolError("invalid employee ingress frame") from exc
+
+
+def _validate_ingress_payload(frame: ChannelFrame) -> None:
+    required = {
+        "request_id",
+        "app_id",
+        "connection_id",
+        "metadata",
+        "payload",
+        "action_correlation",
+    }
+    if set(frame.payload) != required:
+        raise ValueError("invalid ingress payload fields")
+    request_id = frame.payload["request_id"]
+    if not isinstance(request_id, str) or not request_id.startswith("req_"):
+        raise ValueError("invalid ingress request_id")
+    metadata = EmployeeIngressMetadata.from_dict(frame.payload["metadata"])
+    payload = EmployeeIngressPayload.from_dict(frame.payload["payload"])
+    if (
+        metadata.agent_id != frame.agent_id
+        or metadata.channel_generation != frame.generation
+        or metadata.app_id != frame.payload["app_id"]
+        or metadata.connection_id != frame.payload["connection_id"]
+        or metadata.envelope_id != payload.envelope_id
+        or metadata.payload_sha256 != payload.payload_sha256
+        or metadata.payload_size_bytes != payload.canonical_size_bytes
+        or metadata.attachment_count != len(payload.attachment_descriptors)
+        or metadata.attachment_total_bytes != payload.attachment_total_bytes
+    ):
+        raise ValueError("ingress transport binding mismatch")
+    correlation = frame.payload["action_correlation"]
+    if correlation is not None and (not isinstance(correlation, str) or not correlation):
+        raise ValueError("invalid action correlation")
+    if not metadata.event_id and correlation != metadata.action_identity:
+        raise ValueError("fallback action correlation mismatch")
+
+
+def _validate_ingress_ack_payload(frame: ChannelFrame) -> None:
+    required = {"request_id", "app_id", "connection_id", "ack"}
+    if set(frame.payload) != required:
+        raise ValueError("invalid ingress ACK fields")
+    ack = EmployeeIngressAck.from_dict(frame.payload["ack"])
+    if (
+        ack.request_id != frame.payload["request_id"]
+        or ack.agent_id != frame.agent_id
+        or ack.app_id != frame.payload["app_id"]
+        or ack.channel_generation != frame.generation
+        or ack.connection_id != frame.payload["connection_id"]
+    ):
+        raise ValueError("ingress ACK transport binding mismatch")

@@ -147,6 +147,11 @@ class Phase3ImplementationGate:
                 raise ValueError(f"invalid SDK capability profile for {self.id}")
             if wheel != LOCKED_LARK_CHANNEL_WHEEL_SHA256:
                 raise ValueError(f"invalid SDK wheel identity for {self.id}")
+        elif self.artifact_kind == "employee_channel_bridge":
+            if self.artifact_profile_id != "employee-channel-bridge-v1":
+                raise ValueError(f"invalid Channel bridge profile for {self.id}")
+            if wheel != LOCKED_LARK_CHANNEL_WHEEL_SHA256:
+                raise ValueError(f"invalid SDK wheel identity for {self.id}")
         elif self.artifact_kind == "employee_ingress_ipc_harness":
             if wheel is not None or self.artifact_profile_id == CAPABILITY_PROFILE_ID:
                 raise ValueError(f"IPC evidence cannot use SDK capability identity for {self.id}")
@@ -407,7 +412,10 @@ class Phase3ImplementationManifest:
                 or result.sdk_wheel_sha256 != gate.sdk_wheel_sha256
             ):
                 raise ValueError(f"artifact profile mismatch for {gate.id}")
-            if gate.artifact_kind == "employee_channel_sdk_capability":
+            if gate.artifact_kind in {
+                "employee_channel_sdk_capability",
+                "employee_channel_bridge",
+            }:
                 if (
                     result.sdk_capability_artifact_sha256
                     != expected_sdk_capability_artifact_sha256
