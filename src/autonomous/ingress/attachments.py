@@ -80,6 +80,7 @@ _ZIP_MIMES = frozenset(
 _EVENT_TYPES = frozenset(
     {
         "employee.ingress.attachment_staging_started",
+        "employee.ingress.attachment_staging_parent_bound",
         "employee.ingress.attachment_staging_completed",
         "employee.ingress.attachment_staging_failed",
         "employee.ingress.attachment_cleanup_started",
@@ -307,10 +308,11 @@ class AttachmentStagingRecord:
     relative_paths: tuple[str, ...]
     temporary_paths: tuple[str, ...]
     content_hashes: tuple[str, ...]
+    parent_device: int | None = None
+    parent_inode: int | None = None
     status: str = "started"
     failure_reason: str = ""
     cleanup_state: str = "none"
-    trusted_paths: tuple[Path, ...] = ()
 
 
 @dataclass(slots=True)
@@ -469,12 +471,24 @@ class AttachmentStagingService:
             record = self._state.by_staging_id[staging_id]
             self._call_fault("after_started", record)
             try:
-                self._prepare_parent_unlocked(record)
+                parent_device, parent_inode = self._prepare_parent_unlocked(record)
+                parent_bound = JournalEvent(
+                    event_type="employee.ingress.attachment_staging_parent_bound",
+                    aggregate_id=aggregate_id,
+                    payload={
+                        "staging_id": staging_id,
+                        "parent_device": parent_device,
+                        "parent_inode": parent_inode,
+                    },
+                )
+                self._commit_unlocked(aggregate_id, parent_bound)
+                record = self._state.by_staging_id[staging_id]
                 downloader = self._open_employee_downloader(request)
                 for index, descriptor in enumerate(request.descriptors):
                     downloaded = self._download_with_deadline(downloader, descriptor)
                     self._validate_download(descriptor, downloaded)
                     self._publish_unlocked(
+                        record=record,
                         temporary=record.temporary_paths[index],
                         final=record.relative_paths[index],
                         content=downloaded.content,
@@ -507,7 +521,7 @@ class AttachmentStagingService:
                 return ()
             paths: list[Path] = []
             for relative, expected_hash in zip(record.relative_paths, record.content_hashes):
-                content = self._read_trusted_unlocked(relative)
+                content = self._read_trusted_unlocked(relative, record)
                 if hashlib.sha256(content).hexdigest() != expected_hash:
                     raise AttachmentStorageError("trusted attachment hash is invalid")
                 paths.append(self._root / relative)
@@ -530,7 +544,11 @@ class AttachmentStagingService:
             recovered = 0
             for staging_id in tuple(sorted(self._state.by_staging_id)):
                 record = self._state.by_staging_id[staging_id]
-                needs_recovery = record.status == "started" or record.cleanup_state == "started"
+                needs_recovery = (
+                    record.status == "started"
+                    or record.cleanup_state == "started"
+                    or (record.status == "failed" and record.cleanup_state == "none")
+                )
                 if not needs_recovery:
                     continue
                 if record.status == "started":
@@ -618,12 +636,26 @@ class AttachmentStagingService:
         if not _mime_matches(declared, detected):
             raise AttachmentValidationError("attachment MIME does not match magic")
 
-    def _prepare_parent_unlocked(self, record: AttachmentStagingRecord) -> None:
+    def _prepare_parent_unlocked(
+        self,
+        record: AttachmentStagingRecord,
+    ) -> tuple[int, int]:
         parts = _relative_parts(record.relative_paths[0])[:-1]
         fd = self._open_directory_unlocked(parts, create=True)
-        os.close(fd)
+        try:
+            parent_stat = os.fstat(fd)
+            return parent_stat.st_dev, parent_stat.st_ino
+        finally:
+            os.close(fd)
 
-    def _publish_unlocked(self, *, temporary: str, final: str, content: bytes) -> None:
+    def _publish_unlocked(
+        self,
+        *,
+        record: AttachmentStagingRecord,
+        temporary: str,
+        final: str,
+        content: bytes,
+    ) -> None:
         temp_parts = _relative_parts(temporary)
         final_parts = _relative_parts(final)
         if temp_parts[:-1] != final_parts[:-1]:
@@ -633,6 +665,7 @@ class AttachmentStagingService:
         final_name = final_parts[-1]
         descriptor: int | None = None
         try:
+            self._verify_parent_identity(parent_fd, record)
             _require_absent_leaf(parent_fd, final_name)
             _require_absent_leaf(parent_fd, temp_name)
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -654,14 +687,23 @@ class AttachmentStagingService:
                 os.close(descriptor)
             os.close(parent_fd)
 
-    def _read_trusted_unlocked(self, relative: str) -> bytes:
+    def _read_trusted_unlocked(
+        self,
+        relative: str,
+        record: AttachmentStagingRecord,
+    ) -> bytes:
         parts = _relative_parts(relative)
         parent_fd = self._open_directory_unlocked(parts[:-1], create=False)
         fd: int | None = None
         try:
+            self._verify_parent_identity(parent_fd, record)
             fd = os.open(parts[-1], os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
             file_stat = os.fstat(fd)
-            if not stat.S_ISREG(file_stat.st_mode) or stat.S_IMODE(file_stat.st_mode) != 0o600:
+            if (
+                not stat.S_ISREG(file_stat.st_mode)
+                or stat.S_IMODE(file_stat.st_mode) != 0o600
+                or file_stat.st_uid != os.getuid()
+            ):
                 raise AttachmentStorageError("trusted attachment leaf is invalid")
             with os.fdopen(fd, "rb") as stream:
                 fd = None
@@ -699,10 +741,14 @@ class AttachmentStagingService:
         self._commit_unlocked(record.aggregate_id, completed)
 
     def _delete_owned_paths_unlocked(self, record: AttachmentStagingRecord) -> None:
+        if record.parent_device is None or record.parent_inode is None:
+            # Publication is unreachable until this binding is anchored.
+            return
         for relative in (*record.temporary_paths, *record.relative_paths):
             parts = _relative_parts(relative)
             parent_fd = self._open_directory_unlocked(parts[:-1], create=False)
             try:
+                self._verify_parent_identity(parent_fd, record)
                 try:
                     leaf_stat = os.stat(
                         parts[-1],
@@ -721,6 +767,20 @@ class AttachmentStagingService:
                 raise AttachmentStorageError("attachment cleanup failed") from None
             finally:
                 os.close(parent_fd)
+
+    @staticmethod
+    def _verify_parent_identity(
+        parent_fd: int,
+        record: AttachmentStagingRecord,
+    ) -> None:
+        if record.parent_device is None or record.parent_inode is None:
+            raise AttachmentStorageError("attachment parent identity is not bound")
+        parent_stat = os.fstat(parent_fd)
+        if (parent_stat.st_dev, parent_stat.st_ino) != (
+            record.parent_device,
+            record.parent_inode,
+        ):
+            raise AttachmentStorageError("attachment parent identity changed")
 
     def _fail_and_cleanup_unlocked(self, staging_id: str, error: AttachmentError) -> None:
         record = self._state.by_staging_id[staging_id]
@@ -807,7 +867,7 @@ class AttachmentStagingService:
                 break
             for event in frame.events:
                 if event.event_type in _EVENT_TYPES:
-                    _apply_event(fresh, event, self._root)
+                    _apply_event(fresh, event)
             fresh.cursor_sequence = frame.sequence
             fresh.cursor_hash = frame.frame_hash
             anchored_hash = frame.frame_hash
@@ -828,7 +888,7 @@ class AttachmentStagingService:
                 raise AttachmentStateError("attachment lifecycle was not anchored")
             for committed in result.frame.events:
                 if committed.event_type in _EVENT_TYPES:
-                    _apply_event(self._state, committed, self._root)
+                    _apply_event(self._state, committed)
             self._state.cursor_sequence = result.frame.sequence
             self._state.cursor_hash = result.frame.frame_hash
 
@@ -845,7 +905,7 @@ def _failure_reason(error: AttachmentError) -> str:
     return "download"
 
 
-def _apply_event(state: AttachmentStagingState, event: JournalEvent, root: Path) -> None:
+def _apply_event(state: AttachmentStagingState, event: JournalEvent) -> None:
     payload = event.payload
     if event.event_type == "employee.ingress.attachment_staging_started":
         fields = {
@@ -897,6 +957,40 @@ def _apply_event(state: AttachmentStagingState, event: JournalEvent, root: Path)
         state.by_staging_id[staging_id] = record
         state.by_acceptance_id[acceptance_id] = staging_id
         return
+    if event.event_type == "employee.ingress.attachment_staging_parent_bound":
+        if set(payload) != {"staging_id", "parent_device", "parent_inode"}:
+            raise AttachmentStateError("invalid attachment parent binding")
+        staging_id = payload.get("staging_id")
+        if not isinstance(staging_id, str) or staging_id not in state.by_staging_id:
+            raise AttachmentStateError(
+                "attachment parent references unknown staging"
+            )
+        record = state.by_staging_id[staging_id]
+        if event.aggregate_id != record.aggregate_id:
+            raise AttachmentStateError("attachment parent aggregate mismatch")
+        parent_device = payload.get("parent_device")
+        parent_inode = payload.get("parent_inode")
+        if (
+            isinstance(parent_device, bool)
+            or not isinstance(parent_device, int)
+            or parent_device < 0
+            or isinstance(parent_inode, bool)
+            or not isinstance(parent_inode, int)
+            or parent_inode <= 0
+        ):
+            raise AttachmentStateError("attachment parent identity is invalid")
+        if (
+            record.status != "started"
+            or record.parent_device is not None
+            or record.parent_inode is not None
+        ):
+            raise AttachmentStateError("attachment parent is already bound")
+        state.by_staging_id[staging_id] = replace(
+            record,
+            parent_device=parent_device,
+            parent_inode=parent_inode,
+        )
+        return
     if set(payload) not in ({"staging_id"}, {"staging_id", "reason"}):
         raise AttachmentStateError("invalid attachment lifecycle event")
     staging_id = payload.get("staging_id")
@@ -906,26 +1000,26 @@ def _apply_event(state: AttachmentStagingState, event: JournalEvent, root: Path)
     if event.aggregate_id != record.aggregate_id:
         raise AttachmentStateError("attachment lifecycle aggregate mismatch")
     if event.event_type == "employee.ingress.attachment_staging_completed":
-        if record.status != "started":
+        if (
+            record.status != "started"
+            or record.parent_device is None
+            or record.parent_inode is None
+        ):
             raise AttachmentStateError("attachment staging cannot complete")
-        record = replace(
-            record,
-            status="completed",
-            trusted_paths=tuple(root / relative for relative in record.relative_paths),
-        )
+        record = replace(record, status="completed")
     elif event.event_type == "employee.ingress.attachment_staging_failed":
         if record.status != "started" or set(payload) != {"staging_id", "reason"}:
             raise AttachmentStateError("attachment staging cannot fail")
         reason = _strict_string(payload["reason"], "failure reason", maximum=64)
-        record = replace(record, status="failed", failure_reason=reason, trusted_paths=())
+        record = replace(record, status="failed", failure_reason=reason)
     elif event.event_type == "employee.ingress.attachment_cleanup_started":
         if record.cleanup_state != "none":
             raise AttachmentStateError("attachment cleanup already started")
-        record = replace(record, cleanup_state="started", trusted_paths=())
+        record = replace(record, cleanup_state="started")
     elif event.event_type == "employee.ingress.attachment_cleanup_completed":
         if record.cleanup_state != "started":
             raise AttachmentStateError("attachment cleanup was not started")
-        record = replace(record, cleanup_state="completed", trusted_paths=())
+        record = replace(record, cleanup_state="completed")
     state.by_staging_id[staging_id] = record
 
 

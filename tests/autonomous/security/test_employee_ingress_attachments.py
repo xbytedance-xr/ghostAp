@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
+import os
 import stat
 import threading
 import time
@@ -333,7 +334,13 @@ def test_download_timeout_fails_terminally_and_cleans_server_paths(api, tmp_path
     assert record.cleanup_state == "completed"
     assert service.trusted_paths(record.staging_id) == ()
     assert list((tmp_path / "staging").rglob("*.bin")) == []
-    assert len(tuple(writer.replay())) == 4
+    assert [frame.events[0].event_type for frame in writer.replay()] == [
+        "employee.ingress.attachment_staging_started",
+        "employee.ingress.attachment_staging_parent_bound",
+        "employee.ingress.attachment_staging_failed",
+        "employee.ingress.attachment_cleanup_started",
+        "employee.ingress.attachment_cleanup_completed",
+    ]
     service.close()
     writer.close()
 
@@ -572,6 +579,150 @@ def test_crash_after_publish_leaves_owned_paths_for_restart_recovery(api, tmp_pa
     recovered_writer.close()
 
 
+def test_restart_recovers_failure_anchored_before_cleanup_started(api, tmp_path) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+    names = iter(("published", "rejected"))
+    first = _descriptor(api)
+    second = _descriptor(
+        api,
+        PDF,
+        resource_type="file",
+        resource_id="file_v2_resource_2",
+        declared_mime_type="application/pdf",
+        declared_sha256="0" * 64,
+        user_filename="document.pdf",
+    )
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            ),
+            "file_v2_resource_2": api.DownloadedAttachment(
+                content=PDF,
+                file_name="document.pdf",
+            ),
+        },
+        writer=writer,
+        name_factory=lambda: next(names),
+    )
+
+    with (
+        patch.object(service, "_cleanup_unlocked", side_effect=_Crash),
+        pytest.raises(_Crash),
+    ):
+        service.stage(_request(api, (first, second)))
+
+    crashed_record = next(iter(service.state.by_staging_id.values()))
+    assert crashed_record.status == "failed"
+    assert crashed_record.cleanup_state == "none"
+    assert len(list((tmp_path / "staging").rglob("*.bin"))) == 1
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    assert recovered.recover() == 1
+    record = recovered.state.by_staging_id[crashed_record.staging_id]
+    assert record.status == "failed"
+    assert record.cleanup_state == "completed"
+    assert list((tmp_path / "staging").rglob("*.bin")) == []
+    recovered.close()
+    recovered_writer.close()
+
+
+def test_recover_does_not_cleanup_successfully_completed_staging(api, tmp_path) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            )
+        },
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+
+    assert service.recover() == 0
+    assert service.state.by_staging_id[completed.staging_id].cleanup_state == "none"
+    assert len(service.trusted_paths(completed.staging_id)) == 1
+    service.close()
+    writer.close()
+
+
+def test_stage_records_and_replayed_projection_never_expose_unverified_paths(
+    api,
+    tmp_path,
+) -> None:
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            )
+        },
+        writer=writer,
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+
+    assert not hasattr(completed, "trusted_paths")
+    assert not hasattr(
+        service.state.by_staging_id[completed.staging_id],
+        "trusted_paths",
+    )
+    verified = service.trusted_paths(completed.staging_id)
+    assert len(verified) == 1
+    assert verified[0].is_absolute()
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    projected = recovered.state.by_staging_id[completed.staging_id]
+    assert not hasattr(projected, "trusted_paths")
+    replay_verified = recovered.trusted_paths(projected.staging_id)
+    assert replay_verified == verified
+    recovered.close()
+    recovered_writer.close()
+
+
 def test_restart_recovers_cleanup_interrupted_after_durable_start(api, tmp_path) -> None:
     anchor = FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
@@ -657,6 +808,69 @@ def test_cleanup_does_not_claim_completion_after_parent_symlink_replacement(
     writer.close()
 
 
+def test_cleanup_rejects_same_uid_ordinary_parent_directory_substitution(
+    api,
+    tmp_path,
+) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            )
+        },
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    verified = service.trusted_paths(completed.staging_id)
+    original_parent = verified[0].parent
+    displaced = tmp_path / "displaced-envelope"
+    original_parent.rename(displaced)
+    original_parent.mkdir(mode=0o700)
+
+    with pytest.raises(api.AttachmentStorageError, match="parent identity"):
+        service.cleanup(completed.staging_id)
+
+    assert service.state.by_staging_id[completed.staging_id].cleanup_state == "started"
+    assert len(list(displaced.glob("*.bin"))) == 1
+    assert list(original_parent.iterdir()) == []
+    service.close()
+    writer.close()
+
+
+def test_trusted_path_export_rejects_wrong_owner_regular_leaf(api, tmp_path) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            )
+        },
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    real_fstat = os.fstat
+
+    def wrong_leaf_owner(descriptor: int):
+        current = real_fstat(descriptor)
+        if not stat.S_ISREG(current.st_mode):
+            return current
+        values = list(current)
+        values[4] = current.st_uid + 1
+        return os.stat_result(values)
+
+    with (
+        patch.object(api.os, "fstat", side_effect=wrong_leaf_owner),
+        pytest.raises(api.AttachmentStorageError, match="trusted"),
+    ):
+        service.trusted_paths(completed.staging_id)
+
+    service.close()
+    writer.close()
+
+
 def test_only_completed_staging_exposes_gateway_trusted_paths(api, tmp_path) -> None:
     service, writer, _vault, _builder, _downloader = _service(
         api,
@@ -665,7 +879,7 @@ def test_only_completed_staging_exposes_gateway_trusted_paths(api, tmp_path) -> 
     )
     completed = service.stage(_request(api, (_descriptor(api),)))
     paths = service.trusted_paths(completed.staging_id)
-    assert paths == completed.trusted_paths
+    assert len(paths) == 1
     assert all(path.is_absolute() for path in paths)
 
     paths[0].chmod(0o644)
