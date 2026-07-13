@@ -44,6 +44,9 @@ _FORBIDDEN_KEYS = frozenset(
         "vault_key",
     }
 )
+_FORBIDDEN_COLLAPSED_KEYS = frozenset(
+    re.sub(r"[^a-z0-9]", "", key.casefold()) for key in _FORBIDDEN_KEYS
+)
 _ATTACHMENT_FIELDS = frozenset(
     {
         "resource_type",
@@ -167,9 +170,8 @@ def _utc_timestamp(value: Any, name: str) -> str:
 def _validate_secret_key(key: Any, path: str) -> str:
     if not isinstance(key, str) or not key:
         raise ValueError(f"{path} keys must be non-empty strings")
-    snake_case = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key)
-    normalized = re.sub(r"[^a-z0-9]+", "_", snake_case.casefold()).strip("_")
-    if normalized in _FORBIDDEN_KEYS:
+    collapsed = re.sub(r"[^a-z0-9]", "", key.casefold())
+    if collapsed in _FORBIDDEN_COLLAPSED_KEYS:
         raise ValueError(f"secret-bearing field is forbidden at {path}.{key}")
     return key
 
