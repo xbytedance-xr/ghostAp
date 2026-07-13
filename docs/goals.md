@@ -184,15 +184,24 @@
      - Task 3 mandatory matrix 已覆盖 IPC backpressure/partial frame、parent close、
        anchor/projection/ACK encode/control write、late/lost ACK、child crash、SDK write、
        reconnect/STOP/generation rotation；connection epoch 与 READY/INGRESS 顺序 fail-close
-     - Task 3 独立 Spec/Code review 已批准；Task 4-7 尚未完成，Task 7 尚未聚合生产门禁，
+     - Task 3 独立 Spec/Code review 已批准；Task 5-7 尚未完成，Task 7 尚未聚合生产门禁，
        `autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
        low-level dispatcher 黑盒验证消息和 CardAction 两条路径，任一路径不满足即
        保持 execution readiness 关闭
      - 已完成：Channel ACK 前 Journal durable Inbox
-     - 已完成：encrypted payload/blob、并发安全 dedup 与稳定 duplicate ACK；
-       attachment staging 仍属 Task 4
+     - 已完成 Task 4：ACK 路径只加密 typed resource descriptor、不下载附件；授权后仅使用
+       employee credential 与官方 `lark-oapi` message-resource API，无 Manager Bot fallback
+     - 已完成 Task 4：0700/0600、dir-fd/no-follow、server-random name、parent/leaf durable
+       identity、count/size/timeout/MIME+magic/executable/hash/hardlink/generation 校验，以及
+       Gateway-only trusted path export
+     - 已完成 Task 4：cleanup 在 aggregate completion 前对 exact bound inode 执行
+       `ftruncate(0)+fsync` 并 fresh-reopen 全量复核；完成后不执行存在 TOCTOU 的 pathname
+       unlink，`cleanup_completed` 保证敏感字节已持久擦除但不承诺删除零字节目录项
+     - Task 4 最终 70 focused、332 expanded、1479 full Autonomous 测试通过，独立
+       Spec/Code review 均批准且无 Critical/Important；Task 5 authority-bound durable
+       Router 与 bounded queues 是下一项
      - employee/app/generation binding、tenant、membership、ACL 和有界队列
      - ACP dispatch 前锚定 ExecutionAttemptContext
      - 每个 accepted attempt 只调用一次现有 `_run_acp_session`

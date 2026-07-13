@@ -1,7 +1,7 @@
 # Autonomous Employee Durable Ingress and Slock Gateway Plan
 
-> **Status:** active; Tasks 0-3 are complete. Task 4 employee-scoped attachment
-> staging is next. This plan does not
+> **Status:** active; Tasks 0-4 are complete. Task 5 authority-bound durable
+> Router and bounded queues is next. This plan does not
 > authorize raising `autonomous_visible_employee_limit` above `0`.
 
 **Goal:** Accept employee Bot events durably before the Feishu WebSocket ACK,
@@ -326,7 +326,7 @@ or lost ACK, child crash, post-callback SDK write failure, reconnect/STOP/
 generation fencing and replay convergence. Oversized single frames produce
 wire non-success with zero Inbox/Journal/Router/ACP side effects. Independent
 final review approved specification compliance and code quality. This remains
-local Phase 3 evidence; Task 4-7, Task 7 production aggregation, FI-29 and real
+local Phase 3 evidence; Task 5-7, Task 7 production aggregation, FI-29 and real
 tenant release remain pending, so `autonomous_visible_employee_limit=0` is
 unchanged.
 
@@ -378,6 +378,33 @@ Router/ACP counts, and readiness; logs or exception text alone are not evidence.
   durable disposition with recovery for interrupted deletion.
 
 Commit: `feat(autonomous): stage employee attachments safely`
+
+**Task 4 outcome (2026-07-13):** complete. The ACK path stores only encrypted,
+typed official resource descriptors and performs no download. After trusted
+authorization, staging uses only the target employee credential and the
+official `lark-oapi` message-resource API, with no Manager Bot fallback. The
+filesystem protocol binds parent and leaf identities durably, uses fixed
+tenant/employee/envelope roots with `0700/0600`, dir-fd/no-follow traversal,
+server-random names, and validates count, size, timeout, MIME/magic, executable
+content, hashes, hardlinks, generations and exact path ownership before any
+trusted path can be exported.
+
+Cleanup erases attachment bytes through the Journal-bound exact inode fd with
+`ftruncate(0)` and `fsync`, retains exact zero-byte tombstones through aggregate
+completion, and fresh-reopens every target before committing the aggregate
+disposition. Post-completion recovery is observation-only: it deliberately does
+not perform pathname unlink/rename/replace because POSIX provides no atomic
+unlink conditioned on the recorded device/inode, so it cannot delete or move a
+replacement. Thus `cleanup_completed` guarantees durable sensitive-byte
+erasure, not directory-entry deletion.
+
+The final focused suite passed 70 tests; the expanded ingress suite passed 332
+with 1 skip; the full Autonomous suite passed 1479 with 2 skips. Ruff, document
+references, configuration validation and diff checks passed. Independent final
+review approved both specification compliance and code quality with no Critical
+or Important findings. This remains local Phase 3 evidence; Tasks 5-7, Task 7
+production aggregation, FI-29 and real-tenant release remain pending, so
+`autonomous_visible_employee_limit=0` is unchanged.
 
 ## Task 5: Authority-bound durable Router and bounded queues
 
