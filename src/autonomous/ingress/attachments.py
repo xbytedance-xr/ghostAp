@@ -699,16 +699,31 @@ class AttachmentStagingService:
             )
             self._commit_unlocked(record.aggregate_id, prepared)
             identity_anchored = True
+            record = self._state.by_staging_id[record.staging_id]
+            self._call_fault("after_leaf_prepared", record)
             current = os.fstat(descriptor)
-            if (current.st_dev, current.st_ino) != (leaf_stat.st_dev, leaf_stat.st_ino):
+            identity = (leaf_stat.st_dev, leaf_stat.st_ino)
+            if (
+                (current.st_dev, current.st_ino) != identity
+                or current.st_nlink != 1
+            ):
                 raise AttachmentStorageError("attachment leaf identity changed")
+            _require_unique_exact_leaf(parent_fd, identity, temp_name)
             _write_all(descriptor, content)
             os.fsync(descriptor)
-            os.close(descriptor)
-            descriptor = None
             _require_absent_leaf(parent_fd, final_name)
             os.replace(temp_name, final_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
             os.fsync(parent_fd)
+            self._call_fault("after_leaf_rename", record)
+            current = os.fstat(descriptor)
+            if (
+                (current.st_dev, current.st_ino) != identity
+                or current.st_nlink != 1
+            ):
+                raise AttachmentStorageError("attachment leaf identity changed")
+            _require_unique_exact_leaf(parent_fd, identity, final_name)
+            os.close(descriptor)
+            descriptor = None
         except AttachmentStorageError:
             raise
         except OSError:
@@ -751,11 +766,19 @@ class AttachmentStagingService:
                 or not stat.S_ISREG(file_stat.st_mode)
                 or stat.S_IMODE(file_stat.st_mode) != 0o600
                 or file_stat.st_uid != os.getuid()
+                or file_stat.st_nlink != 1
             ):
                 raise AttachmentStorageError("trusted attachment leaf is invalid")
-            with os.fdopen(fd, "rb") as stream:
-                fd = None
-                return stream.read(self._policy.max_file_bytes + 1)
+            _require_unique_exact_leaf(parent_fd, expected_identity, parts[-1])
+            content = _read_at_most(fd, self._policy.max_file_bytes + 1)
+            file_stat = os.fstat(fd)
+            if (
+                (file_stat.st_dev, file_stat.st_ino) != expected_identity
+                or file_stat.st_nlink != 1
+            ):
+                raise AttachmentStorageError("trusted attachment leaf is invalid")
+            _require_unique_exact_leaf(parent_fd, expected_identity, parts[-1])
+            return content
         except AttachmentStorageError:
             raise
         except OSError:
@@ -864,8 +887,15 @@ class AttachmentStagingService:
             or temp_stat.st_nlink != 1
         ):
             raise AttachmentStorageError("unbound attachment leaf is not trusted")
-        self._commit_leaf_cleanup_event_unlocked(record, index, completed=False)
-        self._commit_leaf_cleanup_event_unlocked(record, index, completed=True)
+        cleanup_state = record.leaf_cleanup_states[index]
+        if cleanup_state == "none":
+            self._commit_leaf_cleanup_event_unlocked(record, index, completed=False)
+            record = self._state.by_staging_id[record.staging_id]
+            self._call_fault("after_unbound_leaf_cleanup_started", record)
+            cleanup_state = record.leaf_cleanup_states[index]
+        if cleanup_state == "started":
+            self._commit_leaf_cleanup_event_unlocked(record, index, completed=True)
+            record = self._state.by_staging_id[record.staging_id]
         if temp_stat is not None:
             os.unlink(temporary, dir_fd=parent_fd)
             os.fsync(parent_fd)
@@ -884,7 +914,12 @@ class AttachmentStagingService:
         temporary: str,
         final: str,
     ) -> None:
-        name = _locate_exact_leaf(parent_fd, identity, temporary, final)
+        name, aliases_present = _locate_leaf_for_erasure(
+            parent_fd,
+            identity,
+            temporary,
+            final,
+        )
         if name is None:
             raise AttachmentStorageError("attachment leaf identity is missing")
         fd: int | None = None
@@ -895,7 +930,6 @@ class AttachmentStagingService:
                 (leaf_stat.st_dev, leaf_stat.st_ino) != identity
                 or not stat.S_ISREG(leaf_stat.st_mode)
                 or leaf_stat.st_uid != os.getuid()
-                or leaf_stat.st_nlink != 1
             ):
                 raise AttachmentStorageError("attachment cleanup leaf identity changed")
             if record.leaf_cleanup_states[index] == "none":
@@ -904,6 +938,8 @@ class AttachmentStagingService:
             os.fsync(fd)
             record = self._state.by_staging_id[record.staging_id]
             self._call_fault("after_leaf_truncate", record)
+            if aliases_present or os.fstat(fd).st_nlink != 1:
+                raise AttachmentStorageError("attachment leaf identity has multiple names")
             self._commit_leaf_cleanup_event_unlocked(record, index, completed=True)
             self._call_fault(
                 "after_leaf_erased",
@@ -1409,6 +1445,61 @@ def _leaf_lstat(parent_fd: int, name: str) -> os.stat_result | None:
         raise AttachmentStorageError("attachment leaf cannot be inspected") from None
 
 
+def _require_unique_exact_leaf(
+    parent_fd: int,
+    identity: tuple[int, int],
+    expected_name: str,
+) -> None:
+    expected = _leaf_lstat(parent_fd, expected_name)
+    if (
+        expected is None
+        or (expected.st_dev, expected.st_ino) != identity
+        or expected.st_nlink != 1
+    ):
+        raise AttachmentStorageError("attachment leaf identity changed")
+    exact_names = []
+    for name in os.listdir(parent_fd):
+        leaf_stat = _leaf_lstat(parent_fd, name)
+        if leaf_stat is not None and (leaf_stat.st_dev, leaf_stat.st_ino) == identity:
+            exact_names.append(name)
+    if exact_names != [expected_name]:
+        raise AttachmentStorageError("attachment leaf identity has multiple names")
+
+
+def _locate_leaf_for_erasure(
+    parent_fd: int,
+    identity: tuple[int, int],
+    temporary: str,
+    final: str,
+) -> tuple[str | None, bool]:
+    expected_names = {temporary, final}
+    exact_names: list[str] = []
+    conflicting_expected = False
+    for name in os.listdir(parent_fd):
+        leaf_stat = _leaf_lstat(parent_fd, name)
+        if leaf_stat is None:
+            continue
+        if (leaf_stat.st_dev, leaf_stat.st_ino) == identity:
+            exact_names.append(name)
+        elif name in expected_names:
+            conflicting_expected = True
+    if not exact_names:
+        return None, conflicting_expected
+    selected = next(
+        (name for name in (temporary, final) if name in exact_names),
+        exact_names[0],
+    )
+    selected_stat = _leaf_lstat(parent_fd, selected)
+    aliases_present = (
+        conflicting_expected
+        or len(exact_names) != 1
+        or selected not in expected_names
+        or selected_stat is None
+        or selected_stat.st_nlink != 1
+    )
+    return selected, aliases_present
+
+
 def _locate_exact_leaf(
     parent_fd: int,
     identity: tuple[int, int],
@@ -1441,6 +1532,18 @@ def _write_all(fd: int, content: bytes) -> None:
         if written <= 0:
             raise AttachmentStorageError("attachment write failed")
         view = view[written:]
+
+
+def _read_at_most(fd: int, maximum: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = maximum
+    while remaining:
+        chunk = os.read(fd, remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def _is_executable(content: bytes, filename: str) -> bool:

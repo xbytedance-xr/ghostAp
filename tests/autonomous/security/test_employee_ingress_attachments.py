@@ -906,6 +906,60 @@ def test_restart_cleans_zero_byte_temp_crashed_before_leaf_identity_anchor(
     recovered_writer.close()
 
 
+def test_restart_resumes_unbound_leaf_cleanup_started_before_completion(
+    api,
+    tmp_path,
+) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+
+    def crash(stage: str, _record: object) -> None:
+        if stage == "after_unbound_leaf_cleanup_started":
+            raise _Crash
+
+    invalid = _descriptor(api, declared_sha256="0" * 64)
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=crash,
+    )
+    with pytest.raises(_Crash):
+        service.stage(_request(api, (invalid,)))
+    crashed = next(iter(service.state.by_staging_id.values()))
+    assert crashed.status == "failed"
+    assert crashed.cleanup_state == "started"
+    assert crashed.leaf_identities == (None,)
+    assert crashed.leaf_cleanup_states == ("started",)
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    assert recovered.recover() == 1
+    record = recovered.state.by_staging_id[crashed.staging_id]
+    assert record.cleanup_state == "completed"
+    assert record.leaf_cleanup_states == ("completed",)
+    recovered.close()
+    recovered_writer.close()
+
+
 def test_restart_recovers_failure_anchored_before_cleanup_started(api, tmp_path) -> None:
     anchor = FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
@@ -1331,8 +1385,10 @@ def test_cleanup_rejects_same_uid_ordinary_leaf_substitution(api, tmp_path) -> N
     with pytest.raises(api.AttachmentStorageError, match="leaf identity"):
         service.cleanup(completed.staging_id)
 
-    assert service.state.by_staging_id[completed.staging_id].cleanup_state == "started"
-    assert displaced.read_bytes() == PNG
+    cleanup_record = service.state.by_staging_id[completed.staging_id]
+    assert cleanup_record.cleanup_state == "started"
+    assert cleanup_record.leaf_cleanup_states == ("started",)
+    assert displaced.read_bytes() == b""
     assert original.read_bytes() == PNG
     service.close()
     writer.close()
@@ -1390,6 +1446,97 @@ def test_trusted_path_rejects_same_content_regular_leaf_replacement(api, tmp_pat
     writer.close()
 
 
+@pytest.mark.parametrize("alias_kind", ["temporary", "unexpected"])
+def test_trusted_path_rejects_exact_inode_with_second_parent_name(
+    api,
+    tmp_path,
+    alias_kind,
+) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    final = service.trusted_paths(completed.staging_id)[0]
+    alias = (
+        tmp_path / "staging" / completed.temporary_paths[0]
+        if alias_kind == "temporary"
+        else final.with_name("unexpected-hardlink.bin")
+    )
+    os.link(final, alias)
+
+    with pytest.raises(api.AttachmentStorageError, match="leaf"):
+        service.trusted_paths(completed.staging_id)
+
+    service.close()
+    writer.close()
+
+
+def test_leaf_prepared_hardlink_is_rejected_before_writing_user_bytes(api, tmp_path) -> None:
+    alias_path: Path | None = None
+
+    def add_alias(stage: str, record: object) -> None:
+        nonlocal alias_path
+        if stage != "after_leaf_prepared":
+            return
+        temporary = tmp_path / "staging" / record.temporary_paths[0]
+        alias_path = temporary.with_name("unexpected-prewrite-hardlink.bin")
+        os.link(temporary, alias_path)
+
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        fault_hook=add_alias,
+    )
+
+    with pytest.raises(api.AttachmentStorageError, match="leaf"):
+        service.stage(_request(api, (_descriptor(api),)))
+
+    record = next(iter(service.state.by_staging_id.values()))
+    assert alias_path is not None
+    assert alias_path.stat().st_size == 0
+    assert record.status == "failed"
+    assert record.cleanup_state == "started"
+    assert record.leaf_cleanup_states == ("started",)
+    service.close()
+    writer.close()
+
+
+def test_post_rename_hardlink_is_erased_and_never_completes_staging(api, tmp_path) -> None:
+    alias_path: Path | None = None
+
+    def add_alias(stage: str, record: object) -> None:
+        nonlocal alias_path
+        if stage != "after_leaf_rename":
+            return
+        final = tmp_path / "staging" / record.relative_paths[0]
+        alias_path = final.with_name("unexpected-postrename-hardlink.bin")
+        os.link(final, alias_path)
+
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        fault_hook=add_alias,
+    )
+
+    with pytest.raises(api.AttachmentStorageError, match="leaf"):
+        service.stage(_request(api, (_descriptor(api),)))
+
+    record = next(iter(service.state.by_staging_id.values()))
+    final = tmp_path / "staging" / record.relative_paths[0]
+    assert alias_path is not None
+    assert final.read_bytes() == b""
+    assert alias_path.read_bytes() == b""
+    assert record.status == "failed"
+    assert record.cleanup_state == "started"
+    assert record.leaf_cleanup_states == ("started",)
+    service.close()
+    writer.close()
+
+
 def test_cleanup_rejects_bound_inode_present_at_temp_and_final(api, tmp_path) -> None:
     service, writer, _vault, _builder, _downloader = _service(
         api,
@@ -1405,8 +1552,11 @@ def test_cleanup_rejects_bound_inode_present_at_temp_and_final(api, tmp_path) ->
         service.cleanup(completed.staging_id)
 
     assert service.state.by_staging_id[completed.staging_id].cleanup_state == "started"
+    assert service.state.by_staging_id[completed.staging_id].leaf_cleanup_states == ("started",)
     assert final.exists()
     assert temporary.exists()
+    assert final.read_bytes() == b""
+    assert temporary.read_bytes() == b""
     service.close()
     writer.close()
 
