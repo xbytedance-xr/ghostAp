@@ -18,6 +18,7 @@ from src.autonomous.ingress.projection import IngressProjectionState
 from src.autonomous.ingress.service import EmployeeIngressService
 from src.autonomous.journal.anchor import FileAnchor, MemoryAnchor
 from src.autonomous.journal.blob_store import AesGcmEncryptionProvider, BlobStore
+from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.journal.writer import JournalWriter
 
 HMAC_KEY = b"employee-attachment-staging-hmac-key"
@@ -131,6 +132,68 @@ def _service(
         name_factory=name_factory,
     )
     return service, writer, vault, builder, downloader
+
+
+def _staging_reducer_events(api):
+    staging_id = "stg_illegal_order"
+    aggregate_id = "astg_" + hashlib.sha256(staging_id.encode()).hexdigest()
+    base = (
+        api.tenant_storage_component("tenant/customer:one"),
+        "agt_alpha",
+        "ing_" + "b" * 64,
+    )
+    start = JournalEvent(
+        event_type="employee.ingress.attachment_staging_started",
+        aggregate_id=aggregate_id,
+        payload={
+            "staging_id": staging_id,
+            "acceptance_id": "acc_" + "a" * 64,
+            "envelope_id": "ing_" + "b" * 64,
+            "tenant_key": "tenant/customer:one",
+            "agent_id": "agt_alpha",
+            "app_id": "cli_alpha",
+            "relative_paths": ["/".join((*base, "att_one.bin"))],
+            "temporary_paths": ["/".join((*base, ".att_one.tmp"))],
+            "content_hashes": [hashlib.sha256(PNG).hexdigest()],
+        },
+    )
+
+    def event(event_type: str, **payload: object) -> JournalEvent:
+        return JournalEvent(
+            event_type=event_type,
+            aggregate_id=aggregate_id,
+            payload={"staging_id": staging_id, **payload},
+        )
+
+    return {
+        "start": start,
+        "parent": event(
+            "employee.ingress.attachment_staging_parent_bound",
+            parent_device=1,
+            parent_inode=2,
+        ),
+        "leaf": event(
+            "employee.ingress.attachment_staging_leaf_prepared",
+            index=0,
+            leaf_device=1,
+            leaf_inode=3,
+        ),
+        "completed": event("employee.ingress.attachment_staging_completed"),
+        "failed": event(
+            "employee.ingress.attachment_staging_failed",
+            reason="validation",
+        ),
+        "cleanup_started": event("employee.ingress.attachment_cleanup_started"),
+        "cleanup_leaf_started": event(
+            "employee.ingress.attachment_cleanup_leaf_started",
+            index=0,
+        ),
+        "cleanup_leaf_completed": event(
+            "employee.ingress.attachment_cleanup_leaf_completed",
+            index=0,
+        ),
+        "cleanup_completed": event("employee.ingress.attachment_cleanup_completed"),
+    }
 
 
 def test_ack_contract_rejects_url_and_local_path_resource_descriptors() -> None:
@@ -249,6 +312,213 @@ def test_official_sdk_downloader_uses_only_typed_message_resource_coordinates(ap
     assert captured[0].type == "image"
 
 
+@pytest.mark.parametrize(
+    "sequence",
+    [
+        ("cleanup_started",),
+        ("cleanup_started", "cleanup_completed", "parent"),
+        ("parent", "cleanup_started", "completed"),
+        ("cleanup_started", "failed"),
+        ("leaf",),
+        ("parent", "parent"),
+        ("parent", "leaf", "leaf"),
+        ("parent", "failed", "leaf"),
+        ("parent", "leaf", "completed", "failed"),
+        ("parent", "leaf", "completed", "cleanup_started", "cleanup_started"),
+        ("parent", "leaf", "completed", "cleanup_completed"),
+        ("failed", "cleanup_started", "cleanup_leaf_completed"),
+        ("failed", "cleanup_started", "cleanup_leaf_started", "cleanup_leaf_started"),
+    ],
+)
+def test_reducer_rejects_cleanup_before_terminal_and_duplicate_late_transitions(
+    api,
+    sequence,
+) -> None:
+    events = _staging_reducer_events(api)
+    state = api.AttachmentStagingState()
+    api._apply_event(state, events["start"])
+
+    with pytest.raises(api.AttachmentStateError):
+        for name in sequence:
+            api._apply_event(state, events[name])
+
+
+@pytest.mark.parametrize(
+    "sequence",
+    [
+        (
+            "failed",
+            "cleanup_started",
+            "cleanup_leaf_started",
+            "cleanup_leaf_completed",
+            "cleanup_completed",
+        ),
+        (
+            "parent",
+            "failed",
+            "cleanup_started",
+            "cleanup_leaf_started",
+            "cleanup_leaf_completed",
+            "cleanup_completed",
+        ),
+        (
+            "parent",
+            "leaf",
+            "completed",
+            "cleanup_started",
+            "cleanup_leaf_started",
+            "cleanup_leaf_completed",
+            "cleanup_completed",
+        ),
+    ],
+)
+def test_reducer_accepts_only_terminal_then_cleanup_sequences(api, sequence) -> None:
+    events = _staging_reducer_events(api)
+    state = api.AttachmentStagingState()
+    api._apply_event(state, events["start"])
+
+    for name in sequence:
+        api._apply_event(state, events[name])
+
+    record = next(iter(state.by_staging_id.values()))
+    assert record.status in {"failed", "completed"}
+    assert record.cleanup_state == "completed"
+
+
+def test_replay_rejects_cleanup_then_late_parent_and_completion(api, tmp_path) -> None:
+    events = _staging_reducer_events(api)
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=MemoryAnchor(),
+        hmac_key=HMAC_KEY,
+    )
+    aggregate_id = events["start"].aggregate_id
+    for name in (
+        "start",
+        "cleanup_started",
+        "cleanup_completed",
+        "parent",
+        "completed",
+    ):
+        writer.commit(
+            [events[name]],
+            writer.get_aggregate_versions([aggregate_id]),
+        )
+
+    def replay() -> None:
+        service = api.AttachmentStagingService(
+            writer=writer,
+            root=tmp_path / "staging",
+            credential_resolver=_Vault({}),
+            downloader_builder=lambda **_: None,
+        )
+        service.close()
+
+    with pytest.raises(api.AttachmentStateError):
+        replay()
+    writer.close()
+
+
+def test_two_instances_reject_late_parent_without_anchoring_invalid_event(
+    api,
+    tmp_path,
+) -> None:
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=MemoryAnchor(),
+        hmac_key=HMAC_KEY,
+    )
+    stale, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=writer,
+    )
+    active, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+    )
+    completed = active.stage(_request(api, (_descriptor(api),)))
+    active.cleanup(completed.staging_id)
+    current = active.state.by_staging_id[completed.staging_id]
+    anchor_before = writer.anchor.read()
+    frames_before = len(tuple(writer.replay()))
+    late_parent = JournalEvent(
+        event_type="employee.ingress.attachment_staging_parent_bound",
+        aggregate_id=current.aggregate_id,
+        payload={
+            "staging_id": current.staging_id,
+            "parent_device": current.parent_device,
+            "parent_inode": current.parent_inode,
+        },
+    )
+
+    with pytest.raises(api.AttachmentStateError):
+        stale._commit_unlocked(current.aggregate_id, late_parent)
+
+    assert writer.anchor.read() == anchor_before
+    assert len(tuple(writer.replay())) == frames_before
+    stale._rebuild_unlocked()
+    assert stale.state.by_staging_id[current.staging_id].cleanup_state == "completed"
+    stale.close()
+    active.close()
+    writer.close()
+
+
+def test_two_instances_reject_late_completion_after_failed_cleanup_without_commit(
+    api,
+    tmp_path,
+) -> None:
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=MemoryAnchor(),
+        hmac_key=HMAC_KEY,
+    )
+    stale, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=writer,
+    )
+    active, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            )
+        },
+        writer=writer,
+    )
+    invalid = _descriptor(api, declared_sha256="0" * 64)
+    with pytest.raises(api.AttachmentValidationError):
+        active.stage(_request(api, (invalid,)))
+    current = next(iter(active.state.by_staging_id.values()))
+    anchor_before = writer.anchor.read()
+    frames_before = len(tuple(writer.replay()))
+    late_completed = JournalEvent(
+        event_type="employee.ingress.attachment_staging_completed",
+        aggregate_id=current.aggregate_id,
+        payload={"staging_id": current.staging_id},
+    )
+
+    with pytest.raises(api.AttachmentStateError):
+        stale._commit_unlocked(current.aggregate_id, late_completed)
+
+    assert writer.anchor.read() == anchor_before
+    assert len(tuple(writer.replay())) == frames_before
+    stale._rebuild_unlocked()
+    replayed = stale.state.by_staging_id[current.staging_id]
+    assert replayed.status == "failed"
+    assert replayed.cleanup_state == "completed"
+    stale.close()
+    active.close()
+    writer.close()
+
+
 def test_descriptor_rejects_untyped_coordinates_and_payload_storage_identity(api) -> None:
     with pytest.raises(ValueError, match="message_id"):
         _descriptor(api, message_id="https://open.feishu.cn/message")
@@ -339,6 +609,8 @@ def test_download_timeout_fails_terminally_and_cleans_server_paths(api, tmp_path
         "employee.ingress.attachment_staging_parent_bound",
         "employee.ingress.attachment_staging_failed",
         "employee.ingress.attachment_cleanup_started",
+        "employee.ingress.attachment_cleanup_leaf_started",
+        "employee.ingress.attachment_cleanup_leaf_completed",
         "employee.ingress.attachment_cleanup_completed",
     ]
     service.close()
@@ -579,6 +851,61 @@ def test_crash_after_publish_leaves_owned_paths_for_restart_recovery(api, tmp_pa
     recovered_writer.close()
 
 
+def test_restart_cleans_zero_byte_temp_crashed_before_leaf_identity_anchor(
+    api,
+    tmp_path,
+) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+
+    def crash(stage: str, _record: object) -> None:
+        if stage == "after_empty_leaf_fsync":
+            raise _Crash
+
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=crash,
+        name_factory=lambda: "emptycrash",
+    )
+    with pytest.raises(_Crash):
+        service.stage(_request(api, (_descriptor(api),)))
+    crashed = next(iter(service.state.by_staging_id.values()))
+    assert crashed.status == "started"
+    assert crashed.leaf_identities == (None,)
+    temporary = tmp_path / "staging" / crashed.temporary_paths[0]
+    assert temporary.stat().st_size == 0
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    assert recovered.recover() == 1
+    record = recovered.state.by_staging_id[crashed.staging_id]
+    assert record.status == "failed"
+    assert record.cleanup_state == "completed"
+    assert not temporary.exists()
+    recovered.close()
+    recovered_writer.close()
+
+
 def test_restart_recovers_failure_anchored_before_cleanup_started(api, tmp_path) -> None:
     anchor = FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
@@ -624,6 +951,8 @@ def test_restart_recovers_failure_anchored_before_cleanup_started(api, tmp_path)
     crashed_record = next(iter(service.state.by_staging_id.values()))
     assert crashed_record.status == "failed"
     assert crashed_record.cleanup_state == "none"
+    assert crashed_record.leaf_identities[0] is not None
+    assert crashed_record.leaf_identities[1] is None
     assert len(list((tmp_path / "staging").rglob("*.bin"))) == 1
     service.close()
     writer.close()
@@ -776,6 +1105,115 @@ def test_restart_recovers_cleanup_interrupted_after_durable_start(api, tmp_path)
     recovered_writer.close()
 
 
+def test_restart_completes_cleanup_after_erased_leaf_unlink_crash(api, tmp_path) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+    crashed_once = False
+
+    def crash(stage: str, _record: object) -> None:
+        nonlocal crashed_once
+        if stage == "after_leaf_unlink" and not crashed_once:
+            crashed_once = True
+            raise _Crash
+
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=crash,
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    with pytest.raises(_Crash):
+        service.cleanup(completed.staging_id)
+    crashed = service.state.by_staging_id[completed.staging_id]
+    assert crashed.cleanup_state == "started"
+    assert crashed.leaf_cleanup_states == ("completed",)
+    assert not list((tmp_path / "staging").rglob("*.bin"))
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    assert recovered.recover() == 1
+    record = recovered.state.by_staging_id[completed.staging_id]
+    assert record.cleanup_state == "completed"
+    recovered.close()
+    recovered_writer.close()
+
+
+def test_restart_repeats_exact_zeroing_after_truncate_before_leaf_completion(
+    api,
+    tmp_path,
+) -> None:
+    anchor = FileAnchor(tmp_path / "anchor.json")
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=anchor,
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+    crashed_once = False
+
+    def crash(stage: str, _record: object) -> None:
+        nonlocal crashed_once
+        if stage == "after_leaf_truncate" and not crashed_once:
+            crashed_once = True
+            raise _Crash
+
+    service, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+        writer=writer,
+        fault_hook=crash,
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    staged_path = service.trusted_paths(completed.staging_id)[0]
+    with pytest.raises(_Crash):
+        service.cleanup(completed.staging_id)
+    crashed = service.state.by_staging_id[completed.staging_id]
+    assert crashed.cleanup_state == "started"
+    assert crashed.leaf_cleanup_states == ("started",)
+    assert staged_path.stat().st_size == 0
+    service.close()
+    writer.close()
+
+    recovered_writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=FileAnchor(tmp_path / "anchor.json"),
+        hmac_key=HMAC_KEY,
+        writer_epoch=2,
+    )
+    recovered, _writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {},
+        writer=recovered_writer,
+    )
+    assert recovered.recover() == 1
+    record = recovered.state.by_staging_id[completed.staging_id]
+    assert record.cleanup_state == "completed"
+    assert not staged_path.exists()
+    recovered.close()
+    recovered_writer.close()
+
+
 def test_cleanup_does_not_claim_completion_after_parent_symlink_replacement(
     api,
     tmp_path,
@@ -867,6 +1305,108 @@ def test_trusted_path_export_rejects_wrong_owner_regular_leaf(api, tmp_path) -> 
     ):
         service.trusted_paths(completed.staging_id)
 
+    service.close()
+    writer.close()
+
+
+def test_cleanup_rejects_same_uid_ordinary_leaf_substitution(api, tmp_path) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            )
+        },
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    verified = service.trusted_paths(completed.staging_id)
+    original = verified[0]
+    displaced = original.with_name("unexpected-displaced.bin")
+    original.rename(displaced)
+    original.write_bytes(PNG)
+    original.chmod(0o600)
+
+    with pytest.raises(api.AttachmentStorageError, match="leaf identity"):
+        service.cleanup(completed.staging_id)
+
+    assert service.state.by_staging_id[completed.staging_id].cleanup_state == "started"
+    assert displaced.read_bytes() == PNG
+    assert original.read_bytes() == PNG
+    service.close()
+    writer.close()
+
+
+def test_cleanup_does_not_complete_when_bound_inode_was_moved_outside_parent(
+    api,
+    tmp_path,
+) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    original = service.trusted_paths(completed.staging_id)[0]
+    outside = tmp_path / "moved-outside.bin"
+    original.rename(outside)
+
+    with pytest.raises(api.AttachmentStorageError, match="identity is missing"):
+        service.cleanup(completed.staging_id)
+
+    record = service.state.by_staging_id[completed.staging_id]
+    assert record.cleanup_state == "started"
+    assert record.leaf_cleanup_states == ("none",)
+    assert outside.read_bytes() == PNG
+    service.close()
+    writer.close()
+
+
+def test_trusted_path_rejects_same_content_regular_leaf_replacement(api, tmp_path) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {
+            "img_v2_resource_1": api.DownloadedAttachment(
+                content=PNG,
+                file_name="diagram.png",
+            )
+        },
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    original = service.trusted_paths(completed.staging_id)[0]
+    displaced = original.with_name("same-content-displaced.bin")
+    original.rename(displaced)
+    original.write_bytes(PNG)
+    original.chmod(0o600)
+
+    with pytest.raises(api.AttachmentStorageError, match="leaf"):
+        service.trusted_paths(completed.staging_id)
+
+    assert displaced.read_bytes() == PNG
+
+    service.close()
+    writer.close()
+
+
+def test_cleanup_rejects_bound_inode_present_at_temp_and_final(api, tmp_path) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+    final = service.trusted_paths(completed.staging_id)[0]
+    temporary = tmp_path / "staging" / completed.temporary_paths[0]
+    os.link(final, temporary)
+
+    with pytest.raises(api.AttachmentStorageError, match="multiple names"):
+        service.cleanup(completed.staging_id)
+
+    assert service.state.by_staging_id[completed.staging_id].cleanup_state == "started"
+    assert final.exists()
+    assert temporary.exists()
     service.close()
     writer.close()
 
