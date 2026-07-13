@@ -506,6 +506,7 @@ def test_transient_recovery_failure_is_supervised_and_converges_in_process(
             recovered is not None
             and recovered.phase is HirePhase.READY_PENDING_VERIFICATION
             and recovered.channel_generation == 2
+            and restarted.readiness().ready is True
         ):
             break
         time.sleep(0.05)
