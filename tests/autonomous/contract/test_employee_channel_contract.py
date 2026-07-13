@@ -17,6 +17,7 @@ from src.autonomous.provisioning.channel_protocol import (
     encode_frame,
 )
 from src.autonomous.provisioning.channel_worker import (
+    create_employee_channel,
     extract_raw_message_metadata,
     register_channel_handlers,
 )
@@ -113,6 +114,38 @@ def test_worker_extracts_only_authoritative_non_secret_raw_message_metadata() ->
         "tenant_key": "tenant_a",
         "message_id": "om_1",
     }
+
+
+def test_worker_channel_forces_strict_direct_wss_and_error_only_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import lark_channel
+
+    captured: dict[str, object] = {}
+
+    def fake_channel(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(lark_channel, "FeishuChannel", fake_channel)
+
+    create_employee_channel("cli_employee", "secret-only-in-memory")
+
+    assert captured["log_level"] is lark_channel.LogLevel.ERROR
+    transport = captured["transport"]
+    assert isinstance(transport, lark_channel.TransportConfig)
+    assert transport.proxy_url is None
+    assert transport.trust_env_proxy is False
+    assert transport.handshake_timeout_seconds == 10.0
+    security = captured["security"]
+    assert isinstance(security, lark_channel.SecurityConfig)
+    assert security.mode == "strict"
+    assert security.allow_insecure_ws is False
+    assert security.allow_local_insecure_ws is False
+    assert security.max_ws_fragment_parts == 8
+    assert security.max_ws_fragment_bytes == 256 * 1024
+    assert security.max_concurrent_ws_handlers == 1
+    assert security.resource_overflow_policy == "drop"
 
 
 def test_production_launch_contract_is_fixed_fresh_interpreter() -> None:

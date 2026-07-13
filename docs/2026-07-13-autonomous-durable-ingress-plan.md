@@ -1,7 +1,7 @@
 # Autonomous Employee Durable Ingress and Slock Gateway Plan
 
-> **Status:** active; implementation starts with the Task 0 capability gate,
-> then Task 1 contracts. This plan does not
+> **Status:** active; Task 0 capability gate is complete with a development-only
+> `CAPABLE_PINNED_ADAPTER` decision. Task 1 contracts are next. This plan does not
 > authorize raising `autonomous_visible_employee_limit` above `0`.
 
 **Goal:** Accept employee Bot events durably before the Feishu WebSocket ACK,
@@ -125,6 +125,26 @@ Official references:
 Task 0 ends with one explicit decision: `CAPABLE_PINNED_ADAPTER` or
 `CAPABILITY_RED`. RED may not be bypassed and blocks Tasks 3 and 7 production
 composition; pure contracts and durable Inbox work may continue fail-closed.
+
+**Task 0 outcome (2026-07-13):** `CAPABLE_PINNED_ADAPTER` for the exact locked
+`lark-channel-sdk==1.1.0` adapter profile. The standalone runner freezes 19
+wire selectors and binds their setup/call/teardown results to the GhostAP
+commit, `pyproject.toml`, `uv.lock` wheel hash, installed RECORD, runtime source
+payload, Python/pytest/requests/websockets versions, and a controlled empty
+bytecode cache. Identity mismatch reports stable blocker
+`employee_channel_sdk_capability_mismatch`; stale artifacts are removed before
+identity validation. Evidence remains `promotable=false` and explicitly records
+`requires_parent_payload_gate=true`.
+
+The gate proves low-level message and P2 `card.action.trigger` EVENT callbacks
+hold wire 200 until callback return; timeout, parent close, and callback failure
+produce wire 500. It also proves bounded idle/blocked reconnect, heartbeat,
+termination, strict WSS/direct proxy policy, concurrency, fragment-count and
+fragment-byte overflow drop with same-connection recovery, and secret-safe
+ERROR logging. The high-level handler still demonstrates early 200 and remains
+forbidden. Raw `MessageType.CARD` remains RED. A single oversized frame still
+reaches the SDK callback; Tasks 3 and 7 must require a parent payload-gate
+selector that proves wire non-200 and zero Inbox/Journal/Router/ACP side effects.
 
 Commit: `test(autonomous): prove employee channel ack capability`
 

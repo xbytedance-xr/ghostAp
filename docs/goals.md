@@ -159,6 +159,17 @@
      - 设计与现有实现审计已完成，实施计划见
        `docs/2026-07-13-autonomous-durable-ingress-plan.md`；当前生产 Router/Inbox
        仍是不可接受的内存脚手架，Phase 3 尚未完成
+     - 已完成 Task 0 SDK capability 硬门禁：锁定 `lark-channel-sdk==1.1.0` 的
+       low-level message 与 P2 `card.action.trigger` EVENT 均通过真实 HTTP/WSS/protobuf
+       ACK 顺序验证；高层 handler 提前 200 与 raw `MessageType.CARD` 继续明确禁用
+     - standalone runner 冻结 19 个 wire selectors，绑定 Git/pyproject/uv.lock wheel/
+       RECORD/runtime payload/受控空 bytecode cache；mismatch 稳定阻断为
+       `employee_channel_sdk_capability_mismatch`，本地 evidence 永远不可晋级
+     - 已确认 SDK 的单帧 byte limit 缺口：超大单帧仍会进入 callback，因此 evidence
+       强制 `requires_parent_payload_gate=true`；Task 3/7 未证明 parent wire non-200 与
+       Inbox/Journal/Router/ACP 零副作用前，execution readiness 必须继续关闭
+     - Task 1 contracts/evidence 与 Task 2 durable Journal Inbox 尚未实现；Phase 3
+       仍未完成，`autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
        low-level dispatcher 黑盒验证消息和 CardAction 两条路径，任一路径不满足即

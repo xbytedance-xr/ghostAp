@@ -131,6 +131,39 @@ def extract_raw_message_metadata(event: Any) -> dict[str, str] | None:
     return values  # type: ignore[return-value]
 
 
+def create_employee_channel(app_id: str, app_secret: str) -> Any:
+    """Build the employee SDK channel with fail-closed transport and logs."""
+    from lark_channel import (
+        FeishuChannel,
+        InboundConfig,
+        LogLevel,
+        SecurityConfig,
+        TransportConfig,
+    )
+
+    return FeishuChannel(
+        app_id=app_id,
+        app_secret=app_secret,
+        log_level=LogLevel.ERROR,
+        transport=TransportConfig(
+            auto_reconnect=True,
+            proxy_url=None,
+            trust_env_proxy=False,
+            handshake_timeout_seconds=10.0,
+        ),
+        security=SecurityConfig(
+            mode="strict",
+            allow_insecure_ws=False,
+            allow_local_insecure_ws=False,
+            max_ws_fragment_parts=8,
+            max_ws_fragment_bytes=256 * 1024,
+            max_concurrent_ws_handlers=1,
+            resource_overflow_policy="drop",
+        ),
+        inbound=InboundConfig(emit_raw_events=True, include_raw=True),
+    )
+
+
 async def _run(bootstrap_fd: int, control_fd: int, event_fd: int) -> None:
     apply_process_hardening()
     with os.fdopen(bootstrap_fd, "rb", buffering=0) as bootstrap_stream:
@@ -139,13 +172,7 @@ async def _run(bootstrap_fd: int, control_fd: int, event_fd: int) -> None:
 
     emitter = _FrameEmitter(event_fd, bootstrap.agent_id, bootstrap.generation)
 
-    from lark_channel import FeishuChannel, InboundConfig
-
-    channel = FeishuChannel(
-        app_id=bootstrap.app_id,
-        app_secret=bootstrap.app_secret,
-        inbound=InboundConfig(emit_raw_events=True, include_raw=True),
-    )
+    channel = create_employee_channel(bootstrap.app_id, bootstrap.app_secret)
 
     def emit_event(name: str, value: Any) -> None:
         if name == "error":
