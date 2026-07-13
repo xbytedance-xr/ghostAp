@@ -171,15 +171,21 @@
      - 已完成 Task 1：六个 frozen exact-schema ingress 模型、递归 secret alias 拒绝、
        restart-safe canonical dedup、1.5 秒 ACK/attachment/payload 配置、单员工≤团队≤全局
        队列关系，以及独立 Phase 3 implementation evidence manifest 均已冻结
-     - `EI-IPC-01` 仍明确为 Task 2-owned PENDING，SDK wire evidence 不能替代 Journal
-       fsync/anchor 证据；Task 2 durable Journal Inbox 尚未实现，Phase 3 仍未完成，
+     - 已完成 Task 2：独立 AES-GCM BlobStore + Journal-backed Inbox、anchor 后 ACK、
+       并发/restart/generation dedup、语义/provenance 冲突拒绝、缺失/损坏 payload
+       恢复关闭、orphan quarantine、可重试 tombstone GC 与 commit 前 disposition 校验
+     - `EI-IPC-01` 已由真实 spawn child + Pipe + FileAnchor + Journal/fsync selector
+       收集，观测 ACK `0.014952s <= 1.5s`；它仍只是本地 Phase 3 evidence，不能替代
+       全局 FI-29，也不构成生产 readiness
+     - Task 2 独立 Spec/Code review 已批准；Task 3-7 尚未完成，
        `autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
        low-level dispatcher 黑盒验证消息和 CardAction 两条路径，任一路径不满足即
        保持 execution readiness 关闭
-     - Channel ACK 前 Journal durable Inbox
-     - encrypted payload/blob、并发安全 dedup、稳定 duplicate ACK 与 attachment staging
+     - 已完成：Channel ACK 前 Journal durable Inbox
+     - 已完成：encrypted payload/blob、并发安全 dedup 与稳定 duplicate ACK；
+       attachment staging 仍属 Task 4
      - employee/app/generation binding、tenant、membership、ACL 和有界队列
      - ACP dispatch 前锚定 ExecutionAttemptContext
      - 每个 accepted attempt 只调用一次现有 `_run_acp_session`

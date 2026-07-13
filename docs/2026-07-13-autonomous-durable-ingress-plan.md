@@ -1,7 +1,7 @@
 # Autonomous Employee Durable Ingress and Slock Gateway Plan
 
-> **Status:** active; Task 0 capability gate and Task 1 strict contracts are
-> complete. Task 2 Journal-backed Inbox is next. This plan does not
+> **Status:** active; Tasks 0-2 are complete. Task 3 official low-level Channel
+> ACK bridge is next. This plan does not
 > authorize raising `autonomous_visible_employee_limit` above `0`.
 
 **Goal:** Accept employee Bot events durably before the Feishu WebSocket ACK,
@@ -240,6 +240,25 @@ platform SDK evidence. This outcome does not provide Inbox durability.
   bound result evidence. Task 7 may aggregate it but may not invent it later.
 
 Commit: `feat(autonomous): persist employee ingress before ack`
+
+**Task 2 outcome (2026-07-13):** complete. Employee ingress now owns a
+dedicated AES-GCM BlobStore and a Journal-backed projection. Admission validates
+trusted correlation and payload bounds, checks durable dedup before randomized
+Blob publication, verifies authenticated Blob labels/content, anchors
+`employee.ingress.accepted`, applies the frame, and only then returns the ACK.
+Canonical acceptance survives reconnect/generation replay; semantic or
+provenance conflicts fail closed. Startup replay closes admission for missing or
+corrupt nonterminal payloads, quarantines pre-commit orphan Blobs, and retries
+physical cleanup after an anchored tombstone. Dispositions are strictly
+validated before Journal commit so malformed lifecycle input cannot poison
+replay.
+
+The exact `EI-IPC-01` selector is now collectable and uses a real spawned child,
+`multiprocessing.Pipe`, `FileAnchor`, Journal file and fsync boundary. Its
+observed ACK latency was `0.014952s` against the `1.5s` limit. This remains local
+Phase 3 evidence and is not FI-29 or production readiness. Independent final
+review approved both specification compliance and code quality; Task 3-7 and
+`autonomous_visible_employee_limit=0` remain unchanged.
 
 ## Task 3: Official low-level Channel ACK bridge
 
