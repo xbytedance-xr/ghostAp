@@ -17,6 +17,7 @@
   7. docs/2026-07-12-autonomous-foundation-plan.md
   8. docs/2026-07-12-autonomous-data-plan.md
   9. docs/2026-07-13-autonomous-hire-production-plan.md
+  10. docs/2026-07-13-autonomous-thread-context-plan.md
 
   然后以当前 Git、源码、运行配置和新鲜测试结果为唯一权威状态进行检查：
 
@@ -32,8 +33,9 @@
 
   当前权威状态（2026-07-13；必须用 Git、源码、配置和测试重新核验，不可只相信此摘要）：
 
-  - 当前 `dev` HEAD 与 `origin/dev` 一致：
-    `cf9c425de5266de90e2d35150bffac696018a92d`。
+  - 本文档不再固化会在下一次提交立即过期的 HEAD；每次继续开发必须以上述
+    `git rev-parse HEAD/origin/dev` 的现场结果为准。Thread Context Task 2 开发前
+    二者均位于 `f83585a504de3a372fa9a29106739efec7230393`。
   - Foundation 已完成并保留：
     - Canonical frozen Employee/BotPrincipal domain
     - AES-GCM Credential Vault
@@ -57,12 +59,19 @@
   - readiness 反馈已接入处理器：只有 provider 明确返回 `ready=True` 且无 blockers 才派发真实 Hire；否则向管理员显示具体安全门禁，不再误报“不是管理员”，也不降级创建本地虚拟角色。
   - 当前现场仍不能创建真实员工，但剩余原因是有意的发布门禁而非 DM 识别：`autonomous_visible_employee_limit=0`，且没有独立 QA release 公钥/有效 attestation；全新环境的 `EmployeeDepartmentRuntime` 保持 dormant，`employee_hire_service` 不注入。不得绕过门禁创建员工。
   - 以下模块仍主要是局部实现或内存脚手架，尚未组成真实员工任务闭环：
-    - `EmployeeThreadContext` 缺 employee-scoped 真实 `FeishuMessageSource`、权威 root/thread 解析、revision/edit/delete 和生产接线
+    - Thread Context 的冻结 contracts/config 与 employee-scoped 官方
+      `lark-oapi` message source 已完成：每员工 Vault credential lease、Get current
+      权威 root/thread 解析、Thread/Chat 严格分页、revision/edit/delete/tombstone、
+      查询态 post、Card 1.0/2.0、稳定错误与关闭线性化均有回归；但双遍历稳定
+      snapshot、跨层去重/预算、L1/L2 service 和 production composition 尚未完成
     - `EmployeeMessageRouter` 尚未接 durable employee ingress、Projected Registry、ACL/membership 与真实 Slock `_run_acp_session`
     - `EmployeeResponseChannel` 明确仍是 in-memory outbox，缺 Journal-backed Durable Outbox、稳定 UUID 卡片和 child-owned stream controller
     - `FireSaga` 仍是可变内存顺序流程，未满足 Journal SSOT、Effect 锚定、unknown disposition、恢复与归档合同
     - 团队 membership、`/role add/remove`、`/stop` 终态竞态尚未形成生产闭环
-  - 尚无获授权的真实测试/生产租户执行证据。最后记录的 Autonomous 全量验证为 `1019 passed, 2 skipped`；两项 skip 分别是未授权真实租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
+  - 尚无获授权的真实测试/生产租户执行证据。Thread Context Task 2 后最新
+    Autonomous 全量验证为 `1121 passed, 2 skipped`；两项 skip 分别是未授权真实
+    租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
+    不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
   - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
   - `autonomous_visible_employee_limit` 必须继续保持 0。不得为“先跑起来”而放宽 readiness、伪造 evidence、恢复 legacy/NullJournal fallback 或把测试 fake 当生产依赖。
 
@@ -122,12 +131,15 @@
      - 使用服务端保存、绑定 origin message/chat/operator 的可信 DM provenance
      - provenance 查询失败、残缺、过期、跨 chat、跨 operator 或冲突时 fail-close；仅明确无记录可用 Chat API `chat_mode` 原子回填
      - readiness 未满足时展示具体安全阻断，不误报“不是管理员”
-  2. Thread Context 生产接线：
-     - employee-scoped FeishuMessageSource
-     - root_id → thread_id 权威解析、全量分页、watermark/revision、edit/delete
+  2. 进行中（Task 1/2 已完成）Thread Context 生产接线：
+     - 已完成：冻结 scope/revision/watermark/config contracts
+     - 已完成：employee-scoped 官方 FeishuMessageSource、root_id → thread_id
+       权威解析、严格全量分页 primitive、revision/edit/delete/content normalization
+     - 待完成：双遍历稳定 snapshot、watermark/source boundary 与 current propagation retry
      - Thread/group 去重、protected system/current message
      - L2 → L1 → group recent → oldest Thread 裁剪
-     - `CONTEXT_UNAVAILABLE` fail-close
+     - L1/L2 ACL service、production composition/readiness 与 `CONTEXT_UNAVAILABLE`
+       零执行接线
   3. Durable employee ingress、Router 与 Slock gateway：
      - Channel ACK 前 Journal durable Inbox
      - employee/app/generation binding、tenant、membership、ACL 和有界队列

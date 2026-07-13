@@ -150,8 +150,10 @@ def test_context_message_and_watermark_reject_missing_scope() -> None:
         root_id="",
     )
     assert root_message.root_id == ""
-    with pytest.raises(ValueError, match="root_id requires thread_id"):
-        _message(thread_id="", root_id="om_root")
+    ordinary_reply = _message(thread_id="", root_id="om_root")
+    assert ordinary_reply.root_id == "om_root"
+    with pytest.raises(ValueError, match="root_id"):
+        _message(thread_id="", root_id="omt_wrong_space")
     with pytest.raises(ValueError, match="revision_digest"):
         ThreadWatermark(
             thread_root_id="om_root",

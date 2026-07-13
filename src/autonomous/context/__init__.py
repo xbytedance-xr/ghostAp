@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import Protocol
 
 from .models import (
@@ -20,6 +20,14 @@ from .models import (
     ThreadContextConfig,
     ThreadWatermark,
     TrimmingRecord,
+)
+from .source import (
+    CredentialResolver,
+    EmployeeClientBuilder,
+    EmployeeMessageSourceFactory,
+    EmployeeScopedMessageSource,
+    MessagePage,
+    ResolvedThread,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,15 +53,6 @@ class FeishuMessageSource(Protocol):
         page_token: str = "",
         page_size: int = 50,
     ) -> MessagePage: ...
-
-
-@dataclass(frozen=True)
-class MessagePage:
-    """One page of Feishu messages."""
-
-    messages: tuple[ContextMessage, ...]
-    has_more: bool
-    page_token: str = ""
 
 
 class EmployeeThreadContext:
@@ -269,12 +268,17 @@ __all__ = [
     "ContextMessage",
     "ContextUnavailableError",
     "ContextUnavailableReason",
+    "CredentialResolver",
+    "EmployeeClientBuilder",
+    "EmployeeMessageSourceFactory",
     "EmployeeMessageScope",
+    "EmployeeScopedMessageSource",
     "EmployeeThreadContext",
     "FeishuMessageSource",
     "MessagePage",
     "MessageRevision",
     "MessageSourceError",
+    "ResolvedThread",
     "ThreadContextConfig",
     "ThreadWatermark",
     "TrimmingRecord",

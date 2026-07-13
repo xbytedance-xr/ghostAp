@@ -134,12 +134,10 @@ class ContextMessage:
         if not isinstance(self.sender_type, str) or not self.sender_type:
             raise ValueError("sender_type is required")
         _require_prefix(self.chat_id, "chat_id", "oc_")
-        if self.root_id and not self.thread_id:
-            raise ValueError("root_id requires thread_id")
+        if self.root_id:
+            _require_prefix(self.root_id, "root_id", "om_")
         if self.thread_id:
             _require_prefix(self.thread_id, "thread_id", "omt_")
-            if self.root_id:
-                _require_prefix(self.root_id, "root_id", "om_")
         if self.parent_id:
             _require_prefix(self.parent_id, "parent_id", "om_")
         if not isinstance(self.sender_id_type, str) or not self.sender_id_type:

@@ -37,11 +37,15 @@ owned by Phase 3.
   `has_more=True`.
 - The SDK message model exposes `create_time`, `update_time`, `updated`,
   `deleted`, `message_position`, and `thread_message_position`. These fields,
-  not arrival order, define revision. Thread ordering is exactly
-  `(thread_message_position, message_position, create_time, message_id)` after
-  normalizing missing positions. A present position that is duplicated or
-  decreases in an ascending page fails closed; missing positions fall back to
-  the remaining keys.
+  not arrival order, define revision. Validate the official List response by
+  its requested `create_time` direction. Within one Thread traversal, validate
+  every present `thread_message_position` and `message_position` independently
+  for uniqueness and monotonic progress across page boundaries; missing
+  positions do not invalidate an otherwise correctly ordered API response.
+  Chat traversal never treats Thread-local positions as globally unique.
+  Snapshot assembly later uses the normalized tuple
+  `(thread_message_position, message_position, create_time, message_id)` only
+  as its deterministic internal ordering key.
 - Get Message may reject deleted content. A deleted current message makes the
   snapshot unavailable; deleted historical messages remain tombstones and
   never expose stale body text.
@@ -185,9 +189,10 @@ Commit: `feat(autonomous): define thread context contracts`
   explicit descending order, and bounded page size.
 - Strictly validate SDK success, response shape, page-token progress, deadline,
   message identity/scope, integer millisecond timestamps, update >= create,
-  and the exact normalized ordering key defined above. Reject duplicate IDs or
-  positions with conflicting revision/body and reject present positions that
-  repeat or move backwards.
+  requested create-time direction, and the independent Thread position rules
+  defined above. Reject duplicate IDs or positions with conflicting
+  revision/body and reject present Thread positions that repeat or move
+  backwards.
 - Parse supported content deterministically. Media may use stable non-secret
   placeholders; malformed/unknown non-deleted content fails closed. Tombstones
   contain no historical body.
