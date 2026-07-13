@@ -309,6 +309,42 @@ def test_pagination_cannot_restart_while_continuation_is_required() -> None:
     assert raised.value.reason is ContextUnavailableReason.PAGINATION
 
 
+def test_chat_traversal_can_be_explicitly_reset_after_bounded_window() -> None:
+    first = _Response(
+        items=[
+            _message(
+                "om_first",
+                root_id="",
+                thread_id="",
+                position=0,
+                message_position=20,
+            )
+        ],
+        has_more=True,
+        page_token="next",
+    )
+    restarted = _Response(
+        items=[
+            _message(
+                "om_restarted",
+                root_id="",
+                thread_id="",
+                position=0,
+                message_position=20,
+            )
+        ]
+    )
+    source, api, _, _ = _open_source(list_responses=[first, restarted])
+
+    with source:
+        assert source.list_chat_messages().has_more is True
+        source.reset_chat_traversal()
+        page = source.list_chat_messages()
+
+    assert page.messages[0].message_id == "om_restarted"
+    assert ("page_token", "next") not in api.list_requests[1].queries
+
+
 def test_normalizes_edits_and_tombstones_without_stale_content() -> None:
     edited = _message(
         "om_edited",

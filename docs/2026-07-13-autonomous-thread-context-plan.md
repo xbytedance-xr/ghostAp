@@ -43,9 +43,9 @@ owned by Phase 3.
   for uniqueness and monotonic progress across page boundaries; missing
   positions do not invalidate an otherwise correctly ordered API response.
   Chat traversal never treats Thread-local positions as globally unique.
-  Snapshot assembly later uses the normalized tuple
-  `(thread_message_position, message_position, create_time, message_id)` only
-  as its deterministic internal ordering key.
+  Snapshot assembly preserves API order for Thread traversal. Group recent is
+  ordered by `create_time`, then chat-global `message_position`, then message
+  ID; it never treats `thread_message_position` as global across topics.
 - Get Message may reject deleted content. A deleted current message makes the
   snapshot unavailable; deleted historical messages remain tombstones and
   never expose stale body text.
@@ -214,6 +214,12 @@ Commit: `feat(autonomous): add employee lark context source`
 ---
 
 ## Task 3: Deterministic snapshot assembly and budget policy
+
+**Status (2026-07-13): complete.** The implementation adds stable Thread and
+bounded Group window observations, explicit chat traversal reset, immutable
+identity reconciliation, trusted reserve binding, and deterministic whole-unit
+budget trimming. Three independent API, security, and quality reviews approved
+the final contracts. Task 4 remains intentionally separate.
 
 **Tests first**
 

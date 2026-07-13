@@ -328,6 +328,8 @@ class AssembledContext:
     trimming_trace: tuple[TrimmingRecord, ...] = ()
     snapshot_hash: str = ""
     group_layer_unavailable: bool = False
+    system_prompt_tokens_reserved: int = 0
+    constraints_digest: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thread_messages", tuple(self.thread_messages))
@@ -337,9 +339,19 @@ class AssembledContext:
         object.__setattr__(self, "trimming_trace", tuple(self.trimming_trace))
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 0
-            for value in (self.total_tokens_estimate, self.total_chars)
+            for value in (
+                self.total_tokens_estimate,
+                self.total_chars,
+                self.system_prompt_tokens_reserved,
+            )
         ):
             raise ValueError("context totals must be non-negative")
+        if self.snapshot_hash and re.fullmatch(r"[0-9a-f]{64}", self.snapshot_hash) is None:
+            raise ValueError("snapshot_hash must be a SHA-256 hex digest")
+        if self.constraints_digest and re.fullmatch(
+            r"[0-9a-f]{64}", self.constraints_digest
+        ) is None:
+            raise ValueError("constraints_digest must be a SHA-256 hex digest")
 
     def diagnostics(self) -> dict[str, Any]:
         """Return structural diagnostics without message or memory plaintext."""
@@ -354,6 +366,8 @@ class AssembledContext:
             "truncated": self.truncated,
             "group_layer_unavailable": self.group_layer_unavailable,
             "snapshot_hash": self.snapshot_hash,
+            "system_prompt_tokens_reserved": self.system_prompt_tokens_reserved,
+            "constraints_digest": self.constraints_digest,
         }
 
 

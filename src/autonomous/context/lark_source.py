@@ -353,18 +353,21 @@ class _TraversalState:
     last_thread_position: int | None = None
     last_message: ContextMessage | None = None
 
+    def reset(self) -> None:
+        self.expected_token = ""
+        self.returned_tokens.clear()
+        self.message_ids.clear()
+        self.message_positions.clear()
+        self.thread_positions.clear()
+        self.last_message_position = None
+        self.last_thread_position = None
+        self.last_message = None
+
     def start_page(self, page_token: str) -> None:
         if not page_token:
             if self.expected_token:
                 raise _fail(ContextUnavailableReason.PAGINATION)
-            self.expected_token = ""
-            self.returned_tokens.clear()
-            self.message_ids.clear()
-            self.message_positions.clear()
-            self.thread_positions.clear()
-            self.last_message_position = None
-            self.last_thread_position = None
-            self.last_message = None
+            self.reset()
             return
         if page_token != self.expected_token:
             raise _fail(ContextUnavailableReason.PAGINATION)
@@ -686,6 +689,14 @@ class _LarkEmployeeMessageSource:
                 expected_thread_id=None,
             )
 
+    def reset_chat_traversal(self) -> None:
+        """Abort a bounded recent-chat window without closing the lease."""
+        with self._operation_lock:
+            generation = self._begin_operation()
+            with self._state_lock:
+                self._require_generation(generation)
+                self._chat_state.reset()
+
     def _list_messages(
         self,
         *,
@@ -912,6 +923,9 @@ class _EmployeeSourceLease:
                 page_size=page_size,
             )
         )
+
+    def reset_chat_traversal(self) -> None:
+        self._invoke(lambda source: source.reset_chat_traversal())
 
     def _invoke(
         self,
