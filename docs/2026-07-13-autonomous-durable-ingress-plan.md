@@ -1,7 +1,7 @@
 # Autonomous Employee Durable Ingress and Slock Gateway Plan
 
-> **Status:** active; Tasks 0-2 are complete. Task 3 official low-level Channel
-> ACK bridge is next. This plan does not
+> **Status:** active; Tasks 0-3 are complete. Task 4 employee-scoped attachment
+> staging is next. This plan does not
 > authorize raising `autonomous_visible_employee_limit` above `0`.
 
 **Goal:** Accept employee Bot events durably before the Feishu WebSocket ACK,
@@ -307,6 +307,28 @@ review approved both specification compliance and code quality; Task 3-7 and
   same app and no main-Bot fallback.
 
 Commit: `feat(autonomous): ack employee events after journal anchor`
+
+**Task 3 outcome (2026-07-13):** complete. The production worker now uses only
+the pinned official low-level `WSClient + EventDispatcherHandler`; its
+synchronous message and P2 card callbacks share a strict 1.5-second deadline
+covering connection admission, child-to-parent IPC, Journal anchor and the
+matching transport ACK. The parent validates the current tenant, employee, Bot,
+app, generation and observed connection before calling the durable Inbox. ACK,
+STOP and SEND frames share one sequence/write lock; reconnect rotates the
+connection epoch, cancels old pending ownership and publishes READY before any
+new INGRESS.
+
+The exact `EI-BRIDGE-MESSAGE-01` and `EI-BRIDGE-CARD-01` integration selectors
+pass against the real HTTP discovery, WSS/TLS, protobuf dispatcher and SDK
+response writer. The mandatory fault matrix covers IPC backpressure/partial
+writes, parent close, anchor/projection/ACK encode/control write failures, late
+or lost ACK, child crash, post-callback SDK write failure, reconnect/STOP/
+generation fencing and replay convergence. Oversized single frames produce
+wire non-success with zero Inbox/Journal/Router/ACP side effects. Independent
+final review approved specification compliance and code quality. This remains
+local Phase 3 evidence; Task 4-7, Task 7 production aggregation, FI-29 and real
+tenant release remain pending, so `autonomous_visible_employee_limit=0` is
+unchanged.
 
 **Mandatory bridge fault matrix**
 

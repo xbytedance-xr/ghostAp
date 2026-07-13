@@ -166,8 +166,8 @@
        RECORD/runtime payload/受控空 bytecode cache；mismatch 稳定阻断为
        `employee_channel_sdk_capability_mismatch`，本地 evidence 永远不可晋级
      - 已确认 SDK 的单帧 byte limit 缺口：超大单帧仍会进入 callback，因此 evidence
-       强制 `requires_parent_payload_gate=true`；Task 3/7 未证明 parent wire non-200 与
-       Inbox/Journal/Router/ACP 零副作用前，execution readiness 必须继续关闭
+       强制 `requires_parent_payload_gate=true`；Task 3 已用真实 wire 证明 parent gate
+       返回 non-success 且 Inbox/Journal/Router/ACP 零副作用，Task 7 仍须聚合该证据
      - 已完成 Task 1：六个 frozen exact-schema ingress 模型、递归 secret alias 拒绝、
        restart-safe canonical dedup、1.5 秒 ACK/attachment/payload 配置、单员工≤团队≤全局
        队列关系，以及独立 Phase 3 implementation evidence manifest 均已冻结
@@ -177,7 +177,14 @@
      - `EI-IPC-01` 已由真实 spawn child + Pipe + FileAnchor + Journal/fsync selector
        收集，观测 ACK `0.014952s <= 1.5s`；它仍只是本地 Phase 3 evidence，不能替代
        全局 FI-29，也不构成生产 readiness
-     - Task 2 独立 Spec/Code review 已批准；Task 3-7 尚未完成，
+     - Task 2 独立 Spec/Code review 已批准
+     - 已完成 Task 3：生产 worker 仅使用官方 low-level WSClient/dispatcher；message 与
+       real P2 card callback 在同一 1.5 秒总 deadline 内等待 parent durable ACK，
+       `EI-BRIDGE-MESSAGE-01`/`EI-BRIDGE-CARD-01` 真实 WSS/protobuf selectors 已通过
+     - Task 3 mandatory matrix 已覆盖 IPC backpressure/partial frame、parent close、
+       anchor/projection/ACK encode/control write、late/lost ACK、child crash、SDK write、
+       reconnect/STOP/generation rotation；connection epoch 与 READY/INGRESS 顺序 fail-close
+     - Task 3 独立 Spec/Code review 已批准；Task 4-7 尚未完成，Task 7 尚未聚合生产门禁，
        `autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
