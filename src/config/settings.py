@@ -637,6 +637,35 @@ class Settings(BaseSettings):
     autonomous_history_timezone: str = "UTC"
     autonomous_history_max_range_days: int = Field(default=31, ge=1, le=366)
     autonomous_history_page_size: int = Field(default=50, ge=1, le=200)
+    autonomous_thread_context_max_messages: int = Field(
+        default=200,
+        ge=1,
+        le=10_000,
+    )
+    autonomous_thread_context_max_chars: int = Field(
+        default=400_000,
+        ge=1,
+        le=5_000_000,
+    )
+    autonomous_group_context_max_messages: int = Field(
+        default=50,
+        ge=1,
+        le=500,
+    )
+    autonomous_context_max_tokens: int = Field(
+        default=128_000,
+        ge=1,
+        le=2_000_000,
+    )
+    autonomous_thread_context_page_size: int = Field(default=50, ge=1, le=50)
+    autonomous_group_context_page_size: int = Field(default=20, ge=1, le=50)
+    autonomous_context_fetch_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+    )
+    autonomous_context_max_pages: int = Field(default=200, ge=1, le=10_000)
     autonomous_manager_acl: str = ""
     autonomous_anchor_provider: str = ""
     autonomous_anchor_path: str = "~/.ghostap/autonomy/journal.anchor"
@@ -661,6 +690,23 @@ class Settings(BaseSettings):
     autonomous_employee_service_instance_id: str = ""
     autonomous_employee_staging_tenant_hash: str = ""
     autonomous_employee_production_tenant_hash: str = ""
+
+    @field_validator(
+        "autonomous_thread_context_max_messages",
+        "autonomous_thread_context_max_chars",
+        "autonomous_group_context_max_messages",
+        "autonomous_context_max_tokens",
+        "autonomous_thread_context_page_size",
+        "autonomous_group_context_page_size",
+        "autonomous_context_fetch_timeout_seconds",
+        "autonomous_context_max_pages",
+        mode="before",
+    )
+    @classmethod
+    def _reject_boolean_context_settings(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("employee context numeric settings reject booleans")
+        return value
 
     @field_validator("autonomous_journal_hmac_key", mode="before")
     @classmethod

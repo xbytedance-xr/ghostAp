@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from src.autonomous.context import (
-    AssembledContext,
     ContextLayer,
     ContextMessage,
     ContextUnavailableError,
@@ -38,12 +37,19 @@ class _FakeSource:
 
 
 def _msg(msg_id: str, text: str = "hello", ts: float = 1000.0) -> ContextMessage:
+    canonical_id = msg_id if msg_id.startswith("om_") else f"om_{msg_id}"
     return ContextMessage(
-        message_id=msg_id,
-        sender_id="user_1",
+        message_id=canonical_id,
+        sender_id="ou_1",
         sender_type="user",
         text=text,
         timestamp=ts,
+        chat_id="oc_1",
+        thread_id="omt_1",
+        root_id="om_root",
+        sender_id_type="open_id",
+        sender_tenant_key="tenant_1",
+        msg_type="text",
     )
 
 
@@ -55,9 +61,10 @@ class TestThreadContextAssembly:
         )
         ctx = EmployeeThreadContext(message_source=source)
         result = ctx.assemble(
-            chat_id="chat_1",
-            thread_root_id="root_1",
-            current_message_id="t2",
+            chat_id="oc_1",
+            thread_root_id="om_root",
+            current_message_id="om_t2",
+            tenant_key="tenant_1",
             l1_memory="# Memory",
             l2_group_memory="# Group",
         )
@@ -73,11 +80,12 @@ class TestThreadContextAssembly:
     def test_thread_fetch_failure_raises_context_unavailable(self) -> None:
         source = _FakeSource(thread_fail=True)
         ctx = EmployeeThreadContext(message_source=source)
-        with pytest.raises(ContextUnavailableError, match="thread fetch failed"):
+        with pytest.raises(ContextUnavailableError, match="CONTEXT_UNAVAILABLE:source"):
             ctx.assemble(
-                chat_id="chat_1",
-                thread_root_id="root_1",
-                current_message_id="t1",
+                chat_id="oc_1",
+                thread_root_id="om_root",
+                current_message_id="om_t1",
+                tenant_key="tenant_1",
             )
 
     def test_no_thread_root_skips_thread_fetch(self) -> None:
@@ -86,9 +94,9 @@ class TestThreadContextAssembly:
         )
         ctx = EmployeeThreadContext(message_source=source)
         result = ctx.assemble(
-            chat_id="chat_1",
+            chat_id="oc_1",
             thread_root_id="",
-            current_message_id="g1",
+            current_message_id="om_g1",
         )
         assert len(result.thread_messages) == 0
         assert ContextLayer.THREAD_FULL not in result.layers_used
@@ -101,12 +109,13 @@ class TestThreadContextAssembly:
         )
         ctx = EmployeeThreadContext(message_source=source)
         result = ctx.assemble(
-            chat_id="chat_1",
-            thread_root_id="root_1",
-            current_message_id="t2",
+            chat_id="oc_1",
+            thread_root_id="om_root",
+            current_message_id="om_t2",
+            tenant_key="tenant_1",
         )
         assert len(result.group_messages) == 1
-        assert result.group_messages[0].message_id == "g2"
+        assert result.group_messages[0].message_id == "om_g2"
 
     def test_trimming_when_over_budget(self) -> None:
         long_msgs = [_msg(f"t{i}", "x" * 10000, ts=float(i)) for i in range(50)]
@@ -114,12 +123,16 @@ class TestThreadContextAssembly:
         config = ThreadContextConfig(max_context_tokens=1000)
         ctx = EmployeeThreadContext(message_source=source, config=config)
         result = ctx.assemble(
-            chat_id="chat_1",
-            thread_root_id="root_1",
-            current_message_id="t49",
+            chat_id="oc_1",
+            thread_root_id="om_root",
+            current_message_id="om_t49",
+            tenant_key="tenant_1",
         )
         assert result.truncated
         assert len(result.thread_messages) < 50
+        assert result.watermark is not None
+        assert result.watermark.message_count == 50
+        assert result.watermark.last_message_id == "om_t49"
 
     def test_current_message_marked(self) -> None:
         source = _FakeSource(
@@ -127,13 +140,63 @@ class TestThreadContextAssembly:
         )
         ctx = EmployeeThreadContext(message_source=source)
         result = ctx.assemble(
-            chat_id="chat_1",
-            thread_root_id="root_1",
-            current_message_id="t2",
+            chat_id="oc_1",
+            thread_root_id="om_root",
+            current_message_id="om_t2",
+            tenant_key="tenant_1",
         )
         current_msgs = [m for m in result.thread_messages if m.is_current]
         assert len(current_msgs) == 1
-        assert current_msgs[0].message_id == "t2"
+        assert current_msgs[0].message_id == "om_t2"
+
+    def test_marking_current_preserves_revision_and_scope_fields(self) -> None:
+        message = ContextMessage(
+            message_id="om_current",
+            sender_id="ou_1",
+            sender_type="user",
+            text="current",
+            timestamp=1.0,
+            chat_id="oc_1",
+            thread_id="omt_1",
+            root_id="om_root",
+            sender_id_type="open_id",
+            sender_tenant_key="external_tenant",
+            msg_type="text",
+            create_time_ms=1000,
+            update_time_ms=2000,
+            message_position=4,
+            thread_message_position=3,
+            edited=True,
+        )
+        result = EmployeeThreadContext(
+            message_source=_FakeSource(thread_messages=[message])
+        ).assemble(
+            chat_id="oc_1",
+            thread_root_id="om_root",
+            current_message_id="om_current",
+            tenant_key="tenant_1",
+        )
+
+        current = result.thread_messages[0]
+        assert current.is_current is True
+        assert current.chat_id == "oc_1"
+        assert current.thread_id == "omt_1"
+        assert current.root_id == "om_root"
+        assert current.update_time_ms == 2000
+        assert current.message_position == 4
+        assert current.thread_message_position == 3
+        assert result.watermark is not None
+        assert result.watermark.tenant_key == "tenant_1"
+
+    def test_thread_scope_requires_authoritative_tenant_before_source_read(self) -> None:
+        source = _FakeSource(thread_messages=[_msg("t1")])
+
+        with pytest.raises(ContextUnavailableError, match="CONTEXT_UNAVAILABLE:scope"):
+            EmployeeThreadContext(message_source=source).assemble(
+                chat_id="oc_1",
+                thread_root_id="om_root",
+                current_message_id="om_t1",
+            )
 
     def test_watermark_captures_last_message(self) -> None:
         source = _FakeSource(
@@ -141,11 +204,12 @@ class TestThreadContextAssembly:
         )
         ctx = EmployeeThreadContext(message_source=source)
         result = ctx.assemble(
-            chat_id="chat_1",
-            thread_root_id="root_1",
-            current_message_id="t3",
+            chat_id="oc_1",
+            thread_root_id="om_root",
+            current_message_id="om_t3",
+            tenant_key="tenant_1",
         )
-        assert result.watermark.last_message_id == "t3"
+        assert result.watermark.last_message_id == "om_t3"
         assert result.watermark.last_timestamp == 300.0
         assert result.watermark.message_count == 3
 
@@ -153,9 +217,10 @@ class TestThreadContextAssembly:
         source = _FakeSource(thread_messages=[_msg("t1")])
         ctx = EmployeeThreadContext(message_source=source)
         result = ctx.assemble(
-            chat_id="chat_1",
-            thread_root_id="root_1",
-            current_message_id="t1",
+            chat_id="oc_1",
+            thread_root_id="om_root",
+            current_message_id="om_t1",
+            tenant_key="tenant_1",
             l1_memory="",
             l2_group_memory="",
         )

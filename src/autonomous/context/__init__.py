@@ -2,67 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, replace
 from typing import Protocol
 
+from .models import (
+    AssembledContext,
+    ContextLayer,
+    ContextLayerMetrics,
+    ContextMessage,
+    ContextUnavailableError,
+    ContextUnavailableReason,
+    EmployeeMessageScope,
+    MessageRevision,
+    MessageSourceError,
+    ThreadContextConfig,
+    ThreadWatermark,
+    TrimmingRecord,
+)
+
 logger = logging.getLogger(__name__)
-
-
-class ContextUnavailableError(RuntimeError):
-    """Thread context cannot be assembled; execution must not proceed."""
-
-
-class MessageSourceError(RuntimeError):
-    """Message fetch from Feishu API failed."""
-
-
-class ContextLayer(str, Enum):
-    THREAD_FULL = "thread_full"
-    GROUP_RECENT = "group_recent"
-    L1_MEMORY = "l1_memory"
-    L2_GROUP = "l2_group"
-
-
-@dataclass(frozen=True)
-class ContextMessage:
-    """One message in the assembled context."""
-
-    message_id: str
-    sender_id: str
-    sender_type: str
-    text: str
-    timestamp: float
-    is_system: bool = False
-    is_current: bool = False
-    edited: bool = False
-    deleted: bool = False
-
-
-@dataclass(frozen=True)
-class ThreadWatermark:
-    """Stable cursor for incremental thread fetch."""
-
-    thread_root_id: str
-    last_message_id: str
-    last_timestamp: float
-    message_count: int
-    revision: int = 0
-
-
-@dataclass(frozen=True)
-class AssembledContext:
-    """Final layered context ready for ACP injection."""
-
-    thread_messages: tuple[ContextMessage, ...]
-    group_messages: tuple[ContextMessage, ...]
-    l1_summary: str
-    l2_summary: str
-    total_tokens_estimate: int
-    watermark: ThreadWatermark | None
-    layers_used: tuple[ContextLayer, ...]
-    truncated: bool = False
 
 
 class FeishuMessageSource(Protocol):
@@ -96,19 +56,6 @@ class MessagePage:
     page_token: str = ""
 
 
-@dataclass
-class ThreadContextConfig:
-    """Configuration for context assembly."""
-
-    max_thread_messages: int = 200
-    max_group_messages: int = 50
-    max_context_tokens: int = 128_000
-    tokens_per_char: float = 0.3
-    thread_page_size: int = 50
-    group_page_size: int = 20
-    fetch_timeout_seconds: float = 30.0
-
-
 class EmployeeThreadContext:
     """Assembles layered context for one employee execution."""
 
@@ -127,6 +74,7 @@ class EmployeeThreadContext:
         chat_id: str,
         thread_root_id: str,
         current_message_id: str,
+        tenant_key: str = "",
         l1_memory: str = "",
         l2_group_memory: str = "",
         employee_bot_id: str = "",
@@ -136,12 +84,18 @@ class EmployeeThreadContext:
         thread_messages: list[ContextMessage] = []
         group_messages: list[ContextMessage] = []
         if thread_root_id:
+            if not tenant_key:
+                raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
             try:
                 thread_messages = self._fetch_thread(chat_id, thread_root_id)
                 layers.append(ContextLayer.THREAD_FULL)
-            except (MessageSourceError, Exception) as exc:
+            except Exception as exc:
+                logger.warning(
+                    "employee thread context source failed: %s",
+                    type(exc).__name__,
+                )
                 raise ContextUnavailableError(
-                    f"thread fetch failed: {exc}"
+                    ContextUnavailableReason.SOURCE
                 ) from exc
         try:
             group_messages = self._fetch_group_recent(chat_id, thread_root_id)
@@ -155,21 +109,17 @@ class EmployeeThreadContext:
         for msg in thread_messages:
             if msg.message_id == current_message_id:
                 thread_messages = [
-                    ContextMessage(
-                        message_id=m.message_id,
-                        sender_id=m.sender_id,
-                        sender_type=m.sender_type,
-                        text=m.text,
-                        timestamp=m.timestamp,
-                        is_system=m.is_system,
-                        is_current=(m.message_id == current_message_id),
-                        edited=m.edited,
-                        deleted=m.deleted,
-                    )
+                    replace(m, is_current=(m.message_id == current_message_id))
                     for m in thread_messages
                 ]
                 break
         thread_messages = self._dedup(thread_messages, group_messages)
+        watermark = self._build_watermark(
+            tenant_key=tenant_key,
+            chat_id=chat_id,
+            thread_root_id=thread_root_id,
+            thread_messages=thread_messages,
+        )
         total_estimate = self._estimate_tokens(
             thread_messages, group_messages, l1_memory, l2_group_memory
         )
@@ -181,15 +131,6 @@ class EmployeeThreadContext:
             total_estimate = self._estimate_tokens(
                 thread_messages, group_messages, l1_memory, l2_group_memory
             )
-        watermark = None
-        if thread_messages:
-            last = thread_messages[-1]
-            watermark = ThreadWatermark(
-                thread_root_id=thread_root_id,
-                last_message_id=last.message_id,
-                last_timestamp=last.timestamp,
-                message_count=len(thread_messages),
-            )
         return AssembledContext(
             thread_messages=tuple(thread_messages),
             group_messages=tuple(group_messages),
@@ -199,6 +140,36 @@ class EmployeeThreadContext:
             watermark=watermark,
             layers_used=tuple(layers),
             truncated=truncated,
+        )
+
+    @staticmethod
+    def _build_watermark(
+        *,
+        tenant_key: str,
+        chat_id: str,
+        thread_root_id: str,
+        thread_messages: list[ContextMessage],
+    ) -> ThreadWatermark | None:
+        """Capture source identity and revision before budget trimming."""
+        if not thread_messages:
+            return None
+        last = thread_messages[-1]
+        revisions = tuple(
+            MessageRevision.from_message(message).digest
+            for message in thread_messages
+        )
+        return ThreadWatermark(
+            thread_root_id=thread_root_id,
+            last_message_id=last.message_id,
+            last_timestamp=last.timestamp,
+            message_count=len(thread_messages),
+            revision=max(message.update_time_ms for message in thread_messages),
+            tenant_key=tenant_key,
+            chat_id=chat_id,
+            feishu_thread_id=last.thread_id,
+            revision_digest=hashlib.sha256(
+                "".join(revisions).encode("ascii")
+            ).hexdigest(),
         )
 
     def _fetch_thread(self, chat_id: str, thread_root_id: str) -> list[ContextMessage]:
@@ -289,3 +260,22 @@ class EmployeeThreadContext:
             used += msg_tokens
         kept.sort(key=lambda m: m.timestamp)
         return kept, group, l1, l2, True
+
+
+__all__ = [
+    "AssembledContext",
+    "ContextLayer",
+    "ContextLayerMetrics",
+    "ContextMessage",
+    "ContextUnavailableError",
+    "ContextUnavailableReason",
+    "EmployeeMessageScope",
+    "EmployeeThreadContext",
+    "FeishuMessageSource",
+    "MessagePage",
+    "MessageRevision",
+    "MessageSourceError",
+    "ThreadContextConfig",
+    "ThreadWatermark",
+    "TrimmingRecord",
+]

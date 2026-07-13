@@ -69,6 +69,58 @@ def test_employee_data_settings_validate_timezone_and_query_bounds() -> None:
         Settings(_env_file=None, autonomous_history_page_size=201)
 
 
+def test_employee_thread_context_settings_defaults(settings: Settings) -> None:
+    assert settings.autonomous_thread_context_max_messages == 200
+    assert settings.autonomous_thread_context_max_chars == 400_000
+    assert settings.autonomous_group_context_max_messages == 50
+    assert settings.autonomous_context_max_tokens == 128_000
+    assert settings.autonomous_thread_context_page_size == 50
+    assert settings.autonomous_group_context_page_size == 20
+    assert settings.autonomous_context_fetch_timeout_seconds == 30.0
+    assert settings.autonomous_context_max_pages == 200
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("autonomous_thread_context_max_messages", 0),
+        ("autonomous_thread_context_max_chars", 0),
+        ("autonomous_group_context_max_messages", 0),
+        ("autonomous_context_max_tokens", 0),
+        ("autonomous_thread_context_page_size", 0),
+        ("autonomous_thread_context_page_size", 51),
+        ("autonomous_group_context_page_size", 0),
+        ("autonomous_group_context_page_size", 51),
+        ("autonomous_context_fetch_timeout_seconds", 0),
+        ("autonomous_context_fetch_timeout_seconds", float("inf")),
+        ("autonomous_context_max_pages", 0),
+        ("autonomous_thread_context_max_messages", True),
+        ("autonomous_context_fetch_timeout_seconds", True),
+    ],
+)
+def test_employee_thread_context_settings_reject_invalid_bounds(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, **{field: value})
+
+
+def test_env_example_documents_employee_thread_context_settings() -> None:
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+    for name in (
+        "AUTONOMOUS_THREAD_CONTEXT_MAX_MESSAGES",
+        "AUTONOMOUS_THREAD_CONTEXT_MAX_CHARS",
+        "AUTONOMOUS_GROUP_CONTEXT_MAX_MESSAGES",
+        "AUTONOMOUS_CONTEXT_MAX_TOKENS",
+        "AUTONOMOUS_THREAD_CONTEXT_PAGE_SIZE",
+        "AUTONOMOUS_GROUP_CONTEXT_PAGE_SIZE",
+        "AUTONOMOUS_CONTEXT_FETCH_TIMEOUT_SECONDS",
+        "AUTONOMOUS_CONTEXT_MAX_PAGES",
+    ):
+        assert f"{name}=" in env_example
+
+
 def test_autonomous_settings_are_fail_closed_by_default(settings: Settings) -> None:
     assert settings.autonomous_deployment_mode == AutonomousDeploymentMode.OFF
     assert settings.autonomous_compatibility_mode == "legacy"
