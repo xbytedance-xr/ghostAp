@@ -156,7 +156,15 @@
        failure injection；所有 mandatory Context failure 均零 delegate/task/ACP 派发，三路终审批准
      - Phase 2 handoff 已关闭；下一阶段是 durable employee ingress
   3. 进行中：Durable employee ingress、Router 与 Slock gateway：
+     - 设计与现有实现审计已完成，实施计划见
+       `docs/2026-07-13-autonomous-durable-ingress-plan.md`；当前生产 Router/Inbox
+       仍是不可接受的内存脚手架，Phase 3 尚未完成
+     - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
+       不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
+       low-level dispatcher 黑盒验证消息和 CardAction 两条路径，任一路径不满足即
+       保持 execution readiness 关闭
      - Channel ACK 前 Journal durable Inbox
+     - encrypted payload/blob、并发安全 dedup、稳定 duplicate ACK 与 attachment staging
      - employee/app/generation binding、tenant、membership、ACL 和有界队列
      - ACP dispatch 前锚定 ExecutionAttemptContext
      - 每个 accepted attempt 只调用一次现有 `_run_acp_session`

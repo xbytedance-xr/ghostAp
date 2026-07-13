@@ -250,32 +250,48 @@ Provisioning 使用版本化、带 hash 的最小权限 manifest，并设置 `ad
 启动：
 
 1. 从一次性 bootstrap pipe 读取该员工 secret；主进程已完成 Vault 解析，worker 不持有 master key。
-2. 构造 `lark_channel.FeishuChannel`。
-3. 使用 SDK 常量注册 message、cardAction、reconnecting、reconnected、error、botAdded、botLeave。
-4. `connect_until_ready(timeout=...)`，检查 connection snapshot。
+2. 构造锁定版本中已经通过平台 ACK 顺序黑盒测试的 low-level
+   `lark_channel.ws.Client + EventDispatcherHandler`。高层 `FeishuChannel` 只能
+   schedule 用户 handler 后立即返回，不能用于 durable ingress。
+3. 使用官方 dispatcher 注册 message 与 cardAction；两种原始 frame 必须分别证明
+   durable ACK 后 callback 才返回。reconnecting、reconnected、error、botAdded、
+   botLeave 通过已验证的生命周期适配器接入。
+4. 只有观察到 SDK 的真实连接能力后才向 Supervisor 报 READY；PID 存活、endpoint
+   discovery 或 worker 自报启动均不构成 connection-ready 证据。
 5. 向 Supervisor 报 READY。
 
 停止：
 
 1. 关闭 ingress gate。
 2. drain/cancel handler。
-3. `await disconnect()`。
+3. 调用通过锁定版本生命周期测试的 stop/disconnect 路径。
 4. 等待子进程退出；超时才 TERM/KILL。
 
 生产最终使用 Channel SDK strict security mode；灰度期可先 audit。SDK 内存 dedup 是第一层，跨进程权威 dedup 仍由 Durable Inbox 提供。
 
-SDK 1.1.0 的 reconnect 通知是同步调用，必须注册同步、非阻塞 shim，只做线程安全 IPC enqueue；message/cardAction 使用 async handler。Contract test 禁止未 await coroutine warning，并验证 Supervisor 收到状态。
+SDK 1.1.0 的 reconnect 通知是同步调用，必须注册同步、非阻塞 shim，只做线程安全 IPC enqueue。
+message/cardAction 使用 low-level dispatcher 的同步 callback：callback 写入严格 IPC request，
+再由专用 OS ACK reader 等待主进程 durable ACK；不能依赖被同步 callback 阻塞的 SDK event
+loop 读取 ACK。Contract test 必须验证 ACK 顺序、超时非成功响应、stop/reconnect 生命周期，
+并禁止未 await coroutine warning。
 
 ## 9. Durable Ingress、Router 与 ACP
 
 ### 9.1 ACK 边界
 
-Channel child 收到 `InboundMessage` 或 `CardActionEvent` 后：
+高层 `FeishuChannel.on()` 不满足本节 ACK 合同：锁定的 1.1.0 实现会 schedule async
+handler 后立即把控制权交回 low-level client，平台 `Response(code=200)` 可能早于主进程
+Journal fsync。生产入口必须使用通过锁定版本黑盒测试的 low-level synchronous dispatcher；
+消息与原始 CardAction 路径分别门禁，任何一条无法延迟平台响应都保持 readiness 关闭。
+
+Channel child 的同步 callback 收到 `InboundMessage` 或 `CardActionEvent` 后：
 
 1. 以进程绑定的 employee ID 和 app ID 构造 `EmployeeEnvelope`。
 2. 通过 IPC 交主进程。
 3. 主进程写 Durable Inbox、fsync 并返回 ACK。
-4. child handler 得到 ACK 后才能返回。
+4. 专用 ACK reader 收到与 request/envelope、employee/app/generation/connection 和 semantic
+   digest 完全匹配的 ACK 后，child callback 才能返回；随后 low-level client 才允许写平台
+   成功响应。超时或 NACK 必须让 callback 失败，触发非成功响应/平台重投。
 
 Dedup key 优先使用 `tenant + employee + event_id`；无 event ID 时使用 `tenant + employee + message_id + event_type + action identity`。
 

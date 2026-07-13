@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-13
+- **Durable Ingress计划** — 纠正高层SDK提前ACK假设，冻结wire门禁、Inbox、Router与Slock Gateway任务 → [详细记录](2026-07-13.md)
 - **Thread Context阶段关闭** — 页间故障注入、跨域安全与重启确定性验证完成，下一项为durable ingress → [详细记录](2026-07-13.md)
 - **员工Context生产接线** — runtime ownership、独立探测、恢复撤权与逆序关闭落地，下一项为failure injection → [详细记录](2026-07-13.md)
 - **员工Context授权门禁** — tenant L1/full-L2 ACL、requester绑定、原子authority fence与dir-fd/投影并发加固落地，下一项为production composition → [详细记录](2026-07-13.md)
