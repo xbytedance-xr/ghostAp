@@ -143,6 +143,10 @@ class EmployeeDataComposition:
         """Quarantine blobs not referenced by any projected record or document."""
         return self.service.quarantine_unreferenced_blobs()
 
+    def close(self) -> None:
+        """Release the owned encrypted BlobStore; the shared Writer is external."""
+        self.service.close()
+
 
 def build_employee_data_composition(
     *,

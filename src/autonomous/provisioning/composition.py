@@ -16,6 +16,23 @@ from typing import Any, Protocol
 
 import lark_oapi as lark
 
+from src.slock_engine.memory_manager import (
+    MemoryManager,
+    default_slock_storage_base,
+)
+
+from ..context.lark_source import LarkEmployeeMessageSourceFactory
+from ..context.models import ThreadContextConfig
+from ..context.runtime import (
+    RuntimeEmployeeGenerationAuthority,
+    parse_requester_acl,
+)
+from ..context.service import AuthorizedGroupMemoryReader, EmployeeContextService
+from ..context.source import EmployeeMessageSourceFactory
+from ..data.composition import (
+    EmployeeDataComposition,
+    build_employee_data_composition,
+)
 from ..journal.anchor import FileAnchor
 from ..journal.projections import ProjectionState
 from ..journal.writer import JOURNAL_FILENAME, JournalWriter
@@ -23,7 +40,12 @@ from ..supervisor.employee_channels import (
     ChannelProcessState,
     EmployeeChannelSupervisor,
 )
-from ..workforce.credential_vault import CredentialKeyring, CredentialVault
+from ..workforce.credential_vault import (
+    CredentialKeyring,
+    CredentialReceipt,
+    CredentialVault,
+)
+from ..workforce.registry import ProjectedAgentRegistry
 from .hire_service import HireReadiness, ProductionEmployeeHireService
 from .hire_state import DurableHireState, HireEffectState, HirePhase
 from .lark_app import LarkAppRegistrar
@@ -97,6 +119,17 @@ class EmployeeDepartmentRuntime:
         self._writer: JournalWriter | None = None
         self._vault: CredentialVault | None = None
         self._channels: _ChannelSupervisor | None = None
+        self._data: EmployeeDataComposition | None = None
+        self._context_source_factory: EmployeeMessageSourceFactory | None = None
+        self._context_service: EmployeeContextService | None = None
+        self._context_acl: Any = None
+        self._group_memory_backend: Any = None
+        self._owns_group_memory_backend = False
+        self._context_blockers: tuple[str, ...] = ()
+        self._context_bindings: dict[str, tuple[str, str, int]] = {}
+        self._context_projection_invalidations: set[str] = set()
+        self._context_explicit_invalidations: set[str] = set()
+        self._context_binding_lock = threading.RLock()
         self._slash_factory: SlashReconcilerFactory | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
@@ -109,9 +142,7 @@ class EmployeeDepartmentRuntime:
         self._verification_router: VerificationRouter | None = None
         self._main_bot_send_audit: MainBotSendAudit | None = None
         self._monitor_task: asyncio.Task[None] | None = None
-        self._raw_message_metadata: dict[
-            tuple[str, int, str], tuple[str, str]
-        ] = {}
+        self._raw_message_metadata: dict[tuple[str, int, str], tuple[str, str]] = {}
 
     @classmethod
     def from_settings(
@@ -122,15 +153,13 @@ class EmployeeDepartmentRuntime:
         channel_supervisor: _ChannelSupervisor | None = None,
         slash_reconciler_factory: SlashReconcilerFactory | None = None,
         main_bot_send_audit: MainBotSendAudit | None = None,
-        notification_link: Callable[[DurableHireState, str, int], object]
-        | None = None,
-        notification_status: Callable[[DurableHireState, str], object]
-        | None = None,
+        notification_link: Callable[[DurableHireState, str, int], object] | None = None,
+        notification_status: Callable[[DurableHireState, str], object] | None = None,
+        context_source_factory: EmployeeMessageSourceFactory | None = None,
+        group_memory_backend: Any = None,
     ) -> EmployeeDepartmentRuntime:
         limit = getattr(settings, "autonomous_visible_employee_limit", 0)
-        journal_exists = (
-            Path(settings.autonomous_journal_dir).expanduser() / JOURNAL_FILENAME
-        ).is_file()
+        journal_exists = (Path(settings.autonomous_journal_dir).expanduser() / JOURNAL_FILENAME).is_file()
         if limit == 0 and not journal_exists:
             return cls(blockers=("visible_employee_limit",))
         release_evidence_ready = cls._release_evidence_ready(settings)
@@ -144,8 +173,7 @@ class EmployeeDepartmentRuntime:
             return cls(blockers=("production_anchor",))
         if (
             release_evidence_ready is True
-            and getattr(settings, "autonomous_worker_sandbox_verified", False)
-            is not True
+            and getattr(settings, "autonomous_worker_sandbox_verified", False) is not True
         ):
             return cls(blockers=("worker_sandbox",))
 
@@ -180,9 +208,7 @@ class EmployeeDepartmentRuntime:
             runtime._channels = channel_supervisor or EmployeeChannelSupervisor(
                 secret_resolver=vault.resolve,
             )
-            runtime._slash_factory = (
-                slash_reconciler_factory or cls._default_slash_factory
-            )
+            runtime._slash_factory = slash_reconciler_factory or cls._default_slash_factory
             runtime._main_bot_send_audit = main_bot_send_audit
             runtime._start_loop()
             service = ProductionEmployeeHireService(
@@ -200,6 +226,11 @@ class EmployeeDepartmentRuntime:
             )
             runtime._service = service
             runtime._verification_router = VerificationRouter(nonce_consumer=service)
+            runtime._compose_context(
+                settings,
+                context_source_factory=context_source_factory,
+                group_memory_backend=group_memory_backend,
+            )
             runtime.recover()
             return runtime
         except Exception as exc:
@@ -214,17 +245,101 @@ class EmployeeDepartmentRuntime:
     def hire_service(self) -> ProductionEmployeeHireService | None:
         return self._service
 
+    @property
+    def context_service(self) -> EmployeeContextService | None:
+        return self._context_service
+
+    @property
+    def data_composition(self) -> EmployeeDataComposition | None:
+        return self._data
+
     def readiness(self) -> RuntimeReadiness:
+        return self.hire_readiness()
+
+    def hire_readiness(self) -> RuntimeReadiness:
         if self._service is None:
             return RuntimeReadiness(False, self._blockers or ("not_composed",))
         service_readiness: HireReadiness = self._service.readiness()
         return RuntimeReadiness(service_readiness.ready, service_readiness.blockers)
+
+    def execution_readiness(self, agent_id: str | None = None) -> RuntimeReadiness:
+        """Probe ACTIVE employee Context without weakening hire readiness."""
+        hire = self.hire_readiness()
+        if not hire.ready:
+            return hire
+        if self._service is None:
+            return RuntimeReadiness(False, ("not_composed",))
+        try:
+            projection = self._service.synchronize_projection()
+            active = tuple(
+                state
+                for state in self._service.list_states()
+                if state.phase is HirePhase.ACTIVE
+                and (agent_id is None or state.agent_id == agent_id)
+            )
+            if not active:
+                if agent_id is not None:
+                    return RuntimeReadiness(False, ("employee_not_active",))
+                return RuntimeReadiness(True, ())
+            if (
+                self._context_service is None
+                or self._context_source_factory is None
+                or self._data is None
+            ):
+                return RuntimeReadiness(
+                    False,
+                    self._context_blockers or ("employee_context",),
+                )
+            if not getattr(self._context_acl, "configured", False):
+                return RuntimeReadiness(
+                    False,
+                    ("context_request_authority",),
+                )
+            self._data.service.rebuild_projection()
+            projection = self._service.synchronize_projection()
+            if not self._refresh_context_bindings(projection):
+                return RuntimeReadiness(False, ("context_binding_sync",))
+            head = self._data.service.get_head()
+            if head.sequence != projection.cursor_sequence or head.logical_hash != projection.cursor_hash:
+                return RuntimeReadiness(False, ("context_projection_stale",))
+            for state in active:
+                employee = projection.employees.get(state.agent_id)
+                principal = projection.bot_principals.get(state.bot_principal_id)
+                status = self._channels.status(state.agent_id) if self._channels else None
+                status_state = getattr(status, "state", None)
+                status_value = getattr(status_state, "value", status_state)
+                if (
+                    employee is None
+                    or principal is None
+                    or employee.bot_principal_id != state.bot_principal_id
+                    or principal.agent_id != state.agent_id
+                    or principal.tenant_key != state.tenant_key
+                    or principal.app_id != state.app_id
+                    or not principal.credential_ref
+                ):
+                    return RuntimeReadiness(False, ("context_binding",))
+                if (
+                    status_value != ChannelProcessState.READY.value
+                    or getattr(status, "generation", None) != state.channel_generation
+                    or getattr(status, "identity", {}).get("app_id") != state.app_id
+                    or getattr(status, "ready_metadata", {}).get("connection_id") != state.channel_connection_id
+                ):
+                    return RuntimeReadiness(False, ("context_generation",))
+                if self._context_source_factory.probe(principal) is not True:
+                    return RuntimeReadiness(False, ("context_credentials",))
+            return RuntimeReadiness(True, ())
+        except Exception:
+            return RuntimeReadiness(False, ("employee_context",))
 
     def recover(self) -> None:
         """Replay first, then resume only recoverable durable phases."""
         if self._service is None:
             return
         projection = self._service.recover()
+        if self._data is not None:
+            self._data.service.rebuild_projection()
+        if not self._refresh_context_bindings(self._service.projection_state):
+            self._context_blockers = ("context_binding_sync",)
         if not self._external_resume_allowed:
             self._service.mark_runtime_recovered()
             return
@@ -270,41 +385,279 @@ class EmployeeDepartmentRuntime:
         if self._closing:
             return
         self._closing = True
+        errors: list[str] = []
+
+        def cleanup(label: str, action: Callable[[], Any]) -> bool:
+            try:
+                action()
+                return True
+            except Exception as exc:
+                errors.append(f"{label}:{type(exc).__name__}")
+                return False
+
         if self._service is not None:
-            self._service.stop_admission()
+            cleanup("hire_admission", self._service.stop_admission)
+        if self._context_service is not None:
+            cleanup("context_admission", self._context_service.stop_admission)
         with self._future_lock:
             futures = tuple(self._futures)
+        activities_safe = True
         if futures:
             _done, pending = concurrent.futures.wait(futures, timeout=5.0)
             for future in pending:
                 future.cancel()
+            activities_safe = not pending
         if self._loop is not None and self._loop.is_running():
             quiesce = asyncio.run_coroutine_threadsafe(
                 self._quiesce_loop(),
                 self._loop,
             )
-            quiesce.result()
-        if self._channels is not None:
-            self._channels.close()
-        if self._service is not None:
-            self._service.close()
-        elif self._writer is not None:
-            self._writer.close()
-        if self._vault is not None:
-            self._vault.close()
-        if self._loop is not None:
+            activities_safe = (
+                cleanup("activity_loop", lambda: quiesce.result(timeout=5.0))
+                and activities_safe
+            )
+        context_safe = True
+        if self._context_service is not None:
+            context_safe = cleanup("context_drain", self._context_service.drain)
+        if self._context_source_factory is not None:
+            context_safe = (
+                cleanup("context_sources", self._context_source_factory.close)
+                and context_safe
+            )
+        resources_safe = activities_safe and context_safe
+        if resources_safe:
+            if self._channels is not None:
+                resources_safe = cleanup("channels", self._channels.close)
+        if (
+            resources_safe
+            and self._owns_group_memory_backend
+            and self._group_memory_backend is not None
+        ):
+            resources_safe = cleanup(
+                "group_memory",
+                self._group_memory_backend.shutdown,
+            )
+        if resources_safe and self._data is not None:
+            resources_safe = cleanup("data", self._data.close)
+        if resources_safe:
+            if self._service is not None:
+                resources_safe = cleanup(
+                    "hire_service",
+                    self._service.close,
+                )
+            elif self._writer is not None:
+                resources_safe = cleanup("writer", self._writer.close)
+        if resources_safe and self._vault is not None:
+            resources_safe = cleanup("vault", self._vault.close)
+        if not resources_safe:
+            errors.append("dependent_resources_held")
+        if resources_safe and self._loop is not None:
             self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._loop_thread is not None:
+        if resources_safe and self._loop_thread is not None:
             self._loop_thread.join(timeout=5.0)
+        if errors:
+            logger.error("employee runtime close errors: %s", ",".join(errors))
+        if not resources_safe:
+            self._closing = False
+
+    def invalidate_employee_context(self, agent_id: str) -> None:
+        with self._context_binding_lock:
+            if self._context_source_factory is not None:
+                self._context_source_factory.invalidate_employee(agent_id)
+            self._context_explicit_invalidations.add(agent_id)
+            self._context_bindings.pop(agent_id, None)
+
+    def reactivate_employee_context(self, agent_id: str) -> None:
+        """Re-open admission after a durable replacement binding is installed."""
+        with self._context_binding_lock:
+            if self._context_source_factory is not None:
+                self._context_source_factory.reactivate_employee(agent_id)
+            self._context_explicit_invalidations.discard(agent_id)
+            self._context_projection_invalidations.discard(agent_id)
+
+    def rewrap_employee_credential(
+        self,
+        *,
+        agent_id: str,
+        app_id: str,
+        credential_ref: str,
+    ) -> CredentialReceipt:
+        """Drain employee clients around an atomic Vault key rewrap."""
+        if self._vault is None:
+            raise RuntimeError("employee credential Vault is unavailable")
+        self.invalidate_employee_context(agent_id)
+        receipt = self._vault.rewrap(
+            credential_ref,
+            agent_id,
+            app_id,
+        )
+        self.reactivate_employee_context(agent_id)
+        return receipt
+
+    def _refresh_context_bindings(self, projection: ProjectionState) -> bool:
+        if self._context_source_factory is None or self._service is None:
+            return True
+        try:
+            with self._context_binding_lock:
+                current: dict[str, tuple[str, str, int]] = {}
+                states = self._service.list_states()
+                for state in states:
+                    if state.phase is not HirePhase.ACTIVE:
+                        continue
+                    principal = projection.bot_principals.get(
+                        state.bot_principal_id
+                    )
+                    if principal is None or not principal.credential_ref:
+                        continue
+                    current[state.agent_id] = (
+                        principal.app_id,
+                        principal.credential_ref,
+                        state.channel_generation,
+                    )
+                previous = dict(self._context_bindings)
+                non_active = {
+                    state.agent_id
+                    for state in states
+                    if state.phase is not HirePhase.ACTIVE
+                }
+                changed_or_removed = {
+                    agent_id
+                    for agent_id, old_binding in previous.items()
+                    if current.get(agent_id) != old_binding
+                }
+                for agent_id in non_active | changed_or_removed:
+                    if (
+                        agent_id not in self._context_explicit_invalidations
+                        and agent_id
+                        not in self._context_projection_invalidations
+                    ):
+                        self._context_source_factory.invalidate_employee(
+                            agent_id
+                        )
+                        self._context_projection_invalidations.add(agent_id)
+                for agent_id in current:
+                    if (
+                        agent_id in self._context_projection_invalidations
+                        and agent_id
+                        not in self._context_explicit_invalidations
+                    ):
+                        self._context_source_factory.reactivate_employee(
+                            agent_id
+                        )
+                        self._context_projection_invalidations.discard(
+                            agent_id
+                        )
+                self._context_bindings = current
+            return True
+        except Exception as exc:
+            logger.error(
+                "employee Context binding refresh failed: %s",
+                type(exc).__name__,
+            )
+            return False
+
+    def _compose_context(
+        self,
+        settings: Any,
+        *,
+        context_source_factory: EmployeeMessageSourceFactory | None,
+        group_memory_backend: Any,
+    ) -> None:
+        """Compose execution-only Context; failures never block first hire."""
+        if not self._external_resume_allowed or getattr(settings, "autonomous_visible_employee_limit", 0) == 0:
+            self._context_blockers = ("employee_context",)
+            return
+        if self._service is None or self._writer is None or self._vault is None:
+            self._context_blockers = ("employee_context",)
+            return
+        try:
+            legacy_base = getattr(
+                settings,
+                "autonomous_slock_storage_base",
+                default_slock_storage_base(),
+            )
+            self._data = build_employee_data_composition(
+                settings=settings,
+                writer=self._writer,
+                admin_principal_ids=frozenset(getattr(settings, "admin_user_ids", ()) or ()),
+                main_bot_app_id=getattr(settings, "app_id", ""),
+                agents_root=Path(legacy_base).expanduser() / "agents",
+                legacy_base=legacy_base,
+            )
+            backend = group_memory_backend
+            if backend is None:
+                backend = MemoryManager(str(Path(legacy_base).expanduser()))
+                self._owns_group_memory_backend = True
+            self._group_memory_backend = backend
+            self._context_acl = parse_requester_acl(settings)
+
+            def registry_provider() -> ProjectedAgentRegistry:
+                assert self._service is not None
+                return ProjectedAgentRegistry(
+                    self._service.projection_state,
+                    storage_base_path=legacy_base,
+                )
+
+            generation = RuntimeEmployeeGenerationAuthority(
+                hire_service_provider=lambda: self._service,
+                channel_supervisor=self._channels,
+                data_composition=self._data,
+            )
+            source_factory = context_source_factory or LarkEmployeeMessageSourceFactory(
+                credential_resolver=self._vault,
+                request_timeout_seconds=getattr(
+                    settings,
+                    "autonomous_context_fetch_timeout_seconds",
+                    30.0,
+                ),
+            )
+            group_reader = AuthorizedGroupMemoryReader(
+                registry_provider=registry_provider,
+                requester_acl=self._context_acl,
+                backend=backend,
+            )
+            self._context_source_factory = source_factory
+            self._context_service = EmployeeContextService(
+                registry_provider=registry_provider,
+                generation_authority=generation,
+                requester_acl=self._context_acl,
+                data_composition=self._data,
+                group_memory_reader=group_reader,
+                source_factory=source_factory,
+                config=ThreadContextConfig.from_settings(settings),
+            )
+            self._context_blockers = ()
+        except Exception as exc:
+            logger.error(
+                "employee Context composition unavailable: %s",
+                type(exc).__name__,
+            )
+            if self._context_source_factory is not None:
+                try:
+                    self._context_source_factory.close()
+                except Exception:
+                    pass
+            if self._data is not None:
+                try:
+                    self._data.close()
+                except Exception:
+                    pass
+            if self._owns_group_memory_backend and self._group_memory_backend is not None:
+                try:
+                    self._group_memory_backend.shutdown()
+                except Exception:
+                    pass
+            self._group_memory_backend = None
+            self._owns_group_memory_backend = False
+            self._context_source_factory = None
+            self._context_service = None
+            self._data = None
+            self._context_blockers = ("employee_context",)
 
     @staticmethod
     async def _quiesce_loop() -> None:
         current = asyncio.current_task()
-        tasks = [
-            task
-            for task in asyncio.all_tasks()
-            if task is not current and not task.done()
-        ]
+        tasks = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
         for task in tasks:
             task.cancel()
         if tasks:
@@ -340,12 +693,7 @@ class EmployeeDepartmentRuntime:
 
     @staticmethod
     def _default_slash_factory(app_id: str, app_secret: str) -> _SlashReconciler:
-        client = (
-            lark.Client.builder()
-            .app_id(app_id)
-            .app_secret(app_secret)
-            .build()
-        )
+        client = lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
         return SlashCommandReconciler(LarkSlashCommandAPI(client))
 
     def _start_loop(self) -> None:
@@ -438,10 +786,7 @@ class EmployeeDepartmentRuntime:
         failed_intents: list[str] = []
         if pending_intents:
             results = await asyncio.gather(
-                *(
-                    self._configure_intent(intent_id, force_slash_refresh=True)
-                    for intent_id in pending_intents
-                ),
+                *(self._configure_intent(intent_id, force_slash_refresh=True) for intent_id in pending_intents),
                 return_exceptions=True,
             )
             failed_intents = [
@@ -458,10 +803,7 @@ class EmployeeDepartmentRuntime:
             if any(isinstance(result, BaseException) for result in retry_results):
                 logger.error(
                     "employee recovery remains fail-closed for %d intent(s)",
-                    sum(
-                        isinstance(result, BaseException)
-                        for result in retry_results
-                    ),
+                    sum(isinstance(result, BaseException) for result in retry_results),
                 )
                 return
         self._require_service().mark_runtime_recovered()
@@ -767,10 +1109,7 @@ class EmployeeDepartmentRuntime:
                 event_id = metadata.get("event_id")
                 tenant_key = metadata.get("tenant_key")
                 message_id = metadata.get("message_id")
-                if all(
-                    isinstance(value, str) and value
-                    for value in (event_id, tenant_key, message_id)
-                ):
+                if all(isinstance(value, str) and value for value in (event_id, tenant_key, message_id)):
                     if len(self._raw_message_metadata) >= 2048:
                         self._raw_message_metadata.pop(
                             next(iter(self._raw_message_metadata)),
@@ -865,11 +1204,7 @@ class EmployeeDepartmentRuntime:
             challenge.issued_at,
             audited_at,
         )
-        if (
-            isinstance(main_bot_send_count, bool)
-            or not isinstance(main_bot_send_count, int)
-            or main_bot_send_count < 0
-        ):
+        if isinstance(main_bot_send_count, bool) or not isinstance(main_bot_send_count, int) or main_bot_send_count < 0:
             raise RuntimeError("main Bot send audit is invalid")
         service.commit_effect_transition(
             intent_id,
@@ -932,6 +1267,8 @@ class EmployeeDepartmentRuntime:
         )
         if decision.outcome is VerificationOutcome.READY:
             service.commit_activation(decision)
+            if not self._refresh_context_bindings(service.projection_state):
+                self._context_blockers = ("context_binding_sync",)
 
     @staticmethod
     def _parse_status_ingress(
@@ -942,20 +1279,14 @@ class EmployeeDepartmentRuntime:
             return None
         conversation = data.get("conversation")
         sender = data.get("sender")
-        if not all(
-            isinstance(value, dict)
-            for value in (conversation, sender)
-        ):
+        if not all(isinstance(value, dict) for value in (conversation, sender)):
             return None
         event_id, tenant_key = raw_metadata
         message_id = data.get("id")
         sender_id = sender.get("open_id")
         text = data.get("safe_content_text") or data.get("content_text")
         chat_type = conversation.get("chat_type")
-        if not all(
-            isinstance(value, str) and value
-            for value in (event_id, tenant_key, message_id, sender_id, text)
-        ):
+        if not all(isinstance(value, str) and value for value in (event_id, tenant_key, message_id, sender_id, text)):
             return None
         return (
             event_id,

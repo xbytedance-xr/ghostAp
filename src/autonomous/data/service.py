@@ -104,6 +104,10 @@ class EmployeeDataService:
         self._active_key_id = active_key_id
         self._shard_timezone = shard_timezone
         self._mutex = threading.RLock()
+        self._known_cursor = (
+            data_state.cursor_sequence,
+            data_state.cursor_hash,
+        )
 
     @property
     def state(self) -> DataProjectionState:
@@ -115,6 +119,9 @@ class EmployeeDataService:
                 sequence=self._state.cursor_sequence,
                 logical_hash=self._state.cursor_hash,
             )
+
+    def close(self) -> None:
+        self._blob_store.close()
 
     @contextmanager
     def read_guard(self) -> Iterator[None]:
@@ -156,11 +163,10 @@ class EmployeeDataService:
         """Anchor an immutable attempt binding before ACP dispatch."""
         if not isinstance(context, ExecutionAttemptContext):
             raise TypeError("context must be ExecutionAttemptContext")
-        with self._mutex:
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_unlocked()
             if context.attempt_id in self._state.execution_attempts:
-                raise DataConflictError(
-                    f"attempt already started: {context.attempt_id}"
-                )
+                raise DataConflictError(f"attempt already started: {context.attempt_id}")
             event = JournalEvent(
                 event_type="employee.execution_attempt.started",
                 aggregate_id=context.attempt_id,
@@ -192,7 +198,8 @@ class EmployeeDataService:
             raise ValueError("record/payload ID mismatch")
         if record.occurrence_key != sensitive_payload.occurrence_key:
             raise ValueError("record/payload occurrence mismatch")
-        with self._mutex:
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_unlocked()
             occ_key = (record.tenant_key, record.agent_id, record.occurrence_key)
             existing_id = self._state.history_by_occurrence.get(occ_key)
             if existing_id is not None:
@@ -208,9 +215,7 @@ class EmployeeDataService:
                             state=CommitState.ANCHORED,
                         ),
                     )
-                raise DataConflictError(
-                    f"occurrence conflict: {record.occurrence_key}"
-                )
+                raise DataConflictError(f"occurrence conflict: {record.occurrence_key}")
             labels = build_history_labels(
                 record.tenant_key,
                 record.owner_principal_id,
@@ -262,11 +267,10 @@ class EmployeeDataService:
         content_hash = hashlib.sha256(content).hexdigest()
         if content_hash != document.content_hash:
             raise ValueError("content hash does not match document")
-        with self._mutex:
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_unlocked()
             if document.document_id in self._state.employee_documents:
-                raise DataConflictError(
-                    f"document already exists: {document.document_id}"
-                )
+                raise DataConflictError(f"document already exists: {document.document_id}")
             labels = build_document_labels(
                 tenant_key=document.tenant_key,
                 owner_principal_id=document.owner_principal_id,
@@ -312,7 +316,13 @@ class EmployeeDataService:
     def replay_into(self, state: DataProjectionState) -> DataProjectionState:
         """Full Journal replay populating a fresh state."""
         with self._mutex:
-            return self._replay_into_unlocked(state)
+            replayed = self._replay_into_unlocked(state)
+            if state is self._state:
+                self._known_cursor = (
+                    state.cursor_sequence,
+                    state.cursor_hash,
+                )
+            return replayed
 
     def _replay_into_unlocked(
         self,
@@ -331,6 +341,18 @@ class EmployeeDataService:
             state.cursor_hash = frame.frame_hash
         return state
 
+    def _synchronize_projection_unlocked(self) -> None:
+        if (
+            self._state.cursor_sequence,
+            self._state.cursor_hash,
+        ) != self._known_cursor:
+            return
+        last = self._writer.get_last_frame()
+        sequence = 0 if last is None else last.sequence
+        logical_hash = "" if last is None else last.frame_hash
+        if self._state.cursor_sequence != sequence or self._state.cursor_hash != logical_hash:
+            self._replace_state_unlocked(self._replay_into_unlocked(DataProjectionState()))
+
     def _replace_state_unlocked(self, fresh: DataProjectionState) -> None:
         self._state.history_records = fresh.history_records
         self._state.history_by_employee_day = fresh.history_by_employee_day
@@ -344,6 +366,7 @@ class EmployeeDataService:
         self._state.data_read_audits = fresh.data_read_audits
         self._state.cursor_sequence = fresh.cursor_sequence
         self._state.cursor_hash = fresh.cursor_hash
+        self._known_cursor = (fresh.cursor_sequence, fresh.cursor_hash)
 
     def _apply_frame(self, result: CommitResult) -> None:
         frame = result.frame
@@ -357,6 +380,7 @@ class EmployeeDataService:
                 )
         self._state.cursor_sequence = frame.sequence
         self._state.cursor_hash = frame.frame_hash
+        self._known_cursor = (frame.sequence, frame.frame_hash)
 
 
 def _canonical_payload(payload: ExecutionHistoryPayloadV1) -> bytes:

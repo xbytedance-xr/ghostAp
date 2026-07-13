@@ -348,6 +348,14 @@ Commit: `feat(autonomous): gate employee execution on context`
 
 ## Task 5: Production composition, readiness, and recovery ownership
 
+**Status (2026-07-13): complete.** `EmployeeDepartmentRuntime` now owns the
+employee-scoped Context/Data composition, separates hire and execution
+readiness, probes the employee app identity, rebuilds durable bindings on
+recovery, invalidates rotation/retirement clients, and closes dependencies in
+reverse order. Cross-domain Journal writes use an independent coordination
+lock while retaining the writer leaf lock. Task 6 failure injection remains
+the next Thread Context milestone.
+
 **Tests first**
 
 - Extend `tests/autonomous/integration/test_employee_hire_composition.py` with

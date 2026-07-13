@@ -59,20 +59,22 @@
   - readiness 反馈已接入处理器：只有 provider 明确返回 `ready=True` 且无 blockers 才派发真实 Hire；否则向管理员显示具体安全门禁，不再误报“不是管理员”，也不降级创建本地虚拟角色。
   - 当前现场仍不能创建真实员工，但剩余原因是有意的发布门禁而非 DM 识别：`autonomous_visible_employee_limit=0`，且没有独立 QA release 公钥/有效 attestation；全新环境的 `EmployeeDepartmentRuntime` 保持 dormant，`employee_hire_service` 不注入。不得绕过门禁创建员工。
   - 以下模块仍主要是局部实现或内存脚手架，尚未组成真实员工任务闭环：
-    - Thread Context Task 1-4 已完成：冻结 contracts/config、employee-scoped 官方
+    - Thread Context Task 1-5 已完成：冻结 contracts/config、employee-scoped 官方
       `lark-oapi` message source、每员工 Vault credential lease、Get current 权威
       root/thread 解析、Thread 双遍历稳定 snapshot、Group 双窗口 recent、current
       propagation、revision/identity 去重、watermark、整单元预算裁剪、稳定错误与关闭
       线性化，以及 tenant-bound canonical L1、membership/chat-bound full L2、动态
       Projected Registry/BotPrincipal、requester/current-sender 绑定、mandatory atomic
-      authority fence 均有回归；Task 5 production composition/readiness/recovery ownership
-      尚未完成，普通 ACTIVE Channel 仍未接入该服务
+      authority fence 均有回归；production runtime 现拥有 Context source/service 与
+      canonical Data composition，拆分 hire/execution readiness，并覆盖 employee app probe、
+      shared Journal 同步、restart/rotation/retirement invalidation 与逆序关闭。Task 6
+      failure injection 仍待完成，durable ingress 尚未接入该服务
     - `EmployeeMessageRouter` 尚未接 durable employee ingress、Projected Registry、ACL/membership 与真实 Slock `_run_acp_session`
     - `EmployeeResponseChannel` 明确仍是 in-memory outbox，缺 Journal-backed Durable Outbox、稳定 UUID 卡片和 child-owned stream controller
     - `FireSaga` 仍是可变内存顺序流程，未满足 Journal SSOT、Effect 锚定、unknown disposition、恢复与归档合同
     - 团队 membership、`/role add/remove`、`/stop` 终态竞态尚未形成生产闭环
-  - 尚无获授权的真实测试/生产租户执行证据。Thread Context Task 4 后最新
-    Autonomous 全量验证为 `1192 passed, 2 skipped`；两项 skip 分别是未授权真实
+  - 尚无获授权的真实测试/生产租户执行证据。Thread Context Task 5 后最新
+    Autonomous 全量验证为 `1215 passed, 2 skipped`；两项 skip 分别是未授权真实
     租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
     不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
   - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
@@ -134,7 +136,7 @@
      - 使用服务端保存、绑定 origin message/chat/operator 的可信 DM provenance
      - provenance 查询失败、残缺、过期、跨 chat、跨 operator 或冲突时 fail-close；仅明确无记录可用 Chat API `chat_mode` 原子回填
      - readiness 未满足时展示具体安全阻断，不误报“不是管理员”
-  2. 进行中（Task 1/2/3/4 已完成）Thread Context 生产接线：
+  2. 进行中（Task 1/2/3/4/5 已完成）Thread Context 生产接线：
      - 已完成：冻结 scope/revision/watermark/config contracts
      - 已完成：employee-scoped 官方 FeishuMessageSource、root_id → thread_id
        权威解析、严格全量分页 primitive、revision/edit/delete/content normalization
@@ -147,8 +149,9 @@
        绑定、`CONTEXT_UNAVAILABLE` 零执行和 mandatory atomic authority-fence contract
      - 已完成：Data projection rebuild/read/publish/GC 统一锁所有权，以及 canonical
        L1 root/parent/final dir-fd no-follow containment
-     - 下一项：Task 5 production composition、execution readiness、recovery/shutdown
-       ownership；之后完成 Task 6 failure injection 与 Phase 2 handoff
+     - 已完成：Task 5 production composition、employee-scoped execution readiness、
+       recovery/rotation/retirement invalidation、shared Journal coordination 与 shutdown ownership
+     - 下一项：Task 6 failure injection、全量回归与 Phase 2 handoff
   3. Durable employee ingress、Router 与 Slock gateway：
      - Channel ACK 前 Journal durable Inbox
      - employee/app/generation binding、tenant、membership、ACL 和有界队列

@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -115,6 +116,10 @@ class JournalWriter:
         self._fs_ops = fs_ops or DefaultFileSystemOperations()
         self._blob_ref_validator = blob_ref_validator
         self._mutex = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        # Serialize cross-domain projection refresh + commit without reusing the
+        # writer's non-reentrant leaf lock. Public writer operations called in a
+        # transaction continue to acquire ``_mutex`` independently.
+        self._transaction_mutex = threading.RLock()
         self._closed = False
         self._write_disabled = False
         self._lock_file = open(self.lock_path, "a+b")
@@ -425,3 +430,9 @@ class JournalWriter:
         except JournalIntegrityError as exc:
             return False, [str(exc)]
         return True, []
+
+    @contextmanager
+    def transaction_guard(self) -> Iterator[None]:
+        """Serialize a domain projection refresh with its following commit."""
+        with self._transaction_mutex:
+            yield

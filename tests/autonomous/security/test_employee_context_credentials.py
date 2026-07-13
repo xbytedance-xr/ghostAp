@@ -244,9 +244,7 @@ def test_source_sanitizes_broken_list_response_validation() -> None:
             return BrokenListResponse()
 
     def builder(**_):
-        return SimpleNamespace(
-            im=SimpleNamespace(v1=SimpleNamespace(message=API()))
-        )
+        return SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=API())))
 
     source = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
         credential_resolver=vault,
@@ -274,9 +272,7 @@ def test_factory_close_revokes_active_and_future_employee_leases() -> None:
     class Client:
         def __init__(self):
             self.close_calls = 0
-            self.im = SimpleNamespace(
-                v1=SimpleNamespace(message=SimpleNamespace())
-            )
+            self.im = SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace()))
 
         def close(self):
             self.close_calls += 1
@@ -301,10 +297,117 @@ def test_factory_close_revokes_active_and_future_employee_leases() -> None:
         factory.open(scope=_scope(1), principal=_principal(1))
 
 
+def test_employee_invalidation_revokes_only_target_employee_lease() -> None:
+    vault = _Vault({"cred_1": "secret-alpha", "cred_2": "secret-bravo"})
+
+    class Client:
+        def __init__(self):
+            self.im = SimpleNamespace(v1=SimpleNamespace(message=SimpleNamespace()))
+
+    factory = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
+        credential_resolver=vault,
+        client_builder=lambda **_: Client(),
+    )
+    first = factory.open(scope=_scope(1), principal=_principal(1))
+    second = factory.open(scope=_scope(2), principal=_principal(2))
+    first.__enter__()
+    second.__enter__()
+
+    factory.invalidate_employee("agt_1")
+
+    assert first.closed is True
+    assert second.closed is False
+    with pytest.raises(ContextUnavailableError):
+        factory.open(scope=_scope(1), principal=_principal(1))
+    with pytest.raises(ContextUnavailableError):
+        first.resolve_thread()
+    factory.reactivate_employee("agt_1")
+    with factory.open(scope=_scope(1), principal=_principal(1)):
+        pass
+    second.__exit__(None, None, None)
+    factory.close()
+
+
 def test_production_factory_constructor_cannot_accept_a_prebuilt_client() -> None:
     parameters = inspect.signature(LarkEmployeeMessageSourceFactory).parameters
     assert "client" not in parameters
     assert "client_builder" not in parameters
+
+
+def test_capability_probe_closes_ephemeral_employee_client() -> None:
+    class ApplicationAPI:
+        def get(self, request):
+            return SimpleNamespace(
+                code=0,
+                success=lambda: True,
+                data=SimpleNamespace(
+                    app=SimpleNamespace(app_id=request.app_id)
+                ),
+            )
+
+    class Client:
+        def __init__(self) -> None:
+            self.close_calls = 0
+            self.application = SimpleNamespace(
+                v6=SimpleNamespace(application=ApplicationAPI())
+            )
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    client = Client()
+    factory = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
+        credential_resolver=_Vault({"cred_1": "secret-alpha"}),
+        client_builder=lambda **_: client,
+    )
+
+    assert factory.probe(_principal(1)) is True
+    assert client.close_calls == 1
+    factory.close()
+
+
+@pytest.mark.parametrize(
+    ("code", "success", "returned_app_id"),
+    [
+        (1, True, "cli_employee_1"),
+        (0, False, "cli_employee_1"),
+        (0, True, "cli_another_employee"),
+    ],
+)
+def test_capability_probe_rejects_unverified_app_identity_and_closes_client(
+    code: int,
+    success: bool,
+    returned_app_id: str,
+) -> None:
+    class ApplicationAPI:
+        def get(self, _request):
+            return SimpleNamespace(
+                code=code,
+                success=lambda: success,
+                data=SimpleNamespace(
+                    app=SimpleNamespace(app_id=returned_app_id)
+                ),
+            )
+
+    class Client:
+        def __init__(self) -> None:
+            self.close_calls = 0
+            self.application = SimpleNamespace(
+                v6=SimpleNamespace(application=ApplicationAPI())
+            )
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    client = Client()
+    factory = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
+        credential_resolver=_Vault({"cred_1": "secret-alpha"}),
+        client_builder=lambda **_: client,
+    )
+
+    assert factory.probe(_principal(1)) is False
+    assert client.close_calls == 1
+    factory.close()
 
 
 def test_factory_close_drains_pending_credential_acquire() -> None:
@@ -352,9 +455,7 @@ def test_factory_close_drains_pending_credential_acquire() -> None:
     worker = threading.Thread(target=enter_lease)
     worker.start()
     assert resolver_entered.wait(2)
-    closer = threading.Thread(
-        target=lambda: (factory.close(), close_done.set())
-    )
+    closer = threading.Thread(target=lambda: (factory.close(), close_done.set()))
     closer.start()
     assert not close_done.wait(0.05)
     release_resolver.set()
@@ -365,6 +466,77 @@ def test_factory_close_drains_pending_credential_acquire() -> None:
     assert len(clients) == 1
     assert clients[0].closed is True
     assert lease.closed is True
+
+
+def test_employee_invalidation_drains_inflight_capability_probe() -> None:
+    resolver_entered = threading.Event()
+    release_resolver = threading.Event()
+    invalidated = threading.Event()
+    probe_results: list[bool] = []
+
+    class BlockingVault(_Vault):
+        def resolve(self, credential_ref, agent_id, app_id):
+            resolver_entered.set()
+            assert release_resolver.wait(2)
+            return super().resolve(credential_ref, agent_id, app_id)
+
+    factory = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
+        credential_resolver=BlockingVault({"cred_1": "secret-alpha"}),
+        client_builder=lambda **_: object(),
+    )
+    probe = threading.Thread(
+        target=lambda: probe_results.append(factory.probe(_principal(1)))
+    )
+    probe.start()
+    assert resolver_entered.wait(2)
+    invalidator = threading.Thread(
+        target=lambda: (
+            factory.invalidate_employee("agt_1"),
+            invalidated.set(),
+        )
+    )
+    invalidator.start()
+    assert not invalidated.wait(0.05)
+
+    release_resolver.set()
+    assert invalidated.wait(2)
+    probe.join()
+    invalidator.join()
+    assert probe_results == [False]
+
+
+def test_employee_invalidation_does_not_wait_for_another_employee_probe() -> None:
+    resolver_entered = threading.Event()
+    release_resolver = threading.Event()
+    invalidated = threading.Event()
+
+    class BlockingVault(_Vault):
+        def resolve(self, credential_ref, agent_id, app_id):
+            resolver_entered.set()
+            assert release_resolver.wait(2)
+            return super().resolve(credential_ref, agent_id, app_id)
+
+    factory = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
+        credential_resolver=BlockingVault({"cred_2": "secret-bravo"}),
+        client_builder=lambda **_: object(),
+    )
+    probe = threading.Thread(target=lambda: factory.probe(_principal(2)))
+    probe.start()
+    assert resolver_entered.wait(2)
+
+    invalidator = threading.Thread(
+        target=lambda: (
+            factory.invalidate_employee("agt_1"),
+            invalidated.set(),
+        )
+    )
+    invalidator.start()
+    assert invalidated.wait(0.5)
+
+    release_resolver.set()
+    probe.join()
+    invalidator.join()
+    factory.close()
 
 
 def test_factory_close_revokes_during_response_validation_commit_window() -> None:
@@ -397,9 +569,7 @@ def test_factory_close_revokes_during_response_validation_commit_window() -> Non
             return Response()
 
     def builder(**_):
-        return SimpleNamespace(
-            im=SimpleNamespace(v1=SimpleNamespace(message=API()))
-        )
+        return SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=API())))
 
     factory = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
         credential_resolver=_Vault({"cred_1": "secret-alpha"}),
@@ -417,9 +587,7 @@ def test_factory_close_revokes_during_response_validation_commit_window() -> Non
     worker = threading.Thread(target=resolve)
     worker.start()
     assert get_entered.wait(2)
-    closer = threading.Thread(
-        target=lambda: (factory.close(), close_done.set())
-    )
+    closer = threading.Thread(target=lambda: (factory.close(), close_done.set()))
     closer.start()
     assert not close_done.wait(0.05)
     release_get.set()

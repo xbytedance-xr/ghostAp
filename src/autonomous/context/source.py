@@ -60,6 +60,8 @@ class EmployeeScopedMessageSource(Protocol):
 
 
 class EmployeeMessageSourceFactory(Protocol):
+    def probe(self, principal: BotPrincipal) -> bool: ...
+
     def open(
         self,
         *,
@@ -68,6 +70,10 @@ class EmployeeMessageSourceFactory(Protocol):
     ) -> EmployeeScopedMessageSource: ...
 
     def close(self) -> None: ...
+
+    def invalidate_employee(self, agent_id: str) -> None: ...
+
+    def reactivate_employee(self, agent_id: str) -> None: ...
 
 
 __all__ = [

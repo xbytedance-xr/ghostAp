@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
@@ -244,6 +245,38 @@ def test_missing_l1_and_l2_are_legal_empty_layers() -> None:
     assert snapshot.l1_summary == ""
     assert snapshot.l2_summary == ""
     assert built.source_factory.close_calls == 1
+
+
+def test_context_close_rejects_new_work_and_drains_admitted_assembly() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    closed = threading.Event()
+
+    class BlockingMemory(_MemoryFacade):
+        def read_l1(self, agent_id, tenant_key, *, allow_unscoped_legacy):
+            entered.set()
+            assert release.wait(2)
+            return super().read_l1(
+                agent_id,
+                tenant_key,
+                allow_unscoped_legacy=allow_unscoped_legacy,
+            )
+
+    built = _composition(memory=BlockingMemory())
+    worker = threading.Thread(target=lambda: built.service.assemble(_request()))
+    worker.start()
+    assert entered.wait(2)
+    closer = threading.Thread(target=lambda: (built.service.close(), closed.set()))
+    closer.start()
+    assert not closed.wait(0.05)
+    with pytest.raises(ContextUnavailableError) as raised:
+        built.service.assemble(_request())
+    assert raised.value.reason is ContextUnavailableReason.SOURCE
+
+    release.set()
+    assert closed.wait(2)
+    worker.join()
+    closer.join()
 
 
 @pytest.mark.parametrize(

@@ -152,6 +152,12 @@ class ProductionEmployeeHireService:
     def projection_state(self) -> ProjectionState:
         return self._projection_state
 
+    def synchronize_projection(self) -> ProjectionState:
+        """Advance the read model across frames committed by sibling domains."""
+        with self._mutex:
+            self._synchronize_projection_to_journal_locked()
+            return self._projection_state
+
     def readiness(self) -> HireReadiness:
         blockers: list[str] = []
         if self._closed:
@@ -188,7 +194,8 @@ class ProductionEmployeeHireService:
     def start_hire(self, request: EmployeeHireRequest) -> DurableHireState:
         self._validate_request(request)
         intent_id = _stable_id("hire", request.tenant_key, request.message_id)
-        with self._mutex:
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
             if self._closed:
                 raise HireAdmissionError("closed")
             if self._admission_closed:
@@ -328,7 +335,8 @@ class ProductionEmployeeHireService:
             raise HireAdmissionError("invalid effect metadata")
         if "credential_ref" in metadata_value and "app_id" not in metadata_value:
             raise HireAdmissionError("invalid effect metadata")
-        with self._mutex:
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
             current = self._hire_projection.get(intent_id)
             if current is None:
                 raise HireAdmissionError("unknown hire intent")
@@ -563,7 +571,8 @@ class ProductionEmployeeHireService:
 
     def _commit_hire_event(self, event: JournalEvent) -> DurableHireState:
         """Commit one already-validated hire-only fact and advance all cursors."""
-        with self._mutex:
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
             last_frame = self._writer.get_last_frame()
             writer_sequence = 0 if last_frame is None else last_frame.sequence
             writer_hash = "" if last_frame is None else last_frame.frame_hash
@@ -586,6 +595,20 @@ class ProductionEmployeeHireService:
             apply_frame(self._projection_state, result.frame)
             self._hire_projection = HireProjection.rebuild(self._writer.replay())
             return self._require_hire(event.aggregate_id)
+
+    def _synchronize_projection_to_journal_locked(self) -> None:
+        """Advance workforce/hire views across frames written by other domains."""
+        last = self._writer.get_last_frame()
+        sequence = 0 if last is None else last.sequence
+        logical_hash = "" if last is None else last.frame_hash
+        if (
+            self._projection_state.cursor_sequence == sequence
+            and self._projection_state.cursor_hash == logical_hash
+        ):
+            return
+        frames = tuple(self._writer.replay())
+        self._projection_state = ProjectionRepository().rebuild(iter(frames))
+        self._hire_projection = HireProjection.rebuild(frames)
 
     async def run_provisioning(self, intent_id: str) -> DurableHireState:
         """Run one deduplicated asynchronous provisioning activity."""
@@ -753,33 +776,43 @@ class ProductionEmployeeHireService:
         state: DurableHireState,
         phase: HirePhase,
     ) -> DurableHireState:
-        if phase in {
-            HirePhase.ACTIVE,
-            HirePhase.ACTION_REQUIRED,
-            HirePhase.ARCHIVED,
-        } and any(
-            effect_state in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
-            for _effect_id, effect_state in state.effects
-        ):
-            raise HireAdmissionError("terminal hire phase has unresolved effects")
-        if state.phase is phase:
-            return state
-        try:
-            commit_workforce_events(
-                self._writer,
-                self._projection_state,
-                (
-                    JournalEvent(
-                        event_type="employee.state_changed",
-                        aggregate_id=state.agent_id,
-                        payload={"state": phase.value},
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            state = self._require_hire(state.intent_id)
+            if phase in {
+                HirePhase.ACTIVE,
+                HirePhase.ACTION_REQUIRED,
+                HirePhase.ARCHIVED,
+            } and any(
+                effect_state
+                in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
+                for _effect_id, effect_state in state.effects
+            ):
+                raise HireAdmissionError(
+                    "terminal hire phase has unresolved effects"
+                )
+            if state.phase is phase:
+                return state
+            try:
+                commit_workforce_events(
+                    self._writer,
+                    self._projection_state,
+                    (
+                        JournalEvent(
+                            event_type="employee.state_changed",
+                            aggregate_id=state.agent_id,
+                            payload={"state": phase.value},
+                        ),
                     ),
-                ),
+                )
+            except ProjectionError as exc:
+                raise HireAdmissionError(
+                    "hire phase transition rejected"
+                ) from exc
+            self._hire_projection = HireProjection.rebuild(
+                self._writer.replay()
             )
-        except ProjectionError as exc:
-            raise HireAdmissionError("hire phase transition rejected") from exc
-        self._hire_projection = HireProjection.rebuild(self._writer.replay())
-        return self._require_hire(state.intent_id)
+            return self._require_hire(state.intent_id)
 
     def _bind_principal(
         self,
@@ -787,52 +820,61 @@ class ProductionEmployeeHireService:
         app_id: str,
         credential_ref: str,
     ) -> DurableHireState:
-        existing = self._projection_state.bot_principals.get(state.bot_principal_id)
-        if existing is not None:
-            if (
-                existing.agent_id != state.agent_id
-                or existing.app_id != app_id
-                or existing.credential_ref != credential_ref
-            ):
-                raise HireAdmissionError("bot principal binding conflict")
-            return self._require_hire(state.intent_id)
-        events = (
-            JournalEvent(
-                event_type="employee.bot_principal_bound",
-                aggregate_id=state.agent_id,
-                payload={
-                    "agent_id": state.agent_id,
-                    "bot_principal_id": state.bot_principal_id,
-                },
-            ),
-            JournalEvent(
-                event_type="bot_principal.bound",
-                aggregate_id=state.bot_principal_id,
-                payload={
-                    "bot_principal_id": state.bot_principal_id,
-                    "tenant_key": state.tenant_key,
-                    "agent_id": state.agent_id,
-                    "app_id": app_id,
-                    "credential_ref": credential_ref,
-                    "scopes": [],
-                },
-            ),
-            JournalEvent(
-                event_type="employee.state_changed",
-                aggregate_id=state.agent_id,
-                payload={"state": HirePhase.CONFIGURING.value},
-            ),
-        )
-        try:
-            commit_workforce_events(
-                self._writer,
-                self._projection_state,
-                events,
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            state = self._require_hire(state.intent_id)
+            existing = self._projection_state.bot_principals.get(
+                state.bot_principal_id
             )
-        except ProjectionError as exc:
-            raise HireAdmissionError("bot principal binding rejected") from exc
-        self._hire_projection = HireProjection.rebuild(self._writer.replay())
-        return self._require_hire(state.intent_id)
+            if existing is not None:
+                if (
+                    existing.agent_id != state.agent_id
+                    or existing.app_id != app_id
+                    or existing.credential_ref != credential_ref
+                ):
+                    raise HireAdmissionError("bot principal binding conflict")
+                return self._require_hire(state.intent_id)
+            events = (
+                JournalEvent(
+                    event_type="employee.bot_principal_bound",
+                    aggregate_id=state.agent_id,
+                    payload={
+                        "agent_id": state.agent_id,
+                        "bot_principal_id": state.bot_principal_id,
+                    },
+                ),
+                JournalEvent(
+                    event_type="bot_principal.bound",
+                    aggregate_id=state.bot_principal_id,
+                    payload={
+                        "bot_principal_id": state.bot_principal_id,
+                        "tenant_key": state.tenant_key,
+                        "agent_id": state.agent_id,
+                        "app_id": app_id,
+                        "credential_ref": credential_ref,
+                        "scopes": [],
+                    },
+                ),
+                JournalEvent(
+                    event_type="employee.state_changed",
+                    aggregate_id=state.agent_id,
+                    payload={"state": HirePhase.CONFIGURING.value},
+                ),
+            )
+            try:
+                commit_workforce_events(
+                    self._writer,
+                    self._projection_state,
+                    events,
+                )
+            except ProjectionError as exc:
+                raise HireAdmissionError(
+                    "bot principal binding rejected"
+                ) from exc
+            self._hire_projection = HireProjection.rebuild(
+                self._writer.replay()
+            )
+            return self._require_hire(state.intent_id)
 
     @staticmethod
     def _validate_receipt(

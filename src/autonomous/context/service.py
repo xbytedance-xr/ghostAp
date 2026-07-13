@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Protocol
 
 from ..data.facades import MemoryAccessError, MemoryConflictError, MemoryIntegrityError
@@ -131,10 +132,17 @@ class EmployeeContextService:
         self._group_memory = group_memory_reader
         self._source_factory = source_factory
         self._config = config or ThreadContextConfig()
+        self._condition = threading.Condition(threading.RLock())
+        self._admission_closed = False
+        self._active_assemblies = 0
 
     def assemble(self, request: AuthorizedContextRequest) -> AssembledContext:
         if not isinstance(request, AuthorizedContextRequest):
             raise TypeError("request must be AuthorizedContextRequest")
+        with self._condition:
+            if self._admission_closed:
+                raise ContextUnavailableError(ContextUnavailableReason.SOURCE)
+            self._active_assemblies += 1
         failure_reason: ContextUnavailableReason | None = None
         try:
             binding = self._authorize(request)
@@ -177,16 +185,35 @@ class EmployeeContextService:
             failure_reason = ContextUnavailableReason.MEMORY
         except Exception:
             failure_reason = ContextUnavailableReason.SOURCE
+        finally:
+            with self._condition:
+                self._active_assemblies -= 1
+                self._condition.notify_all()
         raise ContextUnavailableError(failure_reason) from None
+
+    def stop_admission(self) -> None:
+        """Reject new assemblies while allowing already admitted work to drain."""
+        with self._condition:
+            self._admission_closed = True
+
+    def drain(self) -> None:
+        """Wait until every admitted assembly has released its source lease."""
+        with self._condition:
+            while self._active_assemblies:
+                self._condition.wait()
+
+    def close(self) -> None:
+        self.stop_admission()
+        self.drain()
 
     def _authorize(
         self,
         request: AuthorizedContextRequest,
     ) -> ProjectedContextBinding:
+        if not self._generation_authority.is_current(request):
+            raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
         binding = _resolve_binding(self._registry_provider, request)
         if binding is None:
-            raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
-        if not self._generation_authority.is_current(request):
             raise ContextUnavailableError(ContextUnavailableReason.SCOPE)
         if not self._requester_acl.is_authorized(request):
             raise ContextUnavailableError(ContextUnavailableReason.PERMISSION)

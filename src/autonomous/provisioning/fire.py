@@ -17,6 +17,7 @@ class FireSagaError(RuntimeError):
 
 class FirePhase(str, Enum):
     INITIATED = "initiated"
+    CONTEXT_DRAINED = "context_drained"
     CHANNEL_DISCONNECTED = "channel_disconnected"
     SLASH_CLEANED = "slash_cleaned"
     VAULT_DESTROYED = "vault_destroyed"
@@ -62,18 +63,24 @@ class JournalFirePort(Protocol):
     def record_fire_event(self, *, agent_id: str, phase: str, payload: dict[str, Any]) -> None: ...
 
 
+class ContextInvalidationPort(Protocol):
+    def invalidate_employee_context(self, agent_id: str) -> None: ...
+
+
 class FireSaga:
     """Recoverable /fire saga with ordered cleanup phases."""
 
     def __init__(
         self,
         *,
+        context: ContextInvalidationPort,
         channel: ChannelDisconnectPort,
         slash: SlashCleanupPort,
         vault: VaultDestroyPort,
         archive: ArchivePort,
         journal: JournalFirePort,
     ) -> None:
+        self._context = context
         self._channel = channel
         self._slash = slash
         self._vault = vault
@@ -89,6 +96,16 @@ class FireSaga:
     ) -> FireState:
         """Execute the full /fire saga. Recoverable on crash."""
         state = FireState(agent_id=agent_id, app_id=app_id, credential_ref=credential_ref)
+        try:
+            self._context.invalidate_employee_context(agent_id)
+            state.phase = FirePhase.CONTEXT_DRAINED
+            self._journal.record_fire_event(
+                agent_id=agent_id, phase="context_drained", payload={}
+            )
+        except Exception as exc:
+            state.error = f"context drain: {exc}"
+            state.phase = FirePhase.FAILED
+            return state
         try:
             self._channel.stop(agent_id)
             state.phase = FirePhase.CHANNEL_DISCONNECTED

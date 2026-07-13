@@ -513,7 +513,7 @@ def commit_workforce_events(
     from ..journal.projections import apply_frame
 
     event_values = tuple(events)
-    with _WORKFORCE_COMMIT_LOCK:
+    with writer.transaction_guard(), _WORKFORCE_COMMIT_LOCK:
         last_frame = writer.get_last_frame()
         writer_sequence = 0 if last_frame is None else last_frame.sequence
         writer_hash = "" if last_frame is None else last_frame.frame_hash

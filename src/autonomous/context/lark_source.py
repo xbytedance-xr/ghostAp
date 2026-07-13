@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, TypeVar, cast
 
 import lark_oapi as lark
+from lark_oapi.api.application.v6 import GetApplicationRequest
 from lark_oapi.api.im.v1 import GetMessageRequest, ListMessageRequest
 from lark_oapi.channel.normalize import flatten, parse_message_content
 from lark_oapi.channel.types import UnknownContent
@@ -942,7 +943,7 @@ class _EmployeeSourceLease:
             except Exception:
                 failure_reason = ContextUnavailableReason.SOURCE
         finally:
-            self._factory._end_call()
+            self._factory._end_call(source)
         if failure_reason is not None:
             raise _fail(failure_reason)
         return cast(_T, result)
@@ -970,11 +971,14 @@ class LarkEmployeeMessageSourceFactory:
         self.request_timeout_seconds = request_timeout_seconds
         self._client_builder = _default_client_builder
         self._active_sources = set()
+        self._invalidated_agents: set[str] = set()
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._closed = threading.Event()
         self._pending_acquires = 0
         self._active_calls = 0
+        self._pending_by_agent: dict[str, int] = {}
+        self._active_calls_by_agent: dict[str, int] = {}
         self.__post_init__()
 
     @classmethod
@@ -1020,13 +1024,92 @@ class LarkEmployeeMessageSourceFactory:
         scope: EmployeeMessageScope,
         principal: BotPrincipal,
     ) -> _EmployeeSourceLease:
-        if self._closed.is_set():
-            raise _fail(ContextUnavailableReason.CREDENTIALS)
+        with self._condition:
+            if (
+                not isinstance(scope, EmployeeMessageScope)
+                or not isinstance(principal, BotPrincipal)
+                or self._closed.is_set()
+                or scope.agent_id in self._invalidated_agents
+            ):
+                raise _fail(ContextUnavailableReason.CREDENTIALS)
         return _EmployeeSourceLease(
             _factory=self,
             scope=scope,
             _principal=principal,
         )
+
+    def probe(self, principal: BotPrincipal) -> bool:
+        """Verify employee credentials and app identity via an employee client."""
+        with self._condition:
+            if (
+                self._closed.is_set()
+                or not isinstance(principal, BotPrincipal)
+                or not principal.app_id
+                or not principal.credential_ref
+                or principal.agent_id in self._invalidated_agents
+            ):
+                return False
+            self._pending_acquires += 1
+            self._increment_agent_count(
+                self._pending_by_agent,
+                principal.agent_id,
+            )
+        try:
+            secret = self.credential_resolver.resolve(
+                principal.credential_ref,
+                principal.agent_id,
+                principal.app_id,
+            )
+            if not isinstance(secret, str) or not secret:
+                return False
+            client = self._client_builder(
+                app_id=principal.app_id,
+                app_secret=secret,
+                timeout=float(self.request_timeout_seconds),
+            )
+            request = (
+                GetApplicationRequest.builder()
+                .app_id(principal.app_id)
+                .build()
+            )
+            response = client.application.v6.application.get(request)
+            success = getattr(response, "success", None)
+            data = getattr(response, "data", None)
+            app = getattr(data, "app", None)
+            with self._condition:
+                return (
+                    client is not None
+                    and callable(success)
+                    and success() is True
+                    and getattr(response, "code", None) == 0
+                    and getattr(app, "app_id", None) == principal.app_id
+                    and not self._closed.is_set()
+                    and principal.agent_id not in self._invalidated_agents
+                )
+        except Exception:
+            return False
+        finally:
+            if "secret" in locals():
+                del secret
+            if "client" in locals():
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                del client
+            if "request" in locals():
+                del request
+            if "response" in locals():
+                del response
+            with self._condition:
+                self._pending_acquires -= 1
+                self._decrement_agent_count(
+                    self._pending_by_agent,
+                    principal.agent_id,
+                )
+                self._condition.notify_all()
 
     def close(self) -> None:
         with self._condition:
@@ -1039,6 +1122,37 @@ class LarkEmployeeMessageSourceFactory:
                 self._condition.wait()
             self._active_sources.clear()
 
+    def invalidate_employee(self, agent_id: str) -> None:
+        """Revoke every active lease for one employee and wait for calls to drain."""
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ValueError("agent_id is required")
+        with self._condition:
+            self._invalidated_agents.add(agent_id)
+            sources = tuple(
+                source
+                for source in self._active_sources
+                if source.scope.agent_id == agent_id
+            )
+        for source in sources:
+            source.close()
+        with self._condition:
+            while (
+                self._pending_by_agent.get(agent_id, 0)
+                or self._active_calls_by_agent.get(agent_id, 0)
+            ):
+                self._condition.wait()
+            for source in sources:
+                self._active_sources.discard(source)
+
+    def reactivate_employee(self, agent_id: str) -> None:
+        """Allow fresh leases only after a caller has installed a new binding."""
+        if not isinstance(agent_id, str) or not agent_id:
+            raise ValueError("agent_id is required")
+        with self._condition:
+            if self._closed.is_set():
+                raise _fail(ContextUnavailableReason.CREDENTIALS)
+            self._invalidated_agents.discard(agent_id)
+
     def _acquire(
         self,
         *,
@@ -1046,14 +1160,24 @@ class LarkEmployeeMessageSourceFactory:
         principal: BotPrincipal,
     ) -> _LarkEmployeeMessageSource:
         with self._condition:
-            if self._closed.is_set():
+            if (
+                self._closed.is_set()
+                or scope.agent_id in self._invalidated_agents
+            ):
                 raise _fail(ContextUnavailableReason.CREDENTIALS)
             self._pending_acquires += 1
+            self._increment_agent_count(
+                self._pending_by_agent,
+                scope.agent_id,
+            )
         source: _LarkEmployeeMessageSource | None = None
         try:
             source = self._build_source(scope=scope, principal=principal)
             with self._condition:
-                if self._closed.is_set():
+                if (
+                    self._closed.is_set()
+                    or scope.agent_id in self._invalidated_agents
+                ):
                     source.close()
                     raise _fail(ContextUnavailableReason.CREDENTIALS)
                 self._active_sources.add(source)
@@ -1061,6 +1185,10 @@ class LarkEmployeeMessageSourceFactory:
         finally:
             with self._condition:
                 self._pending_acquires -= 1
+                self._decrement_agent_count(
+                    self._pending_by_agent,
+                    scope.agent_id,
+                )
                 self._condition.notify_all()
 
     def _build_source(
@@ -1114,7 +1242,7 @@ class LarkEmployeeMessageSourceFactory:
     def _release(self, source: _LarkEmployeeMessageSource) -> None:
         source.close()
         with self._condition:
-            while self._active_calls:
+            while self._active_calls_by_agent.get(source.scope.agent_id, 0):
                 self._condition.wait()
             self._active_sources.discard(source)
 
@@ -1127,11 +1255,31 @@ class LarkEmployeeMessageSourceFactory:
             ):
                 raise _fail(ContextUnavailableReason.SOURCE)
             self._active_calls += 1
+            self._increment_agent_count(
+                self._active_calls_by_agent,
+                source.scope.agent_id,
+            )
 
-    def _end_call(self) -> None:
+    def _end_call(self, source: _LarkEmployeeMessageSource) -> None:
         with self._condition:
             self._active_calls -= 1
+            self._decrement_agent_count(
+                self._active_calls_by_agent,
+                source.scope.agent_id,
+            )
             self._condition.notify_all()
+
+    @staticmethod
+    def _increment_agent_count(counts: dict[str, int], agent_id: str) -> None:
+        counts[agent_id] = counts.get(agent_id, 0) + 1
+
+    @staticmethod
+    def _decrement_agent_count(counts: dict[str, int], agent_id: str) -> None:
+        remaining = counts.get(agent_id, 0) - 1
+        if remaining > 0:
+            counts[agent_id] = remaining
+        else:
+            counts.pop(agent_id, None)
 
 
 __all__ = ["LarkEmployeeMessageSourceFactory"]

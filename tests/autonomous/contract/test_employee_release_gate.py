@@ -27,9 +27,7 @@ from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
 from src.config.settings import Settings
 
 MANIFEST_PATH = Path("tests/autonomous/acceptance/employee_release_manifest.json")
-PRODUCTION_MANIFEST_PATH = Path(
-    "src/autonomous/acceptance/employee_release_manifest.json"
-)
+PRODUCTION_MANIFEST_PATH = Path("src/autonomous/acceptance/employee_release_manifest.json")
 EXPECTED_GATE_IDS = {
     "EMP-STAGING-PROVISION",
     "EMP-PRODUCTION-PROVISION",
@@ -42,6 +40,12 @@ EXPECTED_GATE_IDS = {
     "EMP-MEDIA-IMAGE",
     "EMP-MEDIA-FILE",
     "EMP-MEDIA-REPLY-THREAD",
+    "EMP-CONTEXT-PAGINATION",
+    "EMP-CONTEXT-THREAD-BINDING",
+    "EMP-CONTEXT-REVISION",
+    "EMP-CONTEXT-TRIMMING",
+    "EMP-CONTEXT-ZERO-DISPATCH",
+    "EMP-CONTEXT-IDENTITY-ISOLATION",
     "EMP-MEDIA-CARD-ACTION",
     "EMP-SECRET-SCAN-STAGING",
     "EMP-SECRET-SCAN-PRODUCTION",
@@ -89,9 +93,7 @@ def test_runtime_checkpoint_requires_independent_ed25519_attestation(
     )
     signed = replace(
         unsigned,
-        signature=base64.b64encode(
-            private_key.sign(unsigned.signing_payload())
-        ).decode("ascii"),
+        signature=base64.b64encode(private_key.sign(unsigned.signing_payload())).decode("ascii"),
     )
 
     assert signed.verify(
@@ -100,12 +102,15 @@ def test_runtime_checkpoint_requires_independent_ed25519_attestation(
         expected_binding=binding,
         now=1_000_001.0,
     )
-    assert replace(signed, key_id="forged").verify(
-        public_key=public_key,
-        expected_key_id="independent-qa-2026",
-        expected_binding=binding,
-        now=1_000_001.0,
-    ) is False
+    assert (
+        replace(signed, key_id="forged").verify(
+            public_key=public_key,
+            expected_key_id="independent-qa-2026",
+            expected_binding=binding,
+            now=1_000_001.0,
+        )
+        is False
+    )
 
 
 def _passing_details(gate_id: str) -> dict[str, object]:
@@ -166,9 +171,7 @@ def test_employee_manifest_is_independent_and_covers_the_real_tenant_matrix(
 
 
 def test_operator_and_runtime_use_the_same_employee_release_profile() -> None:
-    assert json.loads(PRODUCTION_MANIFEST_PATH.read_text()) == json.loads(
-        MANIFEST_PATH.read_text()
-    )
+    assert json.loads(PRODUCTION_MANIFEST_PATH.read_text()) == json.loads(MANIFEST_PATH.read_text())
 
 
 def test_employee_manifest_requires_specific_real_tenant_observations(
@@ -206,6 +209,37 @@ def test_employee_manifest_requires_specific_real_tenant_observations(
         "ipc_clean",
         "archive_clean",
     } <= assertions["EMP-SECRET-SCAN-STAGING"]
+    assert {
+        "full_thread_pagination",
+        "page_token_progress",
+        "configured_cap_fail_closed",
+    } <= assertions["EMP-CONTEXT-PAGINATION"]
+    assert {
+        "root_thread_current_binding",
+        "cross_chat_rejected",
+        "cross_tenant_rejected",
+    } <= assertions["EMP-CONTEXT-THREAD-BINDING"]
+    assert {
+        "revision_edit_observed",
+        "revision_delete_observed",
+        "snapshot_instability_rejected",
+    } <= assertions["EMP-CONTEXT-REVISION"]
+    assert {
+        "deterministic_trimming_observed",
+        "protected_current_retained",
+        "budget_overflow_rejected",
+    } <= assertions["EMP-CONTEXT-TRIMMING"]
+    assert {
+        "context_failure_zero_dispatch",
+        "acp_call_count_zero",
+        "task_commit_count_zero",
+    } <= assertions["EMP-CONTEXT-ZERO-DISPATCH"]
+    assert {
+        "employee_app_context_reads",
+        "manager_bot_client_calls_zero",
+        "manager_bot_api_calls_zero",
+        "main_bot_send_count_zero",
+    } <= assertions["EMP-CONTEXT-IDENTITY-ISOLATION"]
 
 
 def test_missing_evidence_is_pending_and_does_not_change_the_visible_limit(
@@ -326,6 +360,49 @@ def test_partial_stale_or_wrongly_bound_evidence_never_passes(
     )
 
     assert evaluation.status is expected_status
+    assert evaluation.status is not EmployeeReleaseStatus.PASSED
+
+
+@pytest.mark.parametrize("mutation", ["missing", "false"])
+def test_thread_context_gate_requires_each_explicit_real_tenant_assertion(
+    tmp_path: Path,
+    manifest: EmployeeReleaseManifest,
+    binding: EmployeeEnvironmentBinding,
+    mutation: str,
+) -> None:
+    gate = next(
+        item
+        for item in manifest.gates
+        if item.gate_id == "EMP-CONTEXT-IDENTITY-ISOLATION"
+    )
+    details = _passing_details(gate.gate_id)
+    assertions = details["assertions"]
+    assert isinstance(assertions, dict)
+    if mutation == "missing":
+        assertions.pop("manager_bot_api_calls_zero")
+    else:
+        assertions["manager_bot_api_calls_zero"] = False
+    bundle = EmployeeEvidenceBundle(tmp_path / "evidence.jsonl")
+    checkpoint = bundle.append(
+        gate_id=gate.gate_id,
+        environment=gate.environment,
+        tenant_hash=binding.tenant_hash_for(gate.environment),
+        status=EmployeeEvidenceStatus.PASSED,
+        details=details,
+        binding=binding,
+        captured_at=1_000_000,
+        attestor="tenant-qa@example.invalid",
+    )
+
+    evaluation = evaluate_employee_release(
+        manifest=manifest,
+        bundle=bundle,
+        binding=binding,
+        now=1_000_001,
+        checkpoint=checkpoint,
+    )
+
+    assert gate.gate_id not in evaluation.passed
     assert evaluation.status is not EmployeeReleaseStatus.PASSED
 
 
