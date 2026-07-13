@@ -2278,6 +2278,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         effort: str,
     ) -> None:
         from ...autonomous.provisioning.hire_port import EmployeeHireRequest
+        from ...thread.manager import get_current_tenant_key
         requester_id = self._visible_hire_requester(message_id)
         if requester_id is None:
             return
@@ -2299,6 +2300,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             chat_id=chat_id,
             message_id=message_id,
             requester_principal_id=requester_id,
+            tenant_key=get_current_tenant_key() or "",
         )
         try:
             service.start_hire(request)

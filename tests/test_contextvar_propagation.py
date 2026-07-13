@@ -11,9 +11,11 @@ from concurrent.futures import ThreadPoolExecutor
 from src.thread import (
     get_current_is_p2p,
     get_current_sender_id,
+    get_current_tenant_key,
     get_current_thread_id,
     set_current_is_p2p,
     set_current_sender_id,
+    set_current_tenant_key,
     set_current_thread_id,
 )
 
@@ -25,6 +27,7 @@ class TestContextVarPropagation:
         """Parent sets values → copy_context() → run() in worker sees them."""
         set_current_sender_id("user_abc")
         set_current_is_p2p(True)
+        set_current_tenant_key("tenant_a")
         set_current_thread_id("thread_xyz")
 
         ctx = contextvars.copy_context()
@@ -33,6 +36,7 @@ class TestContextVarPropagation:
         def _worker() -> None:
             results["sender_id"] = get_current_sender_id()
             results["is_p2p"] = get_current_is_p2p()
+            results["tenant_key"] = get_current_tenant_key()
             results["thread_id"] = get_current_thread_id()
 
         with ThreadPoolExecutor(max_workers=1) as pool:
@@ -41,11 +45,13 @@ class TestContextVarPropagation:
 
         assert results["sender_id"] == "user_abc"
         assert results["is_p2p"] is True
+        assert results["tenant_key"] == "tenant_a"
         assert results["thread_id"] == "thread_xyz"
 
         # Cleanup parent context
         set_current_sender_id(None)
         set_current_is_p2p(False)
+        set_current_tenant_key(None)
         set_current_thread_id(None)
 
     def test_contextvar_isolation_between_tasks(self) -> None:
@@ -58,11 +64,13 @@ class TestContextVarPropagation:
         def _task_a() -> None:
             set_current_sender_id("A")
             set_current_is_p2p(True)
+            set_current_tenant_key("tenant_a")
             # Intentionally NO cleanup — simulates a missed finally block
 
         def _task_b() -> None:
             observed_in_b["sender_id"] = get_current_sender_id()
             observed_in_b["is_p2p"] = get_current_is_p2p()
+            observed_in_b["tenant_key"] = get_current_tenant_key()
 
         # Capture two separate contexts (like TaskScheduler.submit does)
         ctx_a = contextvars.copy_context()
@@ -76,6 +84,7 @@ class TestContextVarPropagation:
         # task_b must see defaults, not task_a's leaked values
         assert observed_in_b["sender_id"] is None
         assert observed_in_b["is_p2p"] is False
+        assert observed_in_b["tenant_key"] is None
 
     def test_contextvar_no_leak_after_context_run(self) -> None:
         """After context.run() completes, the worker thread's own ContextVar
@@ -167,4 +176,3 @@ class TestCardActionContextVarBackfill:
 
         # Cleanup
         set_current_sender_id(None)
-

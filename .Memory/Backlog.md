@@ -32,5 +32,10 @@
 | B033 | 2026-05-20 | Slock `AgentRegistry._ensure_loaded` 首次访问全量扫描 agent 目录，agent 数量增长后启动/首次访问延迟线性增长 | Medium | Slock audit | ⏳ Open | - |
 | B034 | 2026-05-20 | Slock `MemoryManager` L1/L2/L3 共用单锁，4 Agent 并行时内存读写串行化；可按层/路径拆锁并保留原子 RMW 语义 | Medium | Slock audit | ⏳ Open | - |
 | B035 | 2026-07-12 | Autonomous 生产 composition 尚未把 Manager/Admission/Coordinator 注入飞书 dispatcher；当前 `manager/handler.py` 仍引用旧 Admission API，并存在直接修改 frozen 域对象的遗留路径。命令入口已 fail-closed，后续应按 Journal/Projection/Coordinator 当前契约重新接线，不得恢复旧兼容 API | Medium | recent-change restoration audit | ⏳ Open | - |
+| B036 | 2026-07-13 | Employee Hire 的本地 `FileAnchor` 具备跨进程 CAS 与 fsync，但不具备独立系统防回滚能力；生产启用前需接入远端 KMS/HSM/透明日志等独立 anchor，并完成恢复与故障注入 | Medium | `/hire` production review | ⏳ Open | - |
+| B037 | 2026-07-13 | Employee 真实租户验收工具当前只验证并封装预脱敏采集结果；测试/生产租户 Provisioning、员工收发、桌面/移动 Slash、主 Bot send-count 和 1/10/50 Bot soak 仍需独立 QA 在真实租户执行并签署 attestation | Medium | `/hire` acceptance review | ⏳ Open | - |
+| B038 | 2026-07-13 | 每员工 Channel 默认依赖 bwrap 的 user/mount/PID namespace 与最小只读文件系统；生产宿主需把实际 attestation 和 Feishu-only egress policy 作为部署前置探针，并准备独立容器后端覆盖禁用 namespace 的环境 | Medium | `/hire` channel review | ⏳ Open | - |
+| B039 | 2026-07-13 | Employee runtime release 当前有意 hard-close；启用前需接入不可变 build/image digest、workload identity、部署侧固定 QA trust root、外部单调 attestation ledger，以及带 expiry/tenant/release/instance 绑定且每次 dispatch 续验的 recovery capability | Medium | `/hire` release convergence review | ⏳ Open | - |
+| B040 | 2026-07-13 | 激活门禁已要求独立主 Bot send-count audit，但 `FeishuWSClient` 尚无真实租户审计 provider；启用前必须接入可按 tenant/challenge 时间窗查询的外部审计源，不能用进程内计数或常量零替代 | Medium | `/hire` activation security review | ⏳ Open | - |
 
 > **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。

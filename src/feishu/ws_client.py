@@ -276,6 +276,25 @@ class FeishuWSClient:
         except Exception:
             logger.warning("ChatLockManager initialization failed", exc_info=True)
 
+        self._employee_department_runtime = None
+        try:
+            from ..autonomous.provisioning.composition import (
+                EmployeeDepartmentRuntime,
+            )
+
+            self._employee_department_runtime = EmployeeDepartmentRuntime.from_settings(
+                self.settings,
+                notification_link=lambda state, url, expire_in: self._reply_text(
+                    state.message_id,
+                    f"请在 {expire_in} 秒内完成独立飞书智能体注册：{url}",
+                ),
+            )
+        except Exception as exc:
+            logger.error(
+                "Employee Department composition failed closed: %s",
+                type(exc).__name__,
+            )
+
         # ------------------------------------------------------------------
         # Handler infrastructure
         # ------------------------------------------------------------------
@@ -314,6 +333,11 @@ class FeishuWSClient:
             enable_streaming=self._enable_streaming,
             repo_lock_manager=_repo_lock_mgr,
             chat_lock_manager=_chat_lock_mgr,
+            employee_hire_service=(
+                self._employee_department_runtime.hire_service
+                if self._employee_department_runtime is not None
+                else None
+            ),
         )
 
         # Instantiate handlers (temp locals for registry population)
@@ -504,6 +528,12 @@ class FeishuWSClient:
         self._closed = True
 
         self._ws_health_monitor.stop_watchdog()
+
+        try:
+            if self._employee_department_runtime is not None:
+                self._employee_department_runtime.close()
+        except Exception:
+            logger.debug("Employee Department shutdown skipped", exc_info=True)
 
         # Stop chat lock gate dedup cache cleanup
         try:
@@ -950,6 +980,8 @@ class FeishuWSClient:
             "open_id", None,
         )
         _sender_id = _raw_sender if isinstance(_raw_sender, str) else ""
+        _raw_tenant_key = getattr(getattr(data, "header", None), "tenant_key", None)
+        tenant_key = _raw_tenant_key if isinstance(_raw_tenant_key, str) else ""
 
         project_id = None
         thread_root_id = None
@@ -1033,6 +1065,7 @@ class FeishuWSClient:
                 is_system_command=is_system,
                 is_p2p=is_p2p,
                 sender_id=_sender_id,
+                tenant_key=tenant_key,
                 queue_key=queue_key,
             )
             try:
@@ -1123,7 +1156,13 @@ class FeishuWSClient:
 
         大致流程：校验 → 解析文本/图片 → 解析项目上下文 → 路由到对应模式/引擎。
         """
-        from ..thread import set_current_is_p2p, set_current_sender_id, set_current_sender_name, set_current_thread_id
+        from ..thread import (
+            set_current_is_p2p,
+            set_current_sender_id,
+            set_current_sender_name,
+            set_current_tenant_key,
+            set_current_thread_id,
+        )
 
         try:
             event = data.event
@@ -1153,6 +1192,12 @@ class FeishuWSClient:
             set_current_sender_name(_display_name or (_sender_id[:8] if _sender_id else ""))
             _is_p2p = task_ctx.spec.is_p2p if task_ctx and hasattr(task_ctx, "spec") else False
             set_current_is_p2p(_is_p2p)
+            _tenant_key = (
+                task_ctx.spec.tenant_key
+                if task_ctx and hasattr(task_ctx, "spec")
+                else ""
+            )
+            set_current_tenant_key(_tenant_key or None)
             chat_type = "p2p" if _is_p2p else "group"
 
             root_id = getattr(message, "root_id", None)
@@ -1293,6 +1338,7 @@ class FeishuWSClient:
             set_current_sender_id(None)
             set_current_sender_name("")
             set_current_is_p2p(False)
+            set_current_tenant_key(None)
             with self._pending_image_lock:
                 self._pending_image_keys.pop(message_id, None)
                 self._pending_image_only.discard(message_id)
@@ -1822,6 +1868,8 @@ class FeishuWSClient:
         # Card actions: extract chat_type for p2p privilege detection
         card_chat_type = getattr(getattr(data.event, "context", None), "chat_type", None)
         card_is_p2p = card_chat_type == "p2p"
+        _raw_tenant_key = getattr(getattr(data, "header", None), "tenant_key", None)
+        tenant_key = _raw_tenant_key if isinstance(_raw_tenant_key, str) else ""
 
         action_type_preview = ""
         try:
@@ -1918,6 +1966,7 @@ class FeishuWSClient:
                 is_system_command=is_system,
                 is_p2p=card_is_p2p,
                 sender_id=operator_id,
+                tenant_key=tenant_key,
             )
             handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
             try:
@@ -1956,7 +2005,13 @@ class FeishuWSClient:
         该方法会把 `action.value` normalize 为 dict，提取 `action/project_id`，并通过
         `ActionDispatcher` 做 exact/prefix 路由。
         """
-        from ..thread import set_current_is_p2p, set_current_sender_id, set_current_sender_name, set_current_thread_id
+        from ..thread import (
+            set_current_is_p2p,
+            set_current_sender_id,
+            set_current_sender_name,
+            set_current_tenant_key,
+            set_current_thread_id,
+        )
 
         try:
             start_time = time.perf_counter()
@@ -1995,6 +2050,12 @@ class FeishuWSClient:
             _op_name = _resolve_name(_operator_id, self._get_api_client) if _operator_id else ""
             set_current_sender_name(_op_name or (_operator_id[:8] if _operator_id else ""))
             set_current_is_p2p(_card_is_p2p)
+            _tenant_key = (
+                task_ctx.spec.tenant_key
+                if task_ctx and hasattr(task_ctx, "spec")
+                else ""
+            )
+            set_current_tenant_key(_tenant_key or None)
 
             logger.debug(
                 "卡片回调上下文: operator_open_id=%s, operator_user_id=%s, value_raw_type=%s",
@@ -2131,6 +2192,7 @@ class FeishuWSClient:
             set_current_sender_id(None)
             set_current_sender_name("")
             set_current_is_p2p(False)
+            set_current_tenant_key(None)
 
     def _process_with_intent(
         self,

@@ -43,6 +43,7 @@ def mock_ws_client():
 
 def create_mock_message(text: str, message_id="msg_123", chat_id="chat_456", message_type="text"):
     data = MagicMock()
+    data.header.tenant_key = "tenant_test"
     data.event.message.message_id = message_id
     data.event.message.chat_id = chat_id
     data.event.message.content = json.dumps({"text": text})
@@ -67,7 +68,19 @@ def test_handle_message_system_command_routing(mock_ws_client: FeishuWSClient):
     assert spec.task_type == "system_help"
     assert spec.priority == TaskPriority.HIGH
     assert spec.is_system_command is True
+    assert spec.tenant_key == "tenant_test"
     # System commands should not block behind regular project tasks (often goes to control queue or no strict project queue)
+
+
+def test_employee_department_runtime_is_wired_but_dormant_by_default(
+    mock_ws_client: FeishuWSClient,
+) -> None:
+    runtime = mock_ws_client._employee_department_runtime
+
+    assert runtime is not None
+    assert runtime.hire_service is None
+    assert runtime.readiness().blockers == ("visible_employee_limit",)
+    assert mock_ws_client._handler_ctx.employee_hire_service is None
 
 
 def test_handle_message_shell_command_routing(mock_ws_client: FeishuWSClient):
@@ -681,6 +694,7 @@ def test_card_action_deduplication_and_routing(mock_ws_client: FeishuWSClient):
     # Create fake card action data
     data = MagicMock()
     data.header.event_id = "event_001"
+    data.header.tenant_key = "tenant_card"
     data.event.context.open_message_id = "msg_123"
     data.event.context.open_chat_id = "chat_456"
     data.event.action.value = '{"action": "show_status", "project_id": "proj_1"}'
@@ -701,6 +715,7 @@ def test_card_action_deduplication_and_routing(mock_ws_client: FeishuWSClient):
     spec, func = submit_mock.call_args[0]
 
     assert spec.task_type == "feishu_card_action"
+    assert spec.tenant_key == "tenant_card"
     assert spec.project_id == "proj_1"
     # System card actions like show_status are HIGH priority and is_system_command
     assert spec.priority == TaskPriority.HIGH

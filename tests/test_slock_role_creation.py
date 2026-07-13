@@ -442,6 +442,7 @@ class TestCreateRoleDefaults:
         with (
             patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
             patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
         ):
             handler.create_role(
                 "msg_1",
@@ -466,6 +467,7 @@ class TestCreateRoleDefaults:
         with (
             patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
             patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
         ):
             handler.create_role(
                 "msg_1",
@@ -480,6 +482,7 @@ class TestCreateRoleDefaults:
         assert request.model == "gpt-5/high"
         assert request.effort == "high"
         assert request.requester_principal_id == "ou_admin"
+        assert request.tenant_key == "tenant_a"
         handler._get_engine_manager.assert_not_called()
         handler._get_global_registry.assert_not_called()
 

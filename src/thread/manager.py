@@ -237,6 +237,9 @@ _current_thread_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 _current_sender_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_sender_id", default=None)
 _current_sender_name: contextvars.ContextVar[str] = contextvars.ContextVar("current_sender_name", default="")
 _current_is_p2p: contextvars.ContextVar[bool] = contextvars.ContextVar("current_is_p2p", default=False)
+_current_tenant_key: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_tenant_key", default=None
+)
 
 
 def get_thread_manager() -> ThreadContextManager:
@@ -277,6 +280,14 @@ def set_current_is_p2p(is_p2p: bool) -> None:
 
 def get_current_is_p2p() -> bool:
     return _current_is_p2p.get()
+
+
+def set_current_tenant_key(tenant_key: Optional[str]) -> None:
+    _current_tenant_key.set(tenant_key)
+
+
+def get_current_tenant_key() -> Optional[str]:
+    return _current_tenant_key.get()
 
 
 def set_current_sender_name(name: str) -> None:

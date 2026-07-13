@@ -3,11 +3,13 @@ from .manager import (
     get_current_is_p2p,
     get_current_sender_id,
     get_current_sender_name,
+    get_current_tenant_key,
     get_current_thread_id,
     get_thread_manager,
     set_current_is_p2p,
     set_current_sender_id,
     set_current_sender_name,
+    set_current_tenant_key,
     set_current_thread_id,
 )
 from .models import ThreadContext
@@ -18,10 +20,12 @@ __all__ = [
     "get_current_is_p2p",
     "get_current_sender_id",
     "get_current_sender_name",
+    "get_current_tenant_key",
     "get_current_thread_id",
     "get_thread_manager",
     "set_current_is_p2p",
     "set_current_sender_id",
     "set_current_sender_name",
+    "set_current_tenant_key",
     "set_current_thread_id",
 ]

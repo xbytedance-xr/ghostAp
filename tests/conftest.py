@@ -480,7 +480,7 @@ def _reset_all_singletons():
     except Exception:
         pass
     try:
-        from src.thread import set_current_thread_id
+        from src.thread import set_current_tenant_key, set_current_thread_id
         from src.thread.manager import _reset_thread_manager_for_testing
 
         _reset_thread_manager_for_testing()
@@ -488,6 +488,7 @@ def _reset_all_singletons():
         # Engine handler tests may bind a synthetic thread id; clear it so the
         # next test cannot serialize a stale MagicMock into an unrelated card.
         set_current_thread_id(None)
+        set_current_tenant_key(None)
     except Exception:
         pass
     try:

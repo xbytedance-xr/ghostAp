@@ -1,7 +1,10 @@
 """Settings — main application configuration model backed by pydantic-settings."""
 
+import base64
+import binascii
 import logging as _logging
 import os
+import re
 import shlex
 import warnings
 from typing import Literal
@@ -622,6 +625,7 @@ class Settings(BaseSettings):
     autonomous_write_enabled: bool = False
     autonomous_state_dir: str = "~/.ghostap/autonomy"
     autonomous_journal_dir: str = "~/.ghostap/autonomy/journal"
+    autonomous_journal_hmac_key: SecretStr = SecretStr("")
     autonomous_snapshot_dir: str = "~/.ghostap/autonomy/snapshots"
     autonomous_blob_dir: str = "~/.ghostap/autonomy/blobs"
     autonomous_credential_dir: str = "~/.ghostap/slock/credentials"
@@ -635,6 +639,7 @@ class Settings(BaseSettings):
     autonomous_history_page_size: int = Field(default=50, ge=1, le=200)
     autonomous_manager_acl: str = ""
     autonomous_anchor_provider: str = ""
+    autonomous_anchor_path: str = "~/.ghostap/autonomy/journal.anchor"
     autonomous_sandbox_required: bool = True
     autonomous_worker_sandbox_verified: bool = False
     autonomous_oracle_sandbox_verified: bool = False
@@ -643,6 +648,57 @@ class Settings(BaseSettings):
     autonomous_goal_queue_limit: int = Field(default=1000, ge=1)
     autonomous_run_queue_limit: int = Field(default=100, ge=1)
     autonomous_visible_employee_limit: int = Field(default=0, ge=0)
+    autonomous_employee_release_evidence_bundle: str = (
+        "~/.ghostap/autonomy/employee-release-evidence.jsonl"
+    )
+    autonomous_employee_release_checkpoint: str = (
+        "~/.ghostap/autonomy/employee-release-attestation.json"
+    )
+    autonomous_employee_release_public_key: str = ""
+    autonomous_employee_release_key_id: str = ""
+    autonomous_employee_release_id: str = ""
+    autonomous_employee_commit_sha: str = ""
+    autonomous_employee_service_instance_id: str = ""
+    autonomous_employee_staging_tenant_hash: str = ""
+    autonomous_employee_production_tenant_hash: str = ""
+
+    @field_validator("autonomous_journal_hmac_key", mode="before")
+    @classmethod
+    def _validate_autonomous_journal_hmac_key(cls, value: object) -> SecretStr:
+        raw = value.get_secret_value() if isinstance(value, SecretStr) else value
+        if raw in (None, ""):
+            return SecretStr("")
+        if not isinstance(raw, str):
+            raise ValueError("autonomous_journal_hmac_key must be base64 text")
+        try:
+            decoded = base64.b64decode(raw, altchars=b"-_", validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError(
+                "autonomous_journal_hmac_key must be valid base64"
+            ) from exc
+        if len(decoded) < 32:
+            raise ValueError(
+                "autonomous_journal_hmac_key must decode to at least 32 bytes"
+            )
+        return SecretStr(raw)
+
+    @field_validator("autonomous_anchor_path")
+    @classmethod
+    def _validate_autonomous_anchor_path(cls, value: str) -> str:
+        if not isinstance(value, str) or not value.strip() or "\x00" in value:
+            raise ValueError("autonomous_anchor_path must be a non-empty path")
+        return value
+
+    @field_validator("autonomous_anchor_provider")
+    @classmethod
+    def _validate_autonomous_anchor_provider(cls, value: str) -> str:
+        if value == "":
+            return value
+        if not isinstance(value, str) or re.fullmatch(r"[a-z][a-z0-9_-]*", value) is None:
+            raise ValueError(
+                "autonomous_anchor_provider must be a stable lowercase identifier"
+            )
+        return value
 
     @field_validator("autonomous_history_timezone")
     @classmethod
