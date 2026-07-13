@@ -134,7 +134,8 @@ class Phase3ImplementationGate:
             raise ValueError(f"invalid selector for {self.id}")
         expected_evidence_level = (
             "integration"
-            if self.artifact_kind == "employee_channel_bridge"
+            if self.artifact_kind
+            in {"employee_channel_bridge", "employee_router_queue"}
             else "chaos_security"
         )
         if self.evidence_level != expected_evidence_level:
@@ -160,6 +161,13 @@ class Phase3ImplementationGate:
         elif self.artifact_kind == "employee_ingress_ipc_harness":
             if wheel is not None or self.artifact_profile_id == CAPABILITY_PROFILE_ID:
                 raise ValueError(f"IPC evidence cannot use SDK capability identity for {self.id}")
+        elif self.artifact_kind == "employee_router_queue":
+            if (
+                self.artifact_profile_id != "employee-router-queue-v1"
+                or wheel is not None
+                or self.environment != "local_process_harness"
+            ):
+                raise ValueError(f"invalid Router queue profile for {self.id}")
         else:
             raise ValueError(f"unsupported artifact kind for {self.id}")
 
@@ -427,7 +435,7 @@ class Phase3ImplementationManifest:
                 ):
                     raise ValueError(f"SDK capability artifact mismatch for {gate.id}")
             elif result.sdk_capability_artifact_sha256 is not None:
-                raise ValueError(f"IPC evidence cannot use SDK capability artifact for {gate.id}")
+                raise ValueError(f"local evidence cannot use SDK capability artifact for {gate.id}")
             parsed.append(result)
 
         by_id = {result.gate_id: result for result in parsed}

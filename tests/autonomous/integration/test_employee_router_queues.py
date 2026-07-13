@@ -1,0 +1,466 @@
+"""Durability, FIFO, isolation, and backpressure tests for employee Router queues."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
+from threading import Barrier
+
+import pytest
+
+from src.autonomous.context.runtime import RuntimeRequesterChatAcl
+from src.autonomous.domain import BotPrincipal, EmployeeDefinition, EmployeeState, WorkerType
+from src.autonomous.ingress.models import EmployeeIngressMetadata, EmployeeIngressPayload
+from src.autonomous.ingress.projection import IngressProjectionState
+from src.autonomous.ingress.service import EmployeeIngressService
+from src.autonomous.journal.anchor import MemoryAnchor
+from src.autonomous.journal.blob_store import AesGcmEncryptionProvider, BlobStore
+from src.autonomous.journal.frame import GENESIS_HASH
+from src.autonomous.journal.projections import ProjectionState
+from src.autonomous.journal.writer import JournalWriter
+from src.autonomous.supervisor.employee_channels import ChannelProcessState, ChannelProcessStatus
+from src.autonomous.workforce.registry import ProjectedAgentRegistry
+
+HMAC_KEY = b"employee-router-integration-hmac!!"
+DATA_KEY = b"i" * 32
+
+
+def _module():
+    return importlib.import_module("src.autonomous.ingress.router")
+
+
+def _payload(index: int, *, sender: str = "ou_requester") -> EmployeeIngressPayload:
+    part = {
+        "type": "message",
+        "message_type": "text",
+        "chat_type": "group",
+        "content": {"text": f"task {index}"},
+        "sender_id": sender,
+        "sender_id_type": "open_id",
+        "sender_type": "user",
+        "sender_tenant_key": "tenant_1",
+        "feishu_thread_id": f"omt_{index}",
+    }
+    digest = hashlib.sha256(str(index).encode()).hexdigest()
+    return EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id="ing_" + digest,
+        normalized_parts=(part,),
+        attachment_descriptors=(),
+    )
+
+
+def _metadata(payload: EmployeeIngressPayload, index: int, agent_id: str) -> EmployeeIngressMetadata:
+    suffix = hashlib.sha256(f"{agent_id}:{index}".encode()).hexdigest()[:24]
+    return EmployeeIngressMetadata(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        tenant_key="tenant_1",
+        agent_id=agent_id,
+        bot_principal_id=f"bot_{agent_id.removeprefix('agt_')}",
+        app_id=f"cli_{agent_id.removeprefix('agt_')}",
+        channel_generation=3,
+        connection_id=f"conn_{agent_id.removeprefix('agt_')}",
+        event_id=f"evt_{suffix}",
+        message_id=f"om_{suffix}",
+        event_type="im.message.receive_v1",
+        action_identity="",
+        chat_id="oc_team",
+        thread_root_message_id="om_root",
+        sender_principal_id="ou_requester",
+        received_at="2026-07-13T00:00:00Z",
+        semantic_digest=payload.payload_sha256,
+        payload_sha256=payload.payload_sha256,
+        payload_size_bytes=payload.canonical_size_bytes,
+        attachment_count=0,
+        attachment_total_bytes=0,
+    )
+
+
+class _Channels:
+    def __init__(self, agent_ids: tuple[str, ...]) -> None:
+        self.statuses = {
+            agent_id: ChannelProcessStatus(
+                agent_id=agent_id,
+                app_id=f"cli_{agent_id.removeprefix('agt_')}",
+                generation=3,
+                pid=index + 100,
+                state=ChannelProcessState.READY,
+                identity={"app_id": f"cli_{agent_id.removeprefix('agt_')}"},
+                ready_metadata={"connection_id": f"conn_{agent_id.removeprefix('agt_')}"},
+            )
+            for index, agent_id in enumerate(agent_ids)
+        }
+
+    def status(self, agent_id: str):
+        return self.statuses.get(agent_id)
+
+
+def _stack(
+    tmp_path: Path,
+    *,
+    agent_ids: tuple[str, ...] = ("agt_alpha",),
+    limits: tuple[int, int, int] = (4, 8, 16),
+    inactive_agent_ids: tuple[str, ...] = (),
+):
+    module = _module()
+    writer = JournalWriter.open(
+        tmp_path / "journal", anchor=MemoryAnchor(), hmac_key=HMAC_KEY, writer_epoch=1
+    )
+    ingress = EmployeeIngressService(
+        writer=writer,
+        blob_store=BlobStore(
+            tmp_path / "blobs",
+            AesGcmEncryptionProvider(lambda _key_ref: DATA_KEY),
+        ),
+        ingress_state=IngressProjectionState(),
+        active_key_id="k1",
+    )
+    workforce = ProjectionState()
+    workforce.cursor_sequence = 0
+    workforce.cursor_hash = GENESIS_HASH
+    for index, agent_id in enumerate(agent_ids):
+        suffix = agent_id.removeprefix("agt_")
+        workforce.employees[agent_id] = EmployeeDefinition(
+            agent_id=agent_id,
+            tenant_key="tenant_1",
+            owner_principal_id="ou_owner",
+            name=suffix,
+            tool="codex",
+            model="gpt-5.6-sol",
+            effort="xhigh",
+            worker_type=WorkerType.VISIBLE,
+            state=(
+                EmployeeState.DRAFT
+                if agent_id in inactive_agent_ids
+                else EmployeeState.ACTIVE
+            ),
+            bot_principal_id=f"bot_{suffix}",
+            member_groups=("oc_team",),
+            aggregate_version=index + 1,
+        )
+        workforce.bot_principals[f"bot_{suffix}"] = BotPrincipal(
+            bot_principal_id=f"bot_{suffix}",
+            tenant_key="tenant_1",
+            agent_id=agent_id,
+            app_id=f"cli_{suffix}",
+            credential_ref=f"cred_{suffix}",
+        )
+    channels = _Channels(agent_ids)
+
+    def new_router():
+        return module.DurableEmployeeIngressRouter(
+            writer=writer,
+            ingress_service=ingress,
+            registry_provider=lambda: ProjectedAgentRegistry(workforce),
+            channel_status_provider=channels,
+            requester_acl=RuntimeRequesterChatAcl(
+                allowed_requesters=("ou_requester",), allowed_chats=("oc_team",)
+            ),
+            queue_limits=module.RouterQueueLimits(
+                per_employee=limits[0], per_team=limits[1], global_limit=limits[2]
+            ),
+        )
+
+    return module, writer, ingress, new_router
+
+
+def _accept(
+    ingress: EmployeeIngressService,
+    index: int,
+    agent_id: str = "agt_alpha",
+    *,
+    sender: str = "ou_requester",
+) -> str:
+    payload = _payload(index, sender=sender)
+    metadata = _metadata(payload, index, agent_id)
+    metadata = replace(metadata, sender_principal_id=sender)
+    ack = ingress.accept(
+        metadata,
+        payload,
+        request_id=f"req_{agent_id.removeprefix('agt_')}_{index}",
+    )
+    return ack.acceptance.acceptance_id
+
+
+def test_router_persists_complete_lifecycle_and_atomic_queue_position(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(tmp_path)
+    router = new_router()
+    acceptance_id = _accept(ingress, 1)
+
+    queued = router.route(acceptance_id)
+    grant = router.dequeue()
+    completed = router.finish(acceptance_id, reason_code="completed")
+
+    assert queued.state == "queued"
+    assert queued.queue_position == 1
+    assert queued.queued_sequence > queued.accepted_sequence
+    assert grant is not None and grant.record.state == "dispatching"
+    assert completed.state == "terminal"
+    frames = tuple(writer.replay())
+    event_types = [event.event_type for frame in frames for event in frame.events]
+    assert event_types == [
+        "employee.ingress.accepted",
+        "employee.ingress.router_authorized",
+        "employee.ingress.router_staging",
+        "employee.ingress.router_queued",
+        "employee.ingress.router_dispatching",
+        "employee.ingress.router_terminal",
+    ]
+    queued_events = [
+        (frame, event)
+        for frame in frames
+        for event in frame.events
+        if event.event_type == "employee.ingress.router_queued"
+    ]
+    assert len(queued_events) == 1
+    frame, event = queued_events[0]
+    assert event.payload["queue_position"] == 1
+    assert event.payload["authority"]["team_id"] == "oc_team"
+    serialized_authority = repr(event.payload["authority"]).lower()
+    assert "credential" not in serialized_authority
+    assert "secret" not in serialized_authority
+    assert "access_token" not in serialized_authority
+    assert frame.sequence == queued.queued_sequence
+    ingress.close()
+    writer.close()
+
+
+def test_invalid_router_transition_is_rejected_before_journal_commit(
+    tmp_path: Path,
+) -> None:
+    module, writer, ingress, new_router = _stack(tmp_path)
+    router = new_router()
+    acceptance_id = _accept(ingress, 1)
+    before = writer.anchor.read()
+
+    with writer.transaction_guard(), router._mutex:
+        router.rebuild_projection()
+        record = router.state.by_acceptance_id[acceptance_id]
+        with pytest.raises(module.RouterProjectionError):
+            router._transition_unlocked(record, "queued", {"queue_position": 1})
+
+    assert writer.anchor.read() == before
+    ingress.close()
+    writer.close()
+
+
+def test_durable_fifo_survives_router_restart(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(tmp_path)
+    router = new_router()
+    acceptance_ids = [_accept(ingress, index) for index in (1, 2, 3)]
+    for acceptance_id in acceptance_ids:
+        assert router.route(acceptance_id).state == "queued"
+
+    restarted = new_router()
+    observed: list[str] = []
+    for expected in acceptance_ids:
+        grant = restarted.dequeue()
+        assert grant is not None
+        observed.append(grant.record.acceptance_id)
+        restarted.finish(expected, reason_code="completed")
+
+    assert observed == acceptance_ids
+    ingress.close()
+    writer.close()
+
+
+def test_restart_keeps_dispatching_work_fail_closed_without_redispatch(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, new_router = _stack(tmp_path)
+    router = new_router()
+    first = _accept(ingress, 1)
+    second = _accept(ingress, 2)
+    assert router.route(first).state == "queued"
+    assert router.route(second).state == "queued"
+    grant = router.dequeue()
+    assert grant is not None and grant.record.acceptance_id == first
+
+    restarted = new_router()
+
+    assert restarted.state.by_acceptance_id[first].state == "dispatching"
+    assert restarted.dequeue() is None
+    assert restarted.state.by_acceptance_id[second].state == "queued"
+    ingress.close()
+    writer.close()
+
+
+def test_inbox_failure_helper_cannot_terminate_a_dispatching_grant(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, new_router = _stack(tmp_path)
+    router = new_router()
+    acceptance_id = _accept(ingress, 1)
+    assert router.route(acceptance_id).state == "queued"
+    grant = router.dequeue()
+    assert grant is not None and grant.record.state == "dispatching"
+
+    retained = router._terminal_inbox_failure(acceptance_id)
+
+    assert retained.state == "dispatching"
+    assert retained.reason_code == ""
+    ingress.close()
+    writer.close()
+
+
+def test_queue_full_is_terminal_without_a_queue_event(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(tmp_path, limits=(1, 2, 2))
+    router = new_router()
+    first = _accept(ingress, 1)
+    second = _accept(ingress, 2)
+    assert router.route(first).state == "queued"
+
+    rejected = router.route(second)
+
+    assert rejected.state == "terminal"
+    assert rejected.reason_code == "queue_full"
+    queue_acceptances = {
+        event.payload["acceptance_id"]
+        for frame in writer.replay()
+        for event in frame.events
+        if event.event_type == "employee.ingress.router_queued"
+    }
+    assert queue_acceptances == {first}
+    ingress.close()
+    writer.close()
+
+
+def test_per_employee_dispatch_is_one_but_another_employee_can_progress(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path, agent_ids=("agt_alpha", "agt_beta")
+    )
+    router = new_router()
+    alpha_1 = _accept(ingress, 1, "agt_alpha")
+    alpha_2 = _accept(ingress, 2, "agt_alpha")
+    beta_1 = _accept(ingress, 3, "agt_beta")
+    for acceptance_id in (alpha_1, alpha_2, beta_1):
+        assert router.route(acceptance_id).state == "queued"
+
+    first = router.dequeue()
+    second = router.dequeue()
+
+    assert first is not None and first.record.acceptance_id == alpha_1
+    assert second is not None and second.record.acceptance_id == beta_1
+    assert router.dequeue() is None
+    router.finish(alpha_1, reason_code="completed")
+    third = router.dequeue()
+    assert third is not None and third.record.acceptance_id == alpha_2
+    ingress.close()
+    writer.close()
+
+
+def test_two_employees_are_isolated_under_team_and_global_queue_limits(
+    tmp_path: Path,
+) -> None:
+    """EI-QUEUE-01: local integration evidence in local_process_harness."""
+
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    acceptance_ids = (
+        _accept(ingress, 1, "agt_alpha"),
+        _accept(ingress, 2, "agt_alpha"),
+        _accept(ingress, 3, "agt_beta"),
+    )
+    barrier = Barrier(3)
+
+    def admit(acceptance_id: str):
+        barrier.wait()
+        return router.route(acceptance_id)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        records = list(pool.map(admit, acceptance_ids))
+
+    queued = [record for record in records if record.state == "queued"]
+    rejected = [record for record in records if record.reason_code == "queue_full"]
+    assert {record.authority.agent_id for record in queued} == {"agt_alpha", "agt_beta"}
+    assert len(rejected) == 1 and rejected[0].agent_id == "agt_alpha"
+    assert router.queue_depth(team_id="oc_team") == 2
+    ingress.close()
+    writer.close()
+
+
+def test_no_pending_peer_does_not_reserve_shared_capacity(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha = (_accept(ingress, 1), _accept(ingress, 2))
+
+    assert [router.route(item).state for item in alpha] == ["queued", "queued"]
+    assert router.queue_depth() == 2
+    ingress.close()
+    writer.close()
+
+
+def test_inactive_pending_peer_does_not_reserve_shared_capacity(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        inactive_agent_ids=("agt_beta",),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha = (_accept(ingress, 1), _accept(ingress, 2))
+    _accept(ingress, 3, "agt_beta")
+
+    assert [router.route(item).state for item in alpha] == ["queued", "queued"]
+    assert router.queue_depth() == 2
+    ingress.close()
+    writer.close()
+
+
+def test_unauthorized_pending_peer_does_not_reserve_shared_capacity(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha = (_accept(ingress, 1), _accept(ingress, 2))
+    _accept(ingress, 3, "agt_beta", sender="ou_intruder")
+
+    assert [router.route(item).state for item in alpha] == ["queued", "queued"]
+    assert router.queue_depth() == 2
+    ingress.close()
+    writer.close()
+
+
+def test_two_router_instances_atomically_admit_one_acceptance_once(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, new_router = _stack(tmp_path)
+    first = new_router()
+    second = new_router()
+    acceptance_id = _accept(ingress, 1)
+    barrier = Barrier(2)
+
+    def route(router):
+        barrier.wait()
+        return router.route(acceptance_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        records = list(pool.map(route, (first, second)))
+
+    assert all(record.state == "queued" for record in records)
+    queued_events = [
+        event
+        for frame in writer.replay()
+        for event in frame.events
+        if event.event_type == "employee.ingress.router_queued"
+    ]
+    assert len(queued_events) == 1
+    assert queued_events[0].payload["acceptance_id"] == acceptance_id
+    ingress.close()
+    writer.close()

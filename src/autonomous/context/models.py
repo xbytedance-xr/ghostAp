@@ -468,11 +468,12 @@ class AuthorizedContextRequest:
             "thread_root_message_id",
             "om_",
         )
-        _require_prefix(
-            self.feishu_thread_id,
-            "feishu_thread_id",
-            "omt_",
-        )
+        if self.feishu_thread_id:
+            _require_prefix(
+                self.feishu_thread_id,
+                "feishu_thread_id",
+                "omt_",
+            )
         _require_prefix(
             self.current_message_id,
             "current_message_id",
@@ -544,7 +545,10 @@ class EmployeeExecutionInput:
             or watermark.chat_id != self.request.chat_id
             or watermark.thread_root_id
             != self.request.thread_root_message_id
-            or watermark.feishu_thread_id != self.request.feishu_thread_id
+            or (
+                self.request.feishu_thread_id
+                and watermark.feishu_thread_id != self.request.feishu_thread_id
+            )
         ):
             raise ValueError("context watermark authority mismatch")
         current = [

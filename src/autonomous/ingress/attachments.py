@@ -536,6 +536,24 @@ class AttachmentStagingService:
                 paths.append(self._root / relative)
             return tuple(paths)
 
+    def completed_for_acceptance(
+        self,
+        acceptance_id: str,
+    ) -> AttachmentStagingRecord | None:
+        """Return one verified reusable stage for idempotent Router recovery."""
+
+        with self._mutex:
+            self._ensure_open()
+            self._sync_unlocked()
+            staging_id = self._state.by_acceptance_id.get(acceptance_id)
+            if staging_id is None:
+                return None
+            record = self._state.by_staging_id[staging_id]
+            if record.status != "completed" or record.cleanup_state != "none":
+                raise AttachmentStateError("attachment staging is not reusable")
+            self.trusted_paths(staging_id)
+            return record
+
     def _verify_staged_record_unlocked(self, record: AttachmentStagingRecord) -> None:
         if record.status != "started" or record.cleanup_state != "none":
             raise AttachmentStateError("attachment staging is not live")

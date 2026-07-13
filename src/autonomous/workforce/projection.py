@@ -67,6 +67,12 @@ _WORKFORCE_EVENTS = frozenset(
         "authority.cutover",
     }
 )
+
+
+def is_workforce_event(event_type: str) -> bool:
+    """Return whether an event can change projected employee authority."""
+
+    return event_type in _WORKFORCE_EVENTS
 _PROFILE_FIELDS = frozenset(
     {
         "name",

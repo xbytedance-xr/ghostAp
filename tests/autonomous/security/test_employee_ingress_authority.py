@@ -1,0 +1,996 @@
+"""Fail-closed authority tests for the durable employee ingress Router."""
+
+from __future__ import annotations
+
+import hashlib
+import importlib
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
+from threading import Barrier, Event, Lock, Thread
+from types import SimpleNamespace
+
+import pytest
+
+from src.autonomous.context.runtime import RuntimeRequesterChatAcl
+from src.autonomous.domain import BotPrincipal, EmployeeDefinition, EmployeeState, WorkerType
+from src.autonomous.ingress.attachments import AttachmentStateError
+from src.autonomous.ingress.models import EmployeeIngressMetadata, EmployeeIngressPayload
+from src.autonomous.ingress.projection import IngressProjectionState
+from src.autonomous.ingress.service import EmployeeIngressService
+from src.autonomous.journal.anchor import MemoryAnchor
+from src.autonomous.journal.blob_store import AesGcmEncryptionProvider, BlobStore
+from src.autonomous.journal.frame import GENESIS_HASH, JournalEvent
+from src.autonomous.journal.projections import ProjectionState
+from src.autonomous.journal.writer import JournalWriter
+from src.autonomous.supervisor.employee_channels import (
+    ChannelProcessState,
+    ChannelProcessStatus,
+)
+from src.autonomous.workforce.registry import ProjectedAgentRegistry
+
+HMAC_KEY = b"employee-router-security-hmac-key!"
+DATA_KEY = b"s" * 32
+
+
+def _router_module():
+    return importlib.import_module("src.autonomous.ingress.router")
+
+
+def _payload(
+    *,
+    text: str = "inspect this change",
+    sender_id: str = "ou_requester",
+    sender_id_type: str = "open_id",
+    sender_type: str = "user",
+    sender_tenant_key: str = "tenant_1",
+    part_type: str = "message",
+    value: dict[str, object] | None = None,
+    feishu_thread_id: str = "omt_1",
+    attachment_descriptors: tuple[dict[str, object], ...] = (),
+) -> EmployeeIngressPayload:
+    if part_type == "card_action":
+        part = {
+            "type": "card_action",
+            "tag": "button",
+            "value": value or {},
+            "sender_id": sender_id,
+            "sender_id_type": sender_id_type,
+            "sender_type": sender_type,
+            "sender_tenant_key": sender_tenant_key,
+        }
+    else:
+        part = {
+            "type": "message",
+            "message_type": "text",
+            "chat_type": "group",
+            "content": {"text": text},
+            "sender_id": sender_id,
+            "sender_id_type": sender_id_type,
+            "sender_type": sender_type,
+            "sender_tenant_key": sender_tenant_key,
+            "feishu_thread_id": feishu_thread_id,
+        }
+    digest = hashlib.sha256(repr(sorted(part.items())).encode()).hexdigest()
+    return EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id="ing_" + digest,
+        normalized_parts=(part,),
+        attachment_descriptors=attachment_descriptors,
+    )
+
+
+def _metadata(payload: EmployeeIngressPayload, **changes: object) -> EmployeeIngressMetadata:
+    values: dict[str, object] = {
+        "schema_version": 1,
+        "envelope_id": payload.envelope_id,
+        "tenant_key": "tenant_1",
+        "agent_id": "agt_alpha",
+        "bot_principal_id": "bot_alpha",
+        "app_id": "cli_alpha",
+        "channel_generation": 3,
+        "connection_id": "conn_3",
+        "event_id": "evt_" + payload.envelope_id.removeprefix("ing_")[:24],
+        "message_id": "om_" + payload.envelope_id.removeprefix("ing_")[:24],
+        "event_type": (
+            "card.action.trigger"
+            if payload.normalized_parts[0]["type"] == "card_action"
+            else "im.message.receive_v1"
+        ),
+        "action_identity": "",
+        "chat_id": "oc_team",
+        "thread_root_message_id": "om_root",
+        "sender_principal_id": "ou_requester",
+        "received_at": "2026-07-13T00:00:00Z",
+        "semantic_digest": payload.payload_sha256,
+        "payload_sha256": payload.payload_sha256,
+        "payload_size_bytes": payload.canonical_size_bytes,
+        "attachment_count": len(payload.attachment_descriptors),
+        "attachment_total_bytes": payload.attachment_total_bytes,
+    }
+    values.update(changes)
+    return EmployeeIngressMetadata(**values)
+
+
+def _workforce() -> ProjectionState:
+    state = ProjectionState()
+    state.cursor_sequence = 0
+    state.cursor_hash = GENESIS_HASH
+    state.employees["agt_alpha"] = EmployeeDefinition(
+        agent_id="agt_alpha",
+        tenant_key="tenant_1",
+        owner_principal_id="ou_owner",
+        name="Alpha",
+        tool="codex",
+        model="gpt-5.6-sol",
+        effort="xhigh",
+        worker_type=WorkerType.VISIBLE,
+        state=EmployeeState.ACTIVE,
+        bot_principal_id="bot_alpha",
+        member_groups=("oc_team",),
+        aggregate_version=4,
+    )
+    state.bot_principals["bot_alpha"] = BotPrincipal(
+        bot_principal_id="bot_alpha",
+        tenant_key="tenant_1",
+        agent_id="agt_alpha",
+        app_id="cli_alpha",
+        credential_ref="cred_alpha",
+    )
+    return state
+
+
+class _Channels:
+    def __init__(self) -> None:
+        self.statuses = {
+            "agt_alpha": ChannelProcessStatus(
+                agent_id="agt_alpha",
+                app_id="cli_alpha",
+                generation=3,
+                pid=123,
+                state=ChannelProcessState.READY,
+                identity={"app_id": "cli_alpha"},
+                ready_metadata={"connection_id": "conn_3"},
+            )
+        }
+
+    def status(self, agent_id: str):
+        return self.statuses.get(agent_id)
+
+
+class _MembershipHealth:
+    def __init__(self, degraded: bool) -> None:
+        self.degraded = degraded
+
+    def is_degraded(self, agent_id: str, team_id: str) -> bool:
+        assert agent_id == "agt_alpha"
+        assert team_id == "oc_team"
+        return self.degraded
+
+
+def _stack(
+    tmp_path: Path,
+    *,
+    allowed: bool = True,
+    membership_degraded: bool = False,
+    attachment_staging: object | None = None,
+    fault_hook=None,
+    provider_failure: str = "",
+):
+    module = _router_module()
+    writer = JournalWriter.open(
+        tmp_path / "journal",
+        anchor=MemoryAnchor(),
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
+    )
+    blob_store = BlobStore(
+        tmp_path / "blobs",
+        AesGcmEncryptionProvider(lambda _key_ref: DATA_KEY),
+    )
+    ingress = EmployeeIngressService(
+        writer=writer,
+        blob_store=blob_store,
+        ingress_state=IngressProjectionState(),
+        active_key_id="k1",
+    )
+    workforce = _workforce()
+    channels = _Channels()
+    acl = RuntimeRequesterChatAcl(
+        allowed_requesters=("ou_requester",) if allowed else (),
+        allowed_chats=("oc_team",),
+    )
+    def registry_provider():
+        return ProjectedAgentRegistry(workforce)
+
+    if provider_failure == "registry":
+        def registry_provider():
+            raise RuntimeError("registry down")
+
+    if provider_failure == "channel":
+        def channel_failure(_agent_id: str):
+            raise RuntimeError("channel down")
+
+        channels.status = channel_failure  # type: ignore[method-assign]
+    router = module.DurableEmployeeIngressRouter(
+        writer=writer,
+        ingress_service=ingress,
+        registry_provider=registry_provider,
+        channel_status_provider=channels,
+        requester_acl=acl,
+        queue_limits=module.RouterQueueLimits(per_employee=4, per_team=8, global_limit=16),
+        membership_health=_MembershipHealth(membership_degraded),
+        attachment_staging=attachment_staging,
+        fault_hook=fault_hook,
+        constraints_digest="a" * 64,
+        system_prompt_token_reserve=512,
+    )
+    return module, writer, ingress, workforce, channels, router
+
+
+def _accept(ingress: EmployeeIngressService, payload: EmployeeIngressPayload, **changes: object) -> str:
+    metadata = _metadata(payload, **changes)
+    ack = ingress.accept(metadata, payload, request_id="req_" + metadata.event_id.removeprefix("evt_"))
+    return ack.acceptance.acceptance_id
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    (
+        ("inactive", "authority_denied"),
+        ("principal", "authority_denied"),
+        ("app", "authority_denied"),
+        ("generation", "authority_denied"),
+        ("membership", "authority_denied"),
+        ("acl", "requester_denied"),
+    ),
+)
+def test_router_grants_only_projected_active_binding_and_live_channel(
+    tmp_path: Path,
+    mutation: str,
+    reason: str,
+) -> None:
+    _, writer, ingress, workforce, channels, router = _stack(
+        tmp_path,
+        allowed=mutation != "acl",
+    )
+    if mutation == "inactive":
+        workforce.employees["agt_alpha"] = replace(
+            workforce.employees["agt_alpha"], state=EmployeeState.DRAFT
+        )
+    elif mutation == "principal":
+        workforce.employees["agt_alpha"] = replace(
+            workforce.employees["agt_alpha"], bot_principal_id="bot_other"
+        )
+    elif mutation == "app":
+        channels.statuses["agt_alpha"] = replace(
+            channels.statuses["agt_alpha"], app_id="cli_other"
+        )
+    elif mutation == "generation":
+        channels.statuses["agt_alpha"] = replace(
+            channels.statuses["agt_alpha"], generation=4
+        )
+    elif mutation == "membership":
+        workforce.employees["agt_alpha"] = replace(
+            workforce.employees["agt_alpha"], member_groups=()
+        )
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == reason
+    assert router.dequeue() is None
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        _payload(sender_id_type="user_id"),
+        _payload(sender_type="bot"),
+        _payload(sender_tenant_key="tenant_other"),
+        _payload(sender_id="bot_alpha"),
+    ),
+)
+def test_untrusted_sender_fields_only_reduce_authority(
+    tmp_path: Path,
+    payload: EmployeeIngressPayload,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, payload)
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == (
+        "bot_loop"
+        if payload.normalized_parts[0]["sender_type"] in {"bot", "app"}
+        else "sender_invalid"
+    )
+    ingress.close()
+    writer.close()
+
+
+def test_stale_projection_or_channel_is_rejected_again_at_dequeue(tmp_path: Path) -> None:
+    _, writer, ingress, workforce, channels, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload())
+    assert router.route(acceptance_id).state == "queued"
+    workforce.employees["agt_alpha"] = replace(
+        workforce.employees["agt_alpha"], aggregate_version=5
+    )
+    channels.statuses["agt_alpha"] = replace(
+        channels.statuses["agt_alpha"], generation=4
+    )
+
+    assert router.dequeue() is None
+    record = router.state.by_acceptance_id[acceptance_id]
+    assert record.state == "terminal"
+    assert record.reason_code == "authority_stale"
+    ingress.close()
+    writer.close()
+
+
+def test_degraded_membership_is_a_deny_only_signal(tmp_path: Path) -> None:
+    _, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        membership_degraded=True,
+    )
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "membership_degraded"
+    ingress.close()
+    writer.close()
+
+
+def test_unrelated_projection_head_advancement_does_not_stale_same_employee_version(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, workforce, channels, router = _stack(tmp_path)
+    original_status = channels.status
+
+    def advancing_status(agent_id: str):
+        result = original_status(agent_id)
+        committed = writer.commit(
+            [
+                JournalEvent(
+                    event_type="test.unrelated",
+                    aggregate_id="unrelated",
+                    payload={"value": workforce.cursor_sequence + 1},
+                )
+            ],
+            writer.get_aggregate_versions(["unrelated"]),
+        )
+        workforce.cursor_sequence = committed.frame.sequence
+        workforce.cursor_hash = committed.frame.frame_hash
+        return result
+
+    channels.status = advancing_status  # type: ignore[method-assign]
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "queued"
+    assert record.authority is not None
+    assert record.authority.employee_version == 4
+    ingress.close()
+    writer.close()
+
+
+def test_future_or_foreign_projection_coordinates_are_durably_denied(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, workforce, _, router = _stack(tmp_path)
+    workforce.cursor_sequence = writer.anchor.read().sequence + 1
+    workforce.cursor_hash = "f" * 64
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "authority_denied"
+    ingress.close()
+    writer.close()
+
+
+def test_sequence_zero_projection_requires_genesis_hash_semantics(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, workforce, _, router = _stack(tmp_path)
+    workforce.cursor_sequence = 0
+    workforce.cursor_hash = "f" * 64
+    acceptance_id = _accept(ingress, _payload())
+
+    assert router.route(acceptance_id).reason_code == "authority_denied"
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize("invalid_field", ("identity", "ready_metadata"))
+def test_malformed_channel_status_is_a_durable_authority_deny(
+    tmp_path: Path,
+    invalid_field: str,
+) -> None:
+    _, writer, ingress, _, channels, router = _stack(tmp_path)
+    channels.statuses["agt_alpha"] = replace(
+        channels.statuses["agt_alpha"],
+        **{invalid_field: None},
+    )
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "authority_denied"
+    ingress.close()
+    writer.close()
+
+
+def test_invalid_projected_execution_shape_and_acl_exception_are_durable_denials(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, workforce, _, router = _stack(tmp_path)
+    workforce.employees["agt_alpha"] = replace(
+        workforce.employees["agt_alpha"],
+        tool="",
+    )
+    invalid_shape = _accept(ingress, _payload(text="invalid shape"))
+    assert router.route(invalid_shape).reason_code == "authority_denied"
+
+    workforce.employees["agt_alpha"] = replace(
+        workforce.employees["agt_alpha"],
+        tool="codex",
+    )
+
+    class RaisingAcl:
+        def is_authorized(self, _request) -> bool:
+            raise RuntimeError("ACL unavailable")
+
+    router._requester_acl = RaisingAcl()
+    acl_failure = _accept(ingress, _payload(text="acl failure"))
+    assert router.route(acl_failure).reason_code == "authority_denied"
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        {"correlation_id": "already-consumed"},
+        {"correlation_id": "expired", "expires_at": 1},
+        {"correlation_id": "other-employee", "agent_id": "agt_other"},
+    ),
+)
+def test_card_actions_are_durably_unsupported_before_trusted_issuance(
+    tmp_path: Path,
+    value: dict[str, object],
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    payload = _payload(part_type="card_action", value=value)
+    acceptance_id = _accept(ingress, payload)
+
+    first = router.route(acceptance_id)
+    replay = router.route(acceptance_id)
+
+    assert first == replay
+    assert first.state == "terminal"
+    assert first.reason_code == "card_action_unsupported"
+    assert router.queue_depth() == 0
+    assert router.dequeue() is None
+    ingress.close()
+    writer.close()
+
+
+def test_authorized_context_uses_frozen_snapshot_and_trusted_constraints_only(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    payload = _payload(
+        value={
+            "agent_id": "agt_attacker",
+            "system_prompt_token_reserve": 999999,
+            "constraints_digest": "f" * 64,
+        }
+    )
+    acceptance_id = _accept(ingress, payload)
+    queued = router.route(acceptance_id)
+
+    grant = router.dequeue()
+
+    assert grant is not None
+    assert grant.record.acceptance_id == acceptance_id
+    assert grant.request.tenant_key == queued.authority.tenant_key == "tenant_1"
+    assert grant.request.agent_id == queued.authority.agent_id == "agt_alpha"
+    assert grant.request.app_id == queued.authority.app_id == "cli_alpha"
+    assert grant.request.chat_id == queued.authority.team_id == "oc_team"
+    assert grant.request.current_message_id == queued.message_id
+    assert grant.request.requester_principal_id == queued.authority.requester_principal_id
+    assert grant.request.system_prompt_token_reserve == 512
+    assert grant.request.constraints_digest == "a" * 64
+    ingress.close()
+    writer.close()
+
+
+def test_root_message_without_thread_id_keeps_resolvable_current_coordinates(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    payload = _payload(feishu_thread_id="")
+    acceptance_id = _accept(ingress, payload, thread_root_message_id="")
+
+    assert router.route(acceptance_id).state == "queued"
+    grant = router.dequeue()
+
+    assert grant is not None
+    assert grant.request.thread_root_message_id == grant.request.current_message_id
+    assert grant.request.feishu_thread_id == ""
+    assert grant.request.to_message_scope().feishu_thread_id == ""
+    ingress.close()
+    writer.close()
+
+
+def test_worker_normalizer_encrypts_sender_and_optional_thread_provenance() -> None:
+    from src.autonomous.provisioning.channel_worker import _normalize_sdk_ingress
+
+    event = SimpleNamespace(
+        header=SimpleNamespace(
+            event_id="event-1",
+            event_type="im.message.receive_v1",
+            create_time="1783900800000",
+            tenant_key="tenant_1",
+            app_id="cli_alpha",
+        ),
+        event=SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(open_id="ou_requester"),
+                sender_type="user",
+                tenant_key="tenant_1",
+            ),
+            message=SimpleNamespace(
+                message_id="om_current",
+                root_id="",
+                parent_id="",
+                thread_id="",
+                chat_id="oc_team",
+                chat_type="p2p",
+                message_type="text",
+                content='{"text":"hello"}',
+            ),
+        ),
+    )
+
+    metadata, payload, _ = _normalize_sdk_ingress(
+        event,
+        kind="message",
+        agent_id="agt_alpha",
+        app_id="cli_alpha",
+        generation=3,
+        connection_id="conn_3",
+        tenant_key="tenant_1",
+        bot_principal_id="bot_alpha",
+    )
+
+    part = payload.normalized_parts[0]
+    assert metadata.thread_root_message_id == ""
+    assert part["sender_id"] == "ou_requester"
+    assert part["sender_id_type"] == "open_id"
+    assert part["sender_type"] == "user"
+    assert part["sender_tenant_key"] == "tenant_1"
+    assert part["feishu_thread_id"] == ""
+
+
+def test_non_message_event_type_cannot_grant_message_authority(tmp_path: Path) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload(), event_type="evil.event")
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "unsupported_event"
+    assert router.dequeue() is None
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize("provider_failure", ("registry", "channel"))
+def test_authority_provider_failure_is_a_durable_deny(
+    tmp_path: Path,
+    provider_failure: str,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        provider_failure=provider_failure,
+    )
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "authority_denied"
+    ingress.close()
+    writer.close()
+
+
+def test_authority_callbacks_run_outside_the_journal_transaction_guard(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, channels, router = _stack(tmp_path)
+    original_registry = router._registry_provider
+    original_status = channels.status
+
+    def assert_guard_is_available() -> None:
+        acquired = Event()
+
+        def probe() -> None:
+            with writer.transaction_guard():
+                acquired.set()
+
+        thread = Thread(target=probe)
+        thread.start()
+        assert acquired.wait(1), "authority callback ran under Journal transaction guard"
+        thread.join(1)
+
+    def registry_provider():
+        assert_guard_is_available()
+        return original_registry()
+
+    def channel_status(agent_id: str):
+        assert_guard_is_available()
+        return original_status(agent_id)
+
+    router._registry_provider = registry_provider
+    channels.status = channel_status  # type: ignore[method-assign]
+    acceptance_id = _accept(ingress, _payload())
+
+    assert router.route(acceptance_id).state == "queued"
+    assert router.dequeue() is not None
+    ingress.close()
+    writer.close()
+
+
+class _BlockingStaging:
+    def __init__(self) -> None:
+        self.entered = Event()
+        self.release = Event()
+        self.calls = 0
+        self.state = SimpleNamespace(by_acceptance_id={}, by_staging_id={})
+
+    def stage(self, request) -> None:
+        self.calls += 1
+        self.entered.set()
+        assert self.release.wait(5)
+        staging_id = "stg_done"
+        self.state.by_acceptance_id[request.acceptance_id] = staging_id
+        self.state.by_staging_id[staging_id] = SimpleNamespace(
+            status="completed",
+            cleanup_state="none",
+        )
+
+    def trusted_paths(self, staging_id: str):
+        assert staging_id == "stg_done"
+        return (Path("/trusted/attachment"),)
+
+    def completed_for_acceptance(self, acceptance_id: str):
+        staging_id = self.state.by_acceptance_id.get(acceptance_id)
+        return None if staging_id is None else self.state.by_staging_id[staging_id]
+
+
+def _attachment_payload() -> EmployeeIngressPayload:
+    return _payload(
+        attachment_descriptors=(
+            {
+                "resource_type": "file",
+                "resource_id": "file_1",
+                "mime_type": "text/plain",
+                "size_bytes": 0,
+                "sha256": hashlib.sha256(b"").hexdigest(),
+            },
+        )
+    )
+
+
+def test_attachment_stage_does_not_hold_global_journal_admission_lock(
+    tmp_path: Path,
+) -> None:
+    staging = _BlockingStaging()
+    _, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    first = _accept(ingress, _attachment_payload())
+    route_done = Event()
+
+    def route_attachment() -> None:
+        router.route(first)
+        route_done.set()
+
+    route_thread = Thread(target=route_attachment)
+    route_thread.start()
+    assert staging.entered.wait(2)
+    admitted = Event()
+
+    def admit_other() -> None:
+        _accept(ingress, _payload(text="independent admission"))
+        admitted.set()
+
+    admission_thread = Thread(target=admit_other)
+    admission_thread.start()
+    try:
+        assert admitted.wait(1), "attachment download held global Journal admission"
+    finally:
+        staging.release.set()
+        route_thread.join(5)
+        admission_thread.join(5)
+    assert route_done.is_set()
+    ingress.close()
+    writer.close()
+
+
+def test_router_rechecks_inbox_tombstone_before_queue_commit(tmp_path: Path) -> None:
+    authorized = Event()
+    release = Event()
+
+    def fault(point: str, _record) -> None:
+        if point == "after_authorized":
+            authorized.set()
+            assert release.wait(5)
+
+    _, writer, ingress, _, _, router = _stack(tmp_path, fault_hook=fault)
+    acceptance_id = _accept(ingress, _payload())
+    result: list[object] = []
+
+    thread = Thread(target=lambda: result.append(router.route(acceptance_id)))
+    thread.start()
+    assert authorized.wait(2)
+    ingress.record_disposition(
+        acceptance_id,
+        state="terminal",
+        reason_code="superseded",
+    )
+    assert ingress.gc_terminal_payloads() == 1
+    release.set()
+    thread.join(5)
+
+    assert result and result[0].state == "terminal"
+    assert result[0].reason_code == "inbox_not_dispatchable"
+    assert not any(
+        event.event_type == "employee.ingress.router_queued"
+        and event.payload["acceptance_id"] == acceptance_id
+        for frame in writer.replay()
+        for event in frame.events
+    )
+    ingress.close()
+    writer.close()
+
+
+class _CrashAfterDurableStage(_BlockingStaging):
+    def stage(self, request) -> None:
+        self.calls += 1
+        staging_id = "stg_done"
+        self.state.by_acceptance_id[request.acceptance_id] = staging_id
+        self.state.by_staging_id[staging_id] = SimpleNamespace(
+            status="completed",
+            cleanup_state="none",
+        )
+        raise KeyboardInterrupt("simulated process crash")
+
+
+class _ConcurrentStaging(_BlockingStaging):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock = Lock()
+
+    def completed_for_acceptance(self, acceptance_id: str):
+        with self.lock:
+            return super().completed_for_acceptance(acceptance_id)
+
+    def stage(self, request) -> None:
+        with self.lock:
+            if request.acceptance_id in self.state.by_acceptance_id:
+                raise AttachmentStateError("attachment staging already exists")
+            self.calls += 1
+            time.sleep(0.1)
+            staging_id = "stg_done"
+            self.state.by_acceptance_id[request.acceptance_id] = staging_id
+            self.state.by_staging_id[staging_id] = SimpleNamespace(
+                status="completed",
+                cleanup_state="none",
+            )
+
+
+class _WinningAndLosingStaging(_BlockingStaging):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock = Lock()
+
+    def completed_for_acceptance(self, acceptance_id: str):
+        with self.lock:
+            return super().completed_for_acceptance(acceptance_id)
+
+    def stage(self, request) -> None:
+        with self.lock:
+            self.calls += 1
+            call = self.calls
+        if call == 1:
+            self.entered.set()
+            assert self.release.wait(5)
+            raise RuntimeError("stale losing callback")
+        with self.lock:
+            staging_id = "stg_done"
+            self.state.by_acceptance_id[request.acceptance_id] = staging_id
+            self.state.by_staging_id[staging_id] = SimpleNamespace(
+                status="completed",
+                cleanup_state="none",
+            )
+
+
+def test_attachment_stage_crash_retry_reuses_durable_completed_stage(
+    tmp_path: Path,
+) -> None:
+    staging = _CrashAfterDurableStage()
+    module, writer, ingress, workforce, channels, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    with pytest.raises(KeyboardInterrupt, match="simulated"):
+        router.route(acceptance_id)
+    assert router.state.by_acceptance_id[acceptance_id].state == "authorized"
+
+    restarted = module.DurableEmployeeIngressRouter(
+        writer=writer,
+        ingress_service=ingress,
+        registry_provider=lambda: ProjectedAgentRegistry(workforce),
+        channel_status_provider=channels,
+        requester_acl=RuntimeRequesterChatAcl(
+            allowed_requesters=("ou_requester",),
+            allowed_chats=("oc_team",),
+        ),
+        queue_limits=module.RouterQueueLimits(
+            per_employee=4,
+            per_team=8,
+            global_limit=16,
+        ),
+        membership_health=_MembershipHealth(False),
+        attachment_staging=staging,
+        constraints_digest="a" * 64,
+        system_prompt_token_reserve=512,
+    )
+    assert restarted.route(acceptance_id).state == "queued"
+    assert staging.calls == 1
+    ingress.close()
+    writer.close()
+
+
+def test_two_router_instances_reuse_one_concurrent_attachment_stage(
+    tmp_path: Path,
+) -> None:
+    staging = _ConcurrentStaging()
+    module, writer, ingress, workforce, channels, first = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    second = module.DurableEmployeeIngressRouter(
+        writer=writer,
+        ingress_service=ingress,
+        registry_provider=lambda: ProjectedAgentRegistry(workforce),
+        channel_status_provider=channels,
+        requester_acl=RuntimeRequesterChatAcl(
+            allowed_requesters=("ou_requester",),
+            allowed_chats=("oc_team",),
+        ),
+        queue_limits=module.RouterQueueLimits(4, 8, 16),
+        membership_health=_MembershipHealth(False),
+        attachment_staging=staging,
+        constraints_digest="a" * 64,
+        system_prompt_token_reserve=512,
+    )
+    acceptance_id = _accept(ingress, _attachment_payload())
+    barrier = Barrier(2)
+
+    def route(router):
+        barrier.wait()
+        return router.route(acceptance_id)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        records = list(pool.map(route, (first, second)))
+
+    assert all(record.state == "queued" for record in records)
+    assert staging.calls == 1
+    ingress.close()
+    writer.close()
+
+
+def test_losing_attachment_callback_cannot_revoke_concurrent_dispatch(
+    tmp_path: Path,
+) -> None:
+    staging = _WinningAndLosingStaging()
+    module, writer, ingress, workforce, channels, first = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    second = module.DurableEmployeeIngressRouter(
+        writer=writer,
+        ingress_service=ingress,
+        registry_provider=lambda: ProjectedAgentRegistry(workforce),
+        channel_status_provider=channels,
+        requester_acl=RuntimeRequesterChatAcl(
+            allowed_requesters=("ou_requester",),
+            allowed_chats=("oc_team",),
+        ),
+        queue_limits=module.RouterQueueLimits(4, 8, 16),
+        membership_health=_MembershipHealth(False),
+        attachment_staging=staging,
+        constraints_digest="a" * 64,
+        system_prompt_token_reserve=512,
+    )
+    acceptance_id = _accept(ingress, _attachment_payload())
+    results: list[object] = []
+    losing = Thread(target=lambda: results.append(first.route(acceptance_id)))
+    losing.start()
+    assert staging.entered.wait(2)
+    assert second.route(acceptance_id).state == "queued"
+    grant = second.dequeue()
+    assert grant is not None and grant.record.state == "dispatching"
+    staging.release.set()
+    losing.join(5)
+
+    assert results and results[0].state == "dispatching"
+    assert second.state.by_acceptance_id[acceptance_id].state == "dispatching"
+    ingress.close()
+    writer.close()
+
+
+def test_dequeue_rechecks_inbox_tombstone_in_dispatch_commit_guard(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload())
+    assert router.route(acceptance_id).state == "queued"
+    ingress.record_disposition(
+        acceptance_id,
+        state="terminal",
+        reason_code="superseded",
+    )
+    assert ingress.gc_terminal_payloads() == 1
+
+    assert router.dequeue() is None
+    terminal = router.state.by_acceptance_id[acceptance_id]
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "inbox_not_dispatchable"
+    ingress.close()
+    writer.close()
+
+
+def test_dequeue_rejects_registry_projection_that_missed_workforce_change(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, workforce, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload())
+    assert router.route(acceptance_id).state == "queued"
+    head = writer.anchor.read()
+    workforce.cursor_sequence = head.sequence
+    workforce.cursor_hash = head.frame_hash
+    writer.commit(
+        [
+            JournalEvent(
+                event_type="employee.state_changed",
+                aggregate_id="agt_alpha",
+                payload={"state": "draft"},
+            )
+        ],
+        writer.get_aggregate_versions(["agt_alpha"]),
+    )
+
+    assert router.dequeue() is None
+    terminal = router.state.by_acceptance_id[acceptance_id]
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "authority_stale"
+    ingress.close()
+    writer.close()

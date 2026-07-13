@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Iterator, Protocol
 
 from ..journal.blob_store import (
     AesGcmEncryptionProvider,
@@ -220,6 +221,28 @@ class EmployeeIngressService:
             if record.payload_tombstoned:
                 raise IngressBlobError("ingress payload is tombstoned")
             return self._read_record_payload(record)
+
+    @contextmanager
+    def dispatch_snapshot_guard(
+        self,
+        acceptance_id: str,
+    ) -> Iterator[tuple[IngressRecord, EmployeeIngressPayload]]:
+        """Freeze one dispatchable Inbox record through a short Journal commit.
+
+        Lock order is ingress mutex -> Journal transaction guard.  The caller
+        may commit Router metadata while the context is open, but must never do
+        external I/O in this critical section.
+        """
+
+        with self._mutex, self._writer.transaction_guard():
+            self._ensure_open_unlocked()
+            self._synchronize_projection_unlocked()
+            record = self._state.by_acceptance_id.get(acceptance_id)
+            if record is None:
+                raise KeyError(acceptance_id)
+            if record.disposition is not None or record.payload_tombstoned:
+                raise IngressBlobError("ingress acceptance is not dispatchable")
+            yield record, self._read_record_payload(record)
 
     def record_disposition(
         self,

@@ -56,6 +56,17 @@
       "sdk_wheel_sha256": "d5f094d697578c315d5ec02c1fe7cc6f779314f265e3335c6e0acd8ff4afceba",
       "selector_state": "collectable",
       "status": "pending"
+    },
+    {
+      "id": "EI-QUEUE-01",
+      "selector": "tests/autonomous/integration/test_employee_router_queues.py::test_two_employees_are_isolated_under_team_and_global_queue_limits",
+      "evidence_level": "integration",
+      "environment": "local_process_harness",
+      "artifact_kind": "employee_router_queue",
+      "artifact_profile_id": "employee-router-queue-v1",
+      "sdk_wheel_sha256": null,
+      "selector_state": "collectable",
+      "status": "pending"
     }
   ]
 }

@@ -467,6 +467,7 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         "EI-IPC-01",
         "EI-BRIDGE-MESSAGE-01",
         "EI-BRIDGE-CARD-01",
+        "EI-QUEUE-01",
     )
     assert {
         gate.id: gate.evidence_level for gate in manifest.gates
@@ -476,6 +477,7 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         "EI-IPC-01": "chaos_security",
         "EI-BRIDGE-MESSAGE-01": "integration",
         "EI-BRIDGE-CARD-01": "integration",
+        "EI-QUEUE-01": "integration",
     }
     assert manifest.gate("EI-PLATFORM-MESSAGE-01").selector.endswith(
         "::test_message_wire_response_waits_for_parent_anchor"
@@ -508,6 +510,15 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         assert gate.artifact_kind == "employee_channel_bridge"
         assert gate.sdk_wheel_sha256 == LOCKED_LARK_CHANNEL_WHEEL_SHA256
         assert Path(gate.selector.split("::", 1)[0]).is_file()
+    queue = manifest.gate("EI-QUEUE-01")
+    assert queue.selector == (
+        "tests/autonomous/integration/test_employee_router_queues.py::"
+        "test_two_employees_are_isolated_under_team_and_global_queue_limits"
+    )
+    assert queue.environment == "local_process_harness"
+    assert queue.artifact_kind == "employee_router_queue"
+    assert queue.artifact_profile_id == "employee-router-queue-v1"
+    assert queue.sdk_wheel_sha256 is None
 
 
 def test_phase3_manifest_rejects_duplicate_ids(tmp_path: Path) -> None:
@@ -552,7 +563,7 @@ def test_phase3_evidence_binds_exact_selector_commit_artifacts_and_summary() -> 
         "EI-BRIDGE-MESSAGE-01",
         "EI-BRIDGE-CARD-01",
     )
-    assert evaluation.pending == ("EI-IPC-01",)
+    assert evaluation.pending == ("EI-IPC-01", "EI-QUEUE-01")
 
     with pytest.raises(ValueError, match="commit"):
         manifest.evaluate(

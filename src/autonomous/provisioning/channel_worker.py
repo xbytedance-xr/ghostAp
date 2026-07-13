@@ -617,6 +617,11 @@ def _normalize_sdk_ingress(
                 "message_type": getattr(message, "message_type", ""),
                 "chat_type": getattr(message, "chat_type", ""),
                 "content": content,
+                "sender_id": sender_id,
+                "sender_id_type": "open_id",
+                "sender_type": getattr(sender, "sender_type", ""),
+                "sender_tenant_key": getattr(sender, "tenant_key", ""),
+                "feishu_thread_id": getattr(message, "thread_id", "") or "",
             },
         )
         action_identity = ""
@@ -635,6 +640,10 @@ def _normalize_sdk_ingress(
                 "type": "card_action",
                 "tag": getattr(action, "tag", ""),
                 "value": value,
+                "sender_id": sender_id,
+                "sender_id_type": "open_id",
+                "sender_type": getattr(operator, "sender_type", "") or "",
+                "sender_tenant_key": getattr(operator, "tenant_key", ""),
             },
         )
     else:

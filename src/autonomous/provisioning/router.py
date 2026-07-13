@@ -1,4 +1,9 @@
-"""Employee message router: Channel SDK ingress → Slock _run_acp_session."""
+"""Legacy in-memory employee router retained for scaffold-only tests.
+
+Production employee ingress must use ``autonomous.ingress``'s durable Router;
+this module accepts caller-supplied identity/tool fields and is not an
+authority or recovery boundary.
+"""
 
 from __future__ import annotations
 
@@ -77,7 +82,7 @@ class TaskExecutionPort(Protocol):
 
 
 class EmployeeMessageRouter:
-    """Routes employee bot messages to task execution with ACL and queuing."""
+    """Deprecated scaffold; never compose this into production ingress."""
 
     def __init__(
         self,

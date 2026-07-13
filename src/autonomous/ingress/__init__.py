@@ -22,6 +22,14 @@ from src.autonomous.ingress.models import (
     IngressAcceptance,
     IngressDisposition,
 )
+from src.autonomous.ingress.router import (
+    DurableEmployeeIngressRouter,
+    RouterAuthoritySnapshot,
+    RouterDispatchGrant,
+    RouterLifecycleRecord,
+    RouterProjectionState,
+    RouterQueueLimits,
+)
 from src.autonomous.ingress.sdk_capability import (
     CAPABILITY_NODEIDS,
     CapabilityDecision,
@@ -42,6 +50,7 @@ __all__ = [
     "CapabilityRunEvidence",
     "CapabilityTestOutcome",
     "DownloadedAttachment",
+    "DurableEmployeeIngressRouter",
     "EmployeeAttachmentDescriptor",
     "EmployeeAttemptState",
     "EmployeeIngressAck",
@@ -53,6 +62,11 @@ __all__ = [
     "LarkEmployeeAttachmentDownloader",
     "Phase3EvidenceStatus",
     "Phase3ImplementationManifest",
+    "RouterAuthoritySnapshot",
+    "RouterDispatchGrant",
+    "RouterLifecycleRecord",
+    "RouterProjectionState",
+    "RouterQueueLimits",
     "SDKDistributionIdentity",
     "collect_sdk_distribution_identity",
     "prepare_controlled_sdk_import_cache",

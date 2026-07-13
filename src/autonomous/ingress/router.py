@@ -1,0 +1,1147 @@
+"""Authority-bound durable Router for encrypted employee Inbox records.
+
+This module deliberately stops at a durable dispatch grant.  The Phase 6
+Gateway owns attempt anchoring and ACP execution; raw Channel payload values
+can only make this Router reject an acceptance, never grant authority.
+"""
+
+from __future__ import annotations
+
+import copy
+import threading
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Mapping, Protocol
+
+from ..context.models import AuthorizedContextRequest
+from ..journal.blob_store import BlobRef
+from ..journal.frame import GENESIS_HASH, JournalEvent
+from ..journal.writer import CommitState, JournalWriter
+from ..workforce.projection import is_workforce_event
+from ..workforce.registry import (
+    ProjectedAgentRegistry,
+    ProjectedContextBinding,
+)
+from .models import EmployeeIngressMetadata, EmployeeIngressPayload
+from .service import EmployeeIngressService, IngressBlobError
+
+_ROUTER_PREFIX = "employee.ingress.router_"
+_ROUTER_EVENTS = frozenset(
+    {
+        _ROUTER_PREFIX + "authorized",
+        _ROUTER_PREFIX + "staging",
+        _ROUTER_PREFIX + "queued",
+        _ROUTER_PREFIX + "dispatching",
+        _ROUTER_PREFIX + "terminal",
+    }
+)
+_TERMINAL_REASONS = frozenset(
+    {
+        "authority_denied",
+        "authority_stale",
+        "requester_denied",
+        "sender_invalid",
+        "bot_loop",
+        "membership_degraded",
+        "card_action_unsupported",
+        "unsupported_event",
+        "attachment_staging_unavailable",
+        "attachment_staging_failed",
+        "queue_full",
+        "context_coordinates_invalid",
+        "inbox_not_dispatchable",
+        "completed",
+        "failed",
+        "canceled",
+        "timeout",
+        "action_required",
+    }
+)
+_DISPATCH_TERMINAL_REASONS = frozenset(
+    {"completed", "failed", "canceled", "timeout", "action_required"}
+)
+
+
+class RouterProjectionError(RuntimeError):
+    """The anchored Router history violates its exact lifecycle contract."""
+
+
+class RouterWriteDisabledError(RuntimeError):
+    """A Router transition did not reach the monotonic Journal anchor."""
+
+
+class RequesterAclPort(Protocol):
+    def is_authorized(self, request: AuthorizedContextRequest) -> bool: ...
+
+
+class ChannelStatusPort(Protocol):
+    def status(self, agent_id: str) -> Any: ...
+
+
+class MembershipHealthPort(Protocol):
+    """Optional deny-only live membership health signal."""
+
+    def is_degraded(self, agent_id: str, team_id: str) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RouterQueueLimits:
+    per_employee: int
+    per_team: int
+    global_limit: int
+
+    def __post_init__(self) -> None:
+        values = (self.per_employee, self.per_team, self.global_limit)
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+            raise ValueError("Router queue limits must be integers")
+        if not (1 <= self.per_employee <= self.per_team <= self.global_limit):
+            raise ValueError("Router queue limits require per_employee <= per_team <= global")
+
+
+@dataclass(frozen=True, slots=True)
+class RouterAuthoritySnapshot:
+    """Frozen projected/live authority used for every later revalidation."""
+
+    tenant_key: str
+    agent_id: str
+    bot_principal_id: str
+    app_id: str
+    channel_generation: int
+    connection_id: str
+    team_id: str
+    requester_principal_id: str
+    projection_sequence: int
+    projection_hash: str
+    employee_version: int
+    tool: str
+    model: str
+    effort: str
+    constraints_digest: str = ""
+    system_prompt_token_reserve: int = 0
+
+    _FIELDS = frozenset(
+        {
+            "tenant_key",
+            "agent_id",
+            "bot_principal_id",
+            "app_id",
+            "channel_generation",
+            "connection_id",
+            "team_id",
+            "requester_principal_id",
+            "projection_sequence",
+            "projection_hash",
+            "employee_version",
+            "tool",
+            "model",
+            "effort",
+            "constraints_digest",
+            "system_prompt_token_reserve",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        required = (
+            self.tenant_key,
+            self.agent_id,
+            self.bot_principal_id,
+            self.app_id,
+            self.connection_id,
+            self.team_id,
+            self.requester_principal_id,
+            self.tool,
+            self.model,
+            self.effort,
+        )
+        if not all(isinstance(value, str) and value for value in required):
+            raise ValueError("Router authority snapshot contains blank identity")
+        integers = (
+            self.channel_generation,
+            self.projection_sequence,
+            self.employee_version,
+            self.system_prompt_token_reserve,
+        )
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in integers):
+            raise ValueError("Router authority snapshot contains invalid integer")
+        if self.channel_generation < 1:
+            raise ValueError("Router authority channel generation must be positive")
+        if self.projection_hash and (
+            len(self.projection_hash) != 64
+            or any(character not in "0123456789abcdef" for character in self.projection_hash)
+        ):
+            raise ValueError("Router projection hash must be lowercase SHA-256")
+        if self.constraints_digest and (
+            len(self.constraints_digest) != 64
+            or any(character not in "0123456789abcdef" for character in self.constraints_digest)
+        ):
+            raise ValueError("Router constraints digest must be lowercase SHA-256")
+        if self.system_prompt_token_reserve and not self.constraints_digest:
+            raise ValueError("Router reserve requires constraints digest")
+
+    def to_dict(self) -> dict[str, object]:
+        return {name: getattr(self, name) for name in sorted(self._FIELDS)}
+
+    @classmethod
+    def from_dict(cls, value: object) -> RouterAuthoritySnapshot:
+        if not isinstance(value, dict) or set(value) != cls._FIELDS:
+            raise ValueError("Router authority snapshot must use exact schema")
+        return cls(**value)
+
+
+@dataclass(frozen=True, slots=True)
+class RouterLifecycleRecord:
+    aggregate_id: str
+    acceptance_id: str
+    envelope_id: str
+    tenant_key: str
+    agent_id: str
+    bot_principal_id: str
+    app_id: str
+    channel_generation: int
+    connection_id: str
+    team_id: str
+    message_id: str
+    event_type: str
+    state: str
+    accepted_sequence: int
+    authority: RouterAuthoritySnapshot | None = None
+    queue_position: int = 0
+    queued_sequence: int = 0
+    reason_code: str = ""
+
+
+@dataclass(slots=True)
+class RouterProjectionState:
+    by_acceptance_id: dict[str, RouterLifecycleRecord] = field(default_factory=dict)
+    cursor_sequence: int = 0
+    cursor_hash: str = ""
+
+    def clone(self) -> RouterProjectionState:
+        return copy.deepcopy(self)
+
+
+@dataclass(frozen=True, slots=True)
+class RouterDispatchGrant:
+    record: RouterLifecycleRecord
+    request: AuthorizedContextRequest
+    payload: EmployeeIngressPayload = field(repr=False)
+
+
+def _accepted_record(event: JournalEvent, sequence: int) -> RouterLifecycleRecord:
+    payload = event.payload
+    if set(payload) != {"metadata", "acceptance_id", "accepted_at", "blob_ref"}:
+        raise RouterProjectionError("invalid employee ingress acceptance")
+    try:
+        metadata = EmployeeIngressMetadata.from_dict(payload["metadata"])
+        BlobRef.from_dict(payload["blob_ref"])
+    except (TypeError, ValueError) as exc:
+        raise RouterProjectionError("invalid employee ingress metadata") from exc
+    acceptance_id = payload.get("acceptance_id")
+    if not isinstance(acceptance_id, str) or not acceptance_id.startswith("acc_"):
+        raise RouterProjectionError("invalid employee ingress acceptance identity")
+    if event.aggregate_id != metadata.dedup_key:
+        raise RouterProjectionError("Router acceptance aggregate mismatch")
+    if not isinstance(payload["accepted_at"], str) or not payload["accepted_at"]:
+        raise RouterProjectionError("invalid employee ingress acceptance timestamp")
+    return RouterLifecycleRecord(
+        aggregate_id=event.aggregate_id,
+        acceptance_id=acceptance_id,
+        envelope_id=metadata.envelope_id,
+        tenant_key=metadata.tenant_key,
+        agent_id=metadata.agent_id,
+        bot_principal_id=metadata.bot_principal_id,
+        app_id=metadata.app_id,
+        channel_generation=metadata.channel_generation,
+        connection_id=metadata.connection_id,
+        team_id=metadata.chat_id,
+        message_id=metadata.message_id,
+        event_type=metadata.event_type,
+        state="accepted",
+        accepted_sequence=sequence,
+    )
+
+
+def _reduce_router_event(
+    state: RouterProjectionState,
+    event: JournalEvent,
+    *,
+    sequence: int,
+) -> None:
+    payload = event.payload
+    acceptance_id = payload.get("acceptance_id") if isinstance(payload, dict) else None
+    record = state.by_acceptance_id.get(acceptance_id or "")
+    if record is None or event.aggregate_id != record.aggregate_id:
+        raise RouterProjectionError("Router transition references unknown acceptance")
+    if event.event_type == _ROUTER_PREFIX + "authorized":
+        if set(payload) != {"acceptance_id", "authority"} or record.state != "accepted":
+            raise RouterProjectionError("invalid Router authorized transition")
+        try:
+            authority = RouterAuthoritySnapshot.from_dict(payload["authority"])
+        except (TypeError, ValueError) as exc:
+            raise RouterProjectionError("invalid Router authority snapshot") from exc
+        if authority.agent_id != record.agent_id:
+            raise RouterProjectionError("Router authority employee mismatch")
+        updated = replace(record, state="authorized", authority=authority)
+    elif event.event_type == _ROUTER_PREFIX + "staging":
+        if set(payload) != {"acceptance_id"} or record.state != "authorized":
+            raise RouterProjectionError("invalid Router staging transition")
+        updated = replace(record, state="staging")
+    elif event.event_type == _ROUTER_PREFIX + "queued":
+        if set(payload) != {"acceptance_id", "authority", "queue_position"} or record.state != "staging":
+            raise RouterProjectionError("invalid Router queued transition")
+        try:
+            authority = RouterAuthoritySnapshot.from_dict(payload["authority"])
+        except (TypeError, ValueError) as exc:
+            raise RouterProjectionError("invalid queued Router authority") from exc
+        position = payload["queue_position"]
+        if authority != record.authority or isinstance(position, bool) or not isinstance(position, int) or position < 1:
+            raise RouterProjectionError("invalid Router queue disposition")
+        updated = replace(
+            record,
+            state="queued",
+            queue_position=position,
+            queued_sequence=sequence,
+        )
+    elif event.event_type == _ROUTER_PREFIX + "dispatching":
+        if set(payload) != {"acceptance_id"} or record.state != "queued":
+            raise RouterProjectionError("invalid Router dispatch transition")
+        updated = replace(record, state="dispatching")
+    elif event.event_type == _ROUTER_PREFIX + "terminal":
+        if set(payload) != {"acceptance_id", "reason_code"} or record.state not in {
+            "accepted",
+            "authorized",
+            "staging",
+            "queued",
+            "dispatching",
+        }:
+            raise RouterProjectionError("invalid Router terminal transition")
+        reason = payload["reason_code"]
+        if reason not in _TERMINAL_REASONS:
+            raise RouterProjectionError("invalid Router terminal reason")
+        if (record.state == "dispatching") != (
+            reason in _DISPATCH_TERMINAL_REASONS
+        ):
+            raise RouterProjectionError("Router terminal reason does not match lifecycle")
+        updated = replace(record, state="terminal", reason_code=reason)
+    else:
+        raise RouterProjectionError("unknown Router event")
+    state.by_acceptance_id[acceptance_id] = updated
+
+
+class DurableEmployeeIngressRouter:
+    """Consume only projected Inbox records plus authenticated decrypted blobs."""
+
+    def __init__(
+        self,
+        *,
+        writer: JournalWriter,
+        ingress_service: EmployeeIngressService,
+        registry_provider: Callable[[], ProjectedAgentRegistry],
+        channel_status_provider: ChannelStatusPort,
+        requester_acl: RequesterAclPort,
+        queue_limits: RouterQueueLimits,
+        attachment_staging: Any | None = None,
+        membership_health: MembershipHealthPort | None = None,
+        constraints_digest: str = "",
+        system_prompt_token_reserve: int = 0,
+        fault_hook: Callable[[str, RouterLifecycleRecord], None] | None = None,
+    ) -> None:
+        if not isinstance(writer, JournalWriter):
+            raise TypeError("writer must be JournalWriter")
+        if not isinstance(ingress_service, EmployeeIngressService):
+            raise TypeError("ingress_service must be EmployeeIngressService")
+        if not isinstance(queue_limits, RouterQueueLimits):
+            raise TypeError("queue_limits must be RouterQueueLimits")
+        if not callable(registry_provider) or not hasattr(channel_status_provider, "status"):
+            raise TypeError("Router authority providers are invalid")
+        if not hasattr(requester_acl, "is_authorized"):
+            raise TypeError("requester_acl is invalid")
+        # Reuse the request contract for strict trusted reserve validation.
+        if system_prompt_token_reserve and not constraints_digest:
+            raise ValueError("non-zero reserve requires constraints_digest")
+        if constraints_digest and (
+            len(constraints_digest) != 64
+            or any(character not in "0123456789abcdef" for character in constraints_digest)
+        ):
+            raise ValueError("constraints_digest must be lowercase SHA-256")
+        self._writer = writer
+        self._ingress = ingress_service
+        self._registry_provider = registry_provider
+        self._channels = channel_status_provider
+        self._requester_acl = requester_acl
+        self._limits = queue_limits
+        self._attachment_staging = attachment_staging
+        self._membership_health = membership_health
+        self._constraints_digest = constraints_digest
+        self._reserve = system_prompt_token_reserve
+        self._fault_hook = fault_hook
+        self._mutex = threading.RLock()
+        self._state = RouterProjectionState()
+        self.rebuild_projection()
+
+    @property
+    def state(self) -> RouterProjectionState:
+        return self._state
+
+    def rebuild_projection(self) -> RouterProjectionState:
+        with self._mutex:
+            fresh = RouterProjectionState()
+            anchor = self._writer.anchor.read()
+            anchored_hash = GENESIS_HASH
+            for frame in self._writer.replay():
+                if frame.sequence > anchor.sequence:
+                    break
+                for event in frame.events:
+                    if event.event_type == "employee.ingress.accepted":
+                        record = _accepted_record(event, frame.sequence)
+                        if record.acceptance_id in fresh.by_acceptance_id:
+                            raise RouterProjectionError("duplicate Router acceptance")
+                        fresh.by_acceptance_id[record.acceptance_id] = record
+                    elif event.event_type in _ROUTER_EVENTS:
+                        _reduce_router_event(fresh, event, sequence=frame.sequence)
+                fresh.cursor_sequence = frame.sequence
+                fresh.cursor_hash = frame.frame_hash
+                anchored_hash = frame.frame_hash
+            if anchored_hash != anchor.frame_hash:
+                raise RouterWriteDisabledError("Router projection cannot verify Journal anchor")
+            self._state = fresh
+            return self._state
+
+    def route(self, acceptance_id: str) -> RouterLifecycleRecord:
+        """Authorize, stage, and atomically admit one accepted Inbox record."""
+
+        try:
+            record, ingress_record, payload = self._dispatch_snapshot(acceptance_id)
+        except IngressBlobError:
+            return self._terminal_inbox_failure(acceptance_id)
+        if record.state in {"queued", "dispatching", "terminal"}:
+            return record
+        accepted_identity = self._ingress_identity(ingress_record, payload)
+        if self._is_card_action(ingress_record.metadata, payload):
+            return self._terminal_for_snapshot(
+                acceptance_id,
+                accepted_identity,
+                "card_action_unsupported",
+            )
+        if ingress_record.metadata.event_type != "im.message.receive_v1":
+            return self._terminal_for_snapshot(
+                acceptance_id,
+                accepted_identity,
+                "unsupported_event",
+            )
+
+        # Registry, Channel, membership, and ACL ports may block.  Sample them
+        # before entering the short Journal commit section below.
+        authority, reason = self._resolve_authority(ingress_record.metadata, payload)
+        try:
+            with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
+                current_ingress,
+                current_payload,
+            ), self._mutex:
+                self.rebuild_projection()
+                record = self._record(acceptance_id)
+                if record.state in {"queued", "dispatching", "terminal"}:
+                    return record
+                if self._ingress_identity(current_ingress, current_payload) != accepted_identity:
+                    return self._terminal_unlocked(record, "inbox_not_dispatchable")
+                if authority is None:
+                    return self._terminal_unlocked(record, reason)
+                if record.state == "accepted":
+                    record = self._transition_unlocked(
+                        record,
+                        "authorized",
+                        {"authority": authority.to_dict()},
+                    )
+                elif not self._authority_matches(record.authority, authority):
+                    return self._terminal_unlocked(record, "authority_stale")
+        except IngressBlobError:
+            return self._terminal_inbox_failure(acceptance_id)
+
+        self._call_fault("after_authorized", record)
+        if record.state == "authorized" and payload.attachment_descriptors:
+            if self._attachment_staging is None:
+                return self._terminal_after_external(
+                    acceptance_id,
+                    "attachment_staging_unavailable",
+                )
+            try:
+                self._stage_attachments(
+                    acceptance_id,
+                    ingress_record.metadata,
+                    payload,
+                    authority,
+                )
+            except Exception:
+                return self._terminal_after_external(
+                    acceptance_id,
+                    "attachment_staging_failed",
+                )
+
+        try:
+            record, current_ingress, current_payload = self._dispatch_snapshot(
+                acceptance_id
+            )
+        except IngressBlobError:
+            return self._terminal_inbox_failure(acceptance_id)
+        if record.state in {"queued", "dispatching", "terminal"}:
+            return record
+        current_identity = self._ingress_identity(current_ingress, current_payload)
+        if current_identity != accepted_identity:
+            return self._terminal_for_snapshot(
+                acceptance_id,
+                current_identity,
+                "inbox_not_dispatchable",
+            )
+        current, current_reason = self._resolve_authority(
+            current_ingress.metadata,
+            current_payload,
+        )
+        eligible_peers = self._eligible_pending_peers(authority)
+        try:
+            with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
+                final_ingress,
+                final_payload,
+            ), self._mutex:
+                self.rebuild_projection()
+                record = self._record(acceptance_id)
+                if record.state in {"queued", "dispatching", "terminal"}:
+                    return record
+                if self._ingress_identity(final_ingress, final_payload) != accepted_identity:
+                    return self._terminal_unlocked(record, "inbox_not_dispatchable")
+                if current is None or not self._authority_matches(
+                    record.authority,
+                    current,
+                ):
+                    return self._terminal_unlocked(
+                        record,
+                        "authority_stale" if current is not None else current_reason,
+                    )
+                if record.state == "authorized":
+                    record = self._transition_unlocked(record, "staging", {})
+                if self._queue_full_unlocked(record.authority, eligible_peers):
+                    return self._terminal_unlocked(record, "queue_full")
+                position = 1 + sum(
+                    candidate.state == "queued"
+                    and candidate.authority is not None
+                    and candidate.authority.agent_id == record.authority.agent_id
+                    for candidate in self._state.by_acceptance_id.values()
+                )
+                return self._transition_unlocked(
+                    record,
+                    "queued",
+                    {
+                        "authority": record.authority.to_dict(),
+                        "queue_position": position,
+                    },
+                )
+        except IngressBlobError:
+            return self._terminal_inbox_failure(acceptance_id)
+
+    def dequeue(self) -> RouterDispatchGrant | None:
+        """Return the oldest eligible grant after full live authority revalidation."""
+
+        while True:
+            with self._writer.transaction_guard(), self._mutex:
+                self.rebuild_projection()
+                active = {
+                    record.agent_id
+                    for record in self._state.by_acceptance_id.values()
+                    if record.state == "dispatching"
+                }
+                candidates = sorted(
+                    (
+                        record
+                        for record in self._state.by_acceptance_id.values()
+                        if record.state == "queued" and record.agent_id not in active
+                    ),
+                    key=lambda record: (record.queued_sequence, record.acceptance_id),
+                )
+                if not candidates:
+                    return None
+                candidate = candidates[0]
+            try:
+                current, ingress_record, payload = self._dispatch_snapshot(
+                    candidate.acceptance_id
+                )
+            except IngressBlobError:
+                self._terminal_inbox_failure(candidate.acceptance_id)
+                continue
+            if current.state != "queued":
+                continue
+            snapshot_identity = self._ingress_identity(ingress_record, payload)
+            authority, _reason = self._resolve_authority(
+                ingress_record.metadata,
+                payload,
+            )
+            if authority is None or not self._authority_matches(
+                current.authority,
+                authority,
+            ):
+                self._terminal_for_snapshot(
+                    candidate.acceptance_id,
+                    snapshot_identity,
+                    "authority_stale",
+                    allow_queued=True,
+                )
+                continue
+            try:
+                request = self._context_request(
+                    current,
+                    ingress_record.metadata,
+                    payload,
+                )
+            except (TypeError, ValueError):
+                self._terminal_for_snapshot(
+                    candidate.acceptance_id,
+                    snapshot_identity,
+                    "context_coordinates_invalid",
+                    allow_queued=True,
+                )
+                continue
+            try:
+                with self._ingress.dispatch_snapshot_guard(
+                    candidate.acceptance_id
+                ) as (final_ingress, final_payload), self._mutex:
+                    self.rebuild_projection()
+                    current = self._record(candidate.acceptance_id)
+                    if current.state != "queued":
+                        continue
+                    if any(
+                        other.state == "dispatching"
+                        and other.agent_id == current.agent_id
+                        for other in self._state.by_acceptance_id.values()
+                    ):
+                        continue
+                    if self._ingress_identity(final_ingress, final_payload) != snapshot_identity:
+                        self._terminal_unlocked(current, "inbox_not_dispatchable")
+                        continue
+                    if not self._authority_matches(
+                        current.authority,
+                        authority,
+                    ):
+                        self._terminal_unlocked(current, "authority_stale")
+                        continue
+                    dispatched = self._transition_unlocked(
+                        current,
+                        "dispatching",
+                        {},
+                    )
+                    return RouterDispatchGrant(dispatched, request, payload)
+            except IngressBlobError:
+                self._terminal_inbox_failure(candidate.acceptance_id)
+                continue
+    def finish(self, acceptance_id: str, *, reason_code: str) -> RouterLifecycleRecord:
+        """Anchor a Phase 6 terminal result without performing execution here."""
+
+        if reason_code not in _DISPATCH_TERMINAL_REASONS:
+            raise ValueError("invalid dispatch terminal reason")
+        with self._writer.transaction_guard(), self._mutex:
+            self.rebuild_projection()
+            record = self._record(acceptance_id)
+            if record.state == "terminal":
+                if record.reason_code != reason_code:
+                    raise RouterProjectionError("terminal Router result conflicts with replay")
+                return record
+            if record.state != "dispatching":
+                raise RouterProjectionError("only dispatching Router work can finish")
+            return self._terminal_unlocked(record, reason_code)
+
+    def queue_depth(self, *, agent_id: str = "", team_id: str = "") -> int:
+        with self._writer.transaction_guard(), self._mutex:
+            self.rebuild_projection()
+            return sum(
+                record.state == "queued"
+                and (not agent_id or record.agent_id == agent_id)
+                and (
+                    not team_id
+                    or (record.authority is not None and record.authority.team_id == team_id)
+                )
+                for record in self._state.by_acceptance_id.values()
+            )
+
+    def _record(self, acceptance_id: str) -> RouterLifecycleRecord:
+        record = self._state.by_acceptance_id.get(acceptance_id)
+        if record is None:
+            raise KeyError(acceptance_id)
+        return record
+
+    def _transition_unlocked(
+        self,
+        record: RouterLifecycleRecord,
+        state: str,
+        extra: Mapping[str, object],
+    ) -> RouterLifecycleRecord:
+        event = JournalEvent(
+            event_type=_ROUTER_PREFIX + state,
+            aggregate_id=record.aggregate_id,
+            payload={"acceptance_id": record.acceptance_id, **dict(extra)},
+        )
+        # Reject programmer errors before they can enter the append-only log.
+        preflight = self._state.clone()
+        _reduce_router_event(
+            preflight,
+            event,
+            sequence=self._state.cursor_sequence + 1,
+        )
+        versions = self._writer.get_aggregate_versions([record.aggregate_id])
+        result = self._writer.commit(
+            [event],
+            versions,
+            expected_head_sequence=self._state.cursor_sequence,
+            expected_head_hash=self._state.cursor_hash or None,
+        )
+        if result.state is not CommitState.ANCHORED:
+            raise RouterWriteDisabledError("Router transition was not anchored")
+        _reduce_router_event(self._state, event, sequence=result.frame.sequence)
+        self._state.cursor_sequence = result.frame.sequence
+        self._state.cursor_hash = result.frame.frame_hash
+        return self._record(record.acceptance_id)
+
+    def _terminal_unlocked(
+        self,
+        record: RouterLifecycleRecord,
+        reason_code: str,
+    ) -> RouterLifecycleRecord:
+        return self._transition_unlocked(record, "terminal", {"reason_code": reason_code})
+
+    def _terminal_inbox_failure(
+        self,
+        acceptance_id: str,
+    ) -> RouterLifecycleRecord:
+        return self._terminal_after_external(
+            acceptance_id,
+            "inbox_not_dispatchable",
+        )
+
+    def _terminal_after_external(
+        self,
+        acceptance_id: str,
+        reason_code: str,
+    ) -> RouterLifecycleRecord:
+        with self._writer.transaction_guard(), self._mutex:
+            self.rebuild_projection()
+            record = self._record(acceptance_id)
+            if record.state == "terminal":
+                return record
+            if record.state == "dispatching":
+                # Only Task 6/finish owns terminal attempt outcomes.
+                return record
+            if reason_code.startswith("attachment_") and record.state == "queued":
+                # Another Router instance already proved staging/admission.
+                # A losing external callback must not revoke that durable work.
+                return record
+            return self._terminal_unlocked(record, reason_code)
+
+    def _dispatch_snapshot(self, acceptance_id: str):
+        """Read immutable Inbox/Router state without invoking external ports."""
+
+        with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
+            ingress_record,
+            payload,
+        ), self._mutex:
+            self.rebuild_projection()
+            return self._record(acceptance_id), ingress_record, payload
+
+    @staticmethod
+    def _ingress_identity(ingress_record: Any, payload: EmployeeIngressPayload) -> tuple:
+        return (
+            ingress_record.acceptance,
+            ingress_record.metadata,
+            payload.payload_sha256,
+        )
+
+    def _terminal_for_snapshot(
+        self,
+        acceptance_id: str,
+        expected_identity: tuple,
+        reason_code: str,
+        *,
+        allow_queued: bool = False,
+    ) -> RouterLifecycleRecord:
+        try:
+            with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
+                ingress_record,
+                payload,
+            ), self._mutex:
+                self.rebuild_projection()
+                record = self._record(acceptance_id)
+                if record.state in {"dispatching", "terminal"} or (
+                    record.state == "queued" and not allow_queued
+                ):
+                    return record
+                if self._ingress_identity(ingress_record, payload) != expected_identity:
+                    reason_code = "inbox_not_dispatchable"
+                return self._terminal_unlocked(record, reason_code)
+        except IngressBlobError:
+            return self._terminal_inbox_failure(acceptance_id)
+
+    def _call_fault(
+        self,
+        point: str,
+        record: RouterLifecycleRecord,
+    ) -> None:
+        if self._fault_hook is not None:
+            self._fault_hook(point, record)
+
+    def _resolve_authority(
+        self,
+        metadata: EmployeeIngressMetadata,
+        payload: EmployeeIngressPayload,
+    ) -> tuple[RouterAuthoritySnapshot | None, str]:
+        part, reason = self._message_provenance(metadata, payload)
+        if part is None:
+            return None, reason
+        try:
+            registry = self._registry_provider()
+            if not isinstance(registry, ProjectedAgentRegistry):
+                return None, "authority_denied"
+            binding = registry.context_binding(
+                tenant_key=metadata.tenant_key,
+                agent_id=metadata.agent_id,
+                bot_principal_id=metadata.bot_principal_id,
+                app_id=metadata.app_id,
+                chat_id=metadata.chat_id,
+            )
+            if not isinstance(binding, ProjectedContextBinding):
+                return None, "authority_denied"
+            if self._projection_missed_workforce_change(
+                binding.projection_sequence,
+                binding.projection_hash,
+            ):
+                return None, "authority_denied"
+            status = self._channels.status(metadata.agent_id)
+            identity = getattr(status, "identity", None)
+            ready_metadata = getattr(status, "ready_metadata", None)
+            state = getattr(
+                getattr(status, "state", None),
+                "value",
+                getattr(status, "state", None),
+            )
+            if (
+                not isinstance(identity, Mapping)
+                or not isinstance(ready_metadata, Mapping)
+                or state != "ready"
+                or getattr(status, "agent_id", None) != metadata.agent_id
+                or getattr(status, "app_id", None) != metadata.app_id
+                or getattr(status, "generation", None) != metadata.channel_generation
+                or identity.get("app_id") != metadata.app_id
+                or ready_metadata.get("connection_id") != metadata.connection_id
+            ):
+                return None, "authority_denied"
+            if self._membership_health is not None:
+                if self._membership_health.is_degraded(metadata.agent_id, metadata.chat_id):
+                    return None, "membership_degraded"
+            snapshot = RouterAuthoritySnapshot(
+                tenant_key=metadata.tenant_key,
+                agent_id=binding.employee.agent_id,
+                bot_principal_id=binding.principal.bot_principal_id,
+                app_id=binding.principal.app_id,
+                channel_generation=metadata.channel_generation,
+                connection_id=metadata.connection_id,
+                team_id=metadata.chat_id,
+                requester_principal_id=metadata.sender_principal_id,
+                projection_sequence=binding.projection_sequence,
+                projection_hash=(
+                    binding.projection_hash
+                    if binding.projection_sequence
+                    else GENESIS_HASH
+                ),
+                employee_version=binding.employee.aggregate_version,
+                tool=binding.employee.tool,
+                model=binding.employee.model,
+                effort=binding.employee.effort,
+                constraints_digest=self._constraints_digest,
+                system_prompt_token_reserve=self._reserve,
+            )
+            request = self._request_from(metadata, part, snapshot)
+            if not self._requester_acl.is_authorized(request):
+                return None, "requester_denied"
+            return snapshot, ""
+        except Exception:
+            return None, "authority_denied"
+
+    def _projection_missed_workforce_change(
+        self,
+        sequence: int,
+        frame_hash: str,
+    ) -> bool:
+        anchored_sequence = self._writer.anchor.read().sequence
+        if sequence < 0 or sequence > anchored_sequence:
+            return True
+        if sequence == 0:
+            if frame_hash not in {"", GENESIS_HASH}:
+                return True
+        else:
+            coordinate = next(
+                (
+                    frame
+                    for frame in self._writer.replay(from_sequence=sequence)
+                    if frame.sequence == sequence
+                ),
+                None,
+            )
+            if coordinate is None or coordinate.frame_hash != frame_hash:
+                return True
+        if sequence == anchored_sequence:
+            return False
+        for frame in self._writer.replay(from_sequence=max(1, sequence + 1)):
+            if frame.sequence > anchored_sequence:
+                break
+            if any(is_workforce_event(event.event_type) for event in frame.events):
+                return True
+        return False
+
+    @staticmethod
+    def _message_provenance(
+        metadata: EmployeeIngressMetadata,
+        payload: EmployeeIngressPayload,
+    ) -> tuple[Mapping[str, object] | None, str]:
+        if len(payload.normalized_parts) != 1:
+            return None, "sender_invalid"
+        part = payload.normalized_parts[0]
+        if part.get("type") != "message":
+            return None, "sender_invalid"
+        sender_id = part.get("sender_id")
+        sender_type = part.get("sender_type")
+        if sender_type in {"bot", "app"}:
+            return None, "bot_loop"
+        if (
+            sender_id != metadata.sender_principal_id
+            or part.get("sender_id_type") != "open_id"
+            or sender_type != "user"
+            or part.get("sender_tenant_key") != metadata.tenant_key
+        ):
+            return None, "sender_invalid"
+        return part, ""
+
+    def _context_request(
+        self,
+        record: RouterLifecycleRecord,
+        metadata: EmployeeIngressMetadata,
+        payload: EmployeeIngressPayload,
+    ) -> AuthorizedContextRequest:
+        if record.authority is None or len(payload.normalized_parts) != 1:
+            raise ValueError("Router record lacks authority")
+        return self._request_from(metadata, payload.normalized_parts[0], record.authority)
+
+    @staticmethod
+    def _request_from(
+        metadata: EmployeeIngressMetadata,
+        part: Mapping[str, object],
+        authority: RouterAuthoritySnapshot,
+    ) -> AuthorizedContextRequest:
+        thread_id = part.get("feishu_thread_id", "")
+        if not isinstance(thread_id, str):
+            raise ValueError("invalid Feishu thread identity")
+        return AuthorizedContextRequest(
+            tenant_key=authority.tenant_key,
+            agent_id=authority.agent_id,
+            bot_principal_id=authority.bot_principal_id,
+            app_id=authority.app_id,
+            channel_generation=authority.channel_generation,
+            chat_id=authority.team_id,
+            thread_root_message_id=metadata.thread_root_message_id or metadata.message_id,
+            feishu_thread_id=thread_id,
+            current_message_id=metadata.message_id,
+            requester_principal_id=authority.requester_principal_id,
+            system_prompt_token_reserve=authority.system_prompt_token_reserve,
+            constraints_digest=authority.constraints_digest,
+        )
+
+    @staticmethod
+    def _is_card_action(metadata: EmployeeIngressMetadata, payload: EmployeeIngressPayload) -> bool:
+        return metadata.event_type == "card.action.trigger" or any(
+            part.get("type") == "card_action" for part in payload.normalized_parts
+        )
+
+    def _eligible_pending_peers(
+        self,
+        authority: RouterAuthoritySnapshot,
+    ) -> frozenset[str] | None:
+        """Sample live peers outside the Journal transaction guard.
+
+        ``None`` is a fail-closed provider failure; an empty set means there
+        are no projected pending peers for which shared capacity is reserved.
+        """
+
+        with self._writer.transaction_guard(), self._mutex:
+            self.rebuild_projection()
+            queued_agents = {
+                record.agent_id
+                for record in self._state.by_acceptance_id.values()
+                if record.state == "queued"
+            }
+            pending = tuple(
+                record
+                for record in self._state.by_acceptance_id.values()
+                if record.agent_id != authority.agent_id
+                and record.agent_id not in queued_agents
+                and record.state in {"accepted", "authorized", "staging"}
+                and record.event_type == "im.message.receive_v1"
+                and record.tenant_key == authority.tenant_key
+            )
+        if not pending:
+            return frozenset()
+        eligible: set[str] = set()
+        for pending_record in pending:
+            try:
+                current, ingress_record, payload = self._dispatch_snapshot(
+                    pending_record.acceptance_id
+                )
+            except (IngressBlobError, KeyError):
+                continue
+            if current.state not in {"accepted", "authorized", "staging"}:
+                continue
+            if ingress_record.metadata.event_type != "im.message.receive_v1":
+                continue
+            peer_authority, _reason = self._resolve_authority(
+                ingress_record.metadata,
+                payload,
+            )
+            if peer_authority is not None:
+                eligible.add(pending_record.acceptance_id)
+        return frozenset(eligible)
+
+    def _queue_full_unlocked(
+        self,
+        authority: RouterAuthoritySnapshot,
+        eligible_peer_ids: frozenset[str] | None,
+    ) -> bool:
+        queued = [record for record in self._state.by_acceptance_id.values() if record.state == "queued"]
+        employee_count = sum(record.agent_id == authority.agent_id for record in queued)
+        team_count = sum(record.authority is not None and record.authority.team_id == authority.team_id for record in queued)
+        if employee_count >= self._limits.per_employee or team_count >= self._limits.per_team or len(queued) >= self._limits.global_limit:
+            return True
+        # Preserve a last shared slot only for a pending, currently dispatchable
+        # peer.  Merely existing in the Registry must not waste queue capacity.
+        if employee_count:
+            if eligible_peer_ids is None:
+                return True
+            queued_agents = {record.agent_id for record in queued}
+            eligible = tuple(
+                record
+                for record in self._state.by_acceptance_id.values()
+                if record.acceptance_id in eligible_peer_ids
+                if record.agent_id != authority.agent_id
+                and record.agent_id not in queued_agents
+                and record.state in {"accepted", "authorized", "staging"}
+                and record.event_type == "im.message.receive_v1"
+                and record.tenant_key == authority.tenant_key
+            )
+            team_peer_waiting = any(
+                record.team_id == authority.team_id for record in eligible
+            )
+            global_peer_waiting = bool(eligible)
+            if (
+                team_peer_waiting
+                and team_count + 1 >= self._limits.per_team
+            ) or (
+                global_peer_waiting
+                and len(queued) + 1 >= self._limits.global_limit
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _authority_matches(
+        frozen: RouterAuthoritySnapshot | None,
+        current: RouterAuthoritySnapshot,
+    ) -> bool:
+        """Allow an authenticated projection head to advance, never roll back."""
+
+        if frozen is None or current.projection_sequence < frozen.projection_sequence:
+            return False
+        if (
+            current.projection_sequence == frozen.projection_sequence
+            and current.projection_hash != frozen.projection_hash
+        ):
+            return False
+        ignored = {"projection_sequence", "projection_hash"}
+        return all(
+            getattr(current, field_name) == getattr(frozen, field_name)
+            for field_name in RouterAuthoritySnapshot._FIELDS - ignored
+        )
+
+    def _stage_attachments(
+        self,
+        acceptance_id: str,
+        metadata: EmployeeIngressMetadata,
+        payload: EmployeeIngressPayload,
+        authority: RouterAuthoritySnapshot,
+    ) -> None:
+        from .attachments import (
+            AttachmentStateError,
+            AuthorizedAttachmentStagingRequest,
+            EmployeeAttachmentDescriptor,
+        )
+
+        registry = self._registry_provider()
+        binding = registry.context_binding(
+            tenant_key=authority.tenant_key,
+            agent_id=authority.agent_id,
+            bot_principal_id=authority.bot_principal_id,
+            app_id=authority.app_id,
+            chat_id=authority.team_id,
+        )
+        if binding is None:
+            raise RouterProjectionError("attachment authority is stale")
+        if self._completed_attachment_stage(acceptance_id) is not None:
+            return
+        descriptors = tuple(
+            EmployeeAttachmentDescriptor(
+                schema_version=1,
+                message_id=metadata.message_id,
+                resource_type=str(item["resource_type"]),
+                resource_id=str(item["resource_id"]),
+                declared_mime_type=str(item["mime_type"]),
+                declared_size_bytes=int(item["size_bytes"]),
+                declared_sha256=str(item["sha256"]),
+                user_filename=str(item["resource_id"]),
+            )
+            for item in payload.attachment_descriptors
+        )
+        request = AuthorizedAttachmentStagingRequest(
+            schema_version=1,
+            acceptance_id=acceptance_id,
+            envelope_id=metadata.envelope_id,
+            tenant_key=authority.tenant_key,
+            agent_id=authority.agent_id,
+            app_id=authority.app_id,
+            credential_ref=binding.principal.credential_ref,
+            descriptors=descriptors,
+        )
+        try:
+            self._attachment_staging.stage(request)
+        except AttachmentStateError:
+            if self._completed_attachment_stage(acceptance_id) is None:
+                raise
+
+    def _completed_attachment_stage(self, acceptance_id: str) -> object | None:
+        method = getattr(
+            self._attachment_staging,
+            "completed_for_acceptance",
+            None,
+        )
+        if callable(method):
+            return method(acceptance_id)
+        staging_id = self._attachment_staging.state.by_acceptance_id.get(
+            acceptance_id
+        )
+        if staging_id is None:
+            return None
+        staged = self._attachment_staging.state.by_staging_id[staging_id]
+        if staged.status != "completed" or staged.cleanup_state != "none":
+            raise RouterProjectionError("attachment staging is not reusable")
+        self._attachment_staging.trusted_paths(staging_id)
+        return staged
+
+
+__all__ = [
+    "DurableEmployeeIngressRouter",
+    "RouterAuthoritySnapshot",
+    "RouterDispatchGrant",
+    "RouterLifecycleRecord",
+    "RouterProjectionError",
+    "RouterProjectionState",
+    "RouterQueueLimits",
+    "RouterWriteDisabledError",
+]
