@@ -16,7 +16,10 @@ Journal protocol, or `_run_acp_session` gateway is complete.
 **Authoritative context order:** full Thread > recent group messages > L1 > L2.
 When the budget is exceeded, remove data in the inverse importance order:
 L2, then L1, then recent group messages, then the oldest unprotected Thread
-messages. System constraints and the current user message are never trimmed.
+messages. The current user message is never trimmed. Phase 2 also accepts a
+trusted system-prompt token reserve/digest from the future authority-bound
+execution request; the prompt renderer and plaintext system constraints remain
+owned by Phase 3.
 
 ## Evidence and API decisions
 
@@ -25,14 +28,20 @@ messages. System constraints and the current user message are never trimmed.
   different identifier and must never be passed as that container.
 - Prefer the `thread_id` captured from `im.message.receive_v1`. If it is absent,
   call Get Message for the root/current message and require exactly one result
-  whose message, chat, root, and thread binding match the inbound scope.
+  whose message, chat, and thread binding match the inbound scope. A root
+  message may legally have an empty `root_id`; a reply must point to the
+  expected root message ID.
 - Fetch Thread pages in explicit `ByCreateTimeAsc` order. Fetch recent group
   messages in `ByCreateTimeDesc`, then restore deterministic ascending order
   before assembly. A page token must be present and advance whenever
   `has_more=True`.
 - The SDK message model exposes `create_time`, `update_time`, `updated`,
   `deleted`, `message_position`, and `thread_message_position`. These fields,
-  not arrival order, define revision and deterministic ordering.
+  not arrival order, define revision. Thread ordering is exactly
+  `(thread_message_position, message_position, create_time, message_id)` after
+  normalizing missing positions. A present position that is duplicated or
+  decreases in an ascending page fails closed; missing positions fall back to
+  the remaining keys.
 - Get Message may reject deleted content. A deleted current message makes the
   snapshot unavailable; deleted historical messages remain tombstones and
   never expose stale body text.
@@ -101,9 +110,10 @@ messages. System constraints and the current user message are never trimmed.
 **Required contracts**
 
 - `EmployeeMessageScope` includes `tenant_key`, `agent_id`, `bot_principal_id`,
-  `app_id`, `credential_ref`, `chat_id`, `thread_root_message_id`, optional
+  `app_id`, `chat_id`, `thread_root_message_id`, optional
   `feishu_thread_id`, and `current_message_id`; all required identifiers reject
-  blanks and inconsistent prefixes.
+  blanks and inconsistent prefixes. The caller cannot provide a credential
+  ref; the service resolves it from the projected BotPrincipal internally.
 - `ContextMessage` includes message/chat/thread/root identity, sender ID type
   and tenant, create/update milliseconds, positions, content type, tombstone,
   `is_system`, and `is_current`.
@@ -131,8 +141,8 @@ messages. System constraints and the current user message are never trimmed.
 
 Defaults must preserve the design values where already specified, while
 validators reject zero/negative budgets, page sizes outside the official API
-range, non-finite ratios/timeouts, and combinations where protected content
-cannot be represented.
+range, and non-finite ratios/timeouts. Whether runtime protected content fits
+the configured budget is evaluated per snapshot, not at Settings construction.
 
 **Verification**
 
@@ -160,10 +170,12 @@ Commit: `feat(autonomous): define thread context contracts`
 
 **Implementation requirements**
 
-- Build a fresh employee SDK client from `BotPrincipal` and
+- Build an employee SDK client from `BotPrincipal` and
   `CredentialVault.resolve(credential_ref, agent_id, app_id)` with an explicit
   request timeout. Do not accept the Manager Bot client in the production
-  factory type.
+  factory type. The source owns the client only for one bounded assembly and
+  releases all source/client references before returning; no secret-bearing
+  client cache survives credential rotation, retirement, or runtime close.
 - Root resolution uses `GetMessageRequest`. Require success, non-null data, and
   exactly one matching item. Validate `message_id`, `chat_id`, `root_id`, and
   `thread_id`; persist both root message ID and Feishu Thread ID in the result.
@@ -173,8 +185,9 @@ Commit: `feat(autonomous): define thread context contracts`
   explicit descending order, and bounded page size.
 - Strictly validate SDK success, response shape, page-token progress, deadline,
   message identity/scope, integer millisecond timestamps, update >= create,
-  and deterministic ordering. Reject duplicate IDs with conflicting revision
-  or body.
+  and the exact normalized ordering key defined above. Reject duplicate IDs or
+  positions with conflicting revision/body and reject present positions that
+  repeat or move backwards.
 - Parse supported content deterministically. Media may use stable non-secret
   placeholders; malformed/unknown non-deleted content fails closed. Tombstones
   contain no historical body.
@@ -209,15 +222,21 @@ Commit: `feat(autonomous): add employee lark context source`
 
 - Capture a source boundary and assemble an immutable snapshot. Messages newer
   than the current triggering message belong to the next snapshot. Since the
-  Thread API offers no transactional snapshot parameter, perform bounded
-  repeated reads through that boundary and require matching revision digests;
-  if stability cannot be demonstrated, return `CONTEXT_UNAVAILABLE`.
+  Thread API offers no transactional revision/snapshot parameter, perform two
+  complete bounded traversals through that boundary. Hash each ordered tuple of
+  `(message_id, create_time, update_time, deleted, updated,
+  thread_message_position, content_digest)` and require equal traversal
+  digests. Retry the pair only within the configured deadline; instability after
+  the bounded retry is `CONTEXT_UNAVAILABLE`.
 - Deduplicate within and across pages/layers. Same ID + same revision is one
   message; same ID + newer revision replaces the older version; conflicting
   equal revisions fail closed.
-- Require the current message exactly once and not deleted. Mark it protected.
-  Preserve protected system constraints separately from ordinary group/system
-  chatter so they can never be trimmed.
+- Account for event-to-history API propagation with bounded retry before
+  requiring the current message exactly once and not deleted. Mark it
+  protected. Ordinary Feishu `system` messages never become trusted prompt
+  constraints. The future authority-bound request supplies only a trusted
+  system-prompt token reserve and digest; Phase 2 subtracts the reserve from the
+  context budget without accepting caller-supplied system plaintext.
 - Record historical deletion tombstones without stale text. Edited messages use
   the latest API body while retaining create-order and revision metadata.
 - Apply both character and token budgets. Trim whole units deterministically in
@@ -264,10 +283,20 @@ Commit: `feat(autonomous): enforce thread context snapshots`
 - Read L2 through an ACL adapter around the existing Slock group-memory port,
   requiring tenant + employee membership + chat binding before file access.
   A chat/thread memory summary is not a substitute for full L2.
+- Construct and inject the existing `EmployeeDataComposition` read side only
+  when its data keyring, encrypted Blob store, Journal projection, and
+  materializer are ready. Context must not instantiate an independent
+  projection cursor over the shared Journal.
+- A successful missing L1/L2 document is a legal empty layer. Tenant or
+  membership mismatch, Projection inconsistency, file/Blob read failure,
+  canonical/legacy conflict, or integrity failure is `CONTEXT_UNAVAILABLE` and
+  produces zero delegated execution calls.
 - Introduce `AuthorizedContextRequest`, which contains the frozen authority
   binding produced by Phase 3: tenant, agent, bot principal/app/generation,
   chat, root/thread/current message, and requester principal. Raw Channel event
-  payloads cannot construct a trusted request by themselves.
+  payloads cannot construct a trusted request by themselves. It also carries a
+  trusted system-prompt token reserve and constraints digest, never system
+  plaintext or a caller-selected credential ref.
 - Introduce an immutable `EmployeeExecutionInput` containing the authorized
   request, selected tool/model/effort, and assembled Context snapshot. A
   `ContextPreparingExecutionPort` assembles exactly once and delegates only on
@@ -310,9 +339,12 @@ Commit: `feat(autonomous): gate employee execution on context`
 - `EmployeeDepartmentRuntime.from_settings()` constructs and owns the Context
   source factory/service after Journal and Vault are available. It exposes the
   service to the Phase 3 ingress composition without exposing the Vault secret.
-- Readiness includes an employee-scoped Context capability/probe and reports a
-  stable blocker when unavailable. Existing visible-limit, release evidence,
-  anchor, sandbox, notifier, and main-Bot audit blockers remain intact.
+- Split hire readiness from execution readiness. Context construction cannot
+  block provisioning the first employee before any BotPrincipal exists. Once an
+  employee is ACTIVE, execution readiness requires an employee-scoped Context
+  capability/probe and reports a stable blocker when unavailable. Existing
+  visible-limit, release evidence, anchor, sandbox, notifier, and main-Bot audit
+  blockers remain intact.
 - Shutdown order is admission/ingress, in-flight context work, employee context
   clients, employee channels, service/writer/Vault. No source call may outlive
   Vault closure.
@@ -328,7 +360,8 @@ Commit: `feat(autonomous): gate employee execution on context`
 ```bash
 uv --cache-dir /tmp/ghostap-uv-cache run python -m pytest \
   tests/autonomous/integration/test_employee_hire_composition.py \
-  tests/autonomous/contract/test_employee_release_manifest.py -q
+  tests/autonomous/contract/test_employee_release_gate.py \
+  tests/autonomous/contract/test_acceptance_manifest.py -q
 uv --cache-dir /tmp/ghostap-uv-cache run ruff check \
   src/autonomous/context src/autonomous/provisioning src/config/settings.py
 ```
@@ -379,8 +412,9 @@ Commit: `test(autonomous): close thread context phase`
 ## Phase completion boundary
 
 This plan is complete only when Tasks 1-6 have fresh passing evidence and are
-pushed to `dev`. It proves the production Thread Context dependency and
-pre-execution gate. It does **not** prove durable employee ingress, the real
+pushed to `dev`. It proves the production Thread Context dependency and a typed
+contract fake for the future authority-bound pre-execution step; only Phase 3
+can prove the real gate. It does **not** prove durable employee ingress, the real
 Slock gateway, employee-owned response cards, team/stop/fire semantics, data
 producer cutover, external release trust, or real-tenant acceptance. Those
 remain active in `docs/goals.md` Phases 3-9.
