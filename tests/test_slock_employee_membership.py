@@ -136,14 +136,11 @@ def test_service_authorization_failure_is_not_rendered_as_success(monkeypatch) -
 
 
 def test_employee_picker_callback_uses_projected_agent_id(monkeypatch) -> None:
+    """slock_role_add_select now shows confirm card (pick→confirm flow), not immediate mutation."""
     service = MagicMock()
     service.get_employee.return_value = _employee()
-    service.mutate.return_value = MembershipMutationOutcome(
-        state=MembershipState.ACTIVE,
-        confirmed=True,
-        changed=False,
-    )
     handler, _engine, _legacy = _handler(service=service)
+    handler.update_card = MagicMock(return_value=True)
     monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
     monkeypatch.setattr("src.thread.manager.get_current_sender_id", lambda: "ou_admin")
 
@@ -155,4 +152,5 @@ def test_employee_picker_callback_uses_projected_agent_id(monkeypatch) -> None:
     )
 
     service.get_employee.assert_called_once_with("tenant_a", "agt_employee")
-    assert service.mutate.call_args.args[0].agent_id == "agt_employee"
+    service.mutate.assert_not_called()
+    handler.update_card.assert_called_once()

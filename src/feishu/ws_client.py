@@ -124,6 +124,8 @@ _SILENT_DEDUP_ACTIONS = {
     "select_ttadk_combined_tool", "select_acp_tool",
     "select_acp_model", "slock_new_role_select_tool",
     "slock_new_role_select_model",
+    "slock_role_add_pick", "slock_role_add_confirm",
+    "slock_role_add_select",
 }
 
 

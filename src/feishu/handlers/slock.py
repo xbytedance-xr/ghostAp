@@ -256,6 +256,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             ),
             SlockCommandAction.PLAN_LIST: lambda: self.list_plans(message_id, chat_id, project),
             SlockCommandAction.PLAN_DETAIL: lambda: self.show_plan_detail(message_id, chat_id, cmd.target, project),
+            SlockCommandAction.EMPLOYEE_LIST: lambda: self.list_employees_roster(message_id, chat_id),
         }
 
         handler = dispatch.get(cmd.action)
@@ -2349,6 +2350,70 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             logger.error("visible employee hire dispatch failed: %s", type(exc).__name__)
             self.reply_text(message_id, "独立飞书智能体创建启动失败，请查看安全日志后重试。")
 
+    def list_employees_roster(self, message_id: str, chat_id: str) -> None:
+        """List all tenant employees with state and group membership count."""
+
+        from ...autonomous.domain.enums import EmployeeState, WorkerType
+        from ...thread.manager import get_current_tenant_key
+
+        tenant_key = get_current_tenant_key() or ""
+        if not tenant_key:
+            self.reply_text(message_id, "⚠️ 无法确认租户身份。")
+            return
+
+        hire_service = getattr(self.ctx, "employee_hire_service", None)
+        if hire_service is None:
+            self.reply_text(message_id, "员工管理服务尚未接入，无法查询花名册。")
+            return
+
+        try:
+            projection = hire_service.synchronize_projection()
+        except Exception:
+            self.reply_text(message_id, "⚠️ 员工投影同步失败，请稍后重试。")
+            return
+
+        employees = [
+            emp for emp in projection.employees.values()
+            if emp.tenant_key == tenant_key and emp.worker_type is WorkerType.VISIBLE
+        ]
+
+        if not employees:
+            self.reply_text(message_id, "当前租户还没有员工。使用 `/hire <名字>` 开始雇佣。")
+            return
+
+        _STATE_LABELS = {
+            EmployeeState.ACTIVE: "✅ 就绪",
+            EmployeeState.DRAFT: "📝 草稿",
+            EmployeeState.PROVISIONING_APP: "⏳ 配置中",
+            EmployeeState.STORING_CREDENTIAL: "⏳ 配置中",
+            EmployeeState.CONFIGURING: "⏳ 配置中",
+            EmployeeState.VALIDATING: "⏳ 验证中",
+            EmployeeState.READY_PENDING_VERIFICATION: "⏳ 待验证",
+            EmployeeState.ACTION_REQUIRED: "⚠️ 待处理",
+            EmployeeState.RETIRING: "🔄 退休中",
+            EmployeeState.ARCHIVED: "📦 已归档",
+        }
+
+        lines: list[str] = []
+        for emp in sorted(employees, key=lambda e: e.name):
+            state_label = _STATE_LABELS.get(emp.state, f"❓ {emp.state.value}")
+            group_count = len(emp.member_groups)
+            tool_model = emp.tool or "未配置"
+            if emp.model:
+                tool_model = f"{emp.tool}/{emp.model}"
+            lines.append(
+                f"{emp.emoji} **{emp.name}**　{tool_model}　{state_label}　群×{group_count}"
+            )
+
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {"title": {"tag": "plain_text", "content": f"员工花名册（{len(employees)}人）"}, "template": "blue"},
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}},
+            ],
+        }
+        self.reply_card(message_id, card)
+
     def fire_employee(self, message_id: str, chat_id: str, args: str) -> None:
         """Retire a visible employee through the production Journal-backed service."""
 
@@ -2809,7 +2874,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                             "tag": "select_static",
                             "placeholder": {"tag": "plain_text", "content": "选择员工"},
                             "options": options,
-                            "value": {"action": "slock_role_add_select", "chat_id": chat_id},
+                            "value": {"action": "slock_role_add_pick", "chat_id": chat_id},
                         }],
                     },
                 ],
@@ -4630,7 +4695,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
     def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
         """Handle slock_* card actions."""
-        if action_type == "slock_role_add_select":
+        if action_type in ("slock_role_add_pick", "slock_role_add_select"):
             manager = self._get_engine_manager()
             engine = manager.get_activated_engine(open_chat_id)
             if not engine:
@@ -4642,6 +4707,45 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
             tenant_key = get_current_tenant_key() or ""
             agent_id = str(value.get("_option") or "")
+            service = getattr(self.ctx, "employee_membership_service", None)
+            employee = service.get_employee(tenant_key, agent_id) if service and tenant_key and agent_id else None
+            if employee is None:
+                self.send_text_to_chat(open_chat_id, "⚠️ 员工选择已失效，请重新打开列表。")
+                return
+            emoji = str(getattr(employee, "emoji", "🤖"))
+            name = str(getattr(employee, "name", "员工"))
+            confirm_card = {
+                "config": {"wide_screen_mode": True},
+                "header": {"title": {"tag": "plain_text", "content": "确认添加员工"}, "template": "orange"},
+                "elements": [
+                    {"tag": "div", "text": {"tag": "lark_md", "content": f"将把 **{emoji} {name}** 加入本群"}},
+                    {
+                        "tag": "action",
+                        "actions": [{
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": "确认加入"},
+                            "type": "primary",
+                            "value": {"action": "slock_role_add_confirm", "chat_id": open_chat_id, "agent_id": agent_id},
+                        }],
+                    },
+                ],
+            }
+            confirm_card_json = json.dumps(confirm_card, ensure_ascii=False)
+            self.update_card(open_message_id, confirm_card_json)
+            return
+
+        if action_type == "slock_role_add_confirm":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if not engine:
+                self.send_text_to_chat(open_chat_id, "⚠️ 当前没有活跃的 Slock 团队。")
+                return
+            if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                return
+            from ...thread.manager import get_current_tenant_key
+
+            tenant_key = get_current_tenant_key() or ""
+            agent_id = str(value.get("agent_id") or "")
             service = getattr(self.ctx, "employee_membership_service", None)
             employee = service.get_employee(tenant_key, agent_id) if service and tenant_key and agent_id else None
             if employee is None:

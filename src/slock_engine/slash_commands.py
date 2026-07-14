@@ -61,6 +61,9 @@ class SlockCommandAction(Enum):
     NEW_TEAM_MISSING_NAME = "new_team_missing_name"
     NEW_ROLE_MISSING_NAME = "new_role_missing_name"
 
+    # Employee roster
+    EMPLOYEE_LIST = "employee_list"
+
     # Non-technical / casual message (filtered out)
     CHITCHAT = "chitchat"
 
@@ -103,6 +106,7 @@ _ALIASES: dict[str, str] = {
     "/s": "/slock",
     "/p": "/plan",
     "/h": "/hire",
+    "/roster": "/employees",
 }
 
 
@@ -111,7 +115,7 @@ def get_all_command_prefixes() -> set[str]:
 
     Useful for validating command fix suggestions in card actions.
     """
-    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/hire", "/fire", "/history", "/employee-memory", "/memory", "/council", "/role", "/task", "/team", "/plan"}
+    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/hire", "/fire", "/history", "/employee-memory", "/memory", "/council", "/role", "/task", "/team", "/plan", "/employees"}
     return canonical | set(_ALIASES.keys())
 
 
@@ -161,6 +165,10 @@ def parse_slock_command(text: str) -> SlockCommand:
         if remainder:
             return SlockCommand(action=SlockCommandAction.NEW_ROLE, args=remainder)
         return SlockCommand(action=SlockCommandAction.NEW_ROLE_MISSING_NAME)
+
+    # /employees (global roster)
+    if cmd == "/employees":
+        return SlockCommand(action=SlockCommandAction.EMPLOYEE_LIST)
 
     if cmd == "/fire":
         return SlockCommand(
@@ -476,6 +484,7 @@ def is_slock_command(
         "/fire",
         "/history",
         "/employee-memory",
+        "/employees",
     ):
         return SlockCommandResult(is_command=True)
 
