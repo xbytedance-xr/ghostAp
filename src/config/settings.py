@@ -692,6 +692,17 @@ class Settings(BaseSettings):
         ge=1,
         le=50 * 1024 * 1024,
     )
+    autonomous_employee_ingress_blob_dir: str = (
+        "~/.ghostap/autonomy/ingress-blobs"
+    )
+    autonomous_employee_attachment_staging_dir: str = (
+        "~/.ghostap/autonomy/employee-attachments"
+    )
+    autonomous_employee_system_prompt_token_reserve: int = Field(
+        default=4096,
+        ge=1,
+        le=1_000_000,
+    )
     autonomous_employee_queue_per_employee_limit: int = Field(default=8, ge=1, le=10_000)
     autonomous_employee_queue_per_team_limit: int = Field(default=32, ge=1, le=100_000)
     autonomous_employee_queue_global_limit: int = Field(default=128, ge=1, le=1_000_000)
@@ -737,6 +748,7 @@ class Settings(BaseSettings):
         "autonomous_employee_queue_per_employee_limit",
         "autonomous_employee_queue_per_team_limit",
         "autonomous_employee_queue_global_limit",
+        "autonomous_employee_system_prompt_token_reserve",
         mode="before",
     )
     @classmethod

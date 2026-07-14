@@ -70,14 +70,15 @@
       shared Journal 同步、restart/rotation/retirement invalidation 与逆序关闭；真实页间
       insert/edit/delete、timeout、重复 token、partial SDK、两把密钥轮换、restart 与 shutdown
       故障注入均证明 `CONTEXT_UNAVAILABLE` 零 task/ACP 派发。durable ingress 尚未接入该服务
-    - Phase 3 Task 0-6 已完成 durable employee ingress、Projected Registry/ACL/membership
-      authority、Journal-backed bounded Router，以及锚定 dispatch attempt、Context gate、
-      真实 Slock `_run_acp_session` 和原子 terminal history；Task 7 尚未聚合生产门禁
+    - Phase 3 Task 0-7 已完成 durable employee ingress、Projected Registry/ACL/membership
+      authority、Journal-backed bounded Router、锚定 dispatch attempt、Context gate、
+      真实 Slock `_run_acp_session`、原子 terminal history 与生产 composition/recovery/handoff；
+      本地九 selector 已精确聚合，但外部 trusted final-build attestation 仍待 Phase 8
     - `EmployeeResponseChannel` 明确仍是 in-memory outbox，缺 Journal-backed Durable Outbox、稳定 UUID 卡片和 child-owned stream controller
     - `FireSaga` 仍是可变内存顺序流程，未满足 Journal SSOT、Effect 锚定、unknown disposition、恢复与归档合同
     - 团队 membership、`/role add/remove`、`/stop` 终态竞态尚未形成生产闭环
-  - 尚无获授权的真实测试/生产租户执行证据。Phase 3 Task 6 关闭时最新
-    Autonomous 全量验证为 `1686 passed, 2 skipped`；两项 skip 分别是未授权真实
+  - 尚无获授权的真实测试/生产租户执行证据。Phase 3 Task 7 关闭时最新
+    Autonomous 全量验证为 `1700 passed, 2 skipped`；两项 skip 分别是未授权真实
     租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
     不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
   - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
@@ -157,11 +158,11 @@
      - 已完成：Task 6 真实页间 mutation、deadline/token/partial SDK、restart/rotation/shutdown
        failure injection；所有 mandatory Context failure 均零 delegate/task/ACP 派发，三路终审批准
      - Phase 2 handoff 已关闭；下一阶段是 durable employee ingress
-  3. 进行中：Durable employee ingress、Router 与 Slock gateway：
+  3. 已完成：Durable employee ingress、Router 与 Slock gateway：
      - 设计与现有实现审计已完成，实施计划见
        `docs/2026-07-13-autonomous-durable-ingress-plan.md`；Task 0-5 的 durable Inbox、
-       official Channel ACK bridge、附件暂存、Journal-backed Router 与 Task 6 真实执行
-       已完成；Task 7 的生产聚合仍未完成，因此 Phase 3 尚未关闭
+       official Channel ACK bridge、附件暂存、Journal-backed Router、Task 6 真实执行与
+       Task 7 生产组合/恢复/本地证据聚合均已完成；Phase 3 已关闭
      - 已完成 Task 0 SDK capability 硬门禁：锁定 `lark-channel-sdk==1.1.0` 的
        low-level message 与 P2 `card.action.trigger` EVENT 均通过真实 HTTP/WSS/protobuf
        ACK 顺序验证；高层 handler 提前 200 与 raw `MessageType.CARD` 继续明确禁用
@@ -170,7 +171,7 @@
        `employee_channel_sdk_capability_mismatch`，本地 evidence 永远不可晋级
      - 已确认 SDK 的单帧 byte limit 缺口：超大单帧仍会进入 callback，因此 evidence
        强制 `requires_parent_payload_gate=true`；Task 3 已用真实 wire 证明 parent gate
-       返回 non-success 且 Inbox/Journal/Router/ACP 零副作用，Task 7 仍须聚合该证据
+       返回 non-success 且 Inbox/Journal/Router/ACP 零副作用，Task 7 已纳入九 selector 聚合
      - 已完成 Task 1：六个 frozen exact-schema ingress 模型、递归 secret alias 拒绝、
        restart-safe canonical dedup、1.5 秒 ACK/attachment/payload 配置、单员工≤团队≤全局
        队列关系，以及独立 Phase 3 implementation evidence manifest 均已冻结
@@ -178,8 +179,8 @@
        并发/restart/generation dedup、语义/provenance 冲突拒绝、缺失/损坏 payload
        恢复关闭、orphan quarantine、可重试 tombstone GC 与 commit 前 disposition 校验
      - `EI-IPC-01` 已由真实 spawn child + Pipe + FileAnchor + Journal/fsync selector
-       收集，观测 ACK `0.014952s <= 1.5s`；它仍只是本地 Phase 3 evidence，不能替代
-       全局 FI-29，也不构成生产 readiness
+       收集，观测 ACK `0.014952s <= 1.5s`；Task 7 已将全局 FI-29 严格桥接到该 selector，
+       但当前没有外部 final-build attestation，FI-29 实际状态仍为 PENDING，不构成生产 readiness
      - Task 2 独立 Spec/Code review 已批准
      - 已完成 Task 3：生产 worker 仅使用官方 low-level WSClient/dispatcher；message 与
        real P2 card callback 在同一 1.5 秒总 deadline 内等待 parent durable ACK，
@@ -187,8 +188,8 @@
      - Task 3 mandatory matrix 已覆盖 IPC backpressure/partial frame、parent close、
        anchor/projection/ACK encode/control write、late/lost ACK、child crash、SDK write、
        reconnect/STOP/generation rotation；connection epoch 与 READY/INGRESS 顺序 fail-close
-     - Task 3 独立 Spec/Code review 已批准；Task 7 尚未聚合生产门禁，
-       `autonomous_visible_employee_limit` 保持 0
+     - Task 3 独立 Spec/Code review 已批准；Task 7 已聚合本地生产门禁，
+       外部 release trust 仍未建立，`autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
        low-level dispatcher 黑盒验证消息和 CardAction 两条路径，任一路径不满足即
@@ -227,9 +228,18 @@
        composite/未知 effort/不支持 profile，普通 `/new-role` 保留 legacy composite 语义
      - Task 6 最终 224 affected、1686 full Autonomous 测试通过；changed-file Ruff、
        `git diff --check` 通过，独立 Spec/Code review 均批准且无 Critical/Important
-     - 下一项 Task 7：聚合 SDK capability、parent payload gate、dispatch/Context/Slock、
-       terminal history、worker sandbox 与 release trust 证据；在真实租户证明与外部信任组件
-       就绪前，`autonomous_visible_employee_limit` 必须继续保持 0
+     - 已完成 Task 7：`EmployeeDepartmentRuntime` 现拥有 Inbox/Router/Gateway/附件/data，
+       FeishuWSClient 注入真实 Slock manager 与无共享 provider secret 的 runtime 环境端口；恢复先把
+       unknown dispatch 收敛为 action_required，再启动有退避的 Journal 派发 worker；关停先停 ACK admission，
+       超时未排空时保留 Journal/Vault 等依赖资源
+     - 已完成 Task 7：execution readiness 对 ingress/router/context/data/Slock/environment/recovery
+       缺口稳定 fail-close；修复共享 Journal 推进后 Router workforce projection 过期导致合法消息
+       `authority_stale` 的组合缺陷，并覆盖真实 anchored Inbox → owned Router queue
+     - 已完成 Task 7：九个 `EI-*` exact selector 全部本地通过；全局 FI-29 只接受绑定
+       `EI-IPC-01`、commit、构建 artifact 与结果摘要的严格 bridge，任意 `passed=true` 仍为 PENDING。
+       本地 evidence 不能自我晋级，真实租户与外部 trust 未就绪前 visible limit 必须保持 0
+     - Phase 3 最终 Autonomous `1700 passed, 2 skipped, 1 warning in 397.24s`；下一阶段为
+       Employee Response Channel，不能把 Phase 3 完成误称为 Agent Department 生产就绪
   4. Employee Response Channel：
      - Journal-backed Durable Outbox
      - 稳定 UUID 幂等创建单张状态卡

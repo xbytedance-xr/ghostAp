@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
@@ -112,8 +113,34 @@ def build_employee_process_env(
     return dict(sorted(result.items()))
 
 
+def runtime_only_employee_environment(
+    authority: EmployeeEnvironmentAuthority,
+) -> EmployeeProcessEnvironmentMaterial:
+    """Provide only non-secret process runtime values for an employee.
+
+    Provider credentials must come from a future employee-scoped authority;
+    the manager Bot process environment is never an acceptable credential
+    source.
+    """
+
+    runtime_env = {
+        key: value
+        for key, value in os.environ.items()
+        if key in _RUNTIME_KEYS and isinstance(value, str) and value
+    }
+    return EmployeeProcessEnvironmentMaterial(
+        authority.tenant_key,
+        authority.agent_id,
+        authority.employee_version,
+        authority.credential_ref,
+        runtime_env,
+        {},
+    )
+
+
 __all__ = [
     "EmployeeEnvironmentAuthority",
     "EmployeeProcessEnvironmentMaterial",
     "build_employee_process_env",
+    "runtime_only_employee_environment",
 ]

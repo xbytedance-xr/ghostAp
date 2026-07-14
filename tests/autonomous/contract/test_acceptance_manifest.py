@@ -4,6 +4,11 @@ from pathlib import Path
 import pytest
 
 from src.autonomous.acceptance import AcceptanceManifest, GateStatus
+from src.autonomous.ingress.implementation_evidence import (
+    PHASE3_IMPLEMENTATION_MANIFEST_PATH,
+    ImplementationEvidenceResult,
+    Phase3ImplementationManifest,
+)
 
 MANIFEST_PATH = Path("tests/autonomous/acceptance/manifest.json")
 EXPECTED_IDS = {
@@ -161,3 +166,61 @@ def test_manifest_does_not_substitute_a_different_evidence_type() -> None:
 
     assert "AR-05" in evaluation.pending
     assert "AR-05" not in evaluation.passed
+
+
+def test_fi29_is_bound_to_exact_phase3_ipc_result() -> None:
+    manifest = AcceptanceManifest.load(MANIFEST_PATH)
+    fi29 = next(gate for gate in manifest.gates if gate.id == "FI-29")
+    phase3 = Phase3ImplementationManifest.load(PHASE3_IMPLEMENTATION_MANIFEST_PATH)
+    ipc = phase3.gate("EI-IPC-01")
+    result = ImplementationEvidenceResult.create(
+        gate_id=ipc.id,
+        selector=ipc.selector,
+        commit_sha="a" * 40,
+        artifact_kind=ipc.artifact_kind,
+        artifact_profile_id=ipc.artifact_profile_id,
+        artifact_sha256="b" * 64,
+        sdk_wheel_sha256=None,
+        sdk_capability_artifact_sha256=None,
+        collected_nodeids=(ipc.selector,),
+        pytest_exit_code=0,
+        setup="passed",
+        call="passed",
+        teardown="passed",
+    )
+    evidence = {
+        "FI-29": {
+            "passed": True,
+            "evidence_level": fi29.evidence_level.value,
+            "environment": fi29.environment,
+            "phase3_gate_id": "EI-IPC-01",
+            "phase3_result": result.to_dict(),
+        }
+    }
+
+    arbitrary = manifest.evaluate(
+        {
+            "FI-29": {
+                "passed": True,
+                "evidence_level": fi29.evidence_level.value,
+                "environment": fi29.environment,
+            }
+        }
+    )
+    bridged = manifest.evaluate(
+        evidence,
+        expected_phase3_commit_sha="a" * 40,
+        expected_phase3_artifact_sha256="b" * 64,
+        expected_phase3_sdk_capability_artifact_sha256="c" * 64,
+    )
+    wrong_commit = manifest.evaluate(
+        evidence,
+        expected_phase3_commit_sha="d" * 40,
+        expected_phase3_artifact_sha256="b" * 64,
+        expected_phase3_sdk_capability_artifact_sha256="c" * 64,
+    )
+
+    assert fi29.selector == ipc.selector
+    assert "FI-29" in arbitrary.pending
+    assert "FI-29" in bridged.passed
+    assert "FI-29" in wrong_commit.pending

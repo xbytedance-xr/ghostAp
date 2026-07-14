@@ -1261,6 +1261,32 @@ def test_employee_process_env_excludes_manager_vault_and_peer_secrets() -> None:
     }
 
 
+def test_runtime_only_employee_environment_never_inherits_provider_secrets() -> None:
+    from unittest.mock import patch
+
+    from src.autonomous.gateway.env_scope import (
+        EmployeeEnvironmentAuthority,
+        runtime_only_employee_environment,
+    )
+
+    authority = EmployeeEnvironmentAuthority(
+        "tenant-a",
+        "agent-a",
+        3,
+        "cred-a",
+    )
+    with patch.dict(
+        "os.environ",
+        {"PATH": "/usr/bin", "LANG": "C.UTF-8", "OPENAI_API_KEY": "shared"},
+        clear=True,
+    ):
+        material = runtime_only_employee_environment(authority)
+
+    assert dict(material.runtime_env) == {"LANG": "C.UTF-8", "PATH": "/usr/bin"}
+    assert dict(material.credential_env) == {}
+    assert material.authority == authority
+
+
 def test_coordinator_forces_projected_employee_env_into_real_slock(
     tmp_path,
     monkeypatch,

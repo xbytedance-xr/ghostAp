@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import inspect
 import json
 import threading
@@ -23,6 +24,9 @@ from src.autonomous.context import (
 )
 from src.autonomous.data.models import DataKind, ExecutionAttemptContext
 from src.autonomous.data.ports import PublishEmployeeDocumentCommand
+from src.autonomous.gateway.coordinator import EmployeeDispatchCoordinator
+from src.autonomous.gateway.env_scope import EmployeeProcessEnvironmentMaterial
+from src.autonomous.ingress.models import EmployeeIngressMetadata, EmployeeIngressPayload
 from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
 from src.autonomous.provisioning.hire_port import EmployeeHireRequest
@@ -66,6 +70,12 @@ def _settings(
         settings.autonomous_data_keys = SecretStr(json.dumps(keyring))
         settings.autonomous_data_active_key_id = "k1"
         settings.autonomous_data_blob_dir = str(tmp_path / "data-blobs")
+        settings.autonomous_employee_ingress_blob_dir = str(tmp_path / "ingress-blobs")
+        settings.autonomous_employee_attachment_staging_dir = str(tmp_path / "attachments")
+        settings.autonomous_employee_system_prompt_token_reserve = 4096
+        settings.autonomous_employee_queue_per_employee_limit = 8
+        settings.autonomous_employee_queue_per_team_limit = 32
+        settings.autonomous_employee_queue_global_limit = 128
         settings.autonomous_state_dir = str(tmp_path / "state")
         settings.autonomous_slock_storage_base = str(tmp_path / "slock")
         settings.autonomous_history_timezone = "UTC"
@@ -155,6 +165,10 @@ class _Channels:
         self.started.append((agent_id, app_id, credential_ref, generation))
         self.callbacks[agent_id] = on_event
         status = SimpleNamespace(
+            agent_id=agent_id,
+            app_id=app_id,
+            tenant_key="tenant-a",
+            bot_principal_id="bot_" + agent_id.removeprefix("agt_"),
             state=ChannelProcessState.READY,
             generation=generation,
             identity={"app_id": app_id, "open_id": "ou_employee"},
@@ -165,6 +179,10 @@ class _Channels:
 
     def status(self, agent_id):
         return self.statuses.get(agent_id)
+
+    @contextmanager
+    def employee_dispatch_guard(self):
+        yield
 
     def crash(self, agent_id: str) -> None:
         status = self.statuses[agent_id]
@@ -196,6 +214,21 @@ class _Channels:
 
     def close(self):
         self.closed = True
+
+
+class _SlockManager:
+    @contextmanager
+    def employee_activation_guard(self, **_kwargs):
+        raise RuntimeError("no activated Slock in composition-only test")
+        yield
+
+    def resolve_employee_engine(self, **_kwargs):
+        raise RuntimeError("no activated Slock in composition-only test")
+
+
+class _HealthyMembership:
+    def is_degraded(self, _agent_id: str, _team_id: str) -> bool:
+        return False
 
 
 class _ContextSourceFactory:
@@ -472,7 +505,275 @@ def _runtime(
             "main_bot_send_audit",
             lambda _tenant_key, _started_at, _ended_at: 0,
         )
+        kwargs.setdefault("slock_engine_manager", _SlockManager())
+        kwargs.setdefault(
+            "employee_environment_provider",
+            lambda authority: EmployeeProcessEnvironmentMaterial(
+                authority.tenant_key,
+                authority.agent_id,
+                authority.employee_version,
+                authority.credential_ref,
+                {"PATH": "/usr/bin"},
+                {},
+            ),
+        )
         return EmployeeDepartmentRuntime.from_settings(settings, **kwargs)
+
+
+def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -> None:
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+    )
+
+    assert runtime.ingress_service is not None
+    assert runtime.ingress_router is not None
+    assert runtime.dispatch_coordinator is not None
+    assert runtime.execution_readiness().ready is True
+    runtime.close()
+
+
+def test_task7_execution_readiness_requires_slock_gateway(tmp_path: Path) -> None:
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        slock_engine_manager=None,
+    )
+
+    assert runtime.hire_readiness().ready is True
+    assert runtime.execution_readiness().blockers == ("slock_gateway",)
+    runtime.close()
+
+
+def test_task7_execution_readiness_requires_environment_provider(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        employee_environment_provider=None,
+    )
+
+    assert runtime.hire_readiness().ready is True
+    assert runtime.execution_readiness().blockers == ("employee_environment",)
+    runtime.close()
+
+
+def test_task7_recovers_committed_attempts_before_starting_dispatch(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    with (
+        patch.object(
+            EmployeeDispatchCoordinator,
+            "recover_incomplete_attempts",
+            autospec=True,
+            side_effect=lambda _self: events.append("recover") or (),
+        ),
+        patch.object(
+            EmployeeDepartmentRuntime,
+            "_start_dispatch_worker",
+            autospec=True,
+            side_effect=lambda _self: events.append("start"),
+        ),
+    ):
+        runtime = _runtime(
+            _settings(tmp_path, limit=1, context_configured=True),
+            release_evidence_ready=True,
+            registrar=_Registrar(),
+            channel_supervisor=_Channels(),
+            slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+            notification_link=lambda *_: None,
+            context_source_factory=_ContextSourceFactory(),
+            group_memory_backend=_GroupMemory(),
+        )
+
+    assert events == ["recover", "start"]
+    runtime.close()
+
+
+def test_task7_execution_recovery_failure_is_a_stable_blocker(
+    tmp_path: Path,
+) -> None:
+    with patch.object(
+        EmployeeDispatchCoordinator,
+        "recover_incomplete_attempts",
+        autospec=True,
+        side_effect=RuntimeError("injected recovery failure"),
+    ):
+        runtime = _runtime(
+            _settings(tmp_path, limit=1, context_configured=True),
+            release_evidence_ready=True,
+            registrar=_Registrar(),
+            channel_supervisor=_Channels(),
+            slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+            notification_link=lambda *_: None,
+            context_source_factory=_ContextSourceFactory(),
+            group_memory_backend=_GroupMemory(),
+        )
+
+    assert runtime.hire_readiness().ready is True
+    assert runtime.execution_readiness().blockers == ("employee_recovery",)
+    assert runtime._dispatch_thread is None
+    runtime.close()
+
+
+def test_task7_stuck_dispatch_holds_journal_and_vault_open(tmp_path: Path) -> None:
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+    )
+    assert runtime._dispatch_thread is not None
+    runtime._dispatch_stop.set()
+    runtime._dispatch_thread.join(timeout=1)
+
+    class _StuckThread:
+        alive = True
+
+        def join(self, timeout: float) -> None:
+            assert timeout == 5.0
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+    stuck = _StuckThread()
+    runtime._dispatch_thread = stuck  # type: ignore[assignment]
+    assert runtime._writer is not None
+    assert runtime._vault is not None
+
+    runtime.close()
+
+    assert runtime._writer._closed is False
+    assert runtime._vault._root_finalizer.alive is True
+    stuck.alive = False
+    runtime.close()
+    assert runtime._writer._closed is True
+    assert runtime._vault._root_finalizer.alive is False
+
+
+def test_task7_runtime_routes_anchored_inbox_into_owned_queue(tmp_path: Path) -> None:
+    channels = _Channels()
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    settings.allowed_chat_ids = frozenset({"oc_employee_team"})
+    runtime = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    active = _activate_employee(runtime, channels)
+    channels.statuses[active.agent_id].tenant_key = active.tenant_key
+    channels.statuses[active.agent_id].bot_principal_id = active.bot_principal_id
+    assert runtime._writer is not None
+    assert runtime.hire_service is not None
+    assert runtime.ingress_service is not None
+    assert runtime.ingress_router is not None
+    commit_workforce_events(
+        runtime._writer,
+        runtime.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=active.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    runtime._dispatch_stop.set()
+    assert runtime._dispatch_thread is not None
+    runtime._dispatch_thread.join(timeout=1)
+
+    class _NoDispatch:
+        def dispatch_next(self):
+            return None
+
+    runtime._dispatch = _NoDispatch()  # type: ignore[assignment]
+    suffix = hashlib.sha256(b"composition-route").hexdigest()
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id=f"ing_{suffix}",
+        normalized_parts=(
+            {
+                "type": "message",
+                "message_type": "text",
+                "chat_type": "group",
+                "content": {"text": "route me"},
+                "sender_id": "ou_admin",
+                "sender_id_type": "open_id",
+                "sender_type": "user",
+                "sender_tenant_key": active.tenant_key,
+                "feishu_thread_id": "omt_composition",
+            },
+        ),
+        attachment_descriptors=(),
+    )
+    metadata = EmployeeIngressMetadata(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        tenant_key=active.tenant_key,
+        agent_id=active.agent_id,
+        bot_principal_id=active.bot_principal_id,
+        app_id=active.app_id,
+        channel_generation=active.channel_generation,
+        connection_id=active.channel_connection_id,
+        event_id=f"evt_{suffix[:24]}",
+        message_id=f"om_{suffix[:24]}",
+        event_type="im.message.receive_v1",
+        action_identity="",
+        chat_id="oc_employee_team",
+        thread_root_message_id="om_runtime_root",
+        sender_principal_id="ou_admin",
+        received_at="2026-07-14T00:00:00Z",
+        semantic_digest=payload.payload_sha256,
+        payload_sha256=payload.payload_sha256,
+        payload_size_bytes=payload.canonical_size_bytes,
+        attachment_count=0,
+        attachment_total_bytes=0,
+    )
+    acceptance = runtime.ingress_service.accept(
+        metadata,
+        payload,
+        request_id="req_composition_route",
+    )
+
+    assert runtime._drain_employee_dispatch_once() is True
+    acceptance_id = acceptance.acceptance.acceptance_id
+    routed = runtime.ingress_router.state.by_acceptance_id[acceptance_id]
+    assert routed.state == "queued", routed.reason_code
+    assert runtime.ingress_service.state.by_acceptance_id[
+        acceptance_id
+    ].disposition is None
+    runtime._dispatch_thread = None
+    runtime.close()
 
 
 def _activate_employee(
@@ -554,7 +855,7 @@ def test_context_configuration_failure_does_not_block_first_hire(
 
     assert runtime.context_service is None
     assert runtime.hire_readiness().ready is True
-    assert runtime.execution_readiness().ready is True
+    assert runtime.execution_readiness().blockers == ("employee_ingress",)
     assert runtime.hire_service is not None
     assert runtime.hire_service.start_hire(_request()).intent_id
     runtime.close()
@@ -1229,6 +1530,30 @@ def test_missing_release_evidence_fails_before_keys_or_files_are_opened(
     assert runtime.readiness().blockers == ("release_evidence",)
     assert not (tmp_path / "journal").exists()
     runtime.close()
+
+
+def test_existing_journal_with_revoked_release_stays_dormant_not_miscomposed(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    initial = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+    )
+    initial.close()
+
+    restarted = _runtime(settings, release_evidence_ready=False)
+
+    assert restarted.hire_service is not None
+    assert restarted.hire_readiness().blockers == ("release_evidence",)
+    assert restarted.execution_readiness().blockers == ("release_evidence",)
+    restarted.close()
 
 
 def test_settings_driven_release_evaluator_defaults_to_pending(

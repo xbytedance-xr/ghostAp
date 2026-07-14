@@ -279,12 +279,17 @@ class FeishuWSClient:
 
         self._employee_department_runtime = None
         try:
+            from ..autonomous.gateway.env_scope import (
+                runtime_only_employee_environment,
+            )
             from ..autonomous.provisioning.composition import (
                 EmployeeDepartmentRuntime,
             )
 
             self._employee_department_runtime = EmployeeDepartmentRuntime.from_settings(
                 self.settings,
+                slock_engine_manager=self._slock_engine_manager,
+                employee_environment_provider=runtime_only_employee_environment,
                 notification_link=lambda state, url, expire_in: self._reply_text(
                     state.message_id,
                     f"请在 {expire_in} 秒内完成独立飞书智能体注册：{url}",

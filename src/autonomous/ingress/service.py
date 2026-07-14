@@ -88,6 +88,7 @@ class EmployeeIngressService:
         self._state = ingress_state
         self._active_key_id = active_key_id
         self._mutex = threading.RLock()
+        self._admission_closed = False
         self._closed = False
         self.rebuild_projection()
 
@@ -185,6 +186,13 @@ class EmployeeIngressService:
             self._closed = True
             self._blob_store.close()
 
+    def stop_admission(self) -> None:
+        """Reject new transport ACK work while retaining dispatch reads."""
+
+        with self._mutex:
+            self._ensure_open_unlocked()
+            self._admission_closed = True
+
     def accept(
         self,
         metadata: EmployeeIngressMetadata,
@@ -203,6 +211,8 @@ class EmployeeIngressService:
         self._validate_action_correlation(metadata, action_correlation)
         with self._mutex, self._writer.transaction_guard():
             self._ensure_open_unlocked()
+            if self._admission_closed:
+                raise IngressClosedError("employee ingress admission is closed")
             self._synchronize_projection_unlocked()
             employee_key = (metadata.tenant_key, metadata.agent_id)
             if employee_key in self._state.closed_employees:

@@ -122,6 +122,10 @@ class AcceptanceManifest:
     def evaluate(
         self,
         evidence: Mapping[str, Mapping[str, Any]],
+        *,
+        expected_phase3_commit_sha: str | None = None,
+        expected_phase3_artifact_sha256: str | None = None,
+        expected_phase3_sdk_capability_artifact_sha256: str | None = None,
     ) -> ManifestEvaluation:
         gate_ids = {gate.id for gate in self.gates}
         unknown_ids = sorted(set(evidence) - gate_ids)
@@ -142,7 +146,15 @@ class AcceptanceManifest:
             if artifact.get("passed") is not True:
                 pending.append(gate.id)
                 continue
-            if not self._meets_evidence_contract(gate, artifact):
+            if not self._meets_evidence_contract(
+                gate,
+                artifact,
+                expected_phase3_commit_sha=expected_phase3_commit_sha,
+                expected_phase3_artifact_sha256=expected_phase3_artifact_sha256,
+                expected_phase3_sdk_capability_artifact_sha256=(
+                    expected_phase3_sdk_capability_artifact_sha256
+                ),
+            ):
                 pending.append(gate.id)
                 continue
             passed.append(gate.id)
@@ -165,6 +177,10 @@ class AcceptanceManifest:
     def _meets_evidence_contract(
         gate: AcceptanceGate,
         artifact: Mapping[str, Any],
+        *,
+        expected_phase3_commit_sha: str | None,
+        expected_phase3_artifact_sha256: str | None,
+        expected_phase3_sdk_capability_artifact_sha256: str | None,
     ) -> bool:
         try:
             actual_level = EvidenceLevel(artifact["evidence_level"])
@@ -172,4 +188,40 @@ class AcceptanceManifest:
             return False
         if actual_level is not gate.evidence_level:
             return False
-        return artifact.get("environment") == gate.environment
+        if artifact.get("environment") != gate.environment:
+            return False
+        if gate.id != "FI-29":
+            return True
+        if (
+            artifact.get("phase3_gate_id") != "EI-IPC-01"
+            or expected_phase3_commit_sha is None
+            or expected_phase3_artifact_sha256 is None
+            or expected_phase3_sdk_capability_artifact_sha256 is None
+        ):
+            return False
+        try:
+            from src.autonomous.ingress.implementation_evidence import (
+                PHASE3_IMPLEMENTATION_MANIFEST_PATH,
+                ImplementationEvidenceResult,
+                Phase3ImplementationManifest,
+            )
+
+            result = ImplementationEvidenceResult.from_dict(
+                dict(artifact["phase3_result"])
+            )
+            if result.gate_id != "EI-IPC-01" or result.selector != gate.selector:
+                return False
+            phase3 = Phase3ImplementationManifest.load(
+                PHASE3_IMPLEMENTATION_MANIFEST_PATH
+            )
+            evaluation = phase3.evaluate(
+                (result,),
+                expected_commit_sha=expected_phase3_commit_sha,
+                expected_artifact_sha256=expected_phase3_artifact_sha256,
+                expected_sdk_capability_artifact_sha256=(
+                    expected_phase3_sdk_capability_artifact_sha256
+                ),
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        return evaluation.passed == ("EI-IPC-01",)

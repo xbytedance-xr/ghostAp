@@ -6,6 +6,7 @@ import asyncio
 import base64
 import binascii
 import concurrent.futures
+import hashlib
 import logging
 import threading
 import time
@@ -33,6 +34,16 @@ from ..data.composition import (
     EmployeeDataComposition,
     build_employee_data_composition,
 )
+from ..data.keyring import EmployeeDataKeyring
+from ..gateway.coordinator import EmployeeDispatchCoordinator
+from ..gateway.env_scope import (
+    EmployeeEnvironmentAuthority,
+    EmployeeProcessEnvironmentMaterial,
+)
+from ..ingress.attachments import AttachmentStagingService
+from ..ingress.projection import IngressProjectionState
+from ..ingress.router import DurableEmployeeIngressRouter, RouterQueueLimits
+from ..ingress.service import EmployeeIngressService, IngressConflictError
 from ..journal.anchor import FileAnchor
 from ..journal.projections import ProjectionState
 from ..journal.writer import JOURNAL_FILENAME, JournalWriter
@@ -96,6 +107,24 @@ class _SlashReconciler(Protocol):
 
 SlashReconcilerFactory = Callable[[str, str], _SlashReconciler]
 MainBotSendAudit = Callable[[str, float, float], int]
+EmployeeEnvironmentProvider = Callable[
+    [EmployeeEnvironmentAuthority],
+    EmployeeProcessEnvironmentMaterial,
+]
+
+
+class _SlockMembershipHealth:
+    """Treat an unavailable or ambiguous activated Slock as degraded."""
+
+    def __init__(self, manager: object) -> None:
+        self._manager = manager
+
+    def is_degraded(self, _agent_id: str, team_id: str) -> bool:
+        try:
+            self._manager.resolve_employee_engine(chat_id=team_id)
+        except Exception:
+            return True
+        return False
 
 
 @dataclass(frozen=True)
@@ -120,6 +149,15 @@ class EmployeeDepartmentRuntime:
         self._vault: CredentialVault | None = None
         self._channels: _ChannelSupervisor | None = None
         self._data: EmployeeDataComposition | None = None
+        self._ingress: EmployeeIngressService | None = None
+        self._router: DurableEmployeeIngressRouter | None = None
+        self._attachments: AttachmentStagingService | None = None
+        self._dispatch: EmployeeDispatchCoordinator | None = None
+        self._dispatch_thread: threading.Thread | None = None
+        self._dispatch_stop = threading.Event()
+        self._execution_blockers: tuple[str, ...] = ()
+        self._slock_manager: object | None = None
+        self._environment_provider: EmployeeEnvironmentProvider | None = None
         self._context_source_factory: EmployeeMessageSourceFactory | None = None
         self._context_service: EmployeeContextService | None = None
         self._context_acl: Any = None
@@ -157,6 +195,9 @@ class EmployeeDepartmentRuntime:
         notification_status: Callable[[DurableHireState, str], object] | None = None,
         context_source_factory: EmployeeMessageSourceFactory | None = None,
         group_memory_backend: Any = None,
+        slock_engine_manager: object | None = None,
+        employee_environment_provider: EmployeeEnvironmentProvider | None = None,
+        membership_health: Any = None,
     ) -> EmployeeDepartmentRuntime:
         limit = getattr(settings, "autonomous_visible_employee_limit", 0)
         journal_exists = (Path(settings.autonomous_journal_dir).expanduser() / JOURNAL_FILENAME).is_file()
@@ -204,13 +245,27 @@ class EmployeeDepartmentRuntime:
 
         runtime._writer = writer
         runtime._vault = vault
+        runtime._slock_manager = slock_engine_manager
+        runtime._environment_provider = employee_environment_provider
         try:
+            runtime._start_loop()
+            runtime._compose_execution_storage(settings)
             runtime._channels = channel_supervisor or EmployeeChannelSupervisor(
                 secret_resolver=vault.resolve,
+                ingress_service=runtime._ingress,
+                ingress_binding_resolver=(
+                    runtime._resolve_ingress_binding
+                    if runtime._ingress is not None
+                    else None
+                ),
+                ingress_ack_timeout=getattr(
+                    settings,
+                    "autonomous_employee_ingress_ack_timeout_seconds",
+                    1.5,
+                ),
             )
             runtime._slash_factory = slash_reconciler_factory or cls._default_slash_factory
             runtime._main_bot_send_audit = main_bot_send_audit
-            runtime._start_loop()
             service = ProductionEmployeeHireService(
                 writer,
                 ProjectionState(),
@@ -230,6 +285,10 @@ class EmployeeDepartmentRuntime:
                 settings,
                 context_source_factory=context_source_factory,
                 group_memory_backend=group_memory_backend,
+            )
+            runtime._compose_dispatch(
+                settings,
+                membership_health=membership_health,
             )
             runtime.recover()
             return runtime
@@ -253,6 +312,18 @@ class EmployeeDepartmentRuntime:
     def data_composition(self) -> EmployeeDataComposition | None:
         return self._data
 
+    @property
+    def ingress_service(self) -> EmployeeIngressService | None:
+        return self._ingress
+
+    @property
+    def ingress_router(self) -> DurableEmployeeIngressRouter | None:
+        return self._router
+
+    @property
+    def dispatch_coordinator(self) -> EmployeeDispatchCoordinator | None:
+        return self._dispatch
+
     def readiness(self) -> RuntimeReadiness:
         return self.hire_readiness()
 
@@ -267,6 +338,16 @@ class EmployeeDepartmentRuntime:
         hire = self.hire_readiness()
         if not hire.ready:
             return hire
+        if self._execution_blockers:
+            return RuntimeReadiness(False, self._execution_blockers)
+        if (
+            self._ingress is None
+            or self._router is None
+            or self._dispatch is None
+            or self._data is None
+            or self._context_service is None
+        ):
+            return RuntimeReadiness(False, ("employee_gateway",))
         if self._service is None:
             return RuntimeReadiness(False, ("not_composed",))
         try:
@@ -307,7 +388,6 @@ class EmployeeDepartmentRuntime:
                 principal = projection.bot_principals.get(state.bot_principal_id)
                 status = self._channels.status(state.agent_id) if self._channels else None
                 status_state = getattr(status, "state", None)
-                status_value = getattr(status_state, "value", status_state)
                 if (
                     employee is None
                     or principal is None
@@ -319,7 +399,7 @@ class EmployeeDepartmentRuntime:
                 ):
                     return RuntimeReadiness(False, ("context_binding",))
                 if (
-                    status_value != ChannelProcessState.READY.value
+                    status_state is not ChannelProcessState.READY
                     or getattr(status, "generation", None) != state.channel_generation
                     or getattr(status, "identity", {}).get("app_id") != state.app_id
                     or getattr(status, "ready_metadata", {}).get("connection_id") != state.channel_connection_id
@@ -338,6 +418,25 @@ class EmployeeDepartmentRuntime:
         projection = self._service.recover()
         if self._data is not None:
             self._data.service.rebuild_projection()
+        execution_recovered = not self._execution_blockers
+        if execution_recovered:
+            try:
+                assert self._ingress is not None
+                assert self._router is not None
+                assert self._dispatch is not None
+                self._ingress.rebuild_projection()
+                self._router.rebuild_projection()
+                self._dispatch.recover_incomplete_attempts()
+                self._router.recover_terminal_attachments()
+                self._reconcile_terminal_ingress()
+                self._ingress.gc_terminal_payloads()
+            except Exception as exc:
+                logger.error(
+                    "employee execution recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                self._execution_blockers = ("employee_recovery",)
+                execution_recovered = False
         if not self._refresh_context_bindings(self._service.projection_state):
             self._context_blockers = ("context_binding_sync",)
         if not self._external_resume_allowed:
@@ -377,6 +476,8 @@ class EmployeeDepartmentRuntime:
             self._service.mark_runtime_recovered()
             if self._loop is not None:
                 self._loop.call_soon_threadsafe(self._start_monitor_in_loop)
+            if execution_recovered:
+                self._start_dispatch_worker()
 
     def journal_frames(self) -> tuple[Any, ...]:
         return tuple(self._writer.replay()) if self._writer is not None else ()
@@ -395,10 +496,17 @@ class EmployeeDepartmentRuntime:
                 errors.append(f"{label}:{type(exc).__name__}")
                 return False
 
+        if self._ingress is not None:
+            cleanup("ingress_admission", self._ingress.stop_admission)
         if self._service is not None:
             cleanup("hire_admission", self._service.stop_admission)
         if self._context_service is not None:
             cleanup("context_admission", self._context_service.stop_admission)
+        self._dispatch_stop.set()
+        dispatch_safe = True
+        if self._dispatch_thread is not None:
+            self._dispatch_thread.join(timeout=5.0)
+            dispatch_safe = not self._dispatch_thread.is_alive()
         with self._future_lock:
             futures = tuple(self._futures)
         activities_safe = True
@@ -424,7 +532,7 @@ class EmployeeDepartmentRuntime:
                 cleanup("context_sources", self._context_source_factory.close)
                 and context_safe
             )
-        resources_safe = activities_safe and context_safe
+        resources_safe = dispatch_safe and activities_safe and context_safe
         if resources_safe:
             if self._channels is not None:
                 resources_safe = cleanup("channels", self._channels.close)
@@ -437,6 +545,10 @@ class EmployeeDepartmentRuntime:
                 "group_memory",
                 self._group_memory_backend.shutdown,
             )
+        if resources_safe and self._attachments is not None:
+            resources_safe = cleanup("attachments", self._attachments.close)
+        if resources_safe and self._ingress is not None:
+            resources_safe = cleanup("ingress", self._ingress.close)
         if resources_safe and self._data is not None:
             resources_safe = cleanup("data", self._data.close)
         if resources_safe:
@@ -474,6 +586,271 @@ class EmployeeDepartmentRuntime:
                 self._context_source_factory.reactivate_employee(agent_id)
             self._context_explicit_invalidations.discard(agent_id)
             self._context_projection_invalidations.discard(agent_id)
+
+    def _compose_execution_storage(self, settings: Any) -> None:
+        """Compose the data, durable Inbox, and attachment owners."""
+
+        if not self._external_resume_allowed or getattr(
+            settings,
+            "autonomous_visible_employee_limit",
+            0,
+        ) == 0:
+            self._execution_blockers = ("employee_ingress",)
+            return
+        if self._writer is None or self._vault is None:
+            self._execution_blockers = ("employee_ingress",)
+            return
+        try:
+            legacy_base = getattr(
+                settings,
+                "autonomous_slock_storage_base",
+                default_slock_storage_base(),
+            )
+            self._data = build_employee_data_composition(
+                settings=settings,
+                writer=self._writer,
+                admin_principal_ids=frozenset(
+                    getattr(settings, "admin_user_ids", ()) or ()
+                ),
+                main_bot_app_id=getattr(settings, "app_id", ""),
+                agents_root=Path(legacy_base).expanduser() / "agents",
+                legacy_base=legacy_base,
+            )
+            keyring = EmployeeDataKeyring.from_settings(settings)
+            self._ingress = EmployeeIngressService.from_keyring(
+                writer=self._writer,
+                ingress_state=IngressProjectionState(),
+                keyring=keyring,
+                blob_root=getattr(
+                    settings,
+                    "autonomous_employee_ingress_blob_dir",
+                ),
+            )
+            self._attachments = AttachmentStagingService(
+                writer=self._writer,
+                root=getattr(
+                    settings,
+                    "autonomous_employee_attachment_staging_dir",
+                ),
+                credential_resolver=self._vault,
+                download_timeout_seconds=getattr(
+                    settings,
+                    "autonomous_context_fetch_timeout_seconds",
+                    30.0,
+                ),
+            )
+            self._execution_blockers = ()
+        except Exception as exc:
+            logger.error(
+                "employee execution storage composition unavailable: %s",
+                type(exc).__name__,
+            )
+            if self._attachments is not None:
+                try:
+                    self._attachments.close()
+                except Exception:
+                    pass
+            if self._ingress is not None:
+                try:
+                    self._ingress.close()
+                except Exception:
+                    pass
+            if self._data is not None:
+                try:
+                    self._data.close()
+                except Exception:
+                    pass
+            self._attachments = None
+            self._ingress = None
+            self._data = None
+            self._execution_blockers = ("employee_ingress",)
+
+    def _resolve_ingress_binding(self, agent_id: str, app_id: str) -> tuple[str, str]:
+        service = self._service
+        if service is None:
+            raise RuntimeError("employee workforce projection is unavailable")
+        projection = service.synchronize_projection()
+        employee = projection.employees.get(agent_id)
+        if employee is None or employee.bot_principal_id == "":
+            raise RuntimeError("employee ingress binding is unavailable")
+        principal = projection.bot_principals.get(employee.bot_principal_id)
+        if (
+            principal is None
+            or principal.agent_id != agent_id
+            or principal.app_id != app_id
+        ):
+            raise RuntimeError("employee ingress principal is unavailable")
+        return employee.tenant_key, principal.bot_principal_id
+
+    def _compose_dispatch(self, settings: Any, *, membership_health: Any) -> None:
+        if self._execution_blockers:
+            return
+        if (
+            self._service is None
+            or self._writer is None
+            or self._ingress is None
+            or self._data is None
+            or self._channels is None
+            or self._context_service is None
+        ):
+            self._execution_blockers = ("employee_gateway",)
+            return
+        if self._slock_manager is None or not callable(
+            getattr(self._slock_manager, "employee_activation_guard", None)
+        ):
+            self._execution_blockers = ("slock_gateway",)
+            return
+        if not callable(self._environment_provider):
+            self._execution_blockers = ("employee_environment",)
+            return
+        try:
+            legacy_base = getattr(
+                settings,
+                "autonomous_slock_storage_base",
+                default_slock_storage_base(),
+            )
+
+            def registry_provider() -> ProjectedAgentRegistry:
+                assert self._service is not None
+                return ProjectedAgentRegistry(
+                    self._service.synchronize_projection(),
+                    storage_base_path=legacy_base,
+                )
+
+            health = membership_health or _SlockMembershipHealth(
+                self._slock_manager
+            )
+            constraints_digest = hashlib.sha256(
+                b"ghostap.employee-execution-constraints.v1"
+            ).hexdigest()
+            self._router = DurableEmployeeIngressRouter(
+                writer=self._writer,
+                ingress_service=self._ingress,
+                registry_provider=registry_provider,
+                channel_status_provider=self._channels,
+                requester_acl=self._context_acl,
+                queue_limits=RouterQueueLimits(
+                    per_employee=getattr(
+                        settings,
+                        "autonomous_employee_queue_per_employee_limit",
+                    ),
+                    per_team=getattr(
+                        settings,
+                        "autonomous_employee_queue_per_team_limit",
+                    ),
+                    global_limit=getattr(
+                        settings,
+                        "autonomous_employee_queue_global_limit",
+                    ),
+                ),
+                membership_health=health,
+                attachment_staging=self._attachments,
+                constraints_digest=constraints_digest,
+                system_prompt_token_reserve=getattr(
+                    settings,
+                    "autonomous_employee_system_prompt_token_reserve",
+                ),
+            )
+            self._dispatch = EmployeeDispatchCoordinator(
+                writer=self._writer,
+                hire_service=self._service,
+                ingress_service=self._ingress,
+                router=self._router,
+                data_service=self._data.service,
+                channel_supervisor=self._channels,
+                slock_manager=self._slock_manager,
+                context_service=self._context_service,
+                environment_provider=self._environment_provider,
+                registry_factory=lambda state: ProjectedAgentRegistry(
+                    state,
+                    storage_base_path=legacy_base,
+                ),
+            )
+            self._execution_blockers = ()
+        except Exception as exc:
+            logger.error(
+                "employee dispatch composition unavailable: %s",
+                type(exc).__name__,
+            )
+            self._router = None
+            self._dispatch = None
+            self._execution_blockers = ("employee_gateway",)
+
+    def _start_dispatch_worker(self) -> None:
+        if self._dispatch is None or self._router is None or self._ingress is None:
+            return
+        if self._dispatch_thread is not None and self._dispatch_thread.is_alive():
+            return
+        self._dispatch_stop.clear()
+
+        def run() -> None:
+            delay = 0.05
+            while not self._dispatch_stop.wait(delay):
+                try:
+                    worked = self._drain_employee_dispatch_once()
+                    delay = 0.05 if worked else min(delay * 2.0, 1.0)
+                except Exception as exc:
+                    logger.error(
+                        "employee dispatch worker failed closed: %s",
+                        type(exc).__name__,
+                    )
+                    delay = min(max(delay, 0.05) * 2.0, 5.0)
+
+        self._dispatch_thread = threading.Thread(
+            target=run,
+            name="employee-durable-dispatch",
+            daemon=True,
+        )
+        self._dispatch_thread.start()
+
+    def _drain_employee_dispatch_once(self) -> bool:
+        ingress = self._ingress
+        router = self._router
+        dispatch = self._dispatch
+        if ingress is None or router is None or dispatch is None:
+            return False
+        ingress.rebuild_projection()
+        router.rebuild_projection()
+        worked = False
+        for acceptance_id, record in tuple(ingress.state.by_acceptance_id.items()):
+            if record.disposition is None:
+                routed = router.state.by_acceptance_id.get(acceptance_id)
+                if routed is None or routed.state not in {
+                    "queued",
+                    "dispatching",
+                    "terminal",
+                }:
+                    router.route(acceptance_id)
+                    worked = True
+        worked = dispatch.dispatch_next() is not None or worked
+        worked = self._reconcile_terminal_ingress() > 0 or worked
+        return ingress.gc_terminal_payloads() > 0 or worked
+
+    def _reconcile_terminal_ingress(self) -> int:
+        ingress = self._ingress
+        router = self._router
+        if ingress is None or router is None:
+            return 0
+        router.rebuild_projection()
+        ingress.rebuild_projection()
+        reconciled = 0
+        for acceptance_id, record in tuple(router.state.by_acceptance_id.items()):
+            ingress_record = ingress.state.by_acceptance_id.get(acceptance_id)
+            if (
+                record.state == "terminal"
+                and ingress_record is not None
+                and ingress_record.disposition is None
+            ):
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code=record.reason_code,
+                    )
+                    reconciled += 1
+                except IngressConflictError:
+                    pass
+        return reconciled
 
     def rewrap_employee_credential(
         self,
@@ -576,14 +953,15 @@ class EmployeeDepartmentRuntime:
                 "autonomous_slock_storage_base",
                 default_slock_storage_base(),
             )
-            self._data = build_employee_data_composition(
-                settings=settings,
-                writer=self._writer,
-                admin_principal_ids=frozenset(getattr(settings, "admin_user_ids", ()) or ()),
-                main_bot_app_id=getattr(settings, "app_id", ""),
-                agents_root=Path(legacy_base).expanduser() / "agents",
-                legacy_base=legacy_base,
-            )
+            if self._data is None:
+                self._data = build_employee_data_composition(
+                    settings=settings,
+                    writer=self._writer,
+                    admin_principal_ids=frozenset(getattr(settings, "admin_user_ids", ()) or ()),
+                    main_bot_app_id=getattr(settings, "app_id", ""),
+                    agents_root=Path(legacy_base).expanduser() / "agents",
+                    legacy_base=legacy_base,
+                )
             backend = group_memory_backend
             if backend is None:
                 backend = MemoryManager(str(Path(legacy_base).expanduser()))
@@ -637,11 +1015,6 @@ class EmployeeDepartmentRuntime:
                     self._context_source_factory.close()
                 except Exception:
                     pass
-            if self._data is not None:
-                try:
-                    self._data.close()
-                except Exception:
-                    pass
             if self._owns_group_memory_backend and self._group_memory_backend is not None:
                 try:
                     self._group_memory_backend.shutdown()
@@ -651,8 +1024,9 @@ class EmployeeDepartmentRuntime:
             self._owns_group_memory_backend = False
             self._context_source_factory = None
             self._context_service = None
-            self._data = None
             self._context_blockers = ("employee_context",)
+            if not self._execution_blockers:
+                self._execution_blockers = ("employee_gateway",)
 
     @staticmethod
     async def _quiesce_loop() -> None:
@@ -807,6 +1181,8 @@ class EmployeeDepartmentRuntime:
                 )
                 return
         self._require_service().mark_runtime_recovered()
+        if not self._execution_blockers:
+            self._start_dispatch_worker()
 
     async def _retry_recovery_intent(self, intent_id: str) -> None:
         delay = 0.1

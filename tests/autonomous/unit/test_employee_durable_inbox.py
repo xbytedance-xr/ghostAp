@@ -15,6 +15,7 @@ from src.autonomous.ingress.models import EmployeeIngressMetadata, EmployeeIngre
 from src.autonomous.ingress.projection import IngressProjectionState
 from src.autonomous.ingress.service import (
     EmployeeIngressService,
+    IngressClosedError,
     IngressConflictError,
     IngressCorrelationError,
 )
@@ -81,6 +82,44 @@ def _service(tmp_path: Path) -> tuple[EmployeeIngressService, JournalWriter, Blo
         active_key_id="k1",
     )
     return service, writer, store
+
+
+def test_stop_admission_rejects_new_ack_but_keeps_accepted_payload_dispatchable(
+    tmp_path: Path,
+) -> None:
+    service, writer, _store = _service(tmp_path)
+    first_payload = _payload()
+    first = service.accept(
+        _metadata(first_payload),
+        first_payload,
+        request_id="req_1",
+    )
+
+    service.stop_admission()
+
+    second_payload = _payload(text="second")
+    with pytest.raises(IngressClosedError, match="admission"):
+        service.accept(
+            _metadata(
+                second_payload,
+                envelope_id=second_payload.envelope_id,
+                event_id="evt_2",
+                message_id="om_2",
+                semantic_digest=second_payload.payload_sha256,
+                payload_sha256=second_payload.payload_sha256,
+                payload_size_bytes=second_payload.canonical_size_bytes,
+            ),
+            second_payload,
+            request_id="req_2",
+        )
+    with service.dispatch_snapshot_guard(first.acceptance.acceptance_id) as (
+        _record,
+        restored,
+    ):
+        assert restored == first_payload
+
+    service.close()
+    writer.close()
 
 
 def test_accept_anchors_safe_metadata_and_keeps_payload_only_in_encrypted_blob(

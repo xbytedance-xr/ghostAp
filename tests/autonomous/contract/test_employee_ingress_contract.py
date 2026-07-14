@@ -130,6 +130,30 @@ def _platform_result(
     )
 
 
+def _phase3_result(gate_id: str) -> ImplementationEvidenceResult:
+    manifest = Phase3ImplementationManifest.load(PHASE3_IMPLEMENTATION_MANIFEST_PATH)
+    gate = manifest.gate(gate_id)
+    uses_sdk = gate.artifact_kind in {
+        "employee_channel_sdk_capability",
+        "employee_channel_bridge",
+    }
+    return ImplementationEvidenceResult.create(
+        gate_id=gate.id,
+        selector=gate.selector,
+        commit_sha="a" * 40,
+        artifact_kind=gate.artifact_kind,
+        artifact_profile_id=gate.artifact_profile_id,
+        artifact_sha256="b" * 64,
+        sdk_wheel_sha256=gate.sdk_wheel_sha256,
+        sdk_capability_artifact_sha256="c" * 64 if uses_sdk else None,
+        collected_nodeids=(gate.selector,),
+        pytest_exit_code=0,
+        setup="passed",
+        call="passed",
+        teardown="passed",
+    )
+
+
 @pytest.mark.parametrize(
     "factory",
     [_payload, _metadata, _acceptance],
@@ -382,6 +406,11 @@ def test_ingress_settings_defaults_are_bounded_and_visible_release_stays_closed(
     assert settings.autonomous_employee_queue_per_employee_limit == 8
     assert settings.autonomous_employee_queue_per_team_limit == 32
     assert settings.autonomous_employee_queue_global_limit == 128
+    assert settings.autonomous_employee_ingress_blob_dir.endswith("/ingress-blobs")
+    assert settings.autonomous_employee_attachment_staging_dir.endswith(
+        "/employee-attachments"
+    )
+    assert settings.autonomous_employee_system_prompt_token_reserve == 4096
     assert settings.autonomous_visible_employee_limit == 0
 
 
@@ -407,6 +436,8 @@ def test_ingress_settings_defaults_are_bounded_and_visible_release_stays_closed(
         ("autonomous_employee_queue_per_employee_limit", True),
         ("autonomous_employee_queue_per_team_limit", 0),
         ("autonomous_employee_queue_global_limit", float("nan")),
+        ("autonomous_employee_system_prompt_token_reserve", 0),
+        ("autonomous_employee_system_prompt_token_reserve", True),
     ],
 )
 def test_ingress_numeric_settings_reject_bounds_booleans_and_nan(
@@ -464,6 +495,9 @@ def test_env_example_documents_ingress_settings() -> None:
         "AUTONOMOUS_EMPLOYEE_QUEUE_PER_EMPLOYEE_LIMIT",
         "AUTONOMOUS_EMPLOYEE_QUEUE_PER_TEAM_LIMIT",
         "AUTONOMOUS_EMPLOYEE_QUEUE_GLOBAL_LIMIT",
+        "AUTONOMOUS_EMPLOYEE_INGRESS_BLOB_DIR",
+        "AUTONOMOUS_EMPLOYEE_ATTACHMENT_STAGING_DIR",
+        "AUTONOMOUS_EMPLOYEE_SYSTEM_PROMPT_TOKEN_RESERVE",
     ):
         assert f"{name}=" in env_example
 
@@ -611,6 +645,23 @@ def test_phase3_evidence_binds_exact_selector_commit_artifacts_and_summary() -> 
             expected_artifact_sha256="b" * 64,
             expected_sdk_capability_artifact_sha256="c" * 64,
         )
+
+
+def test_phase3_final_candidate_requires_all_nine_exact_results() -> None:
+    manifest = Phase3ImplementationManifest.load(PHASE3_IMPLEMENTATION_MANIFEST_PATH)
+    results = tuple(_phase3_result(gate.id) for gate in manifest.gates)
+
+    evaluation = manifest.evaluate(
+        results,
+        expected_commit_sha="a" * 40,
+        expected_artifact_sha256="b" * 64,
+        expected_sdk_capability_artifact_sha256="c" * 64,
+    )
+
+    assert evaluation.status is Phase3EvidenceStatus.PASSED
+    assert evaluation.passed == tuple(gate.id for gate in manifest.gates)
+    assert evaluation.pending == ()
+    assert evaluation.failed == ()
 
 
 def test_phase3_evidence_rejects_duplicate_and_missing_from_run_selectors() -> None:

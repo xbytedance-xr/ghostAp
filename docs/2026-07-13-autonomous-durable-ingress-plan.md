@@ -1,7 +1,8 @@
 # Autonomous Employee Durable Ingress and Slock Gateway Plan
 
-> **Status:** active; Tasks 0-5 are complete. Task 6 attempt anchor, Context
-> gate, and real Slock gateway is next. This plan does not
+> **Status:** complete; Tasks 0-7 are implemented and locally verified. The
+> exact nine-selector handoff remains non-promotable without an external trusted
+> final-build attestation. This plan does not
 > authorize raising `autonomous_visible_employee_limit` above `0`.
 
 **Goal:** Accept employee Bot events durably before the Feishu WebSocket ACK,
@@ -581,6 +582,28 @@ Commit: `feat(autonomous): dispatch anchored employee attempts to slock`
   sufficient.
 - Keep `autonomous_visible_employee_limit=0` until external release trust and
   real tenant gates in later phases are complete.
+
+**Completion record (2026-07-14)**
+
+- `EmployeeDepartmentRuntime` now owns the encrypted Inbox, attachment staging,
+  durable Router, Context/data services, and the unique Slock dispatch
+  coordinator. `FeishuWSClient` injects its existing `SlockEngineManager` and a
+  runtime-only employee environment provider that cannot inherit manager
+  provider credentials.
+- Recovery replays Inbox/Router/Gateway state, terminalizes unknown committed
+  attempts without rerunning ACP, reconciles terminal Inbox dispositions, and
+  only then starts the bounded-backoff dispatch worker. Shutdown closes ingress
+  admission first and holds Journal/Vault dependencies if an ACP worker does
+  not drain within grace.
+- All nine frozen `EI-*` selectors pass by exact node ID. The global FI-29 gate
+  now accepts only a strictly parsed `EI-IPC-01` result bound to the expected
+  commit, build artifact, SDK capability artifact, and result summary. Local
+  results remain non-promotable; no external final-build attestation was
+  fabricated or committed.
+- Three `grill-me` review passes (specification, security, and operations)
+  closed stale workforce projection, revoked-release restart, persistent worker
+  retry, and resource-lifetime gaps. Final Autonomous verification is
+  `1700 passed, 2 skipped, 1 warning in 397.24s`.
 
 **Verification**
 
