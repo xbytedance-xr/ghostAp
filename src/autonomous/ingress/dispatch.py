@@ -10,6 +10,7 @@ from ..gateway.context_prompt import (
     render_employee_context,
 )
 from ..gateway.coordinator import (
+    EmployeeCancellationOutcome,
     EmployeeDispatchCoordinator,
     EmployeeDispatchError,
     FinalizedEmployeeAttempt,
@@ -36,6 +37,7 @@ from ..gateway.slock import (
 __all__ = [
     "AgentExecutionSpec",
     "EmployeeDispatchCoordinator",
+    "EmployeeCancellationOutcome",
     "EmployeeDispatchError",
     "FinalizedEmployeeAttempt",
     "PreparedEmployeeDispatch",

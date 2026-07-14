@@ -11,9 +11,15 @@ from .models import DispatchBinding, GatewayExecutionStatus
 
 ATTEMPT_BOUND = "employee.execution_attempt.bound"
 ATTEMPT_DISPATCH_COMMITTED = "employee.execution_attempt.dispatch_committed"
+ATTEMPT_CANCEL_REQUESTED = "employee.execution_attempt.cancel_requested"
 ATTEMPT_TERMINAL = "employee.execution_attempt.terminal"
 _GATEWAY_EVENTS = frozenset(
-    {ATTEMPT_BOUND, ATTEMPT_DISPATCH_COMMITTED, ATTEMPT_TERMINAL}
+    {
+        ATTEMPT_BOUND,
+        ATTEMPT_DISPATCH_COMMITTED,
+        ATTEMPT_CANCEL_REQUESTED,
+        ATTEMPT_TERMINAL,
+    }
 )
 
 
@@ -27,6 +33,12 @@ class AttemptLifecycleRecord:
     bound_sequence: int = 0
     dispatch_committed: bool = False
     dispatch_sequence: int = 0
+    cancel_requested: bool = False
+    cancel_epoch: int = 0
+    cancel_requester_principal_id: str = ""
+    cancel_command_acceptance_id: str = ""
+    cancel_requested_at: str = ""
+    cancel_sequence: int = 0
     terminal_status: str = ""
     terminal_epoch: int = 0
     result_digest: str = ""
@@ -65,6 +77,8 @@ def _reduce_gateway_event(
         _reduce_bound(state, event, frame_sequence)
     elif event.event_type == ATTEMPT_DISPATCH_COMMITTED:
         _reduce_dispatch_committed(state, event, frame_sequence)
+    elif event.event_type == ATTEMPT_CANCEL_REQUESTED:
+        _reduce_cancel_requested(state, event, frame_sequence)
     elif event.event_type == ATTEMPT_TERMINAL:
         _reduce_terminal(state, event, frame_sequence)
     else:
@@ -310,6 +324,12 @@ def _reduce_terminal(
         bound_sequence=record.bound_sequence,
         dispatch_committed=True,
         dispatch_sequence=record.dispatch_sequence,
+        cancel_requested=record.cancel_requested,
+        cancel_epoch=record.cancel_epoch,
+        cancel_requester_principal_id=record.cancel_requester_principal_id,
+        cancel_command_acceptance_id=record.cancel_command_acceptance_id,
+        cancel_requested_at=record.cancel_requested_at,
+        cancel_sequence=record.cancel_sequence,
         terminal_status=status.value,
         terminal_epoch=epoch,
         result_digest=payload["result_digest"],
@@ -319,8 +339,73 @@ def _reduce_terminal(
     )
 
 
+def _reduce_cancel_requested(
+    state: GatewayProjectionState,
+    event: JournalEvent,
+    frame_sequence: int,
+) -> None:
+    expected = {
+        "attempt_id",
+        "cancel_epoch",
+        "requester_principal_id",
+        "command_acceptance_id",
+        "requested_at",
+    }
+    if set(event.payload) != expected:
+        raise GatewayProjectionError("attempt cancellation must use exact schema")
+    payload = event.payload
+    attempt_id = payload.get("attempt_id")
+    record = state.attempts.get(str(attempt_id))
+    if record is None or event.aggregate_id != attempt_id:
+        raise GatewayProjectionError("cancellation references unknown attempt")
+    if not record.dispatch_committed or record.terminal_status:
+        raise GatewayProjectionError("cancellation requires a live committed attempt")
+    values = (
+        payload.get("cancel_epoch"),
+        payload.get("requester_principal_id"),
+        payload.get("command_acceptance_id"),
+        payload.get("requested_at"),
+    )
+    if (
+        values[0] != 1
+        or not isinstance(values[1], str)
+        or not values[1]
+        or not isinstance(values[2], str)
+        or not values[2].startswith("acc_")
+        or re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z",
+            str(values[3]),
+        )
+        is None
+    ):
+        raise GatewayProjectionError("invalid attempt cancellation metadata")
+    if record.cancel_requested:
+        existing = (
+            record.cancel_epoch,
+            record.cancel_requester_principal_id,
+            record.cancel_command_acceptance_id,
+            record.cancel_requested_at,
+        )
+        if existing == values:
+            return
+        raise GatewayProjectionError("attempt cancellation already requested")
+    state.attempts[attempt_id] = AttemptLifecycleRecord(
+        binding=record.binding,
+        bound_sequence=record.bound_sequence,
+        dispatch_committed=True,
+        dispatch_sequence=record.dispatch_sequence,
+        cancel_requested=True,
+        cancel_epoch=1,
+        cancel_requester_principal_id=str(values[1]),
+        cancel_command_acceptance_id=str(values[2]),
+        cancel_requested_at=str(values[3]),
+        cancel_sequence=frame_sequence,
+    )
+
+
 __all__ = [
     "ATTEMPT_BOUND",
+    "ATTEMPT_CANCEL_REQUESTED",
     "ATTEMPT_DISPATCH_COMMITTED",
     "ATTEMPT_TERMINAL",
     "AttemptLifecycleRecord",

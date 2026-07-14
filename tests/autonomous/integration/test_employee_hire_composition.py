@@ -554,6 +554,26 @@ def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -
     runtime.close()
 
 
+def test_runtime_composes_canonical_membership_service(tmp_path: Path) -> None:
+    manager_client = object()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        manager_client_factory=lambda: manager_client,
+    )
+
+    assert runtime.membership_service is not None
+    assert runtime.ingress_router is not None
+    assert runtime.ingress_router._membership_health is runtime.membership_service
+    runtime.close()
+
+
 def test_task7_execution_readiness_requires_slock_gateway(tmp_path: Path) -> None:
     runtime = _runtime(
         _settings(tmp_path, limit=1, context_configured=True),

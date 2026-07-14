@@ -387,10 +387,18 @@ def run_low_level_employee_channel(
         wait_for_parent(event, kind="card")
         return P2CardActionTriggerResponse({})
 
+    def on_bot_added(event: Any) -> None:
+        wait_for_parent(event, kind="membership_added")
+
+    def on_bot_deleted(event: Any) -> None:
+        wait_for_parent(event, kind="membership_deleted")
+
     dispatcher = (
         EventDispatcherHandler.builder("", "", security=security)
         .register_p2_im_message_receive_v1(on_message)
         .register_p2_card_action_trigger(on_card_action)
+        .register_p2_im_chat_member_bot_added_v1(on_bot_added)
+        .register_p2_im_chat_member_bot_deleted_v1(on_bot_deleted)
         .build()
     )
     client = WSClient(
@@ -640,6 +648,22 @@ def _normalize_sdk_ingress(
                 "sender_id_type": "open_id",
                 "sender_type": getattr(operator, "sender_type", "") or "",
                 "sender_tenant_key": getattr(operator, "tenant_key", "") or "",
+            },
+        )
+    elif kind in {"membership_added", "membership_deleted"}:
+        sender_id = getattr(getattr(body, "operator_id", None), "open_id", "")
+        message_id = raw_event_id
+        chat_id = getattr(body, "chat_id", "")
+        root_id = ""
+        action_identity = kind
+        parts = (
+            {
+                "type": "membership_event",
+                "operation": (
+                    "added" if kind == "membership_added" else "deleted"
+                ),
+                "operator_tenant_key": getattr(body, "operator_tenant_key", ""),
+                "external": getattr(body, "external", False),
             },
         )
     else:

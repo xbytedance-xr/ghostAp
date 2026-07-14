@@ -10,7 +10,7 @@ import hashlib
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -47,6 +47,11 @@ from ..ingress.service import EmployeeIngressService, IngressConflictError
 from ..journal.anchor import FileAnchor
 from ..journal.projections import ProjectionState
 from ..journal.writer import JOURNAL_FILENAME, JournalWriter
+from ..membership import (
+    EmployeeMembershipService,
+    LarkMembershipAPI,
+    MembershipBindingError,
+)
 from ..outbox.delivery import (
     EmployeeDeliveryAuthority,
     EmployeeOutboxDeliveryCoordinator,
@@ -172,6 +177,7 @@ class EmployeeDepartmentRuntime:
         self._outbox: EmployeeOutboxService | None = None
         self._outbox_delivery: EmployeeOutboxDeliveryCoordinator | None = None
         self._outbox_lifecycle: EmployeeOutboxLifecycle | None = None
+        self._membership: EmployeeMembershipService | None = None
         self._dispatch_thread: threading.Thread | None = None
         self._dispatch_stop = threading.Event()
         self._execution_blockers: tuple[str, ...] = ()
@@ -217,6 +223,7 @@ class EmployeeDepartmentRuntime:
         slock_engine_manager: object | None = None,
         employee_environment_provider: EmployeeEnvironmentProvider | None = None,
         membership_health: Any = None,
+        manager_client_factory: Callable[[], Any] | None = None,
     ) -> EmployeeDepartmentRuntime:
         limit = getattr(settings, "autonomous_visible_employee_limit", 0)
         journal_exists = (Path(settings.autonomous_journal_dir).expanduser() / JOURNAL_FILENAME).is_file()
@@ -296,6 +303,10 @@ class EmployeeDepartmentRuntime:
             )
             runtime._service = service
             runtime._verification_router = VerificationRouter(nonce_consumer=service)
+            runtime._compose_membership(
+                settings,
+                manager_client_factory=manager_client_factory,
+            )
             runtime._compose_context(
                 settings,
                 context_source_factory=context_source_factory,
@@ -303,7 +314,7 @@ class EmployeeDepartmentRuntime:
             )
             runtime._compose_dispatch(
                 settings,
-                membership_health=membership_health,
+                membership_health=membership_health or runtime._membership,
             )
             runtime.recover()
             return runtime
@@ -322,6 +333,10 @@ class EmployeeDepartmentRuntime:
     @property
     def context_service(self) -> EmployeeContextService | None:
         return self._context_service
+
+    @property
+    def membership_service(self) -> EmployeeMembershipService | None:
+        return self._membership
 
     @property
     def data_composition(self) -> EmployeeDataComposition | None:
@@ -438,6 +453,17 @@ class EmployeeDepartmentRuntime:
         if self._service is None:
             return
         projection = self._service.recover()
+        if self._membership is not None:
+            self._membership.rebuild_projection()
+            if self._external_resume_allowed:
+                try:
+                    self._membership.recover_pending()
+                except Exception as exc:
+                    logger.error(
+                        "employee membership recovery failed closed: %s",
+                        type(exc).__name__,
+                    )
+                    self._execution_blockers = ("membership_recovery",)
         if self._data is not None:
             self._data.service.rebuild_projection()
         execution_recovered = not self._execution_blockers
@@ -701,6 +727,66 @@ class EmployeeDepartmentRuntime:
             self._data = None
             self._execution_blockers = ("employee_ingress",)
 
+    def _compose_membership(
+        self,
+        settings: Any,
+        *,
+        manager_client_factory: Callable[[], Any] | None,
+    ) -> None:
+        """Compose real Bot membership using manager mutation and employee observation."""
+
+        if (
+            not self._external_resume_allowed
+            or self._writer is None
+            or self._service is None
+            or self._vault is None
+            or not callable(manager_client_factory)
+            or self._slock_manager is None
+        ):
+            self._membership = None
+            return
+
+        def employee_client_provider(
+            agent_id: str,
+            app_id: str,
+            credential_ref: str,
+        ) -> Any:
+            app_secret = self._vault.resolve(credential_ref, agent_id, app_id)
+            return lark.Client.builder().app_id(app_id).app_secret(app_secret).build()
+
+        def team_owner(chat_id: str) -> str:
+            try:
+                getter = getattr(self._slock_manager, "get_activated_engine", None)
+                engine = getter(chat_id) if callable(getter) else None
+                channel = getattr(engine, "channel", None)
+                return str(getattr(channel, "owner_id", "") or "")
+            except Exception:
+                return ""
+
+        try:
+            remote = LarkMembershipAPI(
+                manager_client_factory(),
+                employee_client_provider=employee_client_provider,
+            )
+            self._membership = EmployeeMembershipService(
+                writer=self._writer,
+                hire_service=self._service,
+                remote=remote,
+                admin_principal_ids=frozenset(
+                    getattr(settings, "admin_user_ids", ()) or ()
+                ),
+                team_owner_resolver=team_owner,
+                team_active_resolver=lambda chat_id: bool(
+                    self._slock_manager.get_activated_engine(chat_id)
+                ),
+            )
+        except Exception as exc:
+            logger.error(
+                "employee membership composition unavailable: %s",
+                type(exc).__name__,
+            )
+            self._membership = None
+
     def _resolve_ingress_binding(self, agent_id: str, app_id: str) -> tuple[str, str]:
         service = self._service
         if service is None:
@@ -794,6 +880,21 @@ class EmployeeDepartmentRuntime:
                     storage_base_path=legacy_base,
                 ),
                 attempt_lifecycle=outbox_lifecycle,
+                admin_principal_ids=frozenset(
+                    getattr(settings, "admin_user_ids", ()) or ()
+                ),
+                team_owner_resolver=lambda chat_id: str(
+                    getattr(
+                        getattr(
+                            self._slock_manager.get_activated_engine(chat_id),
+                            "channel",
+                            None,
+                        ),
+                        "owner_id",
+                        "",
+                    )
+                    or ""
+                ),
             )
             self._outbox_lifecycle = outbox_lifecycle
             self._outbox_delivery = EmployeeOutboxDeliveryCoordinator(
@@ -851,6 +952,9 @@ class EmployeeDepartmentRuntime:
         worked = False
         for acceptance_id, record in tuple(ingress.state.by_acceptance_id.items()):
             if record.disposition is None:
+                if self._handle_control_ingress(acceptance_id):
+                    worked = True
+                    continue
                 routed = router.state.by_acceptance_id.get(acceptance_id)
                 if routed is None or routed.state not in {
                     "queued",
@@ -865,6 +969,98 @@ class EmployeeDepartmentRuntime:
         if self._outbox is not None:
             worked = self._outbox.gc_superseded_snapshots() > 0 or worked
         return ingress.gc_terminal_payloads() > 0 or worked
+
+    def _handle_control_ingress(self, acceptance_id: str) -> bool:
+        """Consume exact durable employee controls before Router admission."""
+
+        ingress = self._ingress
+        if ingress is None:
+            return False
+        ingress.rebuild_projection()
+        record = ingress.state.by_acceptance_id.get(acceptance_id)
+        if record is None:
+            return False
+        if record.disposition is not None:
+            return record.disposition.reason_code.startswith(("stop_", "membership_"))
+        try:
+            payload = ingress.get_payload(acceptance_id)
+        except Exception:
+            return False
+        first = payload.normalized_parts[0] if len(payload.normalized_parts) == 1 else None
+        if isinstance(first, Mapping) and first.get("type") == "membership_event":
+            if self._membership is None:
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="membership_unavailable",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
+            metadata = record.metadata
+            try:
+                outcome = self._membership.reconcile_event(
+                    tenant_key=metadata.tenant_key,
+                    chat_id=metadata.chat_id,
+                    agent_id=metadata.agent_id,
+                )
+            except MembershipBindingError:
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="ignored",
+                        reason_code="membership_unmanaged",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
+            try:
+                ingress.record_disposition(
+                    acceptance_id,
+                    state="terminal",
+                    reason_code=f"membership_{outcome.state.value}",
+                )
+            except IngressConflictError:
+                pass
+            return True
+        dispatch = self._dispatch
+        lifecycle = self._outbox_lifecycle
+        if dispatch is None or lifecycle is None:
+            return False
+        texts: list[str] = []
+        for part in payload.normalized_parts:
+            content = part.get("content") if isinstance(part, Mapping) else None
+            value = content.get("text") if isinstance(content, Mapping) else None
+            if isinstance(value, str):
+                texts.append(value.strip())
+        if texts != ["/stop"]:
+            return False
+        metadata = record.metadata
+        outcome = dispatch.request_cancel(
+            agent_id=metadata.agent_id,
+            chat_id=metadata.chat_id,
+            requester_principal_id=metadata.sender_principal_id,
+            command_acceptance_id=acceptance_id,
+        )
+        lifecycle.command_response(
+            tenant_key=metadata.tenant_key,
+            agent_id=metadata.agent_id,
+            chat_id=metadata.chat_id,
+            thread_root_message_id=metadata.thread_root_message_id,
+            command_acceptance_id=acceptance_id,
+            status=outcome.status,
+        )
+        try:
+            ingress.record_disposition(
+                acceptance_id,
+                state="terminal",
+                reason_code=f"stop_{outcome.status}",
+            )
+        except IngressConflictError:
+            pass
+        self._drain_employee_outbox_once()
+        return True
 
     def _drain_employee_outbox_once(self) -> bool:
         outbox = self._outbox
@@ -1565,6 +1761,12 @@ class EmployeeDepartmentRuntime:
         state = service.get_state(intent_id)
         challenge = self._challenges.get(intent_id)
         event_name = payload.get("event")
+        if event_name == "durableIngressAccepted":
+            data = payload.get("data")
+            acceptance_id = data.get("acceptance_id") if isinstance(data, dict) else None
+            if isinstance(acceptance_id, str) and acceptance_id:
+                await asyncio.to_thread(self._handle_control_ingress, acceptance_id)
+            return
         if event_name == "rawMessageMeta":
             metadata = payload.get("data")
             if isinstance(metadata, dict):

@@ -59,6 +59,10 @@ _WORKFORCE_EVENTS = frozenset(
         "employee.state_changed",
         "employee.profile_changed",
         "employee.membership_changed",
+        "employee.membership.effect_prepared",
+        "employee.membership.effect_executing",
+        "employee.membership.effect_committed",
+        "employee.membership.effect_action_required",
         "employee.legacy_alias_bound",
         "employee.bot_principal_bound",
         "bot_principal.bound",
@@ -227,6 +231,13 @@ def _change_membership(state: WorkforceProjectionState, event: JournalEvent) -> 
     )
 
 
+def _record_membership_effect(
+    _state: WorkforceProjectionState,
+    _event: JournalEvent,
+) -> None:
+    """Membership effect facts are projected by the bounded membership view."""
+
+
 def _bind_legacy_alias(state: WorkforceProjectionState, event: JournalEvent) -> None:
     employee = _employee(state, event.aggregate_id)
     _require_mutable_employee(employee)
@@ -366,6 +377,10 @@ _APPLIERS = {
     "employee.state_changed": _change_employee_state,
     "employee.profile_changed": _change_employee_profile,
     "employee.membership_changed": _change_membership,
+    "employee.membership.effect_prepared": _record_membership_effect,
+    "employee.membership.effect_executing": _record_membership_effect,
+    "employee.membership.effect_committed": _record_membership_effect,
+    "employee.membership.effect_action_required": _record_membership_effect,
     "employee.legacy_alias_bound": _bind_legacy_alias,
     "employee.bot_principal_bound": _bind_employee_principal,
     "bot_principal.bound": _bind_bot_principal,

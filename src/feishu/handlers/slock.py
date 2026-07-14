@@ -2664,6 +2664,28 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         if not self._check_slock_permission(engine, message_id, chat_id):
             return
 
+        service = getattr(self.ctx, "employee_membership_service", None)
+        if service is not None:
+            from ...thread.manager import get_current_tenant_key
+
+            tenant_key = get_current_tenant_key() or ""
+            if not tenant_key:
+                self.reply_text(message_id, "⚠️ 无法确认租户身份，员工群成员关系未变更。")
+                return
+            try:
+                employee = service.find_employee_by_name(tenant_key, name)
+            except Exception:
+                self.reply_text(message_id, "⚠️ 无法唯一确认该员工，群成员关系未变更。")
+                return
+            if employee is not None:
+                self._change_employee_membership(
+                    message_id,
+                    chat_id,
+                    employee,
+                    operation="remove",
+                )
+                return
+
         agent = engine.registry.find_by_name(name, channel_id=chat_id)
         if not agent:
             self.reply_text(message_id, f"未找到角色: **{redact_sensitive(name)}**")
@@ -2689,20 +2711,31 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             self.reply_text(message_id, "请先激活 Slock 模式: `/slock`")
             return
 
-        registry = self._get_global_registry()
+        if not self._check_slock_permission(engine, message_id, chat_id):
+            return
+
+        service = getattr(self.ctx, "employee_membership_service", None)
+        tenant_key = ""
+        if service is not None:
+            from ...thread.manager import get_current_tenant_key
+
+            tenant_key = get_current_tenant_key() or ""
+            if not tenant_key:
+                self.reply_text(message_id, "⚠️ 无法确认租户身份，员工群成员关系未变更。")
+                return
 
         if not agent_name:
             # Show dropdown of all agents not already in this group
-            all_agents = registry.list_agents()
-            current_ids = {a.agent_id for a in engine.registry.list_agents(channel_id=chat_id)}
-            available = [a for a in all_agents if a.agent_id not in current_ids]
+            registry = self._get_global_registry() if service is None else None
+            all_agents = service.list_employees(tenant_key) if service is not None else registry.list_agents()
+            available = [a for a in all_agents if chat_id not in getattr(a, "member_groups", ())]
 
             if not available:
                 self.reply_text(message_id, "没有可加入的员工。使用 `/hire <名字>` 先雇佣。")
                 return
 
             options = [
-                {"text": {"tag": "plain_text", "content": f"{a.emoji} {a.name} ({a.agent_type})"}, "value": a.agent_id}
+                {"text": {"tag": "plain_text", "content": f"{a.emoji} {a.name} ({getattr(a, 'tool', getattr(a, 'agent_type', 'agent'))})"}, "value": a.agent_id}
                 for a in available[:20]
             ]
             card = {
@@ -2723,7 +2756,24 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             self.reply_card(message_id, card)
             return
 
+
+        if service is not None:
+            try:
+                employee = service.find_employee_by_name(tenant_key, agent_name)
+            except Exception:
+                self.reply_text(message_id, "⚠️ 无法唯一确认该员工，群成员关系未变更。")
+                return
+            if employee is not None:
+                self._change_employee_membership(
+                    message_id,
+                    chat_id,
+                    employee,
+                    operation="add",
+                )
+                return
+
         # Find agent by name
+        registry = self._get_global_registry()
         agent = registry.find_by_name(agent_name)
         if not agent:
             self.reply_text(message_id, f"未找到员工: `{agent_name}`\n使用 `/hire {agent_name}` 先雇佣")
@@ -2734,6 +2784,63 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             agent.member_groups.append(chat_id)
         engine.registry.register(agent)
         self.reply_text(message_id, f"✅ **{agent.emoji} {agent.name}** 已加入当前群")
+
+    def _change_employee_membership(
+        self,
+        message_id: str,
+        chat_id: str,
+        employee: object,
+        *,
+        operation: str,
+    ) -> None:
+        """Mutate a canonical employee membership and report only proven state."""
+
+        from ...autonomous.membership import (
+            MembershipAuthorizationError,
+            MembershipBindingError,
+            MembershipMutationRequest,
+            MembershipOperation,
+            MembershipState,
+        )
+        from ...thread.manager import get_current_sender_id, get_current_tenant_key
+
+        service = getattr(self.ctx, "employee_membership_service", None)
+        tenant_key = get_current_tenant_key() or ""
+        requester = get_current_sender_id() or ""
+        if service is None or not tenant_key or not requester:
+            self.reply_text(message_id, "⚠️ 无法确认操作身份，员工群成员关系未变更。")
+            return
+        try:
+            outcome = service.mutate(
+                MembershipMutationRequest(
+                    tenant_key=tenant_key,
+                    chat_id=chat_id,
+                    agent_id=str(getattr(employee, "agent_id", "")),
+                    requester_principal_id=requester,
+                    operation=MembershipOperation(operation),
+                )
+            )
+        except MembershipAuthorizationError:
+            self.reply_text(message_id, "⚠️ 权限不足，仅管理员或团队创建者可变更员工群成员关系。")
+            return
+        except MembershipBindingError:
+            self.reply_text(message_id, "⚠️ 员工身份绑定不可用，群成员关系未变更。")
+            return
+        except Exception:
+            logger.exception("canonical employee membership mutation failed")
+            self.reply_text(message_id, "⚠️ 员工群成员关系变更失败，未记录为成功。")
+            return
+        emoji = str(getattr(employee, "emoji", "🤖"))
+        name = redact_sensitive(str(getattr(employee, "name", "员工")))
+        desired = MembershipState.ACTIVE if operation == "add" else MembershipState.ABSENT
+        if outcome.confirmed and outcome.state is desired:
+            action = "加入" if operation == "add" else "移出"
+            self.reply_text(message_id, f"✅ **{emoji} {name}** 已{action}当前群")
+            return
+        self.reply_text(
+            message_id,
+            f"⚠️ **{emoji} {name}** 的远端群成员状态无法确认；已进入降级状态并暂停任务路由。",
+        )
 
     def move_role(
         self,
@@ -4303,6 +4410,31 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
     def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
         """Handle slock_* card actions."""
+        if action_type == "slock_role_add_select":
+            manager = self._get_engine_manager()
+            engine = manager.get_activated_engine(open_chat_id)
+            if not engine:
+                self.send_text_to_chat(open_chat_id, "⚠️ 当前没有活跃的 Slock 团队。")
+                return
+            if not self._check_slock_permission(engine, open_message_id, open_chat_id):
+                return
+            from ...thread.manager import get_current_tenant_key
+
+            tenant_key = get_current_tenant_key() or ""
+            agent_id = str(value.get("_option") or "")
+            service = getattr(self.ctx, "employee_membership_service", None)
+            employee = service.get_employee(tenant_key, agent_id) if service and tenant_key and agent_id else None
+            if employee is None:
+                self.send_text_to_chat(open_chat_id, "⚠️ 员工选择已失效，请重新打开列表。")
+                return
+            self._change_employee_membership(
+                open_message_id,
+                open_chat_id,
+                employee,
+                operation="add",
+            )
+            return
+
         # Escalation resolve needs extra params from value — handle before standard dispatch
         if action_type == "slock_escalation_resolve":
             self._resolve_escalation(open_message_id, open_chat_id, value)

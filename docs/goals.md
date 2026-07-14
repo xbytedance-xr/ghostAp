@@ -253,7 +253,28 @@
        Gateway terminal 卡只在原子执行终态提交后 append，runtime 负责恢复、worker、readiness 与逆序关闭
      - 员工 Bot 自己发送；主 Bot fallback 路径不存在。fresh Autonomous
        `1723 passed, 2 skipped, 1 warning in 397.51s`，共享回归 `193 passed`
-  5. 团队 membership、`/role add/remove` 与 `/stop` 终态竞态。
+  5. 团队 membership、`/role add/remove` 与 `/stop` 终态竞态：
+     - **已完成**。实施计划与官方 API 合约见
+       `docs/2026-07-14-autonomous-membership-stop-plan.md`
+     - canonical `employee_v1` membership 现由 Journal-backed 状态机管理；Manager Bot 使用
+       `member_id_type=app_id` 串行调用官方群成员增删 API，目标员工 Bot 使用
+       `members/is_in_chat` 证明最终状态。普通成员列表与 Chat API `chat_type` 均不再作为 Bot
+       membership/会话结构依据
+     - `/role add/remove` 在 handler 与 service 两层重验管理员/团队创建者、租户、ACTIVE visible
+       employee、BotPrincipal/App ID、激活 Slock 团队；成功只在远端观察确认后返回。remove 仅移除
+       当前 chat，不删除全局员工、credential 或其他群关系；legacy virtual role 保留独立旧路径
+     - Bot added/deleted 事件已接入 low-level employee Channel，并先进入 Durable Inbox；事件只触发
+       员工凭据 `is_in_chat` 对账，乱序/重复事件不会直接改投影。未知结果进入
+       `DEGRADED/ACTION_REQUIRED`，Router 默认拒绝继续派发
+     - `/stop` 在 Inbox ACK 后进入独立 durable control path，Router 入队前再次拦截；cancel request
+       先锚定再撤销未执行 permit 或取消运行中 ACP。cancel 与 terminal 共享串行锁：terminal-first
+       返回已结束，cancel-first 强制唯一 `canceled` 终态，迟到 ACP success 不可覆盖
+     - `/stop` 权限为管理员、当前团队创建者或原任务发起人；命令结果通过员工 Durable Outbox
+       投递，无主 Bot fallback。重启对已锚定 cancel 直接收敛 canceled，不重跑 ACP
+     - fresh Autonomous `1763 passed, 2 skipped, 1 warning in 401.21s`；共享 Slock/WS 回归
+       `269 passed`；`ruff check src/autonomous/`、配置校验与 `git diff --check` 通过
+     - Phase 5 不提升 release readiness；`autonomous_visible_employee_limit` 继续保持 0，下一阶段为
+       `/fire` durable Saga
   6. `/fire` durable Saga：
      - RETIRING 立即关闭 ingress
      - Slash 清理、Channel 断开、membership disposition、Vault 销毁、归档

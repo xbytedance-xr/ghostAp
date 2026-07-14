@@ -65,6 +65,48 @@ def test_parent_durable_ingress_call_graph_excludes_router_and_acp_execution() -
     assert "provisioning.router" not in source
 
 
+@pytest.mark.parametrize(
+    ("kind", "operation"),
+    [("membership_added", "added"), ("membership_deleted", "deleted")],
+)
+def test_bot_membership_events_normalize_as_durable_ingress(kind, operation) -> None:
+    from types import SimpleNamespace
+
+    event = SimpleNamespace(
+        header=SimpleNamespace(
+            event_id="evt_membership",
+            event_type=f"im.chat.member.bot.{operation}_v1",
+            tenant_key="tenant_1",
+            app_id="cli_alpha",
+            create_time="1783987200000",
+        ),
+        event=SimpleNamespace(
+            chat_id="oc_team",
+            operator_id=SimpleNamespace(open_id="ou_operator"),
+            operator_tenant_key="tenant_1",
+            external=False,
+            name="Alpha",
+        ),
+    )
+
+    metadata, payload, correlation = _normalize_sdk_ingress(
+        event,
+        kind=kind,
+        agent_id="agt_alpha",
+        app_id="cli_alpha",
+        generation=3,
+        connection_id="conn_alpha",
+        tenant_key="tenant_1",
+        bot_principal_id="bot_alpha",
+    )
+
+    assert metadata.chat_id.startswith("oc_")
+    assert metadata.sender_principal_id == "ou_operator"
+    assert payload.normalized_parts[0]["type"] == "membership_event"
+    assert payload.normalized_parts[0]["operation"] == operation
+    assert correlation is None
+
+
 def test_protocol_round_trips_a_strict_versioned_ndjson_frame() -> None:
     frame = ChannelFrame(
         frame_type=FrameType.EVENT,

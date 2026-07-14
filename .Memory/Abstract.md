@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-14
+- **Phase 5成员关系与停止竞态** - 真实Bot群成员对账、role切换、durable stop唯一终态闭环 → [2026-07-14.md](2026-07-14.md)
 - **Phase 4员工响应闭环** - 加密Outbox、稳定UUID单卡、child patch与终态恢复接线 → [2026-07-14.md](2026-07-14.md)
 - **Task 7生产组合与证据交接** - Inbox/Router/Gateway恢复关停闭环，九门禁及FI-29严格聚合 → [2026-07-14.md](2026-07-14.md)
 - **Task 6员工Slock执行闭环** - 锚定attempt、Context/权限门禁、单次ACP与原子终态恢复落地 → [2026-07-14.md](2026-07-14.md)

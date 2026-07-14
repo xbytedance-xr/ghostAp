@@ -812,6 +812,23 @@ class EmployeeChannelSupervisor:
             )
             if not sent:
                 raise BrokenPipeError("employee ingress ACK pipe closed")
+            try:
+                runtime.on_event(
+                    {
+                        "event": "durableIngressAccepted",
+                        "data": {
+                            "acceptance_id": ack.acceptance.acceptance_id,
+                            "agent_id": ack.agent_id,
+                            "generation": ack.channel_generation,
+                        },
+                    }
+                )
+            except Exception:
+                with self._lock:
+                    runtime.status = replace(
+                        runtime.status,
+                        error_code="ingress-control-callback-failed",
+                    )
         except Exception:
             with self._lock:
                 runtime.status = replace(

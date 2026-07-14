@@ -4059,6 +4059,19 @@ class SlockEngine(BaseEngine):
         logger.info("Stopped agent %s in chat %s", agent_id, self.chat_id)
         return True
 
+    def cancel_employee_session(self, agent_id: str) -> bool:
+        """Latch cancellation even if the employee ACP session is not registered yet."""
+
+        cancel_event = self._get_cancel_event(agent_id)
+        cancel_event.set()
+        with self._lock:
+            session = self._agent_sessions.pop(agent_id, None)
+        if session is not None:
+            with contextlib.suppress(Exception):
+                session.cancel()
+        logger.info("Employee session cancellation requested for %s", agent_id)
+        return True
+
     @property
     def is_active(self) -> bool:
         """Check if the engine is active (has a channel and is not stopping)."""

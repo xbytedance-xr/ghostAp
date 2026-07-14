@@ -42,6 +42,7 @@ from .models import (
 )
 from .projection import (
     ATTEMPT_BOUND,
+    ATTEMPT_CANCEL_REQUESTED,
     ATTEMPT_DISPATCH_COMMITTED,
     ATTEMPT_TERMINAL,
     GatewayProjectionState,
@@ -71,6 +72,13 @@ class FinalizedEmployeeAttempt:
     status: GatewayExecutionStatus
     history_record_id: str
     frame_sequence: int
+
+
+@dataclass(frozen=True, slots=True)
+class EmployeeCancellationOutcome:
+    status: str
+    attempt_id: str = ""
+    changed: bool = False
 
 
 EnvironmentProvider = Callable[
@@ -112,6 +120,8 @@ class EmployeeDispatchCoordinator:
         timeout_seconds: float = 600.0,
         clock: Callable[[], datetime] | None = None,
         attempt_lifecycle: EmployeeAttemptLifecycle | None = None,
+        admin_principal_ids: frozenset[str] = frozenset(),
+        team_owner_resolver: Callable[[str], str] | None = None,
     ) -> None:
         if not callable(environment_provider):
             raise TypeError("environment_provider is required")
@@ -131,6 +141,9 @@ class EmployeeDispatchCoordinator:
         self._attempt_lifecycle = attempt_lifecycle
         self._gateway_state = GatewayProjectionState()
         self._projection_sync_lock = threading.RLock()
+        self._terminal_lock = threading.RLock()
+        self._admin_principal_ids = frozenset(admin_principal_ids)
+        self._team_owner_resolver = team_owner_resolver or (lambda _chat_id: "")
 
     @property
     def state(self) -> GatewayProjectionState:
@@ -358,11 +371,19 @@ class EmployeeDispatchCoordinator:
     ) -> FinalizedEmployeeAttempt:
         """Commit terminal facts, then append the employee response snapshot."""
 
-        finalized = self._finalize_attempt_without_reporting(
-            attempt_id,
-            execution_result,
-            request_text=request_text,
-        )
+        with self._terminal_lock:
+            self._synchronize_gateway_from_journal()
+            lifecycle = self._gateway_state.attempts.get(attempt_id)
+            if lifecycle is not None and lifecycle.cancel_requested and not lifecycle.terminal_status:
+                execution_result = GatewayExecutionResult(
+                    status=GatewayExecutionStatus.CANCELED,
+                    safe_error_code="cancel_requested",
+                )
+            finalized = self._finalize_attempt_without_reporting(
+                attempt_id,
+                execution_result,
+                request_text=request_text,
+            )
         if self._attempt_lifecycle is not None:
             self._synchronize_gateway_from_journal()
             lifecycle = self._gateway_state.attempts.get(attempt_id)
@@ -370,6 +391,121 @@ class EmployeeDispatchCoordinator:
                 raise EmployeeDispatchError("terminal attempt binding is unavailable")
             self._attempt_lifecycle.terminal(lifecycle.binding, execution_result)
         return finalized
+
+    def request_cancel(
+        self,
+        *,
+        agent_id: str,
+        chat_id: str,
+        requester_principal_id: str,
+        command_acceptance_id: str,
+    ) -> EmployeeCancellationOutcome:
+        """Anchor an authorized cancellation before touching the live gateway."""
+
+        if not all(
+            isinstance(value, str) and value and value == value.strip()
+            for value in (
+                agent_id,
+                chat_id,
+                requester_principal_id,
+                command_acceptance_id,
+            )
+        ):
+            raise ValueError("cancellation coordinates are required")
+        with self._terminal_lock:
+            self._synchronize_gateway_from_journal()
+            matching = tuple(
+                record
+                for record in self._gateway_state.attempts.values()
+                if record.binding.agent_id == agent_id
+                and record.binding.chat_id == chat_id
+                and record.dispatch_committed
+            )
+            if not matching:
+                return EmployeeCancellationOutcome("no_active")
+            live = tuple(record for record in matching if not record.terminal_status)
+            target = live[0] if len(live) == 1 else max(
+                matching,
+                key=lambda item: item.dispatch_sequence,
+            )
+            try:
+                team_owner = self._team_owner_resolver(chat_id)
+            except Exception:
+                team_owner = ""
+            if requester_principal_id not in {
+                target.binding.requester_principal_id,
+                *self._admin_principal_ids,
+                team_owner,
+            }:
+                return EmployeeCancellationOutcome(
+                    "forbidden",
+                    target.binding.attempt_id,
+                )
+            if not live:
+                return EmployeeCancellationOutcome(
+                    "already_terminal",
+                    target.binding.attempt_id,
+                )
+            if len(live) != 1:
+                return EmployeeCancellationOutcome("ambiguous")
+            target = live[0]
+            if target.cancel_requested:
+                return EmployeeCancellationOutcome(
+                    "cancel_requested",
+                    target.binding.attempt_id,
+                    False,
+                )
+            requested_at = self._timestamp()
+            for _attempt in range(3):
+                captured_head = self._presynchronize_domains()
+                try:
+                    with slock_activation_guard(), ExitStack() as stack:
+                        stack.enter_context(self._projection_sync_lock)
+                        stack.enter_context(self._hire.employee_dispatch_guard())
+                        stack.enter_context(self._ingress.employee_dispatch_guard(router=self._router))
+                        stack.enter_context(self._data.employee_dispatch_guard())
+                        stack.enter_context(self._channels.employee_dispatch_guard())
+                        stack.enter_context(self._writer.transaction_guard())
+                        self._require_presynchronized_head(captured_head)
+                        current = self._gateway_state.attempts.get(
+                            target.binding.attempt_id
+                        )
+                        if current is None:
+                            return EmployeeCancellationOutcome("no_active")
+                        if current.terminal_status:
+                            return EmployeeCancellationOutcome(
+                                "already_terminal",
+                                current.binding.attempt_id,
+                            )
+                        if current.cancel_requested:
+                            return EmployeeCancellationOutcome(
+                                "cancel_requested",
+                                current.binding.attempt_id,
+                                False,
+                            )
+                        event = JournalEvent(
+                            event_type=ATTEMPT_CANCEL_REQUESTED,
+                            aggregate_id=current.binding.attempt_id,
+                            payload={
+                                "attempt_id": current.binding.attempt_id,
+                                "cancel_epoch": 1,
+                                "requester_principal_id": requester_principal_id,
+                                "command_acceptance_id": command_acceptance_id,
+                                "requested_at": requested_at,
+                            },
+                        )
+                        commit = self._commit_events_unlocked((event,))
+                        self._apply_committed_frame_unlocked(commit.frame)
+                        binding = current.binding
+                    self._gateway.cancel_attempt(binding)
+                    return EmployeeCancellationOutcome(
+                        "cancel_requested",
+                        binding.attempt_id,
+                        True,
+                    )
+                except _ProjectionHeadChanged:
+                    continue
+            raise EmployeeDispatchError("employee cancellation head remained unstable")
 
     def _finalize_attempt_without_reporting(
         self,
@@ -786,6 +922,7 @@ def _result_digest(result: GatewayExecutionResult) -> str:
 
 
 __all__ = [
+    "EmployeeCancellationOutcome",
     "EmployeeDispatchCoordinator",
     "EmployeeDispatchError",
     "FinalizedEmployeeAttempt",

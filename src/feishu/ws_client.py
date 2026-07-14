@@ -290,6 +290,7 @@ class FeishuWSClient:
                 self.settings,
                 slock_engine_manager=self._slock_engine_manager,
                 employee_environment_provider=runtime_only_employee_environment,
+                manager_client_factory=self._get_api_client,
                 notification_link=lambda state, url, expire_in: self._reply_text(
                     state.message_id,
                     f"请在 {expire_in} 秒内完成独立飞书智能体注册：{url}",
@@ -346,6 +347,11 @@ class FeishuWSClient:
             ),
             employee_hire_readiness=(
                 self._employee_department_runtime.readiness
+                if self._employee_department_runtime is not None
+                else None
+            ),
+            employee_membership_service=(
+                self._employee_department_runtime.membership_service
                 if self._employee_department_runtime is not None
                 else None
             ),
@@ -2102,7 +2108,7 @@ class FeishuWSClient:
                 return None
             chat_mode = getattr(response.data, "chat_mode", None)
             return chat_mode if chat_mode in {"p2p", "group", "topic"} else None
-        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        except Exception:
             logger.warning("chat mode lookup failed: chat=%s", chat_id[:12], exc_info=True)
             return None
 
