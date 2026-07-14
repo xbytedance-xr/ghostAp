@@ -11,6 +11,28 @@ from pathlib import Path
 from typing import Optional
 
 
+def canonicalize_user_home_path(path: str | Path) -> Path:
+    """Resolve only a system-managed user-home symlink in ``path``.
+
+    Security-sensitive stores walk their own roots with ``O_NOFOLLOW``.  Some
+    supported hosts expose ``Path.home()`` through a symlink (for example,
+    ``/home/user`` -> ``/data/home/user``), so that trusted prefix must be
+    canonicalized before the walk.  Child components are deliberately left
+    unresolved so each store can continue rejecting links inside its root.
+    """
+
+    expanded = Path(os.path.abspath(Path(path).expanduser()))
+    home = Path(os.path.abspath(Path.home()))
+    try:
+        relative = expanded.relative_to(home)
+    except ValueError:
+        return expanded
+    resolved_home = home.resolve(strict=True)
+    if not resolved_home.is_dir():
+        raise ValueError("user home is not a directory")
+    return resolved_home / relative
+
+
 def normalize_ttadk_cwd(cwd: Optional[str]) -> Optional[str]:
     """将 cwd 归一化为绝对路径（用于 TTADK 相关调用链）。
 

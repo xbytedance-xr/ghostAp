@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterator, Protocol
 
+from src.utils.path import canonicalize_user_home_path
+
 from ..journal.blob_store import (
     AesGcmEncryptionProvider,
     BlobError,
@@ -106,7 +108,7 @@ class EmployeeIngressService:
         if not isinstance(blob_root, (str, Path)) or not str(blob_root):
             raise ValueError("blob_root must be non-empty")
         blob_store = BlobStore(
-            blob_root,
+            canonicalize_user_home_path(blob_root),
             AesGcmEncryptionProvider(keyring.resolve),
         )
         try:

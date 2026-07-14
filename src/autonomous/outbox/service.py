@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import Protocol
 
+from src.utils.path import canonicalize_user_home_path
+
 from ..journal.blob_store import AesGcmEncryptionProvider, BlobError, BlobRef, BlobStore
 from ..journal.frame import GENESIS_HASH, JournalEvent
 from ..journal.writer import CommitResult, CommitState, JournalWriter
@@ -93,7 +95,10 @@ class EmployeeOutboxService:
         keyring: EmployeeKeyring,
         blob_root: str | Path,
     ) -> EmployeeOutboxService:
-        store = BlobStore(blob_root, AesGcmEncryptionProvider(keyring.resolve))
+        store = BlobStore(
+            canonicalize_user_home_path(blob_root),
+            AesGcmEncryptionProvider(keyring.resolve),
+        )
         try:
             return cls(
                 writer=writer,

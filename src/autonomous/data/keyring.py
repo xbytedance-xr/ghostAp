@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from src.utils.path import canonicalize_user_home_path
+
 from ..journal.blob_store import AesGcmEncryptionProvider, BlobStore
 
 _KEYRING_FIELDS = frozenset({"version", "keys"})
@@ -120,6 +122,7 @@ def build_employee_data_storage(
         root = settings.autonomous_data_blob_dir
         if not isinstance(root, str) or not root:
             raise EmployeeDataConfigurationError()
+        root = canonicalize_user_home_path(root)
         provider = AesGcmEncryptionProvider(resolved_keyring.resolve)
         return EmployeeDataStorage(
             keyring=resolved_keyring,

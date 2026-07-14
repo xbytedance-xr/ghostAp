@@ -907,13 +907,22 @@ def test_local_composition_does_not_require_release_provider(tmp_path: Path) -> 
         runtime.close()
 
 
-def test_local_composition_canonicalizes_symlinked_home_prefix(tmp_path: Path) -> None:
+def test_local_composition_canonicalizes_symlinked_home_prefix(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     real_home = tmp_path / "real-home"
     real_home.mkdir()
     linked_home = tmp_path / "linked-home"
     linked_home.symlink_to(real_home, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(linked_home))
     settings = _settings(tmp_path, limit=1)
-    settings.autonomous_credential_dir = str(linked_home / "credentials")
+    settings.autonomous_credential_dir = "~/.ghostap/credentials"
+    settings.autonomous_data_blob_dir = "~/.ghostap/data-blobs"
+    settings.autonomous_employee_ingress_blob_dir = "~/.ghostap/ingress-blobs"
+    settings.autonomous_employee_outbox_blob_dir = "~/.ghostap/outbox-blobs"
+    settings.autonomous_employee_attachment_staging_dir = "~/.ghostap/attachments"
+    settings.autonomous_slock_storage_base = "~/.ghostap/slock"
 
     runtime = EmployeeDepartmentRuntime.from_settings(
         settings,
@@ -926,7 +935,16 @@ def test_local_composition_canonicalizes_symlinked_home_prefix(tmp_path: Path) -
 
     try:
         assert runtime.hire_service is not None
-        assert (real_home / "credentials").is_dir()
+        assert runtime.hire_readiness().ready is True
+        assert runtime._data is not None
+        assert runtime._ingress is not None
+        assert runtime._outbox is not None
+        assert runtime._attachments is not None
+        assert (real_home / ".ghostap/credentials").is_dir()
+        assert (real_home / ".ghostap/data-blobs").is_dir()
+        assert (real_home / ".ghostap/ingress-blobs").is_dir()
+        assert (real_home / ".ghostap/outbox-blobs").is_dir()
+        assert (real_home / ".ghostap/attachments").is_dir()
     finally:
         runtime.close()
 

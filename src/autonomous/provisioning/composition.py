@@ -20,6 +20,7 @@ from src.slock_engine.memory_manager import (
     MemoryManager,
     default_slock_storage_base,
 )
+from src.utils.path import canonicalize_user_home_path
 
 from ..acceptance.main_bot_audit import MainBotSendAuditLog
 from ..acceptance.release_trust import ReleaseTrustProvider
@@ -266,14 +267,8 @@ class EmployeeDepartmentRuntime:
         runtime = cls(runtime_enabled=True)
         try:
             material = resolve_employee_runtime_material(settings)
-            # Canonicalize the configured root before the vault performs its
-            # component-by-component no-follow walk.  Some supported hosts
-            # expose the user's home through a system-managed symlink; the
-            # vault must still reject links created inside its own root.
-            credential_root = (
-                Path(settings.autonomous_credential_dir)
-                .expanduser()
-                .resolve(strict=False)
+            credential_root = canonicalize_user_home_path(
+                settings.autonomous_credential_dir
             )
             vault = CredentialVault(credential_root, material.credential_keyring)
             writer = JournalWriter.open(
@@ -722,10 +717,14 @@ class EmployeeDepartmentRuntime:
             self._execution_blockers = ("employee_ingress",)
             return
         try:
-            legacy_base = getattr(
-                settings,
-                "autonomous_slock_storage_base",
-                default_slock_storage_base(),
+            legacy_base = str(
+                canonicalize_user_home_path(
+                    getattr(
+                        settings,
+                        "autonomous_slock_storage_base",
+                        default_slock_storage_base(),
+                    )
+                )
             )
             self._data = build_employee_data_composition(
                 settings=settings,
@@ -936,10 +935,14 @@ class EmployeeDepartmentRuntime:
                 )
             )
 
-        legacy_base = getattr(
-            settings,
-            "autonomous_slock_storage_base",
-            default_slock_storage_base(),
+        legacy_base = str(
+            canonicalize_user_home_path(
+                getattr(
+                    settings,
+                    "autonomous_slock_storage_base",
+                    default_slock_storage_base(),
+                )
+            )
         )
         authority = JournalFireAuthority(
             writer=self._writer,
@@ -1010,10 +1013,14 @@ class EmployeeDepartmentRuntime:
             self._execution_blockers = ("employee_environment",)
             return
         try:
-            legacy_base = getattr(
-                settings,
-                "autonomous_slock_storage_base",
-                default_slock_storage_base(),
+            legacy_base = str(
+                canonicalize_user_home_path(
+                    getattr(
+                        settings,
+                        "autonomous_slock_storage_base",
+                        default_slock_storage_base(),
+                    )
+                )
             )
 
             def registry_provider() -> ProjectedAgentRegistry:
@@ -1529,10 +1536,14 @@ class EmployeeDepartmentRuntime:
             self._context_blockers = ("employee_context",)
             return
         try:
-            legacy_base = getattr(
-                settings,
-                "autonomous_slock_storage_base",
-                default_slock_storage_base(),
+            legacy_base = str(
+                canonicalize_user_home_path(
+                    getattr(
+                        settings,
+                        "autonomous_slock_storage_base",
+                        default_slock_storage_base(),
+                    )
+                )
             )
             if self._data is None:
                 self._data = build_employee_data_composition(

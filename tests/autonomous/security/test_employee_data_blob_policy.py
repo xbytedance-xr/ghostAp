@@ -87,6 +87,45 @@ def test_composition_factory_uses_active_and_old_keys(tmp_path: Path) -> None:
     assert storage.blob_store.closed is True
 
 
+def test_composition_factory_canonicalizes_only_the_user_home_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(real_home, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(linked_home))
+    settings = _settings(tmp_path)
+    settings.autonomous_data_blob_dir = "~/.ghostap/data-blobs"
+
+    storage = build_employee_data_storage(settings)
+    try:
+        assert storage.blob_store.root == real_home / ".ghostap/data-blobs"
+    finally:
+        storage.close()
+
+
+def test_composition_factory_still_rejects_a_symlink_inside_user_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_home = tmp_path / "real-home"
+    store_parent = real_home / ".ghostap"
+    store_parent.mkdir(parents=True)
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(real_home, target_is_directory=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (store_parent / "data-blobs").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setenv("HOME", str(linked_home))
+    settings = _settings(tmp_path)
+    settings.autonomous_data_blob_dir = "~/.ghostap/data-blobs"
+
+    with pytest.raises(EmployeeDataConfigurationError):
+        build_employee_data_storage(settings)
+
+
 def test_exact_label_policy_rejects_extra_cross_resource_and_secret_keys(
     tmp_path: Path,
 ) -> None:

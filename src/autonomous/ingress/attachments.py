@@ -22,6 +22,8 @@ from typing import Any, Callable, Protocol
 
 from lark_oapi.api.im.v1 import GetMessageResourceRequest
 
+from src.utils.path import canonicalize_user_home_path
+
 from ..journal.frame import GENESIS_HASH, JournalEvent
 from ..journal.writer import CommitState, JournalWriter
 from .models import (
@@ -401,7 +403,7 @@ class AttachmentStagingService:
         ):
             raise ValueError("download timeout is invalid")
         self._writer = writer
-        self._root = Path(root).expanduser().absolute()
+        self._root = canonicalize_user_home_path(root).absolute()
         self._credential_resolver = credential_resolver
         self._downloader_builder = downloader_builder
         self._policy = policy or AttachmentPolicy()
