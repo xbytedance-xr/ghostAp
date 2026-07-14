@@ -665,6 +665,12 @@ class Settings(BaseSettings):
         le=300,
         allow_inf_nan=False,
     )
+    autonomous_fire_grace_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+    )
     autonomous_context_max_pages: int = Field(default=200, ge=1, le=10_000)
     autonomous_employee_ingress_ack_timeout_seconds: float = Field(
         default=1.5,
@@ -742,6 +748,7 @@ class Settings(BaseSettings):
         "autonomous_thread_context_page_size",
         "autonomous_group_context_page_size",
         "autonomous_context_fetch_timeout_seconds",
+        "autonomous_fire_grace_seconds",
         "autonomous_context_max_pages",
         "autonomous_employee_ingress_ack_timeout_seconds",
         "autonomous_employee_ingress_max_payload_bytes",

@@ -137,6 +137,34 @@ def test_remove_only_removes_chat_membership_not_global_employee(tmp_path) -> No
     assert fx.hire.projection_state.bot_principals["bot_1"].credential_ref == "cred_1"
 
 
+def test_retirement_cleanup_is_admin_remove_only_and_does_not_require_live_slock(tmp_path) -> None:
+    fx = _fixture(tmp_path, member_groups=("oc_team",), team_active=False)
+    commit_workforce_events(
+        fx.writer,
+        fx.hire.synchronize_projection(),
+        (
+            JournalEvent(
+                event_type="employee.state_changed",
+                aggregate_id="agt_1",
+                payload={"state": EmployeeState.RETIRING.value},
+            ),
+        ),
+    )
+
+    outcomes = fx.service.retire_all(
+        tenant_key="tenant_1",
+        agent_id="agt_1",
+        requester_principal_id="ou_admin",
+    )
+
+    assert len(outcomes) == 1
+    assert outcomes[0].confirmed is True
+    employee = fx.hire.synchronize_projection().employees["agt_1"]
+    assert employee.state is EmployeeState.RETIRING
+    assert employee.member_groups == ()
+    assert fx.remote.mutations == [(MembershipOperation.REMOVE, "oc_team", "cli_1")]
+
+
 def test_unauthorized_mutation_is_rejected_before_remote_or_journal(tmp_path) -> None:
     fx = _fixture(tmp_path)
     before = fx.writer.get_last_frame().sequence

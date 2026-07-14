@@ -96,6 +96,7 @@ def test_employee_department_runtime_is_wired_but_dormant_by_default(
     assert runtime.hire_service is None
     assert runtime.readiness().blockers == ("visible_employee_limit",)
     assert mock_ws_client._handler_ctx.employee_hire_service is None
+    assert mock_ws_client._handler_ctx.employee_fire_service is None
     assert mock_ws_client._handler_ctx.employee_hire_readiness().blockers == (
         "visible_employee_limit",
     )

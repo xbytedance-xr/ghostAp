@@ -115,6 +115,12 @@ class TestParseSlockCommand:
         assert cmd.action == SlockCommandAction.NEW_ROLE
         assert cmd.args == "Frontend-Dev"
 
+    def test_fire_employee(self):
+        cmd = parse_slock_command("/fire Alpha --drain")
+        assert cmd.action == SlockCommandAction.FIRE_EMPLOYEE
+        assert cmd.args == "Alpha --drain"
+        assert is_slock_command("/fire Alpha")
+
     def test_role_list(self):
         cmd = parse_slock_command("/role list")
         assert cmd.action == SlockCommandAction.ROLE_LIST

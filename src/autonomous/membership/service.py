@@ -235,6 +235,39 @@ class EmployeeMembershipService:
                 mutation_error or "observation_mismatch",
             )
 
+    def retire_all(
+        self,
+        *,
+        tenant_key: str,
+        agent_id: str,
+        requester_principal_id: str,
+    ) -> tuple[MembershipMutationOutcome, ...]:
+        """Remove a RETIRING employee from every known team; never permits add."""
+
+        if requester_principal_id not in self._admins:
+            raise MembershipAuthorizationError("retirement membership cleanup is not authorized")
+        projection = self._hire.synchronize_projection()
+        employee = projection.employees.get(agent_id)
+        if (
+            employee is None
+            or employee.tenant_key != tenant_key
+            or employee.state not in {EmployeeState.RETIRING, EmployeeState.ACTION_REQUIRED}
+            or employee.worker_type is not WorkerType.VISIBLE
+        ):
+            raise MembershipBindingError("retiring employee membership authority unavailable")
+        return tuple(
+            self.mutate(
+                MembershipMutationRequest(
+                    tenant_key=tenant_key,
+                    chat_id=chat_id,
+                    agent_id=agent_id,
+                    requester_principal_id=requester_principal_id,
+                    operation=MembershipOperation.REMOVE,
+                )
+            )
+            for chat_id in employee.member_groups
+        )
+
     def reconcile_event(
         self,
         *,
@@ -370,7 +403,13 @@ class EmployeeMembershipService:
         if (
             employee is None
             or employee.tenant_key != effect.tenant_key
-            or employee.state is not EmployeeState.ACTIVE
+            or (
+                employee.state is not EmployeeState.ACTIVE
+                and not (
+                    effect.operation is MembershipOperation.REMOVE
+                    and employee.state in {EmployeeState.RETIRING, EmployeeState.ACTION_REQUIRED}
+                )
+            )
             or employee.worker_type is not WorkerType.VISIBLE
             or not employee.bot_principal_id
         ):
@@ -398,7 +437,14 @@ class EmployeeMembershipService:
         if (
             employee is None
             or employee.tenant_key != request.tenant_key
-            or employee.state is not EmployeeState.ACTIVE
+            or (
+                employee.state is not EmployeeState.ACTIVE
+                and not (
+                    request.operation is MembershipOperation.REMOVE
+                    and employee.state in {EmployeeState.RETIRING, EmployeeState.ACTION_REQUIRED}
+                    and request.requester_principal_id in self._admins
+                )
+            )
             or employee.worker_type is not WorkerType.VISIBLE
             or not employee.bot_principal_id
         ):
@@ -412,8 +458,13 @@ class EmployeeMembershipService:
             or not principal.credential_ref
         ):
             raise MembershipBindingError("employee principal authority unavailable")
+        retiring_remove = (
+            request.operation is MembershipOperation.REMOVE
+            and employee.state in {EmployeeState.RETIRING, EmployeeState.ACTION_REQUIRED}
+            and request.requester_principal_id in self._admins
+        )
         owner = self._team_owner_resolver(request.chat_id)
-        if self._team_active_resolver(request.chat_id) is not True:
+        if not retiring_remove and self._team_active_resolver(request.chat_id) is not True:
             raise MembershipBindingError("membership team is not active")
         if request.requester_principal_id not in self._admins and (
             not owner or request.requester_principal_id != owner

@@ -550,6 +550,7 @@ def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -
     assert runtime.dispatch_coordinator is not None
     assert runtime.outbox_service is not None
     assert runtime.outbox_delivery is not None
+    assert runtime.fire_service is not None
     assert runtime.execution_readiness().ready is True
     runtime.close()
 

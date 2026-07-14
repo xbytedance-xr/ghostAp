@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
     from ..autonomous.membership.service import EmployeeMembershipService
+    from ..autonomous.provisioning.fire_service import EmployeeFireService
     from ..autonomous.provisioning.hire_port import EmployeeHireService
     from ..chat_lock import ChatLockManager
     from ..deep_engine import DeepEngineManager, ProgressReporter
@@ -96,6 +97,7 @@ class HandlerContext:
     repo_lock_manager: Optional["RepoLockManager"] = None
     chat_lock_manager: Optional["ChatLockManager"] = None
     employee_hire_service: Optional["EmployeeHireService"] = None
+    employee_fire_service: Optional["EmployeeFireService"] = None
     employee_hire_readiness: Optional[Callable[[], Any]] = None
     employee_membership_service: Optional["EmployeeMembershipService"] = None
 

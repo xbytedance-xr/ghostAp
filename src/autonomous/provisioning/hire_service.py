@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from ..domain import EmployeeState, WorkerType
-from ..journal.frame import JournalEvent
+from ..journal.frame import JournalEvent, TransactionFrame
 from ..journal.projections import (
     ProjectionError,
     ProjectionRepository,
@@ -174,6 +174,18 @@ class ProductionEmployeeHireService:
 
         self._synchronize_projection_to_journal_locked()
         return self._projection_state
+
+    def apply_committed_frame_unlocked(self, frame: TransactionFrame) -> None:
+        """Advance workforce and hire views for a sibling-domain anchored frame."""
+
+        from ..journal.projections import apply_frame
+
+        if not isinstance(frame, TransactionFrame) or not frame.committed:
+            raise TypeError("frame must be a committed TransactionFrame")
+        if frame.sequence != self._projection_state.cursor_sequence + 1:
+            raise HireAdmissionError("hire frame sequence is not continuous")
+        apply_frame(self._projection_state, frame)
+        self._hire_projection = HireProjection.rebuild(tuple(self._writer.replay()))
 
     def readiness(self) -> HireReadiness:
         blockers: list[str] = []

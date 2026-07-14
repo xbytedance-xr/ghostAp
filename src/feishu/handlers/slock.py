@@ -234,6 +234,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             SlockCommandAction.TEAM_STATUS: lambda: self.show_team_status(message_id, chat_id, cmd.target, project),
             SlockCommandAction.TEAM_DISSOLVE: lambda: self.dissolve_team(message_id, chat_id, cmd.target, project),
             SlockCommandAction.NEW_ROLE: lambda: self.create_role(message_id, chat_id, cmd.args, project, global_hire=is_hire),
+            SlockCommandAction.FIRE_EMPLOYEE: lambda: self.fire_employee(message_id, chat_id, cmd.args),
             SlockCommandAction.ROLE_LIST: lambda: self.list_roles(message_id, chat_id, project),
             SlockCommandAction.ROLE_REMOVE: lambda: self.remove_role(message_id, chat_id, cmd.target, project),
             SlockCommandAction.ROLE_MOVE: lambda: self.move_role(message_id, chat_id, cmd.target, cmd.args, project),
@@ -2344,6 +2345,63 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         except Exception as exc:
             logger.error("visible employee hire dispatch failed: %s", type(exc).__name__)
             self.reply_text(message_id, "独立飞书智能体创建启动失败，请查看安全日志后重试。")
+
+    def fire_employee(self, message_id: str, chat_id: str, args: str) -> None:
+        """Retire a visible employee through the production Journal-backed service."""
+
+        from ...autonomous.provisioning.fire_service import EmployeeFireRequest
+        from ...autonomous.provisioning.fire_state import FirePhase
+        from ...thread.manager import (
+            get_current_is_p2p,
+            get_current_sender_id,
+            get_current_tenant_key,
+        )
+
+        requester_id = get_current_sender_id() or ""
+        if (
+            not get_current_is_p2p()
+            or not requester_id
+            or requester_id not in getattr(self.ctx.settings, "admin_user_ids", frozenset())
+        ):
+            self.reply_text(message_id, "⛔ `/fire` 仅允许配置管理员在主 Bot 私聊中使用。")
+            return
+        tokens = args.split()
+        drain = "--drain" in tokens
+        names = [token for token in tokens if token != "--drain"]
+        if len(names) != 1:
+            self.reply_text(message_id, "用法: `/fire <员工名称或ID> [--drain]`")
+            return
+        service = getattr(self.ctx, "employee_fire_service", None)
+        if service is None:
+            self.reply_text(message_id, "员工退役服务未就绪；未执行任何删除操作。")
+            return
+        try:
+            state = service.start_fire(
+                EmployeeFireRequest(
+                    employee=names[0],
+                    tenant_key=get_current_tenant_key() or "",
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    requester_principal_id=requester_id,
+                    drain=drain,
+                )
+            )
+        except Exception as exc:
+            logger.error("visible employee fire failed: %s", type(exc).__name__)
+            self.reply_text(message_id, "员工退役未能安全推进；请查看审计日志后处理。")
+            return
+        if state.phase is FirePhase.ARCHIVED:
+            self.reply_text(
+                message_id,
+                "✅ 员工已停止托管、清理命令和本地凭证并完成归档。"
+                "开放平台应用仍需管理员手动停用或删除，GhostAP 未声称已删除该应用。",
+            )
+        else:
+            self.reply_text(
+                message_id,
+                f"⚠️ 员工已关闭新任务入口，但退役需要人工处理：{state.error_code or 'unknown'}。"
+                "凭证与归档不会被误报为已完成。",
+            )
 
     def _visible_hire_readiness_blockers(self) -> tuple[str, ...]:
         provider = getattr(self.ctx, "employee_hire_readiness", None)

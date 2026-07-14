@@ -55,6 +55,7 @@ class IngressProjectionState:
 _INGRESS_EVENT_TYPES = frozenset(
     {
         "employee.ingress.accepted",
+        "employee.ingress.closed",
         "employee.ingress.dispositioned",
         "employee.ingress.payload_tombstoned",
     }
@@ -76,12 +77,37 @@ def reduce_ingress_event(
 
     if event.event_type == "employee.ingress.accepted":
         _reduce_accepted(state, event, frame_sequence, frame_hash)
+    elif event.event_type == "employee.ingress.closed":
+        _reduce_closed(state, event)
     elif event.event_type == "employee.ingress.dispositioned":
         _reduce_dispositioned(state, event, frame_sequence, frame_hash)
     elif event.event_type == "employee.ingress.payload_tombstoned":
         _reduce_payload_tombstoned(state, event)
     else:
         raise IngressProjectionError(f"unknown ingress event: {event.event_type}")
+
+
+def _reduce_closed(state: IngressProjectionState, event: JournalEvent) -> None:
+    payload = event.payload
+    if set(payload) != {"tenant_key", "agent_id", "reason_code", "closed_at"}:
+        raise IngressProjectionError("invalid employee.ingress.closed payload")
+    tenant_key = payload.get("tenant_key")
+    agent_id = payload.get("agent_id")
+    reason_code = payload.get("reason_code")
+    closed_at = payload.get("closed_at")
+    if (
+        not isinstance(tenant_key, str)
+        or not tenant_key
+        or not isinstance(agent_id, str)
+        or not agent_id
+        or event.aggregate_id != f"employee-ingress:{tenant_key}:{agent_id}"
+        or not isinstance(reason_code, str)
+        or not reason_code
+        or not isinstance(closed_at, str)
+        or not closed_at
+    ):
+        raise IngressProjectionError("invalid employee.ingress.closed payload")
+    state.closed_employees.add((tenant_key, agent_id))
 
 
 def _reduce_accepted(

@@ -214,7 +214,23 @@ class SlashCommandReconciler:
 
     async def reconcile(self) -> VerifiedSlashState:
         """Run GET, diff, mutations, GET and exact hash verification."""
-        desired = _indexed_desired(self._desired)
+        return await self._reconcile(self._desired)
+
+    async def cleanup(self) -> VerifiedSlashState:
+        """Remove every command and prove the final server set is empty."""
+
+        return await self._reconcile(())
+
+    async def observe_empty(self) -> bool:
+        """Query only; never mutate while reconciling an unknown cleanup."""
+
+        return not bool(await self._safe_list())
+
+    async def _reconcile(
+        self,
+        desired_commands: tuple[SlashCommand, ...],
+    ) -> VerifiedSlashState:
+        desired = _indexed_desired(desired_commands)
         spec_hash = _canonical_hash(tuple(desired.values()))
         observed = _indexed_observed(await self._safe_list())
         created: list[str] = []

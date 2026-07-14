@@ -166,6 +166,24 @@ async def test_second_reconcile_has_zero_mutations_and_stable_hashes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cleanup_deletes_every_command_and_verifies_empty_server_state() -> None:
+    api = _InMemorySlashAPI(
+        (
+            _observed(),
+            ObservedSlashCommand("cmd_status", "status", "View status"),
+        )
+    )
+
+    verified = await SlashCommandReconciler(api).cleanup()
+
+    assert verified.observed == ()
+    assert verified.spec_hash == verified.observed_hash
+    assert verified.deleted == ("status", "task")
+    assert api.calls[0] == ("GET", "")
+    assert api.calls[-1] == ("GET", "")
+
+
+@pytest.mark.asyncio
 async def test_final_get_mismatch_fails_without_leaking_transport_error() -> None:
     api = _InMemorySlashAPI(apply_mutations=False)
 

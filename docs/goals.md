@@ -19,6 +19,8 @@
   9. docs/2026-07-13-autonomous-hire-production-plan.md
   10. docs/2026-07-13-autonomous-thread-context-plan.md
   11. docs/2026-07-14-autonomous-employee-response-plan.md
+  12. docs/2026-07-14-autonomous-membership-stop-plan.md
+  13. docs/2026-07-14-autonomous-fire-plan.md
 
   然后以当前 Git、源码、运行配置和新鲜测试结果为唯一权威状态进行检查：
 
@@ -79,10 +81,13 @@
       Journal replay、稳定 UUIDv5 单卡 create、employee child public `update_card` patch、四元组回执栅栏、
       terminal fencing、恢复 worker 与 runtime ownership 均已接线；旧 in-memory provisioning response 已删除，
       delivery coordinator 不持有主 Bot 端口，因此不存在 fallback 路径
-    - `FireSaga` 仍是可变内存顺序流程，未满足 Journal SSOT、Effect 锚定、unknown disposition、恢复与归档合同
-    - 团队 membership、`/role add/remove`、`/stop` 终态竞态尚未形成生产闭环
-  - 尚无获授权的真实测试/生产租户执行证据。Phase 4 关闭时最新
-    Autonomous 全量验证为 `1723 passed, 2 skipped`；两项 skip 分别是未授权真实
+    - Phase 5 已完成真实团队 membership、`/role add/remove` 与 `/stop` 唯一终态；Bot 成员关系只由
+      `member_id_type=app_id` 变更和目标员工凭据 `is_in_chat` 观察确认，未知结果默认拒绝
+    - Phase 6 已完成生产 `/fire`：legacy `provisioning/fire.py` 仅保留兼容测试，新路径使用 shared
+      Journal 的 RETIRING/Effects/ACTION_REQUIRED/ARCHIVED 状态机、durable 单员工 ingress closure、
+      verified Slash cleanup、Channel stop、remove-only membership cleanup、Vault destroy 与原子归档
+  - 尚无获授权的真实测试/生产租户执行证据。Phase 6 关闭时最新
+    Autonomous 全量验证为 `1774 passed, 2 skipped`；两项 skip 分别是未授权真实
     租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
     不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
   - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
@@ -276,9 +281,21 @@
      - Phase 5 不提升 release readiness；`autonomous_visible_employee_limit` 继续保持 0，下一阶段为
        `/fire` durable Saga
   6. `/fire` durable Saga：
-     - RETIRING 立即关闭 ingress
-     - Slash 清理、Channel 断开、membership disposition、Vault 销毁、归档
-     - 每个外部 Effect 先锚定；未知结果保持 ACTION_REQUIRED，不伪报成功
+     - 已完成：`fire.requested`、`employee.state_changed=retiring` 与
+       `employee.ingress.closed` 在同一 Journal frame 锚定，Router/Channel 新 ACK 立即 fail-close
+     - 已完成：默认取消当前 attempt 并等待有界 grace；`--drain` 只等待自然完成且同样有上限。
+       Slash 空集合经最终 GET 验证，Channel 停止、已知群 remove-only membership、Vault destroy、
+       manifest fsync 与同文件系统原子 rename 依序执行
+     - 已完成：六个外部/破坏性 Effect 均为 PREPARED → EXECUTING → COMMITTED；恢复时
+       PREPARED 可继续，EXECUTING 只查询不重放。未知结果转 ACTION_REQUIRED，禁止继续销毁凭证或归档
+     - 已完成：`archive_manifest.json` 包含文件 hash、history 日期范围、cleanup disposition、
+       credential 销毁证明哈希及 `external_app_disposition=manual_deletion_required`；终态消息明确
+       GhostAP 未删除开放平台应用，仍需管理员手动停用/删除
+     - 已完成：同消息幂等重投、credential projection 崩溃补写、归档内容 hash 复核和 symlink 拒绝；
+       fresh Autonomous `1774 passed, 2 skipped, 1 warning in 399.34s`，共享 Slock/WS/docs 回归
+       `277 passed`，Ruff、配置校验和 `git diff --check` 通过
+     - Phase 6 不提升 release readiness；visible limit 仍为 0，下一阶段是数据面真实
+       producer/handler/Supervisor cutover
   7. 数据面真实 producer/handler/Supervisor cutover：
      - canonical employee 禁止继续写旧 execution_history.jsonl 或根 MEMORY.md
      - `/history` 与 ACL-aware `/memory` 使用权威 read ports

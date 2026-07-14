@@ -69,6 +69,16 @@ from ..workforce.credential_vault import (
     CredentialVault,
 )
 from ..workforce.registry import ProjectedAgentRegistry
+from .fire_authority import JournalFireAuthority
+from .fire_effects import (
+    AtomicEmployeeArchive,
+    ChannelStopEffect,
+    CredentialDestroyEffect,
+    ExecutionQuiesceEffect,
+    MembershipCleanupEffect,
+    SlashCleanupEffect,
+)
+from .fire_service import EmployeeFireService
 from .hire_service import HireReadiness, ProductionEmployeeHireService
 from .hire_state import DurableHireState, HireEffectState, HirePhase
 from .lark_app import LarkAppRegistrar
@@ -125,6 +135,10 @@ class _ChannelSupervisor(Protocol):
 class _SlashReconciler(Protocol):
     async def reconcile(self) -> VerifiedSlashState: ...
 
+    async def cleanup(self) -> VerifiedSlashState: ...
+
+    async def observe_empty(self) -> bool: ...
+
 
 SlashReconcilerFactory = Callable[[str, str], _SlashReconciler]
 MainBotSendAudit = Callable[[str, float, float], int]
@@ -178,6 +192,7 @@ class EmployeeDepartmentRuntime:
         self._outbox_delivery: EmployeeOutboxDeliveryCoordinator | None = None
         self._outbox_lifecycle: EmployeeOutboxLifecycle | None = None
         self._membership: EmployeeMembershipService | None = None
+        self._fire: EmployeeFireService | None = None
         self._dispatch_thread: threading.Thread | None = None
         self._dispatch_stop = threading.Event()
         self._execution_blockers: tuple[str, ...] = ()
@@ -316,6 +331,7 @@ class EmployeeDepartmentRuntime:
                 settings,
                 membership_health=membership_health or runtime._membership,
             )
+            runtime._compose_fire(settings)
             runtime.recover()
             return runtime
         except Exception as exc:
@@ -337,6 +353,10 @@ class EmployeeDepartmentRuntime:
     @property
     def membership_service(self) -> EmployeeMembershipService | None:
         return self._membership
+
+    @property
+    def fire_service(self) -> EmployeeFireService | None:
+        return self._fire
 
     @property
     def data_composition(self) -> EmployeeDataComposition | None:
@@ -487,6 +507,16 @@ class EmployeeDepartmentRuntime:
                     type(exc).__name__,
                 )
                 self._execution_blockers = ("employee_recovery",)
+                execution_recovered = False
+        if self._fire is not None and self._external_resume_allowed:
+            try:
+                self._fire.recover()
+            except Exception as exc:
+                logger.error(
+                    "employee retirement recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                self._execution_blockers = ("fire_recovery",)
                 execution_recovered = False
         if not self._refresh_context_bindings(self._service.projection_state):
             self._context_blockers = ("context_binding_sync",)
@@ -786,6 +816,73 @@ class EmployeeDepartmentRuntime:
                 type(exc).__name__,
             )
             self._membership = None
+
+    def _compose_fire(self, settings: Any) -> None:
+        """Compose the one-way Journal-backed employee retirement workflow."""
+
+        if (
+            self._writer is None
+            or self._service is None
+            or self._ingress is None
+            or self._vault is None
+            or self._channels is None
+            or self._slash_factory is None
+            or self._loop is None
+        ):
+            self._fire = None
+            return
+
+        def run_async(coroutine: Any) -> Any:
+            if self._loop is None or self._closing:
+                if hasattr(coroutine, "close"):
+                    coroutine.close()
+                raise RuntimeError("employee runtime is closing")
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+            return future.result(
+                timeout=float(
+                    getattr(settings, "autonomous_context_fetch_timeout_seconds", 30.0)
+                )
+            )
+
+        legacy_base = getattr(
+            settings,
+            "autonomous_slock_storage_base",
+            default_slock_storage_base(),
+        )
+        authority = JournalFireAuthority(
+            writer=self._writer,
+            hire_service=self._service,
+            ingress_service=self._ingress,
+            admin_principal_ids=frozenset(
+                getattr(settings, "admin_user_ids", ()) or ()
+            ),
+        )
+        self._fire = EmployeeFireService(
+            writer=self._writer,
+            authority=authority,
+            effects={
+                "execution_quiesce": ExecutionQuiesceEffect(
+                    self._dispatch,
+                    grace_seconds=float(
+                        getattr(settings, "autonomous_fire_grace_seconds", 5.0)
+                    ),
+                ),
+                "slash_cleanup": SlashCleanupEffect(
+                    reconciler_factory=self._slash_factory,
+                    credential_resolver=self._vault.resolve,
+                    async_runner=run_async,
+                ),
+                "channel_stop": ChannelStopEffect(self._channels),
+                "membership_cleanup": MembershipCleanupEffect(
+                    self._membership,
+                    self._service,
+                ),
+                "credential_destroy": CredentialDestroyEffect(self._vault),
+                "archive_move": AtomicEmployeeArchive(
+                    Path(legacy_base).expanduser() / "agents"
+                ),
+            },
+        )
 
     def _resolve_ingress_binding(self, agent_id: str, app_id: str) -> tuple[str, str]:
         service = self._service

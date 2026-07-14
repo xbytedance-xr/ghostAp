@@ -271,6 +271,18 @@ class CredentialVault:
         except Exception:
             raise CredentialVaultError(credential_ref) from None
 
+    def exists(self, credential_ref: str) -> bool:
+        """Return whether the exact credential envelope still exists."""
+
+        try:
+            filename = self._filename(credential_ref)
+            os.stat(filename, dir_fd=self._root_fd, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            raise CredentialVaultError(credential_ref) from None
+
     def find_orphan_receipts(self, live_credential_refs: set[str]) -> list[CredentialReceipt]:
         """Return stored receipts that no current employee record references."""
         receipts: list[CredentialReceipt] = []

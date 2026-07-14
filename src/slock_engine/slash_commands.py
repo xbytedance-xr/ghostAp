@@ -27,6 +27,7 @@ class SlockCommandAction(Enum):
 
     # Role/Agent management
     NEW_ROLE = "new_role"
+    FIRE_EMPLOYEE = "fire_employee"
     ROLE_LIST = "role_list"
     ROLE_REMOVE = "role_remove"
     ROLE_INFO = "role_info"
@@ -109,7 +110,7 @@ def get_all_command_prefixes() -> set[str]:
 
     Useful for validating command fix suggestions in card actions.
     """
-    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/hire", "/council", "/role", "/task", "/team", "/plan"}
+    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/hire", "/fire", "/council", "/role", "/task", "/team", "/plan"}
     return canonical | set(_ALIASES.keys())
 
 
@@ -159,6 +160,12 @@ def parse_slock_command(text: str) -> SlockCommand:
         if remainder:
             return SlockCommand(action=SlockCommandAction.NEW_ROLE, args=remainder)
         return SlockCommand(action=SlockCommandAction.NEW_ROLE_MISSING_NAME)
+
+    if cmd == "/fire":
+        return SlockCommand(
+            action=SlockCommandAction.FIRE_EMPLOYEE,
+            args=remainder,
+        )
 
     # /council <question>
     if cmd == "/council":
@@ -445,10 +452,10 @@ def is_slock_command(
         cmd_word = _ALIASES[cmd_word]
         normalized = f"{cmd_word} {parts[1]}" if len(parts) > 1 else cmd_word
 
-    # Always capture /slock, /new-team, and /hire regardless of chat state
+    # Always capture department commands regardless of chat state; handlers enforce DM/admin.
     # Use exact first-token match to avoid prefix collisions (e.g. /hireling)
     first_token = normalized.split(None, 1)[0] if normalized else ""
-    if first_token in ("/slock", "/slocks", "/new-team", "/hire"):
+    if first_token in ("/slock", "/slocks", "/new-team", "/hire", "/fire"):
         return SlockCommandResult(is_command=True)
 
     # Global management commands: /team and /role operate across all teams

@@ -21,6 +21,7 @@ class HirePhase(str, Enum):
     VALIDATING = "validating"
     READY_PENDING_VERIFICATION = "ready_pending_verification"
     ACTIVE = "active"
+    RETIRING = "retiring"
     ACTION_REQUIRED = "action_required"
     ARCHIVED = "archived"
 
@@ -124,6 +125,11 @@ _ALLOWED_PHASE_SUCCESSORS = {
     },
     HirePhase.ACTIVE: {
         HirePhase.VALIDATING,
+        HirePhase.RETIRING,
+        HirePhase.ACTION_REQUIRED,
+        HirePhase.ARCHIVED,
+    },
+    HirePhase.RETIRING: {
         HirePhase.ACTION_REQUIRED,
         HirePhase.ARCHIVED,
     },

@@ -77,6 +77,7 @@ def test_employee_thread_context_settings_defaults(settings: Settings) -> None:
     assert settings.autonomous_thread_context_page_size == 50
     assert settings.autonomous_group_context_page_size == 20
     assert settings.autonomous_context_fetch_timeout_seconds == 30.0
+    assert settings.autonomous_fire_grace_seconds == 30.0
     assert settings.autonomous_context_max_pages == 200
 
 
@@ -93,9 +94,12 @@ def test_employee_thread_context_settings_defaults(settings: Settings) -> None:
         ("autonomous_group_context_page_size", 51),
         ("autonomous_context_fetch_timeout_seconds", 0),
         ("autonomous_context_fetch_timeout_seconds", float("inf")),
+        ("autonomous_fire_grace_seconds", 0),
+        ("autonomous_fire_grace_seconds", float("inf")),
         ("autonomous_context_max_pages", 0),
         ("autonomous_thread_context_max_messages", True),
         ("autonomous_context_fetch_timeout_seconds", True),
+        ("autonomous_fire_grace_seconds", True),
     ],
 )
 def test_employee_thread_context_settings_reject_invalid_bounds(
@@ -116,6 +120,7 @@ def test_env_example_documents_employee_thread_context_settings() -> None:
         "AUTONOMOUS_THREAD_CONTEXT_PAGE_SIZE",
         "AUTONOMOUS_GROUP_CONTEXT_PAGE_SIZE",
         "AUTONOMOUS_CONTEXT_FETCH_TIMEOUT_SECONDS",
+        "AUTONOMOUS_FIRE_GRACE_SECONDS",
         "AUTONOMOUS_CONTEXT_MAX_PAGES",
     ):
         assert f"{name}=" in env_example

@@ -615,6 +615,48 @@ class TestCreateRoleDefaults:
         service.start_hire.assert_not_called()
         assert "安全门禁" in handler.reply_text.call_args.args[1]
 
+    def test_global_fire_requires_admin_main_bot_dm(self):
+        handler = self._make_handler()
+        service = MagicMock()
+        handler.ctx.employee_fire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_other"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+        ):
+            handler.fire_employee("msg_1", "chat_dm", "Atlas")
+
+        service.start_fire.assert_not_called()
+        assert "仅允许配置管理员" in handler.reply_text.call_args.args[1]
+
+    def test_global_fire_dispatches_production_service_and_discloses_manual_app_cleanup(self):
+        from src.autonomous.provisioning.fire_state import FirePhase
+
+        handler = self._make_handler()
+        service = MagicMock()
+        service.start_fire.return_value = SimpleNamespace(
+            phase=FirePhase.ARCHIVED,
+            error_code="",
+        )
+        handler.ctx.employee_fire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.fire_employee("msg_1", "chat_dm", "Atlas --drain")
+
+        request = service.start_fire.call_args.args[0]
+        assert request.employee == "Atlas"
+        assert request.tenant_key == "tenant_a"
+        assert request.drain is True
+        message = handler.reply_text.call_args.args[1]
+        assert "手动停用或删除" in message
+        assert "未声称已删除" in message
+
     def test_unassigned_task_claim_competition_tries_next_agent_after_failed_claim(self):
         """Automatic assignment broadcasts the claim chance through ranked candidates."""
         from src.feishu.handlers.slock import SlockHandler

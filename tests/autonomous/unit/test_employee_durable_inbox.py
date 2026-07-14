@@ -122,6 +122,44 @@ def test_stop_admission_rejects_new_ack_but_keeps_accepted_payload_dispatchable(
     writer.close()
 
 
+def test_close_employee_is_anchored_replayable_and_does_not_close_peers(
+    tmp_path: Path,
+) -> None:
+    service, writer, _store = _service(tmp_path)
+
+    assert service.close_employee("tenant_1", "agt_alpha", reason_code="retiring") is True
+    assert service.close_employee("tenant_1", "agt_alpha", reason_code="retiring") is False
+
+    blocked = _payload()
+    with pytest.raises(IngressClosedError, match="employee ingress is closed"):
+        service.accept(_metadata(blocked), blocked, request_id="req_blocked")
+
+    peer = _payload(text="peer")
+    peer_ack = service.accept(
+        _metadata(
+            peer,
+            agent_id="agt_beta",
+            bot_principal_id="bot_beta",
+            app_id="cli_beta",
+            event_id="evt_peer",
+            message_id="om_peer",
+            semantic_digest=peer.payload_sha256,
+            payload_sha256=peer.payload_sha256,
+            payload_size_bytes=peer.canonical_size_bytes,
+        ),
+        peer,
+        request_id="req_peer",
+    )
+    assert peer_ack.duplicate is False
+
+    service.rebuild_projection()
+    assert ("tenant_1", "agt_alpha") in service.state.closed_employees
+    event_types = [event.event_type for frame in writer.replay() for event in frame.events]
+    assert event_types.count("employee.ingress.closed") == 1
+    service.close()
+    writer.close()
+
+
 def test_accept_anchors_safe_metadata_and_keeps_payload_only_in_encrypted_blob(
     tmp_path: Path,
 ) -> None:

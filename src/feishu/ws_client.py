@@ -345,6 +345,11 @@ class FeishuWSClient:
                 if self._employee_department_runtime is not None
                 else None
             ),
+            employee_fire_service=(
+                self._employee_department_runtime.fire_service
+                if self._employee_department_runtime is not None
+                else None
+            ),
             employee_hire_readiness=(
                 self._employee_department_runtime.readiness
                 if self._employee_department_runtime is not None
