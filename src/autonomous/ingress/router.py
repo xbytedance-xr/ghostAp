@@ -47,6 +47,7 @@ _TERMINAL_REASONS = frozenset(
         "attachment_staging_unavailable",
         "attachment_staging_failed",
         "queue_full",
+        "queue_rebalanced",
         "context_coordinates_invalid",
         "inbox_not_dispatchable",
         "completed",
@@ -78,7 +79,7 @@ class ChannelStatusPort(Protocol):
 
 
 class MembershipHealthPort(Protocol):
-    """Optional deny-only live membership health signal."""
+    """Required deny-only live membership health signal."""
 
     def is_degraded(self, agent_id: str, team_id: str) -> bool: ...
 
@@ -201,6 +202,7 @@ class RouterLifecycleRecord:
     team_id: str
     message_id: str
     event_type: str
+    requester_principal_id: str
     state: str
     accepted_sequence: int
     authority: RouterAuthoritySnapshot | None = None
@@ -255,6 +257,7 @@ def _accepted_record(event: JournalEvent, sequence: int) -> RouterLifecycleRecor
         team_id=metadata.chat_id,
         message_id=metadata.message_id,
         event_type=metadata.event_type,
+        requester_principal_id=metadata.sender_principal_id,
         state="accepted",
         accepted_sequence=sequence,
     )
@@ -278,8 +281,28 @@ def _reduce_router_event(
             authority = RouterAuthoritySnapshot.from_dict(payload["authority"])
         except (TypeError, ValueError) as exc:
             raise RouterProjectionError("invalid Router authority snapshot") from exc
-        if authority.agent_id != record.agent_id:
-            raise RouterProjectionError("Router authority employee mismatch")
+        accepted_coordinates = (
+            record.tenant_key,
+            record.agent_id,
+            record.bot_principal_id,
+            record.app_id,
+            record.channel_generation,
+            record.connection_id,
+            record.team_id,
+            record.requester_principal_id,
+        )
+        authority_coordinates = (
+            authority.tenant_key,
+            authority.agent_id,
+            authority.bot_principal_id,
+            authority.app_id,
+            authority.channel_generation,
+            authority.connection_id,
+            authority.team_id,
+            authority.requester_principal_id,
+        )
+        if authority_coordinates != accepted_coordinates:
+            raise RouterProjectionError("Router authority acceptance mismatch")
         updated = replace(record, state="authorized", authority=authority)
     elif event.event_type == _ROUTER_PREFIX + "staging":
         if set(payload) != {"acceptance_id"} or record.state != "authorized":
@@ -339,8 +362,8 @@ class DurableEmployeeIngressRouter:
         channel_status_provider: ChannelStatusPort,
         requester_acl: RequesterAclPort,
         queue_limits: RouterQueueLimits,
+        membership_health: MembershipHealthPort,
         attachment_staging: Any | None = None,
-        membership_health: MembershipHealthPort | None = None,
         constraints_digest: str = "",
         system_prompt_token_reserve: int = 0,
         fault_hook: Callable[[str, RouterLifecycleRecord], None] | None = None,
@@ -355,6 +378,8 @@ class DurableEmployeeIngressRouter:
             raise TypeError("Router authority providers are invalid")
         if not hasattr(requester_acl, "is_authorized"):
             raise TypeError("requester_acl is invalid")
+        if not callable(getattr(membership_health, "is_degraded", None)):
+            raise TypeError("membership_health is invalid")
         # Reuse the request contract for strict trusted reserve validation.
         if system_prompt_token_reserve and not constraints_digest:
             raise ValueError("non-zero reserve requires constraints_digest")
@@ -416,7 +441,7 @@ class DurableEmployeeIngressRouter:
         if record.state in {"queued", "dispatching", "terminal"}:
             return record
         accepted_identity = self._ingress_identity(ingress_record, payload)
-        if self._is_card_action(ingress_record.metadata, payload):
+        if ingress_record.metadata.event_type == "card.action.trigger":
             return self._terminal_for_snapshot(
                 acceptance_id,
                 accepted_identity,
@@ -495,7 +520,6 @@ class DurableEmployeeIngressRouter:
             current_ingress.metadata,
             current_payload,
         )
-        eligible_peers = self._eligible_pending_peers(authority)
         try:
             with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
                 final_ingress,
@@ -517,8 +541,11 @@ class DurableEmployeeIngressRouter:
                     )
                 if record.state == "authorized":
                     record = self._transition_unlocked(record, "staging", {})
-                if self._queue_full_unlocked(record.authority, eligible_peers):
-                    return self._terminal_unlocked(record, "queue_full")
+                if self._queue_full_unlocked(record.authority):
+                    victim = self._rebalance_victim_unlocked(record.authority)
+                    if victim is None:
+                        return self._terminal_unlocked(record, "queue_full")
+                    return self._rebalance_and_queue_unlocked(record, victim)
                 position = 1 + sum(
                     candidate.state == "queued"
                     and candidate.authority is not None
@@ -675,26 +702,35 @@ class DurableEmployeeIngressRouter:
             aggregate_id=record.aggregate_id,
             payload={"acceptance_id": record.acceptance_id, **dict(extra)},
         )
+        return self._commit_events_unlocked((event,), record.acceptance_id)
+
+    def _commit_events_unlocked(
+        self,
+        events: tuple[JournalEvent, ...],
+        result_acceptance_id: str,
+    ) -> RouterLifecycleRecord:
+        """Preflight and anchor one complete Router transaction frame."""
+
         # Reject programmer errors before they can enter the append-only log.
         preflight = self._state.clone()
-        _reduce_router_event(
-            preflight,
-            event,
-            sequence=self._state.cursor_sequence + 1,
-        )
-        versions = self._writer.get_aggregate_versions([record.aggregate_id])
+        next_sequence = self._state.cursor_sequence + 1
+        for event in events:
+            _reduce_router_event(preflight, event, sequence=next_sequence)
+        aggregate_ids = {event.aggregate_id for event in events}
+        versions = self._writer.get_aggregate_versions(aggregate_ids)
         result = self._writer.commit(
-            [event],
+            events,
             versions,
             expected_head_sequence=self._state.cursor_sequence,
             expected_head_hash=self._state.cursor_hash or None,
         )
         if result.state is not CommitState.ANCHORED:
             raise RouterWriteDisabledError("Router transition was not anchored")
-        _reduce_router_event(self._state, event, sequence=result.frame.sequence)
+        for event in events:
+            _reduce_router_event(self._state, event, sequence=result.frame.sequence)
         self._state.cursor_sequence = result.frame.sequence
         self._state.cursor_hash = result.frame.frame_hash
-        return self._record(record.acceptance_id)
+        return self._record(result_acceptance_id)
 
     def _terminal_unlocked(
         self,
@@ -821,15 +857,24 @@ class DurableEmployeeIngressRouter:
                 or not isinstance(ready_metadata, Mapping)
                 or state != "ready"
                 or getattr(status, "agent_id", None) != metadata.agent_id
+                or getattr(status, "tenant_key", None) != metadata.tenant_key
+                or getattr(status, "bot_principal_id", None)
+                != metadata.bot_principal_id
                 or getattr(status, "app_id", None) != metadata.app_id
                 or getattr(status, "generation", None) != metadata.channel_generation
                 or identity.get("app_id") != metadata.app_id
                 or ready_metadata.get("connection_id") != metadata.connection_id
             ):
                 return None, "authority_denied"
-            if self._membership_health is not None:
-                if self._membership_health.is_degraded(metadata.agent_id, metadata.chat_id):
-                    return None, "membership_degraded"
+            try:
+                membership_degraded = self._membership_health.is_degraded(
+                    metadata.agent_id,
+                    metadata.chat_id,
+                )
+            except Exception:
+                return None, "membership_degraded"
+            if type(membership_degraded) is not bool or membership_degraded is not False:
+                return None, "membership_degraded"
             snapshot = RouterAuthoritySnapshot(
                 tenant_key=metadata.tenant_key,
                 agent_id=binding.employee.agent_id,
@@ -947,99 +992,109 @@ class DurableEmployeeIngressRouter:
             constraints_digest=authority.constraints_digest,
         )
 
-    @staticmethod
-    def _is_card_action(metadata: EmployeeIngressMetadata, payload: EmployeeIngressPayload) -> bool:
-        return metadata.event_type == "card.action.trigger" or any(
-            part.get("type") == "card_action" for part in payload.normalized_parts
-        )
-
-    def _eligible_pending_peers(
-        self,
-        authority: RouterAuthoritySnapshot,
-    ) -> frozenset[str] | None:
-        """Sample live peers outside the Journal transaction guard.
-
-        ``None`` is a fail-closed provider failure; an empty set means there
-        are no projected pending peers for which shared capacity is reserved.
-        """
-
-        with self._writer.transaction_guard(), self._mutex:
-            self.rebuild_projection()
-            queued_agents = {
-                record.agent_id
-                for record in self._state.by_acceptance_id.values()
-                if record.state == "queued"
-            }
-            pending = tuple(
-                record
-                for record in self._state.by_acceptance_id.values()
-                if record.agent_id != authority.agent_id
-                and record.agent_id not in queued_agents
-                and record.state in {"accepted", "authorized", "staging"}
-                and record.event_type == "im.message.receive_v1"
-                and record.tenant_key == authority.tenant_key
-            )
-        if not pending:
-            return frozenset()
-        eligible: set[str] = set()
-        for pending_record in pending:
-            try:
-                current, ingress_record, payload = self._dispatch_snapshot(
-                    pending_record.acceptance_id
-                )
-            except (IngressBlobError, KeyError):
-                continue
-            if current.state not in {"accepted", "authorized", "staging"}:
-                continue
-            if ingress_record.metadata.event_type != "im.message.receive_v1":
-                continue
-            peer_authority, _reason = self._resolve_authority(
-                ingress_record.metadata,
-                payload,
-            )
-            if peer_authority is not None:
-                eligible.add(pending_record.acceptance_id)
-        return frozenset(eligible)
-
     def _queue_full_unlocked(
         self,
         authority: RouterAuthoritySnapshot,
-        eligible_peer_ids: frozenset[str] | None,
     ) -> bool:
-        queued = [record for record in self._state.by_acceptance_id.values() if record.state == "queued"]
+        queued = [
+            record
+            for record in self._state.by_acceptance_id.values()
+            if record.state == "queued"
+        ]
         employee_count = sum(record.agent_id == authority.agent_id for record in queued)
-        team_count = sum(record.authority is not None and record.authority.team_id == authority.team_id for record in queued)
-        if employee_count >= self._limits.per_employee or team_count >= self._limits.per_team or len(queued) >= self._limits.global_limit:
-            return True
-        # Preserve a last shared slot only for a pending, currently dispatchable
-        # peer.  Merely existing in the Registry must not waste queue capacity.
-        if employee_count:
-            if eligible_peer_ids is None:
-                return True
-            queued_agents = {record.agent_id for record in queued}
-            eligible = tuple(
-                record
-                for record in self._state.by_acceptance_id.values()
-                if record.acceptance_id in eligible_peer_ids
-                if record.agent_id != authority.agent_id
-                and record.agent_id not in queued_agents
-                and record.state in {"accepted", "authorized", "staging"}
-                and record.event_type == "im.message.receive_v1"
-                and record.tenant_key == authority.tenant_key
+        team_count = sum(
+            record.authority is not None
+            and record.authority.team_id == authority.team_id
+            for record in queued
+        )
+        return (
+            employee_count >= self._limits.per_employee
+            or team_count >= self._limits.per_team
+            or len(queued) >= self._limits.global_limit
+        )
+
+    def _rebalance_victim_unlocked(
+        self,
+        authority: RouterAuthoritySnapshot,
+    ) -> RouterLifecycleRecord | None:
+        """Choose the latest queued peer only when the newcomer owns no slot."""
+
+        queued = tuple(
+            record
+            for record in self._state.by_acceptance_id.values()
+            if record.state == "queued" and record.authority is not None
+        )
+        employee_count = sum(
+            record.authority.agent_id == authority.agent_id for record in queued
+        )
+        if employee_count >= self._limits.per_employee:
+            return None
+        team_count = sum(
+            record.authority.team_id == authority.team_id for record in queued
+        )
+        team_full = team_count >= self._limits.per_team
+        global_full = len(queued) >= self._limits.global_limit
+        if not team_full and not global_full:
+            return None
+        scope = tuple(
+            record
+            for record in queued
+            if not team_full or record.authority.team_id == authority.team_id
+        )
+        scope_counts: dict[str, int] = {}
+        for candidate in scope:
+            scope_counts[candidate.authority.agent_id] = (
+                scope_counts.get(candidate.authority.agent_id, 0) + 1
             )
-            team_peer_waiting = any(
-                record.team_id == authority.team_id for record in eligible
-            )
-            global_peer_waiting = bool(eligible)
-            if (
-                team_peer_waiting
-                and team_count + 1 >= self._limits.per_team
-            ) or (
-                global_peer_waiting
-                and len(queued) + 1 >= self._limits.global_limit
-            ):
-                return True
-        return False
+        if scope_counts.get(authority.agent_id, 0) != 0:
+            return None
+        most_slots = max(scope_counts.values(), default=0)
+        if most_slots <= 1:
+            return None
+        candidates = tuple(
+            candidate
+            for candidate in scope
+            if scope_counts[candidate.authority.agent_id] == most_slots
+        )
+        return max(
+            candidates,
+            key=lambda record: (record.queued_sequence, record.acceptance_id),
+        )
+
+    def _rebalance_and_queue_unlocked(
+        self,
+        record: RouterLifecycleRecord,
+        victim: RouterLifecycleRecord,
+    ) -> RouterLifecycleRecord:
+        if record.authority is None:
+            raise RouterProjectionError("staging Router record lacks authority")
+        position = 1 + sum(
+            candidate.state == "queued"
+            and candidate.acceptance_id != victim.acceptance_id
+            and candidate.authority is not None
+            and candidate.authority.agent_id == record.authority.agent_id
+            for candidate in self._state.by_acceptance_id.values()
+        )
+        events = (
+            JournalEvent(
+                event_type=_ROUTER_PREFIX + "terminal",
+                aggregate_id=victim.aggregate_id,
+                payload={
+                    "acceptance_id": victim.acceptance_id,
+                    "reason_code": "queue_rebalanced",
+                },
+            ),
+            JournalEvent(
+                event_type=_ROUTER_PREFIX + "queued",
+                aggregate_id=record.aggregate_id,
+                payload={
+                    "acceptance_id": record.acceptance_id,
+                    "authority": record.authority.to_dict(),
+                    "queue_position": position,
+                },
+            ),
+        )
+        return self._commit_events_unlocked(events, record.acceptance_id)
 
     @staticmethod
     def _authority_matches(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.util
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
@@ -25,6 +27,15 @@ from src.autonomous.ingress.sdk_capability import (
     LOCKED_LARK_CHANNEL_WHEEL_SHA256,
 )
 from src.config.settings import Settings
+
+
+def test_legacy_in_memory_employee_router_is_structurally_absent() -> None:
+    module_name = "src.autonomous.provisioning.router"
+
+    assert not Path("src/autonomous/provisioning/router.py").exists()
+    assert importlib.util.find_spec(module_name) is None
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(module_name)
 
 
 def _payload(**overrides: object) -> EmployeeIngressPayload:

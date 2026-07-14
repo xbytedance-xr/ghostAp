@@ -53,7 +53,13 @@ def _payload(index: int, *, sender: str = "ou_requester") -> EmployeeIngressPayl
     )
 
 
-def _metadata(payload: EmployeeIngressPayload, index: int, agent_id: str) -> EmployeeIngressMetadata:
+def _metadata(
+    payload: EmployeeIngressPayload,
+    index: int,
+    agent_id: str,
+    *,
+    chat_id: str = "oc_team",
+) -> EmployeeIngressMetadata:
     suffix = hashlib.sha256(f"{agent_id}:{index}".encode()).hexdigest()[:24]
     return EmployeeIngressMetadata(
         schema_version=1,
@@ -68,7 +74,7 @@ def _metadata(payload: EmployeeIngressPayload, index: int, agent_id: str) -> Emp
         message_id=f"om_{suffix}",
         event_type="im.message.receive_v1",
         action_identity="",
-        chat_id="oc_team",
+        chat_id=chat_id,
         thread_root_message_id="om_root",
         sender_principal_id="ou_requester",
         received_at="2026-07-13T00:00:00Z",
@@ -89,6 +95,8 @@ class _Channels:
                 generation=3,
                 pid=index + 100,
                 state=ChannelProcessState.READY,
+                tenant_key="tenant_1",
+                bot_principal_id=f"bot_{agent_id.removeprefix('agt_')}",
                 identity={"app_id": f"cli_{agent_id.removeprefix('agt_')}"},
                 ready_metadata={"connection_id": f"conn_{agent_id.removeprefix('agt_')}"},
             )
@@ -99,16 +107,47 @@ class _Channels:
         return self.statuses.get(agent_id)
 
 
+class _HealthyMembership:
+    def is_degraded(self, _agent_id: str, _team_id: str) -> bool:
+        return False
+
+
+class _SelectiveRejectAnchor(MemoryAnchor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reject_sequence: int | None = None
+
+    def compare_and_swap(
+        self,
+        expected_sequence: int,
+        expected_hash: str,
+        new_sequence: int,
+        new_hash: str,
+    ) -> bool:
+        if new_sequence == self.reject_sequence:
+            return False
+        return super().compare_and_swap(
+            expected_sequence,
+            expected_hash,
+            new_sequence,
+            new_hash,
+        )
+
+
 def _stack(
     tmp_path: Path,
     *,
     agent_ids: tuple[str, ...] = ("agt_alpha",),
     limits: tuple[int, int, int] = (4, 8, 16),
     inactive_agent_ids: tuple[str, ...] = (),
+    anchor: MemoryAnchor | None = None,
 ):
     module = _module()
     writer = JournalWriter.open(
-        tmp_path / "journal", anchor=MemoryAnchor(), hmac_key=HMAC_KEY, writer_epoch=1
+        tmp_path / "journal",
+        anchor=anchor or MemoryAnchor(),
+        hmac_key=HMAC_KEY,
+        writer_epoch=1,
     )
     ingress = EmployeeIngressService(
         writer=writer,
@@ -139,7 +178,7 @@ def _stack(
                 else EmployeeState.ACTIVE
             ),
             bot_principal_id=f"bot_{suffix}",
-            member_groups=("oc_team",),
+            member_groups=("oc_team", "oc_other"),
             aggregate_version=index + 1,
         )
         workforce.bot_principals[f"bot_{suffix}"] = BotPrincipal(
@@ -158,11 +197,13 @@ def _stack(
             registry_provider=lambda: ProjectedAgentRegistry(workforce),
             channel_status_provider=channels,
             requester_acl=RuntimeRequesterChatAcl(
-                allowed_requesters=("ou_requester",), allowed_chats=("oc_team",)
+                allowed_requesters=("ou_requester",),
+                allowed_chats=("oc_team", "oc_other"),
             ),
             queue_limits=module.RouterQueueLimits(
                 per_employee=limits[0], per_team=limits[1], global_limit=limits[2]
             ),
+            membership_health=_HealthyMembership(),
         )
 
     return module, writer, ingress, new_router
@@ -174,9 +215,10 @@ def _accept(
     agent_id: str = "agt_alpha",
     *,
     sender: str = "ou_requester",
+    chat_id: str = "oc_team",
 ) -> str:
     payload = _payload(index, sender=sender)
-    metadata = _metadata(payload, index, agent_id)
+    metadata = _metadata(payload, index, agent_id, chat_id=chat_id)
     metadata = replace(metadata, sender_principal_id=sender)
     ack = ingress.accept(
         metadata,
@@ -364,24 +406,34 @@ def test_two_employees_are_isolated_under_team_and_global_queue_limits(
         limits=(2, 2, 2),
     )
     router = new_router()
-    acceptance_ids = (
+    alpha = (
         _accept(ingress, 1, "agt_alpha"),
         _accept(ingress, 2, "agt_alpha"),
-        _accept(ingress, 3, "agt_beta"),
     )
-    barrier = Barrier(3)
+    assert [router.route(item).state for item in alpha] == ["queued", "queued"]
+    beta = (
+        _accept(ingress, 3, "agt_beta"),
+        _accept(ingress, 4, "agt_beta"),
+    )
+    barrier = Barrier(2)
 
     def admit(acceptance_id: str):
         barrier.wait()
         return router.route(acceptance_id)
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        records = list(pool.map(admit, acceptance_ids))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(admit, beta))
 
-    queued = [record for record in records if record.state == "queued"]
-    rejected = [record for record in records if record.reason_code == "queue_full"]
+    router.rebuild_projection()
+    final_records = [router.state.by_acceptance_id[item] for item in (*alpha, *beta)]
+    queued = [record for record in final_records if record.state == "queued"]
+    rejected = [
+        record for record in final_records if record.reason_code == "queue_rebalanced"
+    ]
     assert {record.authority.agent_id for record in queued} == {"agt_alpha", "agt_beta"}
     assert len(rejected) == 1 and rejected[0].agent_id == "agt_alpha"
+    queue_full = [record for record in final_records if record.reason_code == "queue_full"]
+    assert len(queue_full) == 1 and queue_full[0].agent_id == "agt_beta"
     assert router.queue_depth(team_id="oc_team") == 2
     ingress.close()
     writer.close()
@@ -429,9 +481,13 @@ def test_unauthorized_pending_peer_does_not_reserve_shared_capacity(
     )
     router = new_router()
     alpha = (_accept(ingress, 1), _accept(ingress, 2))
-    _accept(ingress, 3, "agt_beta", sender="ou_intruder")
+    beta = _accept(ingress, 3, "agt_beta", sender="ou_intruder")
 
     assert [router.route(item).state for item in alpha] == ["queued", "queued"]
+    rejected = router.route(beta)
+    assert rejected.state == "terminal"
+    assert rejected.reason_code == "requester_denied"
+    assert all(router.state.by_acceptance_id[item].state == "queued" for item in alpha)
     assert router.queue_depth() == 2
     ingress.close()
     writer.close()
@@ -462,5 +518,237 @@ def test_two_router_instances_atomically_admit_one_acceptance_once(
     ]
     assert len(queued_events) == 1
     assert queued_events[0].payload["acceptance_id"] == acceptance_id
+    ingress.close()
+    writer.close()
+
+
+def test_new_employee_rebalances_latest_queued_peer_in_one_frame(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha_1 = _accept(ingress, 1, "agt_alpha")
+    alpha_2 = _accept(ingress, 2, "agt_alpha")
+    assert router.route(alpha_1).state == "queued"
+    assert router.route(alpha_2).state == "queued"
+    beta = _accept(ingress, 3, "agt_beta")
+
+    admitted = router.route(beta)
+
+    assert admitted.state == "queued"
+    assert router.state.by_acceptance_id[alpha_1].state == "queued"
+    victim = router.state.by_acceptance_id[alpha_2]
+    assert victim.state == "terminal"
+    assert victim.reason_code == "queue_rebalanced"
+    rebalance_frames = [
+        frame
+        for frame in writer.replay()
+        if [event.event_type for event in frame.events]
+        == [
+            "employee.ingress.router_terminal",
+            "employee.ingress.router_queued",
+        ]
+    ]
+    assert len(rebalance_frames) == 1
+    assert [event.payload["acceptance_id"] for event in rebalance_frames[0].events] == [
+        alpha_2,
+        beta,
+    ]
+    assert set(rebalance_frames[0].expected_versions) == {
+        router.state.by_acceptance_id[alpha_2].aggregate_id,
+        router.state.by_acceptance_id[beta].aggregate_id,
+    }
+    ingress.close()
+    writer.close()
+
+
+def test_rebalance_does_not_churn_when_each_agent_owns_one_slot(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta", "agt_gamma"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha = _accept(ingress, 1, "agt_alpha")
+    beta = _accept(ingress, 2, "agt_beta")
+    assert router.route(alpha).state == "queued"
+    assert router.route(beta).state == "queued"
+    gamma = _accept(ingress, 3, "agt_gamma")
+
+    rejected = router.route(gamma)
+
+    assert rejected.state == "terminal"
+    assert rejected.reason_code == "queue_full"
+    assert router.state.by_acceptance_id[alpha].state == "queued"
+    assert router.state.by_acceptance_id[beta].state == "queued"
+    ingress.close()
+    writer.close()
+
+
+def test_rebalance_evicts_latest_item_from_most_overrepresented_agent(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta", "agt_gamma"),
+        limits=(2, 3, 3),
+    )
+    router = new_router()
+    alpha = [_accept(ingress, index, "agt_alpha") for index in (1, 2)]
+    beta = _accept(ingress, 3, "agt_beta")
+    for acceptance_id in (*alpha, beta):
+        assert router.route(acceptance_id).state == "queued"
+    gamma = _accept(ingress, 4, "agt_gamma")
+
+    admitted = router.route(gamma)
+
+    assert admitted.state == "queued"
+    assert router.state.by_acceptance_id[alpha[0]].state == "queued"
+    assert router.state.by_acceptance_id[alpha[1]].reason_code == "queue_rebalanced"
+    assert router.state.by_acceptance_id[beta].state == "queued"
+    ingress.close()
+    writer.close()
+
+
+def test_team_full_rebalance_never_evicts_another_team(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta", "agt_gamma"),
+        limits=(2, 2, 4),
+    )
+    router = new_router()
+    alpha = [_accept(ingress, index, "agt_alpha") for index in (1, 2)]
+    for acceptance_id in alpha:
+        assert router.route(acceptance_id).state == "queued"
+    other_team = _accept(ingress, 3, "agt_gamma", chat_id="oc_other")
+    assert router.route(other_team).state == "queued"
+    beta = _accept(ingress, 4, "agt_beta")
+
+    admitted = router.route(beta)
+
+    assert admitted.state == "queued"
+    assert router.state.by_acceptance_id[alpha[1]].reason_code == "queue_rebalanced"
+    assert router.state.by_acceptance_id[other_team].state == "queued"
+    ingress.close()
+    writer.close()
+
+
+def test_global_full_rebalance_can_evict_another_team(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta", "agt_gamma"),
+        limits=(2, 3, 3),
+    )
+    router = new_router()
+    alpha = [
+        _accept(ingress, index, "agt_alpha", chat_id="oc_other")
+        for index in (1, 2)
+    ]
+    for acceptance_id in alpha:
+        assert router.route(acceptance_id).state == "queued"
+    beta = _accept(ingress, 3, "agt_beta")
+    assert router.route(beta).state == "queued"
+    gamma = _accept(ingress, 4, "agt_gamma")
+
+    admitted = router.route(gamma)
+
+    assert admitted.state == "queued"
+    assert router.state.by_acceptance_id[alpha[1]].reason_code == "queue_rebalanced"
+    assert router.state.by_acceptance_id[beta].state == "queued"
+    ingress.close()
+    writer.close()
+
+
+def test_rebalance_never_evicts_dispatching_work(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha_dispatching = _accept(ingress, 1, "agt_alpha")
+    assert router.route(alpha_dispatching).state == "queued"
+    grant = router.dequeue()
+    assert grant is not None and grant.record.acceptance_id == alpha_dispatching
+    alpha_queued = [
+        _accept(ingress, index, "agt_alpha") for index in (2, 3)
+    ]
+    for acceptance_id in alpha_queued:
+        assert router.route(acceptance_id).state == "queued"
+    beta = _accept(ingress, 4, "agt_beta")
+
+    admitted = router.route(beta)
+
+    assert admitted.state == "queued"
+    assert router.state.by_acceptance_id[alpha_dispatching].state == "dispatching"
+    assert router.state.by_acceptance_id[alpha_queued[0]].state == "queued"
+    assert (
+        router.state.by_acceptance_id[alpha_queued[1]].reason_code
+        == "queue_rebalanced"
+    )
+    ingress.close()
+    writer.close()
+
+
+def test_rebalance_frame_replays_atomically_after_restart(tmp_path: Path) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha = [_accept(ingress, index, "agt_alpha") for index in (1, 2)]
+    for acceptance_id in alpha:
+        assert router.route(acceptance_id).state == "queued"
+    beta = _accept(ingress, 3, "agt_beta")
+    assert router.route(beta).state == "queued"
+
+    restarted = new_router()
+
+    assert restarted.state.by_acceptance_id[alpha[0]].state == "queued"
+    assert restarted.state.by_acceptance_id[alpha[1]].reason_code == "queue_rebalanced"
+    assert restarted.state.by_acceptance_id[beta].state == "queued"
+    ingress.close()
+    writer.close()
+
+
+def test_anchor_failure_cannot_publish_half_a_rebalance(tmp_path: Path) -> None:
+    anchor = _SelectiveRejectAnchor()
+    module, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+        anchor=anchor,
+    )
+    router = new_router()
+    alpha = [_accept(ingress, index, "agt_alpha") for index in (1, 2)]
+    for acceptance_id in alpha:
+        assert router.route(acceptance_id).state == "queued"
+    beta = _accept(ingress, 3, "agt_beta")
+    anchor.reject_sequence = anchor.read().sequence + 3
+
+    with pytest.raises(module.RouterWriteDisabledError):
+        router.route(beta)
+
+    assert all(router.state.by_acceptance_id[item].state == "queued" for item in alpha)
+    assert router.state.by_acceptance_id[beta].state == "staging"
+    router.rebuild_projection()
+    assert all(router.state.by_acceptance_id[item].state == "queued" for item in alpha)
+    assert router.state.by_acceptance_id[beta].state == "staging"
+    unanchored = next(
+        frame for frame in writer.replay() if frame.sequence == anchor.reject_sequence
+    )
+    assert [event.event_type for event in unanchored.events] == [
+        "employee.ingress.router_terminal",
+        "employee.ingress.router_queued",
+    ]
+    assert not any(
+        frame.sequence <= anchor.read().sequence
+        and {event.payload.get("acceptance_id") for event in frame.events}
+        == {alpha[1], beta}
+        for frame in writer.replay()
+    )
     ingress.close()
     writer.close()

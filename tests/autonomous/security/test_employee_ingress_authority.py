@@ -150,6 +150,8 @@ class _Channels:
                 generation=3,
                 pid=123,
                 state=ChannelProcessState.READY,
+                tenant_key="tenant_1",
+                bot_principal_id="bot_alpha",
                 identity={"app_id": "cli_alpha"},
                 ready_metadata={"connection_id": "conn_3"},
             )
@@ -160,12 +162,14 @@ class _Channels:
 
 
 class _MembershipHealth:
-    def __init__(self, degraded: bool) -> None:
+    def __init__(self, degraded: object) -> None:
         self.degraded = degraded
 
-    def is_degraded(self, agent_id: str, team_id: str) -> bool:
+    def is_degraded(self, agent_id: str, team_id: str):
         assert agent_id == "agt_alpha"
         assert team_id == "oc_team"
+        if isinstance(self.degraded, BaseException):
+            raise self.degraded
         return self.degraded
 
 
@@ -348,6 +352,87 @@ def test_degraded_membership_is_a_deny_only_signal(tmp_path: Path) -> None:
     writer.close()
 
 
+@pytest.mark.parametrize(
+    "health_result",
+    (None, 1, "healthy", RuntimeError("membership unavailable")),
+)
+def test_only_exact_false_membership_health_is_accepted(
+    tmp_path: Path,
+    health_result: object,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        membership_degraded=health_result,
+    )
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "membership_degraded"
+    ingress.close()
+    writer.close()
+
+
+def test_membership_health_port_is_required_and_structural(tmp_path: Path) -> None:
+    module, writer, ingress, workforce, channels, _ = _stack(tmp_path)
+    common = {
+        "writer": writer,
+        "ingress_service": ingress,
+        "registry_provider": lambda: ProjectedAgentRegistry(workforce),
+        "channel_status_provider": channels,
+        "requester_acl": RuntimeRequesterChatAcl(
+            allowed_requesters=("ou_requester",),
+            allowed_chats=("oc_team",),
+        ),
+        "queue_limits": module.RouterQueueLimits(4, 8, 16),
+    }
+
+    with pytest.raises(TypeError):
+        module.DurableEmployeeIngressRouter(**common)
+    with pytest.raises(TypeError, match="membership_health"):
+        module.DurableEmployeeIngressRouter(
+            **common,
+            membership_health=object(),
+        )
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize(
+    ("status_field", "wrong_value"),
+    (("tenant_key", "tenant_other"), ("bot_principal_id", "bot_other")),
+)
+def test_live_channel_status_binds_tenant_and_bot_principal(
+    tmp_path: Path,
+    status_field: str,
+    wrong_value: str,
+) -> None:
+    _, writer, ingress, _, channels, router = _stack(tmp_path)
+    status = channels.statuses["agt_alpha"]
+    values = {
+        "agent_id": status.agent_id,
+        "app_id": status.app_id,
+        "generation": status.generation,
+        "pid": status.pid,
+        "state": status.state,
+        "identity": status.identity,
+        "ready_metadata": status.ready_metadata,
+        "tenant_key": "tenant_1",
+        "bot_principal_id": "bot_alpha",
+    }
+    values[status_field] = wrong_value
+    channels.statuses["agt_alpha"] = SimpleNamespace(**values)
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "authority_denied"
+    ingress.close()
+    writer.close()
+
+
 def test_unrelated_projection_head_advancement_does_not_stale_same_employee_version(
     tmp_path: Path,
 ) -> None:
@@ -512,6 +597,93 @@ def test_authorized_context_uses_frozen_snapshot_and_trusted_constraints_only(
     assert grant.request.requester_principal_id == queued.authority.requester_principal_id
     assert grant.request.system_prompt_token_reserve == 512
     assert grant.request.constraints_digest == "a" * 64
+    ingress.close()
+    writer.close()
+
+
+def test_accepted_router_projection_retains_requester_principal(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload())
+
+    record = router.route(acceptance_id)
+
+    assert record.requester_principal_id == "ou_requester"
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "forged_value"),
+    (
+        ("tenant_key", "tenant_other"),
+        ("agent_id", "agt_other"),
+        ("bot_principal_id", "bot_other"),
+        ("app_id", "cli_other"),
+        ("channel_generation", 4),
+        ("connection_id", "conn_other"),
+        ("team_id", "oc_other"),
+        ("requester_principal_id", "ou_other"),
+    ),
+)
+def test_authorized_replay_rejects_every_forged_acceptance_coordinate(
+    tmp_path: Path,
+    field_name: str,
+    forged_value: object,
+) -> None:
+    module, writer, ingress, workforce, channels, _ = _stack(tmp_path)
+    payload = _payload()
+    acceptance_id = _accept(ingress, payload)
+    ingress_record = ingress.state.by_acceptance_id[acceptance_id]
+    authority = module.RouterAuthoritySnapshot(
+        tenant_key="tenant_1",
+        agent_id="agt_alpha",
+        bot_principal_id="bot_alpha",
+        app_id="cli_alpha",
+        channel_generation=3,
+        connection_id="conn_3",
+        team_id="oc_team",
+        requester_principal_id="ou_requester",
+        projection_sequence=0,
+        projection_hash=GENESIS_HASH,
+        employee_version=4,
+        tool="codex",
+        model="gpt-5.6-sol",
+        effort="xhigh",
+        constraints_digest="a" * 64,
+        system_prompt_token_reserve=512,
+    ).to_dict()
+    authority[field_name] = forged_value
+    writer.commit(
+        [
+            JournalEvent(
+                event_type="employee.ingress.router_authorized",
+                aggregate_id=ingress_record.aggregate_id,
+                payload={
+                    "acceptance_id": acceptance_id,
+                    "authority": authority,
+                },
+            )
+        ],
+        writer.get_aggregate_versions([ingress_record.aggregate_id]),
+    )
+
+    with pytest.raises(module.RouterProjectionError):
+        module.DurableEmployeeIngressRouter(
+            writer=writer,
+            ingress_service=ingress,
+            registry_provider=lambda: ProjectedAgentRegistry(workforce),
+            channel_status_provider=channels,
+            requester_acl=RuntimeRequesterChatAcl(
+                allowed_requesters=("ou_requester",),
+                allowed_chats=("oc_team",),
+            ),
+            queue_limits=module.RouterQueueLimits(4, 8, 16),
+            membership_health=_MembershipHealth(False),
+            constraints_digest="a" * 64,
+            system_prompt_token_reserve=512,
+        )
     ingress.close()
     writer.close()
 

@@ -510,6 +510,15 @@ def test_card_action_never_self_attests_user_value_as_trusted_correlation() -> N
 
     assert metadata.action_identity == ""
     assert correlation is None
+    assert _payload.normalized_parts == (
+        {
+            "type": "card_action",
+            "sender_id": "ou_sender",
+            "sender_id_type": "open_id",
+            "sender_type": "",
+            "sender_tenant_key": "",
+        },
+    )
 
     event.header.event_id = ""
     with pytest.raises(ValueError, match="trusted event identity"):
@@ -523,3 +532,62 @@ def test_card_action_never_self_attests_user_value_as_trusted_correlation() -> N
             tenant_key="tenant-contract",
             bot_principal_id="bot_contract",
         )
+
+
+def test_card_normalization_never_reads_the_untrusted_action_object() -> None:
+    class ExplosiveBody:
+        operator = type(
+            "Operator",
+            (),
+            {
+                "open_id": "ou_sender",
+                "sender_type": "user",
+                "tenant_key": "tenant-contract",
+            },
+        )()
+        context = type(
+            "Context",
+            (),
+            {
+                "open_message_id": "om_external",
+                "open_chat_id": "oc_external",
+            },
+        )()
+
+        @property
+        def action(self):
+            raise AssertionError("card action must remain opaque before issuance")
+
+    event = type(
+        "Event",
+        (),
+        {
+            "header": type(
+                "Header",
+                (),
+                {
+                    "event_id": "external-event-id",
+                    "event_type": "card.action.trigger",
+                    "create_time": "1783900800000",
+                    "app_id": "cli_contract",
+                    "tenant_key": "tenant-contract",
+                },
+            )(),
+            "event": ExplosiveBody(),
+        },
+    )()
+
+    metadata, payload, correlation = _normalize_sdk_ingress(
+        event,
+        kind="card",
+        agent_id="agt_contract",
+        app_id="cli_contract",
+        generation=2,
+        connection_id="conn_contract",
+        tenant_key="tenant-contract",
+        bot_principal_id="bot_contract",
+    )
+
+    assert metadata.event_type == "card.action.trigger"
+    assert payload.normalized_parts[0]["type"] == "card_action"
+    assert correlation is None

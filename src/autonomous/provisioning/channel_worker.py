@@ -628,22 +628,18 @@ def _normalize_sdk_ingress(
     elif kind == "card":
         context = getattr(body, "context", None)
         operator = getattr(body, "operator", None)
-        action = getattr(body, "action", None)
         sender_id = getattr(operator, "open_id", "")
         message_id = getattr(context, "open_message_id", "")
         chat_id = getattr(context, "open_chat_id", "")
         root_id = ""
-        value = getattr(action, "value", None) or {}
         action_identity = ""
         parts = (
             {
                 "type": "card_action",
-                "tag": getattr(action, "tag", ""),
-                "value": value,
                 "sender_id": sender_id,
                 "sender_id_type": "open_id",
                 "sender_type": getattr(operator, "sender_type", "") or "",
-                "sender_tenant_key": getattr(operator, "tenant_key", ""),
+                "sender_tenant_key": getattr(operator, "tenant_key", "") or "",
             },
         )
     else:

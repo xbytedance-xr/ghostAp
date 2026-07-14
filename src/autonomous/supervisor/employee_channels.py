@@ -70,6 +70,8 @@ class ChannelProcessStatus:
     generation: int
     pid: int
     state: ChannelProcessState
+    tenant_key: str = ""
+    bot_principal_id: str = ""
     identity: dict[str, Any] = field(default_factory=dict)
     ready_metadata: dict[str, Any] = field(default_factory=dict)
     sandbox: SandboxAttestation | None = None
@@ -327,6 +329,8 @@ class EmployeeChannelSupervisor:
             generation=generation,
             pid=process.pid,
             state=ChannelProcessState.STARTING,
+            tenant_key=tenant_key,
+            bot_principal_id=bot_principal_id,
         )
         runtime = _Runtime(
             process,

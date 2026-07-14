@@ -412,6 +412,8 @@ def test_parent_supervisor_anchors_runtime_bound_ingress_before_ack(
     )
     try:
         status = supervisor.start("agt_fixture", "cli_fixture", "cred_1", 3, lambda _: None)
+        assert status.tenant_key == "tenant-fixture"
+        assert status.bot_principal_id == "bot_fixture"
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             status = supervisor.status("agt_fixture")
