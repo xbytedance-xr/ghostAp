@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from .models import (
 )
 from .policy import build_document_labels, build_history_labels, validate_blob_ref_labels
 from .projection import (
+    DataAuthority,
     DataProjectionState,
     JournalHead,
     is_data_event,
@@ -106,12 +108,15 @@ class EmployeeDataService:
         data_state: DataProjectionState,
         active_key_id: str,
         shard_timezone: str = "UTC",
+        authority_required: bool = False,
     ) -> None:
         self._writer = writer
         self._blob_store = blob_store
         self._state = data_state
         self._active_key_id = active_key_id
         self._shard_timezone = shard_timezone
+        self._authority_required = authority_required
+        self._legacy_import_depth = threading.local()
         self._mutex = threading.RLock()
         self._known_cursor = (
             data_state.cursor_sequence,
@@ -121,6 +126,10 @@ class EmployeeDataService:
     @property
     def state(self) -> DataProjectionState:
         return self._state
+
+    @property
+    def shard_timezone(self) -> str:
+        return self._shard_timezone
 
     def get_head(self) -> JournalHead:
         with self._mutex:
@@ -144,6 +153,64 @@ class EmployeeDataService:
         """Hold a consistent data projection view during an authorized read."""
         with self._mutex:
             yield
+
+    @contextmanager
+    def legacy_import_scope(self) -> Iterator[None]:
+        """Allow verified startup import only before canonical authority exists."""
+
+        with self._mutex:
+            self._synchronize_projection_unlocked()
+            if self._state.data_authority.mode != "legacy":
+                raise DataWriteDisabledError("legacy import authority is closed")
+            depth = getattr(self._legacy_import_depth, "value", 0)
+            self._legacy_import_depth.value = depth + 1
+            try:
+                yield
+            finally:
+                self._legacy_import_depth.value = depth
+
+    def cutover_to_canonical(self) -> DataAuthority:
+        """Publish the one-way independent data-writer authority fence."""
+
+        with self._mutex, self._writer.transaction_guard():
+            self._synchronize_projection_unlocked()
+            current = self._state.data_authority
+            if current.mode == "canonical":
+                return current
+            if current.mode != "legacy":
+                raise DataWriteDisabledError("unknown data authority mode")
+            next_sequence = self._state.cursor_sequence + 1
+            event = JournalEvent(
+                event_type="employee.data.authority_cutover",
+                aggregate_id="employee-data-authority",
+                payload={
+                    "epoch": current.epoch + 1,
+                    "mode": "canonical",
+                    "cutover_sequence": next_sequence,
+                },
+            )
+            versions = self._writer.get_aggregate_versions([event.aggregate_id])
+            result = self._writer.commit(
+                [event],
+                versions,
+                expected_head_sequence=self._state.cursor_sequence,
+                expected_head_hash=self._state.cursor_hash or None,
+            )
+            if result.state is not CommitState.ANCHORED:
+                raise DataWriteDisabledError("data authority cutover not anchored")
+            self._apply_frame(result)
+            return self._state.data_authority
+
+    def _require_write_authority_unlocked(self) -> None:
+        if not self._authority_required:
+            return
+        if getattr(self._legacy_import_depth, "value", 0) > 0:
+            if self._state.data_authority.mode != "legacy":
+                raise DataWriteDisabledError("stale legacy data writer")
+            return
+        authority = self._state.data_authority
+        if authority.mode != "canonical" or authority.epoch < 1:
+            raise DataWriteDisabledError("canonical data authority is unavailable")
 
     def rebuild_projection(self) -> DataProjectionState:
         """Replay and atomically replace the live projection under one owner."""
@@ -179,6 +246,91 @@ class EmployeeDataService:
                 raise DataBlobError("history payload verification failed")
             return payload
 
+    def read_blob(self, ref: BlobRef) -> bytes:
+        """Internal recovery read for a projected encrypted Blob reference."""
+
+        if not isinstance(ref, BlobRef):
+            raise TypeError("ref must be BlobRef")
+        return self._blob_store.read(ref)
+
+    def verify_live_blobs(self) -> None:
+        """Authenticate every live history and document Blob before readiness."""
+
+        with self._mutex:
+            self._synchronize_projection_unlocked()
+            history_ids = tuple(
+                record.record_id
+                for record in self._state.history_records.values()
+                if not record.tombstoned
+            )
+            documents = tuple(
+                document
+                for document in self._state.employee_documents.values()
+                if not document.tombstoned
+            )
+        for record_id in history_ids:
+            self.get_history_payload(record_id)
+        for document in documents:
+            ref = BlobRef.from_dict(document.blob_ref)
+            validate_blob_ref_labels(
+                ref,
+                build_document_labels(
+                    tenant_key=document.tenant_key,
+                    owner_principal_id=document.owner_principal_id,
+                    document_id=document.document_id,
+                    kind=document.kind.value,
+                ),
+            )
+            content = self._blob_store.read(ref)
+            if hashlib.sha256(content).hexdigest() != document.content_hash:
+                raise DataBlobError("document Blob verification failed")
+
+    def emit(
+        self,
+        *,
+        principal_id: str,
+        operation: str,
+        resource_id: str,
+        outcome: str,
+        reason: str,
+    ) -> bool:
+        """Anchor one non-secret read audit; return false on any failure."""
+
+        try:
+            nonce = str(time.time_ns())
+            digest = hashlib.sha256(
+                "\x00".join(
+                    (principal_id, operation, resource_id, outcome, reason, nonce)
+                ).encode()
+            ).hexdigest()
+            event = JournalEvent(
+                event_type="employee.data.read_audited",
+                aggregate_id=f"data-audit:{digest}",
+                payload={
+                    "principal_id": principal_id,
+                    "operation": operation,
+                    "resource_id": resource_id,
+                    "outcome": outcome,
+                    "reason": reason,
+                },
+            )
+            with self._mutex, self._writer.transaction_guard():
+                self._synchronize_projection_unlocked()
+                self._require_write_authority_unlocked()
+                versions = self._writer.get_aggregate_versions([event.aggregate_id])
+                result = self._writer.commit(
+                    [event],
+                    versions,
+                    expected_head_sequence=self._state.cursor_sequence,
+                    expected_head_hash=self._state.cursor_hash or None,
+                )
+                if result.state is not CommitState.ANCHORED:
+                    return False
+                self._apply_frame(result)
+            return True
+        except Exception:
+            return False
+
     def quarantine_unreferenced_blobs(self) -> int:
         """Quarantine orphan blobs against one locked projection snapshot."""
         with self._mutex:
@@ -208,6 +360,7 @@ class EmployeeDataService:
             raise TypeError("context must be ExecutionAttemptContext")
         with self._mutex, self._writer.transaction_guard():
             self._synchronize_projection_unlocked()
+            self._require_write_authority_unlocked()
             if context.attempt_id in self._state.execution_attempts:
                 raise DataConflictError(f"attempt already started: {context.attempt_id}")
             event = JournalEvent(
@@ -246,6 +399,7 @@ class EmployeeDataService:
             duplicate = False
             with self._mutex, self._writer.transaction_guard():
                 self._synchronize_projection_unlocked()
+                self._require_write_authority_unlocked()
                 occ_key = (record.tenant_key, record.agent_id, record.occurrence_key)
                 existing_id = self._state.history_by_occurrence.get(occ_key)
                 if existing_id is not None:
@@ -297,6 +451,9 @@ class EmployeeDataService:
             raise ValueError("record/payload ID mismatch")
         if record.occurrence_key != sensitive_payload.occurrence_key:
             raise ValueError("record/payload occurrence mismatch")
+        with self._mutex:
+            self._synchronize_projection_unlocked()
+            self._require_write_authority_unlocked()
         labels = build_history_labels(
             record.tenant_key,
             record.owner_principal_id,
@@ -338,6 +495,7 @@ class EmployeeDataService:
 
         if not isinstance(staged, StagedHistoryPayload):
             raise TypeError("staged must be StagedHistoryPayload")
+        self._require_write_authority_unlocked()
         record = staged.record
         occurrence = (record.tenant_key, record.agent_id, record.occurrence_key)
         if record.record_id in self._state.history_records or (
@@ -420,6 +578,7 @@ class EmployeeDataService:
             raise ValueError("content hash does not match document")
         with self._mutex, self._writer.transaction_guard():
             self._synchronize_projection_unlocked()
+            self._require_write_authority_unlocked()
             if document.document_id in self._state.employee_documents:
                 raise DataConflictError(f"document already exists: {document.document_id}")
             labels = build_document_labels(

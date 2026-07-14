@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 from pathlib import Path
@@ -15,7 +14,6 @@ from src.autonomous.data.models import (
     ExecutionHistoryPayloadV1,
     ExecutionHistoryRecordV1,
     SafeExecutionSummary,
-    ToolUsageV1,
 )
 from src.autonomous.data.projection import DataProjectionState
 from src.autonomous.data.query import (
@@ -158,6 +156,35 @@ class TestDailyHistoryMaterializer:
 
 
 class TestACLHistoryQuery:
+    def test_nonempty_chat_without_trusted_membership_is_denied(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        svc, state, writer, blob_store = _service(tmp_path)
+        _publish_record(svc)
+        factory = EmployeeDataRequestContextFactory(
+            admin_principal_ids=frozenset(),
+            main_bot_app_id="main_bot",
+        )
+        query = HistoryRangeQuery(state=state, context_factory=factory)
+        request = AuthenticatedDataRequest(
+            principal_id="random_user",
+            tenant_key="tenant_1",
+            receiving_bot_app_id="employee_bot",
+            chat_id="chat_1",
+            chat_type="group",
+            thread_root_id="",
+            requested_agent_id="agt_alpha",
+        )
+
+        with pytest.raises(QueryDeniedError):
+            query.query(
+                request,
+                HistoryQuerySpec(start_day="2026-07-12", end_day="2026-07-12"),
+            )
+        blob_store.close()
+        writer.close()
+
     def test_admin_sees_all_records(self, tmp_path: Path) -> None:
         svc, state, writer, blob_store = _service(tmp_path)
         _publish_record(svc, attempt_suffix="_1")

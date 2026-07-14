@@ -185,6 +185,12 @@ class EmployeeMemoryFacade:
         self._legacy_base = Path(legacy_base_path) if legacy_base_path else None
         self._projection_guard = projection_guard or nullcontext
 
+    @property
+    def legacy_base_path(self) -> Path | None:
+        """Configured legacy root used only by the startup importer."""
+
+        return self._legacy_base
+
     def read_l1(
         self,
         agent_id: str,

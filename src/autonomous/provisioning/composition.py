@@ -8,6 +8,7 @@ import binascii
 import concurrent.futures
 import hashlib
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -35,6 +36,9 @@ from ..data.composition import (
     build_employee_data_composition,
 )
 from ..data.keyring import EmployeeDataKeyring
+from ..data.ports import HistoryQuerySpec, MemoryQuerySpec
+from ..data.query import AuthenticatedDataRequest, EmployeeDataSubject, QueryDeniedError
+from ..domain import EmployeeState
 from ..gateway.coordinator import EmployeeDispatchCoordinator
 from ..gateway.env_scope import (
     EmployeeEnvironmentAuthority,
@@ -485,7 +489,14 @@ class EmployeeDepartmentRuntime:
                     )
                     self._execution_blockers = ("membership_recovery",)
         if self._data is not None:
-            self._data.service.rebuild_projection()
+            try:
+                self._recover_employee_data(self._service.projection_state)
+            except Exception as exc:
+                logger.error(
+                    "employee data recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                self._execution_blockers = ("employee_data_recovery",)
         execution_recovered = not self._execution_blockers
         if execution_recovered:
             try:
@@ -692,6 +703,8 @@ class EmployeeDepartmentRuntime:
                 main_bot_app_id=getattr(settings, "app_id", ""),
                 agents_root=Path(legacy_base).expanduser() / "agents",
                 legacy_base=legacy_base,
+                subject_resolver=self._resolve_data_subject,
+                auto_cutover=False,
             )
             keyring = EmployeeDataKeyring.from_settings(settings)
             self._ingress = EmployeeIngressService.from_keyring(
@@ -756,6 +769,54 @@ class EmployeeDepartmentRuntime:
             self._outbox = None
             self._data = None
             self._execution_blockers = ("employee_ingress",)
+
+    def _resolve_data_subject(
+        self,
+        tenant_key: str,
+        agent_id: str,
+    ) -> EmployeeDataSubject | None:
+        service = self._service
+        if service is None:
+            return None
+        projection = service.synchronize_projection()
+        employee = projection.employees.get(agent_id)
+        if employee is None or employee.tenant_key != tenant_key:
+            return None
+        return EmployeeDataSubject(
+            tenant_key=employee.tenant_key,
+            agent_id=employee.agent_id,
+            owner_principal_id=employee.owner_principal_id,
+            member_groups=tuple(employee.member_groups),
+        )
+
+    def _recover_employee_data(self, projection: ProjectionState) -> None:
+        data = self._data
+        if data is None:
+            return
+        data.service.rebuild_projection()
+        if data.state.data_authority.mode == "legacy":
+            from ..migration.slock_data_importer import SlockDataImporter
+
+            legacy_base = data.memory_facade.legacy_base_path
+            if legacy_base is None:
+                raise RuntimeError("legacy data base is unavailable")
+            with data.service.legacy_import_scope():
+                for employee in sorted(
+                    projection.employees.values(),
+                    key=lambda item: item.agent_id,
+                ):
+                    if employee.state is EmployeeState.ARCHIVED:
+                        continue
+                    result = SlockDataImporter(
+                        service=data.service,
+                        legacy_base=legacy_base,
+                        tenant_key=employee.tenant_key,
+                        owner_principal_id=employee.owner_principal_id,
+                    ).import_employee(employee.agent_id)
+                    if result.errors:
+                        raise RuntimeError("legacy employee data import failed")
+            data.service.cutover_to_canonical()
+        data.rebuild_all()
 
     def _compose_membership(
         self,
@@ -968,6 +1029,7 @@ class EmployeeDepartmentRuntime:
                 ingress_service=self._ingress,
                 router=self._router,
                 data_service=self._data.service,
+                data_sink=self._data,
                 channel_supervisor=self._channels,
                 slock_manager=self._slock_manager,
                 context_service=self._context_service,
@@ -1078,7 +1140,9 @@ class EmployeeDepartmentRuntime:
         if record is None:
             return False
         if record.disposition is not None:
-            return record.disposition.reason_code.startswith(("stop_", "membership_"))
+            return record.disposition.reason_code.startswith(
+                ("stop_", "membership_", "history_", "memory_")
+            )
         try:
             payload = ingress.get_payload(acceptance_id)
         except Exception:
@@ -1121,17 +1185,26 @@ class EmployeeDepartmentRuntime:
             except IngressConflictError:
                 pass
             return True
-        dispatch = self._dispatch
-        lifecycle = self._outbox_lifecycle
-        if dispatch is None or lifecycle is None:
-            return False
         texts: list[str] = []
         for part in payload.normalized_parts:
             content = part.get("content") if isinstance(part, Mapping) else None
             value = content.get("text") if isinstance(content, Mapping) else None
             if isinstance(value, str):
                 texts.append(value.strip())
+        data_control = self._parse_data_control(texts)
+        if data_control is not None:
+            return self._handle_data_control(
+                acceptance_id=acceptance_id,
+                command=data_control[0],
+                record=record,
+                payload=payload,
+                history_days=data_control[1],
+            )
         if texts != ["/stop"]:
+            return False
+        dispatch = self._dispatch
+        lifecycle = self._outbox_lifecycle
+        if dispatch is None or lifecycle is None:
             return False
         metadata = record.metadata
         outcome = dispatch.request_cancel(
@@ -1153,6 +1226,104 @@ class EmployeeDepartmentRuntime:
                 acceptance_id,
                 state="terminal",
                 reason_code=f"stop_{outcome.status}",
+            )
+        except IngressConflictError:
+            pass
+        self._drain_employee_outbox_once()
+        return True
+
+    @staticmethod
+    def _parse_data_control(texts: list[str]) -> tuple[str, int] | None:
+        if texts == ["/memory"]:
+            return ("/memory", 0)
+        if len(texts) != 1:
+            return None
+        matched = re.fullmatch(r"/history(?:\s+([1-9]|[12][0-9]|3[01]))?", texts[0])
+        if matched is None:
+            return None
+        return ("/history", int(matched.group(1) or "7"))
+
+    def _handle_data_control(
+        self,
+        *,
+        acceptance_id: str,
+        command: str,
+        record: Any,
+        payload: Any,
+        history_days: int = 7,
+    ) -> bool:
+        data = self._data
+        lifecycle = self._outbox_lifecycle
+        ingress = self._ingress
+        if data is None or lifecycle is None or ingress is None:
+            return False
+        metadata = record.metadata
+        first = payload.normalized_parts[0]
+        chat_type = first.get("chat_type", "") if isinstance(first, Mapping) else ""
+        request = AuthenticatedDataRequest(
+            principal_id=metadata.sender_principal_id,
+            tenant_key=metadata.tenant_key,
+            receiving_bot_app_id=metadata.app_id,
+            chat_id=metadata.chat_id,
+            chat_type=chat_type,
+            thread_root_id=metadata.thread_root_message_id,
+            requested_agent_id=metadata.agent_id,
+        )
+        succeeded = False
+        reason = "failed"
+        try:
+            if command == "/history":
+                from datetime import datetime, timedelta
+                from zoneinfo import ZoneInfo
+
+                end = datetime.now(ZoneInfo(data.service.shard_timezone)).date()
+                start = end - timedelta(days=history_days - 1)
+                result = data.query.query(
+                    request,
+                    HistoryQuerySpec(
+                        start_day=start.isoformat(),
+                        end_day=end.isoformat(),
+                        page_size=20,
+                    ),
+                )
+                rows = [
+                    f"{item.ended_at[:19]} · {item.status} · {item.safe_summary_text}"
+                    for item in result.records
+                ]
+                summary = (
+                    f"最近 {history_days} 天暂无可见执行记录。"
+                    if not rows
+                    else "\n".join(rows)
+                )
+            else:
+                result = data.memory_query.query(
+                    request,
+                    MemoryQuerySpec(agent_id=metadata.agent_id),
+                )
+                summary = result.content or "当前会话暂无员工记忆摘要。"
+            succeeded = True
+            reason = "completed"
+        except QueryDeniedError:
+            summary = "权限不足，无法读取该员工数据。"
+            reason = "denied"
+        except Exception:
+            logger.exception("employee data control failed closed")
+            summary = "员工数据暂不可用，请稍后重试或联系管理员。"
+        lifecycle.read_response(
+            tenant_key=metadata.tenant_key,
+            agent_id=metadata.agent_id,
+            chat_id=metadata.chat_id,
+            thread_root_message_id=metadata.thread_root_message_id,
+            command_acceptance_id=acceptance_id,
+            command=command,
+            summary=summary,
+            succeeded=succeeded,
+        )
+        try:
+            ingress.record_disposition(
+                acceptance_id,
+                state="terminal",
+                reason_code=f"{command.removeprefix('/')}_{reason}",
             )
         except IngressConflictError:
             pass

@@ -205,6 +205,104 @@ def test_runtime_does_not_consume_non_control_text() -> None:
     runtime._dispatch.request_cancel.assert_not_called()
 
 
+def test_runtime_consumes_history_through_authoritative_read_and_outbox() -> None:
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    acceptance_id = "acc_history_control"
+    metadata = SimpleNamespace(
+        agent_id="agt_alpha",
+        app_id="employee_app",
+        chat_id="oc_team",
+        sender_principal_id="ou_member",
+        tenant_key="tenant_1",
+        thread_root_message_id="om_root",
+    )
+    record = SimpleNamespace(disposition=None, metadata=metadata)
+    ingress = MagicMock()
+    ingress.state = SimpleNamespace(by_acceptance_id={acceptance_id: record})
+    ingress.get_payload.return_value = SimpleNamespace(
+        normalized_parts=(
+            {"chat_type": "group", "content": {"text": " /history 14 "}},
+        ),
+    )
+    history = MagicMock()
+    history.query.return_value = SimpleNamespace(records=())
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = ingress
+    runtime._data = SimpleNamespace(
+        query=history,
+        memory_query=MagicMock(),
+        service=SimpleNamespace(shard_timezone="UTC"),
+    )
+    runtime._outbox_lifecycle = MagicMock()
+    runtime._drain_employee_outbox_once = MagicMock(return_value=True)
+
+    assert runtime._handle_control_ingress(acceptance_id) is True
+
+    request = history.query.call_args.args[0]
+    assert request.principal_id == "ou_member"
+    assert request.receiving_bot_app_id == "employee_app"
+    assert request.chat_id == "oc_team"
+    assert request.chat_type == "group"
+    spec = history.query.call_args.args[1]
+    from datetime import date
+
+    assert (date.fromisoformat(spec.end_day) - date.fromisoformat(spec.start_day)).days == 13
+    runtime._outbox_lifecycle.read_response.assert_called_once()
+    ingress.record_disposition.assert_called_once_with(
+        acceptance_id,
+        state="terminal",
+        reason_code="history_completed",
+    )
+
+
+def test_runtime_memory_ignores_payload_authority_and_uses_ingress_metadata() -> None:
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    acceptance_id = "acc_memory_control"
+    metadata = SimpleNamespace(
+        agent_id="agt_alpha",
+        app_id="employee_app",
+        chat_id="oc_team",
+        sender_principal_id="ou_member",
+        tenant_key="tenant_1",
+        thread_root_message_id="om_root",
+    )
+    ingress = MagicMock()
+    ingress.state = SimpleNamespace(
+        by_acceptance_id={
+            acceptance_id: SimpleNamespace(disposition=None, metadata=metadata)
+        }
+    )
+    ingress.get_payload.return_value = SimpleNamespace(
+        normalized_parts=(
+            {
+                "chat_type": "group",
+                "content": {
+                    "text": "/memory",
+                    "principal_id": "ou_admin",
+                    "tenant_key": "tenant_forged",
+                },
+            },
+        ),
+    )
+    memory = MagicMock()
+    memory.query.return_value = SimpleNamespace(content="scoped summary")
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = ingress
+    runtime._data = SimpleNamespace(query=MagicMock(), memory_query=memory)
+    runtime._outbox_lifecycle = MagicMock()
+    runtime._drain_employee_outbox_once = MagicMock(return_value=True)
+
+    assert runtime._handle_control_ingress(acceptance_id) is True
+
+    request = memory.query.call_args.args[0]
+    assert request.principal_id == "ou_member"
+    assert request.tenant_key == "tenant_1"
+    assert request.requested_agent_id == "agt_alpha"
+    assert memory.query.call_args.args[1].full_l1 is False
+
+
 def test_runtime_consumes_durable_membership_event_for_reconciliation() -> None:
     from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
 

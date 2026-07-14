@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import subprocess
@@ -11,6 +12,7 @@ import traceback
 from concurrent.futures import CancelledError, ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, fields, replace
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -52,6 +54,8 @@ def test_replay_dispatches_one_real_slock_session(tmp_path, monkeypatch, caplog)
     assert calls == [(prepared.binding.agent_id, prepared.prompt, 600.0)]
     assert harness.router.dequeue() is None
     assert harness.restart().prepare_next() is None
+    assert not (tmp_path / "slock" / "agents" / "agt_alpha" / "execution_history.jsonl").exists()
+    assert not (tmp_path / "slock" / "agents" / "agt_alpha" / "MEMORY.md").exists()
     journal_text = json.dumps(
         [
             [event.to_dict() for event in frame.events]
@@ -70,6 +74,78 @@ def test_replay_dispatches_one_real_slock_session(tmp_path, monkeypatch, caplog)
     ):
         assert forbidden not in journal_text
         assert forbidden not in log_text
+    harness.close()
+
+
+def test_completed_gateway_publishes_scoped_memory_summary(tmp_path, monkeypatch) -> None:
+    from src.autonomous.data.models import DataKind
+
+    harness = _real_coordinator_harness(tmp_path)
+    sink = MagicMock()
+    harness.coordinator._data_sink = sink
+    monkeypatch.setattr(
+        harness.engine,
+        "_run_acp_session",
+        lambda *_args, **_kwargs: "durable result",
+    )
+
+    prepared = harness.coordinator.prepare_next()
+    assert prepared is not None
+    harness.coordinator.execute_prepared(prepared)
+
+    commands = [call.args[0] for call in sink.publish_document.call_args_list]
+    assert {command.kind for command in commands} == {
+        DataKind.L1_MEMORY,
+        DataKind.MEMORY_SUMMARY,
+        DataKind.SKILL_PROFILE,
+        DataKind.REASONING,
+    }
+    for command in commands:
+        assert command.agent_id == prepared.binding.agent_id
+        assert command.tenant_key == prepared.binding.tenant_key
+        assert command.idempotency_key == prepared.binding.attempt_id
+    summary = next(
+        command for command in commands if command.kind is DataKind.MEMORY_SUMMARY
+    )
+    assert summary.chat_id == prepared.binding.chat_id
+    assert summary.thread_root_id == prepared.binding.thread_root_id
+    assert summary.content == b"durable result"
+    reasoning = next(
+        command for command in commands if command.kind is DataKind.REASONING
+    )
+    assert reasoning.source_id == prepared.binding.task_id
+    assert json.loads(reasoning.content) == {
+        "attempt_id": prepared.binding.attempt_id,
+        "request_digest": hashlib.sha256(prepared.prompt.encode()).hexdigest(),
+        "result_digest": hashlib.sha256(b"durable result").hexdigest(),
+        "status": "completed",
+        "task_id": prepared.binding.task_id,
+    }
+    harness.close()
+
+
+def test_completed_gateway_fails_closed_without_canonical_document_sink(tmp_path) -> None:
+    from src.autonomous.gateway.coordinator import EmployeeDispatchError
+    from src.autonomous.ingress.dispatch import (
+        GatewayExecutionResult,
+        GatewayExecutionStatus,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+    harness.coordinator._data_sink = None
+    prepared = harness.coordinator.prepare_next()
+    assert prepared is not None
+
+    with pytest.raises(EmployeeDispatchError, match="data sink"):
+        harness.coordinator.finalize_attempt(
+            prepared.binding.attempt_id,
+            GatewayExecutionResult(GatewayExecutionStatus.COMPLETED, output="done"),
+            request_text=prepared.prompt,
+        )
+
+    assert harness.coordinator.state.attempts[
+        prepared.binding.attempt_id
+    ].terminal_status == "completed"
     harness.close()
 
 
@@ -402,6 +478,7 @@ def _real_coordinator_harness(tmp_path):
         ingress_service=ingress,
         router=router,
         data_service=data,
+        data_sink=MagicMock(),
         channel_supervisor=channels,
         slock_manager=manager,
         context_service=context,

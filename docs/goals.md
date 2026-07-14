@@ -47,7 +47,7 @@
     - Tenant-aware ProjectedAgentRegistry
     - Legacy/V5 authority cutover 与持久化失败恢复
     - Slock importer 随机 `agt_` ID 和持久 alias/source hash
-  - 员工数据面已有严格 domain、独立 keyring、加密 Blob、Journal publish/replay、按日 history materializer、ACL query、L1/summary/skill/reasoning projection、legacy importer 和 composition；但真实 Slock employee producer、handler、Supervisor authority cutover 尚未全部接线，不能称为 production data cutover。
+  - 员工数据面 Phase 7 已完成 production cutover：真实 Slock Gateway terminal 与 L1/summary/skill/reasoning producer、typed ACL read ports、员工 `/history`/`/memory`、主 Bot 管理员读取、独立 data authority、legacy import、live Blob 校验及 restart materialization rebuild 已全部接线；canonical employee 不再进入旧 history/root MEMORY writer。
   - `/hire` 的生产形态代码已经实现，不再只是内存脚手架：
     - 官方 `lark-oapi==1.7.1` 一键创建应用 adapter 与精确 manifest
     - Journal/Vault-backed durable Hire Saga 与 callback bridge
@@ -61,7 +61,7 @@
   - `/hire` 管理员 DM 卡片权限 Bug 已修复：消息事件入口保存官方 `event.message.chat_type` 与 origin/chat/operator；卡片回调不再读取不存在的 `context.chat_type`。只有服务端明确无 provenance 记录时才查询 Chat API，并且只读结构字段 `chat_mode`；API 结果必须原子写回完整可信绑定。来源查询/写入失败、残缺、过期、跨 chat、跨 operator 或并发冲突均 fail-close。
   - readiness 反馈已接入处理器：只有 provider 明确返回 `ready=True` 且无 blockers 才派发真实 Hire；否则向管理员显示具体安全门禁，不再误报“不是管理员”，也不降级创建本地虚拟角色。
   - 当前现场仍不能创建真实员工，但剩余原因是有意的发布门禁而非 DM 识别：`autonomous_visible_employee_limit=0`，且没有独立 QA release 公钥/有效 attestation；全新环境的 `EmployeeDepartmentRuntime` 保持 dormant，`employee_hire_service` 不注入。不得绕过门禁创建员工。
-  - 以下模块仍未组成真实员工任务闭环：
+  - 真实员工闭环阶段状态：
     - Thread Context Task 1-6 已完成并关闭 Phase 2：冻结 contracts/config、employee-scoped 官方
       `lark-oapi` message source、每员工 Vault credential lease、Get current 权威
       root/thread 解析、Thread 双遍历稳定 snapshot、Group 双窗口 recent、current
@@ -86,8 +86,12 @@
     - Phase 6 已完成生产 `/fire`：legacy `provisioning/fire.py` 仅保留兼容测试，新路径使用 shared
       Journal 的 RETIRING/Effects/ACTION_REQUIRED/ARCHIVED 状态机、durable 单员工 ingress closure、
       verified Slash cleanup、Channel stop、remove-only membership cleanup、Vault destroy 与原子归档
-  - 尚无获授权的真实测试/生产租户执行证据。Phase 6 关闭时最新
-    Autonomous 全量验证为 `1774 passed, 2 skipped`；两项 skip 分别是未授权真实
+    - Phase 7 已完成数据面真实切换：独立 canonical authority 在 legacy import 及验证后单向锚定；
+      completed attempt 在员工结果卡前幂等发布 L1、chat/thread summary、skill profile 与 task reasoning，
+      restart 可补齐文档而不重跑 ACP；read ACL 只信任 transport 与 workforce 投影，完整 L1 仅管理员主
+      Bot DM 可读；迁移拒绝 symlink/冲突/损坏，恢复校验全部 live Blob 并重建投影文件
+  - 尚无获授权的真实测试/生产租户执行证据。Phase 7 关闭时最新
+    Autonomous 全量验证为 `1791 passed, 2 skipped`；两项 skip 分别是未授权真实
     租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
     不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
   - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
@@ -297,9 +301,28 @@
      - Phase 6 不提升 release readiness；visible limit 仍为 0，下一阶段是数据面真实
        producer/handler/Supervisor cutover
   7. 数据面真实 producer/handler/Supervisor cutover：
-     - canonical employee 禁止继续写旧 execution_history.jsonl 或根 MEMORY.md
-     - `/history` 与 ACL-aware `/memory` 使用权威 read ports
-     - restart replay/rebuild 和独立 data authority fencing
+     - **已完成**。实施与审核见 `docs/2026-07-14-autonomous-data-cutover-plan.md`；canonical
+       `employee_v1` 在所有 legacy Slock 入口 fail-close，真实 Gateway 直接复用 `_run_acp_session` 且不写
+       `execution_history.jsonl` 或根 `MEMORY.md`，legacy virtual role 行为保持不变
+     - terminal history 与 Gateway/Router 终态继续原子锚定；completed attempt 在员工 Outbox terminal
+       之前，以 attempt ID 幂等发布 L1、chat/thread `memory_summary`、skill profile 和 task-scoped reasoning。
+       任一 canonical document sink 失败均阻止成功卡，restart 从加密 history 补齐文档而不重跑 ACP
+     - 独立 `employee.data.authority_cutover` epoch/sequence 在 verified legacy import 后单向切至 canonical；
+       canonical 写、read audit、preflight、Blob stage 与 document publish 均在落盘前重验 authority。
+       malformed manifest、L1 冲突、多源 L1、symlink/non-regular source 或 live Blob 损坏全部阻断恢复
+     - `/history` 与 ACL-aware `/memory` 使用 typed read ports。权限只由 transport principal/tenant/
+       receiving app、官方消息 `chat_type` 和 workforce membership 推导；管理员宽读只允许主 Bot P2P，
+       employee Channel `/memory` 只返回当前 chat/thread summary，授权和 durable audit 均早于 plaintext read
+     - 主 Bot 新增独立 `/history <employee>` 与 `/employee-memory <employee>`，不混淆既有
+       `/discuss history` 和 chat-scoped `/memory`；employee Channel 命令在 Inbox ACK 后、Router 前处理，
+       结果只经员工 Durable Outbox 投递，无主 Bot fallback
+     - runtime recovery 验证全部 live history/document Blob，重建 daily JSONL 和 L1/summary/skill/reasoning
+       materialization；history 分片和查询统一使用配置时区。多轮 grill 自动采纳并关闭伪 membership、
+       data writer 漂移、summary terminal 崩溃窗口、source_id 链、root MEMORY 冲突和 migration symlink
+     - fresh Autonomous `1791 passed, 2 skipped, 1 warning in 401.32s`；受影响回归 `265 passed`，
+       共享 Slock/memory/handler/docs `208 passed`；changed-file Ruff、配置校验和 `git diff --check` 通过
+     - Phase 7 不提升 release readiness；visible limit 仍为 0，下一阶段是 Production bootstrap 与
+       外部 release trust integration
   8. Production bootstrap 与外部 release trust integration：
      - 真实 main-Bot send audit provider
      - 不可变 build/workload provenance、固定 QA trust root、外部单调 ledger

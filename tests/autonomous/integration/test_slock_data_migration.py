@@ -6,16 +6,11 @@ import json
 import secrets
 from pathlib import Path
 
-import pytest
-
 from src.autonomous.data.projection import DataProjectionState
 from src.autonomous.data.service import EmployeeDataService
 from src.autonomous.journal.blob_store import AesGcmEncryptionProvider, BlobStore
 from src.autonomous.journal.writer import JournalWriter
-from src.autonomous.migration.slock_data_importer import (
-    SlockDataImporter,
-    SlockDataImportResult,
-)
+from src.autonomous.migration.slock_data_importer import SlockDataImporter
 
 
 class _InMemoryAnchor:
@@ -103,6 +98,46 @@ class TestSlockDataImporter:
         )
         result = importer.import_employee("agt_alpha")
         assert result.documents_imported >= 1
+        blob_store.close()
+        writer.close()
+
+    def test_root_l1_is_retired_only_after_verified_import(self, tmp_path: Path) -> None:
+        svc, state, writer, blob_store = _setup(tmp_path)
+        agent_dir = _legacy_dir(tmp_path, "agt_alpha")
+        root_memory = agent_dir / "MEMORY.md"
+        root_memory.write_text("# root legacy memory")
+
+        result = SlockDataImporter(
+            service=svc,
+            legacy_base=tmp_path / "legacy",
+            tenant_key="tenant_1",
+            owner_principal_id="principal_owner",
+        ).import_employee("agt_alpha")
+
+        assert result.errors == []
+        assert not root_memory.exists()
+        retired = tuple((agent_dir / ".legacy-imported").glob("MEMORY.*.md"))
+        assert len(retired) == 1
+        assert retired[0].read_text() == "# root legacy memory"
+        blob_store.close()
+        writer.close()
+
+    def test_multiple_legacy_l1_files_block_import(self, tmp_path: Path) -> None:
+        svc, state, writer, blob_store = _setup(tmp_path)
+        agent_dir = _legacy_dir(tmp_path, "agt_alpha")
+        (agent_dir / "MEMORY.md").write_text("root")
+        (agent_dir / "memory").mkdir()
+        (agent_dir / "memory" / "MEMORY.md").write_text("nested")
+
+        result = SlockDataImporter(
+            service=svc,
+            legacy_base=tmp_path / "legacy",
+            tenant_key="tenant_1",
+            owner_principal_id="principal_owner",
+        ).import_employee("agt_alpha")
+
+        assert result.documents_imported == 0
+        assert result.errors == ["multiple legacy L1 files exist"]
         blob_store.close()
         writer.close()
 
@@ -196,5 +231,63 @@ class TestSlockDataImporter:
         assert result.history_imported == 1
         assert len(result.errors) == 1
         assert "malformed JSON" in result.errors[0]
+        assert state.legacy_data_sources == {}
+        blob_store.close()
+        writer.close()
+
+    def test_symlinked_history_is_rejected(self, tmp_path: Path) -> None:
+        svc, state, writer, blob_store = _setup(tmp_path)
+        agent_dir = _legacy_dir(tmp_path, "agt_alpha")
+        outside = tmp_path / "outside-history.jsonl"
+        outside.write_text(json.dumps({"timestamp": 1720742400, "success": True}))
+        (agent_dir / "execution_history.jsonl").symlink_to(outside)
+
+        result = SlockDataImporter(
+            service=svc,
+            legacy_base=tmp_path / "legacy",
+            tenant_key="tenant_1",
+            owner_principal_id="principal_owner",
+        ).import_employee("agt_alpha")
+
+        assert result.history_imported == 0
+        assert result.errors and result.errors[0].startswith("history read failed")
+        assert state.history_records == {}
+        blob_store.close()
+        writer.close()
+
+    def test_symlinked_agent_or_reasoning_directory_is_rejected(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        svc, state, writer, blob_store = _setup(tmp_path)
+        outside_agent = tmp_path / "outside-agent"
+        outside_agent.mkdir()
+        agents = tmp_path / "legacy" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "agt_symlink").symlink_to(outside_agent, target_is_directory=True)
+
+        importer = SlockDataImporter(
+            service=svc,
+            legacy_base=tmp_path / "legacy",
+            tenant_key="tenant_1",
+            owner_principal_id="principal_owner",
+        )
+        agent_result = importer.import_employee("agt_symlink")
+        assert agent_result.errors == [
+            "legacy agent directory is not a regular directory"
+        ]
+
+        agent_dir = _legacy_dir(tmp_path, "agt_alpha")
+        outside_reasoning = tmp_path / "outside-reasoning"
+        outside_reasoning.mkdir()
+        (agent_dir / "reasoning").symlink_to(
+            outside_reasoning,
+            target_is_directory=True,
+        )
+        reasoning_result = importer.import_employee("agt_alpha")
+        assert reasoning_result.errors == [
+            "reasoning source is not a regular directory"
+        ]
+        assert state.employee_documents == {}
         blob_store.close()
         writer.close()

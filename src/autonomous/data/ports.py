@@ -36,6 +36,7 @@ class PublishEmployeeDocumentCommand:
     content_type: str
     chat_id: str = ""
     thread_root_id: str = ""
+    idempotency_key: str = ""
 
 
 @dataclass(frozen=True)

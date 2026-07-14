@@ -1534,6 +1534,10 @@ class SlockEngine(BaseEngine):
         attributes for discussion token tracking. Falls back to run_agent_session
         for the actual execution.
         """
+        if agent.security_profile == "employee_v1":
+            raise SecurityPolicyDegradedError(
+                "canonical employee discussion requires the durable Gateway"
+            )
         from src.acp.models import PromptResult
 
         text = self._run_acp_session(agent, prompt, timeout=timeout)
@@ -2046,6 +2050,10 @@ class SlockEngine(BaseEngine):
 
         IDLE → WAKING → THINKING → RUNNING → CHECKING → SENDING → IDLE
         """
+        if agent.security_profile == "employee_v1":
+            raise SecurityPolicyDegradedError(
+                "canonical employee execution requires the durable Gateway"
+            )
         agent_id = agent.agent_id
         channel_id = self._channel.channel_id if self._channel else self.chat_id
         progress_tracker = getattr(self, "_progress_tracker", None)

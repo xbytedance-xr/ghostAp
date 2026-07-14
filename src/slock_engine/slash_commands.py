@@ -51,6 +51,7 @@ class SlockCommandAction(Enum):
     MEMORY = "memory"
     MEMORY_LIST = "memory_list"
     MEMORY_GROUP = "memory_group"
+    EMPLOYEE_HISTORY = "employee_history"
 
     # Plan management
     PLAN_LIST = "plan_list"
@@ -110,7 +111,7 @@ def get_all_command_prefixes() -> set[str]:
 
     Useful for validating command fix suggestions in card actions.
     """
-    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/hire", "/fire", "/council", "/role", "/task", "/team", "/plan"}
+    canonical = {"/slock", "/slocks", "/new-team", "/new-role", "/hire", "/fire", "/history", "/employee-memory", "/memory", "/council", "/role", "/task", "/team", "/plan"}
     return canonical | set(_ALIASES.keys())
 
 
@@ -165,6 +166,18 @@ def parse_slock_command(text: str) -> SlockCommand:
         return SlockCommand(
             action=SlockCommandAction.FIRE_EMPLOYEE,
             args=remainder,
+        )
+
+    if cmd == "/history":
+        return SlockCommand(
+            action=SlockCommandAction.EMPLOYEE_HISTORY,
+            target=remainder.lstrip("@").strip(),
+        )
+
+    if cmd == "/employee-memory":
+        return SlockCommand(
+            action=SlockCommandAction.MEMORY,
+            target=remainder.lstrip("@").strip(),
         )
 
     # /council <question>
@@ -455,7 +468,15 @@ def is_slock_command(
     # Always capture department commands regardless of chat state; handlers enforce DM/admin.
     # Use exact first-token match to avoid prefix collisions (e.g. /hireling)
     first_token = normalized.split(None, 1)[0] if normalized else ""
-    if first_token in ("/slock", "/slocks", "/new-team", "/hire", "/fire"):
+    if first_token in (
+        "/slock",
+        "/slocks",
+        "/new-team",
+        "/hire",
+        "/fire",
+        "/history",
+        "/employee-memory",
+    ):
         return SlockCommandResult(is_command=True)
 
     # Global management commands: /team and /role operate across all teams
@@ -466,7 +487,9 @@ def is_slock_command(
         return SlockCommandResult(is_command=False)
 
     # Chat-scoped commands require managed chat context
-    if normalized.startswith(("/new-role", "/task", "/council", "/discuss", "/memory", "/plan")):
+    if normalized.startswith(
+        ("/new-role", "/task", "/council", "/discuss", "/memory", "/plan")
+    ):
         if manager is not None and chat_id:
             if manager.is_managed_chat(chat_id):
                 return SlockCommandResult(is_command=True)

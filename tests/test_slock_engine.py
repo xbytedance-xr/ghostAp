@@ -121,6 +121,20 @@ class TestParseSlockCommand:
         assert cmd.args == "Alpha --drain"
         assert is_slock_command("/fire Alpha")
 
+    def test_employee_history_is_global_and_distinct_from_discussion(self):
+        cmd = parse_slock_command("/history Alpha")
+
+        assert cmd.action == SlockCommandAction.EMPLOYEE_HISTORY
+        assert cmd.target == "Alpha"
+        assert is_slock_command("/history Alpha")
+        assert parse_slock_command("/discuss history abc").action == (
+            SlockCommandAction.DISCUSSION_HISTORY
+        )
+        memory = parse_slock_command("/employee-memory Alpha")
+        assert memory.action == SlockCommandAction.MEMORY
+        assert memory.target == "Alpha"
+        assert is_slock_command("/employee-memory Alpha")
+
     def test_role_list(self):
         cmd = parse_slock_command("/role list")
         assert cmd.action == SlockCommandAction.ROLE_LIST
@@ -918,6 +932,29 @@ class TestMemoryUpdateAfterExecution:
             with patch.object(engine._memory, "update_agent_context") as mock_update:
                 engine._execute_agent(agent, "do something", None)
                 mock_update.assert_not_called()
+
+    def test_canonical_employee_cannot_enter_legacy_execution_writer(self, tmp_path):
+        """Canonical employees must execute only through the durable Gateway."""
+        from src.slock_engine.exceptions import SecurityPolicyDegradedError
+
+        engine = self._make_engine(tmp_path=tmp_path)
+        ch = SlockChannel(channel_id="ch_employee", team_name="Employees")
+        engine.activate_channel(ch)
+        employee = AgentIdentity(
+            name="Employee",
+            agent_type="coco",
+            owner_group="ch_employee",
+            security_profile="employee_v1",
+        )
+        engine.registry.register(employee)
+
+        with patch.object(engine._memory, "append_execution_record") as history:
+            with patch.object(engine._memory, "update_agent_context") as memory:
+                with pytest.raises(SecurityPolicyDegradedError, match="durable Gateway"):
+                    engine._execute_agent(employee, "do something", None)
+
+        history.assert_not_called()
+        memory.assert_not_called()
 
 
 # ============================================================

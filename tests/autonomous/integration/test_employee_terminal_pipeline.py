@@ -36,6 +36,7 @@ def test_every_started_attempt_has_one_terminal_or_action_required(tmp_path) -> 
 
     for status in dispatch.GatewayExecutionStatus:
         harness = _real_coordinator_harness(tmp_path / status.value)
+        harness.data._shard_timezone = "Asia/Shanghai"
         prepared = harness.coordinator.prepare_next()
         assert prepared is not None
         result = dispatch.GatewayExecutionResult(
@@ -63,6 +64,12 @@ def test_every_started_attempt_has_one_terminal_or_action_required(tmp_path) -> 
             "employee.ingress.router_terminal",
         ]
         assert finalized.status is status
+        history_event = next(
+            event
+            for event in terminal_frame.events
+            if event.event_type == "employee.history.recorded"
+        )
+        assert history_event.payload["shard_timezone"] == "Asia/Shanghai"
         assert finalized.history_record_id in harness.data.state.history_records
         assert (
             harness.coordinator.finalize_attempt(
@@ -188,6 +195,7 @@ def test_recovery_rebuilds_missing_terminal_snapshot_without_rerunning_acp(
     try:
         assert harness.coordinator.reconcile_terminal_snapshots() == 1
         assert recovered == [(prepared.binding.attempt_id, "durable result")]
+        assert harness.coordinator._data_sink.publish_document.call_count == 8
     finally:
         harness.close()
 

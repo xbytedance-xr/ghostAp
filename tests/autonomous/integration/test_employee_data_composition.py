@@ -21,6 +21,7 @@ from src.autonomous.data.ports import (
     PublishEmployeeDocumentCommand,
 )
 from src.autonomous.data.query import AuthenticatedDataRequest, HistoryQuerySpec
+from src.autonomous.data.service import DataWriteDisabledError
 from src.autonomous.journal.writer import JournalWriter
 
 
@@ -76,9 +77,20 @@ def composition(tmp_path: Path) -> EmployeeDataComposition:
 
 
 class TestFullComposition:
+    def test_production_composition_has_independent_canonical_authority(
+        self,
+        composition: EmployeeDataComposition,
+    ) -> None:
+        authority = composition.state.data_authority
+
+        assert authority.mode == "canonical"
+        assert authority.epoch == 1
+        assert authority.cutover_sequence > 0
+
     def test_start_attempt_record_terminal_and_query(
         self, composition: EmployeeDataComposition
     ) -> None:
+        composition.service._shard_timezone = "Asia/Shanghai"
         ctx = ExecutionAttemptContext(
             tenant_key="tenant_1",
             agent_id="agt_alpha",
@@ -108,6 +120,13 @@ class TestFullComposition:
         )
         composition.record_terminal(terminal)
         assert len(composition.state.history_records) == 1
+        history_event = next(
+            event
+            for frame in composition.service._writer.replay()
+            for event in frame.events
+            if event.event_type == "employee.history.recorded"
+        )
+        assert history_event.payload["shard_timezone"] == "Asia/Shanghai"
         request = AuthenticatedDataRequest(
             principal_id="admin_1",
             tenant_key="tenant_1",
@@ -117,14 +136,59 @@ class TestFullComposition:
             thread_root_id="",
             requested_agent_id="agt_alpha",
         )
-        from datetime import date
-        today = date.today().isoformat()
+        today = next(iter(composition.state.history_records.values())).shard_day
         result = composition.query.query(
             request,
             HistoryQuerySpec(start_day=today, end_day=today),
         )
         assert result.total_available == 1
         assert result.records[0].status == "completed"
+        audits = tuple(composition.state.data_read_audits.values())
+        assert len(audits) == 1
+        assert audits[0].operation == "history_query"
+        assert audits[0].outcome == "granted"
+
+    def test_pre_cutover_production_writer_fails_closed(self, tmp_path: Path) -> None:
+        settings = _FakeSettings(tmp_path)
+        writer = JournalWriter.open(
+            tmp_path / "manual-journal",
+            anchor=_InMemoryAnchor(),
+            hmac_key=secrets.token_bytes(32),
+        )
+        comp = build_employee_data_composition(
+            settings=settings,
+            writer=writer,
+            admin_principal_ids=frozenset(),
+            main_bot_app_id="main_bot",
+            agents_root=tmp_path / "manual-agents",
+            auto_cutover=False,
+        )
+        ctx = ExecutionAttemptContext(
+            tenant_key="tenant_1",
+            agent_id="agt_alpha",
+            owner_principal_id="ou_owner",
+            requester_principal_id="ou_requester",
+            task_id="task_authority",
+            run_id="run_authority",
+            attempt_id="attempt_authority",
+            message_id="om_authority",
+            thread_root_id="",
+            chat_id="oc_team",
+            tool="codex",
+            model="gpt-test",
+            effort="high",
+            started_at="2026-07-14T00:00:00+00:00",
+            terminal_epoch=1,
+        )
+
+        with pytest.raises(DataWriteDisabledError, match="authority"):
+            comp.service.start_attempt(ctx)
+
+        comp.service.cutover_to_canonical()
+        comp.service.start_attempt(ctx)
+        assert ctx.attempt_id in comp.state.execution_attempts
+        comp.close()
+        writer.close()
 
     def test_publish_document_materializes_file(
         self, composition: EmployeeDataComposition
@@ -202,6 +266,69 @@ class TestFullComposition:
             "agt_alpha", "tenant_1", "chat_1"
         )
         assert summary == "# Chat summary"
+
+    def test_memory_summary_versions_and_retries_are_idempotent(
+        self,
+        composition: EmployeeDataComposition,
+    ) -> None:
+        def command(content: bytes, key: str) -> PublishEmployeeDocumentCommand:
+            return PublishEmployeeDocumentCommand(
+                agent_id="agt_alpha",
+                tenant_key="tenant_1",
+                owner_principal_id="principal_owner",
+                kind=DataKind.MEMORY_SUMMARY,
+                source_id="",
+                content=content,
+                content_type="text/markdown",
+                chat_id="chat_1",
+                thread_root_id="root_1",
+                idempotency_key=key,
+            )
+
+        composition.publish_document(command(b"first", "attempt_1"))
+        composition.publish_document(command(b"first", "attempt_1"))
+        composition.publish_document(command(b"second", "attempt_2"))
+
+        records = sorted(
+            composition.state.employee_documents.values(),
+            key=lambda item: item.version,
+        )
+        assert [record.version for record in records] == [1, 2]
+        assert records[1].previous_document_id == records[0].document_id
+        assert composition.memory_facade.read_memory_summary(
+            "agt_alpha",
+            "tenant_1",
+            "chat_1",
+            "root_1",
+        ) == "second"
+        with pytest.raises(ValueError, match="idempotency conflict"):
+            composition.publish_document(command(b"different", "attempt_2"))
+
+    def test_reasoning_preserves_task_source_and_versions(
+        self,
+        composition: EmployeeDataComposition,
+    ) -> None:
+        def command(content: bytes, key: str) -> PublishEmployeeDocumentCommand:
+            return PublishEmployeeDocumentCommand(
+                agent_id="agt_alpha",
+                tenant_key="tenant_1",
+                owner_principal_id="principal_owner",
+                kind=DataKind.REASONING,
+                source_id="task_alpha",
+                content=content,
+                content_type="application/json",
+                idempotency_key=key,
+            )
+
+        composition.publish_document(command(b'{"attempt":1}', "attempt_1"))
+        composition.publish_document(command(b'{"attempt":2}', "attempt_2"))
+
+        records = sorted(
+            composition.state.employee_documents.values(),
+            key=lambda item: item.version,
+        )
+        assert [record.source_id for record in records] == ["task_alpha", "task_alpha"]
+        assert [record.version for record in records] == [1, 2]
 
     def test_rebuild_serializes_with_publish_without_losing_document(
         self,

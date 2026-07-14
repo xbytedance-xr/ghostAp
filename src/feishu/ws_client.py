@@ -360,6 +360,11 @@ class FeishuWSClient:
                 if self._employee_department_runtime is not None
                 else None
             ),
+            employee_data_composition=(
+                self._employee_department_runtime.data_composition
+                if self._employee_department_runtime is not None
+                else None
+            ),
         )
 
         # Instantiate handlers (temp locals for registry population)

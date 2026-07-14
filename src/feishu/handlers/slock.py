@@ -251,6 +251,9 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             SlockCommandAction.MEMORY: lambda: self.show_agent_memory(message_id, chat_id, cmd.target, project),
             SlockCommandAction.MEMORY_LIST: lambda: self.show_memory_list(message_id, chat_id, project),
             SlockCommandAction.MEMORY_GROUP: lambda: self.show_memory_group(message_id, chat_id, project),
+            SlockCommandAction.EMPLOYEE_HISTORY: lambda: self.show_employee_history(
+                message_id, chat_id, cmd.target
+            ),
             SlockCommandAction.PLAN_LIST: lambda: self.list_plans(message_id, chat_id, project),
             SlockCommandAction.PLAN_DETAIL: lambda: self.show_plan_detail(message_id, chat_id, cmd.target, project),
         }
@@ -3523,6 +3526,158 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     # Agent Memory (per-agent L1 memory)
     # ------------------------------------------------------------------
 
+    def _resolve_canonical_employee(self, target: str):
+        """Resolve a durable workforce employee without consulting legacy roles."""
+
+        context = getattr(self, "ctx", None)
+        service = getattr(context, "employee_hire_service", None)
+        if service is None or not isinstance(target, str) or not target.strip():
+            return None
+        from ...thread import get_current_tenant_key
+
+        tenant_key = get_current_tenant_key() or ""
+        projection = service.synchronize_projection()
+        employees = getattr(projection, "employees", None)
+        if not isinstance(employees, dict):
+            return None
+        folded = target.strip().casefold()
+        matches = [
+            employee
+            for employee in employees.values()
+            if (not tenant_key or employee.tenant_key == tenant_key)
+            and (
+                employee.agent_id.casefold() == folded
+                or employee.name.casefold() == folded
+            )
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    def _employee_data_request(self, *, employee, chat_id: str):
+        from ...autonomous.data.query import AuthenticatedDataRequest
+        from ...thread import (
+            get_current_is_p2p,
+            get_current_sender_id,
+            get_current_tenant_key,
+            get_current_thread_id,
+        )
+
+        return AuthenticatedDataRequest(
+            principal_id=get_current_sender_id() or "",
+            tenant_key=get_current_tenant_key() or "",
+            receiving_bot_app_id=getattr(self.ctx.settings, "app_id", ""),
+            chat_id=chat_id,
+            chat_type="p2p" if get_current_is_p2p() else "group",
+            thread_root_id=get_current_thread_id() or "",
+            requested_agent_id=employee.agent_id,
+        )
+
+    def _show_authoritative_employee_memory(self, message_id: str, chat_id: str, employee) -> None:
+        data = self.ctx.employee_data_composition
+        if data is None:
+            self.reply_text(message_id, "员工数据服务当前不可用。")
+            return
+        from ...autonomous.data.ports import MemoryQuerySpec
+        from ...autonomous.data.query import QueryDeniedError
+
+        try:
+            result = data.memory_query.query(
+                self._employee_data_request(employee=employee, chat_id=chat_id),
+                MemoryQuerySpec(agent_id=employee.agent_id, full_l1=True),
+            )
+        except QueryDeniedError:
+            self.reply_text(message_id, "权限不足：完整员工记忆仅限主 Bot 管理员私聊读取。")
+            return
+        except Exception:
+            logger.exception("authoritative employee memory read failed")
+            self.reply_text(message_id, "员工记忆暂不可用，请稍后重试。")
+            return
+        from ...slock_engine.card_templates.common import build_card_wrapper
+
+        content = result.content or "当前员工暂无 L1 记忆。"
+        card = build_card_wrapper(
+            header_title=f"🧠 {employee.name} · 权威记忆",
+            header_template="turquoise",
+            elements=[{"tag": "markdown", "content": content[:20_000]}],
+        )
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    def _show_authoritative_employee_history(self, message_id: str, chat_id: str, employee) -> None:
+        data = self.ctx.employee_data_composition
+        if data is None:
+            self.reply_text(message_id, "员工数据服务当前不可用。")
+            return
+        from ...thread import get_current_is_p2p, get_current_sender_id
+
+        admins = frozenset(getattr(self.ctx.settings, "admin_user_ids", ()) or ())
+        if not get_current_is_p2p() or (get_current_sender_id() or "") not in admins:
+            self.reply_text(message_id, "权限不足：员工完整历史仅限主 Bot 管理员私聊读取。")
+            return
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
+
+        from ...autonomous.data.ports import HistoryQuerySpec
+        from ...autonomous.data.query import QueryDeniedError
+
+        end = datetime.now(ZoneInfo(data.service.shard_timezone)).date()
+        try:
+            result = data.query.query(
+                self._employee_data_request(employee=employee, chat_id=chat_id),
+                HistoryQuerySpec(
+                    start_day=(end - timedelta(days=6)).isoformat(),
+                    end_day=end.isoformat(),
+                    page_size=50,
+                ),
+            )
+        except QueryDeniedError:
+            self.reply_text(message_id, "权限不足：员工完整历史仅限主 Bot 管理员私聊读取。")
+            return
+        except Exception:
+            logger.exception("authoritative employee history read failed")
+            self.reply_text(message_id, "员工历史暂不可用，请稍后重试。")
+            return
+        from ...slock_engine.card_templates.common import build_card_wrapper
+
+        rows = [
+            (
+                f"| {record.ended_at[:19]} | {record.status} | "
+                f"{record.safe_summary_text[:160]} |"
+            )
+            for record in result.records
+        ]
+        content = (
+            "最近 7 天暂无执行记录。"
+            if not rows
+            else "| 时间 | 状态 | 摘要 |\n| --- | --- | --- |\n" + "\n".join(rows)
+        )
+        card = build_card_wrapper(
+            header_title=f"📚 {employee.name} · 权威历史",
+            header_template="blue",
+            elements=[{"tag": "markdown", "content": content}],
+        )
+        self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+
+    def show_employee_history(
+        self,
+        message_id: str,
+        chat_id: str,
+        employee_name: str = "",
+    ) -> None:
+        """Read canonical execution history; discussion history stays separate."""
+
+        if not employee_name:
+            self.reply_text(message_id, "用法：`/history <员工名称>`")
+            return
+        employee = SlockHandler._resolve_canonical_employee(self, employee_name)
+        if employee is None:
+            self.reply_text(message_id, f"未找到正式员工 `{employee_name}`。")
+            return
+        SlockHandler._show_authoritative_employee_history(
+            self,
+            message_id,
+            chat_id,
+            employee,
+        )
+
     def show_agent_memory(self, message_id: str, chat_id: str, agent_name: str = "", project: Optional["ProjectContext"] = None):
         """Show L1 memory for a specific agent."""
         if not agent_name:
@@ -3532,6 +3687,13 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 ["/memory coder", "/memory list"],
             )
             self.reply_card(message_id, json.dumps(card, ensure_ascii=False))
+            return
+
+        employee = SlockHandler._resolve_canonical_employee(self, agent_name)
+        if employee is not None:
+            SlockHandler._show_authoritative_employee_memory(
+                self, message_id, chat_id, employee
+            )
             return
 
         manager = self._get_engine_manager()

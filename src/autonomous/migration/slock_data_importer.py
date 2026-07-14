@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ from ..data.models import (
     SafeExecutionSummary,
 )
 from ..data.service import DataConflictError, EmployeeDataService
+from ..journal.writer import CommitState
 
 
 @dataclass(frozen=True)
@@ -77,7 +80,12 @@ class SlockDataImporter:
         """Run idempotent migration for one canonical employee."""
         result = SlockDataImportResult(agent_id=agent_id)
         agent_dir = self._legacy_base / "agents" / agent_id
-        if not agent_dir.is_dir():
+        try:
+            mode = agent_dir.lstat().st_mode
+        except FileNotFoundError:
+            return result
+        if not stat.S_ISDIR(mode):
+            result.errors.append("legacy agent directory is not a regular directory")
             return result
         self._import_history(agent_id, agent_dir, result)
         self._import_l1_memory(agent_id, agent_dir, result)
@@ -89,7 +97,12 @@ class SlockDataImporter:
         self, agent_id: str, agent_dir: Path, result: SlockDataImportResult
     ) -> None:
         history_file = agent_dir / "execution_history.jsonl"
-        if not history_file.exists():
+        try:
+            raw = self._read_regular_file(history_file)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            result.errors.append(f"history read failed: {exc}")
             return
         locator = LegacySourceLocator(
             relative_path=f"agents/{agent_id}/execution_history.jsonl",
@@ -100,14 +113,10 @@ class SlockDataImporter:
         if import_key in state.legacy_data_sources:
             result.history_skipped += 1
             return
-        try:
-            raw = history_file.read_bytes()
-        except OSError as exc:
-            result.errors.append(f"history read failed: {exc}")
-            return
         content_hash = hashlib.sha256(raw).hexdigest()
         lines = raw.strip().split(b"\n") if raw.strip() else []
         imported_ids: list[str] = []
+        errors_before = len(result.errors)
         for ordinal, line in enumerate(lines):
             try:
                 row = json.loads(line)
@@ -117,6 +126,8 @@ class SlockDataImporter:
             record_id = self._import_history_row(agent_id, row, ordinal, locator, content_hash, result)
             if record_id:
                 imported_ids.append(record_id)
+        if len(result.errors) != errors_before:
+            return
         self._commit_import_event(agent_id, locator, content_hash, imported_ids)
 
     def _import_history_row(
@@ -210,14 +221,25 @@ class SlockDataImporter:
         self, agent_id: str, agent_dir: Path, result: SlockDataImportResult
     ) -> None:
         memory_path = agent_dir / "memory" / "MEMORY.md"
+        root_path = agent_dir / "MEMORY.md"
+        if memory_path.exists() and root_path.exists():
+            result.errors.append("multiple legacy L1 files exist")
+            return
+        root_legacy = False
         if not memory_path.exists():
-            memory_path = agent_dir / "MEMORY.md"
+            memory_path = root_path
+            root_legacy = memory_path.exists()
         if not memory_path.exists():
             return
-        self._import_document(
+        imported = self._import_document(
             agent_id, memory_path, DataKind.L1_MEMORY, "l1_memory",
             "text/markdown", result,
         )
+        if imported and root_legacy:
+            try:
+                self._retire_root_memory(agent_dir, memory_path)
+            except OSError as exc:
+                result.errors.append(f"root memory retirement failed: {type(exc).__name__}")
 
     def _import_skill_profile(
         self, agent_id: str, agent_dir: Path, result: SlockDataImportResult
@@ -234,7 +256,12 @@ class SlockDataImporter:
         self, agent_id: str, agent_dir: Path, result: SlockDataImportResult
     ) -> None:
         reasoning_dir = agent_dir / "reasoning"
-        if not reasoning_dir.is_dir():
+        try:
+            mode = reasoning_dir.lstat().st_mode
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(mode):
+            result.errors.append("reasoning source is not a regular directory")
             return
         for path in sorted(reasoning_dir.iterdir()):
             if not path.is_file() or not path.name.endswith(".json"):
@@ -253,12 +280,12 @@ class SlockDataImporter:
         source_id: str,
         content_type: str,
         result: SlockDataImportResult,
-    ) -> None:
+    ) -> bool:
         try:
-            content = file_path.read_bytes()
+            content = self._read_regular_file(file_path)
         except OSError as exc:
             result.errors.append(f"document read failed: {exc}")
-            return
+            return False
         content_hash = hashlib.sha256(content).hexdigest()
         doc_id = f"data_{hashlib.sha256(f'{agent_id}|{kind.value}|{source_id}'.encode()).hexdigest()[:16]}"
         from datetime import UTC, datetime
@@ -279,10 +306,62 @@ class SlockDataImporter:
         try:
             self._service.publish_document(doc, content)
             result.documents_imported += 1
+            return True
         except DataConflictError:
-            result.documents_skipped += 1
+            existing = self._service.state.employee_documents.get(doc_id)
+            if (
+                existing is not None
+                and existing.tenant_key == self._tenant_key
+                and existing.agent_id == agent_id
+                and existing.kind is kind
+                and existing.source_id == source_id
+                and existing.content_hash == content_hash
+            ):
+                result.documents_skipped += 1
+                return True
+            result.errors.append(f"document {kind.value}/{source_id}: conflict")
+            return False
         except (ValueError, TypeError) as exc:
             result.errors.append(f"document {kind.value}/{source_id}: {type(exc).__name__}")
+            return False
+
+    @staticmethod
+    def _read_regular_file(path: Path) -> bytes:
+        """Open a legacy leaf without following symlinks and verify its inode type."""
+
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise OSError("legacy source is not a regular file")
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                return stream.read()
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _retire_root_memory(agent_dir: Path, source: Path) -> None:
+        """Move a verified imported root MEMORY out of all active read paths."""
+
+        content = source.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        retired_dir = agent_dir / ".legacy-imported"
+        retired_dir.mkdir(mode=0o700, exist_ok=True)
+        target = retired_dir / f"MEMORY.{digest}.md"
+        if target.exists():
+            if not stat.S_ISREG(target.lstat().st_mode) or target.read_bytes() != content:
+                raise OSError("legacy retirement target conflict")
+            source.unlink()
+        else:
+            os.replace(source, target)
+        directory_fd = os.open(agent_dir, os.O_RDONLY | os.O_DIRECTORY)
+        retired_fd = os.open(retired_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+            os.fsync(retired_fd)
+        finally:
+            os.close(retired_fd)
+            os.close(directory_fd)
 
     def _commit_import_event(
         self,
@@ -291,7 +370,6 @@ class SlockDataImporter:
         content_hash: str,
         imported_ids: list[str],
     ) -> None:
-        from ..data.projection import is_data_event, reduce_data_event
         from ..journal.frame import JournalEvent
         event = JournalEvent(
             event_type="employee.legacy_data_imported",
@@ -306,24 +384,16 @@ class SlockDataImporter:
             },
         )
         writer = self._service._writer
-        versions = writer.get_aggregate_versions([event.aggregate_id])
-        try:
+        with self._service.employee_dispatch_guard(), writer.transaction_guard():
+            self._service.synchronize_projection_unlocked()
+            self._service._require_write_authority_unlocked()
+            versions = writer.get_aggregate_versions([event.aggregate_id])
             result = writer.commit(
                 [event],
                 versions,
                 expected_head_sequence=self._service.state.cursor_sequence,
                 expected_head_hash=self._service.state.cursor_hash or None,
             )
-            frame = result.frame
-            for ev in frame.events:
-                if is_data_event(ev.event_type):
-                    reduce_data_event(
-                        self._service.state,
-                        ev,
-                        frame_sequence=frame.sequence,
-                        frame_hash=frame.frame_hash,
-                    )
-            self._service.state.cursor_sequence = frame.sequence
-            self._service.state.cursor_hash = frame.frame_hash
-        except Exception:
-            pass
+            if result.state is not CommitState.ANCHORED:
+                raise RuntimeError("legacy import manifest was not anchored")
+            self._service.apply_committed_frame_unlocked(result.frame)

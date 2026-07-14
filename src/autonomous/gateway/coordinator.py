@@ -16,11 +16,13 @@ from src.slock_engine.activation import slock_activation_guard
 from src.slock_engine.manager import SlockEngineResolutionError
 
 from ..data.models import (
+    DataKind,
     ExecutionAttemptContext,
     ExecutionHistoryPayloadV1,
     ExecutionHistoryRecordV1,
     SafeExecutionSummary,
 )
+from ..data.ports import EmployeeDataSink, PublishEmployeeDocumentCommand
 from ..data.service import EmployeeDataService
 from ..domain import EmployeeState, WorkerType
 from ..journal.frame import JournalEvent
@@ -111,6 +113,7 @@ class EmployeeDispatchCoordinator:
         ingress_service: object,
         router: object,
         data_service: EmployeeDataService,
+        data_sink: EmployeeDataSink | None = None,
         channel_supervisor: object,
         slock_manager: object,
         context_service: object,
@@ -130,6 +133,7 @@ class EmployeeDispatchCoordinator:
         self._ingress = ingress_service
         self._router = router
         self._data = data_service
+        self._data_sink = data_sink
         self._channels = channel_supervisor
         self._slock_manager = slock_manager
         self._context = context_service
@@ -384,6 +388,13 @@ class EmployeeDispatchCoordinator:
                 execution_result,
                 request_text=request_text,
             )
+            if execution_result.status is GatewayExecutionStatus.COMPLETED:
+                assert lifecycle is not None
+                self._publish_completed_artifacts(
+                    lifecycle.binding,
+                    execution_result,
+                    request_text=request_text,
+                )
         if self._attempt_lifecycle is not None:
             self._synchronize_gateway_from_journal()
             lifecycle = self._gateway_state.attempts.get(attempt_id)
@@ -653,9 +664,103 @@ class EmployeeDispatchCoordinator:
                     else payload.error_detail
                 ),
             )
+            if status is GatewayExecutionStatus.COMPLETED:
+                self._publish_completed_artifacts(
+                    lifecycle.binding,
+                    result,
+                    request_text=payload.request_text,
+                )
             self._attempt_lifecycle.terminal(lifecycle.binding, result)
             reconciled += 1
         return reconciled
+
+    def _publish_completed_artifacts(
+        self,
+        binding: DispatchBinding,
+        result: GatewayExecutionResult,
+        *,
+        request_text: str,
+    ) -> None:
+        """Publish deterministic canonical documents before reporting success."""
+
+        sink = self._data_sink
+        if sink is None:
+            raise EmployeeDispatchError("canonical employee data sink is unavailable")
+        output = result.output[:100_000]
+        common = {
+            "agent_id": binding.agent_id,
+            "tenant_key": binding.tenant_key,
+            "owner_principal_id": binding.owner_principal_id,
+            "idempotency_key": binding.attempt_id,
+        }
+        l1 = (
+            "# Employee Memory\n\n"
+            f"- Last completed task: {binding.task_id}\n"
+            f"- Attempt: {binding.attempt_id}\n"
+            f"- Tool: {binding.tool}\n"
+            f"- Model: {binding.model}\n\n"
+            "## Last Result\n\n"
+            f"{output}"
+        ).encode("utf-8")
+        skill_profile = json.dumps(
+            {
+                "agent_id": binding.agent_id,
+                "effort": binding.effort,
+                "last_attempt_id": binding.attempt_id,
+                "model": binding.model,
+                "profile": binding.profile,
+                "tool": binding.tool,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        reasoning = json.dumps(
+            {
+                "attempt_id": binding.attempt_id,
+                "request_digest": hashlib.sha256(request_text.encode("utf-8")).hexdigest(),
+                "result_digest": hashlib.sha256(result.output.encode("utf-8")).hexdigest(),
+                "status": result.status.value,
+                "task_id": binding.task_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        commands = (
+            PublishEmployeeDocumentCommand(
+                **common,
+                kind=DataKind.L1_MEMORY,
+                source_id=DataKind.L1_MEMORY.value,
+                content=l1,
+                content_type="text/markdown",
+            ),
+            PublishEmployeeDocumentCommand(
+                **common,
+                kind=DataKind.MEMORY_SUMMARY,
+                source_id="",
+                content=output.encode("utf-8"),
+                content_type="text/markdown",
+                chat_id=binding.chat_id,
+                thread_root_id=binding.thread_root_id,
+            ),
+            PublishEmployeeDocumentCommand(
+                **common,
+                kind=DataKind.SKILL_PROFILE,
+                source_id=DataKind.SKILL_PROFILE.value,
+                content=skill_profile,
+                content_type="application/json",
+            ),
+            PublishEmployeeDocumentCommand(
+                **common,
+                kind=DataKind.REASONING,
+                source_id=binding.task_id,
+                content=reasoning,
+                content_type="application/json",
+            ),
+        )
+        for command in commands:
+            sink.publish_document(command)
 
     def _recover_legacy_router_dispatches(self) -> int:
         """Dispose Router-only dispatches without ever re-running ACP.
@@ -838,7 +943,7 @@ class EmployeeDispatchCoordinator:
             completion_tokens=0,
             predecessor_sequence=head.sequence,
             predecessor_hash=head.logical_hash,
-            shard_timezone="UTC",
+            shard_timezone=self._data.shard_timezone,
         )
         payload = ExecutionHistoryPayloadV1(
             record_id=record.record_id,

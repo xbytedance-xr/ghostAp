@@ -107,6 +107,7 @@ class EmployeeOutboxLifecycle:
                 state=EmployeeCardState.QUEUED,
                 summary="正在处理停止请求。",
                 created_at=created_at,
+                command="/stop",
             )
         if current.state.terminal:
             return current
@@ -127,6 +128,62 @@ class EmployeeOutboxLifecycle:
             state=EmployeeCardState.COMPLETED,
             summary=summaries.get(status, "停止请求已处理。"),
             created_at=current.created_at,
+            command="/stop",
+        )
+
+    def read_response(
+        self,
+        *,
+        tenant_key: str,
+        agent_id: str,
+        chat_id: str,
+        thread_root_message_id: str,
+        command_acceptance_id: str,
+        command: str,
+        summary: str,
+        succeeded: bool,
+    ) -> EmployeeOutboxSnapshot:
+        """Publish one idempotent terminal response for an employee data read."""
+
+        if command not in {"/history", "/memory"}:
+            raise ValueError("unsupported employee read command")
+        attempt_id = f"control_{command_acceptance_id}"
+        outbox_id = employee_outbox_id(tenant_key, agent_id, attempt_id)
+        try:
+            current = self._outbox.get_snapshot(outbox_id)
+        except KeyError:
+            created_at = datetime.now(UTC).isoformat(timespec="microseconds").replace(
+                "+00:00", "Z"
+            )
+            current = self._append_control(
+                tenant_key=tenant_key,
+                agent_id=agent_id,
+                attempt_id=attempt_id,
+                chat_id=chat_id,
+                thread_root_message_id=thread_root_message_id,
+                version=1,
+                state=EmployeeCardState.QUEUED,
+                summary="正在读取员工数据。",
+                created_at=created_at,
+                command=command,
+            )
+        if current.state.terminal:
+            return current
+        return self._append_control(
+            tenant_key=tenant_key,
+            agent_id=agent_id,
+            attempt_id=attempt_id,
+            chat_id=chat_id,
+            thread_root_message_id=thread_root_message_id,
+            version=current.version + 1,
+            state=(
+                EmployeeCardState.COMPLETED
+                if succeeded
+                else EmployeeCardState.ACTION_REQUIRED
+            ),
+            summary=summary,
+            created_at=current.created_at,
+            command=command,
         )
 
     def _append_control(
@@ -141,8 +198,9 @@ class EmployeeOutboxLifecycle:
         state: EmployeeCardState,
         summary: str,
         created_at: str,
+        command: str,
     ) -> EmployeeOutboxSnapshot:
-        title = "员工控制 · /stop"
+        title = f"员工控制 · {command}"
         progress = 100 if state.terminal else 0
         snapshot = EmployeeOutboxSnapshot(
             schema_version=1,

@@ -81,6 +81,9 @@ class DocumentMetadataRecord:
     tombstoned: bool = False
     chat_id: str = ""
     thread_root_id: str = ""
+    previous_document_id: str = ""
+    predecessor_sequence: int = 0
+    predecessor_hash: str = ""
 
 
 @dataclass(frozen=True)
@@ -292,6 +295,26 @@ def _reduce_data_published(
     if document_id in state.employee_documents:
         raise DataProjectionError(f"duplicate document: {document_id}")
     kind = DataKind(payload["kind"])
+    latest_key = (
+        payload["tenant_key"],
+        payload["agent_id"],
+        kind.value,
+        payload["source_id"],
+    )
+    previous_id = state.latest_employee_document.get(latest_key, "")
+    if payload["version"] == 1:
+        if previous_id or payload.get("previous_document_id", ""):
+            raise DataProjectionError("document chain cannot restart at version 1")
+    else:
+        previous = state.employee_documents.get(previous_id)
+        if (
+            previous is None
+            or payload.get("previous_document_id", "") != previous_id
+            or payload["version"] != previous.version + 1
+            or payload.get("predecessor_sequence", 0) != previous.publish_sequence
+            or payload.get("predecessor_hash", "") != previous.publish_frame_hash
+        ):
+            raise DataProjectionError("document predecessor mismatch")
     metadata = DocumentMetadataRecord(
         document_id=document_id,
         tenant_key=payload["tenant_key"],
@@ -307,14 +330,11 @@ def _reduce_data_published(
         publish_frame_hash=frame_hash,
         chat_id=payload.get("chat_id", ""),
         thread_root_id=payload.get("thread_root_id", ""),
+        previous_document_id=payload.get("previous_document_id", ""),
+        predecessor_sequence=payload.get("predecessor_sequence", 0),
+        predecessor_hash=payload.get("predecessor_hash", ""),
     )
     state.employee_documents[document_id] = metadata
-    latest_key = (
-        payload["tenant_key"],
-        payload["agent_id"],
-        kind.value,
-        payload["source_id"],
-    )
     state.latest_employee_document[latest_key] = document_id
 
 
@@ -382,12 +402,20 @@ def _reduce_authority_cutover(
     frame_hash: str,
 ) -> None:
     payload = event.payload
+    if event.aggregate_id != "employee-data-authority":
+        raise DataProjectionError("invalid data authority aggregate")
+    if set(payload) != {"epoch", "mode", "cutover_sequence"}:
+        raise DataProjectionError("invalid data authority payload")
     new_epoch = payload["epoch"]
-    if new_epoch <= state.data_authority.epoch:
+    if type(new_epoch) is not int or new_epoch <= state.data_authority.epoch:
         raise DataProjectionError("authority epoch must advance monotonically")
+    if payload["mode"] != "canonical":
+        raise DataProjectionError("invalid data authority mode")
+    if payload["cutover_sequence"] != frame_sequence:
+        raise DataProjectionError("invalid data authority cutover sequence")
     state.data_authority = DataAuthority(
         epoch=new_epoch,
-        mode=payload["mode"],
+        mode="canonical",
         cutover_sequence=frame_sequence,
     )
 

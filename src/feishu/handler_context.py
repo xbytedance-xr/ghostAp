@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from ..acp.manager import ACPSessionManager
     from ..agent.intent_recognizer import IntentRecognizer
+    from ..autonomous.data.composition import EmployeeDataComposition
     from ..autonomous.membership.service import EmployeeMembershipService
     from ..autonomous.provisioning.fire_service import EmployeeFireService
     from ..autonomous.provisioning.hire_port import EmployeeHireService
@@ -100,6 +101,7 @@ class HandlerContext:
     employee_fire_service: Optional["EmployeeFireService"] = None
     employee_hire_readiness: Optional[Callable[[], Any]] = None
     employee_membership_service: Optional["EmployeeMembershipService"] = None
+    employee_data_composition: Optional["EmployeeDataComposition"] = None
 
     def dependency_view(self) -> HandlerDependencyView:
         """Return a minimal service view while keeping existing fields compatible."""
