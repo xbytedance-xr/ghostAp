@@ -98,3 +98,53 @@ def test_reply_file_sends_file_message_with_file_key():
     body = request.request_body
     assert body.msg_type == "file"
     assert json.loads(body.content) == {"file_key": "file_key_123"}
+
+
+def test_all_main_bot_message_mutations_are_audited_before_dispatch():
+    message_api = MagicMock()
+    message_api.create.return_value = _Response(data=MagicMock(message_id="created"))
+    message_api.reply.return_value = _Response(data=MagicMock(message_id="replied"))
+    message_api.patch.return_value = _Response(data=MagicMock(message_id="patched"))
+    client_obj = MagicMock()
+    client_obj.im.v1.message = message_api
+    events: list[tuple[str, str, str]] = []
+    client = FeishuIMClient(
+        lambda: client_obj,
+        MagicMock(im_api_max_retries=1),
+        outbound_audit=lambda tenant, operation, target: events.append(
+            (tenant, operation, target)
+        ),
+        tenant_key_resolver=lambda: "tenant-a",
+    )
+
+    client.send_message("chat_id", "oc_chat", '{"text":"x"}')
+    client.reply_message("om_message", '{"text":"x"}')
+    client.reply_file("om_message", "file_key")
+    client.patch_message("om_card", "{}")
+
+    assert events == [
+        ("tenant-a", "create", "oc_chat"),
+        ("tenant-a", "reply", "om_message"),
+        ("tenant-a", "reply", "om_message"),
+        ("tenant-a", "patch", "om_card"),
+    ]
+
+
+def test_audit_failure_does_not_break_main_bot_but_is_reported():
+    message_api = MagicMock()
+    message_api.reply.return_value = _Response(data=MagicMock(message_id="replied"))
+    client_obj = MagicMock()
+    client_obj.im.v1.message = message_api
+    failures: list[Exception] = []
+    client = FeishuIMClient(
+        lambda: client_obj,
+        MagicMock(im_api_max_retries=1),
+        outbound_audit=lambda *_args: (_ for _ in ()).throw(OSError("audit disk")),
+        outbound_audit_failure=failures.append,
+    )
+
+    response = client.reply_message("om_message", '{"text":"x"}')
+
+    assert response is not None
+    assert len(failures) == 1
+    assert isinstance(failures[0], OSError)

@@ -50,7 +50,13 @@ class BaseHandler:
     def __init__(self, ctx: "HandlerContext") -> None:
         self.ctx = ctx
         self._card_delivery = None  # Lazy-init singleton CardDelivery
-        self.im_client = FeishuIMClient(ctx.api_client_factory, ctx.settings)
+        self.im_client = FeishuIMClient(
+            ctx.api_client_factory,
+            ctx.settings,
+            outbound_audit=ctx.main_bot_outbound_audit,
+            outbound_audit_failure=ctx.main_bot_outbound_audit_failure,
+            tenant_key_resolver=ctx.tenant_key_resolver,
+        )
         # Lock helper (composition — keeps BaseHandler focused on messaging)
         from .lock_helper import LockHelper
         self.lock_helper = LockHelper(self)
@@ -176,7 +182,12 @@ class BaseHandler:
             from ...card.delivery.factory import create_card_delivery
             from ...card.delivery.feishu_client import FeishuCardAPIClient
 
-            api_client = FeishuCardAPIClient(self.ctx.api_client_factory())
+            api_client = FeishuCardAPIClient(
+                self.ctx.api_client_factory(),
+                outbound_audit=self.ctx.main_bot_outbound_audit,
+                outbound_audit_failure=self.ctx.main_bot_outbound_audit_failure,
+                tenant_key_resolver=self.ctx.tenant_key_resolver,
+            )
             self._card_delivery = create_card_delivery(api_client)
         return self._card_delivery
 

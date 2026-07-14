@@ -102,6 +102,9 @@ class HandlerContext:
     employee_hire_readiness: Optional[Callable[[], Any]] = None
     employee_membership_service: Optional["EmployeeMembershipService"] = None
     employee_data_composition: Optional["EmployeeDataComposition"] = None
+    main_bot_outbound_audit: Optional[Callable[[str, str, str], None]] = None
+    main_bot_outbound_audit_failure: Optional[Callable[[Exception], None]] = None
+    tenant_key_resolver: Optional[Callable[[], str]] = None
 
     def dependency_view(self) -> HandlerDependencyView:
         """Return a minimal service view while keeping existing fields compatible."""

@@ -14,12 +14,22 @@ from .employee_release import (
     EmployeeReleaseStatus,
     evaluate_employee_release,
 )
+from .main_bot_audit import MainBotSendAuditLog
 from .manifest import (
     AcceptanceGate,
     AcceptanceManifest,
     EvidenceLevel,
     GateStatus,
     ManifestEvaluation,
+)
+from .release_trust import (
+    ExternalWitnessAnchor,
+    ReleaseTrustError,
+    ReleaseTrustLease,
+    ReleaseTrustProvider,
+    RootOwnedUnixReleaseTrustBroker,
+    RuntimeReleaseTrustSession,
+    authorize_runtime_employee_release,
 )
 
 __all__ = [
@@ -28,6 +38,7 @@ __all__ = [
     "EvidenceLevel",
     "GateStatus",
     "ManifestEvaluation",
+    "MainBotSendAuditLog",
     "BundleCheckpoint",
     "BundleIntegrityError",
     "EmployeeEnvironmentBinding",
@@ -40,4 +51,11 @@ __all__ = [
     "EmployeeReleaseManifest",
     "EmployeeReleaseStatus",
     "evaluate_employee_release",
+    "ExternalWitnessAnchor",
+    "ReleaseTrustError",
+    "ReleaseTrustLease",
+    "ReleaseTrustProvider",
+    "RootOwnedUnixReleaseTrustBroker",
+    "RuntimeReleaseTrustSession",
+    "authorize_runtime_employee_release",
 ]

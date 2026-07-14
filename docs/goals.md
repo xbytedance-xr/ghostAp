@@ -60,7 +60,7 @@
   - `/hire` 不再降级写入 `AgentRegistry.legacy()`；`/new-role` 继续只负责 Slock 虚拟角色。没有 production service 或 readiness 时必须 fail-close。
   - `/hire` 管理员 DM 卡片权限 Bug 已修复：消息事件入口保存官方 `event.message.chat_type` 与 origin/chat/operator；卡片回调不再读取不存在的 `context.chat_type`。只有服务端明确无 provenance 记录时才查询 Chat API，并且只读结构字段 `chat_mode`；API 结果必须原子写回完整可信绑定。来源查询/写入失败、残缺、过期、跨 chat、跨 operator 或并发冲突均 fail-close。
   - readiness 反馈已接入处理器：只有 provider 明确返回 `ready=True` 且无 blockers 才派发真实 Hire；否则向管理员显示具体安全门禁，不再误报“不是管理员”，也不降级创建本地虚拟角色。
-  - 当前现场仍不能创建真实员工，但剩余原因是有意的发布门禁而非 DM 识别：`autonomous_visible_employee_limit=0`，且没有独立 QA release 公钥/有效 attestation；全新环境的 `EmployeeDepartmentRuntime` 保持 dormant，`employee_hire_service` 不注入。不得绕过门禁创建员工。
+  - 当前现场仍不能创建真实员工，但剩余原因是有意的发布门禁而非 DM 识别：`autonomous_visible_employee_limit=0`，且部署未提供 root-owned release broker、真实 evidence/attestation、完整 release binding 或已验证 worker sandbox；全新环境的 `EmployeeDepartmentRuntime` 保持 dormant，`employee_hire_service` 不注入。不得绕过门禁创建员工。
   - 真实员工闭环阶段状态：
     - Thread Context Task 1-6 已完成并关闭 Phase 2：冻结 contracts/config、employee-scoped 官方
       `lark-oapi` message source、每员工 Vault credential lease、Get current 权威
@@ -76,7 +76,8 @@
     - Phase 3 Task 0-7 已完成 durable employee ingress、Projected Registry/ACL/membership
       authority、Journal-backed bounded Router、锚定 dispatch attempt、Context gate、
       真实 Slock `_run_acp_session`、原子 terminal history 与生产 composition/recovery/handoff；
-      本地九 selector 已精确聚合，但外部 trusted final-build attestation 仍待 Phase 8
+      本地九 selector 已精确聚合；Phase 8 已实现外部 trusted final-build attestation 的运行时消费协议，
+      当前部署实例和真实租户证据仍待 Phase 9
     - Phase 4 Employee Response Channel 已完成：冻结 snapshot/binding/effect、员工密钥加密 Blob、
       Journal replay、稳定 UUIDv5 单卡 create、employee child public `update_card` patch、四元组回执栅栏、
       terminal fencing、恢复 worker 与 runtime ownership 均已接线；旧 in-memory provisioning response 已删除，
@@ -90,11 +91,18 @@
       completed attempt 在员工结果卡前幂等发布 L1、chat/thread summary、skill profile 与 task reasoning，
       restart 可补齐文档而不重跑 ACP；read ACL 只信任 transport 与 workforce 投影，完整 L1 仅管理员主
       Bot DM 可读；迁移拒绝 symlink/冲突/损坏，恢复校验全部 live Blob 并重建投影文件
-  - 尚无获授权的真实测试/生产租户执行证据。Phase 7 关闭时最新
-    Autonomous 全量验证为 `1791 passed, 2 skipped`；两项 skip 分别是未授权真实
+    - Phase 8 已完成 production release trust 客户端与运行时接线：root-owned Unix socket broker 负责
+      immutable workload provenance、固定 QA trust root、单调 attestation consumption、短期 lease/
+      recovery renewal 与全局 witness；员工 Journal 和主 Bot 审计使用独立远端 CAS scope。主 Bot
+      create/reply/file-reply/patch 及 CardDelivery create/reply/patch 在网络调用前双写外部跨副本 ledger
+      与本地 HMAC Journal，未知 tenant 保守计入所有查询窗口；lease 过期关闭新 admission
+  - 尚无获授权的真实测试/生产租户执行证据。Phase 8 关闭时最新
+    Autonomous 全量验证为 `1811 passed, 2 skipped`；两项 skip 分别是未授权真实
     租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
     不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
-  - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
+  - 生产 release 的应用侧集成已完成，但当前部署仍缺实际 root-owned broker 服务及其不可变
+    build/workload provenance、部署侧固定 QA trust root、外部单调 ledger/anchor/witness、有效 QA
+    attestation、完整真实租户 evidence 和 sandbox attestation；这些必须由独立部署/QA 系统提供，不能由应用配置自证。
   - `autonomous_visible_employee_limit` 必须继续保持 0。不得为“先跑起来”而放宽 readiness、伪造 evidence、恢复 legacy/NullJournal fallback 或把测试 fake 当生产依赖。
 
   完整最终目标：
@@ -324,9 +332,21 @@
      - Phase 7 不提升 release readiness；visible limit 仍为 0，下一阶段是 Production bootstrap 与
        外部 release trust integration
   8. Production bootstrap 与外部 release trust integration：
-     - 真实 main-Bot send audit provider
-     - 不可变 build/workload provenance、固定 QA trust root、外部单调 ledger
-     - 生产级 anchor/见证、recovery capability、secret/sandbox 审计
+     - **应用侧已完成**。实施与协议见 `docs/2026-07-14-autonomous-release-trust-plan.md`。新增
+       root-owned Unix socket broker 客户端，拒绝 symlink/非 socket/非 root owner/可写 mode/非 root
+       `SO_PEERCRED`，所有响应严格绑定 nonce、release binding、checkpoint、workload identity/digest、
+       ledger、witness 与有效期；`.env`/本地公钥/checkpoint 不能自行授予 release
+     - broker 负责固定 QA trust root、immutable build/workload provenance 和单调 attestation consume；
+       runtime 持有短期 lease 并在恢复前启动 monitor 续期。续期暂时失败只在当前 lease 有效期内重试，
+       过期后关闭 hire/ingress/context/outbox 新 admission，禁止 external resume
+     - 员工主 Journal 与主 Bot 审计使用不同 broker CAS scope，跨 scope 共享全局 witness 高水位，拒绝
+       回滚和跨 scope 重放。主 Bot IM 与 CardDelivery 的 create/reply/file-reply/patch 均在真实 SDK
+       调用前写外部跨副本 ledger，再写本地 HMAC Journal；只存 tenant/target hash，外部查询必须
+       `complete=true` 且计数不得落后本地
+     - 当前现场只读核查：broker/evidence/attestation/release binding/真实租户 opt-in 均缺失，
+       `worker_sandbox_verified=false`，宿主 user namespace selector 仍 skip；因此 Phase 8 代码完成不代表放行
+     - fresh Autonomous `1811 passed, 2 skipped, 1 warning in 399.43s`；Phase 8/共享回归
+       `210 passed`、`161 passed`，Autonomous/changed-file Ruff、配置校验和 `git diff --check` 通过
   9. 真飞书租户验收与放行：
      - staging + production Provisioning
      - 真实员工独立收发、桌面/移动 Slash、附件/话题/CardAction

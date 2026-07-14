@@ -74,6 +74,33 @@ def test_send_card_reference_sets_feishu_uuid() -> None:
     assert body.uuid == "idem-3"
 
 
+def test_card_message_create_reply_and_patch_are_audited_before_sdk_dispatch() -> None:
+    message_api = _FakeMessageApi()
+    message_api.patch = lambda _request: _FakeResponse()
+    events: list[tuple[str, str, str]] = []
+    client = FeishuCardAPIClient(
+        _client_for(message_api),
+        outbound_audit=lambda tenant, operation, target: events.append(
+            (tenant, operation, target)
+        ),
+        tenant_key_resolver=lambda: "tenant-a",
+    )
+
+    client.create_card("chat_1", {"body": {}})
+    client.create_card("chat_1", {"body": {}}, reply_to="origin_1")
+    client.update_card("card_1", {"body": {}})
+    client.send_card_reference("chat_1", "card_entity")
+    client.send_card_reference("chat_1", "card_entity", reply_to="origin_2")
+
+    assert events == [
+        ("tenant-a", "create", "chat_1"),
+        ("tenant-a", "reply", "origin_1"),
+        ("tenant-a", "patch", "card_1"),
+        ("tenant-a", "create", "chat_1"),
+        ("tenant-a", "reply", "origin_2"),
+    ]
+
+
 def test_call_api_times_out_without_waiting_for_stuck_sdk_call(monkeypatch) -> None:
     message_api = _FakeMessageApi()
     client = FeishuCardAPIClient(_client_for(message_api))

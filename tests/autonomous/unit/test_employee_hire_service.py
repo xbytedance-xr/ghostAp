@@ -362,6 +362,12 @@ def test_journal_hmac_and_anchor_settings_are_strict_redacted_and_fail_closed() 
     assert defaults.autonomous_anchor_path == "~/.ghostap/autonomy/journal.anchor"
     assert defaults.autonomous_anchor_provider == ""
     assert defaults.autonomous_visible_employee_limit == 0
+    assert defaults.autonomous_employee_release_trust_socket == ""
+    assert defaults.autonomous_employee_release_trust_timeout_seconds == 2.0
+    assert defaults.autonomous_main_bot_audit_dir.endswith("main-bot-send-audit")
+    assert defaults.autonomous_main_bot_audit_anchor_path.endswith(
+        "main-bot-send-audit.anchor"
+    )
 
     encoded = base64.urlsafe_b64encode(b"k" * 32).decode()
     configured = Settings(
@@ -376,3 +382,8 @@ def test_journal_hmac_and_anchor_settings_are_strict_redacted_and_fail_closed() 
         Settings(_env_file=None, autonomous_journal_hmac_key="too-short")
     with pytest.raises(ValueError, match="autonomous_anchor_provider"):
         Settings(_env_file=None, autonomous_anchor_provider="file anchor")
+    with pytest.raises(ValueError, match="rejects booleans"):
+        Settings(
+            _env_file=None,
+            autonomous_employee_release_trust_timeout_seconds=True,
+        )

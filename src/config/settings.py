@@ -739,6 +739,18 @@ class Settings(BaseSettings):
     autonomous_employee_service_instance_id: str = ""
     autonomous_employee_staging_tenant_hash: str = ""
     autonomous_employee_production_tenant_hash: str = ""
+    autonomous_employee_release_trust_socket: str = ""
+    autonomous_employee_release_trust_timeout_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        le=30,
+    )
+    autonomous_main_bot_audit_dir: str = (
+        "~/.ghostap/autonomy/main-bot-send-audit"
+    )
+    autonomous_main_bot_audit_anchor_path: str = (
+        "~/.ghostap/autonomy/main-bot-send-audit.anchor"
+    )
 
     @field_validator(
         "autonomous_thread_context_max_messages",
@@ -813,6 +825,24 @@ class Settings(BaseSettings):
             raise ValueError(
                 "autonomous_anchor_provider must be a stable lowercase identifier"
             )
+        return value
+
+    @field_validator("autonomous_employee_release_trust_timeout_seconds", mode="before")
+    @classmethod
+    def _reject_boolean_release_trust_timeout(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("release trust timeout rejects booleans")
+        return value
+
+    @field_validator(
+        "autonomous_employee_release_trust_socket",
+        "autonomous_main_bot_audit_dir",
+        "autonomous_main_bot_audit_anchor_path",
+    )
+    @classmethod
+    def _validate_employee_release_paths(cls, value: str) -> str:
+        if not isinstance(value, str) or "\x00" in value:
+            raise ValueError("employee release paths must be text without NUL")
         return value
 
     @field_validator("autonomous_history_timezone")

@@ -52,9 +52,40 @@ class FeishuCardAPIClient:
 
     _worker_slots = threading.BoundedSemaphore(64)
 
-    def __init__(self, client: "lark.Client") -> None:
+    def __init__(
+        self,
+        client: "lark.Client",
+        *,
+        outbound_audit: Callable[[str, str, str], None] | None = None,
+        outbound_audit_failure: Callable[[Exception], None] | None = None,
+        tenant_key_resolver: Callable[[], str] | None = None,
+    ) -> None:
         self._client = client
         self._settings = get_settings()
+        self._outbound_audit = outbound_audit
+        self._outbound_audit_failure = outbound_audit_failure
+        self._tenant_key_resolver = tenant_key_resolver
+
+    def _audit_outbound(self, operation: str, target: str) -> None:
+        audit = self._outbound_audit
+        if audit is None:
+            return
+        tenant_key = ""
+        if self._tenant_key_resolver is not None:
+            try:
+                resolved = self._tenant_key_resolver()
+                tenant_key = resolved if isinstance(resolved, str) else ""
+            except Exception:
+                tenant_key = ""
+        try:
+            audit(tenant_key, operation, target)
+        except Exception as exc:
+            logger.error("main Bot card audit failed closed: %s", type(exc).__name__)
+            if self._outbound_audit_failure is not None:
+                try:
+                    self._outbound_audit_failure(exc)
+                except Exception:
+                    logger.error("main Bot card audit failure callback failed", exc_info=True)
 
     def _api_timeout_seconds(self) -> float:
         try:
@@ -126,6 +157,7 @@ class FeishuCardAPIClient:
         content = _sanitize_card_content(json.dumps(card_json, ensure_ascii=False))
 
         if reply_to:
+            self._audit_outbound("reply", reply_to)
             if reply_in_thread is None:
                 reply_in_thread = self._settings.default_reply_mode == "thread"
             request = (
@@ -146,6 +178,7 @@ class FeishuCardAPIClient:
                 lambda: self._client.im.v1.message.reply(request),
             )
         else:
+            self._audit_outbound("create", chat_id)
             request = (
                 CreateMessageRequest.builder()
                 .receive_id_type("chat_id")
@@ -194,6 +227,7 @@ class FeishuCardAPIClient:
             .build()
         )
 
+        self._audit_outbound("patch", card_id)
         response = self._call_api(
             "im.message.patch",
             lambda: self._client.im.v1.message.patch(request),
@@ -230,6 +264,7 @@ class FeishuCardAPIClient:
             .build()
         )
 
+        self._audit_outbound("patch", card_id)
         response = self._call_api(
             "cardkit.card_element.content",
             lambda: self._client.cardkit.v1.card_element.content(request),
@@ -304,6 +339,7 @@ class FeishuCardAPIClient:
         content = json.dumps({"type": "card", "data": {"card_id": card_id}})
 
         if reply_to:
+            self._audit_outbound("reply", reply_to)
             if reply_in_thread is None:
                 reply_in_thread = self._settings.default_reply_mode == "thread"
             request = (
@@ -324,6 +360,7 @@ class FeishuCardAPIClient:
                 lambda: self._client.im.v1.message.reply(request),
             )
         else:
+            self._audit_outbound("create", chat_id)
             request = (
                 CreateMessageRequest.builder()
                 .receive_id_type("chat_id")

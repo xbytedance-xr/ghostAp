@@ -50,9 +50,41 @@ def _sanitize_content(content: str) -> str:
 class FeishuIMClient:
     """Client for Feishu IM API interactions with retry logic."""
 
-    def __init__(self, api_client_factory: Callable[[], Any], settings: "Settings") -> None:
+    def __init__(
+        self,
+        api_client_factory: Callable[[], Any],
+        settings: "Settings",
+        *,
+        outbound_audit: Callable[[str, str, str], None] | None = None,
+        outbound_audit_failure: Callable[[Exception], None] | None = None,
+        tenant_key_resolver: Callable[[], str] | None = None,
+    ) -> None:
         self.api_client_factory = api_client_factory
         self.settings = settings
+        self._outbound_audit = outbound_audit
+        self._outbound_audit_failure = outbound_audit_failure
+        self._tenant_key_resolver = tenant_key_resolver
+
+    def _audit_outbound(self, operation: str, target: str) -> None:
+        audit = self._outbound_audit
+        if audit is None:
+            return
+        tenant_key = ""
+        if self._tenant_key_resolver is not None:
+            try:
+                resolved = self._tenant_key_resolver()
+                tenant_key = resolved if isinstance(resolved, str) else ""
+            except Exception:
+                tenant_key = ""
+        try:
+            audit(tenant_key, operation, target)
+        except Exception as exc:
+            logger.error("main Bot outbound audit failed closed: %s", type(exc).__name__)
+            if self._outbound_audit_failure is not None:
+                try:
+                    self._outbound_audit_failure(exc)
+                except Exception:
+                    logger.error("main Bot audit failure callback failed", exc_info=True)
 
     def _execute_with_retry(
         self, func: Callable[[], Any], action_name: str, max_retries: Optional[int] = None
@@ -101,6 +133,7 @@ class FeishuIMClient:
     ) -> Optional[Any]:
         """Send a message."""
         content = _sanitize_content(content)
+        self._audit_outbound("create", receive_id)
         client = self.api_client_factory()
         request = (
             CreateMessageRequest.builder()
@@ -123,6 +156,7 @@ class FeishuIMClient:
     ) -> Optional[Any]:
         """Reply to a message."""
         content = _sanitize_content(content)
+        self._audit_outbound("reply", message_id)
         client = self.api_client_factory()
         request = (
             ReplyMessageRequest.builder()
@@ -179,6 +213,7 @@ class FeishuIMClient:
     ) -> Optional[Any]:
         """Reply to a message with a Feishu file attachment."""
         content = _sanitize_content(json.dumps({"file_key": file_key}, ensure_ascii=False))
+        self._audit_outbound("reply", message_id)
         client = self.api_client_factory()
         request = (
             ReplyMessageRequest.builder()
@@ -198,6 +233,7 @@ class FeishuIMClient:
     def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None) -> Optional[Any]:
         """Patch a message."""
         content = _sanitize_content(content)
+        self._audit_outbound("patch", message_id)
         client = self.api_client_factory()
         request = (
             PatchMessageRequest.builder()

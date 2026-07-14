@@ -23,6 +23,13 @@ from src.slock_engine.memory_manager import (
     default_slock_storage_base,
 )
 
+from ..acceptance.main_bot_audit import MainBotSendAuditLog
+from ..acceptance.release_trust import (
+    ReleaseTrustError,
+    ReleaseTrustProvider,
+    RuntimeReleaseTrustSession,
+    authorize_runtime_employee_release,
+)
 from ..context.lark_source import LarkEmployeeMessageSourceFactory
 from ..context.models import ThreadContextConfig
 from ..context.runtime import (
@@ -223,6 +230,9 @@ class EmployeeDepartmentRuntime:
         self._challenges: dict[str, VerificationChallenge] = {}
         self._verification_router: VerificationRouter | None = None
         self._main_bot_send_audit: MainBotSendAudit | None = None
+        self._owned_main_bot_send_audit: MainBotSendAuditLog | None = None
+        self._release_trust_session: RuntimeReleaseTrustSession | None = None
+        self._release_trust_expired = False
         self._monitor_task: asyncio.Task[None] | None = None
         self._raw_message_metadata: dict[tuple[str, int, str], tuple[str, str]] = {}
 
@@ -235,6 +245,7 @@ class EmployeeDepartmentRuntime:
         channel_supervisor: _ChannelSupervisor | None = None,
         slash_reconciler_factory: SlashReconcilerFactory | None = None,
         main_bot_send_audit: MainBotSendAudit | None = None,
+        release_trust_provider: ReleaseTrustProvider | None = None,
         notification_link: Callable[[DurableHireState, str, int], object] | None = None,
         notification_status: Callable[[DurableHireState, str], object] | None = None,
         context_source_factory: EmployeeMessageSourceFactory | None = None,
@@ -248,22 +259,86 @@ class EmployeeDepartmentRuntime:
         journal_exists = (Path(settings.autonomous_journal_dir).expanduser() / JOURNAL_FILENAME).is_file()
         if limit == 0 and not journal_exists:
             return cls(blockers=("visible_employee_limit",))
-        release_evidence_ready = cls._release_evidence_ready(settings)
+        if release_trust_provider is not None and notification_link is None:
+            release_trust_provider.close()
+            return cls(blockers=("registration_notifier",))
+        release_trust_session: RuntimeReleaseTrustSession | None = None
+        if release_trust_provider is not None:
+            try:
+                release_trust_session = authorize_runtime_employee_release(
+                    settings,
+                    release_trust_provider,
+                )
+            except Exception as exc:
+                logger.error(
+                    "employee release trust unavailable: %s",
+                    type(exc).__name__,
+                )
+                try:
+                    release_trust_provider.close()
+                except Exception:
+                    logger.error("employee release trust provider close failed")
+        release_evidence_ready = (
+            release_trust_session is not None
+            if release_trust_provider is not None
+            else cls._release_evidence_ready(settings)
+        )
         if release_evidence_ready is not True and not journal_exists:
+            if release_trust_session is not None:
+                release_trust_session.close()
             return cls(blockers=("release_evidence",))
         if release_evidence_ready is True and notification_link is None:
+            if release_trust_session is not None:
+                release_trust_session.close()
             return cls(blockers=("registration_notifier",))
-        if release_evidence_ready is True and main_bot_send_audit is None:
-            return cls(blockers=("main_bot_send_audit",))
-        if getattr(settings, "autonomous_anchor_provider", "") != "file":
+        release_anchor = None
+        owned_main_bot_send_audit: MainBotSendAuditLog | None = None
+        if release_trust_session is not None:
+            try:
+                service_instance_id = settings.autonomous_employee_service_instance_id
+                release_anchor = release_trust_session.journal_anchor(
+                    f"employee-journal:{service_instance_id}"
+                )
+                audit_anchor = release_trust_session.journal_anchor(
+                    f"main-bot-audit:{service_instance_id}"
+                )
+                owned_main_bot_send_audit = MainBotSendAuditLog.open(
+                    settings.autonomous_main_bot_audit_dir,
+                    anchor_path=settings.autonomous_main_bot_audit_anchor_path,
+                    hmac_key=cls._decode_hmac_key(settings),
+                    anchor=audit_anchor,
+                    external_audit=release_trust_session,
+                )
+                if main_bot_send_audit is None:
+                    main_bot_send_audit = owned_main_bot_send_audit.count_attempts
+            except Exception:
+                if owned_main_bot_send_audit is not None:
+                    owned_main_bot_send_audit.close()
+                release_trust_session.close()
+                return cls(blockers=("production_anchor",))
+        elif getattr(settings, "autonomous_anchor_provider", "") != "file":
+            if release_trust_session is not None:
+                release_trust_session.close()
             return cls(blockers=("production_anchor",))
+        if release_evidence_ready is True and main_bot_send_audit is None:
+            if owned_main_bot_send_audit is not None:
+                owned_main_bot_send_audit.close()
+            if release_trust_session is not None:
+                release_trust_session.close()
+            return cls(blockers=("main_bot_send_audit",))
         if (
             release_evidence_ready is True
             and getattr(settings, "autonomous_worker_sandbox_verified", False) is not True
         ):
+            if owned_main_bot_send_audit is not None:
+                owned_main_bot_send_audit.close()
+            if release_trust_session is not None:
+                release_trust_session.close()
             return cls(blockers=("worker_sandbox",))
 
         runtime = cls(external_resume_allowed=release_evidence_ready is True)
+        runtime._release_trust_session = release_trust_session
+        runtime._owned_main_bot_send_audit = owned_main_bot_send_audit
         try:
             hmac_key = cls._decode_hmac_key(settings)
             keyring = CredentialKeyring.from_settings(settings)
@@ -273,7 +348,11 @@ class EmployeeDepartmentRuntime:
             )
             writer = JournalWriter.open(
                 Path(settings.autonomous_journal_dir).expanduser(),
-                anchor=FileAnchor(settings.autonomous_anchor_path),
+                anchor=(
+                    release_anchor
+                    if release_anchor is not None
+                    else FileAnchor(settings.autonomous_anchor_path)
+                ),
                 hmac_key=hmac_key,
                 writer_epoch=time.time_ns(),
             )
@@ -336,6 +415,8 @@ class EmployeeDepartmentRuntime:
                 membership_health=membership_health or runtime._membership,
             )
             runtime._compose_fire(settings)
+            if release_trust_session is not None and runtime._loop is not None:
+                runtime._loop.call_soon_threadsafe(runtime._start_monitor_in_loop)
             runtime.recover()
             return runtime
         except Exception as exc:
@@ -386,10 +467,19 @@ class EmployeeDepartmentRuntime:
     def outbox_delivery(self) -> EmployeeOutboxDeliveryCoordinator | None:
         return self._outbox_delivery
 
+    @property
+    def main_bot_outbound_audit(self) -> MainBotSendAuditLog | None:
+        return self._owned_main_bot_send_audit
+
     def readiness(self) -> RuntimeReadiness:
         return self.hire_readiness()
 
     def hire_readiness(self) -> RuntimeReadiness:
+        trust = self._release_trust_session
+        if self._release_trust_expired or (
+            trust is not None and not trust.valid(time.time())
+        ):
+            return RuntimeReadiness(False, ("release_trust",))
         if self._service is None:
             return RuntimeReadiness(False, self._blockers or ("not_composed",))
         service_readiness: HireReadiness = self._service.readiness()
@@ -647,6 +737,16 @@ class EmployeeDepartmentRuntime:
                 resources_safe = cleanup("writer", self._writer.close)
         if resources_safe and self._vault is not None:
             resources_safe = cleanup("vault", self._vault.close)
+        if resources_safe and self._owned_main_bot_send_audit is not None:
+            resources_safe = cleanup(
+                "main_bot_send_audit",
+                self._owned_main_bot_send_audit.close,
+            )
+        if resources_safe and self._release_trust_session is not None:
+            resources_safe = cleanup(
+                "release_trust",
+                self._release_trust_session.close,
+            )
         if not resources_safe:
             errors.append("dependent_resources_held")
         if resources_safe and self._loop is not None:
@@ -1601,7 +1701,7 @@ class EmployeeDepartmentRuntime:
 
     @staticmethod
     def _release_evidence_ready(settings: Any) -> bool:
-        """Reject config-only evidence until external provenance is integrated.
+        """Reject config-only evidence; production uses a broker provider.
 
         The operator-side bundle remains useful for acceptance reporting, but
         settings can neither attest the running image/workload nor provide an
@@ -1609,10 +1709,7 @@ class EmployeeDepartmentRuntime:
         the same settings as both claim and authority would permit replay.
         """
         del settings
-        logger.info(
-            "employee release remains closed: external build/workload provenance "
-            "and monotonic attestation consumption are unavailable"
-        )
+        logger.info("employee release remains closed without an external trust provider")
         return False
 
     @staticmethod
@@ -1754,6 +1851,7 @@ class EmployeeDepartmentRuntime:
 
     async def _monitor_channels(self) -> None:
         while not self._closing:
+            await self._renew_release_trust()
             service = self._require_service()
             channels = self._channels
             if channels is not None:
@@ -1786,6 +1884,41 @@ class EmployeeDepartmentRuntime:
                             type(exc).__name__,
                         )
             await asyncio.sleep(2.0)
+
+    async def _renew_release_trust(self) -> None:
+        session = self._release_trust_session
+        if session is None or self._release_trust_expired:
+            return
+        now = time.time()
+        try:
+            ready = await asyncio.to_thread(
+                session.renew_if_needed,
+                now,
+                renewal_window_seconds=120.0,
+            )
+        except (ReleaseTrustError, OSError, RuntimeError):
+            ready = session.valid(now)
+            logger.warning("employee release trust renewal failed closed")
+        if ready:
+            return
+        self._release_trust_expired = True
+        self._external_resume_allowed = False
+        self._execution_blockers = ("release_trust",)
+        for service in (
+            self._ingress,
+            self._outbox,
+            self._context_service,
+            self._service,
+        ):
+            stop = getattr(service, "stop_admission", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:
+                    logger.error(
+                        "employee release expiry admission close failed: %s",
+                        type(service).__name__,
+                    )
 
     async def _configure_intent(
         self,

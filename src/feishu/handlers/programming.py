@@ -844,7 +844,12 @@ class ProgrammingModeHandler(BaseHandler):
         )
 
         # Create card delivery + session
-        api_client = FeishuCardAPIClient(self.ctx.api_client_factory())
+        api_client = FeishuCardAPIClient(
+            self.ctx.api_client_factory(),
+            outbound_audit=self.ctx.main_bot_outbound_audit,
+            outbound_audit_failure=self.ctx.main_bot_outbound_audit_failure,
+            tenant_key_resolver=self.ctx.tenant_key_resolver,
+        )
         delivery = create_card_delivery(api_client)
         from src.card.session.config import SessionConfig
         config = SessionConfig(metadata=metadata, reply_to=message_id)

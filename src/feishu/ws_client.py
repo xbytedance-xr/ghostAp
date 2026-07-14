@@ -49,7 +49,7 @@ from ..project import (
 from ..slock_engine import SlockEngineManager
 from ..spec_engine import SpecEngineManager, SpecReporter
 from ..tasking import TaskPriority, TaskScheduler, TaskSpec
-from ..thread import get_current_thread_id, get_thread_manager
+from ..thread import get_current_tenant_key, get_current_thread_id, get_thread_manager
 from ..utils.circuit_breaker import CircuitBreaker, CircuitBreakerOpenException
 from ..utils.errors import get_error_detail
 from ..utils.rate_limit import RateLimiter, RateLimitExceededException
@@ -279,6 +279,9 @@ class FeishuWSClient:
 
         self._employee_department_runtime = None
         try:
+            from ..autonomous.acceptance.release_trust import (
+                RootOwnedUnixReleaseTrustBroker,
+            )
             from ..autonomous.gateway.env_scope import (
                 runtime_only_employee_environment,
             )
@@ -286,11 +289,32 @@ class FeishuWSClient:
                 EmployeeDepartmentRuntime,
             )
 
+            release_trust_provider = None
+            trust_socket = getattr(
+                self.settings,
+                "autonomous_employee_release_trust_socket",
+                "",
+            )
+            if (
+                getattr(self.settings, "autonomous_visible_employee_limit", 0) > 0
+                and isinstance(trust_socket, str)
+                and trust_socket.strip()
+            ):
+                release_trust_provider = RootOwnedUnixReleaseTrustBroker(
+                    trust_socket,
+                    timeout_seconds=getattr(
+                        self.settings,
+                        "autonomous_employee_release_trust_timeout_seconds",
+                        2.0,
+                    ),
+                )
+
             self._employee_department_runtime = EmployeeDepartmentRuntime.from_settings(
                 self.settings,
                 slock_engine_manager=self._slock_engine_manager,
                 employee_environment_provider=runtime_only_employee_environment,
                 manager_client_factory=self._get_api_client,
+                release_trust_provider=release_trust_provider,
                 notification_link=lambda state, url, expire_in: self._reply_text(
                     state.message_id,
                     f"请在 {expire_in} 秒内完成独立飞书智能体注册：{url}",
@@ -301,6 +325,12 @@ class FeishuWSClient:
                 "Employee Department composition failed closed: %s",
                 type(exc).__name__,
             )
+
+        main_bot_send_audit = (
+            self._employee_department_runtime.main_bot_outbound_audit
+            if self._employee_department_runtime is not None
+            else None
+        )
 
         # ------------------------------------------------------------------
         # Handler infrastructure
@@ -365,6 +395,17 @@ class FeishuWSClient:
                 if self._employee_department_runtime is not None
                 else None
             ),
+            main_bot_outbound_audit=(
+                main_bot_send_audit.record_attempt
+                if main_bot_send_audit is not None
+                else None
+            ),
+            main_bot_outbound_audit_failure=(
+                main_bot_send_audit.mark_incomplete
+                if main_bot_send_audit is not None
+                else None
+            ),
+            tenant_key_resolver=get_current_tenant_key,
         )
 
         # Instantiate handlers (temp locals for registry population)
@@ -561,7 +602,6 @@ class FeishuWSClient:
                 self._employee_department_runtime.close()
         except Exception:
             logger.debug("Employee Department shutdown skipped", exc_info=True)
-
         # Stop chat lock gate dedup cache cleanup
         try:
             self._chat_lock_gate.close()

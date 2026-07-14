@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-14
+- **Phase 8外部发布信任** - root broker租约、远端CAS见证与跨副本主Bot审计接线 → [2026-07-14.md](2026-07-14.md)
 - **Phase 7数据权威切换** - 四类canonical producer、ACL读取、迁移与恢复重建闭环 → [2026-07-14.md](2026-07-14.md)
 - **Phase 6员工退役闭环** - 原子撤权、锚定清理、Vault销毁与可验证归档 → [2026-07-14.md](2026-07-14.md)
 - **Phase 5成员关系与停止竞态** - 真实Bot群成员对账、role切换、durable stop唯一终态闭环 → [2026-07-14.md](2026-07-14.md)

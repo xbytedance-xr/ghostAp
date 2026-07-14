@@ -27,6 +27,7 @@ from src.autonomous.data.ports import PublishEmployeeDocumentCommand
 from src.autonomous.gateway.coordinator import EmployeeDispatchCoordinator
 from src.autonomous.gateway.env_scope import EmployeeProcessEnvironmentMaterial
 from src.autonomous.ingress.models import EmployeeIngressMetadata, EmployeeIngressPayload
+from src.autonomous.journal.anchor import MemoryAnchor
 from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
 from src.autonomous.provisioning.hire_port import EmployeeHireRequest
@@ -65,6 +66,9 @@ def _settings(
         autonomous_credential_keys=SecretStr(json.dumps(keyring)),
         autonomous_credential_active_key_id="k1",
         autonomous_worker_sandbox_verified=True,
+        autonomous_employee_service_instance_id="ghostap-prod-a",
+        autonomous_main_bot_audit_dir=str(tmp_path / "main-bot-audit"),
+        autonomous_main_bot_audit_anchor_path=str(tmp_path / "main-bot-audit.anchor"),
     )
     if context_configured:
         settings.autonomous_data_keys = SecretStr(json.dumps(keyring))
@@ -879,7 +883,118 @@ def _activate_employee(
 
 def test_production_factory_has_no_boolean_release_bypass() -> None:
     assert "release_evidence_ready" not in inspect.signature(EmployeeDepartmentRuntime.from_settings).parameters
+    assert "release_trust_provider" in inspect.signature(EmployeeDepartmentRuntime.from_settings).parameters
     assert "resume_external" not in inspect.signature(EmployeeDepartmentRuntime.recover).parameters
+
+
+class _ExternalTrustProvider:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _ExternalTrustSession:
+    def __init__(self) -> None:
+        self.closed = False
+        self.expired = False
+        self.anchors: dict[str, MemoryAnchor] = {}
+        self.audit_sequence = 0
+
+    def valid(self, _now: float) -> bool:
+        return not self.expired
+
+    def renew_if_needed(self, _now: float, *, renewal_window_seconds: float) -> bool:
+        assert renewal_window_seconds == 120.0
+        return not self.expired
+
+    def close(self) -> None:
+        self.closed = True
+
+    def journal_anchor(self, scope: str):
+        assert scope in {
+            "employee-journal:ghostap-prod-a",
+            "main-bot-audit:ghostap-prod-a",
+        }
+        anchor = self.anchors.setdefault(scope, MemoryAnchor())
+        anchor.production_safe = True
+        return anchor
+
+    def record_main_bot_send_attempt(self, **_kwargs) -> None:
+        self.audit_sequence += 1
+
+    def count_main_bot_send_attempts(self, _tenant_key, _start, _end) -> int:
+        return self.audit_sequence
+
+
+def test_external_release_session_is_owned_and_closed_by_runtime(tmp_path: Path) -> None:
+    provider = _ExternalTrustProvider()
+    session = _ExternalTrustSession()
+    with patch(
+        "src.autonomous.provisioning.composition.authorize_runtime_employee_release",
+        return_value=session,
+    ):
+        runtime = EmployeeDepartmentRuntime.from_settings(
+            _settings(tmp_path, limit=1),
+            release_trust_provider=provider,
+            registrar=_Registrar(),
+            channel_supervisor=_Channels(),
+            slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+            notification_link=lambda *_: None,
+        )
+
+    assert runtime.hire_service is not None
+    assert runtime.hire_readiness().ready is True
+    assert runtime.main_bot_outbound_audit is not None
+    runtime.main_bot_outbound_audit.record_attempt(
+        "tenant-a",
+        "reply",
+        "om-main-bot",
+        attempted_at=time.time(),
+    )
+    assert session.audit_sequence == 1
+    assert provider.closed is False
+    runtime.close()
+    assert session.closed is True
+
+
+def test_expired_external_release_session_closes_all_new_admission(tmp_path: Path) -> None:
+    provider = _ExternalTrustProvider()
+    session = _ExternalTrustSession()
+    with patch(
+        "src.autonomous.provisioning.composition.authorize_runtime_employee_release",
+        return_value=session,
+    ):
+        runtime = EmployeeDepartmentRuntime.from_settings(
+            _settings(tmp_path, limit=1, context_configured=True),
+            release_trust_provider=provider,
+            main_bot_send_audit=lambda *_: 0,
+            registrar=_Registrar(),
+            channel_supervisor=_Channels(),
+            slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+            notification_link=lambda *_: None,
+            context_source_factory=_ContextSourceFactory(),
+            group_memory_backend=_GroupMemory(),
+            slock_engine_manager=_SlockManager(),
+            employee_environment_provider=lambda authority: EmployeeProcessEnvironmentMaterial(
+                authority.tenant_key,
+                authority.agent_id,
+                authority.employee_version,
+                authority.credential_ref,
+                {"PATH": "/usr/bin"},
+                {},
+            ),
+        )
+    session.expired = True
+
+    asyncio.run(runtime._renew_release_trust())
+
+    assert runtime.hire_readiness().blockers == ("release_trust",)
+    assert runtime.execution_readiness().blockers == ("release_trust",)
+    assert runtime.hire_service is not None
+    assert "admission_closed" in runtime.hire_service.readiness().blockers
+    runtime.close()
 
 
 def test_limit_zero_is_dormant_without_touching_durable_paths(tmp_path: Path) -> None:
