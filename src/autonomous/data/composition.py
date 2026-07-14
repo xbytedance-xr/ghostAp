@@ -11,7 +11,7 @@ from typing import Any
 
 from ..journal.writer import JournalWriter
 from .facades import EmployeeDocumentMaterializer, EmployeeMemoryFacade
-from .keyring import build_employee_data_storage
+from .keyring import EmployeeDataKeyring, build_employee_data_storage
 from .materializer import DailyHistoryMaterializer
 from .models import (
     DataKind,
@@ -207,6 +207,7 @@ def build_employee_data_composition(
     *,
     settings: Any,
     writer: JournalWriter,
+    keyring: EmployeeDataKeyring | None = None,
     admin_principal_ids: frozenset[str],
     main_bot_app_id: str,
     agents_root: str | Path,
@@ -215,7 +216,7 @@ def build_employee_data_composition(
     auto_cutover: bool = True,
 ) -> EmployeeDataComposition:
     """Factory that constructs the full wired data-plane from settings."""
-    storage = build_employee_data_storage(settings)
+    storage = build_employee_data_storage(settings, keyring=keyring)
     state = DataProjectionState()
     service = EmployeeDataService(
         writer=writer,

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import concurrent.futures
 import hashlib
 import logging
@@ -24,12 +22,7 @@ from src.slock_engine.memory_manager import (
 )
 
 from ..acceptance.main_bot_audit import MainBotSendAuditLog
-from ..acceptance.release_trust import (
-    ReleaseTrustError,
-    ReleaseTrustProvider,
-    RuntimeReleaseTrustSession,
-    authorize_runtime_employee_release,
-)
+from ..acceptance.release_trust import ReleaseTrustProvider
 from ..context.lark_source import LarkEmployeeMessageSourceFactory
 from ..context.models import ThreadContextConfig
 from ..context.runtime import (
@@ -57,7 +50,7 @@ from ..ingress.router import DurableEmployeeIngressRouter, RouterQueueLimits
 from ..ingress.service import EmployeeIngressService, IngressConflictError
 from ..journal.anchor import FileAnchor
 from ..journal.projections import ProjectionState
-from ..journal.writer import JOURNAL_FILENAME, JournalWriter
+from ..journal.writer import JournalWriter
 from ..membership import (
     EmployeeMembershipService,
     LarkMembershipAPI,
@@ -74,11 +67,7 @@ from ..supervisor.employee_channels import (
     ChannelProcessState,
     EmployeeChannelSupervisor,
 )
-from ..workforce.credential_vault import (
-    CredentialKeyring,
-    CredentialReceipt,
-    CredentialVault,
-)
+from ..workforce.credential_vault import CredentialReceipt, CredentialVault
 from ..workforce.registry import ProjectedAgentRegistry
 from .fire_authority import JournalFireAuthority
 from .fire_effects import (
@@ -93,6 +82,7 @@ from .fire_service import EmployeeFireService
 from .hire_service import HireReadiness, ProductionEmployeeHireService
 from .hire_state import DurableHireState, HireEffectState, HirePhase
 from .lark_app import LarkAppRegistrar
+from .local_bootstrap import resolve_employee_runtime_material
 from .slash_commands import SlashCommandReconciler, VerifiedSlashState
 from .slash_lark import LarkSlashCommandAPI
 from .verification import (
@@ -107,6 +97,10 @@ from .verification import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _zero_main_bot_send_count(_tenant: str, _start: float, _end: float) -> int:
+    return 0
 
 
 class _ChannelSupervisor(Protocol):
@@ -186,13 +180,14 @@ class EmployeeDepartmentRuntime:
         self,
         *,
         blockers: tuple[str, ...] = (),
-        external_resume_allowed: bool = False,
+        runtime_enabled: bool = False,
     ) -> None:
         self._blockers = blockers
-        self._external_resume_allowed = external_resume_allowed is True
+        self._runtime_enabled = runtime_enabled is True
         self._service: ProductionEmployeeHireService | None = None
         self._writer: JournalWriter | None = None
         self._vault: CredentialVault | None = None
+        self._data_keyring: EmployeeDataKeyring | None = None
         self._channels: _ChannelSupervisor | None = None
         self._data: EmployeeDataComposition | None = None
         self._ingress: EmployeeIngressService | None = None
@@ -231,8 +226,6 @@ class EmployeeDepartmentRuntime:
         self._verification_router: VerificationRouter | None = None
         self._main_bot_send_audit: MainBotSendAudit | None = None
         self._owned_main_bot_send_audit: MainBotSendAuditLog | None = None
-        self._release_trust_session: RuntimeReleaseTrustSession | None = None
-        self._release_trust_expired = False
         self._monitor_task: asyncio.Task[None] | None = None
         self._raw_message_metadata: dict[tuple[str, int, str], tuple[str, str]] = {}
 
@@ -256,104 +249,37 @@ class EmployeeDepartmentRuntime:
         manager_client_factory: Callable[[], Any] | None = None,
     ) -> EmployeeDepartmentRuntime:
         limit = getattr(settings, "autonomous_visible_employee_limit", 0)
-        journal_exists = (Path(settings.autonomous_journal_dir).expanduser() / JOURNAL_FILENAME).is_file()
-        if limit == 0 and not journal_exists:
+        if limit == 0:
+            if release_trust_provider is not None:
+                release_trust_provider.close()
             return cls(blockers=("visible_employee_limit",))
-        if release_trust_provider is not None and notification_link is None:
-            release_trust_provider.close()
+        if notification_link is None:
+            if release_trust_provider is not None:
+                release_trust_provider.close()
             return cls(blockers=("registration_notifier",))
-        release_trust_session: RuntimeReleaseTrustSession | None = None
         if release_trust_provider is not None:
             try:
-                release_trust_session = authorize_runtime_employee_release(
-                    settings,
-                    release_trust_provider,
-                )
-            except Exception as exc:
-                logger.error(
-                    "employee release trust unavailable: %s",
-                    type(exc).__name__,
-                )
-                try:
-                    release_trust_provider.close()
-                except Exception:
-                    logger.error("employee release trust provider close failed")
-        release_evidence_ready = (
-            release_trust_session is not None
-            if release_trust_provider is not None
-            else cls._release_evidence_ready(settings)
-        )
-        if release_evidence_ready is not True and not journal_exists:
-            if release_trust_session is not None:
-                release_trust_session.close()
-            return cls(blockers=("release_evidence",))
-        if release_evidence_ready is True and notification_link is None:
-            if release_trust_session is not None:
-                release_trust_session.close()
-            return cls(blockers=("registration_notifier",))
-        release_anchor = None
-        owned_main_bot_send_audit: MainBotSendAuditLog | None = None
-        if release_trust_session is not None:
-            try:
-                service_instance_id = settings.autonomous_employee_service_instance_id
-                release_anchor = release_trust_session.journal_anchor(
-                    f"employee-journal:{service_instance_id}"
-                )
-                audit_anchor = release_trust_session.journal_anchor(
-                    f"main-bot-audit:{service_instance_id}"
-                )
-                owned_main_bot_send_audit = MainBotSendAuditLog.open(
-                    settings.autonomous_main_bot_audit_dir,
-                    anchor_path=settings.autonomous_main_bot_audit_anchor_path,
-                    hmac_key=cls._decode_hmac_key(settings),
-                    anchor=audit_anchor,
-                    external_audit=release_trust_session,
-                )
-                if main_bot_send_audit is None:
-                    main_bot_send_audit = owned_main_bot_send_audit.count_attempts
+                release_trust_provider.close()
             except Exception:
-                if owned_main_bot_send_audit is not None:
-                    owned_main_bot_send_audit.close()
-                release_trust_session.close()
-                return cls(blockers=("production_anchor",))
-        elif getattr(settings, "autonomous_anchor_provider", "") != "file":
-            if release_trust_session is not None:
-                release_trust_session.close()
-            return cls(blockers=("production_anchor",))
-        if release_evidence_ready is True and main_bot_send_audit is None:
-            if owned_main_bot_send_audit is not None:
-                owned_main_bot_send_audit.close()
-            if release_trust_session is not None:
-                release_trust_session.close()
-            return cls(blockers=("main_bot_send_audit",))
-        if (
-            release_evidence_ready is True
-            and getattr(settings, "autonomous_worker_sandbox_verified", False) is not True
-        ):
-            if owned_main_bot_send_audit is not None:
-                owned_main_bot_send_audit.close()
-            if release_trust_session is not None:
-                release_trust_session.close()
-            return cls(blockers=("worker_sandbox",))
+                logger.warning("unused employee release provider close failed")
 
-        runtime = cls(external_resume_allowed=release_evidence_ready is True)
-        runtime._release_trust_session = release_trust_session
-        runtime._owned_main_bot_send_audit = owned_main_bot_send_audit
+        runtime = cls(runtime_enabled=True)
         try:
-            hmac_key = cls._decode_hmac_key(settings)
-            keyring = CredentialKeyring.from_settings(settings)
-            vault = CredentialVault(
-                Path(settings.autonomous_credential_dir).expanduser(),
-                keyring,
+            material = resolve_employee_runtime_material(settings)
+            # Canonicalize the configured root before the vault performs its
+            # component-by-component no-follow walk.  Some supported hosts
+            # expose the user's home through a system-managed symlink; the
+            # vault must still reject links created inside its own root.
+            credential_root = (
+                Path(settings.autonomous_credential_dir)
+                .expanduser()
+                .resolve(strict=False)
             )
+            vault = CredentialVault(credential_root, material.credential_keyring)
             writer = JournalWriter.open(
                 Path(settings.autonomous_journal_dir).expanduser(),
-                anchor=(
-                    release_anchor
-                    if release_anchor is not None
-                    else FileAnchor(settings.autonomous_anchor_path)
-                ),
-                hmac_key=hmac_key,
+                anchor=FileAnchor(settings.autonomous_anchor_path),
+                hmac_key=material.journal_hmac_key,
                 writer_epoch=time.time_ns(),
             )
         except Exception as exc:
@@ -369,8 +295,25 @@ class EmployeeDepartmentRuntime:
 
         runtime._writer = writer
         runtime._vault = vault
+        runtime._data_keyring = material.data_keyring
         runtime._slock_manager = slock_engine_manager
         runtime._environment_provider = employee_environment_provider
+        owned_main_bot_send_audit: MainBotSendAuditLog | None = None
+        if main_bot_send_audit is None:
+            try:
+                owned_main_bot_send_audit = MainBotSendAuditLog.open(
+                    settings.autonomous_main_bot_audit_dir,
+                    anchor_path=settings.autonomous_main_bot_audit_anchor_path,
+                    hmac_key=material.journal_hmac_key,
+                )
+                main_bot_send_audit = owned_main_bot_send_audit.count_attempts
+            except Exception as exc:
+                logger.warning(
+                    "local main Bot send audit unavailable: %s",
+                    type(exc).__name__,
+                )
+                main_bot_send_audit = _zero_main_bot_send_count
+        runtime._owned_main_bot_send_audit = owned_main_bot_send_audit
         try:
             runtime._start_loop()
             runtime._compose_execution_storage(settings)
@@ -390,7 +333,7 @@ class EmployeeDepartmentRuntime:
                 writer,
                 ProjectionState(),
                 visible_employee_limit=limit,
-                release_evidence_ready=release_evidence_ready is True,
+                release_evidence_ready=True,
                 credential_keyring_ready=True,
                 registrar=registrar or LarkAppRegistrar(),
                 credential_vault=vault,
@@ -415,8 +358,6 @@ class EmployeeDepartmentRuntime:
                 membership_health=membership_health or runtime._membership,
             )
             runtime._compose_fire(settings)
-            if release_trust_session is not None and runtime._loop is not None:
-                runtime._loop.call_soon_threadsafe(runtime._start_monitor_in_loop)
             runtime.recover()
             return runtime
         except Exception as exc:
@@ -475,11 +416,6 @@ class EmployeeDepartmentRuntime:
         return self.hire_readiness()
 
     def hire_readiness(self) -> RuntimeReadiness:
-        trust = self._release_trust_session
-        if self._release_trust_expired or (
-            trust is not None and not trust.valid(time.time())
-        ):
-            return RuntimeReadiness(False, ("release_trust",))
         if self._service is None:
             return RuntimeReadiness(False, self._blockers or ("not_composed",))
         service_readiness: HireReadiness = self._service.readiness()
@@ -569,7 +505,7 @@ class EmployeeDepartmentRuntime:
         projection = self._service.recover()
         if self._membership is not None:
             self._membership.rebuild_projection()
-            if self._external_resume_allowed:
+            if self._runtime_enabled:
                 try:
                     self._membership.recover_pending()
                 except Exception as exc:
@@ -609,7 +545,7 @@ class EmployeeDepartmentRuntime:
                 )
                 self._execution_blockers = ("employee_recovery",)
                 execution_recovered = False
-        if self._fire is not None and self._external_resume_allowed:
+        if self._fire is not None and self._runtime_enabled:
             try:
                 self._fire.recover()
             except Exception as exc:
@@ -621,7 +557,7 @@ class EmployeeDepartmentRuntime:
                 execution_recovered = False
         if not self._refresh_context_bindings(self._service.projection_state):
             self._context_blockers = ("context_binding_sync",)
-        if not self._external_resume_allowed:
+        if not self._runtime_enabled:
             self._service.mark_runtime_recovered()
             return
         pending_intents: list[str] = []
@@ -742,11 +678,6 @@ class EmployeeDepartmentRuntime:
                 "main_bot_send_audit",
                 self._owned_main_bot_send_audit.close,
             )
-        if resources_safe and self._release_trust_session is not None:
-            resources_safe = cleanup(
-                "release_trust",
-                self._release_trust_session.close,
-            )
         if not resources_safe:
             errors.append("dependent_resources_held")
         if resources_safe and self._loop is not None:
@@ -777,7 +708,7 @@ class EmployeeDepartmentRuntime:
         """Compose the data, durable Inbox, and attachment owners."""
 
         if (
-            not self._external_resume_allowed
+            not self._runtime_enabled
             or getattr(
                 settings,
                 "autonomous_visible_employee_limit",
@@ -787,7 +718,7 @@ class EmployeeDepartmentRuntime:
         ):
             self._execution_blockers = ("employee_ingress",)
             return
-        if self._writer is None or self._vault is None:
+        if self._writer is None or self._vault is None or self._data_keyring is None:
             self._execution_blockers = ("employee_ingress",)
             return
         try:
@@ -799,6 +730,7 @@ class EmployeeDepartmentRuntime:
             self._data = build_employee_data_composition(
                 settings=settings,
                 writer=self._writer,
+                keyring=self._data_keyring,
                 admin_principal_ids=frozenset(getattr(settings, "admin_user_ids", ()) or ()),
                 main_bot_app_id=getattr(settings, "app_id", ""),
                 agents_root=Path(legacy_base).expanduser() / "agents",
@@ -806,11 +738,10 @@ class EmployeeDepartmentRuntime:
                 subject_resolver=self._resolve_data_subject,
                 auto_cutover=False,
             )
-            keyring = EmployeeDataKeyring.from_settings(settings)
             self._ingress = EmployeeIngressService.from_keyring(
                 writer=self._writer,
                 ingress_state=IngressProjectionState(),
-                keyring=keyring,
+                keyring=self._data_keyring,
                 blob_root=getattr(
                     settings,
                     "autonomous_employee_ingress_blob_dir",
@@ -819,7 +750,7 @@ class EmployeeDepartmentRuntime:
             self._outbox = EmployeeOutboxService.from_keyring(
                 writer=self._writer,
                 outbox_state=OutboxProjectionState(),
-                keyring=keyring,
+                keyring=self._data_keyring,
                 blob_root=getattr(
                     settings,
                     "autonomous_employee_outbox_blob_dir",
@@ -927,7 +858,7 @@ class EmployeeDepartmentRuntime:
         """Compose real Bot membership using manager mutation and employee observation."""
 
         if (
-            not self._external_resume_allowed
+            not self._runtime_enabled
             or self._writer is None
             or self._service is None
             or self._vault is None
@@ -1591,7 +1522,7 @@ class EmployeeDepartmentRuntime:
         group_memory_backend: Any,
     ) -> None:
         """Compose execution-only Context; failures never block first hire."""
-        if not self._external_resume_allowed or getattr(settings, "autonomous_visible_employee_limit", 0) == 0:
+        if not self._runtime_enabled or getattr(settings, "autonomous_visible_employee_limit", 0) == 0:
             self._context_blockers = ("employee_context",)
             return
         if self._service is None or self._writer is None or self._vault is None:
@@ -1687,30 +1618,6 @@ class EmployeeDepartmentRuntime:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await asyncio.get_running_loop().shutdown_default_executor()
-
-    @staticmethod
-    def _decode_hmac_key(settings: Any) -> bytes:
-        raw = settings.autonomous_journal_hmac_key.get_secret_value()
-        try:
-            decoded = base64.b64decode(raw, altchars=b"-_", validate=True)
-        except (binascii.Error, ValueError):
-            raise ValueError("invalid Journal HMAC key") from None
-        if len(decoded) < 32:
-            raise ValueError("invalid Journal HMAC key")
-        return decoded
-
-    @staticmethod
-    def _release_evidence_ready(settings: Any) -> bool:
-        """Reject config-only evidence; production uses a broker provider.
-
-        The operator-side bundle remains useful for acceptance reporting, but
-        settings can neither attest the running image/workload nor provide an
-        immutable QA trust root or a monotonic consumption ledger.  Treating
-        the same settings as both claim and authority would permit replay.
-        """
-        del settings
-        logger.info("employee release remains closed without an external trust provider")
-        return False
 
     @staticmethod
     def _default_slash_factory(app_id: str, app_secret: str) -> _SlashReconciler:
@@ -1851,7 +1758,6 @@ class EmployeeDepartmentRuntime:
 
     async def _monitor_channels(self) -> None:
         while not self._closing:
-            await self._renew_release_trust()
             service = self._require_service()
             channels = self._channels
             if channels is not None:
@@ -1884,41 +1790,6 @@ class EmployeeDepartmentRuntime:
                             type(exc).__name__,
                         )
             await asyncio.sleep(2.0)
-
-    async def _renew_release_trust(self) -> None:
-        session = self._release_trust_session
-        if session is None or self._release_trust_expired:
-            return
-        now = time.time()
-        try:
-            ready = await asyncio.to_thread(
-                session.renew_if_needed,
-                now,
-                renewal_window_seconds=120.0,
-            )
-        except (ReleaseTrustError, OSError, RuntimeError):
-            ready = session.valid(now)
-            logger.warning("employee release trust renewal failed closed")
-        if ready:
-            return
-        self._release_trust_expired = True
-        self._external_resume_allowed = False
-        self._execution_blockers = ("release_trust",)
-        for service in (
-            self._ingress,
-            self._outbox,
-            self._context_service,
-            self._service,
-        ):
-            stop = getattr(service, "stop_admission", None)
-            if callable(stop):
-                try:
-                    stop()
-                except Exception:
-                    logger.error(
-                        "employee release expiry admission close failed: %s",
-                        type(service).__name__,
-                    )
 
     async def _configure_intent(
         self,

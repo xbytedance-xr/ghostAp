@@ -55,8 +55,8 @@ EXPECTED_GATE_IDS = {
 }
 
 
-def test_runtime_rejects_config_only_release_authority() -> None:
-    assert EmployeeDepartmentRuntime._release_evidence_ready(object()) is False
+def test_runtime_no_longer_exposes_release_evidence_gate() -> None:
+    assert not hasattr(EmployeeDepartmentRuntime, "_release_evidence_ready")
 
 
 @pytest.fixture
@@ -242,7 +242,7 @@ def test_employee_manifest_requires_specific_real_tenant_observations(
     } <= assertions["EMP-CONTEXT-IDENTITY-ISOLATION"]
 
 
-def test_missing_evidence_is_pending_and_does_not_change_the_visible_limit(
+def test_missing_acceptance_evidence_does_not_disable_built_in_employees(
     tmp_path: Path,
     manifest: EmployeeReleaseManifest,
     binding: EmployeeEnvironmentBinding,
@@ -258,7 +258,7 @@ def test_missing_evidence_is_pending_and_does_not_change_the_visible_limit(
     assert evaluation.status is EmployeeReleaseStatus.PENDING
     assert evaluation.passed == ()
     assert set(evaluation.pending) == EXPECTED_GATE_IDS
-    assert Settings(_env_file=None).autonomous_visible_employee_limit == 0
+    assert Settings(_env_file=None).autonomous_visible_employee_limit == 8
 
 
 def test_complete_fresh_evidence_requires_a_matching_external_checkpoint(

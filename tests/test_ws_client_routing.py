@@ -1,10 +1,13 @@
 import json
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pydantic import SecretStr
 
 from src.agent.intent_recognizer import IntentResult, IntentType, TaskStep
+from src.config import get_settings
 from src.feishu.image_handler import FeishuImageHandler, ImageDownloadResult
 from src.feishu.slash_command_parser import SlashCommandParser
 from src.feishu.ws_client import FeishuWSClient
@@ -15,10 +18,33 @@ from src.thread import set_current_thread_id
 
 
 @pytest.fixture
-def mock_ws_client():
+def mock_ws_client(tmp_path: Path):
     # Patch heavy components and side-effects to keep tests fast and isolated
+    settings = get_settings().model_copy(deep=True)
+    settings.autonomous_state_dir = str(tmp_path / "state")
+    settings.autonomous_journal_dir = str(tmp_path / "journal")
+    settings.autonomous_anchor_path = str(tmp_path / "journal.anchor")
+    settings.autonomous_credential_dir = str(tmp_path / "credentials")
+    settings.autonomous_data_blob_dir = str(tmp_path / "data-blobs")
+    settings.autonomous_employee_ingress_blob_dir = str(tmp_path / "ingress-blobs")
+    settings.autonomous_employee_outbox_blob_dir = str(tmp_path / "outbox-blobs")
+    settings.autonomous_employee_attachment_staging_dir = str(tmp_path / "attachments")
+    settings.autonomous_main_bot_audit_dir = str(tmp_path / "main-bot-audit")
+    settings.autonomous_main_bot_audit_anchor_path = str(tmp_path / "main-bot-audit.anchor")
+    settings.autonomous_visible_employee_limit = 8
+    settings.autonomous_journal_hmac_key = SecretStr("")
+    settings.autonomous_credential_keys = SecretStr("")
+    settings.autonomous_credential_active_key_id = ""
+    settings.autonomous_data_keys = SecretStr("")
+    settings.autonomous_data_active_key_id = ""
+
     with patch("src.feishu.ws_client.ACPSessionManager"), \
-         patch("src.feishu.ws_client.configure_logging_with_trace"):
+         patch("src.feishu.ws_client.configure_logging_with_trace"), \
+         patch("src.feishu.ws_client.get_settings", return_value=settings), \
+         patch(
+             "src.autonomous.provisioning.composition.default_slock_storage_base",
+             return_value=str(tmp_path / "slock"),
+         ):
 
         def dummy_callback(*args, **kwargs):
             pass
@@ -87,19 +113,17 @@ def test_handle_message_records_trusted_chat_origin(mock_ws_client: FeishuWSClie
     assert origin["sender_id"] == "ou_admin"
 
 
-def test_employee_department_runtime_is_wired_but_dormant_by_default(
+def test_employee_department_runtime_is_wired_and_enabled_by_default(
     mock_ws_client: FeishuWSClient,
 ) -> None:
     runtime = mock_ws_client._employee_department_runtime
 
     assert runtime is not None
-    assert runtime.hire_service is None
-    assert runtime.readiness().blockers == ("visible_employee_limit",)
-    assert mock_ws_client._handler_ctx.employee_hire_service is None
-    assert mock_ws_client._handler_ctx.employee_fire_service is None
-    assert mock_ws_client._handler_ctx.employee_hire_readiness().blockers == (
-        "visible_employee_limit",
-    )
+    assert runtime.hire_service is not None
+    assert runtime.readiness().ready is True
+    assert mock_ws_client._handler_ctx.employee_hire_service is not None
+    assert mock_ws_client._handler_ctx.employee_fire_service is not None
+    assert mock_ws_client._handler_ctx.employee_hire_readiness().ready is True
 
 
 def test_handle_message_shell_command_routing(mock_ws_client: FeishuWSClient):

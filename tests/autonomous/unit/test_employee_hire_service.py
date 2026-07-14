@@ -361,7 +361,7 @@ def test_journal_hmac_and_anchor_settings_are_strict_redacted_and_fail_closed() 
     assert defaults.autonomous_journal_hmac_key.get_secret_value() == ""
     assert defaults.autonomous_anchor_path == "~/.ghostap/autonomy/journal.anchor"
     assert defaults.autonomous_anchor_provider == ""
-    assert defaults.autonomous_visible_employee_limit == 0
+    assert defaults.autonomous_visible_employee_limit == 8
     assert defaults.autonomous_employee_release_trust_socket == ""
     assert defaults.autonomous_employee_release_trust_timeout_seconds == 2.0
     assert defaults.autonomous_main_bot_audit_dir.endswith("main-bot-send-audit")

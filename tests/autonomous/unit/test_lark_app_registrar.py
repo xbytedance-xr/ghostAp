@@ -10,7 +10,7 @@ from src.autonomous.provisioning.lark_app import (
 
 
 @pytest.mark.asyncio
-async def test_registrar_uses_minimal_manifest_and_forwards_callbacks() -> None:
+async def test_registrar_uses_official_agent_manifest_and_forwards_callbacks() -> None:
     captured: dict = {}
 
     async def register(**kwargs):
@@ -40,32 +40,57 @@ async def test_registrar_uses_minimal_manifest_and_forwards_callbacks() -> None:
         "desc": "GhostAP employee",
     }
     assert captured["addons"] == {
-        "preset": False,
+        "preset": True,
         "scopes": {
             "tenant": [
                 "application:application:self_manage",
                 "application:bot.basic_info:read",
+                "application:bot.menu:write",
                 "application:app_slash_command:read",
                 "application:app_slash_command:write",
                 "cardkit:card:read",
                 "cardkit:card:write",
+                "contact:contact.base:readonly",
+                "docs:document.comment:create",
+                "docs:document.comment:delete",
+                "docs:document.comment:read",
+                "docs:document.comment:update",
+                "docs:document.comment:write_only",
+                "docx:document.block:convert",
+                "docx:document:create",
+                "docx:document:readonly",
+                "docx:document:write_only",
+                "drive:drive.metadata:readonly",
                 "im:chat.members:bot_access",
+                "im:chat:create",
                 "im:chat:read",
+                "im:chat:update",
                 "im:message.group_at_msg:readonly",
                 "im:message.group_at_msg.include_bot:readonly",
                 "im:message.p2p_msg:readonly",
+                "im:message.pins:read",
+                "im:message.pins:write_only",
+                "im:message.reactions:read",
+                "im:message.reactions:write_only",
                 "im:message:readonly",
                 "im:message:send_as_bot",
+                "im:message:send_multi_users",
+                "im:message:send_sys_msg",
                 "im:message:update",
                 "im:resource",
-            ]
+                "wiki:node:read",
+            ],
+            "user": ["offline_access"],
         },
         "events": {
             "items": {
                 "tenant": [
                     "im.message.receive_v1",
+                    "im.message.reaction.created_v1",
+                    "im.message.reaction.deleted_v1",
                     "im.chat.member.bot.added_v1",
                     "im.chat.member.bot.deleted_v1",
+                    "drive.notice.comment_add_v1",
                 ]
             }
         },

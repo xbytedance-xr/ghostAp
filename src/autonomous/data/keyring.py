@@ -109,16 +109,20 @@ class EmployeeDataStorage:
         self.blob_store.close()
 
 
-def build_employee_data_storage(settings: Any) -> EmployeeDataStorage:
+def build_employee_data_storage(
+    settings: Any,
+    *,
+    keyring: EmployeeDataKeyring | None = None,
+) -> EmployeeDataStorage:
     """Fail-closed composition for the dedicated encrypted data BlobStore."""
     try:
-        keyring = EmployeeDataKeyring.from_settings(settings)
+        resolved_keyring = keyring or EmployeeDataKeyring.from_settings(settings)
         root = settings.autonomous_data_blob_dir
         if not isinstance(root, str) or not root:
             raise EmployeeDataConfigurationError()
-        provider = AesGcmEncryptionProvider(keyring.resolve)
+        provider = AesGcmEncryptionProvider(resolved_keyring.resolve)
         return EmployeeDataStorage(
-            keyring=keyring,
+            keyring=resolved_keyring,
             blob_store=BlobStore(root, provider),
         )
     except EmployeeDataConfigurationError:

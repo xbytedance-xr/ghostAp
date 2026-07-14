@@ -29,6 +29,7 @@ from src.autonomous.provisioning.channel_protocol import (
     encode_frame,
 )
 from src.autonomous.provisioning.channel_worker import (
+    _handle_low_level_outbound,
     _handle_update_card,
     _normalize_sdk_ingress,
     create_employee_channel,
@@ -146,6 +147,71 @@ def test_update_card_ipc_is_exact_bounded_and_secret_free() -> None:
                 {**frame.payload, "extra": True},
             )
         )
+
+
+@pytest.mark.parametrize("frame_type", [FrameType.SEND, FrameType.UPDATE_CARD])
+def test_low_level_worker_executes_employee_owned_outbound(frame_type: FrameType) -> None:
+    from types import SimpleNamespace
+
+    calls: list[tuple[str, tuple, dict]] = []
+    emitted: list[tuple[FrameType, dict]] = []
+
+    class _Outbound:
+        def send(self, *args, **kwargs):
+            calls.append(("send", args, kwargs))
+            return SimpleNamespace(success=True, message_id="om_employee")
+
+        def update_card(self, *args, **kwargs):
+            calls.append(("update_card", args, kwargs))
+            return SimpleNamespace(success=True, message_id="om_employee")
+
+    frame = ChannelFrame(
+        frame_type,
+        "agt_1",
+        3,
+        1,
+        (
+            {
+                "request_id": "send_1",
+                "target": "oc_team",
+                "message": {"text": "hello"},
+                "options": None,
+            }
+            if frame_type is FrameType.SEND
+            else {
+                "request_id": "update_1",
+                "message_id": "om_employee",
+                "card": {"schema": "2.0"},
+            }
+        ),
+    )
+    bootstrap = SimpleNamespace(app_id="cli_employee", generation=3)
+    admission = SimpleNamespace(wait_snapshot=lambda **_kwargs: (1, "conn_employee"))
+    emitter = SimpleNamespace(emit=lambda kind, payload: emitted.append((kind, payload)))
+
+    _handle_low_level_outbound(frame, bootstrap, _Outbound(), admission, emitter)
+
+    assert calls and calls[0][0] == (
+        "send" if frame_type is FrameType.SEND else "update_card"
+    )
+    assert emitted == [
+        (
+            FrameType.HEALTH,
+            {
+                "operation": (
+                    "send" if frame_type is FrameType.SEND else "update_card"
+                ),
+                "request_id": (
+                    "send_1" if frame_type is FrameType.SEND else "update_1"
+                ),
+                "success": True,
+                "app_id": "cli_employee",
+                "generation": 3,
+                "connection_id": "conn_employee",
+                "message_id": "om_employee",
+            },
+        )
+    ]
     with pytest.raises(ProtocolError, match="credential material"):
         encode_frame(
             ChannelFrame(

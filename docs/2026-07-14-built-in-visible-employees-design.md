@@ -1,12 +1,13 @@
-# Built-in Visible Employees Design
+# Built-in Visible Employees Runtime Design
 
 ## Outcome
 
 Starting GhostAP with a configured main Bot makes administrator-only `/hire`
 available without a release broker, signed evidence bundle, deployment
 attestation, or manually supplied autonomous encryption keys. Feishu's
-one-click application registration still requires the administrator to open
-the registration link and authorize the new application.
+one-click application registration remains an interactive user flow: the user
+opens the registration link and follows Feishu's official guide to create the
+new Bot application. It does not require a tenant administrator approval.
 
 An explicit `AUTONOMOUS_VISIBLE_EMPLOYEE_LIMIT=0` remains the operator's kill
 switch. The default is `8`, which enables a bounded number of visible
@@ -84,10 +85,28 @@ Hosts with working `bwrap` continue to use the stronger verified isolation.
 3. The existing tool/model/profile/effort card flow produces a typed hire
    request.
 4. `lark_oapi.aregister_app()` sends a registration link through the main Bot.
-5. The administrator authorizes the application in Feishu.
-6. GhostAP stores returned credentials in the local encrypted Vault,
+5. The user opens the link and follows Feishu's official guide to create the
+   application; no tenant administrator approval is required.
+6. The registration request enables Feishu's official agent preset and freezes
+   the message, card, Slash Command, Bot-to-Bot mention, and document-comment
+   scopes/events described by the official one-click agent guide.
+7. GhostAP stores returned credentials in the local encrypted Vault,
    reconciles Slash Commands, starts the employee Channel, verifies its
    identity and reply, and marks the employee active.
+
+The production low-level employee process owns a `lark-oapi` client built from
+that employee's one-shot credential. It supports text, interactive-card, rich
+post, card patch, and document-comment reply transports and returns a receipt
+bound to the current employee app/generation/connection. This closes the
+activation `/status` reply path without falling back to the main Bot.
+
+Transport and platform configuration are not the same as autonomous workflow
+policy. Automatic Agent-to-Agent handoff still needs a membership-bound Bot
+sender authorization and loop budget; document-comment execution still needs
+comment-event normalization, per-document authorization, comment fetch, and a
+dedicated durable routing contract. Until those contracts are implemented,
+their permissions and transport primitives must not be reported as an
+end-to-end workflow.
 
 Authorization cancellation, expiry, invalid SDK responses, corrupted local
 security state, or failed employee identity verification remain explicit

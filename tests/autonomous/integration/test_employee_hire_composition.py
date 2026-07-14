@@ -65,24 +65,24 @@ def _settings(
         autonomous_credential_dir=str(tmp_path / "vault"),
         autonomous_credential_keys=SecretStr(json.dumps(keyring)),
         autonomous_credential_active_key_id="k1",
+        autonomous_data_keys=SecretStr(json.dumps(keyring)),
+        autonomous_data_active_key_id="k1",
+        autonomous_data_blob_dir=str(tmp_path / "data-blobs"),
+        autonomous_employee_ingress_blob_dir=str(tmp_path / "ingress-blobs"),
+        autonomous_employee_outbox_blob_dir=str(tmp_path / "outbox-blobs"),
+        autonomous_employee_attachment_staging_dir=str(tmp_path / "attachments"),
+        autonomous_state_dir=str(tmp_path / "state"),
+        autonomous_slock_storage_base=str(tmp_path / "slock"),
         autonomous_worker_sandbox_verified=True,
         autonomous_employee_service_instance_id="ghostap-prod-a",
         autonomous_main_bot_audit_dir=str(tmp_path / "main-bot-audit"),
         autonomous_main_bot_audit_anchor_path=str(tmp_path / "main-bot-audit.anchor"),
     )
     if context_configured:
-        settings.autonomous_data_keys = SecretStr(json.dumps(keyring))
-        settings.autonomous_data_active_key_id = "k1"
-        settings.autonomous_data_blob_dir = str(tmp_path / "data-blobs")
-        settings.autonomous_employee_ingress_blob_dir = str(tmp_path / "ingress-blobs")
-        settings.autonomous_employee_outbox_blob_dir = str(tmp_path / "outbox-blobs")
-        settings.autonomous_employee_attachment_staging_dir = str(tmp_path / "attachments")
         settings.autonomous_employee_system_prompt_token_reserve = 4096
         settings.autonomous_employee_queue_per_employee_limit = 8
         settings.autonomous_employee_queue_per_team_limit = 32
         settings.autonomous_employee_queue_global_limit = 128
-        settings.autonomous_state_dir = str(tmp_path / "state")
-        settings.autonomous_slock_storage_base = str(tmp_path / "slock")
         settings.autonomous_history_timezone = "UTC"
         settings.autonomous_history_max_range_days = 31
         settings.autonomous_history_page_size = 50
@@ -512,29 +512,25 @@ def _runtime(
     release_evidence_ready: bool,
     **kwargs: object,
 ) -> EmployeeDepartmentRuntime:
-    """Inject a test-only release verdict without exposing a production bypass."""
-    with patch.object(
-        EmployeeDepartmentRuntime,
-        "_release_evidence_ready",
-        return_value=release_evidence_ready,
-    ):
-        kwargs.setdefault(
-            "main_bot_send_audit",
-            lambda _tenant_key, _started_at, _ended_at: 0,
-        )
-        kwargs.setdefault("slock_engine_manager", _SlockManager())
-        kwargs.setdefault(
-            "employee_environment_provider",
-            lambda authority: EmployeeProcessEnvironmentMaterial(
-                authority.tenant_key,
-                authority.agent_id,
-                authority.employee_version,
-                authority.credential_ref,
-                {"PATH": "/usr/bin"},
-                {},
-            ),
-        )
-        return EmployeeDepartmentRuntime.from_settings(settings, **kwargs)
+    """Compose the built-in local runtime; release verdicts are obsolete."""
+    del release_evidence_ready
+    kwargs.setdefault(
+        "main_bot_send_audit",
+        lambda _tenant_key, _started_at, _ended_at: 0,
+    )
+    kwargs.setdefault("slock_engine_manager", _SlockManager())
+    kwargs.setdefault(
+        "employee_environment_provider",
+        lambda authority: EmployeeProcessEnvironmentMaterial(
+            authority.tenant_key,
+            authority.agent_id,
+            authority.employee_version,
+            authority.credential_ref,
+            {"PATH": "/usr/bin"},
+            {},
+        ),
+    )
+    return EmployeeDepartmentRuntime.from_settings(settings, **kwargs)
 
 
 def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -> None:
@@ -887,6 +883,54 @@ def test_production_factory_has_no_boolean_release_bypass() -> None:
     assert "resume_external" not in inspect.signature(EmployeeDepartmentRuntime.recover).parameters
 
 
+def test_local_composition_does_not_require_release_provider(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, limit=1)
+    settings.autonomous_data_keys = SecretStr(
+        json.dumps({"version": 1, "keys": {"k1": _b64(b"d" * 32)}})
+    )
+    settings.autonomous_data_active_key_id = "k1"
+    settings.autonomous_state_dir = str(tmp_path / "state")
+
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        settings,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        main_bot_send_audit=lambda *_: 0,
+    )
+
+    try:
+        assert runtime.hire_service is not None
+        assert runtime.hire_readiness().ready is True
+    finally:
+        runtime.close()
+
+
+def test_local_composition_canonicalizes_symlinked_home_prefix(tmp_path: Path) -> None:
+    real_home = tmp_path / "real-home"
+    real_home.mkdir()
+    linked_home = tmp_path / "linked-home"
+    linked_home.symlink_to(real_home, target_is_directory=True)
+    settings = _settings(tmp_path, limit=1)
+    settings.autonomous_credential_dir = str(linked_home / "credentials")
+
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        settings,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        main_bot_send_audit=lambda *_: 0,
+    )
+
+    try:
+        assert runtime.hire_service is not None
+        assert (real_home / "credentials").is_dir()
+    finally:
+        runtime.close()
+
+
 class _ExternalTrustProvider:
     def __init__(self) -> None:
         self.closed = False
@@ -928,21 +972,17 @@ class _ExternalTrustSession:
         return self.audit_sequence
 
 
-def test_external_release_session_is_owned_and_closed_by_runtime(tmp_path: Path) -> None:
+def test_legacy_release_provider_is_closed_and_not_required(tmp_path: Path) -> None:
     provider = _ExternalTrustProvider()
     session = _ExternalTrustSession()
-    with patch(
-        "src.autonomous.provisioning.composition.authorize_runtime_employee_release",
-        return_value=session,
-    ):
-        runtime = EmployeeDepartmentRuntime.from_settings(
-            _settings(tmp_path, limit=1),
-            release_trust_provider=provider,
-            registrar=_Registrar(),
-            channel_supervisor=_Channels(),
-            slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
-            notification_link=lambda *_: None,
-        )
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        _settings(tmp_path, limit=1),
+        release_trust_provider=provider,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
 
     assert runtime.hire_service is not None
     assert runtime.hire_readiness().ready is True
@@ -953,47 +993,42 @@ def test_external_release_session_is_owned_and_closed_by_runtime(tmp_path: Path)
         "om-main-bot",
         attempted_at=time.time(),
     )
-    assert session.audit_sequence == 1
-    assert provider.closed is False
+    assert session.audit_sequence == 0
+    assert provider.closed is True
     runtime.close()
-    assert session.closed is True
+    assert session.closed is False
 
 
-def test_expired_external_release_session_closes_all_new_admission(tmp_path: Path) -> None:
+def test_legacy_release_session_expiry_cannot_close_local_admission(tmp_path: Path) -> None:
     provider = _ExternalTrustProvider()
     session = _ExternalTrustSession()
-    with patch(
-        "src.autonomous.provisioning.composition.authorize_runtime_employee_release",
-        return_value=session,
-    ):
-        runtime = EmployeeDepartmentRuntime.from_settings(
-            _settings(tmp_path, limit=1, context_configured=True),
-            release_trust_provider=provider,
-            main_bot_send_audit=lambda *_: 0,
-            registrar=_Registrar(),
-            channel_supervisor=_Channels(),
-            slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
-            notification_link=lambda *_: None,
-            context_source_factory=_ContextSourceFactory(),
-            group_memory_backend=_GroupMemory(),
-            slock_engine_manager=_SlockManager(),
-            employee_environment_provider=lambda authority: EmployeeProcessEnvironmentMaterial(
-                authority.tenant_key,
-                authority.agent_id,
-                authority.employee_version,
-                authority.credential_ref,
-                {"PATH": "/usr/bin"},
-                {},
-            ),
-        )
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_trust_provider=provider,
+        main_bot_send_audit=lambda *_: 0,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        slock_engine_manager=_SlockManager(),
+        employee_environment_provider=lambda authority: EmployeeProcessEnvironmentMaterial(
+            authority.tenant_key,
+            authority.agent_id,
+            authority.employee_version,
+            authority.credential_ref,
+            {"PATH": "/usr/bin"},
+            {},
+        ),
+    )
     session.expired = True
 
-    asyncio.run(runtime._renew_release_trust())
-
-    assert runtime.hire_readiness().blockers == ("release_trust",)
-    assert runtime.execution_readiness().blockers == ("release_trust",)
+    assert runtime.hire_readiness().ready is True
+    assert runtime.execution_readiness().ready is True
     assert runtime.hire_service is not None
-    assert "admission_closed" in runtime.hire_service.readiness().blockers
+    assert "admission_closed" not in runtime.hire_service.readiness().blockers
+    assert provider.closed is True
     runtime.close()
 
 
@@ -1025,7 +1060,7 @@ def test_context_configuration_failure_does_not_block_first_hire(
 
     assert runtime.context_service is None
     assert runtime.hire_readiness().ready is True
-    assert runtime.execution_readiness().blockers == ("employee_ingress",)
+    assert runtime.execution_readiness().blockers == ("employee_gateway",)
     assert runtime.hire_service is not None
     assert runtime.hire_service.start_hire(_request()).intent_id
     runtime.close()
@@ -1683,21 +1718,25 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
     restarted.close()
 
 
-def test_missing_release_evidence_fails_before_keys_or_files_are_opened(
+def test_missing_release_evidence_does_not_block_local_runtime(
     tmp_path: Path,
 ) -> None:
     runtime = _runtime(
         _settings(tmp_path, limit=1),
         release_evidence_ready=False,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
     )
 
-    assert runtime.hire_service is None
-    assert runtime.readiness().blockers == ("release_evidence",)
-    assert not (tmp_path / "journal").exists()
+    assert runtime.hire_service is not None
+    assert runtime.readiness().ready is True
+    assert (tmp_path / "journal").exists()
     runtime.close()
 
 
-def test_existing_journal_with_revoked_release_stays_dormant_not_miscomposed(
+def test_existing_journal_recovers_without_release_state(
     tmp_path: Path,
 ) -> None:
     settings = _settings(tmp_path, limit=1, context_configured=True)
@@ -1713,15 +1752,23 @@ def test_existing_journal_with_revoked_release_stays_dormant_not_miscomposed(
     )
     initial.close()
 
-    restarted = _runtime(settings, release_evidence_ready=False)
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=False,
+        notification_link=lambda *_: None,
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+    )
 
     assert restarted.hire_service is not None
-    assert restarted.hire_readiness().blockers == ("release_evidence",)
-    assert restarted.execution_readiness().blockers == ("release_evidence",)
+    assert restarted.hire_readiness().ready is True
+    assert restarted.execution_readiness().ready is True
     restarted.close()
 
 
-def test_settings_driven_release_evaluator_defaults_to_pending(
+def test_release_claim_settings_are_not_required_for_local_runtime(
     tmp_path: Path,
 ) -> None:
     settings = _settings(tmp_path, limit=1)
@@ -1733,30 +1780,33 @@ def test_settings_driven_release_evaluator_defaults_to_pending(
     settings.autonomous_employee_release_evidence_bundle = str(tmp_path / "missing-evidence.jsonl")
     settings.autonomous_employee_release_checkpoint = str(tmp_path / "missing-checkpoint.json")
 
-    runtime = EmployeeDepartmentRuntime.from_settings(settings)
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        settings,
+        notification_link=lambda *_: None,
+        main_bot_send_audit=lambda *_: 0,
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+    )
 
-    assert runtime.hire_service is None
-    assert runtime.readiness().blockers == ("release_evidence",)
-    assert not (tmp_path / "journal").exists()
+    assert runtime.hire_service is not None
+    assert runtime.readiness().ready is True
+    assert (tmp_path / "journal").exists()
     runtime.close()
 
 
-def test_ready_release_without_main_bot_audit_fails_before_durable_open(
+def test_local_main_bot_audit_is_composed_automatically(
     tmp_path: Path,
 ) -> None:
-    with patch.object(
-        EmployeeDepartmentRuntime,
-        "_release_evidence_ready",
-        return_value=True,
-    ):
-        runtime = EmployeeDepartmentRuntime.from_settings(
-            _settings(tmp_path, limit=1),
-            notification_link=lambda *_: None,
-        )
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        _settings(tmp_path, limit=1),
+        notification_link=lambda *_: None,
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+    )
 
-    assert runtime.hire_service is None
-    assert runtime.readiness().blockers == ("main_bot_send_audit",)
-    assert not (tmp_path / "journal").exists()
+    assert runtime.hire_service is not None
+    assert runtime.main_bot_outbound_audit is not None
+    assert runtime.readiness().ready is True
     runtime.close()
 
 
@@ -2093,7 +2143,7 @@ def test_forged_employee_send_identity_cannot_activate(tmp_path: Path) -> None:
     runtime.close()
 
 
-def test_limit_zero_blocks_new_admission_but_replays_existing_employee_state(
+def test_limit_zero_hard_disables_runtime_even_with_existing_employee_state(
     tmp_path: Path,
 ) -> None:
     first_channels = _Channels()
@@ -2118,30 +2168,13 @@ def test_limit_zero_blocks_new_admission_but_replays_existing_employee_state(
     first.close()
 
     settings.autonomous_visible_employee_limit = 0
-    recovered_channels = _Channels()
     recovered = _runtime(
         settings,
         release_evidence_ready=False,
-        channel_supervisor=recovered_channels,
-        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
     )
 
-    assert recovered.hire_service is not None
-    replayed = recovered.hire_service.get_state(admitted.intent_id)
-    assert replayed is not None
-    assert replayed.phase is HirePhase.READY_PENDING_VERIFICATION
-    assert recovered_channels.started == []
-    assert set(recovered.readiness().blockers) >= {
-        "visible_employee_limit",
-        "release_evidence",
-    }
-    recovered.recover()
-    time.sleep(0.1)
-    assert recovered_channels.started == []
-    duplicate = recovered.hire_service.start_hire(_request())
-    assert duplicate.intent_id == admitted.intent_id
-    time.sleep(0.1)
-    assert recovered_channels.started == []
+    assert recovered.hire_service is None
+    assert recovered.readiness().blockers == ("visible_employee_limit",)
     recovered.close()
 
 
@@ -2180,14 +2213,9 @@ def test_hard_closed_nonterminal_replay_cannot_resubmit_external_activity(
         channel_supervisor=channels,
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
     )
-    assert recovered.hire_service is not None
-    replayed = recovered.hire_service.start_hire(_request())
-    assert replayed.intent_id == admitted.intent_id
+    assert recovered.hire_service is None
+    assert recovered.readiness().blockers == ("visible_employee_limit",)
     time.sleep(0.2)
-
-    still_closed = recovered.hire_service.get_state(admitted.intent_id)
-    assert still_closed is not None
-    assert still_closed.phase is HirePhase.CONFIGURING
     assert channels.started == []
     recovered.close()
 

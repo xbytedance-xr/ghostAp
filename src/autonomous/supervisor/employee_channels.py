@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -30,6 +31,8 @@ from src.autonomous.provisioning.channel_protocol import (
     encode_frame,
 )
 from src.autonomous.supervisor.channel_models import ChannelProcessState
+
+logger = logging.getLogger(__name__)
 
 
 class ChannelSandboxUnavailable(RuntimeError):
@@ -171,6 +174,9 @@ class EmployeeChannelSupervisor:
         self._ingress_binding_resolver = ingress_binding_resolver
         self._ingress_ack_timeout = float(ingress_ack_timeout)
         self._launcher = launcher or subprocess.Popen
+        self._automatic_process_fallback = (
+            sandbox_attestor is None and sandbox_prefix is None
+        )
         self._sandbox_attestor = sandbox_attestor or attest_process_sandbox
         self._sandbox_prefix = (
             sandbox_prefix
@@ -239,10 +245,18 @@ class EmployeeChannelSupervisor:
         with self._lock:
             yield
 
-    def launch_contract(self, *, bootstrap_fd: int, control_fd: int, event_fd: int) -> ChannelLaunchContract:
+    def launch_contract(
+        self,
+        *,
+        bootstrap_fd: int,
+        control_fd: int,
+        event_fd: int,
+        sandbox_prefix: tuple[str, ...] | None = None,
+    ) -> ChannelLaunchContract:
         """Return the immutable fresh-exec and FD inheritance contract."""
+        prefix = self._sandbox_prefix if sandbox_prefix is None else sandbox_prefix
         return ChannelLaunchContract(
-            argv=self._sandbox_prefix
+            argv=prefix
             + (
                 sys.executable,
                 "-I",
@@ -254,6 +268,69 @@ class EmployeeChannelSupervisor:
             close_fds=True,
             pass_fds=(bootstrap_fd, control_fd, event_fd),
             env={"PYTHONUTF8": "1"},
+        )
+
+    def _launch_candidate(
+        self,
+        *,
+        agent_id: str,
+        app_id: str,
+        generation: int,
+        tenant_key: str,
+        bot_principal_id: str,
+        on_event: Callable[[dict[str, Any]], None],
+        sandbox_prefix: tuple[str, ...],
+    ) -> tuple[_Runtime, int]:
+        bootstrap_r, bootstrap_w = os.pipe()
+        control_r, control_w = os.pipe()
+        event_r, event_w = os.pipe()
+        child_fds = (bootstrap_r, control_r, event_w)
+        parent_fds = (bootstrap_w, control_w, event_r)
+        contract = self.launch_contract(
+            bootstrap_fd=bootstrap_r,
+            control_fd=control_r,
+            event_fd=event_w,
+            sandbox_prefix=sandbox_prefix,
+        )
+        try:
+            process = self._launcher(
+                contract.argv,
+                close_fds=contract.close_fds,
+                pass_fds=contract.pass_fds,
+                env=contract.env,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            for descriptor in parent_fds:
+                _close_fd(descriptor)
+            raise RuntimeError("employee Channel launch failed") from None
+        finally:
+            for descriptor in child_fds:
+                _close_fd(descriptor)
+
+        status = ChannelProcessStatus(
+            agent_id=agent_id,
+            app_id=app_id,
+            generation=generation,
+            pid=process.pid,
+            state=ChannelProcessState.STARTING,
+            tenant_key=tenant_key,
+            bot_principal_id=bot_principal_id,
+        )
+        return (
+            _Runtime(
+                process,
+                control_w,
+                event_r,
+                status,
+                on_event,
+                tenant_key=tenant_key,
+                bot_principal_id=bot_principal_id,
+                requires_observed_connection=self._production_worker,
+            ),
+            bootstrap_w,
         )
 
     def start(
@@ -295,68 +372,76 @@ class EmployeeChannelSupervisor:
             if generation <= high:
                 raise ValueError("generation must advance after a worker has stopped")
 
-        bootstrap_r, bootstrap_w = os.pipe()
-        control_r, control_w = os.pipe()
-        event_r, event_w = os.pipe()
-        child_fds = (bootstrap_r, control_r, event_w)
-        contract = self.launch_contract(
-            bootstrap_fd=bootstrap_r,
-            control_fd=control_r,
-            event_fd=event_w,
-        )
-        process: subprocess.Popen[bytes] | None = None
-        try:
+        prefixes = [self._sandbox_prefix]
+        if self._automatic_process_fallback and self._sandbox_prefix:
+            prefixes.append(())
+        runtime: _Runtime | None = None
+        bootstrap_w = -1
+        for attempt, prefix in enumerate(prefixes):
+            is_fallback = attempt > 0
             try:
-                process = self._launcher(
-                    contract.argv,
-                    close_fds=contract.close_fds,
-                    pass_fds=contract.pass_fds,
-                    env=contract.env,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                runtime, bootstrap_w = self._launch_candidate(
+                    agent_id=agent_id,
+                    app_id=app_id,
+                    generation=generation,
+                    tenant_key=tenant_key,
+                    bot_principal_id=bot_principal_id,
+                    on_event=on_event,
+                    sandbox_prefix=prefix,
                 )
-            except Exception:
-                for fd in (bootstrap_w, control_w, event_r):
-                    _close_fd(fd)
-                raise RuntimeError("employee Channel launch failed") from None
-        finally:
-            for fd in child_fds:
-                _close_fd(fd)
-
-        status = ChannelProcessStatus(
-            agent_id=agent_id,
-            app_id=app_id,
-            generation=generation,
-            pid=process.pid,
-            state=ChannelProcessState.STARTING,
-            tenant_key=tenant_key,
-            bot_principal_id=bot_principal_id,
-        )
-        runtime = _Runtime(
-            process,
-            control_w,
-            event_r,
-            status,
-            on_event,
-            tenant_key=tenant_key,
-            bot_principal_id=bot_principal_id,
-            requires_observed_connection=self._production_worker,
-        )
+            except RuntimeError:
+                if not is_fallback and len(prefixes) > 1:
+                    logger.warning(
+                        "employee Channel bwrap launch failed; using process fallback"
+                    )
+                    continue
+                raise
+            if is_fallback:
+                attestation = SandboxAttestation(
+                    runtime.process.pid,
+                    False,
+                    "process-fallback",
+                    ("bwrap unavailable; isolated interpreter fallback",),
+                )
+            else:
+                try:
+                    attestation = self._sandbox_attestor(runtime.process.pid)
+                except Exception:
+                    attestation = SandboxAttestation(
+                        runtime.process.pid,
+                        False,
+                        "attestation-error",
+                    )
+            runtime.status = replace(runtime.status, sandbox=attestation)
+            if attestation.verified or is_fallback:
+                if is_fallback:
+                    logger.warning(
+                        "employee Channel is using unverified process fallback"
+                    )
+                break
+            _close_fd(bootstrap_w)
+            bootstrap_w = -1
+            self._fail_and_reap(runtime, "sandbox-unavailable")
+            if len(prefixes) > 1:
+                logger.warning(
+                    "employee Channel bwrap attestation failed; using process fallback"
+                )
+                runtime = None
+                continue
+            with self._lock:
+                self._runtimes[agent_id] = runtime
+                self._generation_high_watermark[agent_id] = generation
+            raise ChannelSandboxUnavailable()
+        if runtime is None or bootstrap_w < 0:
+            raise RuntimeError("employee Channel launch failed")
         with self._lock:
+            high = self._generation_high_watermark.get(agent_id, 0)
+            if generation <= high:
+                _close_fd(bootstrap_w)
+                self._fail_and_reap(runtime, "generation-race")
+                raise ValueError("generation must advance after a worker has stopped")
             self._runtimes[agent_id] = runtime
             self._generation_high_watermark[agent_id] = generation
-
-        try:
-            attestation = self._sandbox_attestor(process.pid)
-        except Exception:
-            attestation = SandboxAttestation(process.pid, False, "attestation-error")
-        with self._lock:
-            runtime.status = replace(runtime.status, sandbox=attestation)
-        if not attestation.verified:
-            _close_fd(bootstrap_w)
-            self._fail_and_reap(runtime, "sandbox-unavailable")
-            raise ChannelSandboxUnavailable()
 
         try:
             secret = self._secret_resolver(credential_ref, agent_id, app_id)

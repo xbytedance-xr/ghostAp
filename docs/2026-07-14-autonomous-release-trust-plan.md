@@ -1,5 +1,12 @@
 # Autonomous Phase 8 Release Trust Plan
 
+> Superseded on 2026-07-14 by the built-in employee runtime design. The broker
+> client remains compatibility code, but release trust, signed evidence,
+> leases, and remote witness services are no longer required to start GhostAP
+> or use built-in administrator-only `/hire`; the initiating user completes
+> Feishu's one-click creation flow without tenant administrator approval. See
+> `docs/2026-07-14-built-in-visible-employees-design.md`.
+
 ## Outcome
 
 Phase 8 replaces the permanent config-only release rejection with a fail-closed

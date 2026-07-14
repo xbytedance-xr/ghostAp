@@ -279,9 +279,6 @@ class FeishuWSClient:
 
         self._employee_department_runtime = None
         try:
-            from ..autonomous.acceptance.release_trust import (
-                RootOwnedUnixReleaseTrustBroker,
-            )
             from ..autonomous.gateway.env_scope import (
                 runtime_only_employee_environment,
             )
@@ -289,32 +286,11 @@ class FeishuWSClient:
                 EmployeeDepartmentRuntime,
             )
 
-            release_trust_provider = None
-            trust_socket = getattr(
-                self.settings,
-                "autonomous_employee_release_trust_socket",
-                "",
-            )
-            if (
-                getattr(self.settings, "autonomous_visible_employee_limit", 0) > 0
-                and isinstance(trust_socket, str)
-                and trust_socket.strip()
-            ):
-                release_trust_provider = RootOwnedUnixReleaseTrustBroker(
-                    trust_socket,
-                    timeout_seconds=getattr(
-                        self.settings,
-                        "autonomous_employee_release_trust_timeout_seconds",
-                        2.0,
-                    ),
-                )
-
             self._employee_department_runtime = EmployeeDepartmentRuntime.from_settings(
                 self.settings,
                 slock_engine_manager=self._slock_engine_manager,
                 employee_environment_provider=runtime_only_employee_environment,
                 manager_client_factory=self._get_api_client,
-                release_trust_provider=release_trust_provider,
                 notification_link=lambda state, url, expire_in: self._reply_text(
                     state.message_id,
                     f"请在 {expire_in} 秒内完成独立飞书智能体注册：{url}",

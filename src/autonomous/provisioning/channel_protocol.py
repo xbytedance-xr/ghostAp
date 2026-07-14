@@ -244,6 +244,12 @@ def _reject_secret_fields(value: Any) -> None:
 
 
 def _validate_typed_payload(frame: ChannelFrame) -> None:
+    if frame.frame_type is FrameType.SEND:
+        try:
+            _validate_send_payload(frame)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ProtocolError("invalid employee send frame") from exc
+        return
     if frame.frame_type is FrameType.UPDATE_CARD:
         try:
             _validate_update_card_payload(frame)
@@ -257,6 +263,31 @@ def _validate_typed_payload(frame: ChannelFrame) -> None:
             _validate_ingress_ack_payload(frame)
     except (TypeError, ValueError, KeyError) as exc:
         raise ProtocolError("invalid employee ingress frame") from exc
+
+
+def _validate_send_payload(frame: ChannelFrame) -> None:
+    if set(frame.payload) != {"request_id", "target", "message", "options"}:
+        raise ValueError("invalid send payload fields")
+    request_id = frame.payload["request_id"]
+    target = frame.payload["target"]
+    message = frame.payload["message"]
+    options = frame.payload["options"]
+    if (
+        not isinstance(request_id, str)
+        or not request_id.startswith("send_")
+        or len(request_id) > 256
+    ):
+        raise ValueError("invalid send request_id")
+    if not isinstance(target, str) or not target or len(target) > 256:
+        raise ValueError("invalid send target")
+    if (
+        not isinstance(message, dict)
+        or len(message) != 1
+        or next(iter(message)) not in {"text", "card", "post"}
+    ):
+        raise ValueError("invalid send message")
+    if options is not None and not isinstance(options, dict):
+        raise ValueError("invalid send options")
 
 
 def _validate_update_card_payload(frame: ChannelFrame) -> None:

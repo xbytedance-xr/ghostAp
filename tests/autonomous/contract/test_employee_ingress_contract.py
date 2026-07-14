@@ -394,7 +394,7 @@ def test_disposition_and_attempt_state_are_strict_frozen_and_generation_bound() 
         replace(attempt, channel_generation=True)
 
 
-def test_ingress_settings_defaults_are_bounded_and_visible_release_stays_closed() -> None:
+def test_ingress_settings_defaults_are_bounded_and_visible_employees_are_enabled() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.autonomous_employee_ingress_ack_timeout_seconds == 1.5
@@ -410,7 +410,7 @@ def test_ingress_settings_defaults_are_bounded_and_visible_release_stays_closed(
     assert settings.autonomous_employee_outbox_blob_dir.endswith("/outbox-blobs")
     assert settings.autonomous_employee_attachment_staging_dir.endswith("/employee-attachments")
     assert settings.autonomous_employee_system_prompt_token_reserve == 4096
-    assert settings.autonomous_visible_employee_limit == 0
+    assert settings.autonomous_visible_employee_limit == 8
 
 
 @pytest.mark.parametrize(

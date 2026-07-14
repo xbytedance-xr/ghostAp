@@ -68,7 +68,7 @@ def test_default_sandbox_attestation_fails_closed_before_secret_resolution(tmp_p
         supervisor.close()
 
 
-def test_default_launcher_uses_verified_filesystem_and_process_isolation_when_supported(
+def test_default_launcher_prefers_bwrap_and_falls_back_to_process_isolation(
     tmp_path: Path,
 ) -> None:
     supervisor = EmployeeChannelSupervisor(
@@ -77,16 +77,15 @@ def test_default_launcher_uses_verified_filesystem_and_process_isolation_when_su
         ready_timeout=1.0,
     )
     try:
-        try:
-            status = supervisor.start(
-                "agt_1", "cli_1", "cred_1", 1, lambda _: None
-            )
-        except ChannelSandboxUnavailable:
-            pytest.skip("host user namespaces are unavailable; production stays fail-closed")
+        status = supervisor.start(
+            "agt_1", "cli_1", "cred_1", 1, lambda _: None
+        )
         assert status.state is ChannelProcessState.READY
         assert status.sandbox is not None
-        assert status.sandbox.verified is True
-        assert status.sandbox.mechanism == "bwrap-filesystem"
+        if status.sandbox.verified:
+            assert status.sandbox.mechanism == "bwrap-filesystem"
+        else:
+            assert status.sandbox.mechanism == "process-fallback"
     finally:
         supervisor.close()
 

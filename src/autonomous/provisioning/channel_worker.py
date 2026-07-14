@@ -304,6 +304,24 @@ def run_low_level_employee_channel(
     mailbox = IngressAckMailbox()
     stop_requested = threading.Event()
     admission = _ConnectionAdmission()
+
+    import lark_oapi as lark
+    from lark_channel.core.enum import LogLevel
+    from lark_channel.event.callback.model.p2_card_action_trigger import (
+        P2CardActionTriggerResponse,
+    )
+    from lark_channel.event.dispatcher_handler import EventDispatcherHandler
+    from lark_channel.ws import Client as WSClient
+
+    from src.autonomous.provisioning.lark_outbound import LarkEmployeeOutbound
+
+    security = _strict_sdk_security_config()
+    outbound = LarkEmployeeOutbound(
+        lark.Client.builder()
+        .app_id(bootstrap.app_id)
+        .app_secret(bootstrap.app_secret)
+        .build()
+    )
     control_reader = threading.Thread(
         target=_read_low_level_control,
         args=(
@@ -312,20 +330,13 @@ def run_low_level_employee_channel(
             mailbox,
             emitter,
             stop_requested,
+            outbound,
+            admission,
         ),
         name=f"employee-channel-control-{bootstrap.agent_id}-{bootstrap.generation}",
         daemon=True,
     )
     control_reader.start()
-
-    from lark_channel.core.enum import LogLevel
-    from lark_channel.event.callback.model.p2_card_action_trigger import (
-        P2CardActionTriggerResponse,
-    )
-    from lark_channel.event.dispatcher_handler import EventDispatcherHandler
-    from lark_channel.ws import Client as WSClient
-
-    security = _strict_sdk_security_config()
 
     def wait_for_parent(event: Any, *, kind: str) -> EmployeeIngressAck:
         deadline = time.monotonic() + float(ack_timeout)
@@ -468,6 +479,8 @@ def _read_low_level_control(
     mailbox: IngressAckMailbox,
     emitter: _FrameEmitter,
     stop_requested: threading.Event,
+    outbound: Any,
+    admission: _ConnectionAdmission,
 ) -> None:
     inbound_sequence = 0
     try:
@@ -494,19 +507,84 @@ def _read_low_level_control(
                     stop_requested.set()
                     mailbox.close()
                     return
-                elif frame.frame_type is FrameType.SEND:
-                    emitter.emit(
-                        FrameType.HEALTH,
-                        {
-                            "operation": "send",
-                            "request_id": frame.payload.get("request_id", ""),
-                            "success": False,
-                            "error_code": "outbound-transport-separate",
-                        },
+                elif frame.frame_type in {FrameType.SEND, FrameType.UPDATE_CARD}:
+                    _handle_low_level_outbound(
+                        frame,
+                        bootstrap,
+                        outbound,
+                        admission,
+                        emitter,
                     )
     finally:
         stop_requested.set()
         mailbox.close()
+
+
+def _handle_low_level_outbound(
+    frame: ChannelFrame,
+    bootstrap: Any,
+    outbound: Any,
+    admission: _ConnectionAdmission,
+    emitter: _FrameEmitter,
+) -> None:
+    """Execute one parent-authorized send with current Channel authority."""
+
+    operation = "send" if frame.frame_type is FrameType.SEND else "update_card"
+    request_id = frame.payload.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        emitter.emit(
+            FrameType.HEALTH,
+            {
+                "operation": operation,
+                "request_id": "",
+                "success": False,
+                "error_code": "invalid-outbound-request",
+            },
+        )
+        return
+    try:
+        _epoch, connection_id = admission.wait_snapshot(
+            deadline=time.monotonic() + 10.0
+        )
+        if frame.frame_type is FrameType.SEND:
+            result = outbound.send(
+                frame.payload.get("target"),
+                frame.payload.get("message"),
+                frame.payload.get("options"),
+            )
+        else:
+            result = outbound.update_card(
+                frame.payload.get("message_id"),
+                frame.payload.get("card"),
+            )
+        if getattr(result, "success", None) is not True:
+            raise RuntimeError("employee outbound operation was not acknowledged")
+        message_id = getattr(result, "message_id", "")
+        if not isinstance(message_id, str) or not message_id:
+            raise RuntimeError("employee outbound receipt is invalid")
+    except Exception as exc:
+        emitter.emit(
+            FrameType.HEALTH,
+            {
+                "operation": operation,
+                "request_id": request_id,
+                "success": False,
+                "error_code": type(exc).__name__,
+            },
+        )
+        return
+    emitter.emit(
+        FrameType.HEALTH,
+        {
+            "operation": operation,
+            "request_id": request_id,
+            "success": True,
+            "app_id": bootstrap.app_id,
+            "generation": bootstrap.generation,
+            "connection_id": connection_id,
+            "message_id": message_id,
+        },
+    )
 
 
 def _observe_low_level_connection(
