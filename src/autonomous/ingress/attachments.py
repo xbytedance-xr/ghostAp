@@ -549,6 +549,8 @@ class AttachmentStagingService:
             if staging_id is None:
                 return None
             record = self._state.by_staging_id[staging_id]
+            if record.cleanup_state == "completed":
+                return None
             if record.status != "completed" or record.cleanup_state != "none":
                 raise AttachmentStateError("attachment staging is not reusable")
             self.trusted_paths(staging_id)

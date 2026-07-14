@@ -2202,3 +2202,19 @@ def test_only_completed_staging_exposes_gateway_trusted_paths(api, tmp_path) -> 
         service.trusted_paths(completed.staging_id)
     service.close()
     writer.close()
+
+
+def test_completed_stage_lookup_returns_none_after_cleanup_tombstone(api, tmp_path) -> None:
+    service, writer, _vault, _builder, _downloader = _service(
+        api,
+        tmp_path,
+        {"img_v2_resource_1": api.DownloadedAttachment(content=PNG, file_name="diagram.png")},
+    )
+    completed = service.stage(_request(api, (_descriptor(api),)))
+
+    assert service.completed_for_acceptance(completed.acceptance_id) is not None
+    service.cleanup(completed.staging_id)
+
+    assert service.completed_for_acceptance(completed.acceptance_id) is None
+    service.close()
+    writer.close()

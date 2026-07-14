@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Protocol
 
 from ..context.models import AuthorizedContextRequest
+from ..domain import EmployeeState, WorkerType
 from ..journal.blob_store import BlobRef
 from ..journal.frame import GENESIS_HASH, JournalEvent
 from ..journal.writer import CommitState, JournalWriter
@@ -189,6 +190,18 @@ class RouterAuthoritySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class _AuthorityResolution:
+    """Ephemeral validated authority plus its non-serializable credential ref."""
+
+    snapshot: RouterAuthoritySnapshot
+    credential_ref: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.credential_ref, str) or not self.credential_ref:
+            raise ValueError("authority credential ref is required")
+
+
+@dataclass(frozen=True, slots=True)
 class RouterLifecycleRecord:
     aggregate_id: str
     acceptance_id: str
@@ -226,6 +239,17 @@ class RouterDispatchGrant:
     record: RouterLifecycleRecord
     request: AuthorizedContextRequest
     payload: EmployeeIngressPayload = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class RouterAttachmentCleanupReport:
+    """Secret-free outcome of one lock-free terminal attachment sweep."""
+
+    recovered_staging: int = 0
+    cleaned_acceptance_ids: tuple[str, ...] = ()
+    failed_acceptance_ids: tuple[str, ...] = ()
+    recovery_error_code: str = ""
+    sweep_error_code: str = ""
 
 
 def _accepted_record(event: JournalEvent, sequence: int) -> RouterLifecycleRecord:
@@ -401,11 +425,16 @@ class DurableEmployeeIngressRouter:
         self._fault_hook = fault_hook
         self._mutex = threading.RLock()
         self._state = RouterProjectionState()
+        self._last_attachment_cleanup_report = RouterAttachmentCleanupReport()
         self.rebuild_projection()
 
     @property
     def state(self) -> RouterProjectionState:
         return self._state
+
+    @property
+    def last_attachment_cleanup_report(self) -> RouterAttachmentCleanupReport:
+        return self._last_attachment_cleanup_report
 
     def rebuild_projection(self) -> RouterProjectionState:
         with self._mutex:
@@ -432,6 +461,12 @@ class DurableEmployeeIngressRouter:
             return self._state
 
     def route(self, acceptance_id: str) -> RouterLifecycleRecord:
+        try:
+            return self._route(acceptance_id)
+        finally:
+            self._refresh_terminal_attachment_cleanup_report()
+
+    def _route(self, acceptance_id: str) -> RouterLifecycleRecord:
         """Authorize, stage, and atomically admit one accepted Inbox record."""
 
         try:
@@ -456,7 +491,10 @@ class DurableEmployeeIngressRouter:
 
         # Registry, Channel, membership, and ACL ports may block.  Sample them
         # before entering the short Journal commit section below.
-        authority, reason = self._resolve_authority(ingress_record.metadata, payload)
+        resolution, reason = self._resolve_authority(
+            ingress_record.metadata,
+            payload,
+        )
         try:
             with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
                 current_ingress,
@@ -468,8 +506,14 @@ class DurableEmployeeIngressRouter:
                     return record
                 if self._ingress_identity(current_ingress, current_payload) != accepted_identity:
                     return self._terminal_unlocked(record, "inbox_not_dispatchable")
-                if authority is None:
+                if resolution is None:
                     return self._terminal_unlocked(record, reason)
+                authority = resolution.snapshot
+                if self._projection_missed_workforce_change(
+                    authority.projection_sequence,
+                    authority.projection_hash,
+                ):
+                    return self._terminal_unlocked(record, "authority_stale")
                 if record.state == "accepted":
                     record = self._transition_unlocked(
                         record,
@@ -488,12 +532,32 @@ class DurableEmployeeIngressRouter:
                     acceptance_id,
                     "attachment_staging_unavailable",
                 )
+            staging_resolution, staging_reason = self._resolve_authority(
+                ingress_record.metadata,
+                payload,
+            )
+            if staging_resolution is None:
+                return self._terminal_after_external(
+                    acceptance_id,
+                    staging_reason,
+                )
+            if (
+                not self._authority_matches(
+                    record.authority,
+                    staging_resolution.snapshot,
+                )
+                or staging_resolution.credential_ref != resolution.credential_ref
+            ):
+                return self._terminal_after_external(
+                    acceptance_id,
+                    "authority_stale",
+                )
             try:
                 self._stage_attachments(
                     acceptance_id,
                     ingress_record.metadata,
                     payload,
-                    authority,
+                    staging_resolution,
                 )
             except Exception:
                 return self._terminal_after_external(
@@ -516,9 +580,19 @@ class DurableEmployeeIngressRouter:
                 current_identity,
                 "inbox_not_dispatchable",
             )
-        current, current_reason = self._resolve_authority(
+        current_resolution, current_reason = self._resolve_authority(
             current_ingress.metadata,
             current_payload,
+        )
+        current = (
+            current_resolution.snapshot
+            if current_resolution is not None
+            else None
+        )
+        credential_changed = (
+            bool(payload.attachment_descriptors)
+            and current_resolution is not None
+            and current_resolution.credential_ref != resolution.credential_ref
         )
         try:
             with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
@@ -531,14 +605,20 @@ class DurableEmployeeIngressRouter:
                     return record
                 if self._ingress_identity(final_ingress, final_payload) != accepted_identity:
                     return self._terminal_unlocked(record, "inbox_not_dispatchable")
-                if current is None or not self._authority_matches(
-                    record.authority,
-                    current,
+                if (
+                    current is None
+                    or credential_changed
+                    or not self._authority_matches(record.authority, current)
                 ):
                     return self._terminal_unlocked(
                         record,
                         "authority_stale" if current is not None else current_reason,
                     )
+                if self._projection_missed_workforce_change(
+                    current.projection_sequence,
+                    current.projection_hash,
+                ):
+                    return self._terminal_unlocked(record, "authority_stale")
                 if record.state == "authorized":
                     record = self._transition_unlocked(record, "staging", {})
                 if self._queue_full_unlocked(record.authority):
@@ -564,6 +644,12 @@ class DurableEmployeeIngressRouter:
             return self._terminal_inbox_failure(acceptance_id)
 
     def dequeue(self) -> RouterDispatchGrant | None:
+        try:
+            return self._dequeue()
+        finally:
+            self._refresh_terminal_attachment_cleanup_report()
+
+    def _dequeue(self) -> RouterDispatchGrant | None:
         """Return the oldest eligible grant after full live authority revalidation."""
 
         while True:
@@ -595,10 +681,11 @@ class DurableEmployeeIngressRouter:
             if current.state != "queued":
                 continue
             snapshot_identity = self._ingress_identity(ingress_record, payload)
-            authority, _reason = self._resolve_authority(
+            resolution, _reason = self._resolve_authority(
                 ingress_record.metadata,
                 payload,
             )
+            authority = resolution.snapshot if resolution is not None else None
             if authority is None or not self._authority_matches(
                 current.authority,
                 authority,
@@ -644,6 +731,9 @@ class DurableEmployeeIngressRouter:
                     if not self._authority_matches(
                         current.authority,
                         authority,
+                    ) or self._projection_missed_workforce_change(
+                        authority.projection_sequence,
+                        authority.projection_hash,
                     ):
                         self._terminal_unlocked(current, "authority_stale")
                         continue
@@ -656,7 +746,19 @@ class DurableEmployeeIngressRouter:
             except IngressBlobError:
                 self._terminal_inbox_failure(candidate.acceptance_id)
                 continue
+
     def finish(self, acceptance_id: str, *, reason_code: str) -> RouterLifecycleRecord:
+        try:
+            return self._finish(acceptance_id, reason_code=reason_code)
+        finally:
+            self._refresh_terminal_attachment_cleanup_report()
+
+    def _finish(
+        self,
+        acceptance_id: str,
+        *,
+        reason_code: str,
+    ) -> RouterLifecycleRecord:
         """Anchor a Phase 6 terminal result without performing execution here."""
 
         if reason_code not in _DISPATCH_TERMINAL_REASONS:
@@ -671,6 +773,35 @@ class DurableEmployeeIngressRouter:
             if record.state != "dispatching":
                 raise RouterProjectionError("only dispatching Router work can finish")
             return self._terminal_unlocked(record, reason_code)
+
+    def recover_terminal_attachments(self) -> RouterAttachmentCleanupReport:
+        """Resume Task 4 cleanup, then converge terminal Router-owned stages."""
+
+        recovered_staging = 0
+        recovery_error_code = ""
+        recover = getattr(self._attachment_staging, "recover", None)
+        if callable(recover):
+            try:
+                recovered = recover()
+                if type(recovered) is not int or recovered < 0:
+                    recovery_error_code = "attachment_recover_invalid_result"
+                else:
+                    recovered_staging = recovered
+            except Exception:
+                recovery_error_code = "attachment_recover_failed"
+        try:
+            report = self._sweep_terminal_attachments(
+                recovered_staging=recovered_staging,
+                recovery_error_code=recovery_error_code,
+            )
+        except Exception:
+            report = RouterAttachmentCleanupReport(
+                recovered_staging=recovered_staging,
+                recovery_error_code=recovery_error_code,
+                sweep_error_code="attachment_terminal_sweep_failed",
+            )
+        self._last_attachment_cleanup_report = report
+        return report
 
     def queue_depth(self, *, agent_id: str = "", team_id: str = "") -> int:
         with self._writer.transaction_guard(), self._mutex:
@@ -690,6 +821,88 @@ class DurableEmployeeIngressRouter:
         if record is None:
             raise KeyError(acceptance_id)
         return record
+
+    def _refresh_terminal_attachment_cleanup_report(self) -> None:
+        try:
+            report = self._sweep_terminal_attachments()
+        except Exception:
+            report = RouterAttachmentCleanupReport(
+                sweep_error_code="attachment_terminal_sweep_failed",
+            )
+        self._last_attachment_cleanup_report = report
+
+    def _terminal_attachment_acceptance_ids(self) -> tuple[str, ...]:
+        with self._writer.transaction_guard(), self._mutex:
+            self.rebuild_projection()
+            return tuple(
+                sorted(
+                    record.acceptance_id
+                    for record in self._state.by_acceptance_id.values()
+                    if record.state == "terminal"
+                )
+            )
+
+    def _sweep_terminal_attachments(
+        self,
+        *,
+        recovered_staging: int = 0,
+        recovery_error_code: str = "",
+    ) -> RouterAttachmentCleanupReport:
+        if self._attachment_staging is None:
+            return RouterAttachmentCleanupReport(
+                recovered_staging=recovered_staging,
+                recovery_error_code=recovery_error_code,
+            )
+        acceptance_ids = self._terminal_attachment_acceptance_ids()
+        # From here onward no Router mutex or Journal transaction guard is held.
+        completed_for_acceptance = getattr(
+            self._attachment_staging,
+            "completed_for_acceptance",
+            None,
+        )
+        cleanup = getattr(self._attachment_staging, "cleanup", None)
+        if not callable(completed_for_acceptance):
+            return RouterAttachmentCleanupReport(
+                recovered_staging=recovered_staging,
+                recovery_error_code=recovery_error_code,
+                sweep_error_code="attachment_completion_port_invalid",
+            )
+        cleaned: list[str] = []
+        failed: list[str] = []
+        for acceptance_id in acceptance_ids:
+            try:
+                staged = completed_for_acceptance(acceptance_id)
+            except Exception:
+                failed.append(acceptance_id)
+                continue
+            if staged is None:
+                continue
+            staging_id = getattr(staged, "staging_id", None)
+            if (
+                type(staging_id) is not str
+                or not staging_id
+                or type(getattr(staged, "status", None)) is not str
+                or getattr(staged, "status", None) != "completed"
+                or type(getattr(staged, "cleanup_state", None)) is not str
+                or getattr(staged, "cleanup_state", None) != "none"
+            ):
+                failed.append(acceptance_id)
+                continue
+            if not callable(cleanup):
+                failed.append(acceptance_id)
+                continue
+            try:
+                cleanup(staging_id)
+            except Exception:
+                failed.append(acceptance_id)
+            else:
+                cleaned.append(acceptance_id)
+        return RouterAttachmentCleanupReport(
+            recovered_staging=recovered_staging,
+            cleaned_acceptance_ids=tuple(cleaned),
+            failed_acceptance_ids=tuple(failed),
+            recovery_error_code=recovery_error_code,
+        )
 
     def _transition_unlocked(
         self,
@@ -822,13 +1035,13 @@ class DurableEmployeeIngressRouter:
         self,
         metadata: EmployeeIngressMetadata,
         payload: EmployeeIngressPayload,
-    ) -> tuple[RouterAuthoritySnapshot | None, str]:
+    ) -> tuple[_AuthorityResolution | None, str]:
         part, reason = self._message_provenance(metadata, payload)
         if part is None:
             return None, reason
         try:
             registry = self._registry_provider()
-            if not isinstance(registry, ProjectedAgentRegistry):
+            if type(registry) is not ProjectedAgentRegistry:
                 return None, "authority_denied"
             binding = registry.context_binding(
                 tenant_key=metadata.tenant_key,
@@ -837,7 +1050,22 @@ class DurableEmployeeIngressRouter:
                 app_id=metadata.app_id,
                 chat_id=metadata.chat_id,
             )
-            if not isinstance(binding, ProjectedContextBinding):
+            if type(binding) is not ProjectedContextBinding:
+                return None, "authority_denied"
+            employee = binding.employee
+            principal = binding.principal
+            if (
+                employee.state is not EmployeeState.ACTIVE
+                or employee.worker_type is not WorkerType.VISIBLE
+                or employee.tenant_key != metadata.tenant_key
+                or employee.agent_id != metadata.agent_id
+                or employee.bot_principal_id != metadata.bot_principal_id
+                or metadata.chat_id not in employee.member_groups
+                or principal.bot_principal_id != metadata.bot_principal_id
+                or principal.tenant_key != metadata.tenant_key
+                or principal.agent_id != metadata.agent_id
+                or principal.app_id != metadata.app_id
+            ):
                 return None, "authority_denied"
             if self._projection_missed_workforce_change(
                 binding.projection_sequence,
@@ -847,23 +1075,45 @@ class DurableEmployeeIngressRouter:
             status = self._channels.status(metadata.agent_id)
             identity = getattr(status, "identity", None)
             ready_metadata = getattr(status, "ready_metadata", None)
-            state = getattr(
-                getattr(status, "state", None),
-                "value",
-                getattr(status, "state", None),
+            status_agent_id = getattr(status, "agent_id", None)
+            status_app_id = getattr(status, "app_id", None)
+            status_tenant_key = getattr(status, "tenant_key", None)
+            status_bot_principal_id = getattr(status, "bot_principal_id", None)
+            status_generation = getattr(status, "generation", None)
+            state = getattr(getattr(status, "state", None), "value", None)
+            identity_app_id = (
+                identity.get("app_id") if isinstance(identity, Mapping) else None
+            )
+            connection_id = (
+                ready_metadata.get("connection_id")
+                if isinstance(ready_metadata, Mapping)
+                else None
+            )
+            required_strings = (
+                status_agent_id,
+                status_app_id,
+                status_tenant_key,
+                status_bot_principal_id,
+                identity_app_id,
+                connection_id,
             )
             if (
                 not isinstance(identity, Mapping)
                 or not isinstance(ready_metadata, Mapping)
+                or any(
+                    not isinstance(value, str) or not value
+                    for value in required_strings
+                )
+                or type(status_generation) is not int
+                or status_generation < 1
                 or state != "ready"
-                or getattr(status, "agent_id", None) != metadata.agent_id
-                or getattr(status, "tenant_key", None) != metadata.tenant_key
-                or getattr(status, "bot_principal_id", None)
-                != metadata.bot_principal_id
-                or getattr(status, "app_id", None) != metadata.app_id
-                or getattr(status, "generation", None) != metadata.channel_generation
-                or identity.get("app_id") != metadata.app_id
-                or ready_metadata.get("connection_id") != metadata.connection_id
+                or status_agent_id != metadata.agent_id
+                or status_tenant_key != metadata.tenant_key
+                or status_bot_principal_id != metadata.bot_principal_id
+                or status_app_id != metadata.app_id
+                or status_generation != metadata.channel_generation
+                or identity_app_id != metadata.app_id
+                or connection_id != metadata.connection_id
             ):
                 return None, "authority_denied"
             try:
@@ -877,9 +1127,9 @@ class DurableEmployeeIngressRouter:
                 return None, "membership_degraded"
             snapshot = RouterAuthoritySnapshot(
                 tenant_key=metadata.tenant_key,
-                agent_id=binding.employee.agent_id,
-                bot_principal_id=binding.principal.bot_principal_id,
-                app_id=binding.principal.app_id,
+                agent_id=employee.agent_id,
+                bot_principal_id=principal.bot_principal_id,
+                app_id=principal.app_id,
                 channel_generation=metadata.channel_generation,
                 connection_id=metadata.connection_id,
                 team_id=metadata.chat_id,
@@ -890,17 +1140,24 @@ class DurableEmployeeIngressRouter:
                     if binding.projection_sequence
                     else GENESIS_HASH
                 ),
-                employee_version=binding.employee.aggregate_version,
-                tool=binding.employee.tool,
-                model=binding.employee.model,
-                effort=binding.employee.effort,
+                employee_version=employee.aggregate_version,
+                tool=employee.tool,
+                model=employee.model,
+                effort=employee.effort,
                 constraints_digest=self._constraints_digest,
                 system_prompt_token_reserve=self._reserve,
             )
             request = self._request_from(metadata, part, snapshot)
-            if not self._requester_acl.is_authorized(request):
+            try:
+                requester_authorized = self._requester_acl.is_authorized(request)
+            except Exception:
                 return None, "requester_denied"
-            return snapshot, ""
+            if type(requester_authorized) is not bool or requester_authorized is not True:
+                return None, "requester_denied"
+            credential_ref = principal.credential_ref
+            if not isinstance(credential_ref, str) or not credential_ref:
+                return None, "authority_denied"
+            return _AuthorityResolution(snapshot, credential_ref), ""
         except Exception:
             return None, "authority_denied"
 
@@ -1121,7 +1378,7 @@ class DurableEmployeeIngressRouter:
         acceptance_id: str,
         metadata: EmployeeIngressMetadata,
         payload: EmployeeIngressPayload,
-        authority: RouterAuthoritySnapshot,
+        resolution: _AuthorityResolution,
     ) -> None:
         from .attachments import (
             AttachmentStateError,
@@ -1129,16 +1386,7 @@ class DurableEmployeeIngressRouter:
             EmployeeAttachmentDescriptor,
         )
 
-        registry = self._registry_provider()
-        binding = registry.context_binding(
-            tenant_key=authority.tenant_key,
-            agent_id=authority.agent_id,
-            bot_principal_id=authority.bot_principal_id,
-            app_id=authority.app_id,
-            chat_id=authority.team_id,
-        )
-        if binding is None:
-            raise RouterProjectionError("attachment authority is stale")
+        authority = resolution.snapshot
         if self._completed_attachment_stage(acceptance_id) is not None:
             return
         descriptors = tuple(
@@ -1161,7 +1409,7 @@ class DurableEmployeeIngressRouter:
             tenant_key=authority.tenant_key,
             agent_id=authority.agent_id,
             app_id=authority.app_id,
-            credential_ref=binding.principal.credential_ref,
+            credential_ref=resolution.credential_ref,
             descriptors=descriptors,
         )
         try:
@@ -1176,22 +1424,14 @@ class DurableEmployeeIngressRouter:
             "completed_for_acceptance",
             None,
         )
-        if callable(method):
-            return method(acceptance_id)
-        staging_id = self._attachment_staging.state.by_acceptance_id.get(
-            acceptance_id
-        )
-        if staging_id is None:
-            return None
-        staged = self._attachment_staging.state.by_staging_id[staging_id]
-        if staged.status != "completed" or staged.cleanup_state != "none":
-            raise RouterProjectionError("attachment staging is not reusable")
-        self._attachment_staging.trusted_paths(staging_id)
-        return staged
+        if not callable(method):
+            raise RouterProjectionError("attachment completion port unavailable")
+        return method(acceptance_id)
 
 
 __all__ = [
     "DurableEmployeeIngressRouter",
+    "RouterAttachmentCleanupReport",
     "RouterAuthoritySnapshot",
     "RouterDispatchGrant",
     "RouterLifecycleRecord",

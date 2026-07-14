@@ -1,6 +1,8 @@
 # GhostAP 项目记忆索引
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
+## 2026-07-14
+- **Task 5最终权限与清理栅栏** - workforce线性化、严格provider shape及终态附件恢复闭环 → [2026-07-14.md](2026-07-14.md)
 ## 2026-07-13
 - **Task 5员工Router终审** - 全坐标权限、必需membership与原子抗饥饿队列落地，ACP执行仍待Task 6 → [2026-07-13.md](2026-07-13.md)
 - **Task 4附件安全暂存** - 稳定叶代际、逐叶墓碑与严格Journal擦除恢复落地 → [2026-07-13.md](2026-07-13.md)

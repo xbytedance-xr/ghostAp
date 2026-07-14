@@ -15,7 +15,11 @@ import pytest
 
 from src.autonomous.context.runtime import RuntimeRequesterChatAcl
 from src.autonomous.domain import BotPrincipal, EmployeeDefinition, EmployeeState, WorkerType
-from src.autonomous.ingress.attachments import AttachmentStateError
+from src.autonomous.ingress.attachments import (
+    AttachmentStagingService,
+    AttachmentStateError,
+    DownloadedAttachment,
+)
 from src.autonomous.ingress.models import EmployeeIngressMetadata, EmployeeIngressPayload
 from src.autonomous.ingress.projection import IngressProjectionState
 from src.autonomous.ingress.service import EmployeeIngressService
@@ -239,6 +243,20 @@ def _accept(ingress: EmployeeIngressService, payload: EmployeeIngressPayload, **
     return ack.acceptance.acceptance_id
 
 
+def _commit_workforce_change(writer: JournalWriter, marker: str) -> None:
+    aggregate_id = f"workforce_race_{marker}"
+    writer.commit(
+        [
+            JournalEvent(
+                event_type="employee.state_changed",
+                aggregate_id=aggregate_id,
+                payload={"marker": marker},
+            )
+        ],
+        writer.get_aggregate_versions([aggregate_id]),
+    )
+
+
 @pytest.mark.parametrize(
     ("mutation", "reason"),
     (
@@ -374,6 +392,33 @@ def test_only_exact_false_membership_health_is_accepted(
     writer.close()
 
 
+@pytest.mark.parametrize(
+    "acl_result",
+    (False, 1, "allowed", object(), None, RuntimeError("acl unavailable")),
+)
+def test_requester_acl_requires_exact_true_and_maps_errors_to_requester_denied(
+    tmp_path: Path,
+    acl_result: object,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+
+    class _Acl:
+        def is_authorized(self, _request):
+            if isinstance(acl_result, BaseException):
+                raise acl_result
+            return acl_result
+
+    router._requester_acl = _Acl()
+    acceptance_id = _accept(ingress, _payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "requester_denied"
+    ingress.close()
+    writer.close()
+
+
 def test_membership_health_port_is_required_and_structural(tmp_path: Path) -> None:
     module, writer, ingress, workforce, channels, _ = _stack(tmp_path)
     common = {
@@ -429,6 +474,57 @@ def test_live_channel_status_binds_tenant_and_bot_principal(
 
     assert record.state == "terminal"
     assert record.reason_code == "authority_denied"
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("generation", 3.0),
+        ("generation", True),
+        ("generation", "3"),
+        ("generation", 0),
+        ("agent_id", ""),
+        ("app_id", ""),
+        ("tenant_key", ""),
+        ("bot_principal_id", ""),
+        ("connection_id", ""),
+        ("connection_id", 3),
+        ("identity", []),
+        ("ready_metadata", []),
+        ("state", "ready"),
+    ),
+)
+def test_live_channel_status_requires_strict_parent_trusted_shape(
+    tmp_path: Path,
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    _, writer, ingress, _, channels, router = _stack(tmp_path)
+    status = channels.statuses["agt_alpha"]
+    values: dict[str, object] = {
+        "agent_id": status.agent_id,
+        "app_id": status.app_id,
+        "generation": status.generation,
+        "pid": status.pid,
+        "state": status.state,
+        "identity": status.identity,
+        "ready_metadata": dict(status.ready_metadata),
+        "tenant_key": status.tenant_key,
+        "bot_principal_id": status.bot_principal_id,
+    }
+    if field_name == "connection_id":
+        values["ready_metadata"]["connection_id"] = invalid_value
+    else:
+        values[field_name] = invalid_value
+    channels.statuses["agt_alpha"] = SimpleNamespace(**values)
+    acceptance_id = _accept(ingress, _payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "authority_denied"
     ingress.close()
     writer.close()
 
@@ -516,7 +612,7 @@ def test_malformed_channel_status_is_a_durable_authority_deny(
     writer.close()
 
 
-def test_invalid_projected_execution_shape_and_acl_exception_are_durable_denials(
+def test_invalid_execution_shape_and_acl_exception_use_specific_durable_denials(
     tmp_path: Path,
 ) -> None:
     _, writer, ingress, workforce, _, router = _stack(tmp_path)
@@ -538,7 +634,7 @@ def test_invalid_projected_execution_shape_and_acl_exception_are_durable_denials
 
     router._requester_acl = RaisingAcl()
     acl_failure = _accept(ingress, _payload(text="acl failure"))
-    assert router.route(acl_failure).reason_code == "authority_denied"
+    assert router.route(acl_failure).reason_code == "requester_denied"
     ingress.close()
     writer.close()
 
@@ -839,6 +935,7 @@ class _BlockingStaging:
         staging_id = "stg_done"
         self.state.by_acceptance_id[request.acceptance_id] = staging_id
         self.state.by_staging_id[staging_id] = SimpleNamespace(
+            staging_id=staging_id,
             status="completed",
             cleanup_state="none",
         )
@@ -850,6 +947,139 @@ class _BlockingStaging:
     def completed_for_acceptance(self, acceptance_id: str):
         staging_id = self.state.by_acceptance_id.get(acceptance_id)
         return None if staging_id is None else self.state.by_staging_id[staging_id]
+
+
+class _RecordingStaging:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.requests: list[object] = []
+        self.cleanup_calls: list[str] = []
+        self.recover_calls = 0
+        self.state = SimpleNamespace(by_acceptance_id={}, by_staging_id={})
+
+    def stage(self, request) -> None:
+        self.calls += 1
+        self.requests.append(request)
+        staging_id = f"stg_recorded_{self.calls}"
+        self.state.by_acceptance_id[request.acceptance_id] = staging_id
+        self.state.by_staging_id[staging_id] = SimpleNamespace(
+            staging_id=staging_id,
+            status="completed",
+            cleanup_state="none",
+        )
+
+    def completed_for_acceptance(self, acceptance_id: str):
+        staging_id = self.state.by_acceptance_id.get(acceptance_id)
+        if staging_id is None:
+            return None
+        record = self.state.by_staging_id[staging_id]
+        if record.cleanup_state == "completed":
+            return None
+        if record.cleanup_state != "none":
+            raise AttachmentStateError("attachment staging is not reusable")
+        return record
+
+    def cleanup(self, staging_id: str) -> None:
+        self.cleanup_calls.append(staging_id)
+        self.state.by_staging_id[staging_id].cleanup_state = "completed"
+
+    def recover(self) -> int:
+        self.recover_calls += 1
+        return 0
+
+
+class _CrashCleanupStaging(_RecordingStaging):
+    def cleanup(self, staging_id: str) -> None:
+        self.cleanup_calls.append(staging_id)
+        record = self.state.by_staging_id[staging_id]
+        record.cleanup_state = "started"
+        raise RuntimeError("cleanup interrupted")
+
+    def recover(self) -> int:
+        self.recover_calls += 1
+        recovered = 0
+        for record in self.state.by_staging_id.values():
+            if record.cleanup_state == "started":
+                record.cleanup_state = "completed"
+                recovered += 1
+        return recovered
+
+
+class _BrokenRecoveryStaging:
+    def recover(self) -> int:
+        raise RuntimeError("recovery unavailable")
+
+    @property
+    def state(self):
+        raise RuntimeError("staging state unavailable")
+
+
+class _ApiOnlyCleanupStaging:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.cleanup_calls: list[str] = []
+        self.records: dict[str, object] = {}
+
+    def stage(self, request) -> None:
+        self.calls += 1
+        staging_id = f"stg_api_{self.calls}"
+        self.records[request.acceptance_id] = SimpleNamespace(
+            staging_id=staging_id,
+            status="completed",
+            cleanup_state="none",
+        )
+
+    def completed_for_acceptance(self, acceptance_id: str):
+        record = self.records.get(acceptance_id)
+        if record is None or record.cleanup_state == "completed":
+            return None
+        return record
+
+    def cleanup(self, staging_id: str) -> None:
+        self.cleanup_calls.append(staging_id)
+        for record in self.records.values():
+            if record.staging_id == staging_id:
+                record.cleanup_state = "completed"
+
+
+class _MalformedCompletionStaging(_RecordingStaging):
+    def __init__(self, behavior: str) -> None:
+        super().__init__()
+        self.behavior = behavior
+
+    def completed_for_acceptance(self, acceptance_id: str):
+        if acceptance_id not in self.state.by_acceptance_id:
+            return None
+        if self.behavior == "raise":
+            raise RuntimeError("completion lookup failed")
+        if self.behavior == "state_error":
+            raise AttachmentStateError("attachment staging is not reusable")
+        if self.behavior == "invalid_cleanup":
+            return SimpleNamespace(
+                staging_id="stg_invalid",
+                status="completed",
+                cleanup_state="unexpected",
+            )
+        return SimpleNamespace(status="completed", cleanup_state="none")
+
+
+class _StateOnlyStaging(_RecordingStaging):
+    completed_for_acceptance = None
+
+
+class _RealCredentialResolver:
+    def resolve(self, credential_ref: str, agent_id: str, app_id: str) -> str:
+        assert (credential_ref, agent_id, app_id) == (
+            "cred_alpha",
+            "agt_alpha",
+            "cli_alpha",
+        )
+        return "employee-secret"
+
+
+class _RealDownloader:
+    def download(self, _descriptor) -> DownloadedAttachment:
+        return DownloadedAttachment(content=b"", file_name="note.txt")
 
 
 def _attachment_payload() -> EmployeeIngressPayload:
@@ -864,6 +1094,416 @@ def _attachment_payload() -> EmployeeIngressPayload:
             },
         )
     )
+
+
+@pytest.mark.parametrize("second_provider_kind", ("forged", "wrong_credential"))
+def test_attachment_stage_requires_second_full_authority_resolution(
+    tmp_path: Path,
+    second_provider_kind: str,
+) -> None:
+    staging = _RecordingStaging()
+    _, writer, ingress, workforce, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    valid_registry = ProjectedAgentRegistry(workforce)
+    valid_binding = valid_registry.context_binding(
+        tenant_key="tenant_1",
+        agent_id="agt_alpha",
+        bot_principal_id="bot_alpha",
+        app_id="cli_alpha",
+        chat_id="oc_team",
+    )
+    assert valid_binding is not None
+    if second_provider_kind == "forged":
+        class _ForgedRegistry:
+            def context_binding(self, **_coordinates):
+                return valid_binding
+
+        second_provider = _ForgedRegistry()
+    else:
+        wrong_workforce = _workforce()
+        wrong_workforce.bot_principals["bot_alpha"] = replace(
+            wrong_workforce.bot_principals["bot_alpha"],
+            credential_ref="cred_wrong",
+        )
+        second_provider = ProjectedAgentRegistry(wrong_workforce)
+    provider_calls = 0
+
+    def registry_provider():
+        nonlocal provider_calls
+        provider_calls += 1
+        return second_provider if provider_calls == 2 else valid_registry
+
+    router._registry_provider = registry_provider
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert provider_calls == 2
+    assert terminal.state == "terminal"
+    assert staging.calls == 0
+    assert staging.requests == []
+    ingress.close()
+    writer.close()
+
+
+def test_attachment_stage_uses_only_validated_employee_credential_ephemerally(
+    tmp_path: Path,
+) -> None:
+    staging = _RecordingStaging()
+    _, writer, ingress, workforce, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    registry = ProjectedAgentRegistry(workforce)
+    provider_calls = 0
+
+    def registry_provider():
+        nonlocal provider_calls
+        provider_calls += 1
+        return registry
+
+    router._registry_provider = registry_provider
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    queued = router.route(acceptance_id)
+
+    assert queued.state == "queued"
+    assert provider_calls == 3
+    assert staging.calls == 1
+    assert staging.requests[0].credential_ref == "cred_alpha"
+    assert queued.authority is not None
+    assert "credential" not in repr(queued.authority.to_dict()).lower()
+    journal_text = repr(tuple(writer.replay())).lower()
+    assert "credential_ref" not in journal_text
+    assert "cred_alpha" not in journal_text
+    ingress.close()
+    writer.close()
+
+
+def test_attachment_final_resolution_rejects_post_stage_credential_change(
+    tmp_path: Path,
+) -> None:
+    staging = _RecordingStaging()
+    _, writer, ingress, workforce, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    valid_registry = ProjectedAgentRegistry(workforce)
+    wrong_workforce = _workforce()
+    wrong_workforce.bot_principals["bot_alpha"] = replace(
+        wrong_workforce.bot_principals["bot_alpha"],
+        credential_ref="cred_rotated",
+    )
+    wrong_registry = ProjectedAgentRegistry(wrong_workforce)
+    provider_calls = 0
+
+    def registry_provider():
+        nonlocal provider_calls
+        provider_calls += 1
+        return wrong_registry if provider_calls == 3 else valid_registry
+
+    router._registry_provider = registry_provider
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert provider_calls == 3
+    assert staging.calls == 1
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "authority_stale"
+    assert staging.cleanup_calls == ["stg_recorded_1"]
+    assert not any(
+        event.event_type == "employee.ingress.router_queued"
+        and event.payload["acceptance_id"] == acceptance_id
+        for frame in writer.replay()
+        for event in frame.events
+    )
+    ingress.close()
+    writer.close()
+
+
+def test_queue_full_terminal_cleans_completed_attachment_stage(tmp_path: Path) -> None:
+    staging = _RecordingStaging()
+    module, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    router._limits = module.RouterQueueLimits(1, 2, 2)
+    first = _accept(ingress, _payload(text="occupy employee queue"))
+    assert router.route(first).state == "queued"
+    attachment = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(attachment)
+
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "queue_full"
+    assert staging.cleanup_calls == ["stg_recorded_1"]
+    assert staging.state.by_staging_id["stg_recorded_1"].cleanup_state == "completed"
+    ingress.close()
+    writer.close()
+
+
+def test_attachment_stage_survives_queued_and_current_dispatch_grant(
+    tmp_path: Path,
+) -> None:
+    staging = _RecordingStaging()
+    _, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    assert router.route(acceptance_id).state == "queued"
+    assert staging.cleanup_calls == []
+    grant = router.dequeue()
+    assert grant is not None and grant.record.state == "dispatching"
+    assert staging.cleanup_calls == []
+
+    terminal = router.finish(acceptance_id, reason_code="completed")
+
+    assert terminal.state == "terminal"
+    assert staging.cleanup_calls == ["stg_recorded_1"]
+    ingress.close()
+    writer.close()
+
+
+def test_dequeue_authority_terminal_cleans_completed_attachment_stage(
+    tmp_path: Path,
+) -> None:
+    staging = _RecordingStaging()
+    _, writer, ingress, _, channels, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    acceptance_id = _accept(ingress, _attachment_payload())
+    assert router.route(acceptance_id).state == "queued"
+    channels.statuses["agt_alpha"] = replace(
+        channels.statuses["agt_alpha"],
+        generation=4,
+    )
+
+    assert router.dequeue() is None
+
+    assert router.state.by_acceptance_id[acceptance_id].reason_code == "authority_stale"
+    assert staging.cleanup_calls == ["stg_recorded_1"]
+    ingress.close()
+    writer.close()
+
+
+def test_terminal_attachment_cleanup_crash_is_reported_and_recovery_is_idempotent(
+    tmp_path: Path,
+) -> None:
+    staging = _CrashCleanupStaging()
+    module, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    router._limits = module.RouterQueueLimits(1, 2, 2)
+    assert router.route(_accept(ingress, _payload(text="occupy"))).state == "queued"
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "queue_full"
+    assert router.last_attachment_cleanup_report.failed_acceptance_ids == (
+        acceptance_id,
+    )
+    assert staging.state.by_staging_id["stg_recorded_1"].cleanup_state == "started"
+
+    first = router.recover_terminal_attachments()
+    second = router.recover_terminal_attachments()
+
+    assert first.recovered_staging == 1
+    assert first.failed_acceptance_ids == ()
+    assert second.recovered_staging == 0
+    assert second.cleaned_acceptance_ids == ()
+    assert second.failed_acceptance_ids == ()
+    assert staging.recover_calls == 2
+    ingress.close()
+    writer.close()
+
+
+def test_terminal_attachment_cleanup_runs_outside_router_and_journal_guards(
+    tmp_path: Path,
+) -> None:
+    staging = _RecordingStaging()
+    module, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    router._limits = module.RouterQueueLimits(1, 2, 2)
+    assert router.route(_accept(ingress, _payload(text="occupy"))).state == "queued"
+    original_completed = staging.completed_for_acceptance
+    original_cleanup = staging.cleanup
+    original_recover = staging.recover
+
+    def assert_guards_are_available() -> None:
+        acquired = Event()
+
+        def probe() -> None:
+            with writer.transaction_guard(), router._mutex:
+                acquired.set()
+
+        thread = Thread(target=probe)
+        thread.start()
+        assert acquired.wait(1), "Task 4 port ran under Router/Journal guard"
+        thread.join(1)
+
+    def completed_for_acceptance(acceptance_id: str):
+        assert_guards_are_available()
+        return original_completed(acceptance_id)
+
+    def cleanup(staging_id: str) -> None:
+        assert_guards_are_available()
+        original_cleanup(staging_id)
+
+    def recover() -> int:
+        assert_guards_are_available()
+        return original_recover()
+
+    staging.completed_for_acceptance = completed_for_acceptance
+    staging.cleanup = cleanup
+    staging.recover = recover
+
+    terminal = router.route(_accept(ingress, _attachment_payload()))
+    recovery = router.recover_terminal_attachments()
+
+    assert terminal.reason_code == "queue_full"
+    assert staging.cleanup_calls == ["stg_recorded_1"]
+    assert recovery.failed_acceptance_ids == ()
+    ingress.close()
+    writer.close()
+
+
+def test_attachment_recovery_reports_provider_and_sweep_errors_without_raising(
+    tmp_path: Path,
+) -> None:
+    staging = _BrokenRecoveryStaging()
+    _, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    acceptance_id = _accept(ingress, _payload(), event_type="evil.event")
+    terminal = router.route(acceptance_id)
+    assert terminal.state == "terminal"
+
+    report = router.recover_terminal_attachments()
+
+    assert report.recovery_error_code == "attachment_recover_failed"
+    assert report.sweep_error_code == "attachment_completion_port_invalid"
+    assert router.state.by_acceptance_id[acceptance_id] == terminal
+    ingress.close()
+    writer.close()
+
+
+def test_terminal_attachment_sweeper_uses_verified_task4_completion_port(
+    tmp_path: Path,
+) -> None:
+    staging = _ApiOnlyCleanupStaging()
+    module, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    router._limits = module.RouterQueueLimits(1, 2, 2)
+    assert router.route(_accept(ingress, _payload(text="occupy"))).state == "queued"
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert terminal.reason_code == "queue_full"
+    assert staging.cleanup_calls == ["stg_api_1"]
+    assert router.last_attachment_cleanup_report.cleaned_acceptance_ids == (
+        acceptance_id,
+    )
+    ingress.close()
+    writer.close()
+
+
+def test_attachment_staging_requires_verified_task4_completion_port(
+    tmp_path: Path,
+) -> None:
+    staging = _StateOnlyStaging()
+    _, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "attachment_staging_failed"
+    assert staging.calls == 0
+    ingress.close()
+    writer.close()
+
+
+def test_real_task4_stage_terminal_cleanup_and_recovery_are_idempotent(
+    tmp_path: Path,
+) -> None:
+    module, writer, ingress, _, _, router = _stack(tmp_path)
+    staging = AttachmentStagingService(
+        writer=writer,
+        root=tmp_path / "real-staging",
+        credential_resolver=_RealCredentialResolver(),
+        downloader_builder=lambda **_kwargs: _RealDownloader(),
+    )
+    router._attachment_staging = staging
+    router._limits = module.RouterQueueLimits(1, 2, 2)
+    assert router.route(_accept(ingress, _payload(text="occupy"))).state == "queued"
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(acceptance_id)
+    first = router.recover_terminal_attachments()
+    second = router.recover_terminal_attachments()
+
+    assert terminal.reason_code == "queue_full"
+    assert staging.completed_for_acceptance(acceptance_id) is None
+    assert first.recovered_staging == 0
+    assert first.failed_acceptance_ids == ()
+    assert first.cleaned_acceptance_ids == ()
+    assert second.recovered_staging == 0
+    assert second.failed_acceptance_ids == ()
+    assert second.cleaned_acceptance_ids == ()
+    assert sum(
+        event.event_type == "employee.ingress.attachment_cleanup_completed"
+        for frame in writer.replay()
+        for event in frame.events
+    ) == 1
+    staging.close()
+    ingress.close()
+    writer.close()
+
+
+@pytest.mark.parametrize(
+    "behavior",
+    ("malformed", "raise", "state_error", "invalid_cleanup"),
+)
+def test_terminal_attachment_sweeper_reports_invalid_task4_completion_result(
+    tmp_path: Path,
+    behavior: str,
+) -> None:
+    staging = _MalformedCompletionStaging(behavior)
+    module, writer, ingress, _, _, router = _stack(
+        tmp_path,
+        attachment_staging=staging,
+    )
+    router._limits = module.RouterQueueLimits(1, 2, 2)
+    assert router.route(_accept(ingress, _payload(text="occupy"))).state == "queued"
+    acceptance_id = _accept(ingress, _attachment_payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert terminal.reason_code == "queue_full"
+    assert staging.cleanup_calls == []
+    assert router.last_attachment_cleanup_report.failed_acceptance_ids == (
+        acceptance_id,
+    )
+    ingress.close()
+    writer.close()
 
 
 def test_attachment_stage_does_not_hold_global_journal_admission_lock(
@@ -1164,5 +1804,71 @@ def test_dequeue_rejects_registry_projection_that_missed_workforce_change(
     terminal = router.state.by_acceptance_id[acceptance_id]
     assert terminal.state == "terminal"
     assert terminal.reason_code == "authority_stale"
+    ingress.close()
+    writer.close()
+
+
+def test_route_fences_initial_authority_sample_before_authorized_commit(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    original_resolve = router._resolve_authority
+    injected = False
+
+    def resolve_then_revoke(metadata, payload):
+        nonlocal injected
+        result = original_resolve(metadata, payload)
+        if result[0] is not None and not injected:
+            injected = True
+            _commit_workforce_change(writer, "route_initial")
+        return result
+
+    router._resolve_authority = resolve_then_revoke
+    acceptance_id = _accept(ingress, _payload())
+
+    terminal = router.route(acceptance_id)
+
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "authority_stale"
+    assert not any(
+        event.event_type == "employee.ingress.router_authorized"
+        and event.payload["acceptance_id"] == acceptance_id
+        for frame in writer.replay()
+        for event in frame.events
+    )
+    ingress.close()
+    writer.close()
+
+
+def test_dequeue_fences_sampled_authority_against_late_workforce_change(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload())
+    assert router.route(acceptance_id).state == "queued"
+    original_resolve = router._resolve_authority
+    injected = False
+
+    def resolve_then_revoke(metadata, payload):
+        nonlocal injected
+        result = original_resolve(metadata, payload)
+        if result[0] is not None and not injected:
+            injected = True
+            _commit_workforce_change(writer, "dequeue")
+        return result
+
+    router._resolve_authority = resolve_then_revoke
+
+    assert router.dequeue() is None
+
+    terminal = router.state.by_acceptance_id[acceptance_id]
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "authority_stale"
+    assert not any(
+        event.event_type == "employee.ingress.router_dispatching"
+        and event.payload["acceptance_id"] == acceptance_id
+        for frame in writer.replay()
+        for event in frame.events
+    )
     ingress.close()
     writer.close()

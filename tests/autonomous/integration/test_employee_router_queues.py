@@ -18,7 +18,7 @@ from src.autonomous.ingress.projection import IngressProjectionState
 from src.autonomous.ingress.service import EmployeeIngressService
 from src.autonomous.journal.anchor import MemoryAnchor
 from src.autonomous.journal.blob_store import AesGcmEncryptionProvider, BlobStore
-from src.autonomous.journal.frame import GENESIS_HASH
+from src.autonomous.journal.frame import GENESIS_HASH, JournalEvent
 from src.autonomous.journal.projections import ProjectionState
 from src.autonomous.journal.writer import JournalWriter
 from src.autonomous.supervisor.employee_channels import ChannelProcessState, ChannelProcessStatus
@@ -32,7 +32,12 @@ def _module():
     return importlib.import_module("src.autonomous.ingress.router")
 
 
-def _payload(index: int, *, sender: str = "ou_requester") -> EmployeeIngressPayload:
+def _payload(
+    index: int,
+    *,
+    sender: str = "ou_requester",
+    attachment_descriptors: tuple[dict[str, object], ...] = (),
+) -> EmployeeIngressPayload:
     part = {
         "type": "message",
         "message_type": "text",
@@ -49,7 +54,7 @@ def _payload(index: int, *, sender: str = "ou_requester") -> EmployeeIngressPayl
         schema_version=1,
         envelope_id="ing_" + digest,
         normalized_parts=(part,),
-        attachment_descriptors=(),
+        attachment_descriptors=attachment_descriptors,
     )
 
 
@@ -81,8 +86,8 @@ def _metadata(
         semantic_digest=payload.payload_sha256,
         payload_sha256=payload.payload_sha256,
         payload_size_bytes=payload.canonical_size_bytes,
-        attachment_count=0,
-        attachment_total_bytes=0,
+        attachment_count=len(payload.attachment_descriptors),
+        attachment_total_bytes=payload.attachment_total_bytes,
     )
 
 
@@ -110,6 +115,42 @@ class _Channels:
 class _HealthyMembership:
     def is_degraded(self, _agent_id: str, _team_id: str) -> bool:
         return False
+
+
+class _QueueCleanupStaging:
+    def __init__(self) -> None:
+        self.stage_calls = 0
+        self.cleanup_calls: list[str] = []
+        self.state = type(
+            "State",
+            (),
+            {"by_acceptance_id": {}, "by_staging_id": {}},
+        )()
+
+    def stage(self, request) -> None:
+        self.stage_calls += 1
+        staging_id = f"stg_queue_{self.stage_calls}"
+        self.state.by_acceptance_id[request.acceptance_id] = staging_id
+        self.state.by_staging_id[staging_id] = type(
+            "Record",
+            (),
+            {
+                "staging_id": staging_id,
+                "status": "completed",
+                "cleanup_state": "none",
+            },
+        )()
+
+    def completed_for_acceptance(self, acceptance_id: str):
+        staging_id = self.state.by_acceptance_id.get(acceptance_id)
+        if staging_id is None:
+            return None
+        record = self.state.by_staging_id[staging_id]
+        return None if record.cleanup_state == "completed" else record
+
+    def cleanup(self, staging_id: str) -> None:
+        self.cleanup_calls.append(staging_id)
+        self.state.by_staging_id[staging_id].cleanup_state = "completed"
 
 
 class _SelectiveRejectAnchor(MemoryAnchor):
@@ -141,6 +182,7 @@ def _stack(
     limits: tuple[int, int, int] = (4, 8, 16),
     inactive_agent_ids: tuple[str, ...] = (),
     anchor: MemoryAnchor | None = None,
+    attachment_staging: object | None = None,
 ):
     module = _module()
     writer = JournalWriter.open(
@@ -204,6 +246,7 @@ def _stack(
                 per_employee=limits[0], per_team=limits[1], global_limit=limits[2]
             ),
             membership_health=_HealthyMembership(),
+            attachment_staging=attachment_staging,
         )
 
     return module, writer, ingress, new_router
@@ -216,8 +259,13 @@ def _accept(
     *,
     sender: str = "ou_requester",
     chat_id: str = "oc_team",
+    attachment_descriptors: tuple[dict[str, object], ...] = (),
 ) -> str:
-    payload = _payload(index, sender=sender)
+    payload = _payload(
+        index,
+        sender=sender,
+        attachment_descriptors=attachment_descriptors,
+    )
     metadata = _metadata(payload, index, agent_id, chat_id=chat_id)
     metadata = replace(metadata, sender_principal_id=sender)
     ack = ingress.accept(
@@ -560,6 +608,98 @@ def test_new_employee_rebalances_latest_queued_peer_in_one_frame(tmp_path: Path)
         router.state.by_acceptance_id[alpha_2].aggregate_id,
         router.state.by_acceptance_id[beta].aggregate_id,
     }
+    ingress.close()
+    writer.close()
+
+
+def test_rebalanced_victim_cleans_its_completed_attachment_stage(tmp_path: Path) -> None:
+    staging = _QueueCleanupStaging()
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+        attachment_staging=staging,
+    )
+    router = new_router()
+    alpha_1 = _accept(ingress, 1, "agt_alpha")
+    assert router.route(alpha_1).state == "queued"
+    descriptor = (
+        {
+            "resource_type": "file",
+            "resource_id": "file_queue",
+            "mime_type": "text/plain",
+            "size_bytes": 0,
+            "sha256": hashlib.sha256(b"").hexdigest(),
+        },
+    )
+    alpha_2 = _accept(
+        ingress,
+        2,
+        "agt_alpha",
+        attachment_descriptors=descriptor,
+    )
+    assert router.route(alpha_2).state == "queued"
+    beta = _accept(ingress, 3, "agt_beta")
+
+    admitted = router.route(beta)
+
+    assert admitted.state == "queued"
+    assert router.state.by_acceptance_id[alpha_2].reason_code == "queue_rebalanced"
+    assert staging.cleanup_calls == ["stg_queue_1"]
+    assert staging.state.by_staging_id["stg_queue_1"].cleanup_state == "completed"
+    ingress.close()
+    writer.close()
+
+
+def test_route_never_rebalances_after_sampled_workforce_authority_changes(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, new_router = _stack(
+        tmp_path,
+        agent_ids=("agt_alpha", "agt_beta"),
+        limits=(2, 2, 2),
+    )
+    router = new_router()
+    alpha = [_accept(ingress, index, "agt_alpha") for index in (1, 2)]
+    for acceptance_id in alpha:
+        assert router.route(acceptance_id).state == "queued"
+    beta = _accept(ingress, 3, "agt_beta")
+    original_resolve = router._resolve_authority
+    samples = 0
+
+    def resolve_then_revoke(metadata, payload):
+        nonlocal samples
+        result = original_resolve(metadata, payload)
+        if result[0] is not None:
+            samples += 1
+            if samples == 2:
+                aggregate_id = "workforce_race_route_final"
+                writer.commit(
+                    [
+                        JournalEvent(
+                            event_type="employee.state_changed",
+                            aggregate_id=aggregate_id,
+                            payload={"state": "draft"},
+                        )
+                    ],
+                    writer.get_aggregate_versions([aggregate_id]),
+                )
+        return result
+
+    router._resolve_authority = resolve_then_revoke
+
+    terminal = router.route(beta)
+
+    assert samples == 2
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "authority_stale"
+    assert all(router.state.by_acceptance_id[item].state == "queued" for item in alpha)
+    assert not any(
+        event.event_type == "employee.ingress.router_terminal"
+        and event.payload.get("reason_code") == "queue_rebalanced"
+        for frame in writer.replay()
+        for event in frame.events
+    )
     ingress.close()
     writer.close()
 
