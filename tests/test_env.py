@@ -152,6 +152,27 @@ class TestBuildCleanEnv:
         build_clean_env(base_env)
         assert base_env == original
 
+    def test_explicit_employee_home_never_injects_manager_user_bins(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        manager_home = tmp_path / "manager"
+        employee_home = tmp_path / "employee"
+        for home in (manager_home, employee_home):
+            (home / ".npm-global" / "bin").mkdir(parents=True)
+            (home / ".local" / "bin").mkdir(parents=True)
+        monkeypatch.setattr(
+            "src.utils.env.os.path.expanduser",
+            lambda _value: str(manager_home),
+        )
+
+        result = build_clean_env({"HOME": str(employee_home), "PATH": "/usr/bin"})
+
+        assert str(employee_home / ".npm-global" / "bin") in result["PATH"]
+        assert str(employee_home / ".local" / "bin") in result["PATH"]
+        assert str(manager_home) not in result["PATH"]
+
 
 class TestResetEnvForTesting:
     """Tests for _reset_env_for_testing() function."""

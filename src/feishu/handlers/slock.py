@@ -2019,6 +2019,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         template_name = ""
         fork_name = ""
         explicit_traits: str | None = None
+        profile = "standard"
         effort = "default"
         tool_explicit = False
         model_explicit = False
@@ -2038,6 +2039,9 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 i += 2
             elif tok == "--effort" and i + 1 < len(tokens):
                 effort = tokens[i + 1]
+                i += 2
+            elif tok == "--profile" and i + 1 < len(tokens):
+                profile = tokens[i + 1]
                 i += 2
             elif tok == "--emoji" and i + 1 < len(tokens):
                 emoji = tokens[i + 1]
@@ -2069,6 +2073,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 employee_name=role_name,
                 tool=tool_type,
                 model=model_name,
+                profile=profile,
                 effort=effort,
             )
             return
@@ -2275,6 +2280,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         employee_name: str,
         tool: str,
         model: str,
+        profile: str,
         effort: str,
     ) -> None:
         from ...autonomous.provisioning.hire_port import EmployeeHireRequest
@@ -2326,6 +2332,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             employee_name=employee_name,
             tool=tool,
             model=model,
+            profile=profile,
             effort=effort,
             chat_id=chat_id,
             message_id=message_id,
@@ -2523,7 +2530,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         role_name = str(value.get("role_name") or "").strip()
         tool_name = str(value.get("tool_name") or "").strip().lower()
-        raw_model = value.get("_option") or value.get("model_name") or ""
+        global_hire = bool(value.get("global_hire"))
+        raw_model = value.get("_option") or (
+            value.get("model_group") if global_hire else value.get("model_name")
+        ) or value.get("model_name") or ""
         model_name = "" if value.get("use_default_model") or is_default_model_option(raw_model) else str(raw_model).strip()
         if not role_name or not tool_name:
             self.reply_text(message_id, "请选择有效的 Slock 角色模型")
@@ -2532,15 +2542,18 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         args = f"{shlex.quote(role_name)} --tool {shlex.quote(tool_name)}"
         if model_name:
             args += f" --model {shlex.quote(model_name)}"
+        profile = str(value.get("model_profile") or "").strip()
+        if global_hire and profile:
+            args += f" --profile {shlex.quote(profile)}"
         effort = str(value.get("model_effort") or "").strip()
-        if effort:
+        if global_hire and effort:
             args += f" --effort {shlex.quote(effort)}"
         self.create_role(
             message_id,
             chat_id,
             args,
             project,
-            global_hire=bool(value.get("global_hire")),
+            global_hire=global_hire,
         )
 
     @staticmethod

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
@@ -42,7 +42,7 @@ def _request(
         message_id=message_id,
         requester_principal_id="ou_admin",
         tenant_key="tenant-a",
-        profile="max",
+        profile="standard",
         role="software engineer",
         persona="careful reviewer",
     )
@@ -56,6 +56,7 @@ def _service(
     credential_keyring_ready: bool = True,
     memory_anchor: bool = False,
     runtime_recovery_ready: bool = True,
+    provisioning_submitter=None,
 ) -> tuple[ProductionEmployeeHireService, JournalWriter, ProjectionState]:
     anchor = MemoryAnchor() if memory_anchor else FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
@@ -72,8 +73,37 @@ def _service(
         release_evidence_ready=release_evidence_ready,
         credential_keyring_ready=credential_keyring_ready,
         runtime_recovery_ready=runtime_recovery_ready,
+        provisioning_submitter=provisioning_submitter,
     )
     return service, writer, projection
+
+
+def test_new_and_duplicate_hire_submit_only_after_all_commit_locks_release(
+    tmp_path: Path,
+) -> None:
+    import src.autonomous.workforce.projection as workforce_projection
+
+    observations = []
+    service = None
+    writer = None
+
+    def submit(intent_id):
+        assert service is not None and writer is not None
+        observations.append(intent_id)
+        assert not workforce_projection._WORKFORCE_COMMIT_LOCK._is_owned()
+        assert not service._mutex._is_owned()
+        assert writer._mutex.acquire(blocking=False)
+        writer._mutex.release()
+
+    service, writer, _projection = _service(
+        tmp_path,
+        provisioning_submitter=submit,
+    )
+    first = service.start_hire(_request())
+    duplicate = service.start_hire(_request())
+
+    assert duplicate == first
+    assert observations == [first.intent_id, first.intent_id]
 
 
 def test_admission_is_anchored_single_frame_and_updates_projection_cursor(
@@ -302,6 +332,26 @@ def test_hire_request_keeps_old_callers_compatible_but_service_requires_tenant(
 
     with pytest.raises(HireAdmissionError, match="tenant_key"):
         service.start_hire(legacy)
+
+    assert tuple(writer.replay()) == ()
+
+
+@pytest.mark.parametrize(
+    "hire_request",
+    [
+        replace(_request(), effort="potato"),
+        replace(_request(), model="gpt-5.6-sol/xhigh", effort="xhigh"),
+        replace(_request(), profile="max"),
+    ],
+)
+def test_hire_rejects_noncanonical_or_unsupported_model_components(
+    tmp_path: Path,
+    hire_request: EmployeeHireRequest,
+) -> None:
+    service, writer, _projection = _service(tmp_path)
+
+    with pytest.raises(HireAdmissionError, match="invalid employee model selection"):
+        service.start_hire(hire_request)
 
     assert tuple(writer.replay()) == ()
 

@@ -9,13 +9,15 @@ from __future__ import annotations
 
 import copy
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Mapping, Protocol
 
 from ..context.models import AuthorizedContextRequest
 from ..domain import EmployeeState, WorkerType
 from ..journal.blob_store import BlobRef
-from ..journal.frame import GENESIS_HASH, JournalEvent
+from ..journal.frame import GENESIS_HASH, JournalEvent, TransactionFrame
 from ..journal.writer import CommitState, JournalWriter
 from ..supervisor.channel_models import ChannelProcessState
 from ..workforce.projection import is_workforce_event
@@ -57,6 +59,7 @@ _TERMINAL_REASONS = frozenset(
         "canceled",
         "timeout",
         "action_required",
+        "slock_unavailable",
     }
 )
 _DISPATCH_TERMINAL_REASONS = frozenset(
@@ -437,6 +440,104 @@ class DurableEmployeeIngressRouter:
     def last_attachment_cleanup_report(self) -> RouterAttachmentCleanupReport:
         return self._last_attachment_cleanup_report
 
+    @contextmanager
+    def _ingress_dispatch_guard(self) -> Iterator[None]:
+        """Join the parent Ingress tier; callers use the Ingress service guard."""
+
+        with self._mutex:
+            yield
+
+    def synchronize_projection_unlocked(self) -> RouterProjectionState:
+        """Refresh while the caller owns the combined Ingress tier."""
+
+        return self.rebuild_projection()
+
+    def preflight_dispatch_event_unlocked(
+        self,
+        *,
+        acceptance_id: str,
+    ) -> JournalEvent:
+        record = self._record(acceptance_id)
+        if record.state != "queued":
+            raise RouterProjectionError("only queued Router work can dispatch")
+        if any(
+            other.state == "dispatching" and other.agent_id == record.agent_id
+            for other in self._state.by_acceptance_id.values()
+        ):
+            raise RouterProjectionError("employee already has dispatching work")
+        event = JournalEvent(
+            event_type=_ROUTER_PREFIX + "dispatching",
+            aggregate_id=record.aggregate_id,
+            payload={"acceptance_id": record.acceptance_id},
+        )
+        probe = self._state.clone()
+        _reduce_router_event(
+            probe,
+            event,
+            sequence=self._state.cursor_sequence + 1,
+        )
+        return event
+
+    def preflight_terminal_event_unlocked(
+        self,
+        *,
+        acceptance_id: str,
+        reason_code: str,
+    ) -> JournalEvent:
+        if reason_code not in _DISPATCH_TERMINAL_REASONS:
+            raise ValueError("invalid dispatch terminal reason")
+        record = self._record(acceptance_id)
+        if record.state == "terminal":
+            if record.reason_code != reason_code:
+                raise RouterProjectionError("terminal Router result conflicts with replay")
+        elif record.state != "dispatching":
+            raise RouterProjectionError("only dispatching Router work can finish")
+        event = JournalEvent(
+            event_type=_ROUTER_PREFIX + "terminal",
+            aggregate_id=record.aggregate_id,
+            payload={
+                "acceptance_id": record.acceptance_id,
+                "reason_code": reason_code,
+            },
+        )
+        if record.state != "terminal":
+            probe = self._state.clone()
+            _reduce_router_event(
+                probe,
+                event,
+                sequence=self._state.cursor_sequence + 1,
+            )
+        return event
+
+    def preflight_frame_unlocked(self, frame: TransactionFrame) -> None:
+        if not frame.committed:
+            raise RouterProjectionError("Router frame must be committed")
+        if frame.sequence != self._state.cursor_sequence + 1:
+            raise RouterProjectionError("Router frame sequence is not continuous")
+        expected_previous = self._state.cursor_hash or GENESIS_HASH
+        if frame.previous_hash != expected_previous:
+            raise RouterProjectionError("Router frame previous hash mismatch")
+        probe = self._state.clone()
+        for event in frame.events:
+            if event.event_type == "employee.ingress.accepted":
+                record = _accepted_record(event, frame.sequence)
+                if record.acceptance_id in probe.by_acceptance_id:
+                    raise RouterProjectionError("duplicate Router acceptance")
+                probe.by_acceptance_id[record.acceptance_id] = record
+            elif event.event_type in _ROUTER_EVENTS:
+                _reduce_router_event(probe, event, sequence=frame.sequence)
+
+    def apply_committed_frame_unlocked(self, frame: TransactionFrame) -> None:
+        self.preflight_frame_unlocked(frame)
+        for event in frame.events:
+            if event.event_type == "employee.ingress.accepted":
+                record = _accepted_record(event, frame.sequence)
+                self._state.by_acceptance_id[record.acceptance_id] = record
+            elif event.event_type in _ROUTER_EVENTS:
+                _reduce_router_event(self._state, event, sequence=frame.sequence)
+        self._state.cursor_sequence = frame.sequence
+        self._state.cursor_hash = frame.frame_hash
+
     def rebuild_projection(self) -> RouterProjectionState:
         with self._mutex:
             fresh = RouterProjectionState()
@@ -645,16 +746,39 @@ class DurableEmployeeIngressRouter:
             return self._terminal_inbox_failure(acceptance_id)
 
     def dequeue(self) -> RouterDispatchGrant | None:
+        """Compatibility alias for non-mutating coordinator candidate lookup."""
+
         try:
-            return self._dequeue()
+            return self.peek_dispatch_candidate()
         finally:
             self._refresh_terminal_attachment_cleanup_report()
 
-    def _dequeue(self) -> RouterDispatchGrant | None:
-        """Return the oldest eligible grant after full live authority revalidation."""
+    def reject_dispatch_candidate(
+        self,
+        acceptance_id: str,
+        *,
+        reason_code: str,
+    ) -> RouterLifecycleRecord:
+        """Durably reject queued work that cannot enter the unique coordinator."""
+
+        if reason_code != "slock_unavailable":
+            raise ValueError("invalid dispatch rejection reason")
+        with self._mutex, self._writer.transaction_guard():
+            self.rebuild_projection()
+            record = self._record(acceptance_id)
+            if record.state == "terminal":
+                if record.reason_code != reason_code:
+                    raise RouterProjectionError("Router rejection conflicts with terminal")
+                return record
+            if record.state != "queued":
+                raise RouterProjectionError("only queued Router work can be rejected")
+            return self._terminal_unlocked(record, reason_code)
+
+    def peek_dispatch_candidate(self) -> RouterDispatchGrant | None:
+        """Return one fully revalidated grant without changing Router state."""
 
         while True:
-            with self._writer.transaction_guard(), self._mutex:
+            with self._mutex, self._writer.transaction_guard():
                 self.rebuild_projection()
                 active = {
                     record.agent_id
@@ -687,10 +811,7 @@ class DurableEmployeeIngressRouter:
                 payload,
             )
             authority = resolution.snapshot if resolution is not None else None
-            if authority is None or not self._authority_matches(
-                current.authority,
-                authority,
-            ):
+            if authority is None or not self._authority_matches(current.authority, authority):
                 self._terminal_for_snapshot(
                     candidate.acceptance_id,
                     snapshot_identity,
@@ -699,11 +820,7 @@ class DurableEmployeeIngressRouter:
                 )
                 continue
             try:
-                request = self._context_request(
-                    current,
-                    ingress_record.metadata,
-                    payload,
-                )
+                request = self._context_request(current, ingress_record.metadata, payload)
             except (TypeError, ValueError):
                 self._terminal_for_snapshot(
                     candidate.acceptance_id,
@@ -729,21 +846,15 @@ class DurableEmployeeIngressRouter:
                     if self._ingress_identity(final_ingress, final_payload) != snapshot_identity:
                         self._terminal_unlocked(current, "inbox_not_dispatchable")
                         continue
-                    if not self._authority_matches(
-                        current.authority,
-                        authority,
-                    ) or self._projection_missed_workforce_change(
-                        authority.projection_sequence,
-                        authority.projection_hash,
+                    if not self._authority_matches(current.authority, authority) or (
+                        self._projection_missed_workforce_change(
+                            authority.projection_sequence,
+                            authority.projection_hash,
+                        )
                     ):
                         self._terminal_unlocked(current, "authority_stale")
                         continue
-                    dispatched = self._transition_unlocked(
-                        current,
-                        "dispatching",
-                        {},
-                    )
-                    return RouterDispatchGrant(dispatched, request, payload)
+                    return RouterDispatchGrant(current, request, payload)
             except IngressBlobError:
                 self._terminal_inbox_failure(candidate.acceptance_id)
                 continue
@@ -764,7 +875,7 @@ class DurableEmployeeIngressRouter:
 
         if reason_code not in _DISPATCH_TERMINAL_REASONS:
             raise ValueError("invalid dispatch terminal reason")
-        with self._writer.transaction_guard(), self._mutex:
+        with self._mutex, self._writer.transaction_guard():
             self.rebuild_projection()
             record = self._record(acceptance_id)
             if record.state == "terminal":
@@ -805,7 +916,7 @@ class DurableEmployeeIngressRouter:
         return report
 
     def queue_depth(self, *, agent_id: str = "", team_id: str = "") -> int:
-        with self._writer.transaction_guard(), self._mutex:
+        with self._mutex, self._writer.transaction_guard():
             self.rebuild_projection()
             return sum(
                 record.state == "queued"
@@ -833,7 +944,7 @@ class DurableEmployeeIngressRouter:
         self._last_attachment_cleanup_report = report
 
     def _terminal_attachment_acceptance_ids(self) -> tuple[str, ...]:
-        with self._writer.transaction_guard(), self._mutex:
+        with self._mutex, self._writer.transaction_guard():
             self.rebuild_projection()
             return tuple(
                 sorted(
@@ -967,7 +1078,7 @@ class DurableEmployeeIngressRouter:
         acceptance_id: str,
         reason_code: str,
     ) -> RouterLifecycleRecord:
-        with self._writer.transaction_guard(), self._mutex:
+        with self._mutex, self._writer.transaction_guard():
             self.rebuild_projection()
             record = self._record(acceptance_id)
             if record.state == "terminal":

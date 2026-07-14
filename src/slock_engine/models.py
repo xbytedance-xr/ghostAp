@@ -219,6 +219,8 @@ class AgentIdentity:
     emoji: str = "🤖"
     agent_type: str = "coco"  # coco/claude/codex/gemini/ttadk
     model_name: str = ""
+    model_profile: str = "standard"
+    reasoning_effort: str = "default"
     system_prompt: str = ""
     role: str = "custom"  # coder/writer/reviewer/tester/planner/architect/custom
     permissions: list[str] = field(default_factory=lambda: ["shell", "file_write", "git"])
@@ -229,6 +231,8 @@ class AgentIdentity:
     member_groups: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     personality_traits: list[str] = field(default_factory=list)  # e.g. ['严谨', '注重细节']
+    capabilities: list[str] = field(default_factory=list)
+    security_profile: str = "legacy"
     # Wake policy: "" (inherit channel/settings default) | "on_mention" | "smart_judge".
     # Free-form to leave room for future modes; the router treats unknown values
     # as the safe default (smart_judge) and only short-circuits on the exact
@@ -242,6 +246,8 @@ class AgentIdentity:
             self.agent_id = self.agent_id.lstrip('.').replace('..', '_')
         if self.owner_group and self.owner_group not in self.member_groups:
             self.member_groups.append(self.owner_group)
+        if self.security_profile not in {"legacy", "employee_v1"}:
+            raise ValueError("unknown Slock agent security profile")
 
     @property
     def display_name(self) -> str:
@@ -258,6 +264,8 @@ class AgentIdentity:
             "emoji": self.emoji,
             "agent_type": self.agent_type,
             "model_name": self.model_name,
+            "model_profile": self.model_profile,
+            "reasoning_effort": self.reasoning_effort,
             "system_prompt": self.system_prompt,
             "role": self.role,
             "permissions": self.permissions,
@@ -268,6 +276,8 @@ class AgentIdentity:
             "member_groups": self.member_groups,
             "created_at": self.created_at,
             "personality_traits": self.personality_traits,
+            "capabilities": self.capabilities,
+            "security_profile": self.security_profile,
             "wake_policy": self.wake_policy,
         }
 
@@ -279,6 +289,8 @@ class AgentIdentity:
             emoji=data.get("emoji", "🤖"),
             agent_type=data.get("agent_type", "coco"),
             model_name=data.get("model_name", ""),
+            model_profile=data.get("model_profile", "standard"),
+            reasoning_effort=data.get("reasoning_effort", "default"),
             system_prompt=data.get("system_prompt", ""),
             role=data.get("role", "custom"),
             permissions=data.get("permissions", ["shell", "file_write", "git"]),
@@ -289,6 +301,8 @@ class AgentIdentity:
             member_groups=data.get("member_groups", []),
             created_at=data.get("created_at", time.time()),
             personality_traits=data.get("personality_traits", []),
+            capabilities=data.get("capabilities", []),
+            security_profile=data.get("security_profile", "legacy"),
             wake_policy=data.get("wake_policy", ""),
         )
 

@@ -516,31 +516,39 @@ def commit_workforce_events(
 ) -> CommitResult:
     """Validate, durably commit, and apply one serialized workforce transaction."""
 
+    event_values = tuple(events)
+    with workforce_projection_guard(), writer.transaction_guard():
+        return commit_workforce_events_unlocked(writer, state, event_values)
+
+
+def commit_workforce_events_unlocked(
+    writer: JournalWriter,
+    state: ProjectionState,
+    events: Iterable[JournalEvent],
+) -> CommitResult:
+    """Commit while the caller holds workforce then Journal transaction guards."""
+
     from ..journal.projections import apply_frame
 
     event_values = tuple(events)
-    with writer.transaction_guard(), _WORKFORCE_COMMIT_LOCK:
-        last_frame = writer.get_last_frame()
-        writer_sequence = 0 if last_frame is None else last_frame.sequence
-        writer_hash = "" if last_frame is None else last_frame.frame_hash
-        if (
-            state.cursor_sequence != writer_sequence
-            or state.cursor_hash != writer_hash
-        ):
-            raise _projection_error("workforce projection is stale")
-        validate_workforce_events(state, event_values)
-        aggregate_ids = {event.aggregate_id for event in event_values}
-        expected_versions = writer.get_aggregate_versions(aggregate_ids)
-        result = writer.commit(
-            event_values,
-            expected_versions,
-            expected_head_sequence=state.cursor_sequence,
-            expected_head_hash=state.cursor_hash,
-        )
-        if result.state is not CommitState.ANCHORED:
-            raise AnchorMismatchError("workforce commit was not anchored")
-        apply_frame(state, result.frame)
-        return result
+    last_frame = writer.get_last_frame()
+    writer_sequence = 0 if last_frame is None else last_frame.sequence
+    writer_hash = "" if last_frame is None else last_frame.frame_hash
+    if state.cursor_sequence != writer_sequence or state.cursor_hash != writer_hash:
+        raise _projection_error("workforce projection is stale")
+    validate_workforce_events(state, event_values)
+    aggregate_ids = {event.aggregate_id for event in event_values}
+    expected_versions = writer.get_aggregate_versions(aggregate_ids)
+    result = writer.commit(
+        event_values,
+        expected_versions,
+        expected_head_sequence=state.cursor_sequence,
+        expected_head_hash=state.cursor_hash,
+    )
+    if result.state is not CommitState.ANCHORED:
+        raise AnchorMismatchError("workforce commit was not anchored")
+    apply_frame(state, result.frame)
+    return result
 
 
 class EmployeeIdentityMaterializer:

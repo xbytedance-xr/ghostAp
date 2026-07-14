@@ -479,6 +479,9 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         "EI-BRIDGE-MESSAGE-01",
         "EI-BRIDGE-CARD-01",
         "EI-QUEUE-01",
+        "EI-ACP-ONCE-01",
+        "EI-TERMINAL-01",
+        "EI-RECOVERY-01",
     )
     assert {
         gate.id: gate.evidence_level for gate in manifest.gates
@@ -489,6 +492,9 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         "EI-BRIDGE-MESSAGE-01": "integration",
         "EI-BRIDGE-CARD-01": "integration",
         "EI-QUEUE-01": "integration",
+        "EI-ACP-ONCE-01": "integration",
+        "EI-TERMINAL-01": "integration",
+        "EI-RECOVERY-01": "chaos_security",
     }
     assert manifest.gate("EI-PLATFORM-MESSAGE-01").selector.endswith(
         "::test_message_wire_response_waits_for_parent_anchor"
@@ -530,6 +536,15 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
     assert queue.artifact_kind == "employee_router_queue"
     assert queue.artifact_profile_id == "employee-router-queue-v1"
     assert queue.sdk_wheel_sha256 is None
+    task6 = {
+        gate.id: gate
+        for gate in manifest.gates
+        if gate.id in {"EI-ACP-ONCE-01", "EI-TERMINAL-01", "EI-RECOVERY-01"}
+    }
+    assert task6["EI-ACP-ONCE-01"].environment == "local_slock_harness"
+    assert task6["EI-TERMINAL-01"].environment == "local_process_harness"
+    assert task6["EI-RECOVERY-01"].environment == "local_process_harness"
+    assert all(Path(gate.selector.split("::", 1)[0]).is_file() for gate in task6.values())
 
 
 def test_phase3_manifest_rejects_duplicate_ids(tmp_path: Path) -> None:
@@ -574,7 +589,13 @@ def test_phase3_evidence_binds_exact_selector_commit_artifacts_and_summary() -> 
         "EI-BRIDGE-MESSAGE-01",
         "EI-BRIDGE-CARD-01",
     )
-    assert evaluation.pending == ("EI-IPC-01", "EI-QUEUE-01")
+    assert evaluation.pending == (
+        "EI-IPC-01",
+        "EI-QUEUE-01",
+        "EI-ACP-ONCE-01",
+        "EI-TERMINAL-01",
+        "EI-RECOVERY-01",
+    )
 
     with pytest.raises(ValueError, match="commit"):
         manifest.evaluate(

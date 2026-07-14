@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from src.acp.employee_selection import compose_employee_model_selection
 from src.slock_engine.memory_manager import default_slock_storage_base
 from src.slock_engine.models import AgentIdentity
 
@@ -119,7 +120,14 @@ class ProjectedAgentRegistry:
             name=employee.name,
             emoji=employee.emoji,
             agent_type=employee.tool,
-            model_name=employee.model,
+            model_name=compose_employee_model_selection(
+                employee.tool,
+                employee.model,
+                employee.profile,
+                employee.effort,
+            ),
+            model_profile=employee.profile,
+            reasoning_effort=employee.effort,
             system_prompt=employee.persona,
             role=employee.role or "custom",
             permissions=list(employee.permissions),
@@ -130,6 +138,8 @@ class ProjectedAgentRegistry:
             member_groups=groups,
             created_at=employee.created_at,
             personality_traits=list(employee.personality_traits),
+            capabilities=list(employee.capabilities),
+            security_profile="employee_v1",
         )
 
     def context_binding(

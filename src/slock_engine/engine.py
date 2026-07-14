@@ -23,6 +23,7 @@ from typing import Any, Callable, Optional
 from ..agent_session import close_session_safely, create_engine_session
 from ..config import get_settings
 from ..engine_base import BaseEngine, EngineRunState
+from .activation import activation_serialized
 from .agent_registry import AgentRegistry
 from .bounded_executor import BoundedExecutor, QueueFullError
 from .card_templates import build_card_wrapper, build_status_panel_card
@@ -1489,9 +1490,35 @@ class SlockEngine(BaseEngine):
         prompt: str,
         *,
         timeout: Optional[float] = None,
+        env: Optional[dict[str, str]] = None,
     ) -> Optional[str]:
         """Run an ACP session for the agent. Public wrapper around _run_acp_session."""
-        return self._run_acp_session(agent, prompt, timeout=timeout)
+        if agent.security_profile != "employee_v1":
+            return self._run_acp_session(agent, prompt, timeout=timeout)
+        if agent.agent_type.startswith("ttadk_"):
+            raise SecurityPolicyDegradedError(
+                "employee backend lacks pre-spawn tool isolation"
+            )
+        if env is None:
+            raise SecurityPolicyDegradedError(
+                "employee session environment is not explicitly scoped"
+            )
+        from src.agent_session.factory import employee_session_environment
+        from src.employee_session_scope import (
+            EmployeeSessionOutcome,
+            employee_session_outcome_capture,
+        )
+
+        with employee_session_outcome_capture() as capture:
+            with employee_session_environment(env):
+                result = self._run_acp_session(agent, prompt, timeout=timeout)
+        if capture.outcome is EmployeeSessionOutcome.TIMEOUT:
+            raise TimeoutError("employee ACP session timed out")
+        if capture.outcome is EmployeeSessionOutcome.CANCELED:
+            from concurrent.futures import CancelledError
+
+            raise CancelledError("employee ACP session was canceled")
+        return result
 
     def run_agent_session_full(
         self,
@@ -1840,6 +1867,7 @@ class SlockEngine(BaseEngine):
     # Engine Lifecycle
     # ------------------------------------------------------------------
 
+    @activation_serialized
     def activate_channel(self, channel: SlockChannel) -> None:
         """Activate slock mode for a channel.
 
@@ -3131,6 +3159,8 @@ class SlockEngine(BaseEngine):
             self._dangerous_shell_patterns = dangerous
 
         permissions = set(agent.permissions or [])
+        capabilities = set(agent.capabilities or [])
+        employee_policy = agent.security_profile == "employee_v1"
 
         def under_allowed_root(path: str) -> bool:
             if not allowed_roots:
@@ -3156,13 +3186,140 @@ class SlockEngine(BaseEngine):
                     paths.append(token if os.path.isabs(token) else os.path.join(cwd, token))
             return paths
 
+        def invokes_lark_cli(command: str) -> bool:
+            names = {"lark-cli", "lark_cli", "feishu-cli", "feishu_cli"}
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                tokens = command.split()
+            if any(os.path.basename(token).casefold() in names for token in tokens):
+                return True
+            return re.search(
+                r"(?:^|[^A-Za-z0-9_-])(?:lark[-_]cli|feishu[-_]cli)"
+                r"(?:$|[^A-Za-z0-9_-])",
+                command,
+                re.IGNORECASE,
+            ) is not None
+
+        def invokes_git_cli(command: str) -> bool:
+            """Fail closed on git through shell; employee git uses its typed tool."""
+
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                return True
+            return any(os.path.basename(token).casefold() == "git" for token in tokens)
+
+        git_write_commands = {
+            "add",
+            "am",
+            "apply",
+            "bisect",
+            "branch",
+            "checkout",
+            "cherry-pick",
+            "clean",
+            "commit",
+            "merge",
+            "mv",
+            "rebase",
+            "reset",
+            "restore",
+            "revert",
+            "rm",
+            "stash",
+            "switch",
+            "tag",
+        }
+        git_read_commands = {
+            "blame",
+            "cat-file",
+            "describe",
+            "diff",
+            "for-each-ref",
+            "grep",
+            "log",
+            "ls-files",
+            "ls-tree",
+            "name-rev",
+            "rev-parse",
+            "shortlog",
+            "show",
+            "status",
+            "whatchanged",
+        }
+
+        def parse_git_command(command: str) -> tuple[str, tuple[str, ...]] | None:
+            try:
+                tokens = shlex.split(command)
+            except ValueError:
+                return None
+            if not tokens or os.path.basename(tokens[0]).casefold() != "git":
+                return None
+            tokens = tokens[1:]
+            if not tokens or tokens[0].startswith("-"):
+                return None
+            return tokens[0].casefold(), tuple(tokens[1:])
+
+        def git_authorized(command: str) -> bool:
+            if employee_policy and not (
+                {"shell", "git", "file_write"} <= permissions
+                and {"shell", "git", "file_write"} <= capabilities
+            ):
+                return False
+            if not employee_policy and "git" not in permissions:
+                return False
+            parsed = parse_git_command(command)
+            if parsed is None:
+                return False
+            subcommand, git_tokens = parsed
+            blocked_options = {
+                "--unsafe-paths",
+                "--ext-diff",
+                "--textconv",
+                "--exec",
+                "--upload-pack",
+                "--receive-pack",
+            }
+            if any(
+                token in blocked_options
+                or token.startswith("--output=")
+                or token == "--output"
+                or token.startswith("--open-files-in-pager")
+                for token in git_tokens
+            ):
+                return False
+            if subcommand in git_read_commands:
+                return True
+            if subcommand in git_write_commands:
+                return "file_write" in permissions and (
+                    not employee_policy or "file_write" in capabilities
+                )
+            return False
+
         def tool_filter(tool_name: str, args: dict | None = None) -> bool:
             args = args or {}
             normalized_tool = (tool_name or "").lower()
             if normalized_tool == "shell":
-                if "shell" not in permissions:
+                if employee_policy and not (
+                    {"shell", "git", "file_write"} <= permissions
+                    and {"shell", "git", "file_write"} <= capabilities
+                ):
+                    return False
+                if "shell" not in permissions or (
+                    employee_policy and "shell" not in capabilities
+                ):
+                    return False
+                if employee_policy and (
+                    "file_write" not in permissions
+                    or "file_write" not in capabilities
+                ):
                     return False
                 command = str(args.get("command") or "")
+                if employee_policy and invokes_lark_cli(command):
+                    return False
+                if employee_policy and invokes_git_cli(command):
+                    return False
                 if dangerous.search(command):
                     return False
                 cwd = os.path.realpath(str(args.get("cwd") or agent.workspace_path or self.root_path or ""))
@@ -3173,7 +3330,10 @@ class SlockEngine(BaseEngine):
 
             path_tools = {"file_read", "file_write", "file_list", "grep", "search"}
             if normalized_tool in path_tools:
-                if normalized_tool.startswith("file_write") and "file_write" not in permissions:
+                if normalized_tool.startswith("file_write") and (
+                    "file_write" not in permissions
+                    or (employee_policy and "file_write" not in capabilities)
+                ):
                     return False
                 if normalized_tool in {"file_read", "file_list", "grep", "search"} and not (
                     {"file_read", "git", "shell"} & permissions
@@ -3181,6 +3341,23 @@ class SlockEngine(BaseEngine):
                     return False
                 path = path_from_tool_args(args)
                 return bool(path) and under_allowed_root(path)
+            if normalized_tool == "git" and employee_policy:
+                if set(args) != {"command", "cwd"}:
+                    return False
+                command = str(
+                    args.get("command")
+                    or args.get("subcommand")
+                    or args.get("operation")
+                    or ""
+                )
+                if not git_authorized(command):
+                    return False
+                cwd = os.path.realpath(
+                    str(args.get("cwd") or agent.workspace_path or self.root_path or "")
+                )
+                return bool(cwd) and under_allowed_root(cwd)
+            if employee_policy:
+                return False
             return True
 
         set_filter(tool_filter)
@@ -3575,6 +3752,7 @@ class SlockEngine(BaseEngine):
             task_board_data=[task.to_dict() for task in self._tasks],
         )
 
+    @activation_serialized
     def restore_from_snapshot(self, snapshot: TeamSnapshot | None) -> bool:
         """Restore a recently dissolved team snapshot."""
         if snapshot is None or snapshot.channel is None:
@@ -3802,6 +3980,7 @@ class SlockEngine(BaseEngine):
                 agent_session.cancel()
         super().cleanup()
 
+    @activation_serialized
     def deactivate(self) -> None:
         """Deactivate slock mode for this channel.
 

@@ -330,6 +330,7 @@ class AssembledContext:
     group_layer_unavailable: bool = False
     system_prompt_tokens_reserved: int = 0
     constraints_digest: str = ""
+    tokens_per_char: float = 0.3
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "thread_messages", tuple(self.thread_messages))
@@ -352,6 +353,13 @@ class AssembledContext:
             r"[0-9a-f]{64}", self.constraints_digest
         ) is None:
             raise ValueError("constraints_digest must be a SHA-256 hex digest")
+        if (
+            isinstance(self.tokens_per_char, bool)
+            or not isinstance(self.tokens_per_char, (int, float))
+            or not math.isfinite(self.tokens_per_char)
+            or self.tokens_per_char <= 0
+        ):
+            raise ValueError("tokens_per_char must be positive and finite")
 
     def diagnostics(self) -> dict[str, Any]:
         """Return structural diagnostics without message or memory plaintext."""
@@ -368,6 +376,7 @@ class AssembledContext:
             "snapshot_hash": self.snapshot_hash,
             "system_prompt_tokens_reserved": self.system_prompt_tokens_reserved,
             "constraints_digest": self.constraints_digest,
+            "tokens_per_char": self.tokens_per_char,
         }
 
 

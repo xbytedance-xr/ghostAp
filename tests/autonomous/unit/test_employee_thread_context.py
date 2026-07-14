@@ -725,6 +725,26 @@ def test_snapshot_hash_is_deterministic_and_plaintext_free_diagnostics_remain() 
     assert "private memory" not in diagnostics
 
 
+def test_snapshot_hash_binds_the_renderer_token_conversion_contract() -> None:
+    """A replay may not change prompt budgeting without changing snapshot identity."""
+
+    thread = _stable_thread()
+    source_a = _FakeSource(traversals=[_pages(thread), _pages(thread)])
+    source_b = _FakeSource(traversals=[_pages(thread), _pages(thread)])
+    first = _assembler(
+        source_a,
+        config=ThreadContextConfig(tokens_per_char=0.3),
+    ).assemble()
+    second = _assembler(
+        source_b,
+        config=ThreadContextConfig(tokens_per_char=0.4),
+    ).assemble()
+
+    assert first.tokens_per_char == 0.3
+    assert second.tokens_per_char == 0.4
+    assert first.snapshot_hash != second.snapshot_hash
+
+
 def test_trusted_reservation_is_validated_and_changes_snapshot_identity() -> None:
     thread = _stable_thread()
     invalid_source = _FakeSource(traversals=[_pages(thread), _pages(thread)])

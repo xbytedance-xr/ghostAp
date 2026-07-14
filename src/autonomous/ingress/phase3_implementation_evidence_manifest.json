@@ -67,6 +67,39 @@
       "sdk_wheel_sha256": null,
       "selector_state": "collectable",
       "status": "pending"
+    },
+    {
+      "id": "EI-ACP-ONCE-01",
+      "selector": "tests/autonomous/integration/test_employee_slock_gateway.py::test_replay_dispatches_one_real_slock_session",
+      "evidence_level": "integration",
+      "environment": "local_slock_harness",
+      "artifact_kind": "employee_slock_gateway",
+      "artifact_profile_id": "employee-slock-gateway-v1",
+      "sdk_wheel_sha256": null,
+      "selector_state": "collectable",
+      "status": "pending"
+    },
+    {
+      "id": "EI-TERMINAL-01",
+      "selector": "tests/autonomous/integration/test_employee_terminal_pipeline.py::test_every_started_attempt_has_one_terminal_or_action_required",
+      "evidence_level": "integration",
+      "environment": "local_process_harness",
+      "artifact_kind": "employee_terminal_pipeline",
+      "artifact_profile_id": "employee-terminal-pipeline-v1",
+      "sdk_wheel_sha256": null,
+      "selector_state": "collectable",
+      "status": "pending"
+    },
+    {
+      "id": "EI-RECOVERY-01",
+      "selector": "tests/autonomous/chaos/test_employee_attempt_recovery.py::test_unknown_dispatch_recovers_action_required_without_rerun",
+      "evidence_level": "chaos_security",
+      "environment": "local_process_harness",
+      "artifact_kind": "employee_attempt_recovery",
+      "artifact_profile_id": "employee-attempt-recovery-v1",
+      "sdk_wheel_sha256": null,
+      "selector_state": "collectable",
+      "status": "pending"
     }
   ]
 }

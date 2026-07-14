@@ -10,8 +10,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ..journal.blob_store import BlobStore
-from ..journal.frame import JournalEvent
+from ..journal.blob_store import BlobError, BlobRef, BlobStore
+from ..journal.frame import GENESIS_HASH, JournalEvent, TransactionFrame
 from ..journal.writer import CommitResult, CommitState, JournalWriter
 from .models import (
     EmployeeDataDocumentV1,
@@ -86,6 +86,15 @@ class AttemptResult:
     commit_result: CommitResult
 
 
+@dataclass(frozen=True)
+class StagedHistoryPayload:
+    """Verified encrypted payload prepared without any domain or Journal lock."""
+
+    record: ExecutionHistoryRecordV1
+    blob_ref: BlobRef
+    content_hash: str
+
+
 class EmployeeDataService:
     """Transactional publish of employee data records into Journal+BlobStore."""
 
@@ -120,6 +129,13 @@ class EmployeeDataService:
                 logical_hash=self._state.cursor_hash,
             )
 
+    @contextmanager
+    def employee_dispatch_guard(self) -> Iterator[None]:
+        """Hold data projection state without taking the Journal guard."""
+
+        with self._mutex:
+            yield
+
     def close(self) -> None:
         self._blob_store.close()
 
@@ -149,15 +165,15 @@ class EmployeeDataService:
                 for document in self._state.employee_documents.values()
                 if (blob_id := document.blob_ref.get("blob_id", ""))
             )
-            orphan_ids = set(self._blob_store.iter_blob_ids()) - live_ids
-            quarantined = 0
-            for blob_id in orphan_ids:
-                try:
-                    self._blob_store.quarantine_blob(blob_id)
-                    quarantined += 1
-                except Exception:
-                    continue
-            return quarantined
+        orphan_ids = set(self._blob_store.iter_blob_ids()) - live_ids
+        quarantined = 0
+        for blob_id in orphan_ids:
+            try:
+                self._blob_store.quarantine_blob(blob_id)
+                quarantined += 1
+            except Exception:
+                continue
+        return quarantined
 
     def start_attempt(self, context: ExecutionAttemptContext) -> AttemptResult:
         """Anchor an immutable attempt binding before ACP dispatch."""
@@ -198,61 +214,169 @@ class EmployeeDataService:
             raise ValueError("record/payload ID mismatch")
         if record.occurrence_key != sensitive_payload.occurrence_key:
             raise ValueError("record/payload occurrence mismatch")
-        with self._mutex, self._writer.transaction_guard():
-            self._synchronize_projection_unlocked()
-            occ_key = (record.tenant_key, record.agent_id, record.occurrence_key)
-            existing_id = self._state.history_by_occurrence.get(occ_key)
-            if existing_id is not None:
-                existing = self._state.history_records[existing_id]
-                payload_bytes = _canonical_payload(sensitive_payload)
-                payload_hash = hashlib.sha256(payload_bytes).hexdigest()
-                existing_blob_hash = existing.blob_ref.get("content_hash", "")
-                if existing_blob_hash == payload_hash:
-                    return RecordResult(
-                        record=record,
-                        commit_result=CommitResult(
-                            frame=None,  # type: ignore[arg-type]
-                            state=CommitState.ANCHORED,
-                        ),
+        staged = self.stage_history_payload(record, sensitive_payload)
+        try:
+            duplicate = False
+            with self._mutex, self._writer.transaction_guard():
+                self._synchronize_projection_unlocked()
+                occ_key = (record.tenant_key, record.agent_id, record.occurrence_key)
+                existing_id = self._state.history_by_occurrence.get(occ_key)
+                if existing_id is not None:
+                    existing = self._state.history_records[existing_id]
+                    if existing.blob_ref.get("content_hash", "") == staged.content_hash:
+                        duplicate = True
+                    else:
+                        raise DataConflictError(
+                            f"occurrence conflict: {record.occurrence_key}"
+                        )
+                if not duplicate:
+                    event = self.preflight_history_event_unlocked(staged)
+                    versions = self._writer.get_aggregate_versions([record.record_id])
+                    result = self._writer.commit(
+                        [event],
+                        versions,
+                        expected_head_sequence=self._state.cursor_sequence,
+                        expected_head_hash=self._state.cursor_hash or None,
                     )
-                raise DataConflictError(f"occurrence conflict: {record.occurrence_key}")
-            labels = build_history_labels(
-                record.tenant_key,
-                record.owner_principal_id,
-                record.record_id,
-            )
-            payload_bytes = _canonical_payload(sensitive_payload)
+                    if result.state != CommitState.ANCHORED:
+                        raise DataWriteDisabledError("history commit not anchored")
+                    self._apply_frame(result)
+            if duplicate:
+                self.quarantine_staged_history(staged)
+                return RecordResult(
+                    record=record,
+                    commit_result=CommitResult(
+                        frame=None,  # type: ignore[arg-type]
+                        state=CommitState.ANCHORED,
+                    ),
+                )
+            return RecordResult(record=record, commit_result=result)
+        except Exception:
+            self.quarantine_staged_history(staged)
+            raise
+
+    def stage_history_payload(
+        self,
+        record: ExecutionHistoryRecordV1,
+        sensitive_payload: ExecutionHistoryPayloadV1,
+    ) -> StagedHistoryPayload:
+        """Publish and read back sensitive history before acquiring any lock."""
+
+        if not isinstance(record, ExecutionHistoryRecordV1):
+            raise TypeError("record must be ExecutionHistoryRecordV1")
+        if not isinstance(sensitive_payload, ExecutionHistoryPayloadV1):
+            raise TypeError("sensitive_payload must be ExecutionHistoryPayloadV1")
+        if record.record_id != sensitive_payload.record_id:
+            raise ValueError("record/payload ID mismatch")
+        if record.occurrence_key != sensitive_payload.occurrence_key:
+            raise ValueError("record/payload occurrence mismatch")
+        labels = build_history_labels(
+            record.tenant_key,
+            record.owner_principal_id,
+            record.record_id,
+        )
+        payload_bytes = _canonical_payload(sensitive_payload)
+        blob_ref: BlobRef | None = None
+        try:
             blob_ref = self._blob_store.stage_and_publish(
                 payload_bytes,
                 labels,
                 self._active_key_id,
             )
             validate_blob_ref_labels(blob_ref, labels)
-            readback = self._blob_store.read(blob_ref)
-            if readback != payload_bytes:
+            if self._blob_store.read(blob_ref) != payload_bytes:
                 raise DataBlobError("blob readback verification failed")
-            event_payload: dict[str, Any] = {
-                **record.to_dict(),
-                "safe_summary": record.safe_summary.text,
-                "blob_ref": blob_ref.to_dict(),
-            }
-            del event_payload["tool_usage"]
-            event = JournalEvent(
-                event_type="employee.history.recorded",
-                aggregate_id=record.record_id,
-                payload=event_payload,
-            )
-            versions = self._writer.get_aggregate_versions([record.record_id])
-            result = self._writer.commit(
-                [event],
-                versions,
-                expected_head_sequence=self._state.cursor_sequence,
-                expected_head_hash=self._state.cursor_hash or None,
-            )
-            if result.state != CommitState.ANCHORED:
-                raise DataWriteDisabledError("history commit not anchored")
-            self._apply_frame(result)
-            return RecordResult(record=record, commit_result=result)
+        except Exception as exc:
+            if blob_ref is not None:
+                self._quarantine_blob_ids({blob_ref.blob_id})
+            if isinstance(exc, (BlobError, DataBlobError)):
+                raise
+            raise DataBlobError("history payload publication failed") from exc
+        return StagedHistoryPayload(
+            record=record,
+            blob_ref=blob_ref,
+            content_hash=hashlib.sha256(payload_bytes).hexdigest(),
+        )
+
+    def quarantine_staged_history(self, staged: StagedHistoryPayload) -> None:
+        if not isinstance(staged, StagedHistoryPayload):
+            raise TypeError("staged must be StagedHistoryPayload")
+        self._quarantine_blob_ids({staged.blob_ref.blob_id})
+
+    def preflight_history_event_unlocked(
+        self,
+        staged: StagedHistoryPayload,
+    ) -> JournalEvent:
+        """Build and reduce one metadata event under the caller-held data guard."""
+
+        if not isinstance(staged, StagedHistoryPayload):
+            raise TypeError("staged must be StagedHistoryPayload")
+        record = staged.record
+        occurrence = (record.tenant_key, record.agent_id, record.occurrence_key)
+        if record.record_id in self._state.history_records or (
+            occurrence in self._state.history_by_occurrence
+        ):
+            raise DataConflictError(f"occurrence conflict: {record.occurrence_key}")
+        event_payload: dict[str, Any] = {
+            **record.to_dict(),
+            "safe_summary": record.safe_summary.text,
+            "blob_ref": staged.blob_ref.to_dict(),
+        }
+        del event_payload["tool_usage"]
+        event = JournalEvent(
+            event_type="employee.history.recorded",
+            aggregate_id=record.record_id,
+            payload=event_payload,
+        )
+        probe = self._state.clone()
+        reduce_data_event(
+            probe,
+            event,
+            frame_sequence=self._state.cursor_sequence + 1,
+            frame_hash="0" * 64,
+        )
+        return event
+
+    def synchronize_projection_unlocked(self) -> None:
+        self._synchronize_projection_unlocked()
+
+    def preflight_frame_unlocked(self, frame: TransactionFrame) -> None:
+        if not frame.committed:
+            raise DataHeadRaceError("data frame must be committed")
+        if frame.sequence != self._state.cursor_sequence + 1:
+            raise DataHeadRaceError("data frame sequence is not continuous")
+        if frame.previous_hash != (self._state.cursor_hash or GENESIS_HASH):
+            raise DataHeadRaceError("data frame previous hash mismatch")
+        probe = self._state.clone()
+        for event in frame.events:
+            if is_data_event(event.event_type):
+                reduce_data_event(
+                    probe,
+                    event,
+                    frame_sequence=frame.sequence,
+                    frame_hash=frame.frame_hash,
+                )
+
+    def apply_committed_frame_unlocked(self, frame: TransactionFrame) -> None:
+        self.preflight_frame_unlocked(frame)
+        for event in frame.events:
+            if is_data_event(event.event_type):
+                reduce_data_event(
+                    self._state,
+                    event,
+                    frame_sequence=frame.sequence,
+                    frame_hash=frame.frame_hash,
+                )
+        self._state.cursor_sequence = frame.sequence
+        self._state.cursor_hash = frame.frame_hash
+        self._known_cursor = (frame.sequence, frame.frame_hash)
+
+    def _quarantine_blob_ids(self, blob_ids: set[str]) -> None:
+        for blob_id in blob_ids:
+            try:
+                self._blob_store.quarantine_blob(blob_id)
+            except Exception:
+                continue
 
     def publish_document(
         self,

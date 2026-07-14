@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from src.autonomous.data.models import (
-    DataKind,
-    EmployeeDataDocumentV1,
     ExecutionAttemptContext,
     ExecutionHistoryPayloadV1,
     ExecutionHistoryRecordV1,
     SafeExecutionSummary,
-    ToolUsageV1,
 )
 from src.autonomous.data.projection import DataProjectionState
 from src.autonomous.data.service import (
@@ -157,6 +158,135 @@ class TestBlobPublishFailure:
                 svc.record_history(record, payload)
         assert record.record_id not in state.history_records
         assert state.cursor_sequence == 0
+        blob_store.close()
+        writer.close()
+
+    def test_stage_and_readback_run_outside_data_and_writer_locks(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        key = _key()
+        blob_store = BlobStore(
+            tmp_path / "blobs",
+            AesGcmEncryptionProvider(lambda _ref: key),
+        )
+        writer = JournalWriter.open(
+            tmp_path / "journal",
+            anchor=_InMemoryAnchor(),
+            hmac_key=secrets.token_bytes(32),
+        )
+        svc = EmployeeDataService(
+            writer=writer,
+            blob_store=blob_store,
+            data_state=DataProjectionState(),
+            active_key_id="k1",
+        )
+        held = threading.local()
+
+        class _TrackingRLock:
+            def __init__(self):
+                self._lock = threading.RLock()
+
+            def __enter__(self):
+                self._lock.acquire()
+                held.count = getattr(held, "count", 0) + 1
+                return self
+
+            def __exit__(self, *_args):
+                held.count -= 1
+                self._lock.release()
+
+        svc._mutex = _TrackingRLock()  # type: ignore[assignment]  # noqa: SLF001
+        writer._transaction_mutex = _TrackingRLock()  # type: ignore[assignment]  # noqa: SLF001
+        original_stage = blob_store.stage_and_publish
+        original_read = blob_store.read
+
+        def stage(*args, **kwargs):
+            assert getattr(held, "count", 0) == 0
+            return original_stage(*args, **kwargs)
+
+        def read(*args, **kwargs):
+            assert getattr(held, "count", 0) == 0
+            return original_read(*args, **kwargs)
+
+        with (
+            patch.object(blob_store, "stage_and_publish", side_effect=stage),
+            patch.object(blob_store, "read", side_effect=read),
+        ):
+            svc.record_history(_record(), _payload(_record()))
+        blob_store.close()
+        writer.close()
+
+    def test_failed_readback_quarantines_only_its_concurrent_blob(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        key = _key()
+        blob_store = BlobStore(
+            tmp_path / "blobs",
+            AesGcmEncryptionProvider(lambda _ref: key),
+        )
+        writer = JournalWriter.open(
+            tmp_path / "journal",
+            anchor=_InMemoryAnchor(),
+            hmac_key=secrets.token_bytes(32),
+        )
+        svc = EmployeeDataService(
+            writer=writer,
+            blob_store=blob_store,
+            data_state=DataProjectionState(),
+            active_key_id="k1",
+        )
+        second_context = replace(
+            _context(),
+            task_id="task_2",
+            run_id="run_2",
+            attempt_id="attempt_2",
+        )
+        second_record = ExecutionHistoryRecordV1.from_attempt(
+            second_context,
+            ended_at="2026-07-12T01:30:00+00:00",
+            status="completed",
+            safe_summary=SafeExecutionSummary.build(status="completed"),
+            prompt_tokens=0,
+            completion_tokens=0,
+            predecessor_sequence=0,
+            predecessor_hash="",
+            shard_timezone="UTC",
+        )
+        records = (_record(), second_record)
+        payloads = tuple(_payload(record) for record in records)
+        bad_hash = hashlib.sha256(
+            json.dumps(
+                payloads[0].to_dict(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        barrier = threading.Barrier(2)
+        original_read = blob_store.read
+
+        def readback(ref):
+            barrier.wait(timeout=3)
+            if ref.content_hash == bad_hash:
+                return b"corrupt readback"
+            return original_read(ref)
+
+        def stage(index):
+            try:
+                return svc.stage_history_payload(records[index], payloads[index])
+            except DataBlobError:
+                return None
+
+        with patch.object(blob_store, "read", side_effect=readback):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                staged = tuple(pool.map(stage, range(2)))
+
+        assert staged[0] is None
+        assert staged[1] is not None
+        assert staged[1].blob_ref.blob_id in set(blob_store.iter_blob_ids())
         blob_store.close()
         writer.close()
 

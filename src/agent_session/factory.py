@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Callable, Optional
 
 from ..acp.providers import normalize_acp_model_name
@@ -16,6 +18,38 @@ from .ttadk_cli import SyncTTADKCLISession
 from .wrappers import ModelFailureAwareSession, RateLimitAwareSession
 
 logger = logging.getLogger(__name__)
+_EMPLOYEE_SESSION_ENV: ContextVar[dict[str, str] | None] = ContextVar(
+    "employee_session_env",
+    default=None,
+)
+
+
+@contextmanager
+def employee_session_environment(env: dict[str, str]):
+    """Scope one explicit env until the synchronous session factory captures it."""
+
+    if _EMPLOYEE_SESSION_ENV.get() is not None:
+        raise RuntimeError("nested employee session environment is forbidden")
+    if not isinstance(env, dict) or not env or any(
+        not isinstance(key, str)
+        or not key
+        or not isinstance(value, str)
+        or not value
+        for key, value in env.items()
+    ):
+        raise ValueError("employee session environment must be explicit")
+    token = _EMPLOYEE_SESSION_ENV.set(dict(env))
+    try:
+        yield
+    finally:
+        _EMPLOYEE_SESSION_ENV.reset(token)
+
+
+def current_employee_session_environment() -> dict[str, str] | None:
+    """Return a copy for immediate synchronous capture by the factory."""
+
+    value = _EMPLOYEE_SESSION_ENV.get()
+    return None if value is None else dict(value)
 
 
 def _normalize_acp_startup_model(agent_type: str, model_name: Optional[str]) -> Optional[str]:
@@ -181,6 +215,9 @@ def create_engine_session(
 
     settings = get_settings()
     agent_type = (agent_type or "").lower()
+    employee_env = current_employee_session_environment()
+    if employee_env is not None and agent_type.startswith("ttadk_"):
+        raise RuntimeError("employee backend lacks pre-spawn env and tool isolation")
 
     # TTADK/引擎侧 cwd 归一化：避免传入 "." 导致 TTADK 项目级缓存不落盘。
     raw_cwd = cwd
@@ -266,6 +303,7 @@ def create_engine_session(
             cwd=cwd,
             startup_timeout=settings.acp_startup_timeout,
             model_name=effective_model,
+            env=employee_env,
         )
 
     if settings.rate_limit_retry_enabled:

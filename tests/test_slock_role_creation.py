@@ -408,6 +408,29 @@ class TestCreateRoleDefaults:
         assert "Core Directives" in agent.system_prompt
         engine.memory.write_agent_memory.assert_called_once()
 
+    def test_legacy_role_keeps_composite_model_variant(self):
+        handler = self._make_handler()
+        engine = self._make_engine()
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+
+        handler.handle_new_role_select_model(
+            "msg_1",
+            "chat_test",
+            {
+                "role_name": "LegacyAgent",
+                "tool_name": "traex",
+                "model_name": "gpt-5.6-sol/max/xhigh",
+                "model_group": "gpt-5.6-sol",
+                "model_profile": "max",
+                "model_effort": "xhigh",
+            },
+        )
+
+        agent = engine.registry.register.call_args.args[0]
+        assert agent.model_name == "gpt-5.6-sol/max/xhigh"
+
     def test_global_hire_final_model_selection_preserves_flag(self):
         handler = self._make_handler()
         handler.create_role = MagicMock()
@@ -417,9 +440,11 @@ class TestCreateRoleDefaults:
             "chat_test",
             {
                 "role_name": "Atlas",
-                "tool_name": "codex",
-                "model_name": "gpt-5/high",
-                "model_effort": "high",
+                "tool_name": "traex",
+                "model_name": "gpt-5.6-sol/max/xhigh",
+                "model_group": "gpt-5.6-sol",
+                "model_profile": "max",
+                "model_effort": "xhigh",
                 "global_hire": True,
             },
         )
@@ -427,7 +452,7 @@ class TestCreateRoleDefaults:
         handler.create_role.assert_called_once_with(
             "msg_1",
             "chat_test",
-            "Atlas --tool codex --model gpt-5/high --effort high",
+            "Atlas --tool traex --model gpt-5.6-sol --profile max --effort xhigh",
             None,
             global_hire=True,
         )
@@ -445,11 +470,18 @@ class TestCreateRoleDefaults:
             patch("src.thread.manager.get_current_is_p2p", return_value=True),
             patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
         ):
-            handler.create_role(
+            handler.handle_new_role_select_model(
                 "msg_1",
                 "chat_test",
-                "Atlas --tool codex --model gpt-5/high --effort high",
-                global_hire=True,
+                {
+                    "role_name": "Atlas",
+                    "tool_name": "traex",
+                    "model_name": "gpt-5.6-sol/max/xhigh",
+                    "model_group": "gpt-5.6-sol",
+                    "model_profile": "max",
+                    "model_effort": "xhigh",
+                    "global_hire": True,
+                },
             )
 
         handler._get_engine_manager.assert_not_called()
@@ -477,7 +509,7 @@ class TestCreateRoleDefaults:
             handler.create_role(
                 "msg_1",
                 "chat_test",
-                "Atlas --tool codex --model gpt-5/high --effort high",
+                "Atlas --tool codex --model gpt-5 --profile standard --effort high",
                 global_hire=True,
             )
 
@@ -486,13 +518,30 @@ class TestCreateRoleDefaults:
         assert "autonomous_visible_employee_limit=0" in message
         assert "QA release evidence" in message
 
-    def test_global_hire_dispatches_typed_request_without_legacy_registry(self):
+    def test_global_hire_cascade_projects_one_runtime_model_selection(self, tmp_path):
+        from src.autonomous.journal.anchor import FileAnchor
+        from src.autonomous.journal.projections import ProjectionState
+        from src.autonomous.journal.writer import JournalWriter
+        from src.autonomous.provisioning.hire_service import ProductionEmployeeHireService
+        from src.autonomous.workforce.registry import ProjectedAgentRegistry
+
         handler = self._make_handler()
-        service = MagicMock()
-        handler.ctx.employee_hire_service = service
-        handler.ctx.employee_hire_readiness = MagicMock(
-            return_value=SimpleNamespace(ready=True, blockers=())
+        writer = JournalWriter.open(
+            tmp_path / "journal",
+            anchor=FileAnchor(tmp_path / "anchor.json"),
+            hmac_key=b"cascade-hire-test-hmac-key-32bytes",
+            writer_epoch=1,
         )
+        projection = ProjectionState()
+        service = ProductionEmployeeHireService(
+            writer,
+            projection,
+            visible_employee_limit=1,
+            release_evidence_ready=True,
+            credential_keyring_ready=True,
+        )
+        handler.ctx.employee_hire_service = service
+        handler.ctx.employee_hire_readiness = service.readiness
         handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
         handler._get_engine_manager = MagicMock()
         handler._get_global_registry = MagicMock()
@@ -502,22 +551,37 @@ class TestCreateRoleDefaults:
             patch("src.thread.manager.get_current_is_p2p", return_value=True),
             patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
         ):
-            handler.create_role(
+            handler.handle_new_role_select_model(
                 "msg_1",
                 "chat_test",
-                "Atlas --tool codex --model gpt-5/high --effort high",
-                global_hire=True,
+                {
+                    "role_name": "Atlas",
+                    "tool_name": "traex",
+                    "model_name": "gpt-5.6-sol/max/xhigh",
+                    "model_group": "gpt-5.6-sol",
+                    "model_profile": "max",
+                    "model_effort": "xhigh",
+                    "global_hire": True,
+                },
             )
 
-        request = service.start_hire.call_args.args[0]
-        assert request.employee_name == "Atlas"
-        assert request.tool == "codex"
-        assert request.model == "gpt-5/high"
-        assert request.effort == "high"
-        assert request.requester_principal_id == "ou_admin"
-        assert request.tenant_key == "tenant_a"
+        employee = next(iter(projection.employees.values()))
+        assert employee.name == "Atlas"
+        assert employee.tool == "traex"
+        assert employee.model == "gpt-5.6-sol"
+        assert employee.profile == "max"
+        assert employee.effort == "xhigh"
+        identity = ProjectedAgentRegistry(
+            projection,
+            storage_base_path=str(tmp_path / "slock"),
+        ).as_slock_identity("tenant_a", employee.agent_id)
+        assert identity is not None
+        assert identity.model_name == "gpt-5.6-sol/max/xhigh"
+        assert identity.model_profile == "max"
+        assert identity.reasoning_effort == "xhigh"
         handler._get_engine_manager.assert_not_called()
         handler._get_global_registry.assert_not_called()
+        service.close()
 
     @pytest.mark.parametrize(
         "readiness_provider",

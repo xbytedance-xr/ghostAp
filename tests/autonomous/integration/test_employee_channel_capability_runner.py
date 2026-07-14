@@ -16,8 +16,10 @@ from src.autonomous.ingress.sdk_capability import (
     CapabilityRunEvidence,
 )
 
+_RUNNER_TIMEOUT_SECONDS = 150
 
-@pytest.mark.timeout(90)
+
+@pytest.mark.timeout(_RUNNER_TIMEOUT_SECONDS)
 def test_runner_collects_exact_nodes_and_writes_development_evidence(
     tmp_path: Path,
 ) -> None:
@@ -34,7 +36,7 @@ def test_runner_collects_exact_nodes_and_writes_development_evidence(
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        timeout=90,
+        timeout=_RUNNER_TIMEOUT_SECONDS,
         check=False,
     )
 

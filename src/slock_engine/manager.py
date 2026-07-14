@@ -8,14 +8,31 @@ import logging
 import os
 import re
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Optional
 
 from ..engine_base import BaseEngineManager
+from .activation import slock_activation_guard
 from .engine import SlockEngine
 from .memory_manager import default_slock_storage_base
 
 logger = logging.getLogger(__name__)
 _LARK_CHAT_ID_RE = re.compile(r"^oc_[A-Za-z0-9_]+$")
+
+
+class SlockEngineResolutionError(RuntimeError):
+    """Activated Slock identity is absent, ambiguous, or mismatched."""
+
+
+@dataclass(frozen=True, slots=True)
+class ActivatedSlockBinding:
+    engine_identity: str
+    chat_id: str
+    root_identity: str
+    canonical_root: str
+    channel_id: str
+    engine: SlockEngine = field(repr=False, compare=False)
 
 
 class SlockEngineManager(BaseEngineManager["SlockEngine"]):
@@ -202,10 +219,28 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
             memory_base_path=self._storage_base_path,
         )
 
+    def get_or_create(
+        self,
+        chat_id: str,
+        root_path: str,
+        engine_name: str = "Coco",
+        *,
+        model_name: Optional[str] = None,
+    ) -> SlockEngine:
+        """Serialize manager membership changes with employee dispatch commits."""
+
+        with slock_activation_guard():
+            return super().get_or_create(
+                chat_id,
+                root_path,
+                engine_name,
+                model_name=model_name,
+            )
+
     def remove(self, chat_id: str, root_path: str) -> None:
         """Remove and cleanup a slock engine instance."""
         key = f"{chat_id}:{root_path}"
-        with self._lock:
+        with slock_activation_guard(), self._lock:
             if key in self._engines:
                 self._engines[key].cleanup()
                 del self._engines[key]
@@ -214,7 +249,7 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
     def discard_engine_for_recovery(self, chat_id: str, root_path: str) -> None:
         """Drop a possibly half-shutdown instance before compensation rebuild."""
         key = f"{chat_id}:{root_path}"
-        with self._lock:
+        with slock_activation_guard(), self._lock:
             self._engines.pop(key, None)
             self._remove_index(chat_id, key)
 
@@ -224,6 +259,77 @@ class SlockEngineManager(BaseEngineManager["SlockEngine"]):
             if engine.channel is not None:
                 return engine
         return None
+
+    @contextmanager
+    def employee_activation_guard(
+        self,
+        *,
+        chat_id: str,
+        expected_root_identity: str | None = None,
+    ):
+        """Hold the global activation guard through caller's dispatch commit."""
+
+        with slock_activation_guard(), self._lock:
+            yield self._resolve_employee_engine_locked(
+                chat_id=chat_id,
+                expected_root_identity=expected_root_identity,
+            )
+
+    def resolve_employee_engine(
+        self,
+        *,
+        chat_id: str,
+        expected_root_identity: str | None = None,
+    ) -> ActivatedSlockBinding:
+        """Resolve exactly one already-activated chat and canonical root."""
+
+        with self.employee_activation_guard(
+            chat_id=chat_id,
+            expected_root_identity=expected_root_identity,
+        ) as binding:
+            return binding
+
+    def _resolve_employee_engine_locked(
+        self,
+        *,
+        chat_id: str,
+        expected_root_identity: str | None,
+    ) -> ActivatedSlockBinding:
+        if not _LARK_CHAT_ID_RE.fullmatch(chat_id):
+            raise SlockEngineResolutionError("invalid employee Slock chat")
+        if expected_root_identity is not None and not re.fullmatch(
+            r"[0-9a-f]{64}", expected_root_identity
+        ):
+            raise SlockEngineResolutionError("invalid employee Slock root identity")
+        engines = tuple(
+            engine
+            for key in self._chat_keys.get(chat_id, ())
+            if (engine := self._engines.get(key)) is not None
+            and engine.channel is not None
+        )
+        if len(engines) != 1:
+            raise SlockEngineResolutionError(
+                "employee Slock requires exactly one activated engine"
+            )
+        engine = engines[0]
+        channel = engine.channel
+        if channel is None or channel.channel_id != chat_id or engine.chat_id != chat_id:
+            raise SlockEngineResolutionError("employee Slock channel binding mismatch")
+        canonical_root = os.path.realpath(engine.root_path)
+        root_identity = hashlib.sha256(canonical_root.encode("utf-8")).hexdigest()
+        if expected_root_identity is not None and root_identity != expected_root_identity:
+            raise SlockEngineResolutionError("employee Slock root binding mismatch")
+        engine_identity = hashlib.sha256(
+            f"{chat_id}\0{canonical_root}".encode("utf-8")
+        ).hexdigest()
+        return ActivatedSlockBinding(
+            engine_identity=engine_identity,
+            chat_id=chat_id,
+            root_identity=root_identity,
+            canonical_root=canonical_root,
+            channel_id=channel.channel_id,
+            engine=engine,
+        )
 
     def is_slock_active(self, chat_id: str) -> bool:
         """Check if slock mode is active for a given chat."""

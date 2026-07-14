@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol
@@ -228,6 +229,13 @@ class EmployeeChannelSupervisor:
                 args.extend(("--ro-bind", str(path), str(path)))
         args.extend(("--chdir", "/tmp", "--"))
         return tuple(args)
+
+    @contextmanager
+    def employee_dispatch_guard(self):
+        """Freeze live Channel authority without taking the Journal guard."""
+
+        with self._lock:
+            yield
 
     def launch_contract(self, *, bootstrap_fd: int, control_fd: int, event_fd: int) -> ChannelLaunchContract:
         """Return the immutable fresh-exec and FD inheritance contract."""

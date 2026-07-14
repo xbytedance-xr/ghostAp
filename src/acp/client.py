@@ -60,6 +60,24 @@ logger = logging.getLogger(__name__)
 _MAX_FILE_CHARS = 200_000
 _ACP_PERMISSION_DANGEROUS_CHECK = DangerousPatternCheckStrategy()
 _ENVIRONMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SHELL_CONTROL_TOKENS = frozenset({";", "&", "&&", "|", "||", "<", ">", "(", ")", "`"})
+
+
+def _permission_execute_tool_name(command: str) -> str:
+    """Classify a plain Git invocation without treating shell wrappers as Git."""
+    if "\n" in command or "\r" in command:
+        return "shell"
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()`")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except (TypeError, ValueError):
+        return "shell"
+    if not tokens or os.path.basename(tokens[0]).casefold() != "git":
+        return "shell"
+    if any(token in _SHELL_CONTROL_TOKENS for token in tokens[1:]):
+        return "shell"
+    return "git"
 
 
 def _get_max_file_chars() -> int:
@@ -575,7 +593,9 @@ class GhostAPClient(Client):
                     tool_args = {"command": command}
                     if isinstance(raw_input, dict):
                         tool_args.update(raw_input)
-                    if not self._is_tool_allowed("shell", tool_args):
+                    tool_args.setdefault("cwd", self._root_dir)
+                    permission_tool = _permission_execute_tool_name(command)
+                    if not self._is_tool_allowed(permission_tool, tool_args):
                         self._record(
                             session_id,
                             "permission",
@@ -611,8 +631,13 @@ class GhostAPClient(Client):
                         )
                         return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
         except Exception as e:
-            # Fail open to avoid breaking agent flows; runtime handlers still enforce.
-            logger.debug("[ACP] Permission safety check failed: %s", get_error_detail(e))
+            logger.warning("[ACP] Permission safety check failed closed: %s", type(e).__name__)
+            self._record(
+                session_id,
+                "permission",
+                {"outcome": "cancelled", "reason": "permission_safety_check_failed"},
+            )
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))
 
         # Find an "allow_once" option, or use the first option.
         allow_option_id = ""

@@ -7,6 +7,7 @@ import hashlib
 import json
 import threading
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -19,7 +20,10 @@ from ..journal.projections import (
     apply_frame,
 )
 from ..journal.writer import AnchorMismatchError, CommitState, JournalWriter
-from ..workforce.projection import commit_workforce_events
+from ..workforce.projection import (
+    commit_workforce_events_unlocked,
+    workforce_projection_guard,
+)
 from .callback_bridge import AsyncCallbackBridge
 from .hire_port import EmployeeHireRequest
 from .hire_state import (
@@ -152,11 +156,24 @@ class ProductionEmployeeHireService:
     def projection_state(self) -> ProjectionState:
         return self._projection_state
 
+    @contextmanager
+    def employee_dispatch_guard(self):
+        """Hold workforce authority then hire state, without taking Journal."""
+
+        with workforce_projection_guard(), self._mutex:
+            yield
+
     def synchronize_projection(self) -> ProjectionState:
         """Advance the read model across frames committed by sibling domains."""
         with self._mutex:
             self._synchronize_projection_to_journal_locked()
             return self._projection_state
+
+    def synchronize_projection_unlocked(self) -> ProjectionState:
+        """Advance views while the caller owns ``employee_dispatch_guard``."""
+
+        self._synchronize_projection_to_journal_locked()
+        return self._projection_state
 
     def readiness(self) -> HireReadiness:
         blockers: list[str] = []
@@ -177,7 +194,7 @@ class ProductionEmployeeHireService:
         return HireReadiness(ready=not blockers, blockers=tuple(blockers))
 
     def recover(self) -> HireProjection:
-        with self._mutex:
+        with self.employee_dispatch_guard():
             if self._closed:
                 raise HireAdmissionError("closed")
             if self._admission_closed:
@@ -188,13 +205,15 @@ class ProductionEmployeeHireService:
             if frames:
                 self._projection_state = rebuilt
             self._hire_projection = HireProjection.rebuild(frames)
-            self._reconcile_recovered_hires()
+        self._reconcile_recovered_hires()
+        with self.employee_dispatch_guard():
             return self._hire_projection
 
     def start_hire(self, request: EmployeeHireRequest) -> DurableHireState:
         self._validate_request(request)
         intent_id = _stable_id("hire", request.tenant_key, request.message_id)
-        with self._mutex, self._writer.transaction_guard():
+        submit_after_commit = False
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             self._synchronize_projection_to_journal_locked()
             if self._closed:
                 raise HireAdmissionError("closed")
@@ -204,7 +223,7 @@ class ProductionEmployeeHireService:
             if existing is not None:
                 if not self._matches_request(existing, request):
                     raise HireAdmissionError("hire idempotency conflict")
-                if (
+                submit_after_commit = (
                     self._provisioning_submitter is not None
                     and self.readiness().ready
                     and existing.phase
@@ -214,73 +233,71 @@ class ProductionEmployeeHireService:
                         HirePhase.CONFIGURING,
                         HirePhase.VALIDATING,
                     }
-                ):
-                    try:
-                        self._provisioning_submitter(existing.intent_id)
-                    except Exception:
-                        raise HireAdmissionError(
-                            "provisioning submission failed after durable admission"
-                        ) from None
-                return existing
-            readiness = self.readiness()
-            if not readiness.ready:
-                raise HireAdmissionError(",".join(readiness.blockers))
-            visible_count = sum(
-                employee.worker_type is WorkerType.VISIBLE
-                and employee.state is not EmployeeState.ARCHIVED
-                for employee in self._projection_state.employees.values()
-            )
-            if visible_count >= self._visible_employee_limit:
-                raise HireAdmissionError("visible_employee_limit capacity reached")
-            agent_id = _stable_id("agt", request.tenant_key, request.message_id)
-            bot_principal_id = _stable_id(
-                "bot",
-                request.tenant_key,
-                request.message_id,
-            )
-            attempt_id = _stable_id(
-                "attempt",
-                request.tenant_key,
-                request.message_id,
-            )
-            event = JournalEvent(
-                event_type="employee.created",
-                aggregate_id=agent_id,
-                payload={
-                    "agent_id": agent_id,
-                    "tenant_key": request.tenant_key,
-                    "owner_principal_id": request.requester_principal_id,
-                    "name": request.employee_name,
-                    "tool": request.tool,
-                    "model": request.model,
-                    "profile": request.profile,
-                    "effort": request.effort,
-                    "role": request.role,
-                    "persona": request.persona,
-                    "worker_type": WorkerType.VISIBLE.value,
-                    "state": EmployeeState.PROVISIONING_APP.value,
-                    "hire_schema_version": 1,
-                    "hire_intent_id": intent_id,
-                    "hire_message_id": request.message_id,
-                    "hire_chat_id": request.chat_id,
-                    "planned_bot_principal_id": bot_principal_id,
-                    "provisioning_attempt_id": attempt_id,
-                },
-            )
-            try:
-                commit_workforce_events(
-                    self._writer,
-                    self._projection_state,
-                    (event,),
                 )
-            except ProjectionError as exc:
-                detail = "name" if "name" in str(exc).casefold() else "projection"
-                raise HireAdmissionError(f"hire {detail} conflict") from exc
-            self._hire_projection = HireProjection.rebuild(self._writer.replay())
-            admitted = self._hire_projection.get(intent_id)
-            if admitted is None:
-                raise HireAdmissionError("anchored hire admission did not replay")
-        if self._provisioning_submitter is not None:
+                admitted = existing
+            else:
+                readiness = self.readiness()
+                if not readiness.ready:
+                    raise HireAdmissionError(",".join(readiness.blockers))
+                visible_count = sum(
+                    employee.worker_type is WorkerType.VISIBLE
+                    and employee.state is not EmployeeState.ARCHIVED
+                    for employee in self._projection_state.employees.values()
+                )
+                if visible_count >= self._visible_employee_limit:
+                    raise HireAdmissionError("visible_employee_limit capacity reached")
+                agent_id = _stable_id("agt", request.tenant_key, request.message_id)
+                bot_principal_id = _stable_id(
+                    "bot",
+                    request.tenant_key,
+                    request.message_id,
+                )
+                attempt_id = _stable_id(
+                    "attempt",
+                    request.tenant_key,
+                    request.message_id,
+                )
+                event = JournalEvent(
+                    event_type="employee.created",
+                    aggregate_id=agent_id,
+                    payload={
+                        "agent_id": agent_id,
+                        "tenant_key": request.tenant_key,
+                        "owner_principal_id": request.requester_principal_id,
+                        "name": request.employee_name,
+                        "tool": request.tool,
+                        "model": request.model,
+                        "profile": request.profile,
+                        "effort": request.effort,
+                        "role": request.role,
+                        "persona": request.persona,
+                        "worker_type": WorkerType.VISIBLE.value,
+                        "state": EmployeeState.PROVISIONING_APP.value,
+                        "hire_schema_version": 1,
+                        "hire_intent_id": intent_id,
+                        "hire_message_id": request.message_id,
+                        "hire_chat_id": request.chat_id,
+                        "planned_bot_principal_id": bot_principal_id,
+                        "provisioning_attempt_id": attempt_id,
+                    },
+                )
+                try:
+                    commit_workforce_events_unlocked(
+                        self._writer,
+                        self._projection_state,
+                        (event,),
+                    )
+                except ProjectionError as exc:
+                    detail = (
+                        "name" if "name" in str(exc).casefold() else "projection"
+                    )
+                    raise HireAdmissionError(f"hire {detail} conflict") from exc
+                self._hire_projection = HireProjection.rebuild(self._writer.replay())
+                admitted = self._hire_projection.get(intent_id)
+                if admitted is None:
+                    raise HireAdmissionError("anchored hire admission did not replay")
+                submit_after_commit = self._provisioning_submitter is not None
+        if submit_after_commit and self._provisioning_submitter is not None:
             try:
                 self._provisioning_submitter(admitted.intent_id)
             except Exception:
@@ -335,7 +352,7 @@ class ProductionEmployeeHireService:
             raise HireAdmissionError("invalid effect metadata")
         if "credential_ref" in metadata_value and "app_id" not in metadata_value:
             raise HireAdmissionError("invalid effect metadata")
-        with self._mutex, self._writer.transaction_guard():
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             self._synchronize_projection_to_journal_locked()
             current = self._hire_projection.get(intent_id)
             if current is None:
@@ -393,7 +410,7 @@ class ProductionEmployeeHireService:
         """Persist a challenge only after exact Slash and Channel evidence."""
         if not isinstance(challenge, VerificationChallenge):
             raise HireAdmissionError("invalid verification challenge")
-        with self._mutex:
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             state = self._require_hire(challenge.hire_intent_id)
             slash_effect_id = self._latest_slash_effect_id(
                 state,
@@ -430,7 +447,10 @@ class ProductionEmployeeHireService:
             ):
                 raise HireAdmissionError("verification challenge binding mismatch")
             if state.phase is HirePhase.CONFIGURING:
-                state = self._commit_phase_transition(state, HirePhase.VALIDATING)
+                state = self._commit_phase_transition_locked(
+                    state,
+                    HirePhase.VALIDATING,
+                )
             state = self._commit_hire_event(
                 JournalEvent(
                     event_type="hire.verification.challenge_issued",
@@ -448,7 +468,7 @@ class ProductionEmployeeHireService:
                     },
                 )
             )
-            return self._commit_phase_transition(
+            return self._commit_phase_transition_locked(
                 state,
                 HirePhase.READY_PENDING_VERIFICATION,
             )
@@ -485,7 +505,7 @@ class ProductionEmployeeHireService:
         """Journal-backed atomic nonce consumer used by VerificationRouter."""
         if not isinstance(challenge, VerificationChallenge):
             return False
-        with self._mutex:
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             state = self._hire_projection.get(challenge.hire_intent_id)
             if (
                 state is None
@@ -505,7 +525,7 @@ class ProductionEmployeeHireService:
                 )
             ):
                 return False
-            self._commit_hire_event(
+            self._commit_hire_event_locked(
                 JournalEvent(
                     event_type="hire.verification.nonce_consumed",
                     aggregate_id=state.intent_id,
@@ -530,7 +550,7 @@ class ProductionEmployeeHireService:
             raise HireAdmissionError("activation decision is not ready")
         evidence = decision.activation_evidence
         coordinates = evidence.coordinates
-        with self._mutex:
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             state = self._require_hire(coordinates.hire_intent_id)
             if (
                 state.phase is not HirePhase.READY_PENDING_VERIFICATION
@@ -546,7 +566,7 @@ class ProductionEmployeeHireService:
                 or evidence.main_bot_send_count != 0
             ):
                 raise HireAdmissionError("activation evidence binding mismatch")
-            state = self._commit_hire_event(
+            state = self._commit_hire_event_locked(
                 JournalEvent(
                     event_type="hire.activation.verified",
                     aggregate_id=state.intent_id,
@@ -567,34 +587,39 @@ class ProductionEmployeeHireService:
                     },
                 )
             )
-            return self._commit_phase_transition(state, HirePhase.ACTIVE)
+            return self._commit_phase_transition_locked(state, HirePhase.ACTIVE)
 
     def _commit_hire_event(self, event: JournalEvent) -> DurableHireState:
         """Commit one already-validated hire-only fact and advance all cursors."""
-        with self._mutex, self._writer.transaction_guard():
-            self._synchronize_projection_to_journal_locked()
-            last_frame = self._writer.get_last_frame()
-            writer_sequence = 0 if last_frame is None else last_frame.sequence
-            writer_hash = "" if last_frame is None else last_frame.frame_hash
-            if (
-                self._projection_state.cursor_sequence != writer_sequence
-                or self._projection_state.cursor_hash != writer_hash
-            ):
-                raise HireAdmissionError("hire projection is stale")
-            expected_versions = self._writer.get_aggregate_versions(
-                (event.aggregate_id,)
-            )
-            result = self._writer.commit(
-                (event,),
-                expected_versions,
-                expected_head_sequence=writer_sequence,
-                expected_head_hash=writer_hash,
-            )
-            if result.state is not CommitState.ANCHORED:
-                raise AnchorMismatchError("hire event commit was not anchored")
-            apply_frame(self._projection_state, result.frame)
-            self._hire_projection = HireProjection.rebuild(self._writer.replay())
-            return self._require_hire(event.aggregate_id)
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            return self._commit_hire_event_locked(event)
+
+    def _commit_hire_event_locked(self, event: JournalEvent) -> DurableHireState:
+        """Commit after the caller acquired workforce, hire, then Journal."""
+
+        self._synchronize_projection_to_journal_locked()
+        last_frame = self._writer.get_last_frame()
+        writer_sequence = 0 if last_frame is None else last_frame.sequence
+        writer_hash = "" if last_frame is None else last_frame.frame_hash
+        if (
+            self._projection_state.cursor_sequence != writer_sequence
+            or self._projection_state.cursor_hash != writer_hash
+        ):
+            raise HireAdmissionError("hire projection is stale")
+        expected_versions = self._writer.get_aggregate_versions(
+            (event.aggregate_id,)
+        )
+        result = self._writer.commit(
+            (event,),
+            expected_versions,
+            expected_head_sequence=writer_sequence,
+            expected_head_hash=writer_hash,
+        )
+        if result.state is not CommitState.ANCHORED:
+            raise AnchorMismatchError("hire event commit was not anchored")
+        apply_frame(self._projection_state, result.frame)
+        self._hire_projection = HireProjection.rebuild(self._writer.replay())
+        return self._require_hire(event.aggregate_id)
 
     def _synchronize_projection_to_journal_locked(self) -> None:
         """Advance workforce/hire views across frames written by other domains."""
@@ -776,43 +801,45 @@ class ProductionEmployeeHireService:
         state: DurableHireState,
         phase: HirePhase,
     ) -> DurableHireState:
-        with self._mutex, self._writer.transaction_guard():
-            self._synchronize_projection_to_journal_locked()
-            state = self._require_hire(state.intent_id)
-            if phase in {
-                HirePhase.ACTIVE,
-                HirePhase.ACTION_REQUIRED,
-                HirePhase.ARCHIVED,
-            } and any(
-                effect_state
-                in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
-                for _effect_id, effect_state in state.effects
-            ):
-                raise HireAdmissionError(
-                    "terminal hire phase has unresolved effects"
-                )
-            if state.phase is phase:
-                return state
-            try:
-                commit_workforce_events(
-                    self._writer,
-                    self._projection_state,
-                    (
-                        JournalEvent(
-                            event_type="employee.state_changed",
-                            aggregate_id=state.agent_id,
-                            payload={"state": phase.value},
-                        ),
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            return self._commit_phase_transition_locked(state, phase)
+
+    def _commit_phase_transition_locked(
+        self,
+        state: DurableHireState,
+        phase: HirePhase,
+    ) -> DurableHireState:
+        """Transition after the caller acquired workforce, hire, then Journal."""
+
+        self._synchronize_projection_to_journal_locked()
+        state = self._require_hire(state.intent_id)
+        if phase in {
+            HirePhase.ACTIVE,
+            HirePhase.ACTION_REQUIRED,
+            HirePhase.ARCHIVED,
+        } and any(
+            effect_state in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
+            for _effect_id, effect_state in state.effects
+        ):
+            raise HireAdmissionError("terminal hire phase has unresolved effects")
+        if state.phase is phase:
+            return state
+        try:
+            commit_workforce_events_unlocked(
+                self._writer,
+                self._projection_state,
+                (
+                    JournalEvent(
+                        event_type="employee.state_changed",
+                        aggregate_id=state.agent_id,
+                        payload={"state": phase.value},
                     ),
-                )
-            except ProjectionError as exc:
-                raise HireAdmissionError(
-                    "hire phase transition rejected"
-                ) from exc
-            self._hire_projection = HireProjection.rebuild(
-                self._writer.replay()
+                ),
             )
-            return self._require_hire(state.intent_id)
+        except ProjectionError as exc:
+            raise HireAdmissionError("hire phase transition rejected") from exc
+        self._hire_projection = HireProjection.rebuild(self._writer.replay())
+        return self._require_hire(state.intent_id)
 
     def _bind_principal(
         self,
@@ -820,7 +847,7 @@ class ProductionEmployeeHireService:
         app_id: str,
         credential_ref: str,
     ) -> DurableHireState:
-        with self._mutex, self._writer.transaction_guard():
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             self._synchronize_projection_to_journal_locked()
             state = self._require_hire(state.intent_id)
             existing = self._projection_state.bot_principals.get(
@@ -862,7 +889,7 @@ class ProductionEmployeeHireService:
                 ),
             )
             try:
-                commit_workforce_events(
+                commit_workforce_events_unlocked(
                     self._writer,
                     self._projection_state,
                     events,
@@ -1065,7 +1092,7 @@ class ProductionEmployeeHireService:
         observed_generation: int,
     ) -> DurableHireState:
         """Fence a crashed Channel generation before any replacement launch."""
-        with self._mutex:
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             state = self._require_hire(intent_id)
             if (
                 state.phase
@@ -1079,14 +1106,17 @@ class ProductionEmployeeHireService:
                 or observed_generation <= 0
             ):
                 raise HireAdmissionError("Channel revalidation binding mismatch")
-            state = self._commit_hire_event(
+            state = self._commit_hire_event_locked(
                 JournalEvent(
                     event_type="hire.channel.crashed",
                     aggregate_id=state.intent_id,
                     payload={"generation": observed_generation},
                 )
             )
-            return self._commit_phase_transition(state, HirePhase.VALIDATING)
+            return self._commit_phase_transition_locked(
+                state,
+                HirePhase.VALIDATING,
+            )
 
     @staticmethod
     def _slash_effect_attempts(
@@ -1131,7 +1161,7 @@ class ProductionEmployeeHireService:
             self._runtime_recovery_ready = True
 
     def close(self) -> None:
-        with self._mutex:
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
             if self._closed:
                 return
             self._admission_closed = True
@@ -1158,6 +1188,17 @@ class ProductionEmployeeHireService:
                 raise HireAdmissionError(f"{field_name} is required")
         if not isinstance(request.role, str) or not isinstance(request.persona, str):
             raise HireAdmissionError("role and persona must be strings")
+        from src.acp.employee_selection import validate_employee_model_components
+
+        try:
+            validate_employee_model_components(
+                request.tool,
+                request.model,
+                request.profile,
+                request.effort,
+            )
+        except ValueError:
+            raise HireAdmissionError("invalid employee model selection") from None
 
     @staticmethod
     def _matches_request(

@@ -34,7 +34,7 @@ def _request() -> EmployeeHireRequest:
         message_id="om_hire_saga",
         requester_principal_id="ou_admin",
         tenant_key="tenant-a",
-        profile="max",
+        profile="standard",
         role="software engineer",
         persona="careful reviewer",
     )

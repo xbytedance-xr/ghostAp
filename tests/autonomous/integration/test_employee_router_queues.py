@@ -276,13 +276,35 @@ def _accept(
     return ack.acceptance.acceptance_id
 
 
+def _commit_dispatch(router, writer, acceptance_id: str):
+    """Test-only simulation of the coordinator's Router event application."""
+
+    candidate = router.peek_dispatch_candidate()
+    assert candidate is not None and candidate.record.acceptance_id == acceptance_id
+    with router._ingress.employee_dispatch_guard(  # noqa: SLF001
+        router=router
+    ), writer.transaction_guard():
+        router.synchronize_projection_unlocked()
+        event = router.preflight_dispatch_event_unlocked(
+            acceptance_id=acceptance_id,
+        )
+        result = writer.commit(
+            (event,),
+            writer.get_aggregate_versions((event.aggregate_id,)),
+            expected_head_sequence=router.state.cursor_sequence,
+            expected_head_hash=router.state.cursor_hash or None,
+        )
+        router.apply_committed_frame_unlocked(result.frame)
+    return replace(candidate, record=router.state.by_acceptance_id[acceptance_id])
+
+
 def test_router_persists_complete_lifecycle_and_atomic_queue_position(tmp_path: Path) -> None:
     _, writer, ingress, new_router = _stack(tmp_path)
     router = new_router()
     acceptance_id = _accept(ingress, 1)
 
     queued = router.route(acceptance_id)
-    grant = router.dequeue()
+    grant = _commit_dispatch(router, writer, acceptance_id)
     completed = router.finish(acceptance_id, reason_code="completed")
 
     assert queued.state == "queued"
@@ -319,6 +341,40 @@ def test_router_persists_complete_lifecycle_and_atomic_queue_position(tmp_path: 
     writer.close()
 
 
+def test_router_peek_dequeue_and_finish_follow_router_writer_order(
+    tmp_path: Path,
+) -> None:
+    from tests.autonomous.chaos.test_employee_attempt_recovery import _TraceRLock
+
+    _, writer, ingress, new_router = _stack(tmp_path)
+    router = new_router()
+    acceptance_id = _accept(ingress, 1)
+    assert router.route(acceptance_id).state == "queued"
+    held = {}
+    trace = []
+    router._mutex = _TraceRLock("router", 0, held, trace)  # noqa: SLF001
+    writer._transaction_mutex = _TraceRLock(  # noqa: SLF001
+        "writer",
+        1,
+        held,
+        trace,
+    )
+
+    candidate = router.peek_dispatch_candidate()
+    assert candidate is not None and candidate.record.state == "queued"
+    assert router.state.by_acceptance_id[acceptance_id].state == "queued"
+    grant = router.dequeue()
+    assert grant is not None and grant.record.state == "queued"
+    grant = _commit_dispatch(router, writer, acceptance_id)
+    assert router.finish(acceptance_id, reason_code="completed").state == "terminal"
+
+    acquired_stacks = [item[3] for item in trace if item[1] == "acquire"]
+    assert ("router", "writer") in acquired_stacks
+    assert all(stack[0] != "writer" or len(stack) == 1 for stack in acquired_stacks)
+    ingress.close()
+    writer.close()
+
+
 def test_invalid_router_transition_is_rejected_before_journal_commit(
     tmp_path: Path,
 ) -> None:
@@ -348,7 +404,7 @@ def test_durable_fifo_survives_router_restart(tmp_path: Path) -> None:
     restarted = new_router()
     observed: list[str] = []
     for expected in acceptance_ids:
-        grant = restarted.dequeue()
+        grant = _commit_dispatch(restarted, writer, expected)
         assert grant is not None
         observed.append(grant.record.acceptance_id)
         restarted.finish(expected, reason_code="completed")
@@ -367,7 +423,7 @@ def test_restart_keeps_dispatching_work_fail_closed_without_redispatch(
     second = _accept(ingress, 2)
     assert router.route(first).state == "queued"
     assert router.route(second).state == "queued"
-    grant = router.dequeue()
+    grant = _commit_dispatch(router, writer, first)
     assert grant is not None and grant.record.acceptance_id == first
 
     restarted = new_router()
@@ -386,7 +442,7 @@ def test_inbox_failure_helper_cannot_terminate_a_dispatching_grant(
     router = new_router()
     acceptance_id = _accept(ingress, 1)
     assert router.route(acceptance_id).state == "queued"
-    grant = router.dequeue()
+    grant = _commit_dispatch(router, writer, acceptance_id)
     assert grant is not None and grant.record.state == "dispatching"
 
     retained = router._terminal_inbox_failure(acceptance_id)
@@ -430,11 +486,12 @@ def test_per_employee_dispatch_is_one_but_another_employee_can_progress(tmp_path
     for acceptance_id in (alpha_1, alpha_2, beta_1):
         assert router.route(acceptance_id).state == "queued"
 
-    first = router.dequeue()
+    first = _commit_dispatch(router, writer, alpha_1)
     second = router.dequeue()
 
     assert first is not None and first.record.acceptance_id == alpha_1
     assert second is not None and second.record.acceptance_id == beta_1
+    second = _commit_dispatch(router, writer, beta_1)
     assert router.dequeue() is None
     router.finish(alpha_1, reason_code="completed")
     third = router.dequeue()
@@ -810,7 +867,7 @@ def test_rebalance_never_evicts_dispatching_work(tmp_path: Path) -> None:
     router = new_router()
     alpha_dispatching = _accept(ingress, 1, "agt_alpha")
     assert router.route(alpha_dispatching).state == "queued"
-    grant = router.dequeue()
+    grant = _commit_dispatch(router, writer, alpha_dispatching)
     assert grant is not None and grant.record.acceptance_id == alpha_dispatching
     alpha_queued = [
         _accept(ingress, index, "agt_alpha") for index in (2, 3)

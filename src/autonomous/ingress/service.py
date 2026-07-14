@@ -16,7 +16,7 @@ from ..journal.blob_store import (
     BlobRef,
     BlobStore,
 )
-from ..journal.frame import GENESIS_HASH, JournalEvent
+from ..journal.frame import GENESIS_HASH, JournalEvent, TransactionFrame
 from ..journal.writer import CommitResult, CommitState, JournalWriter
 from .models import (
     EmployeeIngressAck,
@@ -127,6 +127,55 @@ class EmployeeIngressService:
     def blob_store(self) -> BlobStore:
         return self._blob_store
 
+    @contextmanager
+    def employee_dispatch_guard(self, *, router: object | None = None) -> Iterator[None]:
+        """Hold the complete Ingress tier, optionally including its Router."""
+
+        with self._mutex:
+            if router is None:
+                yield
+                return
+            router_guard = getattr(router, "_ingress_dispatch_guard", None)
+            if not callable(router_guard):
+                raise TypeError("router does not expose the Ingress tier guard")
+            with router_guard():
+                yield
+
+    def synchronize_projection_unlocked(self) -> None:
+        self._synchronize_projection_unlocked()
+
+    def dispatch_identity_unlocked(self, acceptance_id: str) -> tuple[object, ...]:
+        record = self._state.by_acceptance_id.get(acceptance_id)
+        if record is None or record.disposition is not None or record.payload_tombstoned:
+            raise IngressBlobError("ingress acceptance is not dispatchable")
+        return (
+            record.aggregate_id,
+            record.acceptance.acceptance_id,
+            record.metadata,
+            record.blob_ref.content_hash,
+        )
+
+    def apply_committed_frame_unlocked(self, frame: TransactionFrame) -> None:
+        if not isinstance(frame, TransactionFrame):
+            raise TypeError("frame must be TransactionFrame")
+        if not frame.committed:
+            raise IngressWriteDisabledError("ingress frame must be committed")
+        if frame.sequence != self._state.cursor_sequence + 1:
+            raise IngressWriteDisabledError("ingress frame sequence is not continuous")
+        expected_previous = self._state.cursor_hash or GENESIS_HASH
+        if frame.previous_hash != expected_previous:
+            raise IngressWriteDisabledError("ingress frame previous hash mismatch")
+        for event in frame.events:
+            if is_ingress_event(event.event_type):
+                reduce_ingress_event(
+                    self._state,
+                    event,
+                    frame_sequence=frame.sequence,
+                    frame_hash=frame.frame_hash,
+                )
+        self._state.cursor_sequence = frame.sequence
+        self._state.cursor_hash = frame.frame_hash
+
     def close(self) -> None:
         """Close only the ingress-owned BlobStore; the writer has another owner."""
 
@@ -227,14 +276,14 @@ class EmployeeIngressService:
         self,
         acceptance_id: str,
     ) -> Iterator[tuple[IngressRecord, EmployeeIngressPayload]]:
-        """Freeze one dispatchable Inbox record through a short Journal commit.
+        """Freeze one dispatchable Inbox record through a Router commit.
 
-        Lock order is ingress mutex -> Journal transaction guard.  The caller
-        may commit Router metadata while the context is open, but must never do
-        external I/O in this critical section.
+        The ingress mutex is the outer domain lock.  The caller may next take
+        the Router mutex and finally the Journal guard; this method must not
+        pre-acquire the Journal guard or it would invert that shared order.
         """
 
-        with self._mutex, self._writer.transaction_guard():
+        with self._mutex:
             self._ensure_open_unlocked()
             self._synchronize_projection_unlocked()
             record = self._state.by_acceptance_id.get(acceptance_id)

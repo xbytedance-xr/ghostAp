@@ -550,6 +550,73 @@ def test_tool_filter_blocks_auto_approved_permission_request():
         loop.close()
 
 
+def test_permission_bridge_classifies_canonical_git_execute_as_git():
+    seen: list[tuple[str, dict]] = []
+    client = GhostAPClient(on_event=lambda e: None, auto_approve=True)
+    client.set_tool_filter(lambda tool, args: seen.append((tool, args or {})) or tool == "git")
+
+    opt = MagicMock()
+    opt.kind = "allow_once"
+    opt.option_id = "opt1"
+    tool_call = MagicMock()
+    tool_call.kind = "execute"
+    tool_call.raw_input = {"command": "/usr/bin/git status --short"}
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        resp = loop.run_until_complete(client.request_permission(options=[opt], session_id="s1", tool_call=tool_call))
+        assert resp.outcome.outcome == "selected"
+        assert seen == [
+            ("git", {"command": "/usr/bin/git status --short", "cwd": client._root_dir})  # noqa: SLF001
+        ]
+    finally:
+        loop.close()
+
+
+def test_permission_bridge_keeps_wrapped_git_execute_on_shell_policy():
+    seen: list[str] = []
+    client = GhostAPClient(on_event=lambda e: None, auto_approve=True)
+    client.set_tool_filter(lambda tool, args: seen.append(tool) or tool == "git")
+
+    opt = MagicMock()
+    opt.kind = "allow_once"
+    opt.option_id = "opt1"
+    tool_call = MagicMock()
+    tool_call.kind = "execute"
+    tool_call.raw_input = {"command": "sh -c 'git status'"}
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        resp = loop.run_until_complete(client.request_permission(options=[opt], session_id="s1", tool_call=tool_call))
+        assert resp.outcome.outcome == "cancelled"
+        assert seen == ["shell"]
+    finally:
+        loop.close()
+
+
+def test_permission_bridge_fails_closed_when_safety_check_raises():
+    sandbox = MagicMock(spec=SandboxExecutor)
+    sandbox.is_command_safe.side_effect = RuntimeError("safety backend unavailable")
+    client = GhostAPClient(on_event=lambda e: None, auto_approve=True, sandbox=sandbox)
+
+    opt = MagicMock()
+    opt.kind = "allow_once"
+    opt.option_id = "opt1"
+    tool_call = MagicMock()
+    tool_call.kind = "execute"
+    tool_call.raw_input = {"command": "echo hi"}
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        resp = loop.run_until_complete(client.request_permission(options=[opt], session_id="s1", tool_call=tool_call))
+        assert resp.outcome.outcome == "cancelled"
+    finally:
+        loop.close()
+
+
 class TestRebindThread:
     def _make_manager(self):
         from src.acp.manager import ACPSessionManager

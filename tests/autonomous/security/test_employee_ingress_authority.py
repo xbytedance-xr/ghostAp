@@ -1266,7 +1266,11 @@ def test_attachment_stage_survives_queued_and_current_dispatch_grant(
 
     assert router.route(acceptance_id).state == "queued"
     assert staging.cleanup_calls == []
-    grant = router.dequeue()
+    from tests.autonomous.integration.test_employee_router_queues import (
+        _commit_dispatch,
+    )
+
+    grant = _commit_dispatch(router, writer, acceptance_id)
     assert grant is not None and grant.record.state == "dispatching"
     assert staging.cleanup_calls == []
 
@@ -1757,7 +1761,11 @@ def test_losing_attachment_callback_cannot_revoke_concurrent_dispatch(
     losing.start()
     assert staging.entered.wait(2)
     assert second.route(acceptance_id).state == "queued"
-    grant = second.dequeue()
+    from tests.autonomous.integration.test_employee_router_queues import (
+        _commit_dispatch,
+    )
+
+    grant = _commit_dispatch(second, writer, acceptance_id)
     assert grant is not None and grant.record.state == "dispatching"
     staging.release.set()
     losing.join(5)

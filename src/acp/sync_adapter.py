@@ -19,6 +19,7 @@ from functools import lru_cache
 from typing import Any, Callable, Optional
 
 from ..config import get_settings
+from ..employee_session_scope import record_employee_session_outcome
 from ..ttadk.env_sandbox import build_ttadk_subprocess_env
 from ..utils.errors import get_error_detail, sanitize_futures_msg
 from .client import ACPHistoryStore
@@ -996,6 +997,7 @@ def start_session_with_retry(
     session_cls: Optional[type["SyncACPSession"]] = None,
     ttadk_use_pty: bool = False,
     log_failures: bool = True,
+    env: Optional[dict[str, str]] = None,
 ) -> SyncACPSession:
     """Start an ACP session with retry and progressive timeout.
 
@@ -1014,6 +1016,25 @@ def start_session_with_retry(
 
     for attempt in range(1, retries + 1):
         try:
+            if env is not None:
+                session = session_cls(
+                    agent_type=agent_type,
+                    cwd=cwd,
+                    model_name=model_name,
+                    ttadk_use_pty=bool(ttadk_use_pty),
+                    env=dict(env),
+                )
+                effective_timeout = float(startup_timeout) * (
+                    1.0 + 0.5 * (attempt - 1)
+                )
+                session.start(startup_timeout=effective_timeout)
+                logger.info(
+                    "[ACP:%s] Engine session started (attempt=%d/%d)",
+                    agent_type.upper(),
+                    attempt,
+                    retries,
+                )
+                return session
             # Backward-compatible construction: allow fakes/older signatures without model_name kw.
             if model_name:
                 try:
@@ -1444,6 +1465,7 @@ class SyncACPSession:
         agent_cmd: Optional[str] = None,
         model_name: Optional[str] = None,
         ttadk_use_pty: bool = False,
+        env: Optional[dict[str, str]] = None,
     ):
         self._agent_type = agent_type
         self._cwd = cwd
@@ -1455,6 +1477,7 @@ class SyncACPSession:
             self._agent_cmd = cmd
             self._agent_args = agent_args or args
         self._model_name = (model_name or "").strip() or None
+        self._explicit_env = dict(env) if env is not None else None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._acp_session: Optional[ACPSession] = None
@@ -1622,9 +1645,13 @@ class SyncACPSession:
         )
 
     async def _start_session(self) -> str:
-        env_override = None
+        env_override = (
+            dict(self._explicit_env)
+            if getattr(self, "_explicit_env", None) is not None
+            else None
+        )
         try:
-            if (self._agent_type or "").lower().startswith("ttadk_"):
+            if env_override is None and (self._agent_type or "").lower().startswith("ttadk_"):
                 tool = (self._agent_type or "").lower().replace("ttadk_", "", 1)
                 env_override, _ = build_ttadk_subprocess_env(
                     cwd=self._cwd or ".", agent_type=self._agent_type, tool_name=tool
@@ -1806,9 +1833,11 @@ class SyncACPSession:
                         )
                     # Agent still active — continue waiting
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
+            record_employee_session_outcome("canceled")
             self._force_dead = True
             raise RuntimeError("ACP agent 进程在执行过程中意外终止")
         except TimeoutError as e:
+            record_employee_session_outcome("timeout")
             agent_type_str = getattr(self, "_agent_type", "unknown")
             logger.error("[ACP:%s] prompt 执行超时 (timeout=%ss): %s", agent_type_str, effective_timeout, get_error_detail(e), exc_info=True)
             self.cancel(wait=True, timeout=2.0)

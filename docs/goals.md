@@ -31,7 +31,7 @@
 
   重要：用户已经明确授权直接在 dev 分支开发，不要创建 worktree。保留用户已有改动，不要 reset、checkout 或删除任何不属于你的修改。
 
-  当前权威状态（2026-07-13；必须用 Git、源码、配置和测试重新核验，不可只相信此摘要）：
+  当前权威状态（2026-07-14；必须用 Git、源码、配置和测试重新核验，不可只相信此摘要）：
 
   - 本文档不再固化会在下一次提交立即过期的 HEAD；每次继续开发必须以上述
     `git rev-parse HEAD/origin/dev` 的现场结果为准。Thread Context Task 2 开发前
@@ -70,14 +70,14 @@
       shared Journal 同步、restart/rotation/retirement invalidation 与逆序关闭；真实页间
       insert/edit/delete、timeout、重复 token、partial SDK、两把密钥轮换、restart 与 shutdown
       故障注入均证明 `CONTEXT_UNAVAILABLE` 零 task/ACP 派发。durable ingress 尚未接入该服务
-    - Phase 3 Task 0-5 已完成 durable employee ingress、Projected Registry/ACL/membership
-      authority 与 Journal-backed bounded Router；Task 6 尚未把 dispatch attempt、Context gate、
-      真实 Slock `_run_acp_session` 和原子 terminal history 接入，Task 7 尚未聚合生产门禁
+    - Phase 3 Task 0-6 已完成 durable employee ingress、Projected Registry/ACL/membership
+      authority、Journal-backed bounded Router，以及锚定 dispatch attempt、Context gate、
+      真实 Slock `_run_acp_session` 和原子 terminal history；Task 7 尚未聚合生产门禁
     - `EmployeeResponseChannel` 明确仍是 in-memory outbox，缺 Journal-backed Durable Outbox、稳定 UUID 卡片和 child-owned stream controller
     - `FireSaga` 仍是可变内存顺序流程，未满足 Journal SSOT、Effect 锚定、unknown disposition、恢复与归档合同
     - 团队 membership、`/role add/remove`、`/stop` 终态竞态尚未形成生产闭环
-  - 尚无获授权的真实测试/生产租户执行证据。Thread Context Phase 2 关闭时最新
-    Autonomous 全量验证为 `1234 passed, 2 skipped`；两项 skip 分别是未授权真实
+  - 尚无获授权的真实测试/生产租户执行证据。Phase 3 Task 6 关闭时最新
+    Autonomous 全量验证为 `1686 passed, 2 skipped`；两项 skip 分别是未授权真实
     租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
     不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
   - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
@@ -160,8 +160,8 @@
   3. 进行中：Durable employee ingress、Router 与 Slock gateway：
      - 设计与现有实现审计已完成，实施计划见
        `docs/2026-07-13-autonomous-durable-ingress-plan.md`；Task 0-5 的 durable Inbox、
-       official Channel ACK bridge、附件暂存与 Journal-backed Router 已完成，Task 6-7
-       的真实执行和生产聚合仍未完成，因此 Phase 3 尚未关闭
+       official Channel ACK bridge、附件暂存、Journal-backed Router 与 Task 6 真实执行
+       已完成；Task 7 的生产聚合仍未完成，因此 Phase 3 尚未关闭
      - 已完成 Task 0 SDK capability 硬门禁：锁定 `lark-channel-sdk==1.1.0` 的
        low-level message 与 P2 `card.action.trigger` EVENT 均通过真实 HTTP/WSS/protobuf
        ACK 顺序验证；高层 handler 提前 200 与 raw `MessageType.CARD` 继续明确禁用
@@ -187,7 +187,7 @@
      - Task 3 mandatory matrix 已覆盖 IPC backpressure/partial frame、parent close、
        anchor/projection/ACK encode/control write、late/lost ACK、child crash、SDK write、
        reconnect/STOP/generation rotation；connection epoch 与 READY/INGRESS 顺序 fail-close
-     - Task 3 独立 Spec/Code review 已批准；Task 6-7 尚未完成，Task 7 尚未聚合生产门禁，
+     - Task 3 独立 Spec/Code review 已批准；Task 7 尚未聚合生产门禁，
        `autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
@@ -212,10 +212,24 @@
        Task 4 cleanup/recovery 均 fail-close，card action 仍 durable unsupported
      - Task 5 最终 184 focused、277 affected、879 expanded、1590 full Autonomous 测试通过；
        EI-QUEUE-01、Ruff、文档、配置与 diff 门禁通过，独立 Spec/Code review 均批准且无
-       Critical/Important；Task 6 attempt anchor、Context gate 与 real Slock gateway 是下一项
-     - ACP dispatch 前锚定 ExecutionAttemptContext
-     - 每个 accepted attempt 只调用一次现有 `_run_acp_session`
-     - completed/failed/canceled/timeout/action_required 全部进入数据面
+       Critical/Important
+     - 已完成 Task 6：Router dispatch、attempt binding 与 dispatch committed 在同一锚定帧；
+       0/多 Slock、authority/credential/generation/membership 漂移与 Context 失败均 durable
+       fail-close，full projection replay 保持在短提交锁之外
+     - 已完成 Task 6：每个 accepted attempt 最多一次调用现有 `_run_acp_session`；
+       completed/failed/canceled/timeout/action_required 全部原子进入数据面，restart recovery
+       不重跑 unknown dispatch，terminal/finalize CAS 冲突复用已暂存 Blob 并有界重试
+     - 已完成 Task 6：员工进程环境、模型/profile/effort、persona、权限/capability 与 Context
+       snapshot 均冻结进 immutable permit；Git/Shell 使用 shell-equivalent 默认拒绝策略，
+       provider/secret 异常不泄露，真实子进程验证 Manager/Vault/peer secret 不继承
+     - 已完成 Task 6：visible `/hire` 卡片到 typed request、Journal projection、
+       `ProjectedAgentRegistry` 的模型三元组只组合一次；Hire admission 在 anchor 前拒绝
+       composite/未知 effort/不支持 profile，普通 `/new-role` 保留 legacy composite 语义
+     - Task 6 最终 224 affected、1686 full Autonomous 测试通过；changed-file Ruff、
+       `git diff --check` 通过，独立 Spec/Code review 均批准且无 Critical/Important
+     - 下一项 Task 7：聚合 SDK capability、parent payload gate、dispatch/Context/Slock、
+       terminal history、worker sandbox 与 release trust 证据；在真实租户证明与外部信任组件
+       就绪前，`autonomous_visible_employee_limit` 必须继续保持 0
   4. Employee Response Channel：
      - Journal-backed Durable Outbox
      - 稳定 UUID 幂等创建单张状态卡

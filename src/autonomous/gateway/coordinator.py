@@ -1,0 +1,749 @@
+"""Unique durable dispatch/terminal coordinator for visible employees."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import threading
+from collections.abc import Callable, Mapping
+from contextlib import ExitStack
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+
+from src.slock_engine.activation import slock_activation_guard
+from src.slock_engine.manager import SlockEngineResolutionError
+
+from ..data.models import (
+    ExecutionAttemptContext,
+    ExecutionHistoryPayloadV1,
+    ExecutionHistoryRecordV1,
+    SafeExecutionSummary,
+)
+from ..data.service import EmployeeDataService
+from ..domain import EmployeeState, WorkerType
+from ..journal.frame import JournalEvent
+from ..journal.projections import apply_frame
+from ..journal.writer import CommitState, JournalWriter
+from ..supervisor.channel_models import ChannelProcessState
+from ..workforce.registry import ProjectedAgentRegistry
+from .context_prompt import RenderedEmployeePrompt, render_employee_context
+from .env_scope import (
+    EmployeeEnvironmentAuthority,
+    EmployeeProcessEnvironmentMaterial,
+    build_employee_process_env,
+)
+from .models import (
+    DispatchBinding,
+    DispatchPermit,
+    GatewayExecutionResult,
+    GatewayExecutionStatus,
+)
+from .projection import (
+    ATTEMPT_BOUND,
+    ATTEMPT_DISPATCH_COMMITTED,
+    ATTEMPT_TERMINAL,
+    GatewayProjectionState,
+    reduce_gateway_frame,
+)
+from .slock import EmployeeSlockGateway
+
+
+class EmployeeDispatchError(RuntimeError):
+    """Dispatch authority or atomic lifecycle validation failed closed."""
+
+
+class _ProjectionHeadChanged(RuntimeError):
+    """A domain moved after lock-free projection synchronization."""
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedEmployeeDispatch:
+    binding: DispatchBinding
+    permit: DispatchPermit
+    prompt: str
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizedEmployeeAttempt:
+    attempt_id: str
+    status: GatewayExecutionStatus
+    history_record_id: str
+    frame_sequence: int
+
+
+EnvironmentProvider = Callable[
+    [EmployeeEnvironmentAuthority],
+    EmployeeProcessEnvironmentMaterial,
+]
+RegistryFactory = Callable[[object], ProjectedAgentRegistry]
+
+
+class EmployeeDispatchCoordinator:
+    """Own the only Router queued -> ACP -> terminal attempt path."""
+
+    def __init__(
+        self,
+        *,
+        writer: JournalWriter,
+        hire_service: object,
+        ingress_service: object,
+        router: object,
+        data_service: EmployeeDataService,
+        channel_supervisor: object,
+        slock_manager: object,
+        context_service: object,
+        environment_provider: EnvironmentProvider,
+        registry_factory: RegistryFactory | None = None,
+        gateway: EmployeeSlockGateway | None = None,
+        timeout_seconds: float = 600.0,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if not callable(environment_provider):
+            raise TypeError("environment_provider is required")
+        self._writer = writer
+        self._hire = hire_service
+        self._ingress = ingress_service
+        self._router = router
+        self._data = data_service
+        self._channels = channel_supervisor
+        self._slock_manager = slock_manager
+        self._context = context_service
+        self._environment_provider = environment_provider
+        self._registry_factory = registry_factory or ProjectedAgentRegistry
+        self._gateway = gateway or EmployeeSlockGateway()
+        self._timeout_seconds = float(timeout_seconds)
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._gateway_state = GatewayProjectionState()
+        self._projection_sync_lock = threading.RLock()
+
+    @property
+    def state(self) -> GatewayProjectionState:
+        with self._projection_sync_lock:
+            return self._gateway_state.clone()
+
+    def prepare_next(self) -> PreparedEmployeeDispatch | None:
+        """Prepare with bounded retries when the Journal head races."""
+
+        for _attempt in range(3):
+            try:
+                return self._prepare_next_once()
+            except _ProjectionHeadChanged:
+                continue
+        raise EmployeeDispatchError("employee dispatch head remained unstable")
+
+    def _prepare_next_once(self) -> PreparedEmployeeDispatch | None:
+        """Anchor Router dispatch and immutable attempt authority in one frame."""
+
+        grant = self._router.peek_dispatch_candidate()
+        if grant is None:
+            return None
+        snapshot = self._context.assemble(grant.request)
+        self._validate_context_watermark(grant.request, snapshot)
+
+        registry = self._registry_factory(self._hire.projection_state)
+        employee = registry.get(grant.request.tenant_key, grant.request.agent_id)
+        agent = registry.as_slock_identity(
+            grant.request.tenant_key,
+            grant.request.agent_id,
+        )
+        projected_binding = registry.context_binding(
+            tenant_key=grant.request.tenant_key,
+            agent_id=grant.request.agent_id,
+            bot_principal_id=grant.record.bot_principal_id,
+            app_id=grant.record.app_id,
+            chat_id=grant.request.chat_id,
+        )
+        if employee is None or agent is None or projected_binding is None:
+            raise EmployeeDispatchError("employee authority is unavailable")
+        rendered = render_employee_context(
+            snapshot,
+            system_instruction=agent.system_prompt,
+            constraints_digest=grant.request.constraints_digest,
+        )
+        environment_authority = EmployeeEnvironmentAuthority(
+            tenant_key=employee.tenant_key,
+            agent_id=employee.agent_id,
+            employee_version=employee.aggregate_version,
+            credential_ref=projected_binding.principal.credential_ref,
+        )
+        try:
+            material = self._environment_provider(environment_authority)
+        except Exception:
+            raise EmployeeDispatchError("employee environment provider failed") from None
+        if (
+            not isinstance(material, EmployeeProcessEnvironmentMaterial)
+            or material.authority != environment_authority
+        ):
+            raise EmployeeDispatchError("employee environment authority mismatch")
+        employee_home = str(Path(agent.workspace_path).parent)
+        env = build_employee_process_env(
+            material.runtime_env,
+            employee_home=employee_home,
+            credential_env=material.credential_env,
+        )
+        captured_head = self._presynchronize_domains()
+
+        try:
+            activation_context = self._slock_manager.employee_activation_guard(
+                chat_id=grant.request.chat_id,
+            )
+            with activation_context as slock_binding, ExitStack() as stack:
+                stack.enter_context(self._projection_sync_lock)
+                stack.enter_context(self._hire.employee_dispatch_guard())
+                stack.enter_context(
+                    self._ingress.employee_dispatch_guard(router=self._router)
+                )
+                stack.enter_context(self._data.employee_dispatch_guard())
+                stack.enter_context(self._channels.employee_dispatch_guard())
+                stack.enter_context(self._writer.transaction_guard())
+                self._require_presynchronized_head(captured_head)
+                current_registry = self._registry_factory(self._hire.projection_state)
+                current = current_registry.get(
+                    grant.request.tenant_key,
+                    grant.request.agent_id,
+                )
+                current_agent = current_registry.as_slock_identity(
+                    grant.request.tenant_key,
+                    grant.request.agent_id,
+                )
+                current_projected_binding = current_registry.context_binding(
+                    tenant_key=grant.request.tenant_key,
+                    agent_id=grant.request.agent_id,
+                    bot_principal_id=grant.record.bot_principal_id,
+                    app_id=grant.record.app_id,
+                    chat_id=grant.request.chat_id,
+                )
+                if (
+                    current != employee
+                    or current_agent != agent
+                    or current_projected_binding is None
+                    or current_projected_binding.employee != projected_binding.employee
+                    or current_projected_binding.principal != projected_binding.principal
+                ):
+                    raise EmployeeDispatchError("employee authority changed")
+                ingress_identity = self._ingress.dispatch_identity_unlocked(
+                    grant.record.acceptance_id
+                )
+                ingress_metadata = ingress_identity[2]
+                if (
+                    ingress_identity[0] != grant.record.aggregate_id
+                    or ingress_identity[1] != grant.record.acceptance_id
+                    or ingress_identity[3] != grant.payload.payload_sha256
+                    or ingress_metadata.envelope_id != grant.record.envelope_id
+                    or ingress_metadata.tenant_key != grant.record.tenant_key
+                    or ingress_metadata.agent_id != grant.record.agent_id
+                    or ingress_metadata.message_id != grant.record.message_id
+                ):
+                    raise EmployeeDispatchError("employee ingress identity changed")
+                current_router = self._router.state.by_acceptance_id.get(
+                    grant.record.acceptance_id
+                )
+                if current_router != grant.record:
+                    raise EmployeeDispatchError("employee Router grant changed")
+                self._validate_employee(current, grant)
+                status = self._channels.status(grant.request.agent_id)
+                authority_connection = self._validate_channel(status, grant)
+                router_event = self._router.preflight_dispatch_event_unlocked(
+                    acceptance_id=grant.record.acceptance_id,
+                )
+                binding = self._build_binding(
+                    grant=grant,
+                    employee=current,
+                    slock_binding=slock_binding,
+                    rendered=rendered,
+                    authority_connection=authority_connection,
+                )
+                events = (
+                    router_event,
+                    JournalEvent(
+                        event_type=ATTEMPT_BOUND,
+                        aggregate_id=binding.attempt_id,
+                        payload={"binding": binding.to_dict()},
+                    ),
+                    JournalEvent(
+                        event_type=ATTEMPT_DISPATCH_COMMITTED,
+                        aggregate_id=binding.attempt_id,
+                        payload={
+                            "attempt_id": binding.attempt_id,
+                            "permit_id": binding.permit_id,
+                        },
+                    ),
+                )
+                result = self._commit_events_unlocked(events)
+                self._apply_committed_frame_unlocked(result.frame)
+        except SlockEngineResolutionError:
+            self._router.reject_dispatch_candidate(
+                grant.record.acceptance_id,
+                reason_code="slock_unavailable",
+            )
+            return None
+        permit = self._gateway.issue_permit(
+            binding=binding,
+            prompt=rendered.prompt,
+            engine=slock_binding.engine,
+            agent=agent,
+            timeout_seconds=self._timeout_seconds,
+            env=env,
+        )
+        return PreparedEmployeeDispatch(binding, permit, rendered.prompt)
+
+    def _presynchronize_domains(self) -> tuple[int, str]:
+        """Perform potentially full projection repair before the commit section."""
+
+        with self._projection_sync_lock:
+            with self._hire.employee_dispatch_guard():
+                self._hire.synchronize_projection_unlocked()
+            with self._ingress.employee_dispatch_guard(router=self._router):
+                self._ingress.synchronize_projection_unlocked()
+                self._router.synchronize_projection_unlocked()
+            with self._data.employee_dispatch_guard():
+                self._data.synchronize_projection_unlocked()
+            self._synchronize_gateway_unlocked()
+            last = self._writer.get_last_frame()
+            return (0, "") if last is None else (last.sequence, last.frame_hash)
+
+    def _require_presynchronized_head(self, expected: tuple[int, str]) -> None:
+        """Verify every projection and the Journal still share one captured head."""
+
+        last = self._writer.get_last_frame()
+        current = (0, "") if last is None else (last.sequence, last.frame_hash)
+        projection_heads = (
+            (
+                self._hire.projection_state.cursor_sequence,
+                self._hire.projection_state.cursor_hash,
+            ),
+            (self._ingress.state.cursor_sequence, self._ingress.state.cursor_hash),
+            (self._router.state.cursor_sequence, self._router.state.cursor_hash),
+            (self._data.state.cursor_sequence, self._data.state.cursor_hash),
+            (
+                self._gateway_state.cursor_sequence,
+                self._gateway_state.cursor_hash,
+            ),
+        )
+        if current != expected or any(head != expected for head in projection_heads):
+            raise _ProjectionHeadChanged
+
+    def execute_prepared(
+        self,
+        prepared: PreparedEmployeeDispatch,
+    ) -> FinalizedEmployeeAttempt:
+        result = self._gateway.execute_permit(prepared.permit)
+        return self.finalize_attempt(
+            prepared.binding.attempt_id,
+            result,
+            request_text=prepared.prompt,
+        )
+
+    def dispatch_next(self) -> FinalizedEmployeeAttempt | None:
+        prepared = self.prepare_next()
+        return None if prepared is None else self.execute_prepared(prepared)
+
+    def finalize_attempt(
+        self,
+        attempt_id: str,
+        execution_result: GatewayExecutionResult,
+        *,
+        request_text: str = "",
+    ) -> FinalizedEmployeeAttempt:
+        """Stage history lock-free, then commit all terminal metadata together."""
+
+        self._synchronize_gateway_from_journal()
+        lifecycle = self._gateway_state.attempts.get(attempt_id)
+        if lifecycle is None or not lifecycle.dispatch_committed:
+            raise EmployeeDispatchError("attempt is not dispatch committed")
+        if lifecycle.terminal_status:
+            if (
+                lifecycle.terminal_status != execution_result.status.value
+                or lifecycle.result_digest != _result_digest(execution_result)
+            ):
+                raise EmployeeDispatchError("attempt terminal result conflicts")
+            return FinalizedEmployeeAttempt(
+                attempt_id,
+                execution_result.status,
+                lifecycle.history_record_id,
+                lifecycle.terminal_sequence,
+            )
+        ended_at = self._timestamp()
+        record, payload = self._history_models(
+            lifecycle.binding,
+            execution_result,
+            request_text=request_text,
+            ended_at=ended_at,
+        )
+        staged = self._data.stage_history_payload(record, payload)
+        anchored = False
+        try:
+            for _attempt in range(3):
+                captured_head = self._presynchronize_domains()
+                try:
+                    with slock_activation_guard(), ExitStack() as stack:
+                        stack.enter_context(self._projection_sync_lock)
+                        stack.enter_context(self._hire.employee_dispatch_guard())
+                        stack.enter_context(
+                            self._ingress.employee_dispatch_guard(router=self._router)
+                        )
+                        stack.enter_context(self._data.employee_dispatch_guard())
+                        stack.enter_context(self._channels.employee_dispatch_guard())
+                        stack.enter_context(self._writer.transaction_guard())
+                        self._require_presynchronized_head(captured_head)
+                        lifecycle = self._gateway_state.attempts.get(attempt_id)
+                        if lifecycle is None:
+                            raise EmployeeDispatchError(
+                                "attempt disappeared during terminal commit"
+                            )
+                        if lifecycle.terminal_status:
+                            if (
+                                lifecycle.terminal_status
+                                != execution_result.status.value
+                                or lifecycle.result_digest
+                                != _result_digest(execution_result)
+                            ):
+                                raise EmployeeDispatchError(
+                                    "attempt terminal result conflicts"
+                                )
+                            raced = FinalizedEmployeeAttempt(
+                                attempt_id,
+                                execution_result.status,
+                                lifecycle.history_record_id,
+                                lifecycle.terminal_sequence,
+                            )
+                        else:
+                            raced = None
+                        if raced is None:
+                            history_event = self._data.preflight_history_event_unlocked(
+                                staged
+                            )
+                            router_event = self._router.preflight_terminal_event_unlocked(
+                                acceptance_id=lifecycle.binding.acceptance_id,
+                                reason_code=execution_result.status.value,
+                            )
+                            terminal_event = JournalEvent(
+                                event_type=ATTEMPT_TERMINAL,
+                                aggregate_id=attempt_id,
+                                payload={
+                                    "attempt_id": attempt_id,
+                                    "terminal_epoch": 1,
+                                    "status": execution_result.status.value,
+                                    "result_digest": _result_digest(execution_result),
+                                    "history_record_id": record.record_id,
+                                    "ended_at": ended_at,
+                                },
+                            )
+                            commit = self._commit_events_unlocked(
+                                (history_event, terminal_event, router_event)
+                            )
+                            anchored = True
+                            self._apply_committed_frame_unlocked(commit.frame)
+                            return FinalizedEmployeeAttempt(
+                                attempt_id,
+                                execution_result.status,
+                                record.record_id,
+                                commit.frame.sequence,
+                            )
+                    self._data.quarantine_staged_history(staged)
+                    return raced
+                except _ProjectionHeadChanged:
+                    continue
+            raise EmployeeDispatchError("employee terminal head remained unstable")
+        except Exception:
+            if not anchored:
+                self._data.quarantine_staged_history(staged)
+            raise
+
+    def recover_incomplete_attempts(self) -> tuple[FinalizedEmployeeAttempt, ...]:
+        """Terminalize unknown committed outcomes; never call the execution gateway."""
+
+        self._recover_legacy_router_dispatches()
+        self._synchronize_gateway_from_journal()
+        pending = tuple(
+            attempt_id
+            for attempt_id, record in self._gateway_state.attempts.items()
+            if record.dispatch_committed and not record.terminal_status
+        )
+        return tuple(
+            self.finalize_attempt(
+                attempt_id,
+                GatewayExecutionResult(
+                    GatewayExecutionStatus.ACTION_REQUIRED,
+                    safe_error_code="unknown_dispatch_outcome",
+                ),
+            )
+            for attempt_id in pending
+        )
+
+    def _recover_legacy_router_dispatches(self) -> int:
+        """Dispose Router-only dispatches without ever re-running ACP.
+
+        Older code could anchor ``router_dispatching`` without an attempt
+        binding in that frame.  Its external outcome is unknowable, so the
+        only safe recovery is a durable ``action_required`` terminal.
+        """
+
+        for _attempt in range(3):
+            captured_head = self._presynchronize_domains()
+            try:
+                return self._recover_legacy_router_dispatches_once(captured_head)
+            except _ProjectionHeadChanged:
+                continue
+        raise EmployeeDispatchError("employee recovery head remained unstable")
+
+    def _recover_legacy_router_dispatches_once(
+        self,
+        captured_head: tuple[int, str],
+    ) -> int:
+        with slock_activation_guard(), ExitStack() as stack:
+            stack.enter_context(self._projection_sync_lock)
+            stack.enter_context(self._hire.employee_dispatch_guard())
+            stack.enter_context(
+                self._ingress.employee_dispatch_guard(router=self._router)
+            )
+            stack.enter_context(self._data.employee_dispatch_guard())
+            stack.enter_context(self._channels.employee_dispatch_guard())
+            stack.enter_context(self._writer.transaction_guard())
+            self._require_presynchronized_head(captured_head)
+            legacy = tuple(
+                record
+                for record in self._router.state.by_acceptance_id.values()
+                if record.state == "dispatching"
+                and record.acceptance_id
+                not in self._gateway_state.attempt_by_acceptance_id
+            )
+            if not legacy:
+                return 0
+            events = tuple(
+                self._router.preflight_terminal_event_unlocked(
+                    acceptance_id=record.acceptance_id,
+                    reason_code=GatewayExecutionStatus.ACTION_REQUIRED.value,
+                )
+                for record in legacy
+            )
+            commit = self._commit_events_unlocked(events)
+            self._apply_committed_frame_unlocked(commit.frame)
+            return len(events)
+
+    def _commit_events_unlocked(self, events: tuple[JournalEvent, ...]):
+        versions = self._writer.get_aggregate_versions(
+            {event.aggregate_id for event in events}
+        )
+        result = self._writer.commit(
+            events,
+            versions,
+            expected_head_sequence=self._gateway_state.cursor_sequence,
+            expected_head_hash=self._gateway_state.cursor_hash or None,
+        )
+        if result.state is not CommitState.ANCHORED:
+            raise EmployeeDispatchError("employee dispatch frame was not anchored")
+        return result
+
+    def _apply_committed_frame_unlocked(self, frame) -> None:
+        reduce_gateway_frame(self._gateway_state, frame)
+        self._router.apply_committed_frame_unlocked(frame)
+        self._data.apply_committed_frame_unlocked(frame)
+        self._ingress.apply_committed_frame_unlocked(frame)
+        apply_frame(self._hire.projection_state, frame)
+
+    def _synchronize_gateway_from_journal(self) -> None:
+        with self._projection_sync_lock:
+            self._synchronize_gateway_unlocked()
+
+    def _synchronize_gateway_unlocked(self) -> None:
+        last = self._writer.get_last_frame()
+        expected_sequence = 0 if last is None else last.sequence
+        expected_hash = "" if last is None else last.frame_hash
+        if (
+            self._gateway_state.cursor_sequence == expected_sequence
+            and self._gateway_state.cursor_hash == expected_hash
+        ):
+            return
+        fresh = GatewayProjectionState()
+        for frame in self._writer.replay():
+            reduce_gateway_frame(fresh, frame)
+        self._gateway_state = fresh
+
+    def _build_binding(
+        self,
+        *,
+        grant,
+        employee,
+        slock_binding,
+        rendered: RenderedEmployeePrompt,
+        authority_connection: str,
+    ) -> DispatchBinding:
+        acceptance = grant.record.acceptance_id
+        digest = hashlib.sha256(acceptance.encode()).hexdigest()
+        authority = grant.record.authority
+        assert authority is not None
+        return DispatchBinding(
+            schema_version=1,
+            permit_id="prm_" + _stable_hash("permit", acceptance),
+            attempt_id="att_" + _stable_hash("attempt", acceptance),
+            acceptance_id=acceptance,
+            ingress_aggregate_id=grant.record.aggregate_id,
+            envelope_id=grant.record.envelope_id,
+            payload_digest=grant.payload.payload_sha256,
+            tenant_key=employee.tenant_key,
+            agent_id=employee.agent_id,
+            employee_version=employee.aggregate_version,
+            owner_principal_id=employee.owner_principal_id,
+            bot_principal_id=authority.bot_principal_id,
+            app_id=authority.app_id,
+            channel_generation=authority.channel_generation,
+            ingress_connection_id=authority.connection_id,
+            authority_connection_id=authority_connection,
+            requester_principal_id=grant.request.requester_principal_id,
+            task_id="task_" + digest,
+            run_id="run_" + digest,
+            message_id=grant.request.current_message_id,
+            thread_root_id=grant.request.thread_root_message_id,
+            thread_id=grant.request.feishu_thread_id,
+            chat_id=grant.request.chat_id,
+            slock_engine_identity=slock_binding.engine_identity,
+            slock_chat_id=slock_binding.chat_id,
+            slock_root_identity=slock_binding.root_identity,
+            tool=employee.tool,
+            model=employee.model,
+            profile=employee.profile,
+            effort=employee.effort,
+            security_profile="employee_v1",
+            capabilities=employee.capabilities,
+            permissions=employee.permissions,
+            constraints_digest=grant.request.constraints_digest,
+            system_prompt_token_reserve=grant.request.system_prompt_token_reserve,
+            render_contract_digest=rendered.render_contract_digest,
+            context_snapshot_hash=rendered.context_snapshot_hash,
+            context_watermark_digest=rendered.context_watermark_digest,
+            dispatch_committed_at=self._timestamp(),
+        )
+
+    def _history_models(
+        self,
+        binding: DispatchBinding,
+        result: GatewayExecutionResult,
+        *,
+        request_text: str,
+        ended_at: str,
+    ) -> tuple[ExecutionHistoryRecordV1, ExecutionHistoryPayloadV1]:
+        context = ExecutionAttemptContext(
+            tenant_key=binding.tenant_key,
+            agent_id=binding.agent_id,
+            owner_principal_id=binding.owner_principal_id,
+            requester_principal_id=binding.requester_principal_id,
+            task_id=binding.task_id,
+            run_id=binding.run_id,
+            attempt_id=binding.attempt_id,
+            message_id=binding.message_id,
+            thread_root_id=binding.thread_root_id,
+            chat_id=binding.chat_id,
+            tool=binding.tool,
+            model=binding.model,
+            effort=binding.effort,
+            started_at=binding.dispatch_committed_at,
+        )
+        head = self._data.get_head()
+        category = "timeout" if result.status is GatewayExecutionStatus.TIMEOUT else (
+            "none" if result.status is GatewayExecutionStatus.COMPLETED else "unknown"
+        )
+        record = ExecutionHistoryRecordV1.from_attempt(
+            context,
+            ended_at=ended_at,
+            status=result.status.value,
+            safe_summary=SafeExecutionSummary.build(
+                status=result.status.value,
+                error_category=category,
+            ),
+            prompt_tokens=0,
+            completion_tokens=0,
+            predecessor_sequence=head.sequence,
+            predecessor_hash=head.logical_hash,
+            shard_timezone="UTC",
+        )
+        payload = ExecutionHistoryPayloadV1(
+            record_id=record.record_id,
+            occurrence_key=record.occurrence_key,
+            request_text=request_text,
+            result_text=result.output,
+            error_detail=result.safe_error_code,
+        )
+        return record, payload
+
+    @staticmethod
+    def _validate_employee(employee, grant) -> None:
+        authority = grant.record.authority
+        if (
+            employee is None
+            or employee.state is not EmployeeState.ACTIVE
+            or employee.worker_type is not WorkerType.VISIBLE
+            or grant.request.chat_id not in employee.member_groups
+            or authority is None
+            or employee.aggregate_version != authority.employee_version
+            or (employee.tool, employee.model, employee.effort)
+            != (authority.tool, authority.model, authority.effort)
+        ):
+            raise EmployeeDispatchError("employee dispatch authority is stale")
+
+    @staticmethod
+    def _validate_channel(status, grant) -> str:
+        authority = grant.record.authority
+        ready = getattr(status, "ready_metadata", None)
+        connection = ready.get("connection_id") if isinstance(ready, Mapping) else None
+        if (
+            authority is None
+            or status is None
+            or status.state is not ChannelProcessState.READY
+            or status.agent_id != authority.agent_id
+            or status.app_id != authority.app_id
+            or status.tenant_key != authority.tenant_key
+            or status.bot_principal_id != authority.bot_principal_id
+            or status.generation != authority.channel_generation
+            or not isinstance(connection, str)
+            or not connection
+        ):
+            raise EmployeeDispatchError("employee channel authority is stale")
+        return connection
+
+    @staticmethod
+    def _validate_context_watermark(request, snapshot) -> None:
+        watermark = snapshot.watermark
+        if (
+            watermark is None
+            or watermark.tenant_key != request.tenant_key
+            or watermark.chat_id != request.chat_id
+            or watermark.thread_root_id != request.thread_root_message_id
+            or watermark.feishu_thread_id != request.feishu_thread_id
+            or snapshot.constraints_digest != request.constraints_digest
+            or snapshot.system_prompt_tokens_reserved
+            != request.system_prompt_token_reserve
+        ):
+            raise EmployeeDispatchError("employee Context watermark is stale")
+
+    def _timestamp(self) -> str:
+        value = self._clock()
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise EmployeeDispatchError("coordinator clock must return aware datetime")
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _stable_hash(namespace: str, value: str) -> str:
+    return hashlib.sha256(f"{namespace}\0{value}".encode()).hexdigest()
+
+
+def _result_digest(result: GatewayExecutionResult) -> str:
+    encoded = json.dumps(
+        {
+            "status": result.status.value,
+            "output": result.output,
+            "safe_error_code": result.safe_error_code,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+__all__ = [
+    "EmployeeDispatchCoordinator",
+    "EmployeeDispatchError",
+    "FinalizedEmployeeAttempt",
+    "PreparedEmployeeDispatch",
+]

@@ -135,7 +135,12 @@ class Phase3ImplementationGate:
         expected_evidence_level = (
             "integration"
             if self.artifact_kind
-            in {"employee_channel_bridge", "employee_router_queue"}
+            in {
+                "employee_channel_bridge",
+                "employee_router_queue",
+                "employee_slock_gateway",
+                "employee_terminal_pipeline",
+            }
             else "chaos_security"
         )
         if self.evidence_level != expected_evidence_level:
@@ -168,6 +173,27 @@ class Phase3ImplementationGate:
                 or self.environment != "local_process_harness"
             ):
                 raise ValueError(f"invalid Router queue profile for {self.id}")
+        elif self.artifact_kind == "employee_slock_gateway":
+            if (
+                self.artifact_profile_id != "employee-slock-gateway-v1"
+                or wheel is not None
+                or self.environment != "local_slock_harness"
+            ):
+                raise ValueError(f"invalid employee Slock gateway profile for {self.id}")
+        elif self.artifact_kind == "employee_terminal_pipeline":
+            if (
+                self.artifact_profile_id != "employee-terminal-pipeline-v1"
+                or wheel is not None
+                or self.environment != "local_process_harness"
+            ):
+                raise ValueError(f"invalid employee terminal profile for {self.id}")
+        elif self.artifact_kind == "employee_attempt_recovery":
+            if (
+                self.artifact_profile_id != "employee-attempt-recovery-v1"
+                or wheel is not None
+                or self.environment != "local_process_harness"
+            ):
+                raise ValueError(f"invalid employee recovery profile for {self.id}")
         else:
             raise ValueError(f"unsupported artifact kind for {self.id}")
 

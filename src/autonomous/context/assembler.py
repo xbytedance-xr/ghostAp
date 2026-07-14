@@ -578,6 +578,7 @@ class EmployeeThreadContext:
                 "l1_digest": hashlib.sha256(l1_summary.encode()).hexdigest(),
                 "l2_digest": hashlib.sha256(l2_summary.encode()).hexdigest(),
                 "reserve": reserve,
+                "tokens_per_char": self._config.tokens_per_char,
                 "constraints_digest": constraints_digest,
                 "trace": [
                     (
@@ -604,6 +605,7 @@ class EmployeeThreadContext:
             snapshot_hash=snapshot_hash,
             system_prompt_tokens_reserved=reserve,
             constraints_digest=constraints_digest,
+            tokens_per_char=self._config.tokens_per_char,
         )
 
 

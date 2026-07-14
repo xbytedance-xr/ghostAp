@@ -34,7 +34,7 @@ def _request(message_id: str = "om_recover") -> EmployeeHireRequest:
         message_id=message_id,
         requester_principal_id="ou_admin",
         tenant_key="tenant-a",
-        profile="max",
+        profile="standard",
         role="software engineer",
         persona="careful reviewer",
     )
