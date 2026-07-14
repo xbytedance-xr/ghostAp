@@ -152,6 +152,33 @@ class EmployeeDataService:
             self._replace_state_unlocked(fresh)
             return fresh
 
+    def get_history_payload(self, record_id: str) -> ExecutionHistoryPayloadV1:
+        """Read and authenticate one canonical terminal history payload."""
+
+        with self._mutex:
+            self._synchronize_projection_unlocked()
+            metadata = self._state.history_records.get(record_id)
+            if metadata is None or metadata.tombstoned:
+                raise KeyError(record_id)
+            ref = BlobRef.from_dict(metadata.blob_ref)
+            validate_blob_ref_labels(
+                ref,
+                build_history_labels(
+                    metadata.tenant_key,
+                    metadata.owner_principal_id,
+                    metadata.record_id,
+                ),
+            )
+            raw = self._blob_store.read(ref)
+            payload = ExecutionHistoryPayloadV1.from_dict(json.loads(raw))
+            if (
+                payload.record_id != metadata.record_id
+                or payload.occurrence_key != metadata.occurrence_key
+                or _canonical_payload(payload) != raw
+            ):
+                raise DataBlobError("history payload verification failed")
+            return payload
+
     def quarantine_unreferenced_blobs(self) -> int:
         """Quarantine orphan blobs against one locked projection snapshot."""
         with self._mutex:

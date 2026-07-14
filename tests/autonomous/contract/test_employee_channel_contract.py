@@ -29,6 +29,7 @@ from src.autonomous.provisioning.channel_protocol import (
     encode_frame,
 )
 from src.autonomous.provisioning.channel_worker import (
+    _handle_update_card,
     _normalize_sdk_ingress,
     create_employee_channel,
     extract_raw_message_metadata,
@@ -77,6 +78,90 @@ def test_protocol_round_trips_a_strict_versioned_ndjson_frame() -> None:
 
     assert encoded.endswith(b"\n")
     assert decode_frame(encoded) == frame
+
+
+def test_update_card_ipc_is_exact_bounded_and_secret_free() -> None:
+    frame = ChannelFrame(
+        frame_type=FrameType.UPDATE_CARD,
+        agent_id="agt_1",
+        generation=7,
+        sequence=4,
+        payload={
+            "request_id": "update_1",
+            "message_id": "om_employee_card",
+            "card": {"schema": "2.0", "body": {"elements": []}},
+        },
+    )
+
+    assert decode_frame(encode_frame(frame)) == frame
+    with pytest.raises(ProtocolError, match="update card"):
+        encode_frame(
+            ChannelFrame(
+                FrameType.UPDATE_CARD,
+                "agt_1",
+                7,
+                5,
+                {**frame.payload, "extra": True},
+            )
+        )
+    with pytest.raises(ProtocolError, match="credential material"):
+        encode_frame(
+            ChannelFrame(
+                FrameType.UPDATE_CARD,
+                "agt_1",
+                7,
+                6,
+                {**frame.payload, "card": {"token": "forbidden"}},
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_update_handler_calls_public_sdk_method_and_returns_bound_receipt() -> None:
+    calls: list[tuple[str, dict]] = []
+    emitted: list[tuple[FrameType, dict]] = []
+
+    class _Result:
+        success = True
+        message_id = "om_employee_card"
+
+    class _Channel:
+        async def update_card(self, message_id: str, card: dict) -> _Result:
+            calls.append((message_id, card))
+            return _Result()
+
+    class _Emitter:
+        def emit(self, kind: FrameType, payload: dict) -> None:
+            emitted.append((kind, payload))
+
+    await _handle_update_card(
+        _Channel(),
+        {
+            "request_id": "update_1",
+            "message_id": "om_employee_card",
+            "card": {"schema": "2.0"},
+        },
+        _Emitter(),
+        app_id="cli_employee",
+        generation=3,
+        connection_id="conn_employee",
+    )
+
+    assert calls == [("om_employee_card", {"schema": "2.0"})]
+    assert emitted == [
+        (
+            FrameType.HEALTH,
+            {
+                "operation": "update_card",
+                "request_id": "update_1",
+                "success": True,
+                "app_id": "cli_employee",
+                "generation": 3,
+                "connection_id": "conn_employee",
+                "message_id": "om_employee_card",
+            },
+        )
+    ]
 
 
 @pytest.mark.parametrize(

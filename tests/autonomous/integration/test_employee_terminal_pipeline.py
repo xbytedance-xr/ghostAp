@@ -64,11 +64,14 @@ def test_every_started_attempt_has_one_terminal_or_action_required(tmp_path) -> 
         ]
         assert finalized.status is status
         assert finalized.history_record_id in harness.data.state.history_records
-        assert harness.coordinator.finalize_attempt(
-            prepared.binding.attempt_id,
-            result,
-            request_text=prepared.prompt,
-        ) == finalized
+        assert (
+            harness.coordinator.finalize_attempt(
+                prepared.binding.attempt_id,
+                result,
+                request_text=prepared.prompt,
+            )
+            == finalized
+        )
         conflicting = dispatch.GatewayExecutionResult(
             status=status,
             output="different" if status is dispatch.GatewayExecutionStatus.COMPLETED else "",
@@ -91,6 +94,102 @@ def test_history_blob_is_staged_before_atomic_terminal_commit() -> None:
     assert hasattr(EmployeeDataService, "stage_history_payload")
     assert hasattr(dispatch, "EmployeeDispatchCoordinator")
     assert hasattr(dispatch.EmployeeDispatchCoordinator, "finalize_attempt")
+
+
+def test_employee_terminal_card_hook_runs_after_atomic_terminal_anchor(tmp_path) -> None:
+    from src.autonomous.ingress import dispatch
+    from tests.autonomous.integration.test_employee_slock_gateway import (
+        _real_coordinator_harness,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+    observed: list[str] = []
+
+    class _Lifecycle:
+        def queued(self, _binding):
+            observed.append("queued")
+
+        def running(self, _binding):
+            observed.append("running")
+
+        def terminal(self, _binding, _result):
+            frame = tuple(harness.writer.replay())[-1]
+            assert [event.event_type for event in frame.events] == [
+                "employee.history.recorded",
+                "employee.execution_attempt.terminal",
+                "employee.ingress.router_terminal",
+            ]
+            observed.append("terminal")
+
+    harness.coordinator._attempt_lifecycle = _Lifecycle()
+    try:
+        prepared = harness.coordinator.prepare_next()
+        assert prepared is not None
+        harness.coordinator.finalize_attempt(
+            prepared.binding.attempt_id,
+            dispatch.GatewayExecutionResult(
+                dispatch.GatewayExecutionStatus.COMPLETED,
+                output="done",
+            ),
+            request_text=prepared.prompt,
+        )
+
+        assert observed == ["queued", "terminal"]
+    finally:
+        harness.close()
+
+
+def test_recovery_rebuilds_missing_terminal_snapshot_without_rerunning_acp(
+    tmp_path,
+) -> None:
+    from src.autonomous.ingress import dispatch
+    from tests.autonomous.integration.test_employee_slock_gateway import (
+        _real_coordinator_harness,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+
+    class _CrashAfterAnchor:
+        def queued(self, _binding):
+            return None
+
+        def running(self, _binding):
+            return None
+
+        def terminal(self, _binding, _result):
+            raise RuntimeError("crash after terminal anchor")
+
+    harness.coordinator._attempt_lifecycle = _CrashAfterAnchor()
+    prepared = harness.coordinator.prepare_next()
+    assert prepared is not None
+    with pytest.raises(RuntimeError, match="crash after terminal anchor"):
+        harness.coordinator.finalize_attempt(
+            prepared.binding.attempt_id,
+            dispatch.GatewayExecutionResult(
+                dispatch.GatewayExecutionStatus.COMPLETED,
+                output="durable result",
+            ),
+            request_text=prepared.prompt,
+        )
+
+    recovered: list[tuple[str, str]] = []
+
+    class _RecoveredLifecycle:
+        def queued(self, _binding):
+            raise AssertionError("reconciliation must use the terminal hook")
+
+        def running(self, _binding):
+            raise AssertionError("reconciliation must not rerun execution")
+
+        def terminal(self, binding, result):
+            recovered.append((binding.attempt_id, result.output))
+
+    harness.coordinator._attempt_lifecycle = _RecoveredLifecycle()
+    try:
+        assert harness.coordinator.reconcile_terminal_snapshots() == 1
+        assert recovered == [(prepared.binding.attempt_id, "durable result")]
+    finally:
+        harness.close()
 
 
 def test_terminal_commit_section_never_replays_full_journal(
@@ -228,9 +327,7 @@ def test_history_failure_blocks_false_success_and_recovery_requires_action(
         for frame in harness.writer.replay()
         for event in frame.events
     )
-    assert harness.router.state.by_acceptance_id[
-        prepared.binding.acceptance_id
-    ].state == "dispatching"
+    assert harness.router.state.by_acceptance_id[prepared.binding.acceptance_id].state == "dispatching"
     monkeypatch.undo()
 
     recovered = harness.restart().recover_incomplete_attempts()
@@ -308,10 +405,7 @@ def test_anchored_terminal_apply_failure_keeps_live_history_blob(
     monkeypatch.undo()
     restarted = harness.restart()
     assert restarted.recover_incomplete_attempts() == ()
-    assert (
-        restarted.state.attempts[prepared.binding.attempt_id].terminal_status
-        == "completed"
-    )
+    assert restarted.state.attempts[prepared.binding.attempt_id].terminal_status == "completed"
     harness.close()
 
 

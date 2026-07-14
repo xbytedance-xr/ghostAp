@@ -71,6 +71,7 @@ def _settings(
         settings.autonomous_data_active_key_id = "k1"
         settings.autonomous_data_blob_dir = str(tmp_path / "data-blobs")
         settings.autonomous_employee_ingress_blob_dir = str(tmp_path / "ingress-blobs")
+        settings.autonomous_employee_outbox_blob_dir = str(tmp_path / "outbox-blobs")
         settings.autonomous_employee_attachment_staging_dir = str(tmp_path / "attachments")
         settings.autonomous_employee_system_prompt_token_reserve = 4096
         settings.autonomous_employee_queue_per_employee_limit = 8
@@ -198,6 +199,18 @@ class _Channels:
             generation=generation,
             connection_id=status.ready_metadata["connection_id"],
             message_id="om_employee_reply",
+        )
+
+    def update_card(self, agent_id, *, generation, message_id, card):
+        status = self.statuses[agent_id]
+        self.sent.append((agent_id, generation, message_id, card, "update"))
+        return ChannelSendReceipt(
+            request_id="update_runtime",
+            success=True,
+            app_id=status.identity["app_id"],
+            generation=generation,
+            connection_id=status.ready_metadata["connection_id"],
+            message_id=message_id,
         )
 
     def recover(self, desired):
@@ -535,6 +548,8 @@ def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -
     assert runtime.ingress_service is not None
     assert runtime.ingress_router is not None
     assert runtime.dispatch_coordinator is not None
+    assert runtime.outbox_service is not None
+    assert runtime.outbox_delivery is not None
     assert runtime.execution_readiness().ready is True
     runtime.close()
 
@@ -574,6 +589,27 @@ def test_task7_execution_readiness_requires_environment_provider(
 
     assert runtime.hire_readiness().ready is True
     assert runtime.execution_readiness().blockers == ("employee_environment",)
+    runtime.close()
+
+
+def test_phase4_execution_readiness_requires_employee_card_update_capability(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    channels.update_card = None  # type: ignore[method-assign]
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+    )
+
+    assert runtime.hire_readiness().ready is True
+    assert runtime.execution_readiness().blockers == ("employee_outbox",)
     runtime.close()
 
 
@@ -769,9 +805,7 @@ def test_task7_runtime_routes_anchored_inbox_into_owned_queue(tmp_path: Path) ->
     acceptance_id = acceptance.acceptance.acceptance_id
     routed = runtime.ingress_router.state.by_acceptance_id[acceptance_id]
     assert routed.state == "queued", routed.reason_code
-    assert runtime.ingress_service.state.by_acceptance_id[
-        acceptance_id
-    ].disposition is None
+    assert runtime.ingress_service.state.by_acceptance_id[acceptance_id].disposition is None
     runtime._dispatch_thread = None
     runtime.close()
 
@@ -878,9 +912,7 @@ def test_active_employee_requires_employee_scoped_context_probe_and_same_head(
     )
     assert runtime.context_service is not None
     assert runtime.data_composition is not None
-    assert runtime.data_composition.document_materializer.root == (
-        tmp_path / "slock" / "agents"
-    )
+    assert runtime.data_composition.document_materializer.root == (tmp_path / "slock" / "agents")
     active = _activate_employee(runtime, channels)
 
     readiness = runtime.execution_readiness(active.agent_id)
@@ -1046,9 +1078,7 @@ def test_recovery_invalidates_employee_context_after_durable_retirement(
     runtime.recover()
 
     assert source_factory.invalidated == [active.agent_id]
-    assert runtime.execution_readiness(active.agent_id).blockers == (
-        "employee_not_active",
-    )
+    assert runtime.execution_readiness(active.agent_id).blockers == ("employee_not_active",)
     runtime.close()
 
 
@@ -1389,9 +1419,7 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
         ),
     )
     assert first.data_composition is not None
-    employee = first.hire_service.synchronize_projection().employees[
-        active.agent_id
-    ]
+    employee = first.hire_service.synchronize_projection().employees[active.agent_id]
     first.data_composition.publish_document(
         PublishEmployeeDocumentCommand(
             agent_id=active.agent_id,
@@ -1403,11 +1431,14 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
             content_type="text/markdown",
         )
     )
-    assert first.data_composition.memory_facade.read_l1(
-        active.agent_id,
-        active.tenant_key,
-        allow_unscoped_legacy=False,
-    ) == "l1-memory"
+    assert (
+        first.data_composition.memory_facade.read_l1(
+            active.agent_id,
+            active.tenant_key,
+            allow_unscoped_legacy=False,
+        )
+        == "l1-memory"
+    )
     context_request = AuthorizedContextRequest(
         tenant_key=active.tenant_key,
         agent_id=active.agent_id,
@@ -1449,24 +1480,28 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
         time.sleep(0.05)
     assert pending is not None
     callback = restarted_channels.callbacks[pending.agent_id]
-    callback({
-        "event": "rawMessageMeta",
-        "data": {
-            "event_id": "evt_context_restart",
-            "tenant_key": pending.tenant_key,
-            "message_id": "om_context_restart",
-        },
-    })
-    callback({
-        "event": "message",
-        "data": {
-            "id": "om_context_restart",
-            "content_text": "/status",
-            "conversation": {"chat_type": "p2p"},
-            "sender": {"open_id": "ou_admin"},
-            "raw": {},
-        },
-    })
+    callback(
+        {
+            "event": "rawMessageMeta",
+            "data": {
+                "event_id": "evt_context_restart",
+                "tenant_key": pending.tenant_key,
+                "message_id": "om_context_restart",
+            },
+        }
+    )
+    callback(
+        {
+            "event": "message",
+            "data": {
+                "id": "om_context_restart",
+                "content_text": "/status",
+                "conversation": {"chat_type": "p2p"},
+                "sender": {"open_id": "ou_admin"},
+                "raw": {},
+            },
+        }
+    )
     recovered = None
     while time.monotonic() < deadline:
         recovered = restarted.hire_service.get_state(active.intent_id)
@@ -1475,9 +1510,7 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
         time.sleep(0.02)
     assert recovered is not None
     assert restarted.execution_readiness(recovered.agent_id).ready is True
-    assert restarted_source.probed == [
-        (recovered.agent_id, recovered.app_id, recovered.credential_ref)
-    ]
+    assert restarted_source.probed == [(recovered.agent_id, recovered.app_id, recovered.credential_ref)]
     assert restarted.data_composition is not None
     data_head = restarted.data_composition.service.get_head()
     projection = restarted.hire_service.projection_state
@@ -1506,11 +1539,7 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
     assert after_restart.l1_summary == ""
     assert after_restart.l2_summary == ""
     assert after_restart.group_messages == ()
-    deleted = next(
-        message
-        for message in after_restart.thread_messages
-        if message.message_id == "om_runtime_deleted"
-    )
+    deleted = next(message for message in after_restart.thread_messages if message.message_id == "om_runtime_deleted")
     assert deleted.deleted is True
     assert deleted.text == ""
     assert after_restart.thread_messages[0].edited is True

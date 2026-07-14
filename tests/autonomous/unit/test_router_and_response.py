@@ -1,4 +1,4 @@
-"""Tests for authorized Context handoff and employee Response Channel."""
+"""Tests for authorized employee Context handoff."""
 
 from __future__ import annotations
 
@@ -16,28 +16,6 @@ from src.autonomous.context import (
     EmployeeExecutionInput,
     ThreadWatermark,
 )
-from src.autonomous.provisioning.response import (
-    DeliveryState,
-    EmployeeResponseChannel,
-)
-
-
-class _FakeDelivery:
-    def __init__(self, *, fail: bool = False) -> None:
-        self._fail = fail
-        self.sent: list[dict] = []
-
-    def send_message(self, **kwargs):
-        if self._fail:
-            raise RuntimeError("delivery failed")
-        self.sent.append(kwargs)
-        return "msg_1"
-
-    def send_card(self, **kwargs):
-        if self._fail:
-            raise RuntimeError("delivery failed")
-        self.sent.append(kwargs)
-        return "msg_2"
 
 
 def _authorized_request() -> AuthorizedContextRequest:
@@ -273,50 +251,3 @@ class TestContextPreparingExecutionPort:
         assert context_service.calls == [request]
         assert fence.calls == [request]
         assert delegate.calls == []
-
-
-class TestEmployeeResponseChannel:
-    def test_enqueue_text_delivers(self) -> None:
-        delivery = _FakeDelivery()
-        channel = EmployeeResponseChannel(delivery=delivery)
-        entry = channel.enqueue_text(
-            agent_id="agt_alpha",
-            chat_id="chat_1",
-            text="Task completed!",
-        )
-        assert entry.state == DeliveryState.DELIVERED
-        assert len(delivery.sent) == 1
-        assert delivery.sent[0]["agent_id"] == "agt_alpha"
-
-    def test_enqueue_card_delivers(self) -> None:
-        delivery = _FakeDelivery()
-        channel = EmployeeResponseChannel(delivery=delivery)
-        entry = channel.enqueue_card(
-            agent_id="agt_alpha",
-            chat_id="chat_1",
-            card_json={"type": "template", "data": {}},
-        )
-        assert entry.state == DeliveryState.DELIVERED
-
-    def test_delivery_failure_retries(self) -> None:
-        delivery = _FakeDelivery(fail=True)
-        channel = EmployeeResponseChannel(delivery=delivery, max_retry=3)
-        entry = channel.enqueue_text(
-            agent_id="agt_alpha",
-            chat_id="chat_1",
-            text="will fail",
-        )
-        assert entry.state == DeliveryState.PENDING
-        assert entry.attempts == 1
-        channel.retry_pending()
-        channel.retry_pending()
-        assert entry.state == DeliveryState.FAILED
-        assert entry.attempts == 3
-
-    def test_pending_count(self) -> None:
-        delivery = _FakeDelivery(fail=True)
-        channel = EmployeeResponseChannel(delivery=delivery, max_retry=5)
-        channel.enqueue_text(agent_id="agt_a", chat_id="c1", text="a")
-        channel.enqueue_text(agent_id="agt_b", chat_id="c2", text="b")
-        assert channel.pending_count() == 2
-        assert channel.pending_count("agt_a") == 1

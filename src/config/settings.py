@@ -695,6 +695,9 @@ class Settings(BaseSettings):
     autonomous_employee_ingress_blob_dir: str = (
         "~/.ghostap/autonomy/ingress-blobs"
     )
+    autonomous_employee_outbox_blob_dir: str = (
+        "~/.ghostap/autonomy/outbox-blobs"
+    )
     autonomous_employee_attachment_staging_dir: str = (
         "~/.ghostap/autonomy/employee-attachments"
     )

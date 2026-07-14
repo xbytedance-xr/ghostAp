@@ -59,6 +59,7 @@ class FrameType(str, Enum):
     ERROR = "ERROR"
     STOP = "STOP"
     SEND = "SEND"
+    UPDATE_CARD = "UPDATE_CARD"
     INGRESS = "INGRESS"
     INGRESS_ACK = "INGRESS_ACK"
 
@@ -243,6 +244,12 @@ def _reject_secret_fields(value: Any) -> None:
 
 
 def _validate_typed_payload(frame: ChannelFrame) -> None:
+    if frame.frame_type is FrameType.UPDATE_CARD:
+        try:
+            _validate_update_card_payload(frame)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ProtocolError("invalid employee update card frame") from exc
+        return
     try:
         if frame.frame_type is FrameType.INGRESS:
             _validate_ingress_payload(frame)
@@ -250,6 +257,24 @@ def _validate_typed_payload(frame: ChannelFrame) -> None:
             _validate_ingress_ack_payload(frame)
     except (TypeError, ValueError, KeyError) as exc:
         raise ProtocolError("invalid employee ingress frame") from exc
+
+
+def _validate_update_card_payload(frame: ChannelFrame) -> None:
+    if set(frame.payload) != {"request_id", "message_id", "card"}:
+        raise ValueError("invalid update card payload fields")
+    request_id = frame.payload["request_id"]
+    message_id = frame.payload["message_id"]
+    card = frame.payload["card"]
+    if (
+        not isinstance(request_id, str)
+        or not request_id.startswith("update_")
+        or len(request_id) > 256
+    ):
+        raise ValueError("invalid update card request_id")
+    if not isinstance(message_id, str) or not message_id or len(message_id) > 256:
+        raise ValueError("invalid update card message_id")
+    if not isinstance(card, dict):
+        raise ValueError("invalid update card body")
 
 
 def _validate_ingress_payload(frame: ChannelFrame) -> None:

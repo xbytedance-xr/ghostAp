@@ -18,6 +18,7 @@
   8. docs/2026-07-12-autonomous-data-plan.md
   9. docs/2026-07-13-autonomous-hire-production-plan.md
   10. docs/2026-07-13-autonomous-thread-context-plan.md
+  11. docs/2026-07-14-autonomous-employee-response-plan.md
 
   然后以当前 Git、源码、运行配置和新鲜测试结果为唯一权威状态进行检查：
 
@@ -69,16 +70,19 @@
       canonical Data composition，拆分 hire/execution readiness，并覆盖 employee app probe、
       shared Journal 同步、restart/rotation/retirement invalidation 与逆序关闭；真实页间
       insert/edit/delete、timeout、重复 token、partial SDK、两把密钥轮换、restart 与 shutdown
-      故障注入均证明 `CONTEXT_UNAVAILABLE` 零 task/ACP 派发。durable ingress 尚未接入该服务
+      故障注入均证明 `CONTEXT_UNAVAILABLE` 零 task/ACP 派发；Phase 3 已把 durable ingress 接入该服务
     - Phase 3 Task 0-7 已完成 durable employee ingress、Projected Registry/ACL/membership
       authority、Journal-backed bounded Router、锚定 dispatch attempt、Context gate、
       真实 Slock `_run_acp_session`、原子 terminal history 与生产 composition/recovery/handoff；
       本地九 selector 已精确聚合，但外部 trusted final-build attestation 仍待 Phase 8
-    - `EmployeeResponseChannel` 明确仍是 in-memory outbox，缺 Journal-backed Durable Outbox、稳定 UUID 卡片和 child-owned stream controller
+    - Phase 4 Employee Response Channel 已完成：冻结 snapshot/binding/effect、员工密钥加密 Blob、
+      Journal replay、稳定 UUIDv5 单卡 create、employee child public `update_card` patch、四元组回执栅栏、
+      terminal fencing、恢复 worker 与 runtime ownership 均已接线；旧 in-memory provisioning response 已删除，
+      delivery coordinator 不持有主 Bot 端口，因此不存在 fallback 路径
     - `FireSaga` 仍是可变内存顺序流程，未满足 Journal SSOT、Effect 锚定、unknown disposition、恢复与归档合同
     - 团队 membership、`/role add/remove`、`/stop` 终态竞态尚未形成生产闭环
-  - 尚无获授权的真实测试/生产租户执行证据。Phase 3 Task 7 关闭时最新
-    Autonomous 全量验证为 `1700 passed, 2 skipped`；两项 skip 分别是未授权真实
+  - 尚无获授权的真实测试/生产租户执行证据。Phase 4 关闭时最新
+    Autonomous 全量验证为 `1723 passed, 2 skipped`；两项 skip 分别是未授权真实
     租户验收和宿主不满足默认 bwrap attestation。这些本地测试只证明代码合同，
     不替代真实 Bot、双租户、桌面/移动 Slash、主 Bot 零代发和 1/10/50 Bot soak。
   - 生产 release 仍缺外部信任组件：不可变 build/workload provenance、部署侧固定 QA trust root、外部单调 attestation ledger、可续期 recovery capability、真实 main-Bot send audit provider 和生产级不可回滚 anchor/见证。
@@ -238,13 +242,17 @@
      - 已完成 Task 7：九个 `EI-*` exact selector 全部本地通过；全局 FI-29 只接受绑定
        `EI-IPC-01`、commit、构建 artifact 与结果摘要的严格 bridge，任意 `passed=true` 仍为 PENDING。
        本地 evidence 不能自我晋级，真实租户与外部 trust 未就绪前 visible limit 必须保持 0
-     - Phase 3 最终 Autonomous `1700 passed, 2 skipped, 1 warning in 397.24s`；下一阶段为
-       Employee Response Channel，不能把 Phase 3 完成误称为 Agent Department 生产就绪
+     - Phase 3 最终 Autonomous `1700 passed, 2 skipped, 1 warning in 397.24s`
   4. Employee Response Channel：
-     - Journal-backed Durable Outbox
-     - 稳定 UUID 幂等创建单张状态卡
-     - child-owned CardStreamController 或已验证的 employee REST patch backend
-     - 员工 Bot 自己发送，主 Bot fallback 和 send count 必须为 0
+     - **已完成**。实施与证据见 `docs/2026-07-14-autonomous-employee-response-plan.md`；采用稳定 UUID
+       employee child create + 同一 child public `update_card` patch，禁止使用不能绑定预创建消息的
+       非幂等 `channel.stream()` 路径
+     - Journal-backed encrypted Durable Outbox、稳定 UUID 单卡、PREPARED/EXECUTING external Effects、
+       monotonic/terminal fencing、restart retry 与 superseded snapshot GC 已完成
+     - employee child create/update IPC 与 app/generation/connection/message receipt fence 已完成；
+       Gateway terminal 卡只在原子执行终态提交后 append，runtime 负责恢复、worker、readiness 与逆序关闭
+     - 员工 Bot 自己发送；主 Bot fallback 路径不存在。fresh Autonomous
+       `1723 passed, 2 skipped, 1 warning in 397.51s`，共享回归 `193 passed`
   5. 团队 membership、`/role add/remove` 与 `/stop` 终态竞态。
   6. `/fire` durable Saga：
      - RETIRING 立即关闭 ingress

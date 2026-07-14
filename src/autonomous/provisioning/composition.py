@@ -47,6 +47,13 @@ from ..ingress.service import EmployeeIngressService, IngressConflictError
 from ..journal.anchor import FileAnchor
 from ..journal.projections import ProjectionState
 from ..journal.writer import JOURNAL_FILENAME, JournalWriter
+from ..outbox.delivery import (
+    EmployeeDeliveryAuthority,
+    EmployeeOutboxDeliveryCoordinator,
+)
+from ..outbox.lifecycle import EmployeeOutboxLifecycle
+from ..outbox.projection import OutboxProjectionState
+from ..outbox.service import EmployeeOutboxService
 from ..supervisor.employee_channels import (
     ChannelProcessState,
     EmployeeChannelSupervisor,
@@ -96,6 +103,15 @@ class _ChannelSupervisor(Protocol):
         target: str,
         message: Any,
         options: Any = None,
+    ) -> Any: ...
+
+    def update_card(
+        self,
+        agent_id: str,
+        *,
+        generation: int,
+        message_id: str,
+        card: dict[str, Any],
     ) -> Any: ...
 
     def close(self) -> None: ...
@@ -153,6 +169,9 @@ class EmployeeDepartmentRuntime:
         self._router: DurableEmployeeIngressRouter | None = None
         self._attachments: AttachmentStagingService | None = None
         self._dispatch: EmployeeDispatchCoordinator | None = None
+        self._outbox: EmployeeOutboxService | None = None
+        self._outbox_delivery: EmployeeOutboxDeliveryCoordinator | None = None
+        self._outbox_lifecycle: EmployeeOutboxLifecycle | None = None
         self._dispatch_thread: threading.Thread | None = None
         self._dispatch_stop = threading.Event()
         self._execution_blockers: tuple[str, ...] = ()
@@ -253,11 +272,7 @@ class EmployeeDepartmentRuntime:
             runtime._channels = channel_supervisor or EmployeeChannelSupervisor(
                 secret_resolver=vault.resolve,
                 ingress_service=runtime._ingress,
-                ingress_binding_resolver=(
-                    runtime._resolve_ingress_binding
-                    if runtime._ingress is not None
-                    else None
-                ),
+                ingress_binding_resolver=(runtime._resolve_ingress_binding if runtime._ingress is not None else None),
                 ingress_ack_timeout=getattr(
                     settings,
                     "autonomous_employee_ingress_ack_timeout_seconds",
@@ -324,6 +339,14 @@ class EmployeeDepartmentRuntime:
     def dispatch_coordinator(self) -> EmployeeDispatchCoordinator | None:
         return self._dispatch
 
+    @property
+    def outbox_service(self) -> EmployeeOutboxService | None:
+        return self._outbox
+
+    @property
+    def outbox_delivery(self) -> EmployeeOutboxDeliveryCoordinator | None:
+        return self._outbox_delivery
+
     def readiness(self) -> RuntimeReadiness:
         return self.hire_readiness()
 
@@ -344,10 +367,14 @@ class EmployeeDepartmentRuntime:
             self._ingress is None
             or self._router is None
             or self._dispatch is None
+            or self._outbox is None
+            or self._outbox_delivery is None
             or self._data is None
             or self._context_service is None
         ):
             return RuntimeReadiness(False, ("employee_gateway",))
+        if self._channels is None or not callable(getattr(self._channels, "update_card", None)):
+            return RuntimeReadiness(False, ("employee_outbox",))
         if self._service is None:
             return RuntimeReadiness(False, ("not_composed",))
         try:
@@ -355,18 +382,13 @@ class EmployeeDepartmentRuntime:
             active = tuple(
                 state
                 for state in self._service.list_states()
-                if state.phase is HirePhase.ACTIVE
-                and (agent_id is None or state.agent_id == agent_id)
+                if state.phase is HirePhase.ACTIVE and (agent_id is None or state.agent_id == agent_id)
             )
             if not active:
                 if agent_id is not None:
                     return RuntimeReadiness(False, ("employee_not_active",))
                 return RuntimeReadiness(True, ())
-            if (
-                self._context_service is None
-                or self._context_source_factory is None
-                or self._data is None
-            ):
+            if self._context_service is None or self._context_source_factory is None or self._data is None:
                 return RuntimeReadiness(
                     False,
                     self._context_blockers or ("employee_context",),
@@ -424,9 +446,12 @@ class EmployeeDepartmentRuntime:
                 assert self._ingress is not None
                 assert self._router is not None
                 assert self._dispatch is not None
+                assert self._outbox is not None
                 self._ingress.rebuild_projection()
                 self._router.rebuild_projection()
+                self._outbox.rebuild_projection()
                 self._dispatch.recover_incomplete_attempts()
+                self._dispatch.reconcile_terminal_snapshots()
                 self._router.recover_terminal_attachments()
                 self._reconcile_terminal_ingress()
                 self._ingress.gc_terminal_payloads()
@@ -498,6 +523,8 @@ class EmployeeDepartmentRuntime:
 
         if self._ingress is not None:
             cleanup("ingress_admission", self._ingress.stop_admission)
+        if self._outbox is not None:
+            cleanup("outbox_admission", self._outbox.stop_admission)
         if self._service is not None:
             cleanup("hire_admission", self._service.stop_admission)
         if self._context_service is not None:
@@ -520,27 +547,17 @@ class EmployeeDepartmentRuntime:
                 self._quiesce_loop(),
                 self._loop,
             )
-            activities_safe = (
-                cleanup("activity_loop", lambda: quiesce.result(timeout=5.0))
-                and activities_safe
-            )
+            activities_safe = cleanup("activity_loop", lambda: quiesce.result(timeout=5.0)) and activities_safe
         context_safe = True
         if self._context_service is not None:
             context_safe = cleanup("context_drain", self._context_service.drain)
         if self._context_source_factory is not None:
-            context_safe = (
-                cleanup("context_sources", self._context_source_factory.close)
-                and context_safe
-            )
+            context_safe = cleanup("context_sources", self._context_source_factory.close) and context_safe
         resources_safe = dispatch_safe and activities_safe and context_safe
         if resources_safe:
             if self._channels is not None:
                 resources_safe = cleanup("channels", self._channels.close)
-        if (
-            resources_safe
-            and self._owns_group_memory_backend
-            and self._group_memory_backend is not None
-        ):
+        if resources_safe and self._owns_group_memory_backend and self._group_memory_backend is not None:
             resources_safe = cleanup(
                 "group_memory",
                 self._group_memory_backend.shutdown,
@@ -549,6 +566,8 @@ class EmployeeDepartmentRuntime:
             resources_safe = cleanup("attachments", self._attachments.close)
         if resources_safe and self._ingress is not None:
             resources_safe = cleanup("ingress", self._ingress.close)
+        if resources_safe and self._outbox is not None:
+            resources_safe = cleanup("outbox", self._outbox.close)
         if resources_safe and self._data is not None:
             resources_safe = cleanup("data", self._data.close)
         if resources_safe:
@@ -590,11 +609,15 @@ class EmployeeDepartmentRuntime:
     def _compose_execution_storage(self, settings: Any) -> None:
         """Compose the data, durable Inbox, and attachment owners."""
 
-        if not self._external_resume_allowed or getattr(
-            settings,
-            "autonomous_visible_employee_limit",
-            0,
-        ) == 0:
+        if (
+            not self._external_resume_allowed
+            or getattr(
+                settings,
+                "autonomous_visible_employee_limit",
+                0,
+            )
+            == 0
+        ):
             self._execution_blockers = ("employee_ingress",)
             return
         if self._writer is None or self._vault is None:
@@ -609,9 +632,7 @@ class EmployeeDepartmentRuntime:
             self._data = build_employee_data_composition(
                 settings=settings,
                 writer=self._writer,
-                admin_principal_ids=frozenset(
-                    getattr(settings, "admin_user_ids", ()) or ()
-                ),
+                admin_principal_ids=frozenset(getattr(settings, "admin_user_ids", ()) or ()),
                 main_bot_app_id=getattr(settings, "app_id", ""),
                 agents_root=Path(legacy_base).expanduser() / "agents",
                 legacy_base=legacy_base,
@@ -624,6 +645,15 @@ class EmployeeDepartmentRuntime:
                 blob_root=getattr(
                     settings,
                     "autonomous_employee_ingress_blob_dir",
+                ),
+            )
+            self._outbox = EmployeeOutboxService.from_keyring(
+                writer=self._writer,
+                outbox_state=OutboxProjectionState(),
+                keyring=keyring,
+                blob_root=getattr(
+                    settings,
+                    "autonomous_employee_outbox_blob_dir",
                 ),
             )
             self._attachments = AttachmentStagingService(
@@ -655,6 +685,11 @@ class EmployeeDepartmentRuntime:
                     self._ingress.close()
                 except Exception:
                     pass
+            if self._outbox is not None:
+                try:
+                    self._outbox.close()
+                except Exception:
+                    pass
             if self._data is not None:
                 try:
                     self._data.close()
@@ -662,6 +697,7 @@ class EmployeeDepartmentRuntime:
                     pass
             self._attachments = None
             self._ingress = None
+            self._outbox = None
             self._data = None
             self._execution_blockers = ("employee_ingress",)
 
@@ -674,11 +710,7 @@ class EmployeeDepartmentRuntime:
         if employee is None or employee.bot_principal_id == "":
             raise RuntimeError("employee ingress binding is unavailable")
         principal = projection.bot_principals.get(employee.bot_principal_id)
-        if (
-            principal is None
-            or principal.agent_id != agent_id
-            or principal.app_id != app_id
-        ):
+        if principal is None or principal.agent_id != agent_id or principal.app_id != app_id:
             raise RuntimeError("employee ingress principal is unavailable")
         return employee.tenant_key, principal.bot_principal_id
 
@@ -692,12 +724,11 @@ class EmployeeDepartmentRuntime:
             or self._data is None
             or self._channels is None
             or self._context_service is None
+            or self._outbox is None
         ):
             self._execution_blockers = ("employee_gateway",)
             return
-        if self._slock_manager is None or not callable(
-            getattr(self._slock_manager, "employee_activation_guard", None)
-        ):
+        if self._slock_manager is None or not callable(getattr(self._slock_manager, "employee_activation_guard", None)):
             self._execution_blockers = ("slock_gateway",)
             return
         if not callable(self._environment_provider):
@@ -717,12 +748,8 @@ class EmployeeDepartmentRuntime:
                     storage_base_path=legacy_base,
                 )
 
-            health = membership_health or _SlockMembershipHealth(
-                self._slock_manager
-            )
-            constraints_digest = hashlib.sha256(
-                b"ghostap.employee-execution-constraints.v1"
-            ).hexdigest()
+            health = membership_health or _SlockMembershipHealth(self._slock_manager)
+            constraints_digest = hashlib.sha256(b"ghostap.employee-execution-constraints.v1").hexdigest()
             self._router = DurableEmployeeIngressRouter(
                 writer=self._writer,
                 ingress_service=self._ingress,
@@ -751,6 +778,7 @@ class EmployeeDepartmentRuntime:
                     "autonomous_employee_system_prompt_token_reserve",
                 ),
             )
+            outbox_lifecycle = EmployeeOutboxLifecycle(self._outbox)
             self._dispatch = EmployeeDispatchCoordinator(
                 writer=self._writer,
                 hire_service=self._service,
@@ -765,6 +793,13 @@ class EmployeeDepartmentRuntime:
                     state,
                     storage_base_path=legacy_base,
                 ),
+                attempt_lifecycle=outbox_lifecycle,
+            )
+            self._outbox_lifecycle = outbox_lifecycle
+            self._outbox_delivery = EmployeeOutboxDeliveryCoordinator(
+                outbox=self._outbox,
+                channels=self._channels,
+                authority_resolver=self._resolve_outbox_delivery_authority,
             )
             self._execution_blockers = ()
         except Exception as exc:
@@ -774,6 +809,8 @@ class EmployeeDepartmentRuntime:
             )
             self._router = None
             self._dispatch = None
+            self._outbox_delivery = None
+            self._outbox_lifecycle = None
             self._execution_blockers = ("employee_gateway",)
 
     def _start_dispatch_worker(self) -> None:
@@ -824,7 +861,76 @@ class EmployeeDepartmentRuntime:
                     worked = True
         worked = dispatch.dispatch_next() is not None or worked
         worked = self._reconcile_terminal_ingress() > 0 or worked
+        worked = self._drain_employee_outbox_once() or worked
+        if self._outbox is not None:
+            worked = self._outbox.gc_superseded_snapshots() > 0 or worked
         return ingress.gc_terminal_payloads() > 0 or worked
+
+    def _drain_employee_outbox_once(self) -> bool:
+        outbox = self._outbox
+        delivery = self._outbox_delivery
+        if outbox is None or delivery is None:
+            return False
+        outbox.rebuild_projection()
+        pending = sorted(
+            (
+                record
+                for record in outbox.state.by_outbox_id.values()
+                if record.binding is None or record.binding.bound_snapshot_version < record.latest_version
+            ),
+            key=lambda record: (record.latest.created_at, record.outbox_id),
+        )
+        if not pending:
+            return False
+        delivery.deliver(pending[0].outbox_id)
+        return True
+
+    def _resolve_outbox_delivery_authority(
+        self,
+        record: Any,
+    ) -> EmployeeDeliveryAuthority:
+        if self._service is None or self._channels is None:
+            raise RuntimeError("employee delivery authority is unavailable")
+        projection = self._service.synchronize_projection()
+        employee = projection.employees.get(record.agent_id)
+        if employee is None or employee.tenant_key != record.tenant_key or not employee.bot_principal_id:
+            raise RuntimeError("employee delivery identity is unavailable")
+        principal = projection.bot_principals.get(employee.bot_principal_id)
+        active = next(
+            (
+                state
+                for state in self._service.list_states()
+                if state.agent_id == record.agent_id and state.phase is HirePhase.ACTIVE
+            ),
+            None,
+        )
+        status = self._channels.status(record.agent_id)
+        connection_id = getattr(status, "ready_metadata", {}).get(
+            "connection_id",
+            "",
+        )
+        if (
+            principal is None
+            or active is None
+            or status is None
+            or active.tenant_key != record.tenant_key
+            or active.bot_principal_id != employee.bot_principal_id
+            or principal.tenant_key != record.tenant_key
+            or principal.agent_id != record.agent_id
+            or getattr(status, "state", None) is not ChannelProcessState.READY
+            or principal.app_id != active.app_id
+            or getattr(status, "app_id", None) != active.app_id
+            or getattr(status, "identity", {}).get("app_id") != active.app_id
+            or getattr(status, "generation", None) != active.channel_generation
+            or not isinstance(connection_id, str)
+            or not connection_id
+        ):
+            raise RuntimeError("employee delivery Channel is not current")
+        return EmployeeDeliveryAuthority(
+            app_id=active.app_id,
+            generation=active.channel_generation,
+            connection_id=connection_id,
+        )
 
     def _reconcile_terminal_ingress(self) -> int:
         ingress = self._ingress
@@ -836,11 +942,7 @@ class EmployeeDepartmentRuntime:
         reconciled = 0
         for acceptance_id, record in tuple(router.state.by_acceptance_id.items()):
             ingress_record = ingress.state.by_acceptance_id.get(acceptance_id)
-            if (
-                record.state == "terminal"
-                and ingress_record is not None
-                and ingress_record.disposition is None
-            ):
+            if record.state == "terminal" and ingress_record is not None and ingress_record.disposition is None:
                 try:
                     ingress.record_disposition(
                         acceptance_id,
@@ -881,9 +983,7 @@ class EmployeeDepartmentRuntime:
                 for state in states:
                     if state.phase is not HirePhase.ACTIVE:
                         continue
-                    principal = projection.bot_principals.get(
-                        state.bot_principal_id
-                    )
+                    principal = projection.bot_principals.get(state.bot_principal_id)
                     if principal is None or not principal.credential_ref:
                         continue
                     current[state.agent_id] = (
@@ -892,38 +992,24 @@ class EmployeeDepartmentRuntime:
                         state.channel_generation,
                     )
                 previous = dict(self._context_bindings)
-                non_active = {
-                    state.agent_id
-                    for state in states
-                    if state.phase is not HirePhase.ACTIVE
-                }
+                non_active = {state.agent_id for state in states if state.phase is not HirePhase.ACTIVE}
                 changed_or_removed = {
-                    agent_id
-                    for agent_id, old_binding in previous.items()
-                    if current.get(agent_id) != old_binding
+                    agent_id for agent_id, old_binding in previous.items() if current.get(agent_id) != old_binding
                 }
                 for agent_id in non_active | changed_or_removed:
                     if (
                         agent_id not in self._context_explicit_invalidations
-                        and agent_id
-                        not in self._context_projection_invalidations
+                        and agent_id not in self._context_projection_invalidations
                     ):
-                        self._context_source_factory.invalidate_employee(
-                            agent_id
-                        )
+                        self._context_source_factory.invalidate_employee(agent_id)
                         self._context_projection_invalidations.add(agent_id)
                 for agent_id in current:
                     if (
                         agent_id in self._context_projection_invalidations
-                        and agent_id
-                        not in self._context_explicit_invalidations
+                        and agent_id not in self._context_explicit_invalidations
                     ):
-                        self._context_source_factory.reactivate_employee(
-                            agent_id
-                        )
-                        self._context_projection_invalidations.discard(
-                            agent_id
-                        )
+                        self._context_source_factory.reactivate_employee(agent_id)
+                        self._context_projection_invalidations.discard(agent_id)
                 self._context_bindings = current
             return True
         except Exception as exc:

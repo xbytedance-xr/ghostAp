@@ -407,9 +407,8 @@ def test_ingress_settings_defaults_are_bounded_and_visible_release_stays_closed(
     assert settings.autonomous_employee_queue_per_team_limit == 32
     assert settings.autonomous_employee_queue_global_limit == 128
     assert settings.autonomous_employee_ingress_blob_dir.endswith("/ingress-blobs")
-    assert settings.autonomous_employee_attachment_staging_dir.endswith(
-        "/employee-attachments"
-    )
+    assert settings.autonomous_employee_outbox_blob_dir.endswith("/outbox-blobs")
+    assert settings.autonomous_employee_attachment_staging_dir.endswith("/employee-attachments")
     assert settings.autonomous_employee_system_prompt_token_reserve == 4096
     assert settings.autonomous_visible_employee_limit == 0
 
@@ -496,6 +495,7 @@ def test_env_example_documents_ingress_settings() -> None:
         "AUTONOMOUS_EMPLOYEE_QUEUE_PER_TEAM_LIMIT",
         "AUTONOMOUS_EMPLOYEE_QUEUE_GLOBAL_LIMIT",
         "AUTONOMOUS_EMPLOYEE_INGRESS_BLOB_DIR",
+        "AUTONOMOUS_EMPLOYEE_OUTBOX_BLOB_DIR",
         "AUTONOMOUS_EMPLOYEE_ATTACHMENT_STAGING_DIR",
         "AUTONOMOUS_EMPLOYEE_SYSTEM_PROMPT_TOKEN_RESERVE",
     ):
@@ -517,9 +517,7 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
         "EI-TERMINAL-01",
         "EI-RECOVERY-01",
     )
-    assert {
-        gate.id: gate.evidence_level for gate in manifest.gates
-    } == {
+    assert {gate.id: gate.evidence_level for gate in manifest.gates} == {
         "EI-PLATFORM-MESSAGE-01": "chaos_security",
         "EI-PLATFORM-CARD-01": "chaos_security",
         "EI-IPC-01": "chaos_security",
@@ -538,8 +536,7 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
     )
     ipc = manifest.gate("EI-IPC-01")
     assert ipc.selector == (
-        "tests/autonomous/chaos/test_employee_ingress_recovery.py::"
-        "test_ipc_ack_only_after_anchored_acceptance"
+        "tests/autonomous/chaos/test_employee_ingress_recovery.py::test_ipc_ack_only_after_anchored_acceptance"
     )
     assert ipc.selector_state == "collectable"
     assert ipc.artifact_kind == "employee_ingress_ipc_harness"
@@ -571,9 +568,7 @@ def test_phase3_manifest_is_local_strict_and_exposes_collectable_ipc_selector() 
     assert queue.artifact_profile_id == "employee-router-queue-v1"
     assert queue.sdk_wheel_sha256 is None
     task6 = {
-        gate.id: gate
-        for gate in manifest.gates
-        if gate.id in {"EI-ACP-ONCE-01", "EI-TERMINAL-01", "EI-RECOVERY-01"}
+        gate.id: gate for gate in manifest.gates if gate.id in {"EI-ACP-ONCE-01", "EI-TERMINAL-01", "EI-RECOVERY-01"}
     }
     assert task6["EI-ACP-ONCE-01"].environment == "local_slock_harness"
     assert task6["EI-TERMINAL-01"].environment == "local_process_harness"

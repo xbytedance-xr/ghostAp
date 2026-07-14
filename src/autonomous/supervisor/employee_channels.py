@@ -95,6 +95,8 @@ class _PendingSend:
     generation: int = 0
     connection_id: str = ""
     message_id: str = ""
+    operation: str = "send"
+    expected_message_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,6 +477,66 @@ class EmployeeChannelSupervisor:
             message_id=pending.message_id,
         )
 
+    def update_card(
+        self,
+        agent_id: str,
+        *,
+        generation: int,
+        message_id: str,
+        card: dict[str, Any],
+    ) -> ChannelSendReceipt:
+        """Patch one pre-bound card through the exact READY employee generation."""
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError("message_id is required")
+        if not isinstance(card, dict):
+            raise ValueError("card must be an object")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+            raise ValueError("generation must be a positive integer")
+        request_id = f"update_{uuid.uuid4().hex}"
+        pending = _PendingSend(
+            operation="update_card",
+            expected_message_id=message_id,
+        )
+        with self._lock:
+            runtime = self._runtimes.get(agent_id)
+            if runtime is None or runtime.status.state is not ChannelProcessState.READY:
+                raise RuntimeError("employee Channel is not ready")
+            if runtime.status.generation != generation:
+                raise ValueError("employee Channel generation mismatch")
+            runtime.pending_sends[request_id] = pending
+            try:
+                sent = self._send_control(
+                    runtime,
+                    FrameType.UPDATE_CARD,
+                    {
+                        "request_id": request_id,
+                        "message_id": message_id,
+                        "card": card,
+                    },
+                )
+            except ProtocolError:
+                runtime.pending_sends.pop(request_id, None)
+                raise ValueError("unsafe update card payload") from None
+            if not sent:
+                runtime.pending_sends.pop(request_id, None)
+                raise RuntimeError("employee Channel update card failed")
+        if not pending.completed.wait(self._send_timeout):
+            with self._lock:
+                runtime.pending_sends.pop(request_id, None)
+            raise TimeoutError("employee Channel update card receipt timed out")
+        with self._lock:
+            runtime.pending_sends.pop(request_id, None)
+        if pending.success is not True:
+            raise RuntimeError("employee Channel update card was not acknowledged")
+        return ChannelSendReceipt(
+            request_id=request_id,
+            success=True,
+            app_id=pending.app_id,
+            generation=pending.generation,
+            connection_id=pending.connection_id,
+            message_id=pending.message_id,
+        )
+
     def status(self, agent_id: str) -> ChannelProcessStatus | None:
         """Return a secret-free immutable process snapshot."""
         with self._lock:
@@ -663,7 +725,8 @@ class EmployeeChannelSupervisor:
             with self._lock:
                 runtime.status = replace(runtime.status, error_code=code if isinstance(code, str) else "worker-error")
         elif frame.frame_type is FrameType.HEALTH:
-            if frame.payload.get("operation") == "send":
+            operation = frame.payload.get("operation")
+            if operation in {"send", "update_card"}:
                 request_id = frame.payload.get("request_id")
                 success = frame.payload.get("success")
                 if isinstance(request_id, str) and isinstance(success, bool):
@@ -683,6 +746,10 @@ class EmployeeChannelSupervisor:
                                 == runtime.status.ready_metadata.get("connection_id")
                                 and isinstance(message_id, str)
                                 and bool(message_id)
+                                and (
+                                    pending.operation == "send"
+                                    or message_id == pending.expected_message_id
+                                )
                             )
                             pending.success = valid_evidence
                             if valid_evidence:
@@ -693,7 +760,7 @@ class EmployeeChannelSupervisor:
                             elif success is True:
                                 runtime.status = replace(
                                     runtime.status,
-                                    error_code="invalid-send-receipt",
+                                    error_code=f"invalid-{operation.replace('_', '-')}-receipt",
                                 )
                             pending.completed.set()
             with self._lock:

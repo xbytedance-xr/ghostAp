@@ -101,6 +101,17 @@ def _worker(tmp_path: Path, *, behavior: str = "normal") -> Path:
                                     'generation': generation,
                                     'connection_id': 'conn-fixture',
                                     'message_id': 'om-fixture-reply'}})
+                if frame['type'] == 'UPDATE_CARD':
+                    message_id = frame['payload']['message_id']
+                    if {behavior!r} == 'wrong_update_receipt':
+                        message_id = 'om-wrong-card'
+                    emit('HEALTH', {{'operation': 'update_card',
+                                    'request_id': frame['payload']['request_id'],
+                                    'success': True,
+                                    'app_id': bootstrap['app_id'],
+                                    'generation': generation,
+                                    'connection_id': 'conn-fixture',
+                                    'message_id': message_id}})
             raise SystemExit(0)
             """
         ),
@@ -390,6 +401,55 @@ def test_send_is_generation_fenced_and_waits_for_employee_worker_receipt(
                 target="ou_requester",
                 message={"text": "stale"},
             )
+    finally:
+        supervisor.close()
+
+
+def test_update_card_is_generation_and_message_fenced(
+    tmp_path: Path,
+) -> None:
+    supervisor, _secret, _calls = _supervisor(tmp_path)
+    try:
+        supervisor.start("agt_1", "cli_1", "cred_1", 3, lambda _: None)
+
+        receipt = supervisor.update_card(
+            "agt_1",
+            generation=3,
+            message_id="om-employee-card",
+            card={"schema": "2.0", "body": {"elements": []}},
+        )
+
+        assert receipt.success is True
+        assert receipt.app_id == "cli_1"
+        assert receipt.generation == 3
+        assert receipt.connection_id == "conn-fixture"
+        assert receipt.message_id == "om-employee-card"
+        with pytest.raises(ValueError, match="generation"):
+            supervisor.update_card(
+                "agt_1",
+                generation=2,
+                message_id="om-employee-card",
+                card={"schema": "2.0"},
+            )
+    finally:
+        supervisor.close()
+
+
+def test_update_card_rejects_receipt_for_a_different_message(tmp_path: Path) -> None:
+    supervisor, _secret, _calls = _supervisor(
+        tmp_path,
+        behavior="wrong_update_receipt",
+    )
+    try:
+        supervisor.start("agt_1", "cli_1", "cred_1", 3, lambda _: None)
+        with pytest.raises(RuntimeError, match="not acknowledged"):
+            supervisor.update_card(
+                "agt_1",
+                generation=3,
+                message_id="om-employee-card",
+                card={"schema": "2.0"},
+            )
+        assert supervisor.status("agt_1").error_code == "invalid-update-card-receipt"
     finally:
         supervisor.close()
 

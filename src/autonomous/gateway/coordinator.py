@@ -10,6 +10,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol
 
 from src.slock_engine.activation import slock_activation_guard
 from src.slock_engine.manager import SlockEngineResolutionError
@@ -79,6 +80,18 @@ EnvironmentProvider = Callable[
 RegistryFactory = Callable[[object], ProjectedAgentRegistry]
 
 
+class EmployeeAttemptLifecycle(Protocol):
+    def queued(self, binding: DispatchBinding) -> object: ...
+
+    def running(self, binding: DispatchBinding) -> object: ...
+
+    def terminal(
+        self,
+        binding: DispatchBinding,
+        result: GatewayExecutionResult,
+    ) -> object: ...
+
+
 class EmployeeDispatchCoordinator:
     """Own the only Router queued -> ACP -> terminal attempt path."""
 
@@ -98,6 +111,7 @@ class EmployeeDispatchCoordinator:
         gateway: EmployeeSlockGateway | None = None,
         timeout_seconds: float = 600.0,
         clock: Callable[[], datetime] | None = None,
+        attempt_lifecycle: EmployeeAttemptLifecycle | None = None,
     ) -> None:
         if not callable(environment_provider):
             raise TypeError("environment_provider is required")
@@ -114,6 +128,7 @@ class EmployeeDispatchCoordinator:
         self._gateway = gateway or EmployeeSlockGateway()
         self._timeout_seconds = float(timeout_seconds)
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._attempt_lifecycle = attempt_lifecycle
         self._gateway_state = GatewayProjectionState()
         self._projection_sync_lock = threading.RLock()
 
@@ -171,10 +186,7 @@ class EmployeeDispatchCoordinator:
             material = self._environment_provider(environment_authority)
         except Exception:
             raise EmployeeDispatchError("employee environment provider failed") from None
-        if (
-            not isinstance(material, EmployeeProcessEnvironmentMaterial)
-            or material.authority != environment_authority
-        ):
+        if not isinstance(material, EmployeeProcessEnvironmentMaterial) or material.authority != environment_authority:
             raise EmployeeDispatchError("employee environment authority mismatch")
         employee_home = str(Path(agent.workspace_path).parent)
         env = build_employee_process_env(
@@ -191,9 +203,7 @@ class EmployeeDispatchCoordinator:
             with activation_context as slock_binding, ExitStack() as stack:
                 stack.enter_context(self._projection_sync_lock)
                 stack.enter_context(self._hire.employee_dispatch_guard())
-                stack.enter_context(
-                    self._ingress.employee_dispatch_guard(router=self._router)
-                )
+                stack.enter_context(self._ingress.employee_dispatch_guard(router=self._router))
                 stack.enter_context(self._data.employee_dispatch_guard())
                 stack.enter_context(self._channels.employee_dispatch_guard())
                 stack.enter_context(self._writer.transaction_guard())
@@ -222,9 +232,7 @@ class EmployeeDispatchCoordinator:
                     or current_projected_binding.principal != projected_binding.principal
                 ):
                     raise EmployeeDispatchError("employee authority changed")
-                ingress_identity = self._ingress.dispatch_identity_unlocked(
-                    grant.record.acceptance_id
-                )
+                ingress_identity = self._ingress.dispatch_identity_unlocked(grant.record.acceptance_id)
                 ingress_metadata = ingress_identity[2]
                 if (
                     ingress_identity[0] != grant.record.aggregate_id
@@ -236,9 +244,7 @@ class EmployeeDispatchCoordinator:
                     or ingress_metadata.message_id != grant.record.message_id
                 ):
                     raise EmployeeDispatchError("employee ingress identity changed")
-                current_router = self._router.state.by_acceptance_id.get(
-                    grant.record.acceptance_id
-                )
+                current_router = self._router.state.by_acceptance_id.get(grant.record.acceptance_id)
                 if current_router != grant.record:
                     raise EmployeeDispatchError("employee Router grant changed")
                 self._validate_employee(current, grant)
@@ -286,6 +292,8 @@ class EmployeeDispatchCoordinator:
             timeout_seconds=self._timeout_seconds,
             env=env,
         )
+        if self._attempt_lifecycle is not None:
+            self._attempt_lifecycle.queued(binding)
         return PreparedEmployeeDispatch(binding, permit, rendered.prompt)
 
     def _presynchronize_domains(self) -> tuple[int, str]:
@@ -328,6 +336,8 @@ class EmployeeDispatchCoordinator:
         self,
         prepared: PreparedEmployeeDispatch,
     ) -> FinalizedEmployeeAttempt:
+        if self._attempt_lifecycle is not None:
+            self._attempt_lifecycle.running(prepared.binding)
         result = self._gateway.execute_permit(prepared.permit)
         return self.finalize_attempt(
             prepared.binding.attempt_id,
@@ -346,6 +356,28 @@ class EmployeeDispatchCoordinator:
         *,
         request_text: str = "",
     ) -> FinalizedEmployeeAttempt:
+        """Commit terminal facts, then append the employee response snapshot."""
+
+        finalized = self._finalize_attempt_without_reporting(
+            attempt_id,
+            execution_result,
+            request_text=request_text,
+        )
+        if self._attempt_lifecycle is not None:
+            self._synchronize_gateway_from_journal()
+            lifecycle = self._gateway_state.attempts.get(attempt_id)
+            if lifecycle is None:
+                raise EmployeeDispatchError("terminal attempt binding is unavailable")
+            self._attempt_lifecycle.terminal(lifecycle.binding, execution_result)
+        return finalized
+
+    def _finalize_attempt_without_reporting(
+        self,
+        attempt_id: str,
+        execution_result: GatewayExecutionResult,
+        *,
+        request_text: str = "",
+    ) -> FinalizedEmployeeAttempt:
         """Stage history lock-free, then commit all terminal metadata together."""
 
         self._synchronize_gateway_from_journal()
@@ -353,9 +385,8 @@ class EmployeeDispatchCoordinator:
         if lifecycle is None or not lifecycle.dispatch_committed:
             raise EmployeeDispatchError("attempt is not dispatch committed")
         if lifecycle.terminal_status:
-            if (
-                lifecycle.terminal_status != execution_result.status.value
-                or lifecycle.result_digest != _result_digest(execution_result)
+            if lifecycle.terminal_status != execution_result.status.value or lifecycle.result_digest != _result_digest(
+                execution_result
             ):
                 raise EmployeeDispatchError("attempt terminal result conflicts")
             return FinalizedEmployeeAttempt(
@@ -380,28 +411,20 @@ class EmployeeDispatchCoordinator:
                     with slock_activation_guard(), ExitStack() as stack:
                         stack.enter_context(self._projection_sync_lock)
                         stack.enter_context(self._hire.employee_dispatch_guard())
-                        stack.enter_context(
-                            self._ingress.employee_dispatch_guard(router=self._router)
-                        )
+                        stack.enter_context(self._ingress.employee_dispatch_guard(router=self._router))
                         stack.enter_context(self._data.employee_dispatch_guard())
                         stack.enter_context(self._channels.employee_dispatch_guard())
                         stack.enter_context(self._writer.transaction_guard())
                         self._require_presynchronized_head(captured_head)
                         lifecycle = self._gateway_state.attempts.get(attempt_id)
                         if lifecycle is None:
-                            raise EmployeeDispatchError(
-                                "attempt disappeared during terminal commit"
-                            )
+                            raise EmployeeDispatchError("attempt disappeared during terminal commit")
                         if lifecycle.terminal_status:
                             if (
-                                lifecycle.terminal_status
-                                != execution_result.status.value
-                                or lifecycle.result_digest
-                                != _result_digest(execution_result)
+                                lifecycle.terminal_status != execution_result.status.value
+                                or lifecycle.result_digest != _result_digest(execution_result)
                             ):
-                                raise EmployeeDispatchError(
-                                    "attempt terminal result conflicts"
-                                )
+                                raise EmployeeDispatchError("attempt terminal result conflicts")
                             raced = FinalizedEmployeeAttempt(
                                 attempt_id,
                                 execution_result.status,
@@ -411,9 +434,7 @@ class EmployeeDispatchCoordinator:
                         else:
                             raced = None
                         if raced is None:
-                            history_event = self._data.preflight_history_event_unlocked(
-                                staged
-                            )
+                            history_event = self._data.preflight_history_event_unlocked(staged)
                             router_event = self._router.preflight_terminal_event_unlocked(
                                 acceptance_id=lifecycle.binding.acceptance_id,
                                 reason_code=execution_result.status.value,
@@ -430,9 +451,7 @@ class EmployeeDispatchCoordinator:
                                     "ended_at": ended_at,
                                 },
                             )
-                            commit = self._commit_events_unlocked(
-                                (history_event, terminal_event, router_event)
-                            )
+                            commit = self._commit_events_unlocked((history_event, terminal_event, router_event))
                             anchored = True
                             self._apply_committed_frame_unlocked(commit.frame)
                             return FinalizedEmployeeAttempt(
@@ -472,6 +491,36 @@ class EmployeeDispatchCoordinator:
             for attempt_id in pending
         )
 
+    def reconcile_terminal_snapshots(self) -> int:
+        """Re-emit terminal lifecycle facts without executing ACP."""
+
+        if self._attempt_lifecycle is None:
+            return 0
+        self._data.rebuild_projection()
+        self._synchronize_gateway_from_journal()
+        reconciled = 0
+        for lifecycle in tuple(self._gateway_state.attempts.values()):
+            if not lifecycle.terminal_status:
+                continue
+            payload = self._data.get_history_payload(lifecycle.history_record_id)
+            status = GatewayExecutionStatus(lifecycle.terminal_status)
+            result = GatewayExecutionResult(
+                status=status,
+                output=(
+                    payload.result_text
+                    if status is GatewayExecutionStatus.COMPLETED
+                    else ""
+                ),
+                safe_error_code=(
+                    ""
+                    if status is GatewayExecutionStatus.COMPLETED
+                    else payload.error_detail
+                ),
+            )
+            self._attempt_lifecycle.terminal(lifecycle.binding, result)
+            reconciled += 1
+        return reconciled
+
     def _recover_legacy_router_dispatches(self) -> int:
         """Dispose Router-only dispatches without ever re-running ACP.
 
@@ -495,9 +544,7 @@ class EmployeeDispatchCoordinator:
         with slock_activation_guard(), ExitStack() as stack:
             stack.enter_context(self._projection_sync_lock)
             stack.enter_context(self._hire.employee_dispatch_guard())
-            stack.enter_context(
-                self._ingress.employee_dispatch_guard(router=self._router)
-            )
+            stack.enter_context(self._ingress.employee_dispatch_guard(router=self._router))
             stack.enter_context(self._data.employee_dispatch_guard())
             stack.enter_context(self._channels.employee_dispatch_guard())
             stack.enter_context(self._writer.transaction_guard())
@@ -506,8 +553,7 @@ class EmployeeDispatchCoordinator:
                 record
                 for record in self._router.state.by_acceptance_id.values()
                 if record.state == "dispatching"
-                and record.acceptance_id
-                not in self._gateway_state.attempt_by_acceptance_id
+                and record.acceptance_id not in self._gateway_state.attempt_by_acceptance_id
             )
             if not legacy:
                 return 0
@@ -523,9 +569,7 @@ class EmployeeDispatchCoordinator:
             return len(events)
 
     def _commit_events_unlocked(self, events: tuple[JournalEvent, ...]):
-        versions = self._writer.get_aggregate_versions(
-            {event.aggregate_id for event in events}
-        )
+        versions = self._writer.get_aggregate_versions({event.aggregate_id for event in events})
         result = self._writer.commit(
             events,
             versions,
@@ -641,8 +685,10 @@ class EmployeeDispatchCoordinator:
             started_at=binding.dispatch_committed_at,
         )
         head = self._data.get_head()
-        category = "timeout" if result.status is GatewayExecutionStatus.TIMEOUT else (
-            "none" if result.status is GatewayExecutionStatus.COMPLETED else "unknown"
+        category = (
+            "timeout"
+            if result.status is GatewayExecutionStatus.TIMEOUT
+            else ("none" if result.status is GatewayExecutionStatus.COMPLETED else "unknown")
         )
         record = ExecutionHistoryRecordV1.from_attempt(
             context,
@@ -677,8 +723,7 @@ class EmployeeDispatchCoordinator:
             or grant.request.chat_id not in employee.member_groups
             or authority is None
             or employee.aggregate_version != authority.employee_version
-            or (employee.tool, employee.model, employee.effort)
-            != (authority.tool, authority.model, authority.effort)
+            or (employee.tool, employee.model, employee.effort) != (authority.tool, authority.model, authority.effort)
         ):
             raise EmployeeDispatchError("employee dispatch authority is stale")
 
@@ -712,8 +757,7 @@ class EmployeeDispatchCoordinator:
             or watermark.thread_root_id != request.thread_root_message_id
             or watermark.feishu_thread_id != request.feishu_thread_id
             or snapshot.constraints_digest != request.constraints_digest
-            or snapshot.system_prompt_tokens_reserved
-            != request.system_prompt_token_reserve
+            or snapshot.system_prompt_tokens_reserved != request.system_prompt_token_reserve
         ):
             raise EmployeeDispatchError("employee Context watermark is stale")
 

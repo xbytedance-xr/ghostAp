@@ -1038,6 +1038,15 @@ async def _run(bootstrap_fd: int, control_fd: int, event_fd: int) -> None:
                         generation=bootstrap.generation,
                         connection_id=connection_id,
                     )
+                if frame.frame_type is FrameType.UPDATE_CARD:
+                    await _handle_update_card(
+                        channel,
+                        frame.payload,
+                        emitter,
+                        app_id=bootstrap.app_id,
+                        generation=bootstrap.generation,
+                        connection_id=connection_id,
+                    )
     finally:
         try:
             await channel.disconnect()
@@ -1075,6 +1084,54 @@ async def _handle_send(
         FrameType.HEALTH,
         {
             "operation": "send",
+            "request_id": request_id,
+            "success": bool(getattr(result, "success", False)),
+            "app_id": app_id,
+            "generation": generation,
+            "connection_id": connection_id,
+            "message_id": getattr(result, "message_id", "") or "",
+        },
+    )
+
+
+async def _handle_update_card(
+    channel: Any,
+    payload: dict[str, Any],
+    emitter: _FrameEmitter,
+    *,
+    app_id: str,
+    generation: int,
+    connection_id: str,
+) -> None:
+    request_id = payload.get("request_id")
+    message_id = payload.get("message_id")
+    card = payload.get("card")
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or not isinstance(message_id, str)
+        or not message_id
+        or not isinstance(card, dict)
+    ):
+        emitter.emit(FrameType.ERROR, {"error_code": "invalid-update-card"})
+        return
+    try:
+        result = await channel.update_card(message_id, card)
+    except Exception as exc:
+        emitter.emit(FrameType.ERROR, {"error_code": type(exc).__name__})
+        emitter.emit(
+            FrameType.HEALTH,
+            {
+                "operation": "update_card",
+                "request_id": request_id,
+                "success": False,
+            },
+        )
+        return
+    emitter.emit(
+        FrameType.HEALTH,
+        {
+            "operation": "update_card",
             "request_id": request_id,
             "success": bool(getattr(result, "success", False)),
             "app_id": app_id,
