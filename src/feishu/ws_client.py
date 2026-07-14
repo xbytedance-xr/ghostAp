@@ -295,6 +295,16 @@ class FeishuWSClient:
                     state.message_id,
                     f"请在 {expire_in} 秒内完成独立飞书智能体注册：{url}",
                 ),
+                notification_status=lambda state, status: (
+                    self._reply_text(
+                        state.message_id,
+                        "独立飞书智能体注册请求已提交，正在等待你在上方链接中完成授权确认。"
+                        "确认前注册接口会持续返回 400 authorization_pending，这是设备授权"
+                        "流程的正常等待状态；请按链接完成授权，期间请勿重复发送 /hire。",
+                    )
+                    if status == "polling"
+                    else None
+                ),
             )
         except Exception as exc:
             logger.error(

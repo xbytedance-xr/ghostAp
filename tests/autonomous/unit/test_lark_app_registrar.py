@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from src.autonomous.provisioning.lark_app import (
@@ -159,3 +161,77 @@ def test_registration_request_freezes_and_validates_avatar_urls() -> None:
             description="employee",
             avatar_urls=("https://example.com/bad\nname.png",),
         )
+
+
+@pytest.mark.asyncio
+async def test_registrar_suppresses_only_registration_400_transport_noise(caplog) -> None:
+    registration_400 = (
+        'HTTP Request: POST https://accounts.feishu.cn/oauth/v1/app/registration '
+        '"HTTP/1.1 400 Bad Request"'
+    )
+    registration_200 = (
+        'HTTP Request: POST https://accounts.feishu.cn/oauth/v1/app/registration '
+        '"HTTP/1.1 200 OK"'
+    )
+    unrelated_400 = (
+        'HTTP Request: POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal '
+        '"HTTP/1.1 400 Bad Request"'
+    )
+
+    async def register(**_kwargs):
+        httpx_logger = logging.getLogger("httpx")
+        httpx_logger.info(registration_400)
+        httpx_logger.info(registration_200)
+        httpx_logger.info(unrelated_400)
+        return {"client_id": "cli_employee", "client_secret": "secret-value"}
+
+    with caplog.at_level(logging.INFO, logger="httpx"):
+        await LarkAppRegistrar(register_fn=register).register(
+            RegistrationRequest(name="Atlas", description="GhostAP employee"),
+            on_link=lambda _url, _ttl: None,
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert registration_400 not in messages
+    assert registration_200 in messages
+    assert unrelated_400 in messages
+
+
+@pytest.mark.asyncio
+async def test_registrar_reports_each_registration_status_once() -> None:
+    async def register(**kwargs):
+        kwargs["on_status_change"]({"status": "polling"})
+        kwargs["on_status_change"]({"status": "polling"})
+        kwargs["on_status_change"]({"status": "slow_down"})
+        kwargs["on_status_change"]({"status": "slow_down"})
+        kwargs["on_status_change"]({"status": "polling"})
+        return {"client_id": "cli_employee", "client_secret": "secret-value"}
+
+    statuses: list[str] = []
+    await LarkAppRegistrar(register_fn=register).register(
+        RegistrationRequest(name="Atlas", description="GhostAP employee"),
+        on_link=lambda _url, _ttl: None,
+        on_status=statuses.append,
+    )
+
+    assert statuses == ["polling", "slow_down"]
+
+
+@pytest.mark.asyncio
+async def test_registrar_detaches_poll_noise_filter_even_when_registration_fails() -> None:
+    from src.autonomous.provisioning import lark_app
+
+    httpx_logger = logging.getLogger("httpx")
+
+    async def register(**_kwargs):
+        assert lark_app._poll_noise_filter in httpx_logger.filters
+        raise RuntimeError("registration transport failed")
+
+    with pytest.raises(AppRegistrationError):
+        await LarkAppRegistrar(register_fn=register).register(
+            RegistrationRequest(name="Atlas", description="GhostAP employee"),
+            on_link=lambda _url, _ttl: None,
+        )
+
+    assert lark_app._poll_noise_filter not in httpx_logger.filters
+    assert lark_app._poll_noise_refcount == 0

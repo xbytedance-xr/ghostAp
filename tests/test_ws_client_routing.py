@@ -1,6 +1,7 @@
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -124,6 +125,23 @@ def test_employee_department_runtime_is_wired_and_enabled_by_default(
     assert mock_ws_client._handler_ctx.employee_hire_service is not None
     assert mock_ws_client._handler_ctx.employee_fire_service is not None
     assert mock_ws_client._handler_ctx.employee_hire_readiness().ready is True
+
+
+def test_employee_registration_notifier_explains_pending_oauth_state(
+    mock_ws_client: FeishuWSClient,
+) -> None:
+    runtime = mock_ws_client._employee_department_runtime
+    state = SimpleNamespace(message_id="msg_hire")
+    mock_ws_client._reply_text = MagicMock()
+
+    runtime._service._on_registration_status(state, "polling")
+
+    mock_ws_client._reply_text.assert_called_once_with(
+        "msg_hire",
+        "独立飞书智能体注册请求已提交，正在等待你在上方链接中完成授权确认。"
+        "确认前注册接口会持续返回 400 authorization_pending，这是设备授权"
+        "流程的正常等待状态；请按链接完成授权，期间请勿重复发送 /hire。",
+    )
 
 
 def test_handle_message_shell_command_routing(mock_ws_client: FeishuWSClient):

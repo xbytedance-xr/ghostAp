@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import re
+import threading
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +19,57 @@ class AppRegistrationError(RuntimeError):
 
 
 _REQUIRED_PARAMETERS = frozenset({"app_preset", "addons", "create_only", "app_id"})
+
+# The device-authorization poll returns HTTP 400 with an ``authorization_pending``
+# body until the operator confirms the app on the web page.  ``httpx`` logs every
+# poll as ``"400 Bad Request"`` at INFO, which reads like a hard failure even
+# though the SDK correctly treats it as a normal ``polling`` state.  The filter
+# below drops only that specific endpoint's 400 lines; every other status (200,
+# unrelated 400s, real errors) still reaches the logs.
+_HTTPX_LOGGER_NAME = "httpx"
+_REGISTRATION_ENDPOINT_PATH = "/oauth/v1/app/registration"
+
+
+class _RegistrationPollNoiseFilter(logging.Filter):
+    """Suppress only the registration endpoint's expected 400 poll lines."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        if _REGISTRATION_ENDPOINT_PATH in message and " 400 " in message:
+            return False
+        return True
+
+
+_poll_noise_filter = _RegistrationPollNoiseFilter()
+_poll_noise_lock = threading.Lock()
+_poll_noise_refcount = 0
+
+
+@contextmanager
+def _suppress_registration_poll_noise():
+    """Install the endpoint-scoped filter for the lifetime of active polls.
+
+    Reference counting keeps the filter attached while any concurrent
+    registration is still polling, and removes it once the last one returns so
+    ``httpx`` diagnostics resume unaffected outside registration.
+    """
+
+    global _poll_noise_refcount
+    httpx_logger = logging.getLogger(_HTTPX_LOGGER_NAME)
+    with _poll_noise_lock:
+        if _poll_noise_refcount == 0:
+            httpx_logger.addFilter(_poll_noise_filter)
+        _poll_noise_refcount += 1
+    try:
+        yield
+    finally:
+        with _poll_noise_lock:
+            _poll_noise_refcount -= 1
+            if _poll_noise_refcount == 0:
+                httpx_logger.removeFilter(_poll_noise_filter)
 
 _TENANT_SCOPES = (
     "application:application:self_manage",
@@ -158,8 +212,14 @@ class LarkAppRegistrar:
             if on_status is None or not isinstance(info, dict):
                 return
             status = info.get("status")
-            if isinstance(status, str) and status:
-                on_status(status)
+            if not isinstance(status, str) or not status:
+                return
+            if status in seen_statuses:
+                return
+            seen_statuses.add(status)
+            on_status(status)
+
+        seen_statuses: set[str] = set()
 
         app_preset: dict[str, Any] = {
             "name": request.name,
@@ -168,22 +228,23 @@ class LarkAppRegistrar:
         if request.avatar_urls:
             app_preset["avatar"] = list(request.avatar_urls)
         try:
-            raw = await self._register(
-                on_qr_code=handle_qr_code,
-                on_status_change=handle_status,
-                source="ghostap",
-                app_preset=app_preset,
-                addons={
-                    "preset": True,
-                    "scopes": {
-                        "tenant": list(_TENANT_SCOPES),
-                        "user": list(_USER_SCOPES),
+            with _suppress_registration_poll_noise():
+                raw = await self._register(
+                    on_qr_code=handle_qr_code,
+                    on_status_change=handle_status,
+                    source="ghostap",
+                    app_preset=app_preset,
+                    addons={
+                        "preset": True,
+                        "scopes": {
+                            "tenant": list(_TENANT_SCOPES),
+                            "user": list(_USER_SCOPES),
+                        },
+                        "events": {"items": {"tenant": list(_TENANT_EVENTS)}},
+                        "callbacks": {"items": list(_CALLBACKS)},
                     },
-                    "events": {"items": {"tenant": list(_TENANT_EVENTS)}},
-                    "callbacks": {"items": list(_CALLBACKS)},
-                },
-                create_only=True,
-            )
+                    create_only=True,
+                )
         except AppRegistrationError:
             raise
         except Exception as exc:

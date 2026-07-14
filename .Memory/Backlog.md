@@ -37,5 +37,7 @@
 | B038 | 2026-07-13 | 每员工 Channel 默认依赖 bwrap 的 user/mount/PID namespace 与最小只读文件系统；生产宿主需把实际 attestation 和 Feishu-only egress policy 作为部署前置探针，并准备独立容器后端覆盖禁用 namespace 的环境 | Medium | `/hire` channel review | ⏳ Open | - |
 | B039 | 2026-07-13 | Employee runtime release 当前有意 hard-close；启用前需接入不可变 build/image digest、workload identity、部署侧固定 QA trust root、外部单调 attestation ledger，以及带 expiry/tenant/release/instance 绑定且每次 dispatch 续验的 recovery capability | Medium | `/hire` release convergence review | ⏳ Open | - |
 | B040 | 2026-07-13 | 激活门禁已要求独立主 Bot send-count audit，但 `FeishuWSClient` 尚无真实租户审计 provider；启用前必须接入可按 tenant/challenge 时间窗查询的外部审计源，不能用进程内计数或常量零替代 | Medium | `/hire` activation security review | ⏳ Open | - |
+| B041 | 2026-07-14 | 员工 hire 缺终态用户通知：成功（应发"去消息激活新 Bot"）与失败/超时（应发"需人工处理"）当前只记日志。需新增 `notification_ready`/`notification_failed` 通道并接线，避免"请勿重复发送 /hire"成为悬空承诺 | Medium | 注册400日志 grill 复审 | ⏳ Open | - |
+| B042 | 2026-07-14 | `AsyncCallbackBridge` 的 link/status 回调在员工事件循环上同步调用阻塞式 `reply_message`，设备授权长轮询期会短暂阻塞循环/轮询节奏；可用 `asyncio.to_thread` 包装同步回复 | Low | 注册400日志 grill 复审 | ⏳ Open | - |
 
 > **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。
