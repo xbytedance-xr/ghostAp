@@ -58,7 +58,7 @@
   - `/hire` 管理员 DM 卡片权限 Bug 已修复：消息事件入口保存官方 `event.message.chat_type` 与 origin/chat/operator；卡片回调不再读取不存在的 `context.chat_type`。只有服务端明确无 provenance 记录时才查询 Chat API，并且只读结构字段 `chat_mode`；API 结果必须原子写回完整可信绑定。来源查询/写入失败、残缺、过期、跨 chat、跨 operator 或并发冲突均 fail-close。
   - readiness 反馈已接入处理器：只有 provider 明确返回 `ready=True` 且无 blockers 才派发真实 Hire；否则向管理员显示具体安全门禁，不再误报“不是管理员”，也不降级创建本地虚拟角色。
   - 当前现场仍不能创建真实员工，但剩余原因是有意的发布门禁而非 DM 识别：`autonomous_visible_employee_limit=0`，且没有独立 QA release 公钥/有效 attestation；全新环境的 `EmployeeDepartmentRuntime` 保持 dormant，`employee_hire_service` 不注入。不得绕过门禁创建员工。
-  - 以下模块仍主要是局部实现或内存脚手架，尚未组成真实员工任务闭环：
+  - 以下模块仍未组成真实员工任务闭环：
     - Thread Context Task 1-6 已完成并关闭 Phase 2：冻结 contracts/config、employee-scoped 官方
       `lark-oapi` message source、每员工 Vault credential lease、Get current 权威
       root/thread 解析、Thread 双遍历稳定 snapshot、Group 双窗口 recent、current
@@ -70,7 +70,9 @@
       shared Journal 同步、restart/rotation/retirement invalidation 与逆序关闭；真实页间
       insert/edit/delete、timeout、重复 token、partial SDK、两把密钥轮换、restart 与 shutdown
       故障注入均证明 `CONTEXT_UNAVAILABLE` 零 task/ACP 派发。durable ingress 尚未接入该服务
-    - `EmployeeMessageRouter` 尚未接 durable employee ingress、Projected Registry、ACL/membership 与真实 Slock `_run_acp_session`
+    - Phase 3 Task 0-5 已完成 durable employee ingress、Projected Registry/ACL/membership
+      authority 与 Journal-backed bounded Router；Task 6 尚未把 dispatch attempt、Context gate、
+      真实 Slock `_run_acp_session` 和原子 terminal history 接入，Task 7 尚未聚合生产门禁
     - `EmployeeResponseChannel` 明确仍是 in-memory outbox，缺 Journal-backed Durable Outbox、稳定 UUID 卡片和 child-owned stream controller
     - `FireSaga` 仍是可变内存顺序流程，未满足 Journal SSOT、Effect 锚定、unknown disposition、恢复与归档合同
     - 团队 membership、`/role add/remove`、`/stop` 终态竞态尚未形成生产闭环
@@ -157,8 +159,9 @@
      - Phase 2 handoff 已关闭；下一阶段是 durable employee ingress
   3. 进行中：Durable employee ingress、Router 与 Slock gateway：
      - 设计与现有实现审计已完成，实施计划见
-       `docs/2026-07-13-autonomous-durable-ingress-plan.md`；当前生产 Router/Inbox
-       仍是不可接受的内存脚手架，Phase 3 尚未完成
+       `docs/2026-07-13-autonomous-durable-ingress-plan.md`；Task 0-5 的 durable Inbox、
+       official Channel ACK bridge、附件暂存与 Journal-backed Router 已完成，Task 6-7
+       的真实执行和生产聚合仍未完成，因此 Phase 3 尚未关闭
      - 已完成 Task 0 SDK capability 硬门禁：锁定 `lark-channel-sdk==1.1.0` 的
        low-level message 与 P2 `card.action.trigger` EVENT 均通过真实 HTTP/WSS/protobuf
        ACK 顺序验证；高层 handler 提前 200 与 raw `MessageType.CARD` 继续明确禁用
@@ -184,7 +187,7 @@
      - Task 3 mandatory matrix 已覆盖 IPC backpressure/partial frame、parent close、
        anchor/projection/ACK encode/control write、late/lost ACK、child crash、SDK write、
        reconnect/STOP/generation rotation；connection epoch 与 READY/INGRESS 顺序 fail-close
-     - Task 3 独立 Spec/Code review 已批准；Task 5-7 尚未完成，Task 7 尚未聚合生产门禁，
+     - Task 3 独立 Spec/Code review 已批准；Task 6-7 尚未完成，Task 7 尚未聚合生产门禁，
        `autonomous_visible_employee_limit` 保持 0
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
@@ -200,9 +203,16 @@
        `ftruncate(0)+fsync` 并 fresh-reopen 全量复核；完成后不执行存在 TOCTOU 的 pathname
        unlink，`cleanup_completed` 保证敏感字节已持久擦除但不承诺删除零字节目录项
      - Task 4 最终 70 focused、332 expanded、1479 full Autonomous 测试通过，独立
-       Spec/Code review 均批准且无 Critical/Important；Task 5 authority-bound durable
-       Router 与 bounded queues 是下一项
-     - employee/app/generation binding、tenant、membership、ACL 和有界队列
+       Spec/Code review 均批准且无 Critical/Important
+     - 已完成 Task 5：删除旧内存 production Router；durable Router 只消费 anchored Inbox，
+       绑定 ACTIVE visible employee/tenant/Bot/app/精确 READY enum/generation/connection/
+       membership/requester ACL/workforce coordinate，并持久化完整生命周期与有界 FIFO
+     - 已完成 Task 5：team/global fairness rebalance 在单帧原子终止过度占用的 queued victim
+       并接纳 newcomer；final workforce fence、三次附件 authority/credential 校验、terminal-only
+       Task 4 cleanup/recovery 均 fail-close，card action 仍 durable unsupported
+     - Task 5 最终 184 focused、277 affected、879 expanded、1590 full Autonomous 测试通过；
+       EI-QUEUE-01、Ruff、文档、配置与 diff 门禁通过，独立 Spec/Code review 均批准且无
+       Critical/Important；Task 6 attempt anchor、Context gate 与 real Slock gateway 是下一项
      - ACP dispatch 前锚定 ExecutionAttemptContext
      - 每个 accepted attempt 只调用一次现有 `_run_acp_session`
      - completed/failed/canceled/timeout/action_required 全部进入数据面

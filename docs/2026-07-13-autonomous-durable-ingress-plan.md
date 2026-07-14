@@ -1,7 +1,7 @@
 # Autonomous Employee Durable Ingress and Slock Gateway Plan
 
-> **Status:** active; Tasks 0-4 are complete. Task 5 authority-bound durable
-> Router and bounded queues is next. This plan does not
+> **Status:** active; Tasks 0-5 are complete. Task 6 attempt anchor, Context
+> gate, and real Slock gateway is next. This plan does not
 > authorize raising `autonomous_visible_employee_limit` above `0`.
 
 **Goal:** Accept employee Bot events durably before the Feishu WebSocket ACK,
@@ -326,7 +326,7 @@ or lost ACK, child crash, post-callback SDK write failure, reconnect/STOP/
 generation fencing and replay convergence. Oversized single frames produce
 wire non-success with zero Inbox/Journal/Router/ACP side effects. Independent
 final review approved specification compliance and code quality. This remains
-local Phase 3 evidence; Task 5-7, Task 7 production aggregation, FI-29 and real
+local Phase 3 evidence; Tasks 6-7, Task 7 production aggregation, FI-29 and real
 tenant release remain pending, so `autonomous_visible_employee_limit=0` is
 unchanged.
 
@@ -402,7 +402,7 @@ The final focused suite passed 70 tests; the expanded ingress suite passed 332
 with 1 skip; the full Autonomous suite passed 1479 with 2 skips. Ruff, document
 references, configuration validation and diff checks passed. Independent final
 review approved both specification compliance and code quality with no Critical
-or Important findings. This remains local Phase 3 evidence; Tasks 5-7, Task 7
+or Important findings. This remains local Phase 3 evidence; Tasks 6-7, Task 7
 production aggregation, FI-29 and real-tenant release remain pending, so
 `autonomous_visible_employee_limit=0` is unchanged.
 
@@ -443,6 +443,34 @@ production aggregation, FI-29 and real-tenant release remain pending, so
   current message coordinates, and trusted constraints digest/reserve.
 
 Commit: `feat(autonomous): route durable employee inbox records`
+
+**Task 5 outcome (2026-07-14):** complete. The in-memory production Router was
+removed. `DurableEmployeeIngressRouter` now consumes only anchored Inbox
+acceptances and authenticated payloads, persists the exact
+accepted/authorized/staging/queued/dispatching/terminal lifecycle, rebuilds
+FIFO order from Journal sequence, and enforces per-employee, team and global
+queue limits. Fairness rebalancing terminates only an overrepresented queued
+victim and admits the newcomer in the same two-aggregate anchored frame;
+dispatching work is never a victim.
+
+Authority is default-deny and binds the ACTIVE visible employee, tenant, Bot
+principal, app, exact parent-owned Channel READY enum, generation/connection,
+team membership, requester ACL and a verifiable workforce projection
+coordinate. Final queue/rebalance/dequeue guards fence later anchored workforce
+changes. Attachment credentials are validated and used only ephemerally;
+terminal Router records own lock-free Task 4 cleanup and restart recovery
+without cleaning queued or dispatching work. Card actions remain durable
+unsupported until Phase 4 owns trusted issuance.
+
+Final verification passed 184 focused tests, a 277-test affected Channel/runtime
+set, 879 expanded ingress tests with 1 skip, and a fresh full Autonomous run of
+1590 tests with 2 skips; the sole warning remains the pinned SDK protobuf
+datetime deprecation. EI-QUEUE-01, Ruff, document references, configuration and
+diff checks passed. Independent final review approved specification compliance
+and code quality with no Critical or Important findings. This is still local
+Phase 3 evidence: Task 6 owns attempt/effect/Context/ACP/terminal execution,
+Task 7 owns production aggregation, and `autonomous_visible_employee_limit=0`
+remains unchanged.
 
 ## Task 6: Attempt anchor, Context gate, and real Slock gateway
 
