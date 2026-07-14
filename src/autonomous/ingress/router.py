@@ -17,6 +17,7 @@ from ..domain import EmployeeState, WorkerType
 from ..journal.blob_store import BlobRef
 from ..journal.frame import GENESIS_HASH, JournalEvent
 from ..journal.writer import CommitState, JournalWriter
+from ..supervisor.channel_models import ChannelProcessState
 from ..workforce.projection import is_workforce_event
 from ..workforce.registry import (
     ProjectedAgentRegistry,
@@ -1080,7 +1081,7 @@ class DurableEmployeeIngressRouter:
             status_tenant_key = getattr(status, "tenant_key", None)
             status_bot_principal_id = getattr(status, "bot_principal_id", None)
             status_generation = getattr(status, "generation", None)
-            state = getattr(getattr(status, "state", None), "value", None)
+            status_state = getattr(status, "state", None)
             identity_app_id = (
                 identity.get("app_id") if isinstance(identity, Mapping) else None
             )
@@ -1106,7 +1107,7 @@ class DurableEmployeeIngressRouter:
                 )
                 or type(status_generation) is not int
                 or status_generation < 1
-                or state != "ready"
+                or status_state is not ChannelProcessState.READY
                 or status_agent_id != metadata.agent_id
                 or status_tenant_key != metadata.tenant_key
                 or status_bot_principal_id != metadata.bot_principal_id

@@ -9,7 +9,6 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field, replace
-from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Iterable, Protocol
 
@@ -29,6 +28,7 @@ from src.autonomous.provisioning.channel_protocol import (
     encode_bootstrap,
     encode_frame,
 )
+from src.autonomous.supervisor.channel_models import ChannelProcessState
 
 
 class ChannelSandboxUnavailable(RuntimeError):
@@ -36,15 +36,6 @@ class ChannelSandboxUnavailable(RuntimeError):
 
     def __init__(self) -> None:
         super().__init__("employee Channel sandbox unavailable")
-
-
-class ChannelProcessState(str, Enum):
-    STARTING = "starting"
-    READY = "ready"
-    STOPPING = "stopping"
-    STOPPED = "stopped"
-    FAILED = "failed"
-    CRASHED = "crashed"
 
 
 @dataclass(frozen=True, slots=True)

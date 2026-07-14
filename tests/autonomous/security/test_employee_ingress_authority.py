@@ -42,6 +42,14 @@ def _router_module():
     return importlib.import_module("src.autonomous.ingress.router")
 
 
+def test_employee_channel_state_reexports_shared_enum_identity() -> None:
+    shared = importlib.import_module(
+        "src.autonomous.supervisor.channel_models"
+    ).ChannelProcessState
+
+    assert ChannelProcessState is shared
+
+
 def _payload(
     *,
     text: str = "inspect this change",
@@ -494,6 +502,7 @@ def test_live_channel_status_binds_tenant_and_bot_principal(
         ("identity", []),
         ("ready_metadata", []),
         ("state", "ready"),
+        ("state", SimpleNamespace(value="ready")),
     ),
 )
 def test_live_channel_status_requires_strict_parent_trusted_shape(
