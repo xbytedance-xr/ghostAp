@@ -631,8 +631,12 @@ def test_production_launch_contract_is_fixed_fresh_interpreter() -> None:
     assert contract.argv[0] == "/usr/bin/bwrap"
     assert "--unshare-user" in contract.argv
     assert "--unshare-pid" in contract.argv
+    assert "--as-pid-1" in contract.argv
     assert "--ro-bind" in contract.argv
     assert str(expected_worker.parents[3] / ".env") not in contract.argv
+    assert str(expected_worker.parents[3] / "pyproject.toml") in contract.argv
+    assert str(expected_worker.parents[3] / "uv.lock") in contract.argv
+    assert str(expected_worker.parents[3] / "AGENTS.md") not in contract.argv
     assert contract.argv[-7:] == (
         "--",
         sys.executable,
@@ -661,6 +665,12 @@ def test_low_level_entry_hardens_before_credentials_or_sdk_import() -> None:
 
     assert source.index("apply_process_hardening()") < source.index(
         "decode_bootstrap"
+    )
+    assert source.index("emit_macos_sandbox_proof") < source.index(
+        "decode_bootstrap"
+    )
+    assert source.index("collect_sdk_distribution_identity") < source.index(
+        "emit_macos_sandbox_proof"
     )
     assert source.index("apply_process_hardening()") < source.index(
         "from lark_channel"

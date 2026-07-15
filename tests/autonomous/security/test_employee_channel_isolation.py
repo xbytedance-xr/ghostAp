@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import errno
+import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -7,11 +10,14 @@ from pathlib import Path
 
 import pytest
 
+from src.autonomous.provisioning import channel_worker as channel_worker_module
 from src.autonomous.supervisor.employee_channels import (
     ChannelProcessState,
     ChannelSandboxUnavailable,
     EmployeeChannelSupervisor,
     SandboxAttestation,
+    _read_sandbox_metadata,
+    attest_macos_sandbox_proof,
 )
 
 
@@ -33,6 +39,37 @@ def _worker(tmp_path: Path) -> Path:
             os.write(event_fd, (json.dumps(frame, separators=(',', ':')) + '\\n').encode())
             control = os.fdopen(control_fd, 'rb', buffering=0)
             control.readline()
+            """
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _mac_proof_worker(tmp_path: Path, *, denied_errno: int = errno.EACCES) -> Path:
+    marker = tmp_path / "proof-emitted"
+    path = tmp_path / "mac_proof_worker.py"
+    path.write_text(
+        textwrap.dedent(
+            f"""
+            import json
+            import os
+            import sys
+
+            bootstrap_fd, control_fd, event_fd, proof_fd = map(int, sys.argv[1:5])
+            nonce = sys.argv[5]
+            {str(marker)!r} and open({str(marker)!r}, 'w').close()
+            proof = {{'schema_version': 1, 'nonce': nonce, 'pid': os.getpid(),
+                      'source_readable': True, 'runtime_readable': True,
+                      'repository_canary_errno': {denied_errno}}}
+            os.write(proof_fd, json.dumps(proof, separators=(',', ':')).encode())
+            os.close(proof_fd)
+            bootstrap = json.loads(os.fdopen(bootstrap_fd, 'rb', buffering=0).readline())
+            frame = {{'v': 1, 'type': 'READY', 'agent_id': bootstrap['agent_id'],
+                     'generation': bootstrap['generation'], 'sequence': 1,
+                     'payload': {{'identity': {{'app_id': bootstrap['app_id']}}}}}}
+            os.write(event_fd, (json.dumps(frame, separators=(',', ':')) + '\\n').encode())
+            os.fdopen(control_fd, 'rb', buffering=0).readline()
             """
         ),
         encoding="utf-8",
@@ -71,6 +108,17 @@ def test_default_sandbox_attestation_fails_closed_before_secret_resolution(tmp_p
 def test_default_launcher_prefers_bwrap_and_falls_back_to_process_isolation(
     tmp_path: Path,
 ) -> None:
+    user_namespaces_work = (
+        sys.platform == "linux"
+        and Path("/usr/bin/bwrap").is_file()
+        and Path("/usr/bin/unshare").is_file()
+        and subprocess.run(
+            ["/usr/bin/unshare", "-Ur", "true"],
+            check=False,
+            capture_output=True,
+        ).returncode
+        == 0
+    )
     supervisor = EmployeeChannelSupervisor(
         secret_resolver=lambda *_: "employee-secret",
         worker_path=_worker(tmp_path),
@@ -82,8 +130,11 @@ def test_default_launcher_prefers_bwrap_and_falls_back_to_process_isolation(
         )
         assert status.state is ChannelProcessState.READY
         assert status.sandbox is not None
+        if user_namespaces_work:
+            assert status.sandbox.verified is True
         if status.sandbox.verified:
             assert status.sandbox.mechanism == "bwrap-filesystem"
+            assert status.sandbox.pid != status.pid
         else:
             assert status.sandbox.mechanism == "process-fallback"
     finally:
@@ -185,3 +236,307 @@ def test_launcher_failure_closes_every_parent_and_child_pipe_fd(tmp_path: Path) 
 
     assert len(tuple(Path("/proc/self/fd").iterdir())) == before
     supervisor.close()
+
+
+def test_default_linux_launcher_failure_closes_bwrap_info_pipe(tmp_path: Path) -> None:
+    if sys.platform != "linux":
+        pytest.skip("Linux bwrap metadata contract")
+    before = len(tuple(Path("/proc/self/fd").iterdir()))
+
+    def fail_launch(*_args, **_kwargs):
+        raise OSError("injected launcher failure")
+
+    supervisor = EmployeeChannelSupervisor(
+        secret_resolver=lambda *_: "must-not-resolve",
+        worker_path=_worker(tmp_path),
+        launcher=fail_launch,
+    )
+    with pytest.raises(RuntimeError, match="launch failed"):
+        supervisor.start("agt_1", "cli_1", "cred_1", 1, lambda _: None)
+
+    assert len(tuple(Path("/proc/self/fd").iterdir())) == before
+    supervisor.close()
+
+
+def test_macos_temp_setup_failure_closes_all_launch_fds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = len(tuple(Path("/proc/self/fd").iterdir()))
+    resolved = False
+
+    def fail_temp(*_args, **_kwargs):
+        raise OSError("injected temp failure")
+
+    def resolve(*_args: str) -> str:
+        nonlocal resolved
+        resolved = True
+        return "must-not-resolve"
+
+    monkeypatch.setattr(
+        "src.autonomous.supervisor.employee_channels.tempfile.mkdtemp",
+        fail_temp,
+    )
+    supervisor = EmployeeChannelSupervisor(
+        secret_resolver=resolve,
+        worker_path=_worker(tmp_path),
+        launcher=subprocess.Popen,
+        platform_name="darwin",
+    )
+    with pytest.raises(ChannelSandboxUnavailable):
+        supervisor.start("agt_1", "cli_1", "cred_1", 1, lambda _: None)
+
+    assert resolved is False
+    assert len(tuple(Path("/proc/self/fd").iterdir())) == before
+    supervisor.close()
+
+
+def test_bwrap_info_metadata_is_bounded_and_strictly_typed() -> None:
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, json.dumps({"child-pid": 1234, "future": 1}).encode())
+    os.close(write_fd)
+    try:
+        assert _read_sandbox_metadata(read_fd)["child-pid"] == 1234
+    finally:
+        os.close(read_fd)
+
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"[1234]")
+    os.close(write_fd)
+    try:
+        with pytest.raises(ValueError, match="object"):
+            _read_sandbox_metadata(read_fd)
+    finally:
+        os.close(read_fd)
+
+
+def test_macos_seatbelt_contract_is_deny_default_and_proof_is_exact(
+    tmp_path: Path,
+) -> None:
+    supervisor = EmployeeChannelSupervisor(
+        secret_resolver=lambda *_: "unused",
+        platform_name="darwin",
+        launcher=subprocess.Popen,
+    )
+    contract = supervisor.launch_contract(
+        bootstrap_fd=41,
+        control_fd=42,
+        event_fd=43,
+        sandbox_proof_fd=44,
+        sandbox_proof_nonce="a" * 32,
+        sandbox_temp_dir=tmp_path,
+    )
+
+    assert contract.argv[0] == "/usr/bin/sandbox-exec"
+    assert any("(deny default)" in argument for argument in contract.argv)
+    assert any("(allow network-outbound)" in argument for argument in contract.argv)
+    assert "GHOSTAP_SOURCE_ROOT=" in " ".join(contract.argv)
+    assert f"GHOSTAP_TEMP={tmp_path}" in contract.argv
+    assert contract.argv[-5:] == ("41", "42", "43", "44", "a" * 32)
+    assert contract.pass_fds == (41, 42, 43, 44)
+    assert contract.env["GHOSTAP_CHANNEL_TMP"] == str(tmp_path)
+    assert contract.env["TMPDIR"] == str(tmp_path)
+
+    proof = {
+        "schema_version": 1,
+        "nonce": "a" * 32,
+        "pid": 987,
+        "source_readable": True,
+        "runtime_readable": True,
+        "repository_canary_errno": errno.EACCES,
+    }
+    accepted = attest_macos_sandbox_proof(
+        proof,
+        nonce="a" * 32,
+        expected_pid=987,
+    )
+    assert accepted.verified is True
+    assert accepted.pid == 987
+    assert accepted.mechanism == "seatbelt-filesystem"
+
+    assert attest_macos_sandbox_proof(
+        proof,
+        nonce="b" * 32,
+        expected_pid=987,
+    ).verified is False
+    assert attest_macos_sandbox_proof(
+        {**proof, "repository_canary_errno": errno.ENOENT},
+        nonce="a" * 32,
+        expected_pid=987,
+    ).verified is False
+    assert attest_macos_sandbox_proof(
+        {**proof, "unexpected": True},
+        nonce="a" * 32,
+        expected_pid=987,
+    ).verified is False
+    assert attest_macos_sandbox_proof(
+        {**proof, "pid": 988},
+        nonce="a" * 32,
+        expected_pid=987,
+    ).verified is False
+
+
+def test_missing_macos_seatbelt_fails_before_secret_resolution(tmp_path: Path) -> None:
+    resolved = False
+
+    def resolve(*_args: str) -> str:
+        nonlocal resolved
+        resolved = True
+        return "must-not-be-delivered"
+
+    supervisor = EmployeeChannelSupervisor(
+        secret_resolver=resolve,
+        worker_path=_worker(tmp_path),
+        platform_name="darwin",
+    )
+    try:
+        with pytest.raises(ChannelSandboxUnavailable):
+            supervisor.start("agt_mac", "cli_mac", "cred_mac", 1, lambda _: None)
+        assert resolved is False
+    finally:
+        supervisor.close()
+
+
+def test_platform_override_cannot_change_production_fallback_policy() -> None:
+    other_platform = "darwin" if sys.platform != "darwin" else "linux"
+    with pytest.raises(ValueError, match="platform override"):
+        EmployeeChannelSupervisor(
+            secret_resolver=lambda *_: "unused",
+            platform_name=other_platform,
+        )
+
+
+def test_macos_proof_precedes_secret_resolution_and_bootstrap(tmp_path: Path) -> None:
+    worker = _mac_proof_worker(tmp_path)
+    proof_marker = tmp_path / "proof-emitted"
+    launches: list[tuple[tuple[str, ...], dict[str, object]]] = []
+    sandbox_temp: Path | None = None
+
+    def launch(argv, **kwargs):
+        launches.append((tuple(argv), dict(kwargs)))
+        command_start = tuple(argv).index(sys.executable)
+        return subprocess.Popen(tuple(argv)[command_start:], **kwargs)
+
+    def resolve(*_args: str) -> str:
+        assert proof_marker.is_file()
+        return "employee-secret"
+
+    supervisor = EmployeeChannelSupervisor(
+        secret_resolver=resolve,
+        worker_path=worker,
+        launcher=launch,
+        platform_name="darwin",
+        ready_timeout=1.0,
+    )
+    try:
+        status = supervisor.start(
+            "agt_mac",
+            "cli_mac",
+            "cred_mac",
+            1,
+            lambda _: None,
+        )
+        assert status.state is ChannelProcessState.READY
+        assert status.sandbox is not None
+        assert status.sandbox.verified is True
+        assert status.sandbox.mechanism == "seatbelt-filesystem"
+        launch_argv, launch_options = launches[0]
+        sandbox_temp = Path(launch_options["env"]["GHOSTAP_CHANNEL_TMP"])
+        assert sandbox_temp.is_dir()
+        assert sandbox_temp.stat().st_mode & 0o777 == 0o700
+        assert f"GHOSTAP_TEMP={sandbox_temp}" in launch_argv
+    finally:
+        supervisor.close()
+    assert sandbox_temp is not None
+    assert not sandbox_temp.exists()
+
+
+def test_macos_invalid_denial_proof_never_resolves_secret(tmp_path: Path) -> None:
+    resolved = False
+    worker = _mac_proof_worker(tmp_path, denied_errno=errno.ENOENT)
+
+    def launch(argv, **kwargs):
+        command_start = tuple(argv).index(sys.executable)
+        return subprocess.Popen(tuple(argv)[command_start:], **kwargs)
+
+    def resolve(*_args: str) -> str:
+        nonlocal resolved
+        resolved = True
+        return "must-not-be-delivered"
+
+    supervisor = EmployeeChannelSupervisor(
+        secret_resolver=resolve,
+        worker_path=worker,
+        launcher=launch,
+        platform_name="darwin",
+    )
+    try:
+        with pytest.raises(ChannelSandboxUnavailable):
+            supervisor.start("agt_mac", "cli_mac", "cred_mac", 1, lambda _: None)
+        assert resolved is False
+    finally:
+        supervisor.close()
+
+
+@pytest.mark.parametrize("ptrace_result", [0, -1])
+def test_darwin_worker_hardening_denies_debug_attach(
+    monkeypatch: pytest.MonkeyPatch,
+    ptrace_result: int,
+) -> None:
+    calls: list[tuple[int, int, object, int]] = []
+
+    class FakePtrace:
+        argtypes: list[object] = []
+        restype: object = None
+
+        def __call__(self, request: int, pid: int, address: object, data: int) -> int:
+            calls.append((request, pid, address, data))
+            return ptrace_result
+
+    class FakeLibC:
+        ptrace = FakePtrace()
+
+    limits: list[tuple[int, tuple[int, int]]] = []
+    monkeypatch.setattr(channel_worker_module.sys, "platform", "darwin")
+    monkeypatch.setattr(channel_worker_module.ctypes, "CDLL", lambda *_args, **_kwargs: FakeLibC())
+    monkeypatch.setattr(
+        channel_worker_module.resource,
+        "setrlimit",
+        lambda kind, value: limits.append((kind, value)),
+    )
+
+    if ptrace_result == 0:
+        channel_worker_module.apply_process_hardening()
+    else:
+        with pytest.raises(
+            channel_worker_module.WorkerSecurityError,
+            match="debug attachment",
+        ):
+            channel_worker_module.apply_process_hardening()
+
+    assert limits == [(channel_worker_module.resource.RLIMIT_CORE, (0, 0))]
+    assert calls == [(31, 0, None, 0)]
+
+
+def test_macos_worker_proof_requires_permission_denial(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_open = os.open
+
+    def sandboxed_open(path, flags):
+        if Path(path).name == "AGENTS.md":
+            raise PermissionError(errno.EACCES, "seatbelt denied", str(path))
+        return original_open("/dev/null", flags)
+
+    monkeypatch.setattr(channel_worker_module.sys, "platform", "darwin")
+    monkeypatch.setattr(channel_worker_module.os, "open", sandboxed_open)
+    read_fd, write_fd = os.pipe()
+
+    channel_worker_module.emit_macos_sandbox_proof(write_fd, "c" * 32)
+    proof = json.loads(os.read(read_fd, 4096))
+    os.close(read_fd)
+
+    assert proof["nonce"] == "c" * 32
+    assert proof["repository_canary_errno"] == errno.EACCES
+    assert proof["source_readable"] is True
+    assert proof["runtime_readable"] is True

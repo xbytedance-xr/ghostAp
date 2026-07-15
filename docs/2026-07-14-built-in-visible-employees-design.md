@@ -58,11 +58,18 @@ created. Main-Bot delivery remains separate from employee-Bot delivery.
 
 ## Employee Channel compatibility
 
-Employee Channel startup prefers the existing `bwrap` launch contract. If the
-production worker cannot be launched or attested because the host lacks
-working user namespaces, the supervisor retries exactly once with the same
-isolated Python worker and inherited pipe contract but without the `bwrap`
-prefix.
+Employee Channel startup selects a platform sandbox. Linux uses `bwrap` and
+attests the worker PID returned by Bubblewrap's one-shot `--info-fd` status
+channel, rather than the outer monitor PID. macOS uses the system
+`/usr/bin/sandbox-exec` with a deny-default Seatbelt profile and accepts the
+worker only after a nonce-bound denial proof succeeds before credential
+resolution.
+
+If the Linux production worker cannot be launched or attested because the host
+lacks working user namespaces, the supervisor retries exactly once with the
+same isolated Python worker and inherited pipe contract but without the
+`bwrap` prefix. macOS does not take this unverified fallback: missing or failed
+Seatbelt proof is fail-closed.
 
 The fallback process:
 
@@ -76,7 +83,18 @@ The fallback process:
   recovery rules.
 
 No configuration flag or false `verified=True` attestation is introduced.
-Hosts with working `bwrap` continue to use the stronger verified isolation.
+Hosts with working `bwrap` or Seatbelt use the stronger verified isolation.
+`restart.sh` synchronizes declared Python dependencies, installs the Linux
+`bubblewrap` system package through a supported package manager when possible,
+and probes the built-in macOS Seatbelt executable.
+
+The macOS worker receives a per-launch `0700` temporary directory and the
+Seatbelt profile grants read/write access only to that directory. It completes
+SDK lock/distribution preflight, proves that the allowed runtime is readable
+and a real repository canary is denied, and only then receives credentials.
+`sandbox-exec`/SBPL is a deprecated compatibility surface rather than Apple's
+supported App Sandbox entitlement model, so each target macOS release still
+requires a native profile, DNS, TLS, and WebSocket acceptance run.
 
 ## User flow
 

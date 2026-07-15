@@ -260,6 +260,8 @@ def run_low_level_employee_channel(
     control_fd: int,
     event_fd: int,
     *,
+    sandbox_proof_fd: int | None = None,
+    sandbox_proof_nonce: str = "",
     domain: str = "https://open.feishu.cn",
     proxy_url: str | None = None,
     proxy_allowlist: tuple[str, ...] = (),
@@ -289,10 +291,13 @@ def run_low_level_employee_channel(
         prepare_controlled_sdk_import_cache,
     )
 
+    channel_tmp = Path(os.environ.get("GHOSTAP_CHANNEL_TMP", "/tmp"))
     prepare_controlled_sdk_import_cache(
-        Path("/tmp") / f"ghostap-employee-channel-sdk-{os.getpid()}"
+        channel_tmp / f"ghostap-employee-channel-sdk-{os.getpid()}"
     )
     collect_sdk_distribution_identity(require_controlled_import_cache=True)
+    if sandbox_proof_fd is not None:
+        emit_macos_sandbox_proof(sandbox_proof_fd, sandbox_proof_nonce)
 
     with os.fdopen(bootstrap_fd, "rb", buffering=0) as bootstrap_stream:
         bootstrap = decode_bootstrap(bootstrap_stream.readline(MAX_FRAME_BYTES + 1))
@@ -810,16 +815,77 @@ def _canonical_ingress_id(value: Any, prefix: str) -> str:
 def apply_process_hardening() -> None:
     """Disable core dumps, dumpability, and privilege acquisition."""
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-    if sys.platform != "linux":
-        raise WorkerSecurityError("unsupported worker platform")
     libc = ctypes.CDLL(None, use_errno=True)
-    prctl = libc.prctl
-    prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
-    prctl.restype = ctypes.c_int
-    if prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
-        raise WorkerSecurityError("dumpability hardening failed")
-    if prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
-        raise WorkerSecurityError("privilege hardening failed")
+    if sys.platform == "linux":
+        prctl = libc.prctl
+        prctl.argtypes = [
+            ctypes.c_int,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+        ]
+        prctl.restype = ctypes.c_int
+        if prctl(4, 0, 0, 0, 0) != 0:  # PR_SET_DUMPABLE
+            raise WorkerSecurityError("dumpability hardening failed")
+        if prctl(38, 1, 0, 0, 0) != 0:  # PR_SET_NO_NEW_PRIVS
+            raise WorkerSecurityError("privilege hardening failed")
+        return
+    if sys.platform == "darwin":
+        ptrace = libc.ptrace
+        ptrace.argtypes = [
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        ptrace.restype = ctypes.c_int
+        result = ptrace(31, 0, None, 0)  # PT_DENY_ATTACH
+        if result != 0:
+            raise WorkerSecurityError("debug attachment hardening failed")
+        return
+    raise WorkerSecurityError("unsupported worker platform")
+
+
+def emit_macos_sandbox_proof(fd: int, nonce: str) -> None:
+    """Prove the deny-default Seatbelt profile before reading credentials."""
+    if (
+        sys.platform != "darwin"
+        or len(nonce) != 32
+        or any(character not in "0123456789abcdef" for character in nonce)
+    ):
+        raise WorkerSecurityError("invalid macOS sandbox proof request")
+    repository_root = Path(__file__).resolve().parents[3]
+    canary = repository_root / "AGENTS.md"
+
+    def readable(path: Path) -> bool:
+        try:
+            descriptor = os.open(path, os.O_RDONLY)
+        except OSError:
+            return False
+        os.close(descriptor)
+        return True
+
+    try:
+        descriptor = os.open(canary, os.O_RDONLY)
+    except OSError as exc:
+        canary_errno = int(exc.errno or 0)
+    else:
+        os.close(descriptor)
+        canary_errno = 0
+    proof = {
+        "schema_version": 1,
+        "nonce": nonce,
+        "pid": os.getpid(),
+        "source_readable": readable(Path(__file__).resolve()),
+        "runtime_readable": readable(Path(sys.executable).resolve()),
+        "repository_canary_errno": canary_errno,
+    }
+    raw = json.dumps(proof, separators=(",", ":")).encode()
+    try:
+        os.write(fd, raw)
+    finally:
+        os.close(fd)
 
 
 @dataclass(slots=True)
@@ -1271,14 +1337,26 @@ def _json_safe(value: Any) -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 3:
+    if len(args) not in {3, 5}:
         return 64
     try:
-        fds = [int(value) for value in args]
+        fds = [int(value) for value in args[:3]]
     except ValueError:
         return 64
+    proof_fd: int | None = None
+    proof_nonce = ""
+    if len(args) == 5:
+        try:
+            proof_fd = int(args[3])
+        except ValueError:
+            return 64
+        proof_nonce = args[4]
     try:
-        run_low_level_employee_channel(*fds)
+        run_low_level_employee_channel(
+            *fds,
+            sandbox_proof_fd=proof_fd,
+            sandbox_proof_nonce=proof_nonce,
+        )
     except Exception:
         return 1
     return 0

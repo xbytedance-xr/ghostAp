@@ -32,12 +32,20 @@ GhostAP 把“执行策略”和“工具传输”拆开：
 - 飞书/Lark 企业自建应用，开启长连接接收事件
 - 如需使用 `/wf`，需要 Node.js 20+
 - 需要使用的 AI 工具或 ACP Provider 已在本机安装并完成各自认证
+- 可见员工 Channel 在 Linux 使用 `bubblewrap`，在 macOS 使用系统 Seatbelt；
+  `restart.sh` 会自动同步 Python 依赖、安装受支持 Linux 发行版的
+  `bubblewrap`，或探测 macOS 自带的 `/usr/bin/sandbox-exec`
 
 ### 安装依赖
 
 ```bash
 uv sync --group dev
 ```
+
+也可以直接执行 `./restart.sh start`。该入口默认先运行 `uv sync --group dev`
+并准备当前平台的员工隔离依赖；`uv` 本身仍是启动前唯一需要预装的 Python
+包管理工具。可分别用 `GHOSTAP_SYNC_PYTHON_DEPENDENCIES=0` 和
+`GHOSTAP_PREPARE_EMPLOYEE_SANDBOX=0` 跳过这两步。
 
 ### 配置飞书应用
 
@@ -244,6 +252,12 @@ uv run ruff check src/autonomous/         # 0 错误
 - 仓库操作受 repo 锁保护，群聊访问可由管理员锁定。
 - 卡片按钮带签名校验，错误详情会脱敏和截断。
 - Workflow 脚本会做结构化验证，禁止危险模块和明显逃逸。
+- 可见员工 Channel 在 Linux 通过 Bubblewrap user/mount/PID namespace 验真；
+  macOS 通过 deny-default Seatbelt 与凭证下发前拒绝探针验真。macOS 缺少
+  系统 Seatbelt 时员工 Channel 默认拒绝启动，不会伪报隔离成功。
+- macOS 的 `sandbox-exec` 是系统兼容接口且已被 Apple 标记为 deprecated；
+  当前实现需要在目标 macOS 版本上完成 profile、DNS/TLS/WSS 真机验收。需要
+  Apple 长期支持的产品边界时，应迁移到签名 helper + App Sandbox entitlement。
 - 日志优先查看 `logs.log`；重启或启动问题同时检查 `[RESTART]` 标记和 `uv run python -m src.main --validate` 输出。
 
 ## 开发

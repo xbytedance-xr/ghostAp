@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import secrets
+import select
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -34,6 +39,41 @@ from src.autonomous.supervisor.channel_models import ChannelProcessState
 
 logger = logging.getLogger(__name__)
 
+_SANDBOX_METADATA_MAX_BYTES = 4096
+_SANDBOX_METADATA_TIMEOUT_SECONDS = 10.0
+_MACOS_SEATBELT_PROFILE = """
+(version 1)
+(deny default)
+(allow process-exec
+    (literal (param "GHOSTAP_PYTHON"))
+    (literal (param "GHOSTAP_PYTHON_REAL")))
+(allow process-info* (target self))
+(allow signal (target self))
+(allow sysctl-read)
+(allow mach-lookup)
+(allow system-socket)
+(allow network-outbound)
+(allow file-read*
+    (subpath (param "GHOSTAP_SOURCE_ROOT"))
+    (literal (param "GHOSTAP_WORKER"))
+    (subpath (param "GHOSTAP_RUNTIME_PREFIX"))
+    (subpath (param "GHOSTAP_BASE_PREFIX"))
+    (literal (param "GHOSTAP_PYTHON"))
+    (literal (param "GHOSTAP_PYTHON_REAL"))
+    (literal (param "GHOSTAP_PYPROJECT"))
+    (literal (param "GHOSTAP_UV_LOCK"))
+    (subpath (param "GHOSTAP_TEMP"))
+    (subpath "/System/Library")
+    (subpath "/Library/Frameworks")
+    (subpath "/usr/lib")
+    (subpath "/usr/share")
+    (subpath "/private/etc")
+    (subpath "/private/var/db/timezone")
+    (literal "/private/var/run/mDNSResponder")
+    (subpath "/dev"))
+(allow file-write* (subpath (param "GHOSTAP_TEMP")))
+""".strip()
+
 
 class ChannelSandboxUnavailable(RuntimeError):
     """No verified per-employee OS isolation boundary is available."""
@@ -56,6 +96,15 @@ class ChannelLaunchContract:
     close_fds: bool
     pass_fds: tuple[int, ...]
     env: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class _SandboxAttempt:
+    prefix: tuple[str, ...]
+    mechanism: str
+    bwrap_info: bool = False
+    seatbelt_proof: bool = False
+    fallback: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +181,7 @@ class _Runtime:
     inbound_sequence: int = 0
     pending_sends: dict[str, _PendingSend] = field(default_factory=dict)
     control_lock: threading.Lock = field(default_factory=threading.Lock)
+    sandbox_temp_dir: Path | None = None
 
 
 class EmployeeChannelSupervisor:
@@ -148,6 +198,7 @@ class EmployeeChannelSupervisor:
         launcher: Callable[..., subprocess.Popen[bytes]] | None = None,
         sandbox_attestor: SandboxAttestor | None = None,
         sandbox_prefix: tuple[str, ...] | None = None,
+        platform_name: str | None = None,
         ingress_service: EmployeeIngressService | None = None,
         ingress_binding_resolver: Callable[[str, str], tuple[str, str]] | None = None,
         ingress_ack_timeout: float = 1.5,
@@ -174,15 +225,35 @@ class EmployeeChannelSupervisor:
         self._ingress_binding_resolver = ingress_binding_resolver
         self._ingress_ack_timeout = float(ingress_ack_timeout)
         self._launcher = launcher or subprocess.Popen
+        if (
+            platform_name is not None
+            and platform_name != sys.platform
+            and worker_path is None
+            and launcher is None
+        ):
+            raise ValueError("platform override requires a test launcher or worker")
+        self._platform_name = platform_name or sys.platform
         self._automatic_process_fallback = (
-            sandbox_attestor is None and sandbox_prefix is None
+            sandbox_attestor is None
+            and sandbox_prefix is None
+            and self._platform_name == "linux"
         )
         self._sandbox_attestor = sandbox_attestor or attest_process_sandbox
-        self._sandbox_prefix = (
-            sandbox_prefix
-            if sandbox_prefix is not None
-            else (() if sandbox_attestor is not None else self._bwrap_prefix())
-        )
+        if sandbox_prefix is not None:
+            self._sandbox_kind = "custom"
+            self._sandbox_prefix = sandbox_prefix
+        elif sandbox_attestor is not None:
+            self._sandbox_kind = "custom"
+            self._sandbox_prefix = ()
+        elif self._platform_name == "linux":
+            self._sandbox_kind = "linux-bwrap"
+            self._sandbox_prefix = self._bwrap_prefix()
+        elif self._platform_name == "darwin":
+            self._sandbox_kind = "macos-seatbelt"
+            self._sandbox_prefix = self._seatbelt_prefix()
+        else:
+            self._sandbox_kind = "unavailable"
+            self._sandbox_prefix = ()
         self._runtimes: dict[str, _Runtime] = {}
         self._generation_high_watermark: dict[str, int] = {}
         self._lock = threading.RLock()
@@ -207,6 +278,7 @@ class EmployeeChannelSupervisor:
             "--unshare-pid",
             "--unshare-uts",
             "--unshare-ipc",
+            "--as-pid-1",
             "--proc",
             "/proc",
             "--dev",
@@ -223,6 +295,9 @@ class EmployeeChannelSupervisor:
         args.extend(("--ro-bind", str(runtime_prefix), str(runtime_prefix)))
         if source_root.is_dir():
             args.extend(("--ro-bind", str(source_root), str(source_root)))
+        for path in (repository_root / "pyproject.toml", repository_root / "uv.lock"):
+            if path.is_file():
+                args.extend(("--ro-bind", str(path), str(path)))
         if not self._worker_path.is_relative_to(source_root):
             args.extend(
                 ("--ro-bind", str(self._worker_path), str(self._worker_path))
@@ -238,6 +313,37 @@ class EmployeeChannelSupervisor:
         args.extend(("--chdir", "/tmp", "--"))
         return tuple(args)
 
+    def _seatbelt_prefix(self) -> tuple[str, ...]:
+        """Build the deny-default macOS Seatbelt launch contract."""
+        repository_root = Path(__file__).resolve().parents[3]
+        source_root = repository_root / "src"
+        if not all(
+            (repository_root / name).is_file()
+            for name in ("AGENTS.md", "pyproject.toml", "uv.lock")
+        ):
+            raise ChannelSandboxUnavailable()
+        return (
+            "/usr/bin/sandbox-exec",
+            "-D",
+            f"GHOSTAP_SOURCE_ROOT={source_root}",
+            "-D",
+            f"GHOSTAP_WORKER={self._worker_path}",
+            "-D",
+            f"GHOSTAP_RUNTIME_PREFIX={Path(sys.prefix).resolve()}",
+            "-D",
+            f"GHOSTAP_BASE_PREFIX={Path(sys.base_prefix).resolve()}",
+            "-D",
+            f"GHOSTAP_PYTHON={sys.executable}",
+            "-D",
+            f"GHOSTAP_PYTHON_REAL={Path(sys.executable).resolve()}",
+            "-D",
+            f"GHOSTAP_PYPROJECT={repository_root / 'pyproject.toml'}",
+            "-D",
+            f"GHOSTAP_UV_LOCK={repository_root / 'uv.lock'}",
+            "-p",
+            _MACOS_SEATBELT_PROFILE,
+        )
+
     @contextmanager
     def employee_dispatch_guard(self):
         """Freeze live Channel authority without taking the Journal guard."""
@@ -252,22 +358,48 @@ class EmployeeChannelSupervisor:
         control_fd: int,
         event_fd: int,
         sandbox_prefix: tuple[str, ...] | None = None,
+        sandbox_proof_fd: int | None = None,
+        sandbox_proof_nonce: str = "",
+        sandbox_pass_fds: tuple[int, ...] = (),
+        sandbox_env: dict[str, str] | None = None,
+        sandbox_temp_dir: str | Path | None = None,
     ) -> ChannelLaunchContract:
         """Return the immutable fresh-exec and FD inheritance contract."""
         prefix = self._sandbox_prefix if sandbox_prefix is None else sandbox_prefix
+        effective_env = dict(sandbox_env or {})
+        if prefix and prefix[0] == "/usr/bin/sandbox-exec":
+            if sandbox_temp_dir is None:
+                raise ValueError("macOS sandbox temp directory is required")
+            temp_path = Path(sandbox_temp_dir)
+            if not temp_path.is_absolute():
+                raise ValueError("macOS sandbox temp directory must be absolute")
+            prefix = _with_seatbelt_temp_dir(prefix, temp_path)
+            effective_env.update(
+                {
+                    "GHOSTAP_CHANNEL_TMP": str(temp_path),
+                    "TMPDIR": str(temp_path),
+                }
+            )
+        worker_args = (
+            sys.executable,
+            "-I",
+            str(self._worker_path),
+            str(bootstrap_fd),
+            str(control_fd),
+            str(event_fd),
+        )
+        passed_fds = (bootstrap_fd, control_fd, event_fd)
+        if sandbox_proof_fd is not None:
+            if not sandbox_proof_nonce:
+                raise ValueError("sandbox proof nonce is required")
+            worker_args += (str(sandbox_proof_fd), sandbox_proof_nonce)
+            passed_fds += (sandbox_proof_fd,)
+        passed_fds += sandbox_pass_fds
         return ChannelLaunchContract(
-            argv=prefix
-            + (
-                sys.executable,
-                "-I",
-                str(self._worker_path),
-                str(bootstrap_fd),
-                str(control_fd),
-                str(event_fd),
-            ),
+            argv=prefix + worker_args,
             close_fds=True,
-            pass_fds=(bootstrap_fd, control_fd, event_fd),
-            env={"PYTHONUTF8": "1"},
+            pass_fds=passed_fds,
+            env={"PYTHONUTF8": "1", **effective_env},
         )
 
     def _launch_candidate(
@@ -279,20 +411,57 @@ class EmployeeChannelSupervisor:
         tenant_key: str,
         bot_principal_id: str,
         on_event: Callable[[dict[str, Any]], None],
-        sandbox_prefix: tuple[str, ...],
-    ) -> tuple[_Runtime, int]:
-        bootstrap_r, bootstrap_w = os.pipe()
-        control_r, control_w = os.pipe()
-        event_r, event_w = os.pipe()
-        child_fds = (bootstrap_r, control_r, event_w)
-        parent_fds = (bootstrap_w, control_w, event_r)
-        contract = self.launch_contract(
-            bootstrap_fd=bootstrap_r,
-            control_fd=control_r,
-            event_fd=event_w,
-            sandbox_prefix=sandbox_prefix,
-        )
+        sandbox_attempt: _SandboxAttempt,
+    ) -> tuple[_Runtime, int, int | None, dict[str, Any] | None, str]:
+        child_fds: list[int] = []
+        parent_fds: list[int] = []
+        metadata_r = -1
+        metadata_w = -1
+        proof_nonce = ""
+        sandbox_temp_dir: Path | None = None
+        prefix = sandbox_attempt.prefix
         try:
+            bootstrap_r, bootstrap_w = os.pipe()
+            child_fds.append(bootstrap_r)
+            parent_fds.append(bootstrap_w)
+            control_r, control_w = os.pipe()
+            child_fds.append(control_r)
+            parent_fds.append(control_w)
+            event_r, event_w = os.pipe()
+            child_fds.append(event_w)
+            parent_fds.append(event_r)
+            if sandbox_attempt.bwrap_info or sandbox_attempt.seatbelt_proof:
+                metadata_r, metadata_w = os.pipe()
+                child_fds.append(metadata_w)
+                parent_fds.append(metadata_r)
+            if sandbox_attempt.bwrap_info:
+                prefix = _with_bwrap_info_fd(prefix, metadata_w)
+            elif sandbox_attempt.seatbelt_proof:
+                proof_nonce = secrets.token_hex(16)
+                temp_base = Path("/private/tmp")
+                if not temp_base.is_dir():
+                    temp_base = Path("/tmp")
+                sandbox_temp_dir = Path(
+                    tempfile.mkdtemp(
+                        prefix="ghostap-employee-channel-",
+                        dir=temp_base,
+                    )
+                )
+                sandbox_temp_dir.chmod(0o700)
+            contract = self.launch_contract(
+                bootstrap_fd=bootstrap_r,
+                control_fd=control_r,
+                event_fd=event_w,
+                sandbox_prefix=prefix,
+                sandbox_proof_fd=(
+                    metadata_w if sandbox_attempt.seatbelt_proof else None
+                ),
+                sandbox_proof_nonce=proof_nonce,
+                sandbox_pass_fds=(
+                    (metadata_w,) if sandbox_attempt.bwrap_info else ()
+                ),
+                sandbox_temp_dir=sandbox_temp_dir,
+            )
             process = self._launcher(
                 contract.argv,
                 close_fds=contract.close_fds,
@@ -303,12 +472,13 @@ class EmployeeChannelSupervisor:
                 stderr=subprocess.DEVNULL,
             )
         except Exception:
-            for descriptor in parent_fds:
+            for descriptor in (*parent_fds, *child_fds):
                 _close_fd(descriptor)
+            if sandbox_temp_dir is not None:
+                shutil.rmtree(sandbox_temp_dir, ignore_errors=True)
             raise RuntimeError("employee Channel launch failed") from None
-        finally:
-            for descriptor in child_fds:
-                _close_fd(descriptor)
+        for descriptor in child_fds:
+            _close_fd(descriptor)
 
         status = ChannelProcessStatus(
             agent_id=agent_id,
@@ -319,19 +489,66 @@ class EmployeeChannelSupervisor:
             tenant_key=tenant_key,
             bot_principal_id=bot_principal_id,
         )
-        return (
-            _Runtime(
-                process,
-                control_w,
-                event_r,
-                status,
-                on_event,
-                tenant_key=tenant_key,
-                bot_principal_id=bot_principal_id,
-                requires_observed_connection=self._production_worker,
-            ),
-            bootstrap_w,
+        runtime = _Runtime(
+            process,
+            control_w,
+            event_r,
+            status,
+            on_event,
+            tenant_key=tenant_key,
+            bot_principal_id=bot_principal_id,
+            requires_observed_connection=self._production_worker,
+            sandbox_temp_dir=sandbox_temp_dir,
         )
+        attestation_pid: int | None = None
+        proof: dict[str, Any] | None = None
+        if metadata_r >= 0:
+            try:
+                metadata = _read_sandbox_metadata(metadata_r)
+                if sandbox_attempt.bwrap_info:
+                    candidate = metadata.get("child-pid")
+                    if (
+                        isinstance(candidate, int)
+                        and not isinstance(candidate, bool)
+                        and candidate > 0
+                        and candidate != process.pid
+                    ):
+                        attestation_pid = candidate
+                else:
+                    proof = metadata
+            except (OSError, ValueError):
+                pass
+            finally:
+                _close_fd(metadata_r)
+        return runtime, bootstrap_w, attestation_pid, proof, proof_nonce
+
+    def _sandbox_attempts(self) -> list[_SandboxAttempt]:
+        if self._sandbox_kind == "linux-bwrap":
+            attempts = [
+                _SandboxAttempt(
+                    self._sandbox_prefix,
+                    "bwrap-filesystem",
+                    bwrap_info=True,
+                )
+            ]
+            if self._automatic_process_fallback:
+                attempts.append(
+                    _SandboxAttempt(
+                        (),
+                        "process-fallback",
+                        fallback=True,
+                    )
+                )
+            return attempts
+        if self._sandbox_kind == "macos-seatbelt":
+            return [
+                _SandboxAttempt(
+                    self._sandbox_prefix,
+                    "seatbelt-filesystem",
+                    seatbelt_proof=True,
+                )
+            ]
+        return [_SandboxAttempt(self._sandbox_prefix, self._sandbox_kind)]
 
     def start(
         self,
@@ -372,37 +589,82 @@ class EmployeeChannelSupervisor:
             if generation <= high:
                 raise ValueError("generation must advance after a worker has stopped")
 
-        prefixes = [self._sandbox_prefix]
-        if self._automatic_process_fallback and self._sandbox_prefix:
-            prefixes.append(())
+        attempts = self._sandbox_attempts()
         runtime: _Runtime | None = None
         bootstrap_w = -1
-        for attempt, prefix in enumerate(prefixes):
-            is_fallback = attempt > 0
+        for attempt_index, sandbox_attempt in enumerate(attempts):
             try:
-                runtime, bootstrap_w = self._launch_candidate(
+                (
+                    runtime,
+                    bootstrap_w,
+                    attestation_pid,
+                    sandbox_proof,
+                    proof_nonce,
+                ) = self._launch_candidate(
                     agent_id=agent_id,
                     app_id=app_id,
                     generation=generation,
                     tenant_key=tenant_key,
                     bot_principal_id=bot_principal_id,
                     on_event=on_event,
-                    sandbox_prefix=prefix,
+                    sandbox_attempt=sandbox_attempt,
                 )
             except RuntimeError:
-                if not is_fallback and len(prefixes) > 1:
+                if attempt_index + 1 < len(attempts):
                     logger.warning(
                         "employee Channel bwrap launch failed; using process fallback"
                     )
                     continue
+                if self._sandbox_kind == "macos-seatbelt":
+                    logger.warning(
+                        "employee Channel seatbelt launch failed; sandbox unavailable"
+                    )
+                    raise ChannelSandboxUnavailable() from None
                 raise
-            if is_fallback:
+            if sandbox_attempt.fallback:
                 attestation = SandboxAttestation(
                     runtime.process.pid,
                     False,
                     "process-fallback",
-                    ("bwrap unavailable; isolated interpreter fallback",),
+                    ("bwrap unavailable; no filesystem isolation",),
                 )
+            elif sandbox_attempt.bwrap_info:
+                if attestation_pid is None or runtime.process.poll() is not None:
+                    attestation = SandboxAttestation(
+                        runtime.process.pid,
+                        False,
+                        "bwrap-unverified",
+                        ("bwrap child metadata unavailable",),
+                    )
+                else:
+                    try:
+                        attestation = self._sandbox_attestor(attestation_pid)
+                    except Exception:
+                        attestation = SandboxAttestation(
+                            attestation_pid,
+                            False,
+                            "attestation-error",
+                        )
+                    if attestation.verified and runtime.process.poll() is not None:
+                        attestation = SandboxAttestation(
+                            attestation.pid,
+                            False,
+                            "bwrap-unverified",
+                            ("bwrap monitor exited during attestation",),
+                        )
+            elif sandbox_attempt.seatbelt_proof:
+                attestation = attest_macos_sandbox_proof(
+                    sandbox_proof,
+                    nonce=proof_nonce,
+                    expected_pid=runtime.process.pid,
+                )
+                if attestation.verified and runtime.process.poll() is not None:
+                    attestation = SandboxAttestation(
+                        attestation.pid,
+                        False,
+                        "seatbelt-unverified",
+                        ("sandbox-exec monitor exited during attestation",),
+                    )
             else:
                 try:
                     attestation = self._sandbox_attestor(runtime.process.pid)
@@ -413,8 +675,8 @@ class EmployeeChannelSupervisor:
                         "attestation-error",
                     )
             runtime.status = replace(runtime.status, sandbox=attestation)
-            if attestation.verified or is_fallback:
-                if is_fallback:
+            if attestation.verified or sandbox_attempt.fallback:
+                if sandbox_attempt.fallback:
                     logger.warning(
                         "employee Channel is using unverified process fallback"
                     )
@@ -422,7 +684,7 @@ class EmployeeChannelSupervisor:
             _close_fd(bootstrap_w)
             bootstrap_w = -1
             self._fail_and_reap(runtime, "sandbox-unavailable")
-            if len(prefixes) > 1:
+            if attempt_index + 1 < len(attempts):
                 logger.warning(
                     "employee Channel bwrap attestation failed; using process fallback"
                 )
@@ -757,6 +1019,8 @@ class EmployeeChannelSupervisor:
                         stopped_at=time.time(),
                         exit_code=runtime.process.poll(),
                     )
+            if exit_code is not None or should_reap:
+                self._cleanup_runtime_temp(runtime)
 
     def _accept_frame(self, runtime: _Runtime, frame: ChannelFrame) -> None:
         if frame.frame_type is FrameType.READY:
@@ -982,6 +1246,15 @@ class EmployeeChannelSupervisor:
             runtime.event_fd = -1
         if runtime.reader is not None and runtime.reader is not threading.current_thread():
             runtime.reader.join(timeout=self._stop_timeout)
+        self._cleanup_runtime_temp(runtime)
+
+    @staticmethod
+    def _cleanup_runtime_temp(runtime: _Runtime) -> None:
+        path = runtime.sandbox_temp_dir
+        runtime.sandbox_temp_dir = None
+        if path is None:
+            return
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def attest_process_sandbox(pid: int) -> SandboxAttestation:
@@ -989,6 +1262,7 @@ def attest_process_sandbox(pid: int) -> SandboxAttestation:
     deadline = time.monotonic() + 1.0
     while True:
         try:
+            process_start_time = _proc_start_time(pid)
             parent_user_ns = os.readlink("/proc/self/ns/user")
             child_user_ns = os.readlink(f"/proc/{pid}/ns/user")
             parent_mount_ns = os.readlink("/proc/self/ns/mnt")
@@ -1002,12 +1276,14 @@ def attest_process_sandbox(pid: int) -> SandboxAttestation:
                 (child_repository / name).exists()
                 for name in (".env", ".git", ".Memory")
             )
+            identity_stable = _proc_start_time(pid) == process_start_time
             if (
                 child_user_ns != parent_user_ns
                 and child_mount_ns != parent_mount_ns
                 and child_pid_ns != parent_pid_ns
                 and source_visible
                 and secrets_hidden
+                and identity_stable
             ):
                 return SandboxAttestation(
                     pid,
@@ -1034,6 +1310,118 @@ def attest_process_sandbox(pid: int) -> SandboxAttestation:
                 ),
             )
         time.sleep(0.01)
+
+
+def _proc_start_time(pid: int) -> str:
+    """Return Linux proc stat field 22 without depending on mutable counters."""
+    raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    command_end = raw.rfind(")")
+    if command_end < 0:
+        raise ValueError("invalid proc stat")
+    fields_after_command = raw[command_end + 2 :].split()
+    if len(fields_after_command) < 20:
+        raise ValueError("invalid proc stat")
+    return fields_after_command[19]
+
+
+def attest_macos_sandbox_proof(
+    proof: dict[str, Any] | None,
+    *,
+    nonce: str,
+    expected_pid: int,
+) -> SandboxAttestation:
+    """Validate the trusted worker's pre-credential Seatbelt denial proof."""
+    if not isinstance(proof, dict) or set(proof) != {
+        "schema_version",
+        "nonce",
+        "pid",
+        "source_readable",
+        "runtime_readable",
+        "repository_canary_errno",
+    }:
+        return SandboxAttestation(
+            0,
+            False,
+            "seatbelt-unverified",
+            ("invalid sandbox proof schema",),
+        )
+    pid = proof.get("pid")
+    denied_errno = proof.get("repository_canary_errno")
+    verified = (
+        type(proof.get("schema_version")) is int
+        and proof.get("schema_version") == 1
+        and isinstance(proof.get("nonce"), str)
+        and proof.get("nonce") == nonce
+        and isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and pid == expected_pid
+        and proof.get("source_readable") is True
+        and proof.get("runtime_readable") is True
+        and isinstance(denied_errno, int)
+        and not isinstance(denied_errno, bool)
+        and denied_errno in {1, 13}
+    )
+    return SandboxAttestation(
+        pid if isinstance(pid, int) and not isinstance(pid, bool) else 0,
+        verified,
+        "seatbelt-filesystem" if verified else "seatbelt-unverified",
+        (
+            "deny-default Seatbelt profile",
+            "repository canary denied before credentials",
+        )
+        if verified
+        else ("sandbox denial proof rejected",),
+    )
+
+
+def _with_bwrap_info_fd(prefix: tuple[str, ...], fd: int) -> tuple[str, ...]:
+    try:
+        separator = prefix.index("--")
+    except ValueError as exc:
+        raise ValueError("invalid bwrap launch prefix") from exc
+    return prefix[:separator] + ("--info-fd", str(fd)) + prefix[separator:]
+
+
+def _with_seatbelt_temp_dir(
+    prefix: tuple[str, ...],
+    path: Path,
+) -> tuple[str, ...]:
+    try:
+        profile_flag = prefix.index("-p")
+    except ValueError as exc:
+        raise ValueError("invalid seatbelt launch prefix") from exc
+    return (
+        prefix[:profile_flag]
+        + ("-D", f"GHOSTAP_TEMP={path}")
+        + prefix[profile_flag:]
+    )
+
+
+def _read_sandbox_metadata(fd: int) -> dict[str, Any]:
+    """Read exactly one small JSON object from a one-shot sandbox pipe."""
+    deadline = time.monotonic() + _SANDBOX_METADATA_TIMEOUT_SECONDS
+    raw = bytearray()
+    os.set_blocking(fd, False)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError("sandbox metadata timed out")
+        readable, _, _ = select.select((fd,), (), (), remaining)
+        if not readable:
+            raise ValueError("sandbox metadata timed out")
+        chunk = os.read(fd, min(1024, _SANDBOX_METADATA_MAX_BYTES + 1 - len(raw)))
+        if not chunk:
+            break
+        raw.extend(chunk)
+        if len(raw) > _SANDBOX_METADATA_MAX_BYTES:
+            raise ValueError("sandbox metadata is too large")
+    try:
+        decoded = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid sandbox metadata") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("sandbox metadata must be an object")
+    return decoded
 
 
 def _write_all(fd: int, raw: bytes) -> None:
