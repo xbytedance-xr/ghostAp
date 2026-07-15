@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -252,21 +253,23 @@ class SlashCommandReconciler:
             await self._mutate_and_resolve("DELETE", current.canonical, current.command_id)
             deleted.append(name)
 
-        final_observed = await self._safe_list()
-        final_index = _indexed_observed(final_observed)
-        observed_hash = _canonical_hash(tuple(command.canonical for command in final_index.values()))
-        if set(final_index) != set(desired) or any(
-            final_index[name].canonical != target for name, target in desired.items()
-        ):
-            raise SlashReconciliationError("Slash exact verification failed")
-        return VerifiedSlashState(
-            spec_hash=spec_hash,
-            observed_hash=observed_hash,
-            observed=tuple(sorted(final_observed, key=lambda command: command.command)),
-            created=tuple(created),
-            updated=tuple(updated),
-            deleted=tuple(deleted),
-        )
+        for _verify_attempt in range(2):
+            await asyncio.sleep(0.5)
+            final_observed = await self._safe_list()
+            final_index = _indexed_observed(final_observed)
+            observed_hash = _canonical_hash(tuple(command.canonical for command in final_index.values()))
+            if set(final_index) == set(desired) and all(
+                final_index[name].canonical == target for name, target in desired.items()
+            ):
+                return VerifiedSlashState(
+                    spec_hash=spec_hash,
+                    observed_hash=observed_hash,
+                    observed=tuple(sorted(final_observed, key=lambda command: command.command)),
+                    created=tuple(created),
+                    updated=tuple(updated),
+                    deleted=tuple(deleted),
+                )
+        raise SlashReconciliationError("Slash exact verification failed")
 
     async def _safe_list(self) -> tuple[ObservedSlashCommand, ...]:
         try:

@@ -1075,6 +1075,157 @@ class SystemBuilder:
         return "interactive", json.dumps(card, ensure_ascii=False)
 
     @staticmethod
+    def build_slock_role_unified_select_card(
+        role_name: str,
+        tools: list[dict],
+        models: list,
+        tool_name: str,
+        project_id: Optional[str] = None,
+        current_model: Optional[str] = None,
+        *,
+        pending_group: Optional[str] = None,
+        pending_profile: Optional[str] = None,
+        pending_effort: Optional[str] = None,
+        value_extra: Optional[dict] = None,
+    ) -> tuple[str, str]:
+        """Build a unified /hire card with tool dropdown + model cascade."""
+
+        from ..render.model_cascade import build_model_cascade_elements, has_cascade_variants
+
+        role = str(role_name or "").strip()
+        merged_extra = dict(value_extra or {})
+        merged_extra["role_name"] = role
+
+        # Tool dropdown
+        tool_options = []
+        initial_tool_option = None
+        for tool in tools or []:
+            name = str(tool.get("name") or "").strip()
+            if not name:
+                continue
+            emoji = str(tool.get("emoji") or "🤖")
+            label = str(tool.get("label") or name)
+            desc = str(tool.get("description") or "")
+            display = f"{emoji} {label}" + (f" ({desc})" if desc else "")
+            opt = {"text": {"tag": "plain_text", "content": display}, "value": name}
+            tool_options.append(opt)
+            if name == tool_name:
+                initial_tool_option = opt
+
+        tool_dropdown_value = {
+            "action": action_ids.SLOCK_NEW_ROLE_SELECT_TOOL_DROPDOWN,
+            "project_id": project_id,
+            **merged_extra,
+        }
+        tool_dropdown = {
+            "tag": "action",
+            "actions": [{
+                "tag": "select_static",
+                "placeholder": {"tag": "plain_text", "content": "选择工具"},
+                "options": tool_options,
+                "value": tool_dropdown_value,
+            }],
+        }
+        if initial_tool_option:
+            tool_dropdown["actions"][0]["initial_option"] = initial_tool_option["value"]
+
+        elements: list[dict] = [
+            {"tag": "markdown", "content": f"为员工 **{role}** 选择工具和模型"},
+            tool_dropdown,
+            {"tag": "hr"},
+        ]
+
+        # Normalize models for cascade
+        norm_models: list[dict] = []
+        for model in models or []:
+            if isinstance(model, dict):
+                m_name = str(model.get("name") or "").strip()
+                m_disp = model.get("display_name") or m_name
+                m_desc = model.get("description", "")
+                reasoning_efforts = tuple(model.get("reasoning_efforts") or ())
+                adapted_reasoning_effort = model.get("adapted_reasoning_effort")
+                is_default = bool(model.get("is_default"))
+                raw_selection_variants = list(model.get("selection_variants") or [])
+            else:
+                m_name = str(getattr(model, "name", None) or model or "").strip()
+                m_disp = getattr(model, "display_name", None) or getattr(model, "friendly_name", None) or m_name
+                m_desc = getattr(model, "description", "")
+                reasoning_efforts = tuple(getattr(model, "reasoning_efforts", ()) or ())
+                adapted_reasoning_effort = getattr(model, "adapted_reasoning_effort", None)
+                is_default = bool(getattr(model, "is_default", False))
+                raw_selection_variants = list(getattr(model, "selection_variants", ()) or ())
+            if not m_name:
+                continue
+            selection_variants = []
+            for raw_variant in raw_selection_variants:
+                if isinstance(raw_variant, dict):
+                    selection_variants.append(dict(raw_variant))
+                else:
+                    selection_variants.append({
+                        "name": str(getattr(raw_variant, "name", "") or ""),
+                        "profile": str(getattr(raw_variant, "profile", "") or ""),
+                        "effort": str(getattr(raw_variant, "effort", "default") or "default"),
+                        "display_name": str(getattr(raw_variant, "display_name", "") or ""),
+                        "is_variant_default": bool(getattr(raw_variant, "is_variant_default", False)),
+                    })
+            norm_models.append({
+                "name": m_name,
+                "display_name": str(m_disp or m_name),
+                "description": str(m_desc or ""),
+                "reasoning_efforts": reasoning_efforts,
+                "adapted_reasoning_effort": adapted_reasoning_effort,
+                "is_default": is_default,
+                "selection_variants": selection_variants,
+            })
+
+        def _value_builder(action: str, extra: dict) -> dict:
+            value = {
+                "action": action,
+                "tool_name": tool_name,
+                "project_id": project_id,
+            }
+            value.update(extra)
+            value.update(merged_extra)
+            return value
+
+        if has_cascade_variants(norm_models):
+            elements.append({"tag": "markdown", "content": f"员工: **{role}** · 选择模型和思考深度"})
+            elements.extend(
+                build_model_cascade_elements(
+                    models=norm_models,
+                    value_builder=_value_builder,
+                    group_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_GROUP,
+                    profile_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE,
+                    effort_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT,
+                    select_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
+                    default_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
+                    pending_group=pending_group,
+                    pending_profile=pending_profile,
+                    pending_effort=pending_effort,
+                    current_model=current_model,
+                    button_row_builder=build_responsive_layout,
+                )
+            )
+        else:
+            # Simple model list as buttons
+            for model in norm_models[:20]:
+                btn_value = _value_builder(action_ids.SLOCK_NEW_ROLE_SELECT_MODEL, {"_option": model["name"]})
+                btn_value["model_name"] = model["name"]
+                elements.append({
+                    "tag": "action",
+                    "actions": [{
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": model["display_name"]},
+                        "type": "default",
+                        "value": btn_value,
+                        "behaviors": [{"type": "callback", "value": btn_value}],
+                    }],
+                })
+
+        card = CoreBuilder._wrap_card("Slock 员工创建", "blue", elements)
+        return "interactive", json.dumps(card, ensure_ascii=False)
+
+    @staticmethod
     def build_acp_model_select_card(
         models: list,
         tool_name: str,

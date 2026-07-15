@@ -512,6 +512,12 @@ def register_programming_mode_actions(client: 'FeishuWSClient') -> None:
         exact=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
     )
     client._register_action(
+        lambda mid, cid, pid, val: client._slock_handler.handle_new_role_tool_dropdown_change(
+            mid, cid, val, _resolve_project(client, pid, cid)
+        ),
+        exact=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL_DROPDOWN,
+    )
+    client._register_action(
         lambda mid, cid, pid, val: client._slock_handler.handle_new_role_select_model(
             mid, cid, val, _resolve_project(client, pid, cid)
         ),

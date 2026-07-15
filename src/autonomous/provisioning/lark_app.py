@@ -137,6 +137,7 @@ class RegistrationRequest:
     name: str
     description: str
     avatar_urls: tuple[str, ...] = ()
+    existing_app_id: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _strict_text(self.name, "name", max_length=80))
@@ -157,6 +158,10 @@ class RegistrationRequest:
                 or any(ord(char) < 32 or ord(char) == 127 for char in url)
             ):
                 raise ValueError("avatar_urls must use https")
+        if self.existing_app_id:
+            raw = self.existing_app_id
+            if not isinstance(raw, str) or re.fullmatch(r"cli_[A-Za-z0-9_-]{3,128}", raw) is None:
+                raise ValueError("existing_app_id must be a valid cli_ app ID")
 
 
 @dataclass(frozen=True, repr=False)
@@ -227,24 +232,30 @@ class LarkAppRegistrar:
         }
         if request.avatar_urls:
             app_preset["avatar"] = list(request.avatar_urls)
+
+        register_kwargs: dict[str, Any] = {
+            "on_qr_code": handle_qr_code,
+            "on_status_change": handle_status,
+            "source": "ghostap",
+            "app_preset": app_preset,
+            "addons": {
+                "preset": True,
+                "scopes": {
+                    "tenant": list(_TENANT_SCOPES),
+                    "user": list(_USER_SCOPES),
+                },
+                "events": {"items": {"tenant": list(_TENANT_EVENTS)}},
+                "callbacks": {"items": list(_CALLBACKS)},
+            },
+        }
+        if request.existing_app_id:
+            register_kwargs["app_id"] = request.existing_app_id
+        else:
+            register_kwargs["create_only"] = False
+
         try:
             with _suppress_registration_poll_noise():
-                raw = await self._register(
-                    on_qr_code=handle_qr_code,
-                    on_status_change=handle_status,
-                    source="ghostap",
-                    app_preset=app_preset,
-                    addons={
-                        "preset": True,
-                        "scopes": {
-                            "tenant": list(_TENANT_SCOPES),
-                            "user": list(_USER_SCOPES),
-                        },
-                        "events": {"items": {"tenant": list(_TENANT_EVENTS)}},
-                        "callbacks": {"items": list(_CALLBACKS)},
-                    },
-                    create_only=True,
-                )
+                raw = await self._register(**register_kwargs)
         except AppRegistrationError:
             raise
         except Exception as exc:

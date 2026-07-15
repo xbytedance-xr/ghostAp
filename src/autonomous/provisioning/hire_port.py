@@ -22,6 +22,7 @@ class EmployeeHireRequest:
     profile: str = "standard"
     role: str = ""
     persona: str = ""
+    existing_app_id: str = ""
 
 
 class EmployeeHireService(Protocol):

@@ -35,7 +35,7 @@ async def test_registrar_uses_official_agent_manifest_and_forwards_callbacks() -
     assert result.app_secret == "secret-value"
     assert links == [("https://accounts.feishu.cn/device", 600)]
     assert statuses == ["polling"]
-    assert captured["create_only"] is True
+    assert captured["create_only"] is False
     assert captured["source"] == "ghostap"
     assert captured["app_preset"] == {
         "name": "Atlas",

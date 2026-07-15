@@ -40,6 +40,7 @@ SYSTEM_CARD_ACTIONS = {
     "select_acp_model",
     "refresh_acp_models",
     "slock_new_role_select_tool",
+    "slock_new_role_select_tool_dropdown",
     "slock_new_role_select_model",
     "select_ttadk_combined_tool",
     "load_more",

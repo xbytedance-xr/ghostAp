@@ -283,6 +283,7 @@ class ProductionEmployeeHireService:
                         "effort": request.effort,
                         "role": request.role,
                         "persona": request.persona,
+                        "existing_app_id": request.existing_app_id,
                         "worker_type": WorkerType.VISIBLE.value,
                         "state": EmployeeState.PROVISIONING_APP.value,
                         "hire_schema_version": 1,
@@ -714,6 +715,7 @@ class ProductionEmployeeHireService:
                 RegistrationRequest(
                     name=state.employee_name,
                     description=state.role or state.persona or "GhostAP employee",
+                    existing_app_id=getattr(state, "existing_app_id", "") or "",
                 ),
                 on_link=link_callback,
                 on_status=status_callback,

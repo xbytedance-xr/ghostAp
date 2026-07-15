@@ -2262,18 +2262,25 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         *,
         global_hire: bool = False,
     ) -> None:
-        """Show the first `/new-role` interactive step: choose a backing tool."""
+        """Show unified /hire card: tool dropdown + model cascade in one card."""
 
         tool_options = self._selectable_role_tool_options()
         if not tool_options:
             self.reply_text(message_id, "当前环境未检测到可用的 Slock 编程工具，请安装 Traex/Claude/Codex 等 CLI 后重试。")
             return
 
-        _, card_content = CardBuilder.build_slock_role_tool_select_card(
-            role_name,
-            tool_options,
+        default_tool = tool_options[0]["name"]
+        cwd = getattr(project, "root_path", None) or self.get_working_dir(None)
+        models = fetch_acp_models(default_tool, cwd=cwd, current_model=None)
+
+        value_extra: dict = {"global_hire": True} if global_hire else {}
+        _, card_content = CardBuilder.build_slock_role_unified_select_card(
+            role_name=role_name,
+            tools=tool_options,
+            models=models,
+            tool_name=default_tool,
             project_id=(project.project_id if project else None),
-            value_extra={"global_hire": True} if global_hire else None,
+            value_extra=value_extra,
         )
         self.reply_card(message_id, card_content)
 
@@ -2287,6 +2294,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         model: str,
         profile: str,
         effort: str,
+        existing_app_id: str = "",
     ) -> None:
         from ...autonomous.provisioning.hire_port import EmployeeHireRequest
         from ...thread.manager import get_current_tenant_key
@@ -2343,6 +2351,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             message_id=message_id,
             requester_principal_id=requester_id,
             tenant_key=get_current_tenant_key() or "",
+            existing_app_id=existing_app_id,
         )
         try:
             service.start_hire(request)
@@ -2504,6 +2513,47 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return None
         return requester_id
 
+    def handle_new_role_tool_dropdown_change(
+        self,
+        message_id: str,
+        chat_id: str,
+        value: dict,
+        project: Optional["ProjectContext"] = None,
+    ) -> None:
+        """Repaint the unified /hire card when the user changes the tool dropdown."""
+
+        role_name = str(value.get("role_name") or "").strip()
+        tool_name = str(value.get("_option") or "").strip().lower()
+        if not role_name or not tool_name:
+            self.reply_text(message_id, "请选择有效的工具")
+            return
+        if tool_name not in self.TOOL_TYPE_ROLE_MAP:
+            self.reply_text(message_id, f"请选择有效的工具: `{tool_name}`")
+            return
+
+        is_global = bool(value.get("global_hire"))
+        manager = self._get_engine_manager()
+        engine = manager.get_activated_engine(chat_id) if not is_global else None
+
+        cwd = (
+            getattr(project, "root_path", None)
+            or (getattr(engine, "root_path", None) if engine else None)
+            or self.get_working_dir(chat_id)
+        )
+        models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
+        tool_options = self._selectable_role_tool_options()
+        value_extra: dict = {"global_hire": is_global}
+
+        _, card_content = CardBuilder.build_slock_role_unified_select_card(
+            role_name=role_name,
+            tools=tool_options,
+            models=models,
+            tool_name=tool_name,
+            project_id=(project.project_id if project else value.get("project_id")),
+            value_extra=value_extra,
+        )
+        self.update_card(message_id, card_content)
+
     def handle_new_role_select_tool(
         self,
         message_id: str,
@@ -2628,19 +2678,16 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         )
         models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
         value_extra = {"role_name": role_name, "global_hire": is_global}
-        _, card_content = CardBuilder.build_acp_model_cascade_card(
-            models,
-            tool_name,
+        tool_options = self._selectable_role_tool_options()
+        _, card_content = CardBuilder.build_slock_role_unified_select_card(
+            role_name=role_name,
+            tools=tool_options,
+            models=models,
+            tool_name=tool_name,
             project_id=(project.project_id if project else value.get("project_id")),
             pending_group=pending_group,
             pending_profile=pending_profile,
             pending_effort=pending_effort,
-            context_markdown=f"员工: **{role_name}** · 选择模型和思考深度",
-            group_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_GROUP,
-            profile_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE,
-            effort_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT,
-            select_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
-            refresh_action=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
             value_extra=value_extra,
         )
         self.update_card(message_id, card_content)

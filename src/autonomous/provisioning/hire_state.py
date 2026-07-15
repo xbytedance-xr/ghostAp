@@ -48,6 +48,7 @@ class DurableHireState:
     profile: str = "standard"
     role: str = ""
     persona: str = ""
+    existing_app_id: str = ""
     agent_id: str = ""
     bot_principal_id: str = ""
     attempt_id: str = ""
@@ -191,6 +192,7 @@ def _created_state(event: JournalEvent, sequence: int) -> DurableHireState | Non
         profile=_required_string(payload, "profile"),
         role=str(payload.get("role", "")),
         persona=str(payload.get("persona", "")),
+        existing_app_id=str(payload.get("existing_app_id", "")),
         agent_id=agent_id,
         bot_principal_id=_required_string(payload, "planned_bot_principal_id"),
         attempt_id=_required_string(payload, "provisioning_attempt_id"),

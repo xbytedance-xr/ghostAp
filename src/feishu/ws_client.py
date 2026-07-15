@@ -126,6 +126,7 @@ _SILENT_DEDUP_ACTIONS = {
     "slock_new_role_select_model",
     "slock_role_add_pick", "slock_role_add_confirm",
     "slock_role_add_select",
+    "slock_new_role_select_tool_dropdown",
 }
 
 

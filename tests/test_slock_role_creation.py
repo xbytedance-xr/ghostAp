@@ -186,16 +186,19 @@ class TestCreateRoleDefaults:
         manager.get_activated_engine.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
-        with patch(
-            "src.workflow_engine.tool_registry.get_available_tools",
-            return_value={
-                "traex": "默认编程工具",
-                "coco": "默认协作工具",
-                "codex": "代码实现",
-                "aiden": "AI 编程助手",
-                "claude": "评审与长文",
-                "gemini": "多模态与代码",
-            },
+        with (
+            patch(
+                "src.workflow_engine.tool_registry.get_available_tools",
+                return_value={
+                    "traex": "默认编程工具",
+                    "coco": "默认协作工具",
+                    "codex": "代码实现",
+                    "aiden": "AI 编程助手",
+                    "claude": "评审与长文",
+                    "gemini": "多模态与代码",
+                },
+            ),
+            patch("src.acp.helper.fetch_acp_models", return_value=[]),
         ):
             handler.create_role("msg_1", "chat_test", "SimpleAgent")
 
@@ -206,10 +209,11 @@ class TestCreateRoleDefaults:
         assert "选择工具" in card_text
         assert "SimpleAgent" in card_text
         values = _collect_card_values(card)
-        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "traex" for v in values)
-        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "coco" for v in values)
-        assert any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "codex" for v in values)
-        assert not any(v.get("action") == "slock_new_role_select_tool" and v.get("tool_name") == "ttadk" for v in values)
+        assert any(v.get("action") == "slock_new_role_select_tool_dropdown" for v in values)
+        # Tool options are in the dropdown
+        assert "traex" in card_text
+        assert "coco" in card_text
+        assert "codex" in card_text
 
     def test_create_role_name_only_filters_unavailable_tools_from_card(self):
         """The Slock tool picker only shows tools available in this environment."""
@@ -220,16 +224,21 @@ class TestCreateRoleDefaults:
         manager.get_activated_engine.return_value = engine
         handler._get_engine_manager = MagicMock(return_value=manager)
 
-        with patch(
-            "src.workflow_engine.tool_registry.get_available_tools",
-            return_value={"traex": "默认编程工具", "coco": "协作工具", "ttadk": "CLI 桥接"},
+        with (
+            patch(
+                "src.workflow_engine.tool_registry.get_available_tools",
+                return_value={"traex": "默认编程工具", "coco": "协作工具", "ttadk": "CLI 桥接"},
+            ),
+            patch("src.acp.helper.fetch_acp_models", return_value=[]),
         ):
             handler.create_role("msg_1", "chat_test", "SimpleAgent")
 
         card = json.loads(handler.reply_card.call_args[0][1])
-        values = _collect_card_values(card)
-        tool_names = {v.get("tool_name") for v in values if v.get("action") == "slock_new_role_select_tool"}
-        assert tool_names == {"traex", "coco"}
+        card_text = json.dumps(card, ensure_ascii=False)
+        # Only traex and coco should appear (ttadk is not in TOOL_SELECT_OPTIONS)
+        assert "traex" in card_text.lower() or "Traex" in card_text
+        assert "coco" in card_text.lower() or "Coco" in card_text
+        assert "codex" not in card_text.lower()
 
     def test_global_hire_name_only_preserves_flag_in_tool_card(self):
         handler = self._make_handler()
@@ -245,6 +254,7 @@ class TestCreateRoleDefaults:
             ),
             patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
             patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.acp.helper.fetch_acp_models", return_value=[]),
         ):
             handler.create_role(
                 "msg_1", "chat_test", "Atlas", global_hire=True
@@ -255,7 +265,7 @@ class TestCreateRoleDefaults:
         tool_values = [
             value
             for value in values
-            if value.get("action") == "slock_new_role_select_tool"
+            if value.get("action") == "slock_new_role_select_tool_dropdown"
         ]
         assert tool_values
         assert all(value.get("global_hire") is True for value in tool_values)

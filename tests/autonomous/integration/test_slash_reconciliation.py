@@ -192,7 +192,7 @@ async def test_final_get_mismatch_fails_without_leaking_transport_error() -> Non
 
     assert "exact verification failed" in str(exc_info.value)
     assert "secret" not in str(exc_info.value).lower()
-    assert api.calls == [("GET", ""), ("POST", "task"), ("GET", "")]
+    assert api.calls == [("GET", ""), ("POST", "task"), ("GET", ""), ("GET", "")]
 
 
 @pytest.mark.asyncio
