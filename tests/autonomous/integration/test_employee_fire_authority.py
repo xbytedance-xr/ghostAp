@@ -87,3 +87,49 @@ def test_admission_atomically_commits_retiring_and_employee_ingress_closure(tmp_
     ]
     ingress.close()
     writer.close()
+
+
+def test_configuring_employee_with_credentials_can_be_retired(tmp_path):
+    writer = make_writer(tmp_path)
+    state = ProjectionState()
+    commit_events(writer, state, employee_created())
+    commit_events(writer, state, *bot_binding_events())
+    commit_events(
+        writer,
+        state,
+        JournalEvent(
+            event_type="employee.state_changed",
+            aggregate_id="agt_1",
+            payload={"state": "configuring"},
+        ),
+    )
+    ingress = EmployeeIngressService(
+        writer=writer,
+        blob_store=BlobStore(
+            tmp_path / "blobs",
+            AesGcmEncryptionProvider(lambda _key: b"fire-ingress-data-key-32-bytes!!"),
+        ),
+        ingress_state=IngressProjectionState(),
+        active_key_id="k1",
+    )
+    hire = _HireProjectionOwner(state)
+    authority = JournalFireAuthority(
+        writer=writer,
+        hire_service=hire,
+        ingress_service=ingress,
+        admin_principal_ids=frozenset({"ou_admin"}),
+    )
+    request = EmployeeFireRequest(
+        employee="Atlas",
+        tenant_key="tenant_1",
+        message_id="om_fire_configuring",
+        chat_id="oc_dm",
+        requester_principal_id="ou_admin",
+    )
+
+    authority.admit(request, authority.resolve(request), "fire_configuring")
+
+    assert state.employees["agt_1"].state.value == "retiring"
+    assert ("tenant_1", "agt_1") in ingress.state.closed_employees
+    ingress.close()
+    writer.close()

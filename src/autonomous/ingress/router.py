@@ -584,7 +584,10 @@ class DurableEmployeeIngressRouter:
                 accepted_identity,
                 "card_action_unsupported",
             )
-        if ingress_record.metadata.event_type != "im.message.receive_v1":
+        if ingress_record.metadata.event_type not in {
+            "im.message.receive_v1",
+            "ghostap.team.assignment.v1",
+        }:
             return self._terminal_for_snapshot(
                 acceptance_id,
                 accepted_identity,
@@ -1312,7 +1315,18 @@ class DurableEmployeeIngressRouter:
         if len(payload.normalized_parts) != 1:
             return None, "sender_invalid"
         part = payload.normalized_parts[0]
-        if part.get("type") != "message":
+        expected_type = (
+            "team_assignment"
+            if metadata.event_type == "ghostap.team.assignment.v1"
+            else "message"
+        )
+        if part.get("type") != expected_type:
+            return None, "sender_invalid"
+        if expected_type == "team_assignment" and (
+            not isinstance(part.get("team_instruction"), str)
+            or not part.get("team_instruction")
+            or len(part.get("team_instruction")) > 14_000
+        ):
             return None, "sender_invalid"
         sender_id = part.get("sender_id")
         sender_type = part.get("sender_type")

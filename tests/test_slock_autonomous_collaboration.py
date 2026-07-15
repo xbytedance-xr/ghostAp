@@ -19,6 +19,7 @@ def _make_handler():
     ctx.settings.slock_nli_confidence_threshold = 0.6
     ctx.settings.slock_reply_mode = "direct"
     ctx.slock_engine_manager = MagicMock()
+    ctx.employee_team_service = None
 
     handler = SlockHandler(ctx)
     handler.reply_card = MagicMock(return_value="plan-card-001")
@@ -76,6 +77,34 @@ def test_plain_task_message_starts_collaboration_plan_instead_of_single_agent_ro
     engine._collaboration_orchestrator.create_plan.assert_called_once()
     handler.reply_card.assert_called_once()
     handler._execute_routed_message.assert_not_called()
+
+
+def test_plain_task_prefers_durable_visible_employee_team_service():
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler.ctx.employee_team_service.start_task.return_value = MagicMock(
+        run_id="teamrun_1234567890"
+    )
+
+    with patch(
+        "src.thread.manager.get_current_tenant_key",
+        return_value="tenant_1",
+    ), patch(
+        "src.thread.manager.get_current_sender_id",
+        return_value="ou_user",
+    ):
+        handler.handle_message("om_task", "oc_team", "实现登录功能并补充测试", None)
+
+    handler.ctx.employee_team_service.start_task.assert_called_once_with(
+        tenant_key="tenant_1",
+        message_id="om_task",
+        chat_id="oc_team",
+        requester_principal_id="ou_user",
+        task="实现登录功能并补充测试",
+    )
+    engine.add_task.assert_not_called()
 
 
 def test_autonomous_collaboration_keeps_explicit_mention_on_direct_route():

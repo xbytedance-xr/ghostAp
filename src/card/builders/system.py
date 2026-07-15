@@ -1118,16 +1118,13 @@ class SystemBuilder:
             **merged_extra,
         }
         tool_dropdown = {
-            "tag": "action",
-            "actions": [{
-                "tag": "select_static",
-                "placeholder": {"tag": "plain_text", "content": "选择工具"},
-                "options": tool_options,
-                "value": tool_dropdown_value,
-            }],
+            "tag": "select_static",
+            "placeholder": {"tag": "plain_text", "content": "选择工具"},
+            "options": tool_options,
+            "value": tool_dropdown_value,
         }
         if initial_tool_option:
-            tool_dropdown["actions"][0]["initial_option"] = initial_tool_option["value"]
+            tool_dropdown["initial_option"] = initial_tool_option["value"]
 
         elements: list[dict] = [
             {"tag": "markdown", "content": f"为员工 **{role}** 选择工具和模型"},
@@ -1208,19 +1205,18 @@ class SystemBuilder:
             )
         else:
             # Simple model list as buttons
+            model_buttons: list[dict] = []
             for model in norm_models[:20]:
                 btn_value = _value_builder(action_ids.SLOCK_NEW_ROLE_SELECT_MODEL, {"_option": model["name"]})
                 btn_value["model_name"] = model["name"]
-                elements.append({
-                    "tag": "action",
-                    "actions": [{
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": model["display_name"]},
-                        "type": "default",
-                        "value": btn_value,
-                        "behaviors": [{"type": "callback", "value": btn_value}],
-                    }],
+                model_buttons.append({
+                    "tag": "button",
+                    "text": {"tag": "plain_text", "content": model["display_name"]},
+                    "type": "default",
+                    "value": btn_value,
+                    "behaviors": [{"type": "callback", "value": btn_value}],
                 })
+            elements.extend(build_responsive_layout(model_buttons))
 
         card = CoreBuilder._wrap_card("Slock 员工创建", "blue", elements)
         return "interactive", json.dumps(card, ensure_ascii=False)

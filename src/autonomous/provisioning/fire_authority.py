@@ -41,11 +41,20 @@ class JournalFireAuthority:
             for employee in projection.employees.values()
             if employee.tenant_key == request.tenant_key
             and employee.worker_type is WorkerType.VISIBLE
-            and employee.state is EmployeeState.ACTIVE
+            and employee.state
+            in {
+                EmployeeState.PROVISIONING_APP,
+                EmployeeState.STORING_CREDENTIAL,
+                EmployeeState.CONFIGURING,
+                EmployeeState.VALIDATING,
+                EmployeeState.READY_PENDING_VERIFICATION,
+                EmployeeState.ACTIVE,
+                EmployeeState.ACTION_REQUIRED,
+            }
             and request.employee in {employee.agent_id, employee.name}
         )
         if len(matches) != 1:
-            raise FireServiceError("active employee was not uniquely resolved")
+            raise FireServiceError("retirable employee was not uniquely resolved")
         employee = matches[0]
         if not employee.bot_principal_id:
             raise FireServiceError("employee bot principal is unavailable")
@@ -110,12 +119,63 @@ class JournalFireAuthority:
             self._ingress.synchronize_projection_unlocked()
             projection = self._hire.synchronize_projection_unlocked()
             current = projection.employees.get(target.agent_id)
-            if current is None or current.state is not EmployeeState.ACTIVE:
-                raise FireServiceError("employee is not active")
+            if current is None or current.state not in {
+                EmployeeState.PROVISIONING_APP,
+                EmployeeState.STORING_CREDENTIAL,
+                EmployeeState.CONFIGURING,
+                EmployeeState.VALIDATING,
+                EmployeeState.READY_PENDING_VERIFICATION,
+                EmployeeState.ACTIVE,
+                EmployeeState.ACTION_REQUIRED,
+            }:
+                raise FireServiceError("employee is not retirable")
+            hire_effect_dispositions = self._hire_effect_dispositions(target.agent_id)
             validate_workforce_events(projection, (retiring,))
-            frame = self._commit_unlocked((requested, retiring, ingress_closed))
+            frame = self._commit_unlocked(
+                (
+                    requested,
+                    *hire_effect_dispositions,
+                    retiring,
+                    ingress_closed,
+                )
+            )
             self._hire.apply_committed_frame_unlocked(frame)
             self._ingress.apply_committed_frame_unlocked(frame)
+
+    def _hire_effect_dispositions(self, agent_id: str) -> tuple[JournalEvent, ...]:
+        list_states = getattr(self._hire, "list_states", None)
+        if not callable(list_states):
+            return ()
+        matches = [state for state in list_states() if state.agent_id == agent_id]
+        if len(matches) > 1:
+            raise FireServiceError("employee hire authority is ambiguous")
+        if not matches:
+            return ()
+        state = matches[0]
+        effect_types = dict(state.effect_types)
+        events: list[JournalEvent] = []
+        for effect_id, effect_state in state.effects:
+            if effect_state.value not in {"prepared", "executing"}:
+                continue
+            effect_type = effect_types.get(effect_id)
+            if not effect_type:
+                raise FireServiceError("employee hire effect type is unavailable")
+            metadata = {
+                **dict(state.metadata_for(effect_id)),
+                "error_code": "retirement_requested",
+            }
+            events.append(
+                JournalEvent(
+                    event_type="hire.effect.action_required",
+                    aggregate_id=state.intent_id,
+                    payload={
+                        "effect_id": effect_id,
+                        "effect_type": effect_type,
+                        "metadata": metadata,
+                    },
+                )
+            )
+        return tuple(events)
 
     def mark_action_required(self, agent_id: str) -> None:
         self._commit_employee_state(agent_id, EmployeeState.ACTION_REQUIRED)

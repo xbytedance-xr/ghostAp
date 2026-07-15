@@ -188,9 +188,24 @@ class EmployeeDispatchCoordinator:
         )
         if employee is None or agent is None or projected_binding is None:
             raise EmployeeDispatchError("employee authority is unavailable")
+        part = grant.payload.normalized_parts[0] if len(grant.payload.normalized_parts) == 1 else None
+        team_instruction = part.get("team_instruction", "") if isinstance(part, Mapping) else ""
+        if team_instruction:
+            if (
+                grant.record.event_type != "ghostap.team.assignment.v1"
+                or not isinstance(team_instruction, str)
+                or len(team_instruction) > 14_000
+            ):
+                raise EmployeeDispatchError("team instruction authority is invalid")
+        system_instruction = agent.system_prompt
+        if team_instruction:
+            system_instruction = (
+                f"{system_instruction}\n\n## TEAM_COORDINATOR_INSTRUCTION\n"
+                f"{team_instruction}"
+            )
         rendered = render_employee_context(
             snapshot,
-            system_instruction=agent.system_prompt,
+            system_instruction=system_instruction,
             constraints_digest=grant.request.constraints_digest,
         )
         environment_authority = EmployeeEnvironmentAuthority(

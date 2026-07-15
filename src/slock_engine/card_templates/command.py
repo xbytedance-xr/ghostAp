@@ -228,25 +228,36 @@ def build_command_panel_card(*, channel_id: str = "", project_id: str = "") -> d
 
 
 def build_command_panel_extended_card(*, channel_id: str = "", project_id: str = "") -> dict:
-    """Build the extended command panel with action-based input forms.
+    """Build the extended command panel with Schema 2.0 input forms.
 
     This is the second-level card triggered by '更多操作' button.
     Contains team creation, role creation, and council forms.
-    Uses standard 'action' elements (not 'form') for Feishu Schema 2.0 compatibility.
     """
     elements: list[dict] = []
 
+    def _form(element_id: str, input_name: str, placeholder: str, button: dict) -> dict:
+        button["form_action_type"] = "submit"
+        return {
+            "tag": "form",
+            "element_id": element_id,
+            "elements": [
+                {
+                    "tag": "input",
+                    "name": input_name,
+                    "placeholder": {"tag": "plain_text", "content": placeholder},
+                    "width": "fill",
+                },
+                button,
+            ],
+        }
+
     # Team creation action
     elements.append({"tag": "markdown", "content": "**\U0001f3e0 创建团队**"})
-    elements.append({
-        "tag": "action",
-        "actions": [
-            {
-                "tag": "input",
-                "name": "team_name",
-                "placeholder": {"tag": "plain_text", "content": "输入团队名称"},
-                "width": "fill",
-            },
+    elements.append(
+        _form(
+            "slock_new_team_form",
+            "team_name",
+            "输入团队名称",
             build_callback_button(
                 "创建团队",
                 "slock_form_new_team",
@@ -254,21 +265,17 @@ def build_command_panel_extended_card(*, channel_id: str = "", project_id: str =
                 project_id=project_id,
                 button_type="primary",
             ),
-        ],
-    })
+        )
+    )
 
     # Role creation action
     elements.append({"tag": "hr"})
     elements.append({"tag": "markdown", "content": "**\U0001f3ad 创建角色**"})
-    elements.append({
-        "tag": "action",
-        "actions": [
-            {
-                "tag": "input",
-                "name": "role_name",
-                "placeholder": {"tag": "plain_text", "content": "输入角色名称（如: coder-小明）"},
-                "width": "fill",
-            },
+    elements.append(
+        _form(
+            "slock_new_role_form",
+            "role_name",
+            "输入角色名称（如: coder-小明）",
             build_callback_button(
                 "创建角色",
                 "slock_form_new_role",
@@ -276,21 +283,17 @@ def build_command_panel_extended_card(*, channel_id: str = "", project_id: str =
                 project_id=project_id,
                 button_type="primary",
             ),
-        ],
-    })
+        )
+    )
 
     # Council action
     elements.append({"tag": "hr"})
     elements.append({"tag": "markdown", "content": "**\U0001f9d1\u200d\u2696\ufe0f Council 评审**"})
-    elements.append({
-        "tag": "action",
-        "actions": [
-            {
-                "tag": "input",
-                "name": "council_topic",
-                "placeholder": {"tag": "plain_text", "content": "输入评审议题"},
-                "width": "fill",
-            },
+    elements.append(
+        _form(
+            "slock_council_form",
+            "council_topic",
+            "输入评审议题",
             build_callback_button(
                 "发起评审",
                 "slock_form_council",
@@ -298,8 +301,8 @@ def build_command_panel_extended_card(*, channel_id: str = "", project_id: str =
                 project_id=project_id,
                 button_type="primary",
             ),
-        ],
-    })
+        )
+    )
 
     # Bottom hint
     elements.append({"tag": "hr"})

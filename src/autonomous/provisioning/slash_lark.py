@@ -55,11 +55,12 @@ class LarkSlashCommandAPI:
                     or _SAFE_ID.fullmatch(command_id) is None
                     or not isinstance(command, str)
                     or not isinstance(description, dict)
-                    or set(description) != set(AppSlashCommandI18nText._types)
+                    or not set(description) <= set(AppSlashCommandI18nText._types)
+                    or "default_value" not in description
                 ):
                     raise ValueError
                 default_value = description.get("default_value")
-                i18n = description.get("i18n")
+                i18n = description.get("i18n", {})
                 if not isinstance(default_value, str) or not isinstance(i18n, dict):
                     raise ValueError
                 if not set(i18n) <= set(AppSlashCommandI18n._types):

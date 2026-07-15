@@ -206,6 +206,7 @@ class TestCreateRoleDefaults:
         handler.reply_card.assert_called_once()
         card = json.loads(handler.reply_card.call_args[0][1])
         card_text = json.dumps(card, ensure_ascii=False)
+        assert '"tag": "action"' not in card_text
         assert "选择工具" in card_text
         assert "SimpleAgent" in card_text
         values = _collect_card_values(card)
@@ -261,6 +262,7 @@ class TestCreateRoleDefaults:
             )
 
         card = json.loads(handler.reply_card.call_args[0][1])
+        assert '"tag": "action"' not in json.dumps(card, ensure_ascii=False)
         values = _collect_card_values(card)
         tool_values = [
             value

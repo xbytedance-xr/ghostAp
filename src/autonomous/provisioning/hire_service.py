@@ -810,6 +810,44 @@ class ProductionEmployeeHireService:
             effect_type=effect_type,
         )
 
+    def mark_recovery_action_required(
+        self,
+        intent_id: str,
+        *,
+        error_code: str,
+    ) -> DurableHireState:
+        """Terminalize every unresolved hire effect after bounded recovery.
+
+        Recovery must not keep global hire admission closed forever because one
+        employee cannot be reconciled.  All unresolved effects are disposed
+        durably before the hire itself enters ``ACTION_REQUIRED``.
+        """
+
+        if not isinstance(error_code, str) or not error_code:
+            raise HireAdmissionError("recovery error code is required")
+        state = self._require_hire(intent_id)
+        unresolved = [
+            (effect_id, dict(state.effect_types).get(effect_id, ""))
+            for effect_id, effect_state in state.effects
+            if effect_state in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
+        ]
+        for effect_id, effect_type in unresolved:
+            if not effect_type:
+                raise HireAdmissionError("unresolved hire effect type is missing")
+            state = self.commit_effect_transition(
+                intent_id,
+                effect_id=effect_id,
+                effect_type=effect_type,
+                next_state=HireEffectState.ACTION_REQUIRED,
+                metadata={
+                    **dict(state.metadata_for(effect_id)),
+                    "error_code": error_code,
+                },
+            )
+        if state.phase is not HirePhase.ACTION_REQUIRED:
+            state = self._commit_phase_transition(state, HirePhase.ACTION_REQUIRED)
+        return state
+
     def _commit_phase_transition(
         self,
         state: DurableHireState,

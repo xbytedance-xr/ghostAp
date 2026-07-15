@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -46,10 +47,12 @@ from ..gateway.env_scope import (
     EmployeeProcessEnvironmentMaterial,
 )
 from ..ingress.attachments import AttachmentStagingService
+from ..ingress.models import EmployeeIngressMetadata, EmployeeIngressPayload
 from ..ingress.projection import IngressProjectionState
 from ..ingress.router import DurableEmployeeIngressRouter, RouterQueueLimits
 from ..ingress.service import EmployeeIngressService, IngressConflictError
 from ..journal.anchor import FileAnchor
+from ..journal.frame import JournalEvent
 from ..journal.projections import ProjectionState
 from ..journal.writer import JournalWriter
 from ..membership import (
@@ -68,6 +71,7 @@ from ..supervisor.employee_channels import (
     ChannelProcessState,
     EmployeeChannelSupervisor,
 )
+from ..team import EmployeeTeamService, TeamAttemptResult, TeamTarget
 from ..workforce.credential_vault import CredentialReceipt, CredentialVault
 from ..workforce.registry import ProjectedAgentRegistry
 from .fire_authority import JournalFireAuthority
@@ -99,9 +103,7 @@ from .verification import (
 
 logger = logging.getLogger(__name__)
 
-
-def _zero_main_bot_send_count(_tenant: str, _start: float, _end: float) -> int:
-    return 0
+_RECOVERY_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6)
 
 
 class _ChannelSupervisor(Protocol):
@@ -136,6 +138,160 @@ class _ChannelSupervisor(Protocol):
     ) -> Any: ...
 
     def close(self) -> None: ...
+
+
+class _RuntimeTeamBackend:
+    """Adapt TeamRun work to the canonical employee ingress/gateway pipeline."""
+
+    def __init__(
+        self,
+        runtime: "EmployeeDepartmentRuntime",
+        notify: Callable[[str, str, str], object],
+    ) -> None:
+        self._runtime = runtime
+        self._notify = notify
+
+    def list_active(self, tenant_key: str, chat_id: str) -> tuple[TeamTarget, ...]:
+        runtime = self._runtime
+        service = runtime._require_service()
+        projection = service.synchronize_projection()
+        targets: list[TeamTarget] = []
+        for state in service.list_states():
+            employee = projection.employees.get(state.agent_id)
+            status = runtime._channels.status(state.agent_id) if runtime._channels else None
+            if (
+                state.phase is HirePhase.ACTIVE
+                and employee is not None
+                and employee.tenant_key == tenant_key
+                and chat_id in employee.member_groups
+                and getattr(status, "state", None) is ChannelProcessState.READY
+                and getattr(status, "generation", None) == state.channel_generation
+            ):
+                targets.append(TeamTarget(employee.agent_id, employee.name, employee.role))
+        return tuple(sorted(targets, key=lambda item: item.agent_id))
+
+    def submit(
+        self,
+        *,
+        run_id: str,
+        step_id: str,
+        target: TeamTarget,
+        tenant_key: str,
+        chat_id: str,
+        message_id: str,
+        requester_principal_id: str,
+        instruction: str,
+    ) -> str:
+        runtime = self._runtime
+        service = runtime._require_service()
+        ingress = runtime._ingress
+        channels = runtime._channels
+        if ingress is None or channels is None:
+            raise RuntimeError("team employee ingress is unavailable")
+        state = next(
+            (
+                candidate
+                for candidate in service.list_states()
+                if candidate.agent_id == target.agent_id
+                and candidate.tenant_key == tenant_key
+                and candidate.phase is HirePhase.ACTIVE
+            ),
+            None,
+        )
+        status = channels.status(target.agent_id)
+        ready_metadata = getattr(status, "ready_metadata", None)
+        connection_id = (
+            ready_metadata.get("connection_id")
+            if isinstance(ready_metadata, Mapping)
+            else ""
+        )
+        if (
+            state is None
+            or getattr(status, "state", None) is not ChannelProcessState.READY
+            or getattr(status, "generation", None) != state.channel_generation
+            or not isinstance(connection_id, str)
+            or not connection_id
+        ):
+            raise RuntimeError("team employee channel authority is unavailable")
+        stable = hashlib.sha256(f"{run_id}\0{step_id}\0{target.agent_id}".encode()).hexdigest()
+        payload = EmployeeIngressPayload(
+            schema_version=1,
+            envelope_id=f"ing_{stable}",
+            normalized_parts=(
+                {
+                    "type": "team_assignment",
+                    "message_type": "text",
+                    "chat_type": "group",
+                    "content": instruction,
+                    "team_instruction": instruction,
+                    "sender_id": requester_principal_id,
+                    "sender_id_type": "open_id",
+                    "sender_type": "user",
+                    "sender_tenant_key": tenant_key,
+                    "feishu_thread_id": "",
+                    "team_run_id": run_id,
+                    "team_step_id": step_id,
+                },
+            ),
+            attachment_descriptors=(),
+        )
+        metadata = EmployeeIngressMetadata(
+            schema_version=1,
+            envelope_id=payload.envelope_id,
+            tenant_key=tenant_key,
+            agent_id=state.agent_id,
+            bot_principal_id=state.bot_principal_id,
+            app_id=state.app_id,
+            channel_generation=state.channel_generation,
+            connection_id=connection_id,
+            event_id=f"evt_{stable}",
+            message_id=message_id,
+            event_type="ghostap.team.assignment.v1",
+            action_identity=f"team:{run_id}:{step_id}",
+            chat_id=chat_id,
+            thread_root_message_id=message_id,
+            sender_principal_id=requester_principal_id,
+            received_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            semantic_digest=payload.payload_sha256,
+            payload_sha256=payload.payload_sha256,
+            payload_size_bytes=payload.canonical_size_bytes,
+            attachment_count=0,
+            attachment_total_bytes=0,
+        )
+        ack = ingress.accept(metadata, payload, request_id=f"req_{stable}")
+        return ack.acceptance.acceptance_id
+
+    def result(self, acceptance_id: str) -> TeamAttemptResult | None:
+        runtime = self._runtime
+        dispatch = runtime._dispatch
+        router = runtime._router
+        data = runtime._data
+        if dispatch is None or router is None or data is None:
+            return TeamAttemptResult("action_required", error_code="team_gateway_unavailable")
+        gateway = dispatch.state
+        attempt_id = gateway.attempt_by_acceptance_id.get(acceptance_id)
+        if attempt_id:
+            attempt = gateway.attempts.get(attempt_id)
+            if attempt is not None and attempt.terminal_status:
+                if attempt.terminal_status == "completed":
+                    payload = data.service.get_history_payload(attempt.history_record_id)
+                    return TeamAttemptResult(
+                        "completed",
+                        output=payload.result_text,
+                        history_record_id=attempt.history_record_id,
+                    )
+                return TeamAttemptResult(
+                    attempt.terminal_status,
+                    history_record_id=attempt.history_record_id,
+                    error_code=attempt.terminal_status,
+                )
+        routed = router.state.by_acceptance_id.get(acceptance_id)
+        if routed is not None and routed.state == "terminal":
+            return TeamAttemptResult("action_required", error_code=routed.reason_code)
+        return None
+
+    def notify(self, message_id: str, chat_id: str, result: str) -> None:
+        self._notify(message_id, chat_id, result)
 
 
 class _SlashReconciler(Protocol):
@@ -200,6 +356,7 @@ class EmployeeDepartmentRuntime:
         self._outbox_lifecycle: EmployeeOutboxLifecycle | None = None
         self._membership: EmployeeMembershipService | None = None
         self._fire: EmployeeFireService | None = None
+        self._team: EmployeeTeamService | None = None
         self._dispatch_thread: threading.Thread | None = None
         self._dispatch_stop = threading.Event()
         self._execution_blockers: tuple[str, ...] = ()
@@ -226,6 +383,7 @@ class EmployeeDepartmentRuntime:
         self._challenges: dict[str, VerificationChallenge] = {}
         self._verification_router: VerificationRouter | None = None
         self._main_bot_send_audit: MainBotSendAudit | None = None
+        self._notification_status: Callable[[DurableHireState, str], object] | None = None
         self._owned_main_bot_send_audit: MainBotSendAuditLog | None = None
         self._monitor_task: asyncio.Task[None] | None = None
         self._raw_message_metadata: dict[tuple[str, int, str], tuple[str, str]] = {}
@@ -242,6 +400,7 @@ class EmployeeDepartmentRuntime:
         release_trust_provider: ReleaseTrustProvider | None = None,
         notification_link: Callable[[DurableHireState, str, int], object] | None = None,
         notification_status: Callable[[DurableHireState, str], object] | None = None,
+        team_notification: Callable[[str, str, str], object] | None = None,
         context_source_factory: EmployeeMessageSourceFactory | None = None,
         group_memory_backend: Any = None,
         slock_engine_manager: object | None = None,
@@ -303,12 +462,17 @@ class EmployeeDepartmentRuntime:
                 )
                 main_bot_send_audit = owned_main_bot_send_audit.count_attempts
             except Exception as exc:
-                logger.warning(
+                logger.error(
                     "local main Bot send audit unavailable: %s",
                     type(exc).__name__,
                 )
-                main_bot_send_audit = _zero_main_bot_send_count
+                try:
+                    writer.close()
+                finally:
+                    vault.close()
+                return cls(blockers=("main_bot_send_audit",))
         runtime._owned_main_bot_send_audit = owned_main_bot_send_audit
+        runtime._notification_status = notification_status
         try:
             runtime._start_loop()
             runtime._compose_execution_storage(settings)
@@ -354,6 +518,20 @@ class EmployeeDepartmentRuntime:
             )
             runtime._compose_fire(settings)
             runtime.recover()
+            if team_notification is not None and runtime._writer is not None:
+                runtime._team = EmployeeTeamService(
+                    writer=runtime._writer,
+                    backend=_RuntimeTeamBackend(runtime, team_notification),
+                    attempt_timeout_seconds=float(
+                        getattr(settings, "autonomous_team_step_timeout_seconds", 600.0)
+                    ),
+                )
+                recovered_team_runs = runtime._team.recover()
+                if recovered_team_runs:
+                    logger.warning(
+                        "employee team recovery isolated %d interrupted run(s)",
+                        recovered_team_runs,
+                    )
             return runtime
         except Exception as exc:
             logger.error(
@@ -378,6 +556,10 @@ class EmployeeDepartmentRuntime:
     @property
     def fire_service(self) -> EmployeeFireService | None:
         return self._fire
+
+    @property
+    def team_service(self) -> EmployeeTeamService | None:
+        return self._team
 
     @property
     def data_composition(self) -> EmployeeDataComposition | None:
@@ -617,6 +799,9 @@ class EmployeeDepartmentRuntime:
             cleanup("hire_admission", self._service.stop_admission)
         if self._context_service is not None:
             cleanup("context_admission", self._context_service.stop_admission)
+        team_safe = True
+        if self._team is not None:
+            team_safe = cleanup("team_service", self._team.close)
         self._dispatch_stop.set()
         dispatch_safe = True
         if self._dispatch_thread is not None:
@@ -641,7 +826,7 @@ class EmployeeDepartmentRuntime:
             context_safe = cleanup("context_drain", self._context_service.drain)
         if self._context_source_factory is not None:
             context_safe = cleanup("context_sources", self._context_source_factory.close) and context_safe
-        resources_safe = dispatch_safe and activities_safe and context_safe
+        resources_safe = team_safe and dispatch_safe and activities_safe and context_safe
         if resources_safe:
             if self._channels is not None:
                 resources_safe = cleanup("channels", self._channels.close)
@@ -1666,7 +1851,7 @@ class EmployeeDepartmentRuntime:
             if existing is not None and not existing.done():
                 return
             future = asyncio.run_coroutine_threadsafe(
-                self._configure_intent(intent_id),
+                self._configure_and_notify(intent_id),
                 self._loop,
             )
             self._intent_futures[intent_id] = future
@@ -1686,6 +1871,83 @@ class EmployeeDepartmentRuntime:
                 )
 
         future.add_done_callback(complete)
+
+    async def _configure_and_notify(self, intent_id: str) -> None:
+        succeeded = False
+        try:
+            await self._configure_intent(intent_id)
+            succeeded = True
+        except Exception:
+            current = self._require_service().get_state(intent_id)
+            has_disposed_failure = current is not None and any(
+                effect_state is HireEffectState.ACTION_REQUIRED
+                for _effect_id, effect_state in current.effects
+            )
+            if not has_disposed_failure:
+                succeeded = await self._retry_recovery_intent(intent_id)
+        state = self._require_service().get_state(intent_id)
+        if state is None:
+            return
+        status = (
+            "ready"
+            if succeeded and state.phase is HirePhase.READY_PENDING_VERIFICATION
+            else "action_required"
+            if state.phase is HirePhase.ACTION_REQUIRED
+            or any(
+                effect_state is HireEffectState.ACTION_REQUIRED
+                for _effect_id, effect_state in state.effects
+            )
+            else ""
+        )
+        if status:
+            await self._notify_hire_terminal(state, status)
+
+    async def _notify_hire_terminal(
+        self,
+        state: DurableHireState,
+        status: str,
+    ) -> None:
+        callback = self._notification_status
+        writer = self._writer
+        if callback is None or writer is None:
+            return
+        aggregate_id = f"hire-notification:{state.intent_id}:{status}"
+        existing = [
+            event.event_type
+            for frame in writer.replay()
+            for event in frame.events
+            if event.aggregate_id == aggregate_id
+        ]
+        if "hire.notification.committed" in existing:
+            return
+
+        def commit(event_type: str) -> None:
+            with writer.transaction_guard():
+                last = writer.get_last_frame()
+                result = writer.commit(
+                    (
+                        JournalEvent(
+                            event_type=event_type,
+                            aggregate_id=aggregate_id,
+                            payload={"intent_id": state.intent_id, "status": status},
+                        ),
+                    ),
+                    writer.get_aggregate_versions((aggregate_id,)),
+                    expected_head_sequence=0 if last is None else last.sequence,
+                    expected_head_hash="" if last is None else last.frame_hash,
+                )
+            if result.state.value != "anchored":
+                raise RuntimeError("hire notification event was not anchored")
+
+        if "hire.notification.prepared" not in existing:
+            commit("hire.notification.prepared")
+        commit("hire.notification.executing")
+        try:
+            await asyncio.to_thread(callback, state, status)
+        except Exception:
+            commit("hire.notification.action_required")
+            return
+        commit("hire.notification.committed")
 
     def _submit_coroutine(
         self,
@@ -1739,29 +2001,51 @@ class EmployeeDepartmentRuntime:
                 *(self._retry_recovery_intent(intent_id) for intent_id in failed_intents),
                 return_exceptions=True,
             )
+            failures = sum(
+                isinstance(result, BaseException) or result is False
+                for result in retry_results
+            )
             if any(isinstance(result, BaseException) for result in retry_results):
                 logger.error(
-                    "employee recovery remains fail-closed for %d intent(s)",
-                    sum(isinstance(result, BaseException) for result in retry_results),
+                    "employee recovery could not be durably isolated for %d intent(s)",
+                    failures,
                 )
+                self._execution_blockers = ("hire_recovery",)
                 return
+            if failures:
+                logger.error(
+                    "employee recovery isolated %d exhausted intent(s) as action_required",
+                    failures,
+                )
+            for intent_id, result in zip(failed_intents, retry_results, strict=True):
+                state = self._require_service().get_state(intent_id)
+                if state is not None:
+                    await self._notify_hire_terminal(
+                        state,
+                        "ready" if result is True else "action_required",
+                    )
         self._require_service().mark_runtime_recovered()
         if not self._execution_blockers:
             self._start_dispatch_worker()
 
-    async def _retry_recovery_intent(self, intent_id: str) -> None:
-        delay = 0.1
-        while not self._closing:
+    async def _retry_recovery_intent(self, intent_id: str) -> bool:
+        for delay in _RECOVERY_RETRY_DELAYS:
+            if self._closing:
+                raise RuntimeError("employee runtime is closing")
             await asyncio.sleep(delay)
             try:
                 await self._configure_intent(
                     intent_id,
                     force_slash_refresh=True,
                 )
-                return
+                return True
             except Exception:
-                delay = min(delay * 2.0, 30.0)
-        raise RuntimeError("employee runtime is closing")
+                continue
+        self._require_service().mark_recovery_action_required(
+            intent_id,
+            error_code="recovery_exhausted",
+        )
+        return False
 
     def _start_monitor_in_loop(self) -> None:
         if self._monitor_task is None or self._monitor_task.done():

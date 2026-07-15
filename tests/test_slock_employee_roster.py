@@ -205,6 +205,21 @@ def _handler_for_card(*, service=None) -> tuple[SlockHandler, MagicMock]:
 
 
 class TestRoleAddPickConfirm:
+    def test_picker_uses_schema2_static_select_without_legacy_action(self, monkeypatch):
+        monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
+
+        service = MagicMock()
+        service.list_employees.return_value = [_employee()]
+        handler, _ = _handler_for_card(service=service)
+
+        handler.add_role_to_group("om_1", "oc_team")
+
+        handler.reply_card.assert_called_once()
+        card = handler.reply_card.call_args.args[1]
+        blob = json.dumps(card, ensure_ascii=False)
+        assert '"tag": "action"' not in blob
+        assert '"tag": "select_static"' in blob
+
     def test_pick_shows_confirm_card_no_mutation(self, monkeypatch):
         monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
 
@@ -219,6 +234,8 @@ class TestRoleAddPickConfirm:
         handler.update_card.assert_called_once()
         card_json = handler.update_card.call_args.args[1]
         card = json.loads(card_json)
+        assert '"tag": "action"' not in card_json
+        assert '"tag": "column_set"' in card_json
         assert "确认" in card["header"]["title"]["content"]
         assert "柳七月" in card["elements"][0]["text"]["content"]
         handler._change_employee_membership.assert_not_called()

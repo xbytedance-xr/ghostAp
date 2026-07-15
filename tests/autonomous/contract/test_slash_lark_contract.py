@@ -118,6 +118,36 @@ async def test_adapter_uses_v7_base_requests_tenant_token_and_official_models() 
 
 
 @pytest.mark.asyncio
+async def test_list_accepts_server_omitting_optional_description_i18n() -> None:
+    api = LarkSlashCommandAPI(
+        _RecordingClient(
+            [
+                _response(
+                    {
+                        "code": 0,
+                        "msg": "success",
+                        "data": {
+                            "items": [
+                                {
+                                    "command_id": "cmd_task",
+                                    "command": "task",
+                                    "description": {"default_value": "Assign a task"},
+                                }
+                            ]
+                        },
+                    }
+                )
+            ]
+        )
+    )
+
+    observed = await api.list_commands()
+
+    assert observed[0].description == "Assign a task"
+    assert observed[0].description_i18n == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [

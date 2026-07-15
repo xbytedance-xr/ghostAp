@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GhostAP 团队员工流程预览</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, "PingFang SC", sans-serif; background: #f5f6f8; color: #1f2329; }
+    body { margin: 0; padding: 32px 18px; }
+    main { max-width: 1080px; margin: auto; display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+    .card { background: white; border: 1px solid #dee0e3; border-radius: 14px; overflow: hidden; box-shadow: 0 8px 24px #1f23290d; }
+    .header { padding: 15px 18px; color: white; font-weight: 700; background: linear-gradient(135deg, #3370ff, #4e83fd); }
+    .orange { background: linear-gradient(135deg, #f59e0b, #f97316); }
+    .body { padding: 18px; display: grid; gap: 12px; }
+    .label { font-size: 13px; color: #646a73; }
+    select, input, button { box-sizing: border-box; width: 100%; min-height: 40px; border-radius: 8px; border: 1px solid #c9cdd4; background: white; padding: 8px 11px; font: inherit; }
+    button { border: 0; background: #3370ff; color: white; font-weight: 650; cursor: pointer; }
+    .secondary { background: #f2f3f5; color: #1f2329; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .note { font-size: 12px; line-height: 1.55; color: #8f959e; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="card">
+      <div class="header">Slock 员工创建</div>
+      <div class="body">
+        <strong>为员工 Atlas 选择工具和模型</strong>
+        <label class="label">工具</label>
+        <select><option>🤖 Codex（代码实现）</option></select>
+        <label class="label">模型</label>
+        <select><option>GPT-5 · high</option></select>
+        <button>确认创建</button>
+        <span class="note">Schema V2：下拉框作为根组件，不使用已移除的 action 容器。</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="header orange">确认添加员工</div>
+      <div class="body">
+        <strong>将把 🤖 Atlas 加入本群</strong>
+        <div class="row"><button>确认加入</button><button class="secondary">取消</button></div>
+        <span class="note">按钮通过 column_set 响应式排列，保持移动端可点击区域。</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="header">Slock 扩展操作</div>
+      <div class="body">
+        <strong>创建团队</strong>
+        <form><input name="team_name" placeholder="输入团队名称"><button type="button">创建团队</button></form>
+        <strong>创建角色</strong>
+        <form><input name="role_name" placeholder="输入角色名称"><button type="button">创建角色</button></form>
+        <strong>Council 评审</strong>
+        <form><input name="council_topic" placeholder="输入评审议题"><button type="button">发起评审</button></form>
+        <span class="note">每组输入使用独立 Schema V2 form，提交时只携带本组字段。</span>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

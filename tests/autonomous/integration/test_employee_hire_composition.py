@@ -831,6 +831,73 @@ def test_task7_runtime_routes_anchored_inbox_into_owned_queue(tmp_path: Path) ->
     runtime.close()
 
 
+def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -> None:
+    channels = _Channels()
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    settings.allowed_chat_ids = frozenset({"oc_employee_team"})
+    runtime = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        team_notification=lambda *_: None,
+        context_source_factory=_AssemblingContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    active = _activate_employee(runtime, channels)
+    channels.statuses[active.agent_id].tenant_key = active.tenant_key
+    channels.statuses[active.agent_id].bot_principal_id = active.bot_principal_id
+    assert runtime._writer is not None
+    assert runtime.hire_service is not None
+    assert runtime.team_service is not None
+    commit_workforce_events(
+        runtime._writer,
+        runtime.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=active.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    runtime._dispatch_stop.set()
+    assert runtime._dispatch_thread is not None
+    runtime._dispatch_thread.join(timeout=1)
+
+    class _NoDispatch:
+        def dispatch_next(self):
+            return None
+
+    real_dispatch = runtime._dispatch
+    runtime._dispatch = _NoDispatch()  # type: ignore[assignment]
+    backend = runtime.team_service._backend
+    target = backend.list_active(active.tenant_key, "oc_employee_team")[0]
+    acceptance_id = backend.submit(
+        run_id="teamrun_integration",
+        step_id="analysis",
+        target=target,
+        tenant_key=active.tenant_key,
+        chat_id="oc_employee_team",
+        message_id="om_team_task",
+        requester_principal_id="ou_admin",
+        instruction="分析并修复团队模式",
+    )
+
+    assert runtime._drain_employee_dispatch_once() is True
+    routed = runtime.ingress_router.state.by_acceptance_id[acceptance_id]
+    assert routed.state == "queued", routed.reason_code
+    payload = runtime.ingress_service.get_payload(acceptance_id)
+    assert payload.normalized_parts[0]["type"] == "team_assignment"
+    assert payload.normalized_parts[0]["team_instruction"] == "分析并修复团队模式"
+    runtime._dispatch = real_dispatch
+    runtime._dispatch_thread = None
+    runtime.close()
+
+
 def _activate_employee(
     runtime: EmployeeDepartmentRuntime,
     channels: _Channels,
@@ -2042,6 +2109,146 @@ def test_transient_recovery_failure_is_supervised_and_converges_in_process(
     assert slash.calls == 5
     assert restarted.readiness().ready is True
     restarted.close()
+
+
+def test_exhausted_hire_recovery_is_isolated_as_action_required(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, limit=1)
+    first = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _FailingSlash(),
+        notification_link=lambda *_: None,
+    )
+    assert first.hire_service is not None
+    admitted = first.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        pending = first.hire_service.get_state(admitted.intent_id)
+        if (
+            pending is not None
+            and pending.phase is HirePhase.CONFIGURING
+            and pending.effect_state("slash-reconcile:1:1") is HireEffectState.EXECUTING
+        ):
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    first.close()
+
+    slash = _FailOnceSlash(failures=100)
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=True,
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: slash,
+        notification_link=lambda *_: None,
+    )
+    assert restarted.hire_service is not None
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        recovered = restarted.hire_service.get_state(admitted.intent_id)
+        if (
+            recovered is not None
+            and recovered.phase is HirePhase.ACTION_REQUIRED
+            and restarted.readiness().ready is True
+        ):
+            break
+        time.sleep(0.05)
+
+    assert recovered is not None
+    assert recovered.phase is HirePhase.ACTION_REQUIRED
+    assert recovered.effect_state("slash-reconcile:1:1") is HireEffectState.ACTION_REQUIRED
+    assert recovered.metadata_for("slash-reconcile:1:1")["error_code"] == "recovery_exhausted"
+    assert slash.calls == 6
+    assert restarted.readiness().ready is True
+    restarted.close()
+
+
+def test_new_hire_reports_ready_terminal_status(tmp_path: Path) -> None:
+    statuses: list[str] = []
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        notification_status=lambda _state, status: statuses.append(status),
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        state = runtime.hire_service.get_state(admitted.intent_id)
+        if (
+            state is not None
+            and state.phase is HirePhase.READY_PENDING_VERIFICATION
+            and statuses == ["ready"]
+        ):
+            break
+        time.sleep(0.02)
+
+    assert state is not None and state.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert statuses == ["ready"]
+    notification_events = [
+        event.event_type
+        for frame in runtime.journal_frames()
+        for event in frame.events
+        if event.aggregate_id.endswith(":ready")
+    ]
+    assert notification_events == [
+        "hire.notification.prepared",
+        "hire.notification.executing",
+        "hire.notification.committed",
+    ]
+    runtime.close()
+
+
+def test_new_hire_reports_action_required_after_bounded_retries(tmp_path: Path) -> None:
+    statuses: list[str] = []
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _FailingSlash(),
+        notification_link=lambda *_: None,
+        notification_status=lambda _state, status: statuses.append(status),
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        state = runtime.hire_service.get_state(admitted.intent_id)
+        if (
+            state is not None
+            and state.phase is HirePhase.ACTION_REQUIRED
+            and statuses == ["action_required"]
+        ):
+            break
+        time.sleep(0.05)
+
+    assert state is not None and state.phase is HirePhase.ACTION_REQUIRED
+    assert statuses == ["action_required"]
+    runtime.close()
+
+
+def test_main_bot_audit_open_failure_blocks_runtime(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, limit=1)
+
+    with patch(
+        "src.autonomous.provisioning.composition.MainBotSendAuditLog.open",
+        side_effect=OSError("injected audit failure"),
+    ):
+        runtime = EmployeeDepartmentRuntime.from_settings(
+            settings,
+            notification_link=lambda *_: None,
+        )
+
+    assert runtime.hire_service is None
+    assert runtime.readiness().blockers == ("main_bot_send_audit",)
+    runtime.close()
 
 
 def test_real_employee_status_ingress_and_employee_send_are_required_for_active(

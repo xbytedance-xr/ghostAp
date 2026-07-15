@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from src.slock_engine.card_templates import (
     build_agent_message_card,
     build_status_panel_card,
@@ -461,9 +463,10 @@ class TestBuildWelcomeCard:
 
         card = build_welcome_card(team_name="MyTeam")
         blob = json.dumps(card, ensure_ascii=False)
-        assert "/new-role" in blob
-        assert "/task assign" in blob
-        assert "/slock help" in blob
+        assert "/hire" in blob
+        assert "/role add" in blob
+        assert "/goal" in blob
+        assert "/slock status" in blob
         assert "/role list" in blob
 
     def test_body_contains_team_name_in_content(self):
@@ -784,6 +787,36 @@ class TestBuildCommandPanelCard:
             assert len(behaviors) == 1, f"Button should have exactly 1 behavior: {btn}"
             assert behaviors[0]["type"] == "callback"
             assert behaviors[0]["value"]["action"] == btn["value"]["action"]
+
+
+class TestBuildCommandPanelExtendedCard:
+    def test_schema2_forms_replace_removed_action_container(self):
+        from src.slock_engine.card_templates import build_command_panel_extended_card
+
+        card = build_command_panel_extended_card(
+            channel_id="oc_team",
+            project_id="project_1",
+        )
+
+        blob = json.dumps(card, ensure_ascii=False)
+        assert '"tag": "action"' not in blob
+        forms = [
+            element
+            for element in card["body"]["elements"]
+            if element.get("tag") == "form"
+        ]
+        assert len(forms) == 3
+        assert all(form.get("element_id") for form in forms)
+        assert {
+            button["behaviors"][0]["value"]["action"]
+            for form in forms
+            for button in form["elements"]
+            if button.get("tag") == "button"
+        } == {
+            "slock_form_new_team",
+            "slock_form_new_role",
+            "slock_form_council",
+        }
 
 
 class TestBuildMemoryDisplayCard:

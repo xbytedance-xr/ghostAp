@@ -536,6 +536,36 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         if classification != "task":
             return False
 
+        team_service = getattr(self.ctx, "employee_team_service", None)
+        if team_service is not None:
+            from ...thread.manager import (
+                get_current_sender_id,
+                get_current_tenant_key,
+            )
+
+            tenant_key = get_current_tenant_key() or ""
+            requester_principal_id = get_current_sender_id() or ""
+            if not tenant_key or not requester_principal_id:
+                self.reply_text(message_id, "⚠️ 无法确认团队任务的租户或发起人身份。")
+                return True
+            try:
+                run = team_service.start_task(
+                    tenant_key=tenant_key,
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    requester_principal_id=requester_principal_id,
+                    task=text.strip(),
+                )
+            except Exception:
+                logger.exception("Visible employee team admission failed")
+                self.reply_text(message_id, "⚠️ 团队任务未能安全入队，请检查员工与群成员状态。")
+                return True
+            self.reply_text(
+                message_id,
+                f"👥 团队任务已受理（`{run.run_id[:20]}…`），员工将依次执行、交接、评审并汇总。",
+            )
+            return True
+
         self.assign_task(message_id, chat_id, text.strip(), "", project)
         return True
 
@@ -2916,13 +2946,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 "header": {"title": {"tag": "plain_text", "content": "选择要加入的员工"}, "template": "blue"},
                 "elements": [
                     {
-                        "tag": "action",
-                        "actions": [{
-                            "tag": "select_static",
-                            "placeholder": {"tag": "plain_text", "content": "选择员工"},
-                            "options": options,
-                            "value": {"action": "slock_role_add_pick", "chat_id": chat_id},
-                        }],
+                        "tag": "select_static",
+                        "placeholder": {"tag": "plain_text", "content": "选择员工"},
+                        "options": options,
+                        "value": {"action": "slock_role_add_pick", "chat_id": chat_id},
                     },
                 ],
             }
@@ -4766,15 +4793,14 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 "header": {"title": {"tag": "plain_text", "content": "确认添加员工"}, "template": "orange"},
                 "elements": [
                     {"tag": "div", "text": {"tag": "lark_md", "content": f"将把 **{emoji} {name}** 加入本群"}},
-                    {
-                        "tag": "action",
-                        "actions": [{
+                    *build_responsive_layout([
+                        {
                             "tag": "button",
                             "text": {"tag": "plain_text", "content": "确认加入"},
                             "type": "primary",
                             "value": {"action": "slock_role_add_confirm", "chat_id": open_chat_id, "agent_id": agent_id},
-                        }],
-                    },
+                        },
+                    ]),
                 ],
             }
             confirm_card_json = json.dumps(confirm_card, ensure_ascii=False)

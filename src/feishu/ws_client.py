@@ -301,12 +301,22 @@ class FeishuWSClient:
                 notification_status=lambda state, status: (
                     self._reply_text(
                         state.message_id,
-                        "独立飞书智能体注册请求已提交，正在等待你在上方链接中完成授权确认。"
-                        "确认前注册接口会持续返回 400 authorization_pending，这是设备授权"
-                        "流程的正常等待状态；请按链接完成授权，期间请勿重复发送 /hire。",
+                        (
+                            "独立飞书智能体注册请求已提交，正在等待你在上方链接中完成授权确认。"
+                            "确认前注册接口会持续返回 400 authorization_pending，这是设备授权"
+                            "流程的正常等待状态；请按链接完成授权，期间请勿重复发送 /hire。"
+                            if status == "polling"
+                            else f"✅ 员工 **{state.employee_name}** 已就绪。请先私聊该员工发送 `/status` 完成激活，再将其加入 Slock 群。"
+                            if status == "ready"
+                            else f"⚠️ 员工 **{state.employee_name}** 创建未能自动收敛，已转为人工处理；可使用 `/fire {state.employee_name}` 清理后重试。"
+                        ),
                     )
-                    if status == "polling"
+                    if status in {"polling", "ready", "action_required"}
                     else None
+                ),
+                team_notification=lambda message_id, _chat_id, result: self._reply_text(
+                    message_id,
+                    result,
                 ),
             )
         except Exception as exc:
@@ -381,6 +391,11 @@ class FeishuWSClient:
             ),
             employee_data_composition=(
                 self._employee_department_runtime.data_composition
+                if self._employee_department_runtime is not None
+                else None
+            ),
+            employee_team_service=(
+                self._employee_department_runtime.team_service
                 if self._employee_department_runtime is not None
                 else None
             ),

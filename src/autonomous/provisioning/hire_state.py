@@ -100,27 +100,32 @@ _ALLOWED_PHASE_SUCCESSORS = {
     HirePhase.PROVISIONING_APP: {
         HirePhase.STORING_CREDENTIAL,
         HirePhase.CONFIGURING,
+        HirePhase.RETIRING,
         HirePhase.ACTION_REQUIRED,
         HirePhase.ARCHIVED,
     },
     HirePhase.STORING_CREDENTIAL: {
         HirePhase.CONFIGURING,
+        HirePhase.RETIRING,
         HirePhase.ACTION_REQUIRED,
         HirePhase.ARCHIVED,
     },
     HirePhase.CONFIGURING: {
         HirePhase.VALIDATING,
+        HirePhase.RETIRING,
         HirePhase.ACTION_REQUIRED,
         HirePhase.ARCHIVED,
     },
     HirePhase.VALIDATING: {
         HirePhase.READY_PENDING_VERIFICATION,
+        HirePhase.RETIRING,
         HirePhase.ACTION_REQUIRED,
         HirePhase.ARCHIVED,
     },
     HirePhase.READY_PENDING_VERIFICATION: {
         HirePhase.VALIDATING,
         HirePhase.ACTIVE,
+        HirePhase.RETIRING,
         HirePhase.ACTION_REQUIRED,
         HirePhase.ARCHIVED,
     },
@@ -134,7 +139,7 @@ _ALLOWED_PHASE_SUCCESSORS = {
         HirePhase.ACTION_REQUIRED,
         HirePhase.ARCHIVED,
     },
-    HirePhase.ACTION_REQUIRED: {HirePhase.ARCHIVED},
+    HirePhase.ACTION_REQUIRED: {HirePhase.RETIRING, HirePhase.ARCHIVED},
     HirePhase.ARCHIVED: set(),
 }
 _EFFECT_PAYLOAD_KEYS = frozenset({"effect_id", "effect_type", "metadata"})

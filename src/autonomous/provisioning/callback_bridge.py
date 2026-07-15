@@ -46,7 +46,10 @@ class AsyncCallbackBridge:
 
     def _submit(self, target: Callback, *args: object) -> None:
         async def invoke() -> None:
-            result = target(*args)
+            if inspect.iscoroutinefunction(target):
+                result = target(*args)
+            else:
+                result = await asyncio.to_thread(target, *args)
             if inspect.isawaitable(result):
                 await result
 
