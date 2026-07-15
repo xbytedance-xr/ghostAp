@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -118,7 +119,8 @@ def _effect(
 async def test_active_requires_durable_slash_channel_ingress_and_employee_send(
     tmp_path: Path,
 ) -> None:
-    service = _service(_writer(tmp_path))
+    writer = _writer(tmp_path)
+    service = _service(writer)
     configured = await _configured(service)
     _effect(
         service,
@@ -167,6 +169,45 @@ async def test_active_requires_durable_slash_channel_ingress_and_employee_send(
 
     assert pending.phase is HirePhase.READY_PENDING_VERIFICATION
     assert pending.verification_nonce == challenge.nonce
+    too_early = VerificationRouter(
+        nonce_consumer=service,
+        clock=lambda: 120.0,
+        nonce_factory=lambda: "nonce_too_early_0123456789abcdef012345",
+    ).issue_challenge(
+        VerificationBinding(
+            pending.intent_id,
+            pending.tenant_key,
+            pending.app_id,
+            pending.agent_id,
+            1,
+            pending.requester_principal_id,
+            pending.requester_union_id,
+            "spec_hash",
+        ),
+        ttl_seconds=60,
+    )
+    with pytest.raises(HireAdmissionError, match="renewal rejected"):
+        service.renew_activation_verification(too_early)
+    router = VerificationRouter(
+        nonce_consumer=service,
+        clock=lambda: 135.0,
+        nonce_factory=lambda: "nonce_renewed_0123456789abcdef01234567",
+    )
+    challenge = router.issue_challenge(
+        VerificationBinding(
+            pending.intent_id,
+            pending.tenant_key,
+            pending.app_id,
+            pending.agent_id,
+            1,
+            pending.requester_principal_id,
+            pending.requester_union_id,
+            "spec_hash",
+        ),
+        ttl_seconds=60,
+    )
+    pending = service.renew_activation_verification(challenge)
+    assert pending.verification_nonce == challenge.nonce
     coordinates = VerificationCoordinates(
         hire_intent_id=pending.intent_id,
         tenant_key=pending.tenant_key,
@@ -175,7 +216,7 @@ async def test_active_requires_durable_slash_channel_ingress_and_employee_send(
         generation=1,
         nonce=challenge.nonce,
     )
-    decision = router.evaluate(
+    decision = router.evaluate_for_atomic_commit(
         challenge,
         slash=SlashVerificationEvidence(
             coordinates,
@@ -203,17 +244,62 @@ async def test_active_requires_durable_slash_channel_ingress_and_employee_send(
             pending.app_id,
             "send_1",
             0,
-            107.0,
+            137.0,
         ),
         current_generation=1,
-        now=110.0,
+        now=140.0,
     )
     assert decision.outcome is VerificationOutcome.READY
+    assert decision.activation_evidence is not None
+    reply_effect_id = "verification-status-reply:evt_1"
+    for effect_state in (HireEffectState.PREPARED, HireEffectState.EXECUTING):
+        service.commit_effect_transition(
+            pending.intent_id,
+            effect_id=reply_effect_id,
+            effect_type="employee_status_reply",
+            next_state=effect_state,
+        )
+    reply_effect_metadata = {
+        "send_request_id": "send_1",
+        "ingress_event_id": "evt_1",
+        "reply_app_id": pending.app_id,
+        "reply_message_id": "om_employee_reply",
+        "generation": "1",
+        "connection_id": "conn_1",
+        "main_bot_send_count": "0",
+    }
+    sequence_before_forgery = writer.get_last_frame().sequence
+    forged = replace(
+        decision,
+        activation_evidence=replace(
+            decision.activation_evidence,
+            sender_union_id="on_attacker",
+        ),
+    )
+    with pytest.raises(HireAdmissionError, match="evidence binding mismatch"):
+        service.commit_activation(
+            forged,
+            reply_effect_id=reply_effect_id,
+            reply_effect_metadata=reply_effect_metadata,
+        )
+    assert writer.get_last_frame().sequence == sequence_before_forgery
 
-    active = service.commit_activation(decision)
+    active = service.commit_activation(
+        decision,
+        reply_effect_id=reply_effect_id,
+        reply_effect_metadata=reply_effect_metadata,
+    )
 
     assert active.phase is HirePhase.ACTIVE
     assert active.activation_ingress_event_id == "evt_1"
+    activation_frame = writer.get_last_frame()
+    assert activation_frame is not None
+    assert [event.event_type for event in activation_frame.events] == [
+        "hire.effect.committed",
+        "hire.verification.nonce_consumed",
+        "hire.activation.verified",
+        "employee.state_changed",
+    ]
     assert service.consume_once(challenge, consumed_at=111.0) is False
     assert "nonce_012345" not in repr(active)
 
@@ -244,7 +330,79 @@ async def test_verification_cannot_start_without_committed_exact_configuration(
 
 
 @pytest.mark.asyncio
-async def test_activation_nonce_and_terminal_state_survive_replay(tmp_path: Path) -> None:
+async def test_unknown_status_reply_outcome_recovers_without_blocking_hire(
+    tmp_path: Path,
+) -> None:
+    service = _service(_writer(tmp_path))
+    configured = await _configured(service)
+    _effect(
+        service,
+        configured.intent_id,
+        "slash-reconcile:1",
+        "slash_reconciliation",
+        {
+            "slash_spec_hash": "spec_hash",
+            "slash_observed_hash": "spec_hash",
+            "slash_verified_at": "98.0",
+        },
+    )
+    _effect(
+        service,
+        configured.intent_id,
+        "channel-start:1",
+        "employee_channel_start",
+        {
+            "app_id": configured.app_id,
+            "generation": "1",
+            "identity_app_id": configured.app_id,
+            "connection_id": "conn_1",
+            "channel_verified_at": "99.0",
+        },
+    )
+    router = VerificationRouter(nonce_consumer=service, clock=lambda: 100.0)
+    challenge = router.issue_challenge(
+        VerificationBinding(
+            configured.intent_id,
+            configured.tenant_key,
+            configured.app_id,
+            configured.agent_id,
+            1,
+            configured.requester_principal_id,
+            configured.requester_union_id,
+            "spec_hash",
+        )
+    )
+    service.begin_activation_verification(challenge)
+    effect_id = "verification-status-reply:evt_unknown"
+    service.commit_effect_transition(
+        configured.intent_id,
+        effect_id=effect_id,
+        effect_type="employee_status_reply",
+        next_state=HireEffectState.PREPARED,
+    )
+    service.commit_effect_transition(
+        configured.intent_id,
+        effect_id=effect_id,
+        effect_type="employee_status_reply",
+        next_state=HireEffectState.EXECUTING,
+    )
+    service.close()
+
+    reopened = _service(_writer(tmp_path, epoch=2))
+    recovered = reopened.recover().get(configured.intent_id)
+
+    assert recovered is not None
+    assert recovered.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert recovered.effect_state(effect_id) is HireEffectState.ACTION_REQUIRED
+    assert recovered.metadata_for(effect_id)["error_code"] == (
+        "activation_reply_outcome_unknown"
+    )
+
+
+@pytest.mark.asyncio
+async def test_consumed_nonce_without_activation_fails_closed_on_replay(
+    tmp_path: Path,
+) -> None:
     service = _service(_writer(tmp_path))
     configured = await _configured(service)
     _effect(
@@ -297,7 +455,7 @@ async def test_activation_nonce_and_terminal_state_survive_replay(tmp_path: Path
     replayed = reopened.recover().get(configured.intent_id)
 
     assert replayed is not None
-    assert replayed.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert replayed.phase is HirePhase.ACTION_REQUIRED
     assert replayed.verification_consumed is True
     assert reopened.consume_once(challenge, consumed_at=102.0) is False
 

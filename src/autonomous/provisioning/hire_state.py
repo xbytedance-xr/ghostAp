@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
@@ -12,6 +13,9 @@ from ..journal.frame import JournalEvent, TransactionFrame
 
 class HireProjectionError(RuntimeError):
     """A durable hire event stream violates the Saga contract."""
+
+
+ACTIVATION_CHALLENGE_RENEWAL_LEAD_SECONDS = 30.0
 
 
 class HirePhase(str, Enum):
@@ -188,6 +192,15 @@ def _created_state(event: JournalEvent, sequence: int) -> DurableHireState | Non
     requester_union_id = payload.get("requester_union_id", "")
     if not isinstance(requester_union_id, str):
         raise HireProjectionError("requester_union_id must be a string")
+    existing_app_id = payload.get("existing_app_id", "")
+    if (
+        not isinstance(existing_app_id, str)
+        or (
+            existing_app_id
+            and re.fullmatch(r"cli_[A-Za-z0-9_-]{3,128}", existing_app_id) is None
+        )
+    ):
+        raise HireProjectionError("existing_app_id is invalid")
     return DurableHireState(
         intent_id=_required_string(payload, "hire_intent_id"),
         tenant_key=_required_string(payload, "tenant_key"),
@@ -202,7 +215,7 @@ def _created_state(event: JournalEvent, sequence: int) -> DurableHireState | Non
         profile=_required_string(payload, "profile"),
         role=str(payload.get("role", "")),
         persona=str(payload.get("persona", "")),
-        existing_app_id=str(payload.get("existing_app_id", "")),
+        existing_app_id=existing_app_id,
         agent_id=agent_id,
         bot_principal_id=_required_string(payload, "planned_bot_principal_id"),
         attempt_id=_required_string(payload, "provisioning_attempt_id"),
@@ -252,15 +265,29 @@ class HireProjection:
         states: dict[str, DurableHireState] = {}
         agent_intents: dict[str, str] = {}
         bot_intents: dict[str, str] = {}
+        existing_app_intents: dict[str, str] = {}
         for frame in frames:
             for event in frame.events:
                 created = _created_state(event, frame.sequence)
                 if created is not None:
                     if created.intent_id in states or created.agent_id in agent_intents:
                         raise HireProjectionError("duplicate durable hire admission")
+                    existing_app_owner = existing_app_intents.get(
+                        created.existing_app_id
+                    )
+                    if (
+                        created.existing_app_id
+                        and existing_app_owner is not None
+                        and states[existing_app_owner].phase is not HirePhase.ARCHIVED
+                    ):
+                        raise HireProjectionError("duplicate existing_app_id admission")
                     states[created.intent_id] = created
                     agent_intents[created.agent_id] = created.intent_id
                     bot_intents[created.bot_principal_id] = created.intent_id
+                    if created.existing_app_id:
+                        existing_app_intents[created.existing_app_id] = (
+                            created.intent_id
+                        )
                     continue
                 intent_id = (
                     event.aggregate_id
@@ -306,6 +333,13 @@ class HireProjection:
                         phase=phase,
                         last_sequence=frame.sequence,
                     )
+                    if (
+                        phase is HirePhase.ARCHIVED
+                        and current.existing_app_id
+                        and existing_app_intents.get(current.existing_app_id)
+                        == intent_id
+                    ):
+                        existing_app_intents.pop(current.existing_app_id)
                     continue
                 if event.event_type == "bot_principal.bound":
                     if event.aggregate_id != current.bot_principal_id:
@@ -325,7 +359,10 @@ class HireProjection:
                         last_sequence=frame.sequence,
                     )
                     continue
-                if event.event_type == "hire.verification.challenge_issued":
+                if event.event_type in {
+                    "hire.verification.challenge_issued",
+                    "hire.verification.challenge_reissued",
+                }:
                     expected_keys = {
                         "tenant_key",
                         "app_id",
@@ -344,9 +381,47 @@ class HireProjection:
                     generation = event.payload["generation"]
                     issued_at = event.payload["issued_at"]
                     expires_at = event.payload["expires_at"]
+                    initial_challenge = (
+                        event.event_type == "hire.verification.challenge_issued"
+                        and current.phase is HirePhase.VALIDATING
+                    )
+                    renewed_challenge = (
+                        event.event_type == "hire.verification.challenge_issued"
+                        and current.phase is HirePhase.READY_PENDING_VERIFICATION
+                        and not current.verification_consumed
+                        and current.verification_expires_at > 0
+                        and isinstance(event.payload.get("nonce"), str)
+                        and event.payload.get("nonce") != current.verification_nonce
+                        and isinstance(issued_at, (int, float))
+                        and not isinstance(issued_at, bool)
+                        and float(issued_at)
+                        >= current.verification_expires_at
+                        - ACTIVATION_CHALLENGE_RENEWAL_LEAD_SECONDS
+                        and isinstance(expires_at, (int, float))
+                        and not isinstance(expires_at, bool)
+                        and float(expires_at) > current.verification_expires_at
+                    )
+                    audit_collision_reissue = (
+                        event.event_type == "hire.verification.challenge_reissued"
+                        and current.phase is HirePhase.READY_PENDING_VERIFICATION
+                        and not current.verification_consumed
+                        and current.verification_expires_at > 0
+                        and isinstance(event.payload.get("nonce"), str)
+                        and event.payload.get("nonce") != current.verification_nonce
+                        and isinstance(issued_at, (int, float))
+                        and not isinstance(issued_at, bool)
+                        and float(issued_at) > current.verification_issued_at
+                        and isinstance(expires_at, (int, float))
+                        and not isinstance(expires_at, bool)
+                        and float(expires_at) > float(issued_at)
+                    )
                     if (
                         event.aggregate_id != current.intent_id
-                        or current.phase is not HirePhase.VALIDATING
+                        or not (
+                            initial_challenge
+                            or renewed_challenge
+                            or audit_collision_reissue
+                        )
                         or event.payload["tenant_key"] != current.tenant_key
                         or event.payload["app_id"] != current.app_id
                         or event.payload["agent_id"] != current.agent_id
@@ -549,6 +624,7 @@ class HireProjection:
 
 
 __all__ = [
+    "ACTIVATION_CHALLENGE_RENEWAL_LEAD_SECONDS",
     "DurableHireState",
     "HireEffectState",
     "HirePhase",

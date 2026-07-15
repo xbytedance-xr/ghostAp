@@ -1126,8 +1126,17 @@ class SystemBuilder:
         if initial_tool_option:
             tool_dropdown["initial_option"] = initial_tool_option["value"]
 
+        existing_app_id = str(merged_extra.get("existing_app_id") or "").strip()
+        app_context = (
+            f"\n\n复用已有飞书应用：`{existing_app_id}`"
+            if re.fullmatch(r"cli_[A-Za-z0-9_-]{3,128}", existing_app_id)
+            else ""
+        )
         elements: list[dict] = [
-            {"tag": "markdown", "content": f"为员工 **{role}** 选择工具和模型"},
+            {
+                "tag": "markdown",
+                "content": f"为员工 **{role}** 选择工具和模型{app_context}",
+            },
             tool_dropdown,
             {"tag": "hr"},
         ]

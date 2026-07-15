@@ -139,6 +139,25 @@ async def test_registrar_rejects_malformed_credentials(app_id, app_secret) -> No
         )
 
 
+@pytest.mark.asyncio
+async def test_existing_app_registration_rejects_mismatched_client_id() -> None:
+    async def register(**_kwargs):
+        return {
+            "client_id": "cli_different_app",
+            "client_secret": "secret-value",
+        }
+
+    with pytest.raises(AppRegistrationError, match="existing app identity mismatch"):
+        await LarkAppRegistrar(register_fn=register).register(
+            RegistrationRequest(
+                name="Atlas",
+                description="GhostAP employee",
+                existing_app_id="cli_existing_123",
+            ),
+            on_link=lambda _url, _ttl: None,
+        )
+
+
 def test_registration_request_rejects_blank_or_control_characters() -> None:
     with pytest.raises(ValueError, match="name"):
         RegistrationRequest(name="", description="employee")

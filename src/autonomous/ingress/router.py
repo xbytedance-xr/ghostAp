@@ -60,6 +60,7 @@ _TERMINAL_REASONS = frozenset(
         "timeout",
         "action_required",
         "slock_unavailable",
+        "control_consumed",
     }
 )
 _DISPATCH_TERMINAL_REASONS = frozenset(
@@ -568,6 +569,29 @@ class DurableEmployeeIngressRouter:
         finally:
             self._refresh_terminal_attachment_cleanup_report()
 
+    def claim_control(self, acceptance_id: str, *, command: str) -> bool:
+        """Atomically exclude one exact control message from task admission."""
+
+        if command != "/status":
+            raise ValueError("unsupported Router control command")
+        try:
+            with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
+                _ingress_record,
+                payload,
+            ), self._mutex, self._writer.transaction_guard():
+                self.rebuild_projection()
+                record = self._record(acceptance_id)
+                if not self._is_exact_text_command(payload, command):
+                    return False
+                if record.state == "terminal":
+                    return record.reason_code == "control_consumed"
+                if record.state == "dispatching":
+                    return False
+                self._terminal_unlocked(record, "control_consumed")
+                return True
+        except IngressBlobError:
+            return False
+
     def _route(self, acceptance_id: str) -> RouterLifecycleRecord:
         """Authorize, stage, and atomically admit one accepted Inbox record."""
 
@@ -578,6 +602,13 @@ class DurableEmployeeIngressRouter:
         if record.state in {"queued", "dispatching", "terminal"}:
             return record
         accepted_identity = self._ingress_identity(ingress_record, payload)
+        if self._is_exact_text_command(payload, "/status"):
+            return self._terminal_for_snapshot(
+                acceptance_id,
+                accepted_identity,
+                "control_consumed",
+                allow_queued=True,
+            )
         if ingress_record.metadata.event_type == "card.action.trigger":
             return self._terminal_for_snapshot(
                 acceptance_id,
@@ -1113,6 +1144,18 @@ class DurableEmployeeIngressRouter:
             payload.payload_sha256,
         )
 
+    @staticmethod
+    def _is_exact_text_command(
+        payload: EmployeeIngressPayload,
+        command: str,
+    ) -> bool:
+        if len(payload.normalized_parts) != 1:
+            return False
+        part = payload.normalized_parts[0]
+        content = part.get("content") if isinstance(part, Mapping) else None
+        text = content.get("text") if isinstance(content, Mapping) else None
+        return isinstance(text, str) and text.strip() == command
+
     def _terminal_for_snapshot(
         self,
         acceptance_id: str,
@@ -1125,7 +1168,7 @@ class DurableEmployeeIngressRouter:
             with self._ingress.dispatch_snapshot_guard(acceptance_id) as (
                 ingress_record,
                 payload,
-            ), self._mutex:
+            ), self._mutex, self._writer.transaction_guard():
                 self.rebuild_projection()
                 record = self._record(acceptance_id)
                 if record.state in {"dispatching", "terminal"} or (

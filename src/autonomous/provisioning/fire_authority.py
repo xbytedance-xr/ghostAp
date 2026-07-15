@@ -14,6 +14,13 @@ from .fire_service import (
     EmployeeFireTarget,
     FireServiceError,
 )
+from .fire_state import (
+    DurableFireState,
+    FireCleanupMode,
+    FirePhase,
+    rebuild_fire_projection,
+)
+from .hire_state import DurableHireState, HireEffectState
 
 
 class JournalFireAuthority:
@@ -33,9 +40,19 @@ class JournalFireAuthority:
         self._admins = frozenset(admin_principal_ids)
 
     def resolve(self, request: EmployeeFireRequest) -> EmployeeFireTarget:
+        self.authorize_request(request)
+        projection = self._hire.synchronize_projection()
+        return self._resolve_from_projection(request, projection)
+
+    def authorize_request(self, request: EmployeeFireRequest) -> None:
         if request.requester_principal_id not in self._admins:
             raise FireServiceError("fire is not authorized")
-        projection = self._hire.synchronize_projection()
+
+    def _resolve_from_projection(
+        self,
+        request: EmployeeFireRequest,
+        projection: object,
+    ) -> EmployeeFireTarget:
         identity_matches = tuple(
             employee
             for employee in projection.employees.values()
@@ -66,7 +83,50 @@ class JournalFireAuthority:
             raise FireServiceError("retirable employee was not uniquely resolved")
         employee = matches[0]
         if not employee.bot_principal_id:
-            raise FireServiceError("employee bot principal is unavailable")
+            hire_state = self._hire_state(employee.agent_id)
+            if hire_state is None:
+                return EmployeeFireTarget(
+                    tenant_key=employee.tenant_key,
+                    agent_id=employee.agent_id,
+                    employee_name=employee.name,
+                    bot_principal_id="",
+                    app_id="",
+                    credential_ref="",
+                    cleanup_mode=FireCleanupMode.EXTERNAL_UNKNOWN,
+                )
+            credential_metadata = dict(hire_state.metadata_for("store-credential"))
+            if (
+                hire_state.effect_state("store-credential")
+                is HireEffectState.COMMITTED
+                and credential_metadata.get("app_id")
+                and credential_metadata.get("credential_ref")
+                and hire_state.bot_principal_id
+            ):
+                return EmployeeFireTarget(
+                    tenant_key=employee.tenant_key,
+                    agent_id=employee.agent_id,
+                    employee_name=employee.name,
+                    bot_principal_id=hire_state.bot_principal_id,
+                    app_id=credential_metadata["app_id"],
+                    credential_ref=credential_metadata["credential_ref"],
+                    cleanup_mode=FireCleanupMode.RECOVERABLE,
+                )
+            register_state = hire_state.effect_state("register-app")
+            cleanup_mode = (
+                FireCleanupMode.SAFE_ABORT
+                if register_state
+                in {None, HireEffectState.PLANNED, HireEffectState.PREPARED}
+                else FireCleanupMode.EXTERNAL_UNKNOWN
+            )
+            return EmployeeFireTarget(
+                tenant_key=employee.tenant_key,
+                agent_id=employee.agent_id,
+                employee_name=employee.name,
+                bot_principal_id="",
+                app_id=self._prebinding_app_id(hire_state),
+                credential_ref="",
+                cleanup_mode=cleanup_mode,
+            )
         principal = projection.bot_principals.get(employee.bot_principal_id)
         if (
             principal is None
@@ -90,55 +150,66 @@ class JournalFireAuthority:
         request: EmployeeFireRequest,
         target: EmployeeFireTarget,
         intent_id: str,
-    ) -> None:
-        ingress_aggregate = f"employee-ingress:{target.tenant_key}:{target.agent_id}"
-        requested = JournalEvent(
-            event_type="fire.requested",
-            aggregate_id=intent_id,
-            payload={
-                "intent_id": intent_id,
-                "tenant_key": request.tenant_key,
-                "message_id": request.message_id,
-                "chat_id": request.chat_id,
-                "requester_principal_id": request.requester_principal_id,
-                "agent_id": target.agent_id,
-                "employee_name": target.employee_name,
-                "bot_principal_id": target.bot_principal_id,
-                "app_id": target.app_id,
-                "credential_ref": target.credential_ref,
-                "drain": request.drain,
-            },
-        )
-        retiring = JournalEvent(
-            event_type="employee.state_changed",
-            aggregate_id=target.agent_id,
-            payload={"state": EmployeeState.RETIRING.value},
-        )
-        ingress_closed = JournalEvent(
-            event_type="employee.ingress.closed",
-            aggregate_id=ingress_aggregate,
-            payload={
-                "tenant_key": target.tenant_key,
-                "agent_id": target.agent_id,
-                "reason_code": "retiring",
-                "closed_at": datetime.now(UTC).isoformat(),
-            },
-        )
+    ) -> EmployeeFireTarget:
         with self._hire.employee_dispatch_guard(), self._ingress.employee_dispatch_guard(), self._writer.transaction_guard():
             self._ingress.synchronize_projection_unlocked()
             projection = self._hire.synchronize_projection_unlocked()
-            current = projection.employees.get(target.agent_id)
-            if current is None or current.state not in {
-                EmployeeState.PROVISIONING_APP,
-                EmployeeState.STORING_CREDENTIAL,
-                EmployeeState.CONFIGURING,
-                EmployeeState.VALIDATING,
-                EmployeeState.READY_PENDING_VERIFICATION,
-                EmployeeState.ACTIVE,
-                EmployeeState.ACTION_REQUIRED,
-            }:
-                raise FireServiceError("employee is not retirable")
-            hire_effect_dispositions = self._hire_effect_dispositions(target.agent_id)
+            # Re-resolve under the same locks that commit retirement. Provisioning
+            # may have bound a principal after the optimistic resolve above.
+            target = self._resolve_from_projection(request, projection)
+            live_requests = [
+                state
+                for state in rebuild_fire_projection(
+                    tuple(self._writer.replay())
+                ).values()
+                if state.tenant_key == target.tenant_key
+                and state.agent_id == target.agent_id
+                and state.phase
+                in {FirePhase.RETIRING, FirePhase.ACTION_REQUIRED}
+            ]
+            if live_requests:
+                raise FireServiceError(
+                    "employee retirement already in progress"
+                )
+            ingress_aggregate = (
+                f"employee-ingress:{target.tenant_key}:{target.agent_id}"
+            )
+            requested = JournalEvent(
+                event_type="fire.requested",
+                aggregate_id=intent_id,
+                payload={
+                    "intent_id": intent_id,
+                    "tenant_key": request.tenant_key,
+                    "message_id": request.message_id,
+                    "chat_id": request.chat_id,
+                    "requester_principal_id": request.requester_principal_id,
+                    "agent_id": target.agent_id,
+                    "employee_name": target.employee_name,
+                    "bot_principal_id": target.bot_principal_id,
+                    "app_id": target.app_id,
+                    "credential_ref": target.credential_ref,
+                    "drain": request.drain,
+                    "cleanup_mode": target.cleanup_mode.value,
+                },
+            )
+            retiring = JournalEvent(
+                event_type="employee.state_changed",
+                aggregate_id=target.agent_id,
+                payload={"state": EmployeeState.RETIRING.value},
+            )
+            ingress_closed = JournalEvent(
+                event_type="employee.ingress.closed",
+                aggregate_id=ingress_aggregate,
+                payload={
+                    "tenant_key": target.tenant_key,
+                    "agent_id": target.agent_id,
+                    "reason_code": "retiring",
+                    "closed_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            hire_effect_dispositions = self._hire_effect_dispositions(
+                target.agent_id
+            )
             validate_workforce_events(projection, (retiring,))
             frame = self._commit_unlocked(
                 (
@@ -150,6 +221,7 @@ class JournalFireAuthority:
             )
             self._hire.apply_committed_frame_unlocked(frame)
             self._ingress.apply_committed_frame_unlocked(frame)
+            return target
 
     def _hire_effect_dispositions(self, agent_id: str) -> tuple[JournalEvent, ...]:
         list_states = getattr(self._hire, "list_states", None)
@@ -186,8 +258,88 @@ class JournalFireAuthority:
             )
         return tuple(events)
 
+    def _hire_state(self, agent_id: str) -> DurableHireState | None:
+        list_states = getattr(self._hire, "list_states", None)
+        if not callable(list_states):
+            return None
+        matches = [state for state in list_states() if state.agent_id == agent_id]
+        if len(matches) > 1:
+            raise FireServiceError("employee hire authority is ambiguous")
+        if not matches:
+            return None
+        return matches[0]
+
+    @staticmethod
+    def _prebinding_app_id(state: DurableHireState) -> str:
+        return (
+            dict(state.metadata_for("register-app")).get("app_id", "")
+            or state.app_id
+            or state.existing_app_id
+        )
+
     def mark_action_required(self, agent_id: str) -> None:
         self._commit_employee_state(agent_id, EmployeeState.ACTION_REQUIRED)
+
+    def confirm_external_disposition(
+        self,
+        request: EmployeeFireRequest,
+        state: DurableFireState,
+        disposition_ref: str,
+    ) -> None:
+        if request.requester_principal_id not in self._admins:
+            raise FireServiceError("fire is not authorized")
+        if (
+            request.tenant_key != state.tenant_key
+            or request.employee not in {state.agent_id, state.employee_name}
+            or disposition_ref != (state.app_id or "NO_APP_FOUND")
+        ):
+            raise FireServiceError("external disposition reference mismatch")
+        with self._hire.employee_dispatch_guard(), self._writer.transaction_guard():
+            current_fire = rebuild_fire_projection(
+                tuple(self._writer.replay())
+            ).get(state.intent_id)
+            if current_fire is None:
+                raise FireServiceError("external cleanup request is unavailable")
+            if current_fire.external_disposition_confirmed:
+                if current_fire.external_disposition_ref != disposition_ref:
+                    raise FireServiceError(
+                        "external disposition reference mismatch"
+                    )
+                return
+            if (
+                current_fire.phase is not FirePhase.ACTION_REQUIRED
+                or current_fire.cleanup_mode
+                is not FireCleanupMode.EXTERNAL_UNKNOWN
+                or current_fire.error_code
+                != "external_cleanup_authority_unavailable"
+                or disposition_ref
+                != (current_fire.app_id or "NO_APP_FOUND")
+            ):
+                raise FireServiceError(
+                    "external cleanup request is not awaiting confirmation"
+                )
+            projection = self._hire.synchronize_projection_unlocked()
+            current = projection.employees.get(state.agent_id)
+            if (
+                current is None
+                or current.tenant_key != state.tenant_key
+                or current.state is not EmployeeState.ACTION_REQUIRED
+            ):
+                raise FireServiceError(
+                    "external cleanup request is not awaiting confirmation"
+                )
+            event = JournalEvent(
+                event_type="fire.external_disposition_confirmed",
+                aggregate_id=state.intent_id,
+                payload={
+                    "disposition_ref": disposition_ref,
+                    "disposed_by": request.requester_principal_id,
+                    "disposed_at": datetime.now(UTC).isoformat(),
+                    "confirmation_message_id": request.message_id,
+                },
+            )
+            frame = self._commit_unlocked((event,))
+            self._hire.apply_committed_frame_unlocked(frame)
 
     def mark_credential_destroyed(self, target: EmployeeFireTarget) -> None:
         event = JournalEvent(
@@ -199,6 +351,22 @@ class JournalFireAuthority:
             projection = self._hire.synchronize_projection_unlocked()
             principal = projection.bot_principals.get(target.bot_principal_id)
             if principal is None:
+                hire_state = self._hire_state(target.agent_id)
+                metadata = (
+                    {}
+                    if hire_state is None
+                    else dict(hire_state.metadata_for("store-credential"))
+                )
+                if (
+                    target.cleanup_mode is FireCleanupMode.RECOVERABLE
+                    and hire_state is not None
+                    and hire_state.bot_principal_id == target.bot_principal_id
+                    and metadata.get("app_id") == target.app_id
+                    and metadata.get("credential_ref") == target.credential_ref
+                    and hire_state.effect_state("store-credential")
+                    is HireEffectState.COMMITTED
+                ):
+                    return
                 raise FireServiceError("employee bot principal is unavailable")
             if principal.credential_ref == "":
                 return
@@ -206,7 +374,13 @@ class JournalFireAuthority:
             frame = self._commit_unlocked((event,))
             self._hire.apply_committed_frame_unlocked(frame)
 
-    def mark_archived(self, agent_id: str, intent_id: str) -> None:
+    def mark_archived(
+        self,
+        agent_id: str,
+        intent_id: str,
+        *,
+        external_disposition_confirmed: bool,
+    ) -> None:
         archived = JournalEvent(
             event_type="employee.state_changed",
             aggregate_id=agent_id,
@@ -215,7 +389,13 @@ class JournalFireAuthority:
         completed = JournalEvent(
             event_type="fire.completed",
             aggregate_id=intent_id,
-            payload={"external_app_disposition": "manual_deletion_required"},
+            payload={
+                "external_app_disposition": (
+                    "manual_disposition_confirmed"
+                    if external_disposition_confirmed
+                    else "manual_deletion_required"
+                )
+            },
         )
         with self._hire.employee_dispatch_guard(), self._writer.transaction_guard():
             projection = self._hire.synchronize_projection_unlocked()

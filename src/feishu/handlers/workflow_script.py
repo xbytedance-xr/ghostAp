@@ -106,7 +106,13 @@ class WorkflowScriptMixin:
                 status["error"] = "上传 HTML 报告失败，已保留本地报告"
                 return status
 
-            response = im_client.reply_file(message_id, file_key, reply_in_thread=True)
+            origin = self._resolve_origin(message_id)
+            response = im_client.reply_file(
+                message_id,
+                file_key,
+                reply_in_thread=True,
+                audit_aliases=self._reply_audit_aliases(origin),
+            )
             if response is None:
                 status["error"] = "回复 HTML 附件失败，已保留本地报告"
                 return status

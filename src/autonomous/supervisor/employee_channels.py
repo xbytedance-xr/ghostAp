@@ -257,7 +257,12 @@ class EmployeeChannelSupervisor:
         self._runtimes: dict[str, _Runtime] = {}
         self._generation_high_watermark: dict[str, int] = {}
         self._lock = threading.RLock()
+        self._lifecycle_registry_lock = threading.Lock()
+        self._lifecycle_locks: dict[str, threading.RLock] = {}
+        self._lifecycle_condition = threading.Condition()
+        self._starts_in_flight = 0
         self._closed = False
+        self._close_complete = False
 
     def _bwrap_prefix(self) -> tuple[str, ...]:
         """Build a minimal read-only runtime root with no Vault or project data."""
@@ -350,6 +355,10 @@ class EmployeeChannelSupervisor:
 
         with self._lock:
             yield
+
+    def _agent_lifecycle_lock(self, agent_id: str) -> threading.RLock:
+        with self._lifecycle_registry_lock:
+            return self._lifecycle_locks.setdefault(agent_id, threading.RLock())
 
     def launch_contract(
         self,
@@ -558,6 +567,34 @@ class EmployeeChannelSupervisor:
         generation: int,
         on_event: Callable[[dict[str, Any]], None],
     ) -> ChannelProcessStatus:
+        """Serialize one employee's generations across complete launch/teardown."""
+
+        with self._lifecycle_condition:
+            if self._closed:
+                raise RuntimeError("employee Channel supervisor is closed")
+            self._starts_in_flight += 1
+        try:
+            with self._agent_lifecycle_lock(agent_id):
+                return self._start_serialized(
+                    agent_id,
+                    app_id,
+                    credential_ref,
+                    generation,
+                    on_event,
+                )
+        finally:
+            with self._lifecycle_condition:
+                self._starts_in_flight -= 1
+                self._lifecycle_condition.notify_all()
+
+    def _start_serialized(
+        self,
+        agent_id: str,
+        app_id: str,
+        credential_ref: str,
+        generation: int,
+        on_event: Callable[[dict[str, Any]], None],
+    ) -> ChannelProcessStatus:
         """Launch, attest, bootstrap, and await READY for one employee."""
         self._validate_start(agent_id, app_id, credential_ref, generation, on_event)
         if self._production_worker and self._ingress_service is None:
@@ -575,15 +612,22 @@ class EmployeeChannelSupervisor:
                 or not bot_principal_id.startswith("bot_")
             ):
                 raise ValueError("invalid durable employee ingress binding")
-        with self._lock:
+        with self._lifecycle_condition:
             if self._closed:
                 raise RuntimeError("employee Channel supervisor is closed")
+        with self._lock:
             existing = self._runtimes.get(agent_id)
             if existing is not None and existing.process.poll() is None:
-                if existing.status.generation == generation:
+                if (
+                    existing.status.generation == generation
+                    and existing.status.state
+                    in {ChannelProcessState.STARTING, ChannelProcessState.READY}
+                ):
                     return existing.status
         if existing is not None and existing.process.poll() is None:
-            self.stop(agent_id)
+            self._stop_serialized(agent_id)
+            if existing.process.poll() is None:
+                raise RuntimeError("previous employee Channel did not terminate")
         with self._lock:
             high = self._generation_high_watermark.get(agent_id, 0)
             if generation <= high:
@@ -609,7 +653,17 @@ class EmployeeChannelSupervisor:
                     on_event=on_event,
                     sandbox_attempt=sandbox_attempt,
                 )
+                with self._lifecycle_condition:
+                    supervisor_closed = self._closed
+                if supervisor_closed:
+                    _close_fd(bootstrap_w)
+                    bootstrap_w = -1
+                    self._fail_and_reap(runtime, "supervisor-closed")
+                    raise RuntimeError("employee Channel supervisor is closed")
             except RuntimeError:
+                with self._lifecycle_condition:
+                    if self._closed:
+                        raise
                 if attempt_index + 1 < len(attempts):
                     logger.warning(
                         "employee Channel bwrap launch failed; using process fallback"
@@ -696,14 +750,23 @@ class EmployeeChannelSupervisor:
             raise ChannelSandboxUnavailable()
         if runtime is None or bootstrap_w < 0:
             raise RuntimeError("employee Channel launch failed")
-        with self._lock:
-            high = self._generation_high_watermark.get(agent_id, 0)
-            if generation <= high:
-                _close_fd(bootstrap_w)
-                self._fail_and_reap(runtime, "generation-race")
-                raise ValueError("generation must advance after a worker has stopped")
-            self._runtimes[agent_id] = runtime
-            self._generation_high_watermark[agent_id] = generation
+        with self._lifecycle_condition:
+            supervisor_closed = self._closed
+            if not supervisor_closed:
+                with self._lock:
+                    high = self._generation_high_watermark.get(agent_id, 0)
+                    if generation <= high:
+                        _close_fd(bootstrap_w)
+                        self._fail_and_reap(runtime, "generation-race")
+                        raise ValueError(
+                            "generation must advance after a worker has stopped"
+                        )
+                    self._runtimes[agent_id] = runtime
+                    self._generation_high_watermark[agent_id] = generation
+        if supervisor_closed:
+            _close_fd(bootstrap_w)
+            self._fail_and_reap(runtime, "supervisor-closed")
+            raise RuntimeError("employee Channel supervisor is closed")
 
         try:
             secret = self._secret_resolver(credential_ref, agent_id, app_id)
@@ -733,7 +796,6 @@ class EmployeeChannelSupervisor:
         try:
             _write_all(bootstrap_w, bootstrap)
         except OSError:
-            _close_fd(bootstrap_w)
             self._fail_and_reap(runtime, "bootstrap-failed")
             return runtime.status
         finally:
@@ -744,18 +806,32 @@ class EmployeeChannelSupervisor:
         return runtime.status
 
     def stop(self, agent_id: str) -> ChannelProcessStatus | None:
+        """Wait for any in-flight lifecycle operation before returning terminal."""
+
+        with self._agent_lifecycle_lock(agent_id):
+            return self._stop_serialized(agent_id)
+
+    def _stop_serialized(self, agent_id: str) -> ChannelProcessStatus | None:
         """Gracefully stop one generation, escalating only after timeout."""
         with self._lock:
             runtime = self._runtimes.get(agent_id)
             if runtime is None:
                 return None
-            if runtime.status.state in {ChannelProcessState.STOPPED, ChannelProcessState.FAILED}:
+            if (
+                runtime.status.state
+                in {
+                    ChannelProcessState.STOPPED,
+                    ChannelProcessState.FAILED,
+                    ChannelProcessState.CRASHED,
+                }
+                and runtime.process.poll() is not None
+            ):
                 return runtime.status
             runtime.stopping = True
             runtime.status = replace(runtime.status, state=ChannelProcessState.STOPPING)
             self._fail_pending_sends(runtime)
         self._send_control(runtime, FrameType.STOP, {})
-        _close_fd(runtime.control_fd)
+        _close_fd(self._take_control_fd(runtime))
         self._wait_or_terminate(runtime)
         with self._lock:
             runtime.status = replace(
@@ -936,13 +1012,23 @@ class EmployeeChannelSupervisor:
 
     def close(self) -> None:
         """Stop all owned children and make admission permanently closed."""
-        with self._lock:
+        with self._lifecycle_condition:
             if self._closed:
+                while not self._close_complete:
+                    self._lifecycle_condition.wait()
                 return
             self._closed = True
-            agent_ids = list(self._runtimes)
-        for agent_id in agent_ids:
-            self.stop(agent_id)
+            while self._starts_in_flight:
+                self._lifecycle_condition.wait()
+        try:
+            with self._lock:
+                agent_ids = list(self._runtimes)
+            for agent_id in agent_ids:
+                self.stop(agent_id)
+        finally:
+            with self._lifecycle_condition:
+                self._close_complete = True
+                self._lifecycle_condition.notify_all()
 
     def _validate_start(self, agent_id: str, app_id: str, credential_ref: str, generation: int, on_event: Any) -> None:
         if not all(isinstance(value, str) and value for value in (agent_id, app_id, credential_ref)):
@@ -953,8 +1039,11 @@ class EmployeeChannelSupervisor:
             raise TypeError("on_event must be callable")
 
     def _read_frames(self, runtime: _Runtime) -> None:
+        event_fd = self._take_event_fd(runtime)
+        if event_fd < 0:
+            return
         try:
-            with os.fdopen(runtime.event_fd, "rb", buffering=0) as stream:
+            with os.fdopen(event_fd, "rb", buffering=0) as stream:
                 while True:
                     raw = stream.readline(MAX_FRAME_BYTES + 1)
                     if not raw:
@@ -976,7 +1065,6 @@ class EmployeeChannelSupervisor:
                     runtime.inbound_sequence = frame.sequence
                     self._accept_frame(runtime, frame)
         finally:
-            runtime.event_fd = -1
             exit_code = runtime.process.poll()
             should_reap = False
             with self._lock:
@@ -1010,8 +1098,7 @@ class EmployeeChannelSupervisor:
                     runtime.ready.set()
                     should_reap = not crashed
             if should_reap:
-                _close_fd(runtime.control_fd)
-                runtime.control_fd = -1
+                _close_fd(self._take_control_fd(runtime))
                 self._wait_or_terminate(runtime)
                 with self._lock:
                     runtime.status = replace(
@@ -1209,8 +1296,7 @@ class EmployeeChannelSupervisor:
         runtime.stopping = True
         with self._lock:
             self._fail_pending_sends(runtime)
-        _close_fd(runtime.control_fd)
-        runtime.control_fd = -1
+        _close_fd(self._take_control_fd(runtime))
         self._wait_or_terminate(runtime)
         with self._lock:
             runtime.status = replace(
@@ -1241,12 +1327,29 @@ class EmployeeChannelSupervisor:
                 runtime.process.wait(timeout=self._stop_timeout)
 
     def _finish_reader(self, runtime: _Runtime) -> None:
-        if runtime.event_fd >= 0:
-            _close_fd(runtime.event_fd)
-            runtime.event_fd = -1
+        event_fd = self._take_event_fd(runtime)
+        if event_fd >= 0:
+            _close_fd(event_fd)
         if runtime.reader is not None and runtime.reader is not threading.current_thread():
             runtime.reader.join(timeout=self._stop_timeout)
         self._cleanup_runtime_temp(runtime)
+
+    def _take_event_fd(self, runtime: _Runtime) -> int:
+        """Atomically transfer the event-pipe read descriptor to one closer."""
+
+        with self._lock:
+            event_fd = runtime.event_fd
+            runtime.event_fd = -1
+            return event_fd
+
+    @staticmethod
+    def _take_control_fd(runtime: _Runtime) -> int:
+        """Atomically transfer the control-pipe descriptor to one closer."""
+
+        with runtime.control_lock:
+            control_fd = runtime.control_fd
+            runtime.control_fd = -1
+            return control_fd
 
     @staticmethod
     def _cleanup_runtime_temp(runtime: _Runtime) -> None:

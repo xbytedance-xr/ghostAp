@@ -74,6 +74,20 @@ def _identifier(value: object, field: str) -> str:
     return value
 
 
+def _activation_fence_targets(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (tuple, list)):
+        raise ReleaseTrustError("invalid main Bot activation fence target set")
+    targets = tuple(value)
+    if (
+        not targets
+        or len(targets) > 64
+        or targets != tuple(sorted(set(targets)))
+        or any(not isinstance(item, str) or not _HASH_RE.fullmatch(item) for item in targets)
+    ):
+        raise ReleaseTrustError("invalid main Bot activation fence target set")
+    return targets
+
+
 def _attestation_dict(value: EmployeeReleaseAttestation) -> dict[str, Any]:
     return {**value.unsigned_dict(), "signature": value.signature}
 
@@ -146,6 +160,10 @@ class RuntimeReleaseTrustSession:
         self._lease = lease
         self._anchor_witness_sequence = lease.witness_sequence
         self._main_bot_audit_sequence = 0
+        self._main_bot_activation_fences: dict[
+            str,
+            tuple[str, tuple[str, ...]],
+        ] = {}
         self._lock = threading.RLock()
         self._closed = False
 
@@ -332,6 +350,184 @@ class RuntimeReleaseTrustSession:
             self._accept_anchor_witness(witness)
             self._main_bot_audit_sequence = audit_sequence
             return count
+
+    def count_main_bot_target_send_attempts(
+        self,
+        tenant_key: str,
+        target_hash: str,
+        start: float,
+        end: float,
+    ) -> int:
+        if not isinstance(tenant_key, str) or not tenant_key:
+            raise ReleaseTrustError("main Bot audit tenant is required")
+        if not _HASH_RE.fullmatch(target_hash):
+            raise ReleaseTrustError("invalid main Bot audit target hash")
+        started_at = _finite_number(start, "main Bot audit start")
+        ended_at = _finite_number(end, "main Bot audit end")
+        if started_at > ended_at:
+            raise ReleaseTrustError("invalid main Bot audit window")
+        tenant_hash = hashlib.sha256(tenant_key.encode("utf-8")).hexdigest()
+        with self._lock:
+            if self._closed or not self._lease.valid_at(time.time()):
+                raise ReleaseTrustError("release capability is expired")
+            method = getattr(
+                self._provider,
+                "count_main_bot_target_send_attempts",
+                None,
+            )
+            if not callable(method):
+                raise ReleaseTrustError("external main Bot target audit is unavailable")
+            count, audit_sequence, witness = method(
+                self._lease,
+                tenant_hash=tenant_hash,
+                target_hash=target_hash,
+                start=started_at,
+                end=ended_at,
+            )
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < 0
+                or isinstance(audit_sequence, bool)
+                or not isinstance(audit_sequence, int)
+                or audit_sequence < self._main_bot_audit_sequence
+            ):
+                raise ReleaseTrustError("external main Bot target audit query is invalid")
+            self._accept_anchor_witness(witness)
+            self._main_bot_audit_sequence = audit_sequence
+            return count
+
+    @property
+    def main_bot_activation_fence_ready(self) -> bool:
+        with self._lock:
+            return (
+                not self._closed
+                and self._lease.valid_at(time.time())
+                and callable(
+                    getattr(
+                        self._provider,
+                        "acquire_main_bot_activation_fence",
+                        None,
+                    )
+                )
+                and callable(
+                    getattr(
+                        self._provider,
+                        "release_main_bot_activation_fence",
+                        None,
+                    )
+                )
+            )
+
+    def acquire_main_bot_activation_fence(
+        self,
+        tenant_key: str,
+        target_hashes: tuple[str, ...],
+    ) -> str:
+        if not isinstance(tenant_key, str) or not tenant_key:
+            raise ReleaseTrustError("main Bot activation fence tenant is required")
+        targets = _activation_fence_targets(target_hashes)
+        tenant_hash = hashlib.sha256(tenant_key.encode("utf-8")).hexdigest()
+        with self._lock:
+            if self._closed or not self._lease.valid_at(time.time()):
+                raise ReleaseTrustError("release capability is expired")
+            method = getattr(
+                self._provider,
+                "acquire_main_bot_activation_fence",
+                None,
+            )
+            if not callable(method):
+                raise ReleaseTrustError(
+                    "external main Bot activation fence is unavailable"
+                )
+            witness_floor = self._anchor_witness_sequence
+            result = method(
+                self._lease,
+                tenant_hash=tenant_hash,
+                target_hashes=targets,
+                witness_sequence=witness_floor,
+            )
+            if not isinstance(result, tuple) or len(result) != 3:
+                raise ReleaseTrustError(
+                    "external main Bot activation fence response is invalid"
+                )
+            fence_id, audit_sequence, witness = result
+            fence_id = _identifier(fence_id, "main Bot activation fence_id")
+            if (
+                fence_id in self._main_bot_activation_fences
+                or isinstance(audit_sequence, bool)
+                or not isinstance(audit_sequence, int)
+                or audit_sequence < self._main_bot_audit_sequence
+                or isinstance(witness, bool)
+                or not isinstance(witness, int)
+                or witness <= witness_floor
+            ):
+                raise ReleaseTrustError(
+                    "external main Bot activation fence witness is invalid"
+                )
+            self._accept_anchor_witness(witness)
+            self._main_bot_audit_sequence = audit_sequence
+            self._main_bot_activation_fences[fence_id] = (tenant_hash, targets)
+            return fence_id
+
+    def release_main_bot_activation_fence(
+        self,
+        tenant_key: str,
+        target_hashes: tuple[str, ...],
+        *,
+        fence_id: str,
+    ) -> None:
+        if not isinstance(tenant_key, str) or not tenant_key:
+            raise ReleaseTrustError("main Bot activation fence tenant is required")
+        targets = _activation_fence_targets(target_hashes)
+        tenant_hash = hashlib.sha256(tenant_key.encode("utf-8")).hexdigest()
+        fence_id = _identifier(fence_id, "main Bot activation fence_id")
+        with self._lock:
+            if self._closed or not self._lease.valid_at(time.time()):
+                raise ReleaseTrustError("release capability is expired")
+            if self._main_bot_activation_fences.get(fence_id) != (
+                tenant_hash,
+                targets,
+            ):
+                raise ReleaseTrustError(
+                    "external main Bot activation fence binding mismatch"
+                )
+            method = getattr(
+                self._provider,
+                "release_main_bot_activation_fence",
+                None,
+            )
+            if not callable(method):
+                raise ReleaseTrustError(
+                    "external main Bot activation fence is unavailable"
+                )
+            witness_floor = self._anchor_witness_sequence
+            result = method(
+                self._lease,
+                tenant_hash=tenant_hash,
+                target_hashes=targets,
+                fence_id=fence_id,
+                witness_sequence=witness_floor,
+            )
+            if not isinstance(result, tuple) or len(result) != 2:
+                raise ReleaseTrustError(
+                    "external main Bot activation fence response is invalid"
+                )
+            audit_sequence, witness = result
+            if (
+                isinstance(audit_sequence, bool)
+                or not isinstance(audit_sequence, int)
+                or audit_sequence < self._main_bot_audit_sequence
+                or isinstance(witness, bool)
+                or not isinstance(witness, int)
+                or witness <= witness_floor
+            ):
+                raise ReleaseTrustError(
+                    "external main Bot activation fence witness is invalid"
+                )
+            self._accept_anchor_witness(witness)
+            self._main_bot_audit_sequence = audit_sequence
+            self._main_bot_activation_fences.pop(fence_id)
 
 
 class ExternalWitnessAnchor:
@@ -678,6 +874,123 @@ class RootOwnedUnixReleaseTrustBroker:
             include_count=True,
         )
 
+    def count_main_bot_target_send_attempts(
+        self,
+        lease: ReleaseTrustLease,
+        *,
+        tenant_hash: str,
+        target_hash: str,
+        start: float,
+        end: float,
+    ) -> tuple[int, int, int]:
+        nonce = secrets.token_hex(32)
+        response = self._exchange(
+            {
+                **self._lease_request(
+                    operation="count_main_bot_target_send_attempts",
+                    nonce=nonce,
+                    lease=lease,
+                ),
+                "tenant_hash": tenant_hash,
+                "target_hash": target_hash,
+                "start": start,
+                "end": end,
+            }
+        )
+        return self._parse_main_bot_audit_response(
+            response,
+            nonce=nonce,
+            lease=lease,
+            include_count=True,
+        )
+
+    def acquire_main_bot_activation_fence(
+        self,
+        lease: ReleaseTrustLease,
+        *,
+        tenant_hash: str,
+        target_hashes: tuple[str, ...],
+        witness_sequence: int | None = None,
+    ) -> tuple[str, int, int]:
+        targets = _activation_fence_targets(target_hashes)
+        if not _HASH_RE.fullmatch(tenant_hash):
+            raise ReleaseTrustError("invalid main Bot activation fence tenant hash")
+        witness_floor = (
+            lease.witness_sequence
+            if witness_sequence is None
+            else _positive_int(witness_sequence, "witness_sequence")
+        )
+        if witness_floor < lease.witness_sequence:
+            raise ReleaseTrustError("invalid main Bot activation fence witness")
+        nonce = secrets.token_hex(32)
+        response = self._exchange(
+            {
+                **self._lease_request(
+                    operation="acquire_main_bot_activation_fence",
+                    nonce=nonce,
+                    lease=lease,
+                ),
+                "tenant_hash": tenant_hash,
+                "target_hashes": list(targets),
+                "witness_sequence": witness_floor,
+            }
+        )
+        fence_id, audit_sequence, witness = self._parse_activation_fence_response(
+            response,
+            nonce=nonce,
+            lease=lease,
+            tenant_hash=tenant_hash,
+            target_hashes=targets,
+            fence_id=None,
+            witness_floor=witness_floor,
+        )
+        return fence_id, audit_sequence, witness
+
+    def release_main_bot_activation_fence(
+        self,
+        lease: ReleaseTrustLease,
+        *,
+        tenant_hash: str,
+        target_hashes: tuple[str, ...],
+        fence_id: str,
+        witness_sequence: int | None = None,
+    ) -> tuple[int, int]:
+        targets = _activation_fence_targets(target_hashes)
+        if not _HASH_RE.fullmatch(tenant_hash):
+            raise ReleaseTrustError("invalid main Bot activation fence tenant hash")
+        fence_id = _identifier(fence_id, "main Bot activation fence_id")
+        witness_floor = (
+            lease.witness_sequence
+            if witness_sequence is None
+            else _positive_int(witness_sequence, "witness_sequence")
+        )
+        if witness_floor < lease.witness_sequence:
+            raise ReleaseTrustError("invalid main Bot activation fence witness")
+        nonce = secrets.token_hex(32)
+        response = self._exchange(
+            {
+                **self._lease_request(
+                    operation="release_main_bot_activation_fence",
+                    nonce=nonce,
+                    lease=lease,
+                ),
+                "tenant_hash": tenant_hash,
+                "target_hashes": list(targets),
+                "fence_id": fence_id,
+                "witness_sequence": witness_floor,
+            }
+        )
+        _fence_id, audit_sequence, witness = self._parse_activation_fence_response(
+            response,
+            nonce=nonce,
+            lease=lease,
+            tenant_hash=tenant_hash,
+            target_hashes=targets,
+            fence_id=fence_id,
+            witness_floor=witness_floor,
+        )
+        return audit_sequence, witness
+
     @staticmethod
     def _lease_request(
         *,
@@ -743,6 +1056,72 @@ class RootOwnedUnixReleaseTrustBroker:
             ):
                 raise ReleaseTrustError("external main Bot audit query is incomplete")
         return count, audit_sequence, witness
+
+    @staticmethod
+    def _parse_activation_fence_response(
+        response: Mapping[str, Any],
+        *,
+        nonce: str,
+        lease: ReleaseTrustLease,
+        tenant_hash: str,
+        target_hashes: tuple[str, ...],
+        fence_id: str | None,
+        witness_floor: int,
+    ) -> tuple[str, int, int]:
+        required = {
+            "protocol_version",
+            "decision",
+            "nonce",
+            "lease_id",
+            "tenant_hash",
+            "target_hashes",
+            "fence_id",
+            "audit_sequence",
+            "witness_sequence",
+        }
+        if set(response) != required or response.get("protocol_version") != _PROTOCOL_VERSION:
+            raise ReleaseTrustError(
+                "invalid external main Bot activation fence response schema"
+            )
+        if response.get("decision") != "allow":
+            raise ReleaseTrustError("external main Bot activation fence denied")
+        if response.get("nonce") != nonce:
+            raise ReleaseTrustError("external main Bot activation fence nonce mismatch")
+        response_fence_id = _identifier(
+            response.get("fence_id"),
+            "main Bot activation fence_id",
+        )
+        try:
+            response_targets = _activation_fence_targets(
+                response.get("target_hashes")
+            )
+        except ReleaseTrustError as exc:
+            raise ReleaseTrustError(
+                "external main Bot activation fence binding mismatch"
+            ) from exc
+        if (
+            response.get("lease_id") != lease.lease_id
+            or response.get("tenant_hash") != tenant_hash
+            or response_targets != target_hashes
+            or (fence_id is not None and response_fence_id != fence_id)
+        ):
+            raise ReleaseTrustError(
+                "external main Bot activation fence binding mismatch"
+            )
+        audit_sequence = response.get("audit_sequence")
+        witness = response.get("witness_sequence")
+        if (
+            isinstance(audit_sequence, bool)
+            or not isinstance(audit_sequence, int)
+            or audit_sequence < 0
+            or isinstance(witness, bool)
+            or not isinstance(witness, int)
+            or witness <= witness_floor
+        ):
+            raise ReleaseTrustError(
+                "external main Bot activation fence witness is invalid"
+            )
+        return response_fence_id, audit_sequence, witness
 
     @staticmethod
     def _anchor_request(

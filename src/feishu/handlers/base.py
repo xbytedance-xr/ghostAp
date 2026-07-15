@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass as _dataclass
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
@@ -187,6 +188,9 @@ class BaseHandler:
                 outbound_audit=self.ctx.main_bot_outbound_audit,
                 outbound_audit_failure=self.ctx.main_bot_outbound_audit_failure,
                 tenant_key_resolver=self.ctx.tenant_key_resolver,
+                outbound_target_aliases=lambda target: self._reply_audit_aliases(
+                    self._resolve_origin(target)
+                ),
             )
             self._card_delivery = create_card_delivery(api_client)
         return self._card_delivery
@@ -207,6 +211,29 @@ class BaseHandler:
             except Exception as e:
                 logger.warning("Failed to link reply %s → origin %s: %s", reply_id, origin_message_id, str(e))
 
+    def _reply_audit_aliases(self, origin_message_id: str) -> tuple[str, ...]:
+        """Resolve canonical recipient coordinates from trusted origin provenance."""
+
+        try:
+            provenance = self.ctx.message_linker.query(origin_message_id)
+        except Exception:
+            return ()
+        if not isinstance(provenance, Mapping):
+            return ()
+        chat_id = provenance.get("chat_id")
+        if not isinstance(chat_id, str) or not chat_id:
+            return ()
+        aliases = [chat_id]
+        sender_id = provenance.get("sender_id")
+        if (
+            provenance.get("chat_type") == "p2p"
+            and isinstance(sender_id, str)
+            and sender_id
+            and sender_id != chat_id
+        ):
+            aliases.append(sender_id)
+        return tuple(aliases)
+
     # ------------------------------------------------------------------
     # Messaging API
     # ------------------------------------------------------------------
@@ -217,6 +244,7 @@ class BaseHandler:
         text: str,
         *,
         reply_in_thread: Optional[bool] = None,
+        idempotency_key: str | None = None,
     ) -> Optional[str]:
         """Reply with plain text to *message_id*.
 
@@ -225,6 +253,7 @@ class BaseHandler:
             text: Plain text content to send. Must not be None or empty.
             reply_in_thread: Whether to reply in thread. If None, uses
                 ``settings.default_reply_mode`` to determine.
+            idempotency_key: Optional stable Feishu UUID for safe retries.
 
         Returns:
             The sent message's message_id on success, or None on failure.
@@ -236,6 +265,7 @@ class BaseHandler:
             logger.warning("reply_text 收到空内容 (text=%r)，跳过发送", text)
             return None
         origin = self._resolve_origin(message_id)
+        audit_aliases = self._reply_audit_aliases(origin)
         request_id = self.ensure_request_id(origin)
         ref_note = self.format_ref_note(origin, request_id, None)
         text_val = str(text)
@@ -250,6 +280,8 @@ class BaseHandler:
             response = self.im_client.reply_message(
                 message_id, content_str, msg_type="text",
                 reply_in_thread=reply_in_thread,
+                idempotency_key=idempotency_key,
+                audit_aliases=audit_aliases,
             )
             if response and response.success() and response.data and response.data.message_id:
                 reply_id = response.data.message_id
@@ -283,6 +315,7 @@ class BaseHandler:
             No exceptions raised; errors are logged and None is returned.
         """
         origin = self._resolve_origin(message_id)
+        audit_aliases = self._reply_audit_aliases(origin)
         request_id = self.ensure_request_id(origin)
         ref_note = self.format_ref_note(origin, request_id, None)
         content_str = self._inject_ref_note(card_content, "interactive", ref_note)
@@ -294,6 +327,7 @@ class BaseHandler:
             response = self.im_client.reply_message(
                 message_id, content_str, msg_type="interactive",
                 reply_in_thread=reply_in_thread,
+                audit_aliases=audit_aliases,
             )
             if response and response.success() and response.data and response.data.message_id:
                 reply_id = response.data.message_id
@@ -319,7 +353,12 @@ class BaseHandler:
         """
         try:
             content_str = self._normalize_interactive_card_content(card_content)
-            response = self.im_client.patch_message(message_id, content_str)
+            origin = self._resolve_origin(message_id)
+            response = self.im_client.patch_message(
+                message_id,
+                content_str,
+                audit_aliases=self._reply_audit_aliases(origin),
+            )
             return bool(response and response.success())
         except Exception as e:
             logger.error("update_card 异常: %s", e, exc_info=True)

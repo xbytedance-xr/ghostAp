@@ -1,6 +1,35 @@
+import hashlib
+import inspect
 import threading
 import time
 from types import SimpleNamespace
+
+from src.feishu.ws_client import (
+    _employee_hire_status_text,
+    _employee_hire_status_uuid,
+)
+
+
+def test_pending_employee_notification_does_not_claim_ready() -> None:
+    text = _employee_hire_status_text("Atlas", "ready")
+
+    assert text is not None
+    assert "配置完成，正在等待激活" in text
+    assert "已就绪" not in text
+    assert "/status" in text
+    assert _employee_hire_status_text("Atlas", "active") == (
+        "✅ 员工 **Atlas** 已激活，可以加入 Slock 群协作。"
+    )
+
+
+def test_employee_hire_status_uuid_is_stable_per_intent_and_status() -> None:
+    expected = hashlib.sha256(
+        b"employee-hire-status:hire-intent-1:active"
+    ).hexdigest()[:50]
+
+    assert _employee_hire_status_uuid("hire-intent-1", "active") == expected
+    assert _employee_hire_status_uuid("hire-intent-1", "active") == expected
+    assert _employee_hire_status_uuid("hire-intent-1", "ready") != expected
 
 
 def test_ws_client_start_reconnects_if_underlying_start_returns(monkeypatch):
@@ -95,6 +124,14 @@ def test_ws_lifecycle_helpers_are_extracted_from_ws_client():
     assert ObservedLarkWSClient.__name__ == "ObservedLarkWSClient"
     assert frame_header_value(frame, "type") == "pong"
     assert frame_header_value(frame, "missing") is None
+
+
+def test_main_ws_acknowledges_bot_deleted_events() -> None:
+    from src.feishu.ws_client import FeishuWSClient
+
+    source = inspect.getsource(FeishuWSClient.start)
+
+    assert "register_p2_im_chat_member_bot_deleted_v1" in source
 
 
 def test_lifecycle_fatal_errors_are_not_silently_swallowed():

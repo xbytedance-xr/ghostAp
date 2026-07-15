@@ -59,17 +59,39 @@ class FeishuCardAPIClient:
         outbound_audit: Callable[[str, str, str], None] | None = None,
         outbound_audit_failure: Callable[[Exception], None] | None = None,
         tenant_key_resolver: Callable[[], str] | None = None,
+        outbound_target_aliases: Callable[[str], tuple[str, ...]] | None = None,
     ) -> None:
         self._client = client
         self._settings = get_settings()
         self._outbound_audit = outbound_audit
         self._outbound_audit_failure = outbound_audit_failure
         self._tenant_key_resolver = tenant_key_resolver
+        self._outbound_target_aliases = outbound_target_aliases
+        self._audit_aliases_by_message: dict[str, tuple[str, ...]] = {}
+        self._audit_alias_lock = threading.Lock()
 
-    def _audit_outbound(self, operation: str, target: str) -> None:
+    def _audit_outbound(self, operation: str, target: str) -> tuple[str, ...]:
         audit = self._outbound_audit
         if audit is None:
-            return
+            return (target,)
+        aliases: tuple[str, ...] = ()
+        if operation in {"reply", "patch"}:
+            with self._audit_alias_lock:
+                aliases = self._audit_aliases_by_message.get(target, ())
+            if not aliases and self._outbound_target_aliases is not None:
+                try:
+                    resolved = self._outbound_target_aliases(target)
+                except Exception:
+                    resolved = ()
+                if isinstance(resolved, tuple) and all(
+                    isinstance(alias, str) and alias for alias in resolved
+                ):
+                    aliases = resolved
+            if not aliases:
+                raise RuntimeError(
+                    f"main Bot card {operation} recipient scope is unavailable"
+                )
+        targets = tuple(dict.fromkeys((target, *aliases)))
         tenant_key = ""
         if self._tenant_key_resolver is not None:
             try:
@@ -77,15 +99,28 @@ class FeishuCardAPIClient:
                 tenant_key = resolved if isinstance(resolved, str) else ""
             except Exception:
                 tenant_key = ""
-        try:
-            audit(tenant_key, operation, target)
-        except Exception as exc:
-            logger.error("main Bot card audit failed closed: %s", type(exc).__name__)
-            if self._outbound_audit_failure is not None:
-                try:
-                    self._outbound_audit_failure(exc)
-                except Exception:
-                    logger.error("main Bot card audit failure callback failed", exc_info=True)
+        for audit_target in targets:
+            try:
+                audit(tenant_key, operation, audit_target)
+            except Exception as exc:
+                logger.error("main Bot card audit failed closed: %s", type(exc).__name__)
+                if self._outbound_audit_failure is not None:
+                    try:
+                        self._outbound_audit_failure(exc)
+                    except Exception:
+                        logger.error("main Bot card audit failure callback failed", exc_info=True)
+                raise
+        return targets
+
+    def _remember_message_audit_aliases(
+        self,
+        message_id: str,
+        aliases: tuple[str, ...],
+    ) -> None:
+        if not isinstance(message_id, str) or not message_id or not aliases:
+            return
+        with self._audit_alias_lock:
+            self._audit_aliases_by_message[message_id] = aliases
 
     def _api_timeout_seconds(self) -> float:
         try:
@@ -157,7 +192,7 @@ class FeishuCardAPIClient:
         content = _sanitize_card_content(json.dumps(card_json, ensure_ascii=False))
 
         if reply_to:
-            self._audit_outbound("reply", reply_to)
+            audit_aliases = self._audit_outbound("reply", reply_to)
             if reply_in_thread is None:
                 reply_in_thread = self._settings.default_reply_mode == "thread"
             request = (
@@ -178,7 +213,7 @@ class FeishuCardAPIClient:
                 lambda: self._client.im.v1.message.reply(request),
             )
         else:
-            self._audit_outbound("create", chat_id)
+            audit_aliases = self._audit_outbound("create", chat_id)
             request = (
                 CreateMessageRequest.builder()
                 .receive_id_type("chat_id")
@@ -203,6 +238,7 @@ class FeishuCardAPIClient:
             )
 
         message_id = response.data.message_id
+        self._remember_message_audit_aliases(message_id, audit_aliases)
         # In Feishu IM API, card_id == message_id for interactive messages
         return message_id, message_id
 
@@ -339,7 +375,7 @@ class FeishuCardAPIClient:
         content = json.dumps({"type": "card", "data": {"card_id": card_id}})
 
         if reply_to:
-            self._audit_outbound("reply", reply_to)
+            audit_aliases = self._audit_outbound("reply", reply_to)
             if reply_in_thread is None:
                 reply_in_thread = self._settings.default_reply_mode == "thread"
             request = (
@@ -360,7 +396,7 @@ class FeishuCardAPIClient:
                 lambda: self._client.im.v1.message.reply(request),
             )
         else:
-            self._audit_outbound("create", chat_id)
+            audit_aliases = self._audit_outbound("create", chat_id)
             request = (
                 CreateMessageRequest.builder()
                 .receive_id_type("chat_id")
@@ -384,4 +420,6 @@ class FeishuCardAPIClient:
                 f"Card reference send failed: code={response.code}, msg={response.msg}"
             )
 
-        return response.data.message_id
+        message_id = response.data.message_id
+        self._remember_message_audit_aliases(message_id, audit_aliases)
+        return message_id

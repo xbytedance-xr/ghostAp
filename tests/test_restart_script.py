@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -26,6 +27,8 @@ def test_restart_script_syncs_python_and_prepares_platform_sandbox():
     assert "GHOSTAP_SYNC_PYTHON_DEPENDENCIES" in text
     assert "uv sync --check --group dev" in text
     assert "uv sync --group dev" in text
+    assert "venv_has_stale_entrypoint_shebang" in text
+    assert "uv sync --group dev --reinstall" in text
     assert "prepare_python_dependencies || exit 1" in start_body
     assert "GHOSTAP_PREPARE_EMPLOYEE_SANDBOX" in text
     assert "prepare_employee_sandbox_dependency" in start_body
@@ -46,3 +49,112 @@ def test_restart_script_syntax_is_valid():
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_restart_process_discovery_is_scoped_to_project_cwd():
+    shell = r'''
+export GHOSTAP_RESTART_LIBRARY_ONLY=1
+source "$1"
+uname() { echo Linux; }
+ps() {
+    if [ "$1" = "-axo" ]; then
+        printf '%s\n' \
+            '4242 uv run python -m src.main' \
+            '4343 /tmp/other/.venv/bin/python -m src.main' \
+            '4545 harmless uv run python -m src.main marker' \
+            "4444 $PROJECT_DIR/.venv/bin/python -m src.main"
+        return
+    fi
+    command ps "$@"
+}
+readlink() {
+    case "$2" in
+        */4444/cwd|*/4545/cwd) printf '%s\n' "$PROJECT_DIR" ;;
+        */4444/exe|*/4545/exe|"$PYTHON_BIN") printf '%s\n' "$PYTHON_BIN" ;;
+        *) printf '%s\n' '/tmp/other-checkout' ;;
+    esac
+}
+get_running_pids
+'''
+
+    result = subprocess.run(
+        ["bash", "-c", shell, "bash", str(RESTART_SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["4444"]
+
+
+def test_restart_pid_file_is_validated_before_signalling():
+    text = RESTART_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'kill -0 "$PID" 2>/dev/null && pid_is_ghostap_service "$PID"' in text
+    assert "stale pid file ignored" in text
+    assert "ps -axo pid=,command=" in text
+
+
+def test_stale_pid_in_project_cwd_must_match_service_command():
+    shell = r'''
+export GHOSTAP_RESTART_LIBRARY_ONLY=1
+source "$1"
+uname() { echo Linux; }
+readlink() { printf '%s\n' "$PROJECT_DIR"; }
+ps() {
+    if [ "$1" = "-p" ]; then
+        printf '%s\n' "$FAKE_PROCESS_COMMAND"
+        return
+    fi
+    command ps "$@"
+}
+FAKE_PROCESS_COMMAND='uv run pytest tests/'
+if pid_is_ghostap_service 4242; then
+    exit 9
+fi
+FAKE_PROCESS_COMMAND="$PROJECT_DIR/.venv/bin/python -m src.main"
+pid_is_ghostap_service 4343
+'''
+
+    result = subprocess.run(
+        ["bash", "-c", shell, "bash", str(RESTART_SCRIPT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_default_launchctl_labels_are_isolated_per_checkout(tmp_path):
+    labels: list[str] = []
+    for name in ("checkout-a", "checkout-b"):
+        checkout = tmp_path / name
+        checkout.mkdir()
+        script = checkout / "restart.sh"
+        shutil.copy2(RESTART_SCRIPT, script)
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'unset GHOSTAP_LAUNCHCTL_LABEL '
+                'GHOSTAP_RESTART_LAUNCHCTL_LABEL; '
+                'export GHOSTAP_RESTART_LIBRARY_ONLY=1; '
+                'source "$1"; printf "%s|%s\n" '
+                '"$LAUNCHCTL_LABEL" "$RESTART_LAUNCHCTL_LABEL"',
+                "bash",
+                str(script),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        labels.append(result.stdout.strip())
+
+    assert labels[0] != labels[1]
+    for label in labels:
+        service, worker = label.split("|")
+        assert service.startswith("com.ghostap.local.")
+        assert worker == f"{service}.restart"

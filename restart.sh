@@ -1,6 +1,7 @@
 #!/bin/bash
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+PROJECT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)"
 LOG_FILE="$PROJECT_DIR/logs.log"
 PID_FILE="$PROJECT_DIR/.ghostap.pid"
 RESTART_SCRIPT="$PROJECT_DIR/.restart_worker.sh"
@@ -12,7 +13,8 @@ RESIDUAL_GRACE_DELAY="${GHOSTAP_RESIDUAL_GRACE_DELAY:-0.2}"
 START_CHECK_DELAY="${GHOSTAP_START_CHECK_DELAY:-0.3}"
 LOG_MODE="${GHOSTAP_LOG_MODE:-truncate}"
 STARTED_PID=""
-LAUNCHCTL_LABEL="${GHOSTAP_LAUNCHCTL_LABEL:-com.ghostap.local}"
+PROJECT_LAUNCHCTL_ID=$(printf '%s' "$PROJECT_DIR" | cksum | awk '{print $1}')
+LAUNCHCTL_LABEL="${GHOSTAP_LAUNCHCTL_LABEL:-com.ghostap.local.${PROJECT_LAUNCHCTL_ID}}"
 RESTART_LAUNCHCTL_LABEL="${GHOSTAP_RESTART_LAUNCHCTL_LABEL:-${LAUNCHCTL_LABEL}.restart}"
 CODEX_ACP_NPM_PACKAGE="${GHOSTAP_CODEX_ACP_NPM_PACKAGE:-@agentclientprotocol/codex-acp@1.1.2}"
 PREPARE_CODEX_ACP="${GHOSTAP_PREPARE_CODEX_ACP:-1}"
@@ -24,7 +26,63 @@ PREPARE_EMPLOYEE_SANDBOX="${GHOSTAP_PREPARE_EMPLOYEE_SANDBOX:-1}"
 cd "$PROJECT_DIR"
 
 get_running_pids() {
-    ps aux | grep -E "(uv run python -m src\.main|\.venv/bin/python.*-m src\.main)" | grep -v grep | awk '{print $2}'
+    local pid command
+    while read -r pid command; do
+        [ -n "$pid" ] || continue
+        if pid_is_ghostap_service "$pid" "$command"; then
+            echo "$pid"
+        fi
+    done < <(ps -axo pid=,command= 2>/dev/null)
+}
+
+pid_belongs_to_project() {
+    local pid="$1"
+    local process_cwd=""
+    case "$(uname -s)" in
+        Linux)
+            process_cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null) || return 1
+            ;;
+        Darwin)
+            command -v lsof >/dev/null 2>&1 || return 1
+            process_cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)
+            ;;
+        *)
+            command -v pwdx >/dev/null 2>&1 || return 1
+            process_cwd=$(pwdx "$pid" 2>/dev/null | sed 's/^[^:]*:[[:space:]]*//')
+            ;;
+    esac
+    [ -n "$process_cwd" ] && [ "$process_cwd" = "$PROJECT_DIR" ]
+}
+
+pid_is_ghostap_service() {
+    local pid="$1"
+    local process_command="${2:-}"
+    local command_kind=""
+    if [ -z "$process_command" ]; then
+        process_command=$(ps -p "$pid" -o command= 2>/dev/null) || return 1
+    fi
+    pid_belongs_to_project "$pid" || return 1
+    case "$process_command" in
+        "$PYTHON_BIN -m src.main"|".venv/bin/python -m src.main")
+            command_kind="python"
+            ;;
+        "uv run python -m src.main"|*/uv\ run\ python\ -m\ src.main)
+            command_kind="uv"
+            ;;
+        *) return 1 ;;
+    esac
+    if [ "$(uname -s)" = "Linux" ]; then
+        local process_exe expected_exe
+        process_exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null) || return 1
+        if [ "$command_kind" = "python" ]; then
+            expected_exe=$(readlink -f "$PYTHON_BIN" 2>/dev/null) || return 1
+        else
+            expected_exe=$(command -v uv 2>/dev/null) || return 1
+            expected_exe=$(readlink -f "$expected_exe" 2>/dev/null) || return 1
+        fi
+        [ "$process_exe" = "$expected_exe" ] || return 1
+    fi
+    return 0
 }
 
 log_restart() {
@@ -74,6 +132,24 @@ service_command_label() {
     fi
 }
 
+venv_has_stale_entrypoint_shebang() {
+    [ -d "$PROJECT_DIR/.venv/bin" ] || return 1
+    local script first_line interpreter
+    while IFS= read -r -d '' script; do
+        IFS= read -r first_line < "$script" || continue
+        case "$first_line" in
+            '#!'*/.venv/bin/python*)
+                interpreter="${first_line#\#!}"
+                case "$interpreter" in
+                    "$PROJECT_DIR"/.venv/bin/python*) ;;
+                    *) return 0 ;;
+                esac
+                ;;
+        esac
+    done < <(find "$PROJECT_DIR/.venv/bin" -maxdepth 1 -type f -perm -u+x -print0)
+    return 1
+}
+
 prepare_python_dependencies() {
     if [ "$SYNC_PYTHON_DEPENDENCIES" = "0" ]; then
         log_restart "python dependency sync skipped"
@@ -86,7 +162,16 @@ prepare_python_dependencies() {
     fi
 
     echo "同步 GhostAP Python 依赖..."
-    if uv sync --check --group dev >/dev/null 2>&1; then
+    if venv_has_stale_entrypoint_shebang; then
+        echo "检测到项目目录迁移，正在重建虚拟环境入口脚本..."
+        if uv sync --group dev --reinstall >/dev/null 2>&1; then
+            log_restart "python dependencies reinstalled stale entrypoint shebang"
+            return
+        fi
+        echo "❌ Python 虚拟环境入口脚本修复失败"
+        log_restart "python dependency reinstall failed stale entrypoint shebang"
+        return 1
+    elif uv sync --check --group dev >/dev/null 2>&1; then
         log_restart "python dependencies already synchronized"
         return
     fi
@@ -227,7 +312,7 @@ stop_service() {
     
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
-        if kill -0 "$PID" 2>/dev/null; then
+        if kill -0 "$PID" 2>/dev/null && pid_is_ghostap_service "$PID"; then
             # 先尝试优雅停止（进程本身 + 进程组，确保子进程(ACP agent等)不残留）
             kill "$PID" 2>/dev/null || true
             kill -- -"$PID" 2>/dev/null || true
@@ -238,6 +323,9 @@ stop_service() {
                 kill -9 -- -"$PID" 2>/dev/null || true
             fi
             echo "已停止进程 PID: $PID"
+        elif kill -0 "$PID" 2>/dev/null; then
+            echo "忽略不属于当前项目的 PID 文件记录: $PID"
+            log_restart "stale pid file ignored pid=$PID"
         fi
         rm -f "$PID_FILE"
     fi
@@ -309,7 +397,9 @@ show_status() {
     if [ -n "$PIDS" ]; then
         echo "✅ GhostAP 正在运行"
         echo "   进程列表:"
-        ps aux | grep -E "(uv run python -m src\.main|\.venv/bin/python.*-m src\.main)" | grep -v grep
+        for PID in $PIDS; do
+            ps -p "$PID" -o pid=,command=
+        done
     else
         echo "❌ GhostAP 未运行"
     fi
@@ -357,6 +447,10 @@ WORKER_EOF
     echo "   服务将在 ${RESTART_GRACE_DELAY} 秒后重新启动"
     echo "   查看日志: tail -f $LOG_FILE"
 }
+
+if [ "${GHOSTAP_RESTART_LIBRARY_ONLY:-0}" = "1" ]; then
+    return 0 2>/dev/null || exit 0
+fi
 
 case "${1:-restart}" in
     start)

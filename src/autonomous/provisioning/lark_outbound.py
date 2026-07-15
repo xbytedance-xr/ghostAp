@@ -149,9 +149,12 @@ class LarkEmployeeOutbound:
         if set(options) - allowed:
             raise ValueError("invalid send options")
         normalized = dict(options)
-        for name in ("uuid", "reply_to"):
-            if name in normalized:
-                normalized[name] = _text(normalized[name], name, maximum=256)
+        if "uuid" in normalized:
+            normalized["uuid"] = _text(normalized["uuid"], "uuid", maximum=50)
+        if "reply_to" in normalized:
+            normalized["reply_to"] = _text(
+                normalized["reply_to"], "reply_to", maximum=256
+            )
         if "reply_in_thread" in normalized and type(normalized["reply_in_thread"]) is not bool:
             raise ValueError("invalid reply_in_thread")
         if "comment_reply" in normalized:

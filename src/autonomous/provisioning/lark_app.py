@@ -270,6 +270,8 @@ class LarkAppRegistrar:
             r"cli_[A-Za-z0-9_-]{3,128}", app_id
         ) is None:
             raise AppRegistrationError("one-click registration returned incomplete credentials")
+        if request.existing_app_id and app_id != request.existing_app_id:
+            raise AppRegistrationError("existing app identity mismatch")
         if (
             not isinstance(app_secret, str)
             or not 8 <= len(app_secret) <= 512

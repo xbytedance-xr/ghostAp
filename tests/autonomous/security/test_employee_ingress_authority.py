@@ -676,6 +676,71 @@ def test_card_actions_are_durably_unsupported_before_trusted_issuance(
     writer.close()
 
 
+def test_exact_status_control_cannot_enter_general_router_queue(tmp_path: Path) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload(text="/status"))
+
+    routed = router.route(acceptance_id)
+
+    assert routed.state == "terminal"
+    assert routed.reason_code == "control_consumed"
+    assert router.claim_control(acceptance_id, command="/status") is True
+    assert router.dequeue() is None
+    ingress.close()
+    writer.close()
+
+
+def test_status_prefix_remains_a_normal_employee_task(tmp_path: Path) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload(text="/status please inspect"))
+
+    routed = router.route(acceptance_id)
+
+    assert routed.state == "queued"
+    assert router.claim_control(acceptance_id, command="/status") is False
+    ingress.close()
+    writer.close()
+
+
+def test_status_control_claim_holds_shared_journal_guard(tmp_path: Path) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    acceptance_id = _accept(ingress, _payload(text="/status"))
+    terminal_entered = Event()
+    release_terminal = Event()
+    unrelated_committed = Event()
+    original_terminal = router._terminal_unlocked
+
+    def blocked_terminal(record, reason_code):
+        terminal_entered.set()
+        assert release_terminal.wait(2)
+        return original_terminal(record, reason_code)
+
+    router._terminal_unlocked = blocked_terminal  # type: ignore[method-assign]
+
+    def unrelated_commit() -> None:
+        with writer.transaction_guard():
+            _commit_workforce_change(writer, "during_status_control_claim")
+        unrelated_committed.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claim = executor.submit(
+            router.claim_control,
+            acceptance_id,
+            command="/status",
+        )
+        assert terminal_entered.wait(2)
+        unrelated = executor.submit(unrelated_commit)
+        assert not unrelated_committed.wait(0.1)
+        release_terminal.set()
+        assert claim.result(timeout=2) is True
+        unrelated.result(timeout=2)
+
+    assert unrelated_committed.is_set()
+    assert router.state.by_acceptance_id[acceptance_id].reason_code == "control_consumed"
+    ingress.close()
+    writer.close()
+
+
 def test_authorized_context_uses_frozen_snapshot_and_trusted_constraints_only(
     tmp_path: Path,
 ) -> None:
@@ -824,7 +889,10 @@ def test_worker_normalizer_encrypts_sender_and_optional_thread_provenance() -> N
         ),
         event=SimpleNamespace(
             sender=SimpleNamespace(
-                sender_id=SimpleNamespace(open_id="ou_requester"),
+                sender_id=SimpleNamespace(
+                    open_id="ou_requester",
+                    union_id="on_requester",
+                ),
                 sender_type="user",
                 tenant_key="tenant_1",
             ),
@@ -855,6 +923,7 @@ def test_worker_normalizer_encrypts_sender_and_optional_thread_provenance() -> N
     part = payload.normalized_parts[0]
     assert metadata.thread_root_message_id == ""
     assert part["sender_id"] == "ou_requester"
+    assert part["sender_union_id"] == "on_requester"
     assert part["sender_id_type"] == "open_id"
     assert part["sender_type"] == "user"
     assert part["sender_tenant_key"] == "tenant_1"

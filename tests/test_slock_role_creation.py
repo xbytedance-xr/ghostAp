@@ -272,6 +272,70 @@ class TestCreateRoleDefaults:
         assert tool_values
         assert all(value.get("global_hire") is True for value in tool_values)
 
+    def test_global_hire_existing_app_is_preserved_in_tool_card(self):
+        handler = self._make_handler()
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch(
+                "src.workflow_engine.tool_registry.get_available_tools",
+                return_value={"codex": "代码实现"},
+            ),
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.acp.helper.fetch_acp_models", return_value=[]),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --app-id cli_existing_123",
+                global_hire=True,
+            )
+
+        card = json.loads(handler.reply_card.call_args[0][1])
+        assert "cli_existing_123" in json.dumps(card, ensure_ascii=False)
+        values = _collect_card_values(card)
+        assert values
+        assert all(
+            value.get("existing_app_id") == "cli_existing_123"
+            for value in values
+            if value.get("global_hire") is True
+        )
+
+    def test_global_hire_existing_app_survives_tool_to_model_card(self):
+        handler = self._make_handler()
+        models = [
+            SimpleNamespace(
+                name="gpt-5",
+                description="fast",
+                reasoning_efforts=("high",),
+                adapted_reasoning_effort="high",
+                selection_variants=(),
+                is_default=True,
+            )
+        ]
+
+        with patch("src.feishu.handlers.slock.fetch_acp_models", return_value=models):
+            handler.handle_new_role_select_tool(
+                "msg_1",
+                "chat_test",
+                {
+                    "role_name": "Atlas",
+                    "tool_name": "codex",
+                    "global_hire": True,
+                    "existing_app_id": "cli_existing_123",
+                },
+            )
+
+        card = json.loads(handler.reply_card.call_args.args[1])
+        assert "cli_existing_123" in json.dumps(card, ensure_ascii=False)
+        values = _collect_card_values(card)
+        assert any(
+            value.get("action") == "slock_new_role_select_model"
+            and value.get("existing_app_id") == "cli_existing_123"
+            for value in values
+        )
+
     def test_global_hire_tool_card_requires_admin_main_bot_dm(self):
         handler = self._make_handler()
         handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
@@ -469,6 +533,87 @@ class TestCreateRoleDefaults:
             global_hire=True,
         )
 
+    def test_global_hire_final_model_selection_preserves_existing_app(self):
+        handler = self._make_handler()
+        handler.create_role = MagicMock()
+
+        handler.handle_new_role_select_model(
+            "msg_1",
+            "chat_test",
+            {
+                "role_name": "Atlas",
+                "tool_name": "codex",
+                "model_name": "gpt-5",
+                "global_hire": True,
+                "existing_app_id": "cli_existing_123",
+            },
+        )
+
+        handler.create_role.assert_called_once_with(
+            "msg_1",
+            "chat_test",
+            "Atlas --tool codex --model gpt-5 --app-id cli_existing_123",
+            None,
+            global_hire=True,
+        )
+
+    def test_global_hire_existing_app_reaches_employee_hire_request(self):
+        handler = self._make_handler()
+        service = MagicMock()
+        handler.ctx.employee_hire_service = service
+        handler.ctx.employee_hire_readiness = lambda: SimpleNamespace(
+            ready=True,
+            blockers=(),
+        )
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch(
+                "src.thread.manager.get_current_sender_union_id",
+                return_value="on_admin",
+            ),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool codex --model gpt-5 --app-id cli_existing_123",
+                global_hire=True,
+            )
+
+        request = service.start_hire.call_args.args[0]
+        assert request.employee_name == "Atlas"
+        assert request.tool == "codex"
+        assert request.model == "gpt-5"
+        assert request.existing_app_id == "cli_existing_123"
+
+    @pytest.mark.parametrize(
+        "app_id",
+        ("cli_", "not_cli_existing", "cli_bad/app"),
+    )
+    def test_global_hire_rejects_invalid_existing_app_id(self, app_id):
+        handler = self._make_handler()
+        service = MagicMock()
+        handler.ctx.employee_hire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                f"Atlas --app-id {app_id}",
+                global_hire=True,
+            )
+
+        service.start_hire.assert_not_called()
+        handler.reply_card.assert_not_called()
+        assert "App ID" in handler.reply_text.call_args.args[1]
+
     def test_global_hire_without_department_service_fails_closed(self):
         handler = self._make_handler()
         handler.ctx.employee_hire_service = None
@@ -591,6 +736,68 @@ class TestCreateRoleDefaults:
         assert "Slash 命令清理结果未确认" in message
         assert "/fire Atlas" in message
         assert "不要重新 `/hire` 同名员工" in message
+
+    def test_global_fire_unknown_external_app_refuses_false_success(self):
+        from src.autonomous.provisioning.fire_state import FirePhase
+
+        handler = self._make_handler()
+        service = MagicMock()
+        service.start_fire.return_value = SimpleNamespace(
+            phase=FirePhase.ACTION_REQUIRED,
+            error_code="external_cleanup_authority_unavailable",
+            effects=(),
+            employee_name="Atlas",
+            app_id="cli_registered",
+        )
+        handler.ctx.employee_fire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.fire_employee("msg_1", "chat_dm", "Atlas")
+
+        message = handler.reply_text.call_args.args[1]
+        assert "拒绝误报退役成功" in message
+        assert "飞书开放平台" in message
+        assert "仍保持占用" in message
+        assert "--confirm-app-disposed" in message
+        assert "cli_registered" in message
+
+    def test_global_fire_confirms_external_app_disposition(self):
+        from src.autonomous.provisioning.fire_state import FirePhase
+
+        handler = self._make_handler()
+        service = MagicMock()
+        service.confirm_external_disposition.return_value = SimpleNamespace(
+            phase=FirePhase.ARCHIVED,
+            error_code="",
+            external_disposition_confirmed=True,
+        )
+        handler.ctx.employee_fire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.fire_employee(
+                "msg_confirm",
+                "chat_dm",
+                "Atlas --confirm-app-disposed cli_registered",
+            )
+
+        service.start_fire.assert_not_called()
+        request, disposition_ref = (
+            service.confirm_external_disposition.call_args.args
+        )
+        assert request.employee == "Atlas"
+        assert request.message_id == "msg_confirm"
+        assert disposition_ref == "cli_registered"
+        assert "名称和容量已释放" in handler.reply_text.call_args.args[1]
 
     def test_global_fire_reports_already_archived_without_generic_failure(self):
         from src.autonomous.provisioning.fire_service import FireServiceError
@@ -755,6 +962,56 @@ class TestCreateRoleDefaults:
         message = handler.reply_text.call_args.args[1]
         assert "手动停用或删除" in message
         assert "未声称已删除" in message
+
+    @pytest.mark.parametrize(
+        ("app_id", "expected", "unexpected"),
+        (
+            (
+                "",
+                "未创建或绑定飞书应用",
+                "应用仍需管理员手动停用或删除",
+            ),
+            (
+                "cli_existing",
+                "GhostAP 未修改或删除已有应用 `cli_existing`",
+                "应用仍需管理员手动停用或删除",
+            ),
+        ),
+    )
+    def test_global_fire_safe_abort_reports_precise_external_disposition(
+        self,
+        app_id,
+        expected,
+        unexpected,
+    ):
+        from src.autonomous.provisioning.fire_state import (
+            FireCleanupMode,
+            FirePhase,
+        )
+
+        handler = self._make_handler()
+        service = MagicMock()
+        service.start_fire.return_value = SimpleNamespace(
+            phase=FirePhase.ARCHIVED,
+            cleanup_mode=FireCleanupMode.SAFE_ABORT,
+            app_id=app_id,
+            external_disposition_confirmed=False,
+        )
+        handler.ctx.employee_fire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.fire_employee("msg_1", "chat_dm", "Atlas")
+
+        message = handler.reply_text.call_args.args[1]
+        assert "应用注册执行前安全中止" in message
+        assert "名称和容量已释放" in message
+        assert expected in message
+        assert unexpected not in message
 
     def test_unassigned_task_claim_competition_tries_next_agent_after_failed_claim(self):
         """Automatic assignment broadcasts the claim chance through ranked candidates."""

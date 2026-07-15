@@ -11,6 +11,7 @@
     .card { background: white; border: 1px solid #dee0e3; border-radius: 14px; overflow: hidden; box-shadow: 0 8px 24px #1f23290d; }
     .header { padding: 15px 18px; color: white; font-weight: 700; background: linear-gradient(135deg, #3370ff, #4e83fd); }
     .orange { background: linear-gradient(135deg, #f59e0b, #f97316); }
+    .red { background: linear-gradient(135deg, #d14343, #e65c5c); }
     .body { padding: 18px; display: grid; gap: 12px; }
     .label { font-size: 13px; color: #646a73; }
     select, input, button { box-sizing: border-box; width: 100%; min-height: 40px; border-radius: 8px; border: 1px solid #c9cdd4; background: white; padding: 8px 11px; font: inherit; }
@@ -26,12 +27,13 @@
       <div class="header">Slock 员工创建</div>
       <div class="body">
         <strong>为员工 Atlas 选择工具和模型</strong>
+        <div class="note">复用已有飞书应用：<strong>cli_existing_123</strong></div>
         <label class="label">工具</label>
         <select><option>🤖 Codex（代码实现）</option></select>
         <label class="label">模型</label>
         <select><option>GPT-5 · high</option></select>
         <button>确认创建</button>
-        <span class="note">Schema V2：下拉框作为根组件，不使用已移除的 action 容器。</span>
+        <span class="note">已有 App ID 会随工具、模型和思考深度选择持续透传，并在最终创建前保持可见。</span>
       </div>
     </section>
 
@@ -41,6 +43,18 @@
         <strong>将把 🤖 Atlas 加入本群</strong>
         <div class="row"><button>确认加入</button><button class="secondary">取消</button></div>
         <span class="note">按钮通过 column_set 响应式排列，保持移动端可点击区域。</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="header red">管理员员工花名册</div>
+      <div class="body">
+        <strong>🤖 Atlas　⚠️ 待外部应用处置确认</strong>
+        <div class="note">Employee ID：<strong>agt_atlas_123</strong></div>
+        <div class="note">App ID：<strong>cli_existing_123</strong></div>
+        <div>请先在开放平台核验处置结果，再手工执行：</div>
+        <code>/fire agt_atlas_123 --confirm-app-disposed cli_existing_123</code>
+        <span class="note">完整 ID 和人工确认命令仅在配置管理员的主 Bot 私聊中显示；群聊和非管理员只显示脱敏花名册。</span>
       </div>
     </section>
 

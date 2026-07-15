@@ -85,9 +85,18 @@ from .fire_effects import (
 )
 from .fire_service import EmployeeFireService
 from .hire_service import HireReadiness, ProductionEmployeeHireService
-from .hire_state import DurableHireState, HireEffectState, HirePhase
+from .hire_state import (
+    DurableHireState,
+    HireEffectState,
+    HirePhase,
+)
 from .lark_app import LarkAppRegistrar
 from .local_bootstrap import resolve_employee_runtime_material
+from .notification_state import (
+    HireNotificationPhase,
+    hire_notification_message_uuid,
+    rebuild_hire_notification_projection,
+)
 from .slash_commands import SlashCommandReconciler, VerifiedSlashState
 from .slash_lark import LarkSlashCommandAPI
 from .verification import (
@@ -104,6 +113,12 @@ from .verification import (
 logger = logging.getLogger(__name__)
 
 _RECOVERY_RETRY_DELAYS = (0.1, 0.2, 0.4, 0.8, 1.6)
+
+
+def _stable_feishu_uuid(value: str) -> str:
+    """Return a deterministic key within Feishu's 50-character UUID limit."""
+
+    return hashlib.sha256(value.encode()).hexdigest()[:50]
 
 
 class _ChannelSupervisor(Protocol):
@@ -303,7 +318,7 @@ class _SlashReconciler(Protocol):
 
 
 SlashReconcilerFactory = Callable[[str, str], _SlashReconciler]
-MainBotSendAudit = Callable[[str, float, float], int]
+MainBotSendAudit = Callable[[str, str, float, float], int]
 EmployeeEnvironmentProvider = Callable[
     [EmployeeEnvironmentAuthority],
     EmployeeProcessEnvironmentMaterial,
@@ -383,12 +398,12 @@ class EmployeeDepartmentRuntime:
         self._challenges: dict[str, VerificationChallenge] = {}
         self._verification_router: VerificationRouter | None = None
         self._main_bot_send_audit: MainBotSendAudit | None = None
+        self._main_bot_activation_audit: MainBotSendAuditLog | None = None
         self._notification_status: Callable[[DurableHireState, str], object] | None = None
         self._owned_main_bot_send_audit: MainBotSendAuditLog | None = None
         self._monitor_task: asyncio.Task[None] | None = None
-        self._raw_message_metadata: dict[
-            tuple[str, int, str], tuple[str, str, str]
-        ] = {}
+        self._activation_lock = threading.RLock()
+        self._notification_async_lock: asyncio.Lock | None = None
 
     @classmethod
     def from_settings(
@@ -462,7 +477,7 @@ class EmployeeDepartmentRuntime:
                     anchor_path=settings.autonomous_main_bot_audit_anchor_path,
                     hmac_key=material.journal_hmac_key,
                 )
-                main_bot_send_audit = owned_main_bot_send_audit.count_attempts
+                main_bot_send_audit = owned_main_bot_send_audit.count_target_attempts
             except Exception as exc:
                 logger.error(
                     "local main Bot send audit unavailable: %s",
@@ -474,6 +489,14 @@ class EmployeeDepartmentRuntime:
                     vault.close()
                 return cls(blockers=("main_bot_send_audit",))
         runtime._owned_main_bot_send_audit = owned_main_bot_send_audit
+        audit_owner = getattr(main_bot_send_audit, "__self__", None)
+        runtime._main_bot_activation_audit = (
+            owned_main_bot_send_audit
+            if owned_main_bot_send_audit is not None
+            else audit_owner
+            if isinstance(audit_owner, MainBotSendAuditLog)
+            else None
+        )
         runtime._notification_status = notification_status
         try:
             runtime._start_loop()
@@ -589,7 +612,7 @@ class EmployeeDepartmentRuntime:
 
     @property
     def main_bot_outbound_audit(self) -> MainBotSendAuditLog | None:
-        return self._owned_main_bot_send_audit
+        return self._main_bot_activation_audit
 
     def readiness(self) -> RuntimeReadiness:
         return self.hire_readiness()
@@ -597,6 +620,12 @@ class EmployeeDepartmentRuntime:
     def hire_readiness(self) -> RuntimeReadiness:
         if self._service is None:
             return RuntimeReadiness(False, self._blockers or ("not_composed",))
+        activation_audit = self._main_bot_activation_audit
+        if (
+            activation_audit is None
+            or activation_audit.activation_fence_ready is not True
+        ):
+            return RuntimeReadiness(False, ("main_bot_activation_fence",))
         service_readiness: HireReadiness = self._service.readiness()
         return RuntimeReadiness(service_readiness.ready, service_readiness.blockers)
 
@@ -740,7 +769,37 @@ class EmployeeDepartmentRuntime:
             self._service.mark_runtime_recovered()
             return
         pending_intents: list[str] = []
+        status_reply_intents: list[str] = []
         for state in projection.states.values():
+            effect_types = dict(state.effect_types)
+            unresolved_phase_reply = any(
+                effect_state
+                in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
+                and effect_types.get(effect_id) == "employee_status_reply"
+                and self._phase_status_decision(
+                    dict(state.metadata_for(effect_id)).get("error_code", "")
+                )
+                is not None
+                for effect_id, effect_state in state.effects
+            )
+            if (
+                unresolved_phase_reply
+                and state.phase
+                in {
+                    HirePhase.VALIDATING,
+                    HirePhase.READY_PENDING_VERIFICATION,
+                    HirePhase.ACTION_REQUIRED,
+                }
+                and state.credential_ref
+                and state.channel_generation > 0
+            ):
+                if state.phase is HirePhase.READY_PENDING_VERIFICATION:
+                    self._service.begin_channel_revalidation(
+                        state.intent_id,
+                        observed_generation=state.channel_generation,
+                    )
+                status_reply_intents.append(state.intent_id)
+                continue
             if (
                 state.phase
                 in {
@@ -764,9 +823,19 @@ class EmployeeDepartmentRuntime:
                 HirePhase.VALIDATING,
             }:
                 pending_intents.append(state.intent_id)
-        if pending_intents:
+        recover_notifications = (
+            self._notification_status is not None
+            and any(
+                self._terminal_notification_status(state)
+                for state in projection.states.values()
+            )
+        )
+        if pending_intents or status_reply_intents or recover_notifications:
             self._submit_coroutine(
-                self._recover_runtime(list(dict.fromkeys(pending_intents))),
+                self._recover_runtime(
+                    list(dict.fromkeys(pending_intents)),
+                    list(dict.fromkeys(status_reply_intents)),
+                ),
                 label="recovery",
             )
         else:
@@ -1366,7 +1435,7 @@ class EmployeeDepartmentRuntime:
             return False
         if record.disposition is not None:
             return record.disposition.reason_code.startswith(
-                ("stop_", "membership_", "history_", "memory_")
+                ("stop_", "membership_", "history_", "memory_", "activation_")
             )
         try:
             payload = ingress.get_payload(acceptance_id)
@@ -1416,6 +1485,32 @@ class EmployeeDepartmentRuntime:
             value = content.get("text") if isinstance(content, Mapping) else None
             if isinstance(value, str):
                 texts.append(value.strip())
+        if texts == ["/status"]:
+            router = self._router
+            if router is not None and not router.claim_control(
+                acceptance_id,
+                command="/status",
+            ):
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_denied",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
+            handled = self._handle_durable_activation_status(acceptance_id)
+            if not handled:
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_denied",
+                    )
+                except IngressConflictError:
+                    pass
+            return True
         data_control = self._parse_data_control(texts)
         if data_control is not None:
             return self._handle_data_control(
@@ -1455,6 +1550,691 @@ class EmployeeDepartmentRuntime:
         except IngressConflictError:
             pass
         self._drain_employee_outbox_once()
+        return True
+
+    def _handle_durable_activation_status(self, acceptance_id: str) -> bool:
+        """Verify a pending employee from its durable official-SDK ingress."""
+
+        ingress = self._ingress
+        service = self._service
+        if ingress is None or service is None:
+            return False
+        with self._activation_lock:
+            ingress.rebuild_projection()
+            record = ingress.state.by_acceptance_id.get(acceptance_id)
+            if record is None:
+                return False
+            if record.disposition is not None:
+                return record.disposition.reason_code.startswith("activation_")
+            candidates = tuple(
+                candidate
+                for candidate in service.list_states()
+                if candidate.agent_id == record.metadata.agent_id
+            )
+            if len(candidates) != 1:
+                return False
+            state = candidates[0]
+            active_state = state if state.phase is HirePhase.ACTIVE else None
+            pending_state = (
+                state
+                if state.phase is HirePhase.READY_PENDING_VERIFICATION
+                else None
+            )
+            try:
+                payload = ingress.get_payload(acceptance_id)
+            except Exception:
+                return False
+            first = (
+                payload.normalized_parts[0]
+                if len(payload.normalized_parts) == 1
+                else None
+            )
+            content = first.get("content") if isinstance(first, Mapping) else None
+            command = content.get("text") if isinstance(content, Mapping) else None
+            sender_id = first.get("sender_id") if isinstance(first, Mapping) else None
+            sender_union_id = (
+                first.get("sender_union_id") if isinstance(first, Mapping) else None
+            )
+            metadata = record.metadata
+            received_at = datetime.fromisoformat(
+                metadata.received_at.replace("Z", "+00:00")
+            ).timestamp()
+            stable_identity_valid = (
+                first is not None
+                and first.get("type") == "message"
+                and first.get("message_type") == "text"
+                and first.get("chat_type") == "p2p"
+                and first.get("sender_type") == "user"
+                and isinstance(command, str)
+                and command.strip() == "/status"
+                and isinstance(sender_id, str)
+                and sender_id
+                and sender_id == metadata.sender_principal_id
+                and isinstance(sender_union_id, str)
+                and sender_union_id == state.requester_union_id
+                and first.get("sender_tenant_key") == metadata.tenant_key
+                and metadata.tenant_key == state.tenant_key
+                and metadata.app_id == state.app_id
+                and metadata.agent_id == state.agent_id
+                and metadata.bot_principal_id == state.bot_principal_id
+                and metadata.event_type == "im.message.receive_v1"
+            )
+            identity_valid = (
+                stable_identity_valid
+                and metadata.channel_generation == state.channel_generation
+                and metadata.connection_id == state.channel_connection_id
+            )
+            phase_reply_effect_id = (
+                f"verification-retry-reply:{metadata.event_id}"
+            )
+            phase_reply_code = dict(
+                state.metadata_for(phase_reply_effect_id)
+            ).get("error_code", "")
+            original_phase = self._phase_status_decision(phase_reply_code)
+            if original_phase is not None:
+                if not stable_identity_valid:
+                    try:
+                        ingress.record_disposition(
+                            acceptance_id,
+                            state="terminal",
+                            reason_code="activation_denied",
+                        )
+                    except IngressConflictError:
+                        pass
+                    return True
+                if (
+                    state.effect_state(phase_reply_effect_id)
+                    is not HireEffectState.COMMITTED
+                    and not self._send_activation_retry_notice(
+                        state=state,
+                        generation=state.channel_generation,
+                        event_id=metadata.event_id,
+                        sender_id=sender_id,
+                        message=self._status_unavailable_message_for_phase(
+                            original_phase
+                        ),
+                        decision_code=phase_reply_code,
+                    )
+                ):
+                    raise RuntimeError("employee phase status reply unavailable")
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code=f"activation_status_{original_phase.value}",
+                    )
+                except IngressConflictError:
+                    pass
+                if state.phase is HirePhase.VALIDATING:
+                    self._promote_after_phase_status_reply(state.intent_id)
+                return True
+            if active_state is None and pending_state is None:
+                if not identity_valid:
+                    try:
+                        ingress.record_disposition(
+                            acceptance_id,
+                            state="terminal",
+                            reason_code="activation_denied",
+                        )
+                    except IngressConflictError:
+                        pass
+                    return True
+                message = self._status_unavailable_message(state)
+                if not self._send_activation_retry_notice(
+                    state=state,
+                    generation=metadata.channel_generation,
+                    event_id=metadata.event_id,
+                    sender_id=sender_id,
+                    message=message,
+                    decision_code=f"phase_status:{state.phase.value}",
+                ):
+                    raise RuntimeError("employee phase status reply unavailable")
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code=f"activation_status_{state.phase.value}",
+                    )
+                except IngressConflictError:
+                    pass
+                if state.phase is HirePhase.VALIDATING:
+                    self._promote_after_phase_status_reply(state.intent_id)
+                return True
+            if active_state is not None:
+                if not identity_valid:
+                    try:
+                        ingress.record_disposition(
+                            acceptance_id,
+                            state="terminal",
+                            reason_code="activation_denied",
+                        )
+                    except IngressConflictError:
+                        pass
+                    return True
+                if active_state.activation_ingress_event_id == metadata.event_id:
+                    self._send_activation_success_notice(
+                        state=active_state,
+                        event_id=metadata.event_id,
+                        sender_id=sender_id,
+                    )
+                    self._schedule_activation_notification(active_state)
+                    reason_code = "activation_verified"
+                else:
+                    if not self._send_already_active_notice(
+                        state=active_state,
+                        acceptance_id=acceptance_id,
+                        sender_id=sender_id,
+                    ):
+                        raise RuntimeError("employee already-active reply unavailable")
+                    reason_code = "activation_already_active"
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code=reason_code,
+                    )
+                except IngressConflictError:
+                    pass
+                with service.employee_dispatch_guard():
+                    service.synchronize_projection_unlocked()
+                return True
+            assert pending_state is not None
+            state = pending_state
+            if (
+                stable_identity_valid
+                and metadata.channel_generation < state.channel_generation
+            ):
+                self._send_activation_retry_notice(
+                    state=state,
+                    generation=state.channel_generation,
+                    event_id=metadata.event_id,
+                    sender_id=sender_id,
+                    message=(
+                        "Employee session refreshed. Send /status again."
+                    ),
+                )
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_generation_refreshed",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
+            if not identity_valid:
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_denied",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
+            challenge = self._challenge_for_state(state)
+            now = time.time()
+            challenge_valid = (
+                challenge is not None
+                and challenge.issued_at <= received_at <= challenge.expires_at
+                and now <= challenge.expires_at
+            )
+            if not challenge_valid:
+                if challenge is None or now > challenge.expires_at:
+                    challenge = self._renew_activation_challenge(state)
+                self._send_activation_retry_notice(
+                    state=service.get_state(state.intent_id) or state,
+                    generation=metadata.channel_generation,
+                    event_id=metadata.event_id,
+                    sender_id=sender_id,
+                    message=(
+                        "Activation window refreshed. Send /status again."
+                    ),
+                )
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_challenge_renewed",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
+            activated = self._complete_status_activation(
+                state=state,
+                challenge=challenge,
+                generation=metadata.channel_generation,
+                event_id=metadata.event_id,
+                message_id=metadata.message_id,
+                sender_id=sender_id,
+                sender_union_id=sender_union_id,
+                command=command.strip(),
+                is_p2p=True,
+                reply_options={},
+                received_at=received_at,
+            )
+            try:
+                ingress.record_disposition(
+                    acceptance_id,
+                    state="terminal",
+                    reason_code=(
+                        "activation_verified" if activated else "activation_denied"
+                    ),
+                )
+            except IngressConflictError:
+                pass
+            with service.employee_dispatch_guard():
+                service.synchronize_projection_unlocked()
+            return True
+
+    @staticmethod
+    def _status_unavailable_message(state: DurableHireState) -> str:
+        return EmployeeDepartmentRuntime._status_unavailable_message_for_phase(
+            state.phase
+        )
+
+    @staticmethod
+    def _status_unavailable_message_for_phase(phase: HirePhase) -> str:
+        if phase is HirePhase.ACTION_REQUIRED:
+            return (
+                "Employee setup requires administrator action. Ask the "
+                "administrator to run /roster; /status cannot activate it yet."
+            )
+        if phase in {HirePhase.RETIRING, HirePhase.ARCHIVED}:
+            return "This employee is retired and cannot be activated."
+        return (
+            f"Employee setup is currently {phase.value}; activation is not "
+            "ready. Send /status again after setup completes."
+        )
+
+    @staticmethod
+    def _phase_status_decision(value: str) -> HirePhase | None:
+        prefix = "phase_status:"
+        if not value.startswith(prefix):
+            return None
+        try:
+            phase = HirePhase(value.removeprefix(prefix))
+        except ValueError:
+            return None
+        if phase in {HirePhase.ACTIVE, HirePhase.READY_PENDING_VERIFICATION}:
+            return None
+        return phase
+
+    def _promote_after_phase_status_reply(self, intent_id: str) -> None:
+        service = self._require_service()
+        current = service.get_state(intent_id)
+        if (
+            current is None
+            or current.phase is not HirePhase.VALIDATING
+            or not current.slash_spec_hash
+            or current.slash_spec_hash != current.slash_observed_hash
+            or current.channel_generation <= 0
+            or current.channel_identity_app_id != current.app_id
+            or not current.channel_connection_id
+        ):
+            return
+        router = self._verification_router
+        if router is None:
+            raise RuntimeError("employee Verification Router unavailable")
+        challenge = router.issue_challenge(
+            VerificationBinding(
+                hire_intent_id=current.intent_id,
+                tenant_key=current.tenant_key,
+                app_id=current.app_id,
+                agent_id=current.agent_id,
+                generation=current.channel_generation,
+                requester_principal_id=current.requester_principal_id,
+                requester_union_id=current.requester_union_id,
+                expected_slash_spec_hash=current.slash_spec_hash,
+            )
+        )
+        service.begin_activation_verification(challenge)
+        self._challenges[current.intent_id] = challenge
+
+    def _send_already_active_notice(
+        self,
+        *,
+        state: DurableHireState,
+        acceptance_id: str,
+        sender_id: str,
+    ) -> bool:
+        """Durably and idempotently acknowledge a new status event after ACTIVE."""
+
+        writer = self._writer
+        channels = self._channels
+        if writer is None or channels is None:
+            return False
+        aggregate_id = f"hire-already-active:{acceptance_id}"
+        existing = [
+            event.event_type
+            for frame in writer.replay()
+            for event in frame.events
+            if event.aggregate_id == aggregate_id
+        ]
+        committed_event = "hire.activation.already_active_reply.committed"
+        if committed_event in existing:
+            return True
+
+        def commit(event_type: str, payload: Mapping[str, object]) -> None:
+            with writer.transaction_guard():
+                last = writer.get_last_frame()
+                result = writer.commit(
+                    (
+                        JournalEvent(
+                            event_type=event_type,
+                            aggregate_id=aggregate_id,
+                            payload=dict(payload),
+                        ),
+                    ),
+                    writer.get_aggregate_versions((aggregate_id,)),
+                    expected_head_sequence=0 if last is None else last.sequence,
+                    expected_head_hash="" if last is None else last.frame_hash,
+                )
+            if result.state.value != "anchored":
+                raise RuntimeError("already-active reply event was not anchored")
+
+        base_payload = {
+            "intent_id": state.intent_id,
+            "acceptance_id": acceptance_id,
+            "app_id": state.app_id,
+            "generation": state.channel_generation,
+        }
+        prepared_event = "hire.activation.already_active_reply.prepared"
+        executing_event = "hire.activation.already_active_reply.executing"
+        if prepared_event not in existing:
+            commit(prepared_event, base_payload)
+        if executing_event not in existing:
+            commit(executing_event, base_payload)
+        stable_uuid = _stable_feishu_uuid(
+            f"employee-already-active:{acceptance_id}"
+        )
+        receipt = channels.send(
+            state.agent_id,
+            generation=state.channel_generation,
+            target=sender_id,
+            message={"text": f"{state.employee_name} is already active."},
+            options={"uuid": stable_uuid},
+        )
+        if (
+            getattr(receipt, "success", False) is not True
+            or getattr(receipt, "app_id", "") != state.app_id
+            or getattr(receipt, "generation", 0) != state.channel_generation
+            or getattr(receipt, "connection_id", "")
+            != state.channel_connection_id
+            or not getattr(receipt, "request_id", "")
+            or not getattr(receipt, "message_id", "")
+        ):
+            raise RuntimeError("employee already-active reply receipt is invalid")
+        commit(
+            committed_event,
+            {
+                **base_payload,
+                "send_request_id": receipt.request_id,
+                "reply_message_id": receipt.message_id,
+                "connection_id": receipt.connection_id,
+                "uuid": stable_uuid,
+            },
+        )
+        return True
+
+    def _send_activation_success_notice(
+        self,
+        *,
+        state: DurableHireState,
+        event_id: str,
+        sender_id: str,
+    ) -> bool:
+        """Durably acknowledge successful activation in the employee DM."""
+
+        writer = self._writer
+        channels = self._channels
+        if writer is None or channels is None:
+            return False
+        aggregate_id = f"hire-activation-success:{event_id}"
+        existing = [
+            event.event_type
+            for frame in writer.replay()
+            for event in frame.events
+            if event.aggregate_id == aggregate_id
+        ]
+        committed_event = "hire.activation.success_reply.committed"
+        if committed_event in existing:
+            return True
+
+        def commit(event_type: str, payload: Mapping[str, object]) -> None:
+            with writer.transaction_guard():
+                last = writer.get_last_frame()
+                result = writer.commit(
+                    (
+                        JournalEvent(
+                            event_type=event_type,
+                            aggregate_id=aggregate_id,
+                            payload=dict(payload),
+                        ),
+                    ),
+                    writer.get_aggregate_versions((aggregate_id,)),
+                    expected_head_sequence=0 if last is None else last.sequence,
+                    expected_head_hash="" if last is None else last.frame_hash,
+                )
+            if result.state.value != "anchored":
+                raise RuntimeError("activation success reply event was not anchored")
+
+        base_payload = {
+            "intent_id": state.intent_id,
+            "event_id": event_id,
+            "app_id": state.app_id,
+            "generation": state.channel_generation,
+        }
+        prepared_event = "hire.activation.success_reply.prepared"
+        executing_event = "hire.activation.success_reply.executing"
+        if prepared_event not in existing:
+            commit(prepared_event, base_payload)
+        if executing_event not in existing:
+            commit(executing_event, base_payload)
+        stable_uuid = _stable_feishu_uuid(f"employee-activation-success:{event_id}")
+        receipt = channels.send(
+            state.agent_id,
+            generation=state.channel_generation,
+            target=sender_id,
+            message={"text": f"{state.employee_name} is active."},
+            options={"uuid": stable_uuid},
+        )
+        if (
+            getattr(receipt, "success", False) is not True
+            or getattr(receipt, "app_id", "") != state.app_id
+            or getattr(receipt, "generation", 0) != state.channel_generation
+            or getattr(receipt, "connection_id", "")
+            != state.channel_connection_id
+            or not getattr(receipt, "request_id", "")
+            or not getattr(receipt, "message_id", "")
+        ):
+            raise RuntimeError("employee activation success reply receipt is invalid")
+        commit(
+            committed_event,
+            {
+                **base_payload,
+                "send_request_id": receipt.request_id,
+                "reply_message_id": receipt.message_id,
+                "connection_id": receipt.connection_id,
+                "uuid": stable_uuid,
+            },
+        )
+        return True
+
+    def _challenge_for_state(
+        self,
+        state: DurableHireState,
+    ) -> VerificationChallenge | None:
+        challenge = self._challenges.get(state.intent_id)
+        if challenge is not None and challenge.nonce == state.verification_nonce:
+            return challenge
+        if (
+            not state.verification_nonce
+            or state.verification_issued_at <= 0
+            or state.verification_expires_at <= state.verification_issued_at
+        ):
+            return None
+        challenge = VerificationChallenge(
+            hire_intent_id=state.intent_id,
+            tenant_key=state.tenant_key,
+            app_id=state.app_id,
+            agent_id=state.agent_id,
+            generation=state.channel_generation,
+            requester_principal_id=state.requester_principal_id,
+            requester_union_id=state.requester_union_id,
+            expected_slash_spec_hash=state.slash_spec_hash,
+            nonce=state.verification_nonce,
+            issued_at=state.verification_issued_at,
+            expires_at=state.verification_expires_at,
+        )
+        self._challenges[state.intent_id] = challenge
+        return challenge
+
+    def _send_activation_retry_notice(
+        self,
+        *,
+        state: DurableHireState,
+        generation: int,
+        event_id: str,
+        sender_id: str,
+        message: str,
+        decision_code: str = "",
+    ) -> bool:
+        service = self._require_service()
+        channels = self._channels
+        if channels is None:
+            return False
+        effect_id = f"verification-retry-reply:{event_id}"
+        effect_state = state.effect_state(effect_id)
+        if effect_state is None:
+            state = service.commit_effect_transition(
+                state.intent_id,
+                effect_id=effect_id,
+                effect_type="employee_status_reply",
+                next_state=HireEffectState.PREPARED,
+                metadata=(
+                    {"error_code": decision_code} if decision_code else None
+                ),
+            )
+            effect_state = state.effect_state(effect_id)
+        if effect_state is HireEffectState.PREPARED:
+            state = service.commit_effect_transition(
+                state.intent_id,
+                effect_id=effect_id,
+                effect_type="employee_status_reply",
+                next_state=HireEffectState.EXECUTING,
+            )
+            effect_state = state.effect_state(effect_id)
+        if effect_state is HireEffectState.COMMITTED:
+            return True
+        if effect_state is not HireEffectState.EXECUTING:
+            return False
+        stable_uuid = _stable_feishu_uuid(f"employee-activation-retry:{event_id}")
+        receipt = channels.send(
+            state.agent_id,
+            generation=generation,
+            target=sender_id,
+            message={"text": message},
+            options={"uuid": stable_uuid},
+        )
+        if (
+            getattr(receipt, "success", False) is not True
+            or getattr(receipt, "app_id", "") != state.app_id
+            or getattr(receipt, "generation", 0) != generation
+            or getattr(receipt, "connection_id", "")
+            != state.channel_connection_id
+            or not getattr(receipt, "request_id", "")
+            or not getattr(receipt, "message_id", "")
+        ):
+            raise RuntimeError("employee activation retry receipt is invalid")
+        service.commit_effect_transition(
+            state.intent_id,
+            effect_id=effect_id,
+            effect_type="employee_status_reply",
+            next_state=HireEffectState.COMMITTED,
+            metadata={
+                "send_request_id": receipt.request_id,
+                "ingress_event_id": event_id,
+                "reply_app_id": receipt.app_id,
+                "reply_message_id": receipt.message_id,
+                "generation": str(receipt.generation),
+                "connection_id": receipt.connection_id,
+                "main_bot_send_count": "0",
+            },
+        )
+        return True
+
+    def _send_activation_incomplete_notice(
+        self,
+        *,
+        state: DurableHireState,
+        generation: int,
+        event_id: str,
+        sender_id: str,
+    ) -> bool:
+        """Durably correct a preflight reply when final activation is rejected."""
+
+        service = self._require_service()
+        channels = self._channels
+        if channels is None:
+            return False
+        effect_id = f"verification-incomplete-reply:{event_id}"
+        effect_state = state.effect_state(effect_id)
+        if effect_state is None:
+            state = service.commit_effect_transition(
+                state.intent_id,
+                effect_id=effect_id,
+                effect_type="employee_status_reply",
+                next_state=HireEffectState.PREPARED,
+            )
+            effect_state = state.effect_state(effect_id)
+        if effect_state is HireEffectState.PREPARED:
+            state = service.commit_effect_transition(
+                state.intent_id,
+                effect_id=effect_id,
+                effect_type="employee_status_reply",
+                next_state=HireEffectState.EXECUTING,
+            )
+            effect_state = state.effect_state(effect_id)
+        if effect_state is HireEffectState.COMMITTED:
+            return True
+        if effect_state is not HireEffectState.EXECUTING:
+            return False
+        stable_uuid = _stable_feishu_uuid(
+            f"employee-activation-incomplete:{event_id}"
+        )
+        receipt = channels.send(
+            state.agent_id,
+            generation=generation,
+            target=sender_id,
+            message={"text": "Activation did not complete. Send /status again."},
+            options={"uuid": stable_uuid},
+        )
+        if (
+            getattr(receipt, "success", False) is not True
+            or getattr(receipt, "app_id", "") != state.app_id
+            or getattr(receipt, "generation", 0) != generation
+            or getattr(receipt, "connection_id", "")
+            != state.channel_connection_id
+            or not getattr(receipt, "request_id", "")
+            or not getattr(receipt, "message_id", "")
+        ):
+            raise RuntimeError("employee activation incomplete receipt is invalid")
+        service.commit_effect_transition(
+            state.intent_id,
+            effect_id=effect_id,
+            effect_type="employee_status_reply",
+            next_state=HireEffectState.COMMITTED,
+            metadata={
+                "send_request_id": receipt.request_id,
+                "ingress_event_id": event_id,
+                "reply_app_id": receipt.app_id,
+                "reply_message_id": receipt.message_id,
+                "generation": str(receipt.generation),
+                "connection_id": receipt.connection_id,
+                "main_bot_send_count": "0",
+            },
+        )
         return True
 
     @staticmethod
@@ -1631,7 +2411,12 @@ class EmployeeDepartmentRuntime:
         reconciled = 0
         for acceptance_id, record in tuple(router.state.by_acceptance_id.items()):
             ingress_record = ingress.state.by_acceptance_id.get(acceptance_id)
-            if record.state == "terminal" and ingress_record is not None and ingress_record.disposition is None:
+            if (
+                record.state == "terminal"
+                and record.reason_code != "control_consumed"
+                and ingress_record is not None
+                and ingress_record.disposition is None
+            ):
                 try:
                     ingress.record_disposition(
                         acceptance_id,
@@ -1902,28 +2687,50 @@ class EmployeeDepartmentRuntime:
             else ""
         )
         if status:
-            await self._notify_hire_terminal(state, status)
+            await self._retry_terminal_notification(state.intent_id, status)
 
     async def _notify_hire_terminal(
         self,
         state: DurableHireState,
         status: str,
-    ) -> None:
+    ) -> bool:
+        if self._notification_async_lock is None:
+            self._notification_async_lock = asyncio.Lock()
+        async with self._notification_async_lock:
+            current = self._require_service().get_state(state.intent_id)
+            if (
+                current is None
+                or self._terminal_notification_status(current) != status
+            ):
+                return False
+            return await self._notify_hire_terminal_locked(current, status)
+
+    async def _notify_hire_terminal_locked(
+        self,
+        state: DurableHireState,
+        status: str,
+    ) -> bool:
         callback = self._notification_status
         writer = self._writer
         if callback is None or writer is None:
-            return
+            return False
         aggregate_id = f"hire-notification:{state.intent_id}:{status}"
-        existing = [
-            event.event_type
-            for frame in writer.replay()
-            for event in frame.events
-            if event.aggregate_id == aggregate_id
-        ]
-        if "hire.notification.committed" in existing:
-            return
+        notification = rebuild_hire_notification_projection(
+            tuple(writer.replay())
+        ).get(aggregate_id)
+        if (
+            notification is not None
+            and notification.phase is HireNotificationPhase.COMMITTED
+        ):
+            return True
+        message_uuid = hire_notification_message_uuid(state.intent_id, status)
+        base_payload = {
+            "intent_id": state.intent_id,
+            "status": status,
+            "message_uuid": message_uuid,
+        }
 
-        def commit(event_type: str) -> None:
+        def commit(event_type: str, **extra: str) -> None:
             with writer.transaction_guard():
                 last = writer.get_last_frame()
                 result = writer.commit(
@@ -1931,7 +2738,7 @@ class EmployeeDepartmentRuntime:
                         JournalEvent(
                             event_type=event_type,
                             aggregate_id=aggregate_id,
-                            payload={"intent_id": state.intent_id, "status": status},
+                            payload={**base_payload, **extra},
                         ),
                     ),
                     writer.get_aggregate_versions((aggregate_id,)),
@@ -1941,15 +2748,59 @@ class EmployeeDepartmentRuntime:
             if result.state.value != "anchored":
                 raise RuntimeError("hire notification event was not anchored")
 
-        if "hire.notification.prepared" not in existing:
+        if notification is None:
             commit("hire.notification.prepared")
+        elif notification.phase in {
+            HireNotificationPhase.EXECUTING,
+            HireNotificationPhase.ACTION_REQUIRED,
+        }:
+            commit("hire.notification.retry_requested")
+        current = self._require_service().get_state(state.intent_id)
+        if (
+            current is None
+            or self._terminal_notification_status(current) != status
+        ):
+            return False
+        state = current
         commit("hire.notification.executing")
         try:
-            await asyncio.to_thread(callback, state, status)
+            receipt = await asyncio.wait_for(
+                asyncio.to_thread(callback, state, status),
+                timeout=15.0,
+            )
         except Exception:
             commit("hire.notification.action_required")
-            return
-        commit("hire.notification.committed")
+            return False
+        if receipt is None or receipt is False:
+            commit("hire.notification.action_required")
+            return False
+        receipt_ref = (
+            receipt
+            if isinstance(receipt, str) and receipt
+            else getattr(receipt, "message_id", "")
+            or f"ack:{message_uuid}"
+        )
+        commit("hire.notification.committed", receipt_ref=receipt_ref)
+        return True
+
+    async def _retry_terminal_notification(
+        self,
+        intent_id: str,
+        status: str,
+    ) -> bool:
+        if self._notification_status is None:
+            return False
+        for delay in (0.0, *_RECOVERY_RETRY_DELAYS):
+            if delay:
+                await asyncio.sleep(delay)
+            if self._closing:
+                return False
+            state = self._require_service().get_state(intent_id)
+            if state is None or self._terminal_notification_status(state) != status:
+                return False
+            if await self._notify_hire_terminal(state, status):
+                return True
+        return False
 
     def _submit_coroutine(
         self,
@@ -1985,8 +2836,26 @@ class EmployeeDepartmentRuntime:
     async def _recover_runtime(
         self,
         pending_intents: list[str],
+        status_reply_intents: list[str],
     ) -> None:
         failed_intents: list[str] = []
+        if status_reply_intents:
+            status_results = await asyncio.gather(
+                *(
+                    self._recover_status_reply_channel(intent_id)
+                    for intent_id in status_reply_intents
+                ),
+                return_exceptions=True,
+            )
+            status_failures = sum(
+                isinstance(result, BaseException) for result in status_results
+            )
+            if status_failures:
+                logger.error(
+                    "employee phase-status Channel recovery failed for %d intent(s)",
+                    status_failures,
+                )
+                self._execution_blockers = ("status_reply_recovery",)
         if pending_intents:
             results = await asyncio.gather(
                 *(self._configure_intent(intent_id, force_slash_refresh=True) for intent_id in pending_intents),
@@ -2019,16 +2888,22 @@ class EmployeeDepartmentRuntime:
                     "employee recovery isolated %d exhausted intent(s) as action_required",
                     failures,
                 )
-            for intent_id, result in zip(failed_intents, retry_results, strict=True):
-                state = self._require_service().get_state(intent_id)
-                if state is not None:
-                    await self._notify_hire_terminal(
-                        state,
-                        "ready" if result is True else "action_required",
-                    )
+        await self._retry_terminal_notifications()
         self._require_service().mark_runtime_recovered()
         if not self._execution_blockers:
             self._start_dispatch_worker()
+
+    async def _recover_status_reply_channel(self, intent_id: str) -> None:
+        state = self._require_service().get_state(intent_id)
+        if state is None:
+            return
+        await self._reconcile_slash(
+            state,
+            generation=state.channel_generation + 1,
+            force_refresh=True,
+        )
+        state = self._require_service().get_state(intent_id) or state
+        await self._start_channel(state, force_next_generation=True)
 
     async def _retry_recovery_intent(self, intent_id: str) -> bool:
         for delay in _RECOVERY_RETRY_DELAYS:
@@ -2065,11 +2940,12 @@ class EmployeeDepartmentRuntime:
                     }:
                         continue
                     try:
-                        status = channels.status(state.agent_id)
+                        channel_status = channels.status(state.agent_id)
                         if (
-                            status is not None
-                            and status.generation == state.channel_generation
-                            and status.state
+                            channel_status is not None
+                            and channel_status.generation
+                            == state.channel_generation
+                            and channel_status.state
                             in {
                                 ChannelProcessState.CRASHED,
                                 ChannelProcessState.FAILED,
@@ -2081,12 +2957,77 @@ class EmployeeDepartmentRuntime:
                                 observed_generation=state.channel_generation,
                             )
                             self._submit_intent(state.intent_id)
+                        elif (
+                            state.phase is HirePhase.READY_PENDING_VERIFICATION
+                            and state.verification_expires_at <= time.time()
+                        ):
+                            self._renew_activation_challenge(state)
                     except Exception as exc:
                         logger.error(
                             "employee Channel monitor failed closed: %s",
                             type(exc).__name__,
                         )
             await asyncio.sleep(2.0)
+
+    async def _retry_terminal_notifications(self) -> None:
+        if self._notification_status is None:
+            return
+        pending = [
+            self._retry_terminal_notification(state.intent_id, status)
+            for state in self._require_service().list_states()
+            if (status := self._terminal_notification_status(state))
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    @staticmethod
+    def _terminal_notification_status(state: DurableHireState) -> str:
+        has_action_required_effect = any(
+            effect_state is HireEffectState.ACTION_REQUIRED
+            for _effect_id, effect_state in state.effects
+        )
+        return (
+            "ready"
+            if state.phase is HirePhase.READY_PENDING_VERIFICATION
+            else "active"
+            if state.phase is HirePhase.ACTIVE
+            else "action_required"
+            if state.phase is HirePhase.ACTION_REQUIRED
+            or has_action_required_effect
+            else ""
+        )
+
+    def _renew_activation_challenge(
+        self,
+        state: DurableHireState,
+    ) -> VerificationChallenge:
+        with self._activation_lock:
+            service = self._require_service()
+            current = service.get_state(state.intent_id)
+            if (
+                current is None
+                or current.phase is not HirePhase.READY_PENDING_VERIFICATION
+                or current.verification_consumed
+            ):
+                raise RuntimeError("employee activation challenge is not renewable")
+            router = self._verification_router
+            if router is None:
+                raise RuntimeError("employee Verification Router unavailable")
+            challenge = router.issue_challenge(
+                VerificationBinding(
+                    hire_intent_id=current.intent_id,
+                    tenant_key=current.tenant_key,
+                    app_id=current.app_id,
+                    agent_id=current.agent_id,
+                    generation=current.channel_generation,
+                    requester_principal_id=current.requester_principal_id,
+                    requester_union_id=current.requester_union_id,
+                    expected_slash_spec_hash=current.slash_spec_hash,
+                )
+            )
+            service.renew_activation_verification(challenge)
+            self._challenges[current.intent_id] = challenge
+            return challenge
 
     async def _configure_intent(
         self,
@@ -2200,9 +3141,18 @@ class EmployeeDepartmentRuntime:
         )
         return verified
 
-    async def _start_channel(self, state: DurableHireState) -> Any:
+    async def _start_channel(
+        self,
+        state: DurableHireState,
+        *,
+        force_next_generation: bool = False,
+    ) -> Any:
         service = self._require_service()
-        generation = self._target_channel_generation(state)
+        generation = (
+            state.channel_generation + 1
+            if force_next_generation
+            else self._target_channel_generation(state)
+        )
         effect_id = f"channel-start:{generation}"
         current = service.get_state(state.intent_id) or state
         effect_state = current.effect_state(effect_id)
@@ -2323,13 +3273,10 @@ class EmployeeDepartmentRuntime:
 
     async def _handle_channel_event(
         self,
-        intent_id: str,
-        generation: int,
+        _intent_id: str,
+        _generation: int,
         payload: dict[str, Any],
     ) -> None:
-        service = self._require_service()
-        state = service.get_state(intent_id)
-        challenge = self._challenges.get(intent_id)
         event_name = payload.get("event")
         if event_name == "durableIngressAccepted":
             data = payload.get("data")
@@ -2337,229 +3284,322 @@ class EmployeeDepartmentRuntime:
             if isinstance(acceptance_id, str) and acceptance_id:
                 await asyncio.to_thread(self._handle_control_ingress, acceptance_id)
             return
-        if event_name == "rawMessageMeta":
-            metadata = payload.get("data")
-            if isinstance(metadata, dict):
-                event_id = metadata.get("event_id")
-                tenant_key = metadata.get("tenant_key")
-                message_id = metadata.get("message_id")
-                sender_union_id = metadata.get("sender_union_id")
-                if all(
-                    isinstance(value, str) and value
-                    for value in (
-                        event_id,
-                        tenant_key,
-                        message_id,
-                        sender_union_id,
+        return
+
+    def _complete_status_activation(
+        self,
+        *,
+        state: DurableHireState,
+        challenge: VerificationChallenge,
+        generation: int,
+        event_id: str,
+        message_id: str,
+        sender_id: str,
+        sender_union_id: str,
+        command: str,
+        is_p2p: bool,
+        reply_options: dict[str, Any],
+        received_at: float | None,
+    ) -> bool:
+        """Anchor the employee reply and commit a verified activation."""
+
+        with self._activation_lock:
+            service = self._require_service()
+            current = service.get_state(state.intent_id)
+            if current is None or current.phase is not HirePhase.READY_PENDING_VERIFICATION:
+                return current is not None and current.phase is HirePhase.ACTIVE
+            audit = self._main_bot_send_audit
+            if audit is None:
+                raise RuntimeError("main Bot send audit is unavailable")
+            activation_audit = self._main_bot_activation_audit
+            if (
+                activation_audit is None
+                or activation_audit.activation_fence_ready is not True
+            ):
+                raise RuntimeError("main Bot activation fence is unavailable")
+            preflight_audited_at = time.time()
+            audit_target_hashes = self._activation_audit_target_hashes(
+                current,
+                ingress_message_id=message_id,
+            )
+            preflight_main_bot_send_count = self._count_main_bot_target_attempts(
+                audit,
+                tenant_key=current.tenant_key,
+                target_hashes=audit_target_hashes,
+                start=challenge.issued_at,
+                end=preflight_audited_at,
+            )
+            if preflight_main_bot_send_count != 0:
+                router = self._verification_router
+                if router is None:
+                    raise RuntimeError("employee Verification Router unavailable")
+                replacement = router.issue_challenge(
+                    VerificationBinding(
+                        hire_intent_id=current.intent_id,
+                        tenant_key=current.tenant_key,
+                        app_id=current.app_id,
+                        agent_id=current.agent_id,
+                        generation=current.channel_generation,
+                        requester_principal_id=current.requester_principal_id,
+                        requester_union_id=current.requester_union_id,
+                        expected_slash_spec_hash=current.slash_spec_hash,
                     )
-                ):
-                    if len(self._raw_message_metadata) >= 2048:
-                        self._raw_message_metadata.pop(
-                            next(iter(self._raw_message_metadata)),
-                            None,
-                        )
-                    self._raw_message_metadata[(intent_id, generation, message_id)] = (
-                        event_id,
-                        tenant_key,
-                        sender_union_id,
+                )
+                current = service.reissue_activation_verification_after_audit_collision(
+                    replacement
+                )
+                self._challenges[current.intent_id] = replacement
+                self._send_activation_retry_notice(
+                    state=current,
+                    generation=generation,
+                    event_id=event_id,
+                    sender_id=sender_id,
+                    message=(
+                        "Activation window reset after a conflicting main Bot send. "
+                        "Send /status again."
+                    ),
+                )
+                return False
+            effect_id = f"verification-status-reply:{event_id}"
+            effect_state = current.effect_state(effect_id)
+            if effect_state is None:
+                current = service.commit_effect_transition(
+                    state.intent_id,
+                    effect_id=effect_id,
+                    effect_type="employee_status_reply",
+                    next_state=HireEffectState.PREPARED,
+                )
+                effect_state = current.effect_state(effect_id)
+            if effect_state is HireEffectState.PREPARED:
+                current = service.commit_effect_transition(
+                    state.intent_id,
+                    effect_id=effect_id,
+                    effect_type="employee_status_reply",
+                    next_state=HireEffectState.EXECUTING,
+                )
+                effect_state = current.effect_state(effect_id)
+            if effect_state is HireEffectState.COMMITTED:
+                self._send_activation_incomplete_notice(
+                    state=current,
+                    generation=generation,
+                    event_id=event_id,
+                    sender_id=sender_id,
+                )
+                return False
+            if effect_state is not HireEffectState.EXECUTING or self._channels is None:
+                return False
+            stable_reply_uuid = _stable_feishu_uuid(
+                f"employee-activation-preflight:{event_id}"
+            )
+            receipt = self._channels.send(
+                current.agent_id,
+                generation=generation,
+                target=sender_id,
+                message={
+                    "text": (
+                        f"{current.employee_name} activation verification started; "
+                        "not active yet."
                     )
-            return
-        if (
-            state is None
-            or challenge is None
-            or state.phase is not HirePhase.READY_PENDING_VERIFICATION
-            or generation != state.channel_generation
-            or event_name != "message"
-        ):
-            return
-        data = payload.get("data")
-        message_id = data.get("id") if isinstance(data, dict) else None
-        raw_metadata = (
-            self._raw_message_metadata.pop(
-                (intent_id, generation, message_id),
-                None,
+                },
+                options={"uuid": stable_reply_uuid, **reply_options},
             )
-            if isinstance(message_id, str)
-            else None
-        )
-        parsed = self._parse_status_ingress(data, raw_metadata)
-        if parsed is None:
-            return
-        (
-            event_id,
-            message_id,
-            tenant_key,
-            sender_id,
-            sender_union_id,
-            command,
-            is_p2p,
-        ) = parsed
-        if (
-            tenant_key != state.tenant_key
-            or sender_union_id != state.requester_union_id
-            or command != "/status"
-            or is_p2p is not True
-        ):
-            return
-        effect_id = f"verification-status-reply:{event_id}"
-        effect_state = state.effect_state(effect_id)
-        if effect_state is None:
-            state = service.commit_effect_transition(
-                intent_id,
-                effect_id=effect_id,
-                effect_type="employee_status_reply",
-                next_state=HireEffectState.PREPARED,
+            if getattr(receipt, "success", False) is not True:
+                raise RuntimeError("employee status reply was not acknowledged")
+            send_request_id = getattr(receipt, "request_id", "")
+            reply_app_id = getattr(receipt, "app_id", "")
+            reply_generation = getattr(receipt, "generation", 0)
+            reply_connection_id = getattr(receipt, "connection_id", "")
+            reply_message_id = getattr(receipt, "message_id", "")
+            if (
+                not isinstance(send_request_id, str)
+                or not send_request_id
+                or reply_app_id != current.app_id
+                or reply_generation != generation
+                or reply_connection_id != current.channel_connection_id
+                or not isinstance(reply_message_id, str)
+                or not reply_message_id
+            ):
+                raise RuntimeError("employee status reply receipt is invalid")
+            ingress_at = (
+                max(time.time(), challenge.issued_at)
+                if received_at is None
+                else received_at
             )
-            effect_state = state.effect_state(effect_id)
-        if effect_state is HireEffectState.PREPARED:
-            state = service.commit_effect_transition(
-                intent_id,
-                effect_id=effect_id,
-                effect_type="employee_status_reply",
-                next_state=HireEffectState.EXECUTING,
+            fence = activation_audit.activation_fence(
+                current.tenant_key,
+                audit_target_hashes,
             )
-            effect_state = state.effect_state(effect_id)
-        if effect_state is not HireEffectState.EXECUTING or self._channels is None:
-            return
-        receipt = await asyncio.to_thread(
-            self._channels.send,
-            state.agent_id,
-            generation=generation,
-            target=sender_id,
-            message={"text": f"{state.employee_name} is ready."},
-            options={"reply_to": message_id},
-        )
-        if getattr(receipt, "success", False) is not True:
-            raise RuntimeError("employee status reply was not acknowledged")
-        send_request_id = getattr(receipt, "request_id", "")
-        reply_app_id = getattr(receipt, "app_id", "")
-        reply_generation = getattr(receipt, "generation", 0)
-        reply_connection_id = getattr(receipt, "connection_id", "")
-        reply_message_id = getattr(receipt, "message_id", "")
-        if (
-            not isinstance(send_request_id, str)
-            or not send_request_id
-            or reply_app_id != state.app_id
-            or reply_generation != generation
-            or reply_connection_id != state.channel_connection_id
-            or not isinstance(reply_message_id, str)
-            or not reply_message_id
-        ):
-            raise RuntimeError("employee status reply receipt is invalid")
-        audit = self._main_bot_send_audit
-        if audit is None:
-            raise RuntimeError("main Bot send audit is unavailable")
-        audited_at = time.time()
-        main_bot_send_count = await asyncio.to_thread(
-            audit,
-            state.tenant_key,
-            challenge.issued_at,
-            audited_at,
-        )
-        if isinstance(main_bot_send_count, bool) or not isinstance(main_bot_send_count, int) or main_bot_send_count < 0:
-            raise RuntimeError("main Bot send audit is invalid")
-        service.commit_effect_transition(
-            intent_id,
-            effect_id=effect_id,
-            effect_type="employee_status_reply",
-            next_state=HireEffectState.COMMITTED,
-            metadata={
-                "send_request_id": send_request_id,
-                "ingress_event_id": event_id,
-                "reply_app_id": reply_app_id,
-                "reply_message_id": reply_message_id,
-                "generation": str(reply_generation),
-                "connection_id": reply_connection_id,
-                "main_bot_send_count": str(main_bot_send_count),
-            },
-        )
-        coordinates = VerificationCoordinates(
-            hire_intent_id=state.intent_id,
-            tenant_key=state.tenant_key,
-            app_id=state.app_id,
-            agent_id=state.agent_id,
-            generation=generation,
-            nonce=challenge.nonce,
-        )
-        ingress_at = max(time.time(), challenge.issued_at)
-        router = self._verification_router
-        if router is None:
-            raise RuntimeError("employee Verification Router unavailable")
-        decision = router.evaluate(
-            challenge,
-            slash=SlashVerificationEvidence(
-                coordinates=coordinates,
-                desired_spec_hash=state.slash_spec_hash,
-                observed_spec_hash=state.slash_observed_hash,
-                reconciled=state.slash_spec_hash == state.slash_observed_hash,
-                verified_at=state.slash_verified_at,
-            ),
-            channel=ChannelVerificationEvidence(
-                coordinates=coordinates,
-                identity_app_id=state.channel_identity_app_id,
-                connection_id=state.channel_connection_id,
-                ready=True,
-                verified_at=state.channel_verified_at,
-            ),
-            ingress=TenantIngressEvidence(
-                coordinates=coordinates,
+            with fence:
+                evaluated_at = time.time()
+                main_bot_send_count = self._count_main_bot_target_attempts(
+                    audit,
+                    tenant_key=current.tenant_key,
+                    target_hashes=audit_target_hashes,
+                    start=challenge.issued_at,
+                    end=evaluated_at,
+                )
+                reply_effect_metadata = {
+                    "send_request_id": send_request_id,
+                    "ingress_event_id": event_id,
+                    "reply_app_id": reply_app_id,
+                    "reply_message_id": reply_message_id,
+                    "generation": str(reply_generation),
+                    "connection_id": reply_connection_id,
+                    "main_bot_send_count": str(main_bot_send_count),
+                }
+                if main_bot_send_count != 0:
+                    current = service.commit_effect_transition(
+                        state.intent_id,
+                        effect_id=effect_id,
+                        effect_type="employee_status_reply",
+                        next_state=HireEffectState.COMMITTED,
+                        metadata=reply_effect_metadata,
+                    )
+                    self._send_activation_incomplete_notice(
+                        state=current,
+                        generation=generation,
+                        event_id=event_id,
+                        sender_id=sender_id,
+                    )
+                    return False
+                coordinates = VerificationCoordinates(
+                    hire_intent_id=current.intent_id,
+                    tenant_key=current.tenant_key,
+                    app_id=current.app_id,
+                    agent_id=current.agent_id,
+                    generation=generation,
+                    nonce=challenge.nonce,
+                )
+                router = self._verification_router
+                if router is None:
+                    raise RuntimeError("employee Verification Router unavailable")
+                decision = router.evaluate_for_atomic_commit(
+                    challenge,
+                    slash=SlashVerificationEvidence(
+                        coordinates=coordinates,
+                        desired_spec_hash=current.slash_spec_hash,
+                        observed_spec_hash=current.slash_observed_hash,
+                        reconciled=current.slash_spec_hash
+                        == current.slash_observed_hash,
+                        verified_at=current.slash_verified_at,
+                    ),
+                    channel=ChannelVerificationEvidence(
+                        coordinates=coordinates,
+                        identity_app_id=current.channel_identity_app_id,
+                        connection_id=current.channel_connection_id,
+                        ready=True,
+                        verified_at=current.channel_verified_at,
+                    ),
+                    ingress=TenantIngressEvidence(
+                        coordinates=coordinates,
+                        event_id=event_id,
+                        message_id=message_id,
+                        sender_principal_id=sender_id,
+                        sender_union_id=sender_union_id,
+                        command=command,
+                        is_p2p=is_p2p,
+                        reply_succeeded=True,
+                        reply_app_id=reply_app_id,
+                        employee_send_request_id=send_request_id,
+                        main_bot_send_count=main_bot_send_count,
+                        received_at=ingress_at,
+                    ),
+                    current_generation=generation,
+                    now=evaluated_at,
+                )
+                if decision.outcome is not VerificationOutcome.READY:
+                    current = service.commit_effect_transition(
+                        state.intent_id,
+                        effect_id=effect_id,
+                        effect_type="employee_status_reply",
+                        next_state=HireEffectState.COMMITTED,
+                        metadata=reply_effect_metadata,
+                    )
+                    self._send_activation_incomplete_notice(
+                        state=current,
+                        generation=generation,
+                        event_id=event_id,
+                        sender_id=sender_id,
+                    )
+                    return False
+                active = service.commit_activation(
+                    decision,
+                    reply_effect_id=effect_id,
+                    reply_effect_metadata=reply_effect_metadata,
+                )
+            self._send_activation_success_notice(
+                state=active,
                 event_id=event_id,
-                message_id=message_id,
-                sender_principal_id=sender_id,
-                sender_union_id=sender_union_id,
-                command=command,
-                is_p2p=is_p2p,
-                reply_succeeded=True,
-                reply_app_id=reply_app_id,
-                employee_send_request_id=send_request_id,
-                main_bot_send_count=main_bot_send_count,
-                received_at=ingress_at,
-            ),
-            current_generation=generation,
-            now=ingress_at,
-        )
-        if decision.outcome is VerificationOutcome.READY:
-            service.commit_activation(decision)
+                sender_id=sender_id,
+            )
             if not self._refresh_context_bindings(service.projection_state):
                 self._context_blockers = ("context_binding_sync",)
+            self._schedule_activation_notification(active)
+            return True
 
     @staticmethod
-    def _parse_status_ingress(
-        data: object,
-        raw_metadata: tuple[str, str, str] | None,
-    ) -> tuple[str, str, str, str, str, str, bool] | None:
-        if not isinstance(data, dict) or raw_metadata is None:
-            return None
-        conversation = data.get("conversation")
-        sender = data.get("sender")
-        if not all(isinstance(value, dict) for value in (conversation, sender)):
-            return None
-        event_id, tenant_key, sender_union_id = raw_metadata
-        message_id = data.get("id")
-        sender_id = sender.get("open_id")
-        text = data.get("safe_content_text") or data.get("content_text")
-        chat_type = conversation.get("chat_type")
-        if not all(
-            isinstance(value, str) and value
-            for value in (
-                event_id,
-                tenant_key,
-                message_id,
-                sender_id,
-                sender_union_id,
-                text,
-            )
+    def _activation_audit_target_hashes(
+        state: DurableHireState,
+        *,
+        ingress_message_id: str,
+    ) -> tuple[str, ...]:
+        """Cover every known main-Bot reply/create coordinate for the requester."""
+
+        canonical_ingress_hash = ingress_message_id.removeprefix("om_")
+        if re.fullmatch(r"[0-9a-f]{64}", canonical_ingress_hash) is None:
+            canonical_ingress_hash = hashlib.sha256(
+                ingress_message_id.encode()
+            ).hexdigest()
+        target_hashes = {canonical_ingress_hash}
+        for target in (
+            state.requester_union_id,
+            state.requester_principal_id,
+            state.chat_id,
+            state.message_id,
         ):
-            return None
-        return (
-            event_id,
-            message_id,
-            tenant_key,
-            sender_id,
-            sender_union_id,
-            text.strip(),
-            chat_type == "p2p",
+            if target:
+                target_hashes.add(hashlib.sha256(target.encode()).hexdigest())
+        return tuple(sorted(target_hashes))
+
+    @staticmethod
+    def _count_main_bot_target_attempts(
+        audit: MainBotSendAudit,
+        *,
+        tenant_key: str,
+        target_hashes: tuple[str, ...],
+        start: float,
+        end: float,
+    ) -> int:
+        total = 0
+        for target_hash in target_hashes:
+            count = audit(tenant_key, target_hash, start, end)
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < 0
+            ):
+                raise RuntimeError("main Bot send audit is invalid")
+            total += count
+        return total
+
+    def _schedule_activation_notification(self, state: DurableHireState) -> None:
+        loop = self._loop
+        if loop is None or self._notification_status is None:
+            return
+        future = asyncio.run_coroutine_threadsafe(
+            self._retry_terminal_notification(state.intent_id, "active"),
+            loop,
         )
+        try:
+            future.result(timeout=15.0)
+            service = self._require_service()
+            with service.employee_dispatch_guard():
+                service.synchronize_projection_unlocked()
+        except Exception as exc:
+            logger.error(
+                "employee activation notification failed closed: %s",
+                type(exc).__name__,
+            )
 
     def _require_service(self) -> ProductionEmployeeHireService:
         if self._service is None:

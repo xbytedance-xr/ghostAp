@@ -786,7 +786,12 @@ class TestWorkflowHandlerConfirmFlow(unittest.TestCase):
         self.assertNotIn(".ghostap", str(html_path))
         self.assertIn("cache sentinel", html)
         handler.im_client.upload_file.assert_called_once()
-        handler.im_client.reply_file.assert_called_once_with("msg_1", "file_key_123", reply_in_thread=True)
+        handler.im_client.reply_file.assert_called_once_with(
+            "msg_1",
+            "file_key_123",
+            reply_in_thread=True,
+            audit_aliases=(),
+        )
 
     def test_workflow_callbacks_fallback_card_updates_future_message_id(self):
         """If progress patching fails, callbacks should send a full card and update the target id."""

@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import os
 import textwrap
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -255,6 +257,97 @@ def _supervisor(tmp_path: Path, *, behavior: str = "normal", timeout: float = 2.
     return supervisor, secret, calls
 
 
+def test_event_fd_ownership_can_only_be_taken_once(tmp_path: Path) -> None:
+    supervisor, _secret, _calls = _supervisor(tmp_path)
+    event_r, event_w = os.pipe()
+    runtime = SimpleNamespace(event_fd=event_r)
+    barrier = threading.Barrier(3)
+
+    def take() -> int:
+        barrier.wait()
+        return supervisor._take_event_fd(runtime)  # type: ignore[arg-type]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(take) for _ in range(2)]
+            barrier.wait()
+            owners = [future.result(timeout=2) for future in futures]
+        assert sorted(owners) == [-1, event_r]
+        assert runtime.event_fd == -1
+        os.close(event_r)
+        event_r = -1
+    finally:
+        if event_r >= 0:
+            os.close(event_r)
+        os.close(event_w)
+        supervisor.close()
+
+
+def test_control_fd_ownership_can_only_be_taken_once(tmp_path: Path) -> None:
+    supervisor, _secret, _calls = _supervisor(tmp_path)
+    control_r, control_w = os.pipe()
+    runtime = SimpleNamespace(control_fd=control_w, control_lock=threading.Lock())
+    barrier = threading.Barrier(3)
+
+    def take() -> int:
+        barrier.wait()
+        return supervisor._take_control_fd(runtime)  # type: ignore[arg-type]
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(take) for _ in range(2)]
+            barrier.wait()
+            owners = [future.result(timeout=2) for future in futures]
+        assert sorted(owners) == [-1, control_w]
+        assert runtime.control_fd == -1
+        os.close(control_w)
+        control_w = -1
+    finally:
+        os.close(control_r)
+        if control_w >= 0:
+            os.close(control_w)
+        supervisor.close()
+
+
+def test_bootstrap_write_failure_closes_bootstrap_fd_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor, _secret, _calls = _supervisor(tmp_path)
+    real_close_fd = employee_channel_module._close_fd
+    bootstrap_fd = -1
+    bootstrap_close_count = 0
+
+    def fail_bootstrap_write(descriptor: int, _payload: bytes) -> None:
+        nonlocal bootstrap_fd
+        bootstrap_fd = descriptor
+        raise OSError("bootstrap pipe failed")
+
+    def track_close(descriptor: int) -> None:
+        nonlocal bootstrap_close_count
+        if descriptor == bootstrap_fd:
+            bootstrap_close_count += 1
+        real_close_fd(descriptor)
+
+    monkeypatch.setattr(employee_channel_module, "_write_all", fail_bootstrap_write)
+    monkeypatch.setattr(employee_channel_module, "_close_fd", track_close)
+    try:
+        status = supervisor.start(
+            "agt_bootstrap",
+            "cli_bootstrap",
+            "cred_bootstrap",
+            1,
+            lambda _: None,
+        )
+
+        assert status.state is ChannelProcessState.FAILED
+        assert status.error_code == "bootstrap-failed"
+        assert bootstrap_fd >= 0
+        assert bootstrap_close_count == 1
+    finally:
+        supervisor.close()
+
+
 def test_two_employees_get_distinct_fresh_processes_and_one_shot_credentials(tmp_path: Path) -> None:
     supervisor, secret, calls = _supervisor(tmp_path)
     try:
@@ -304,6 +397,180 @@ def test_clean_stop_and_crash_detection(tmp_path: Path) -> None:
         assert status.exit_code == 23
     finally:
         crashing.close()
+
+
+def test_start_waits_for_inflight_stop_before_launching_next_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor, _secret, _calls = _supervisor(tmp_path)
+    stop_entered = threading.Event()
+    allow_stop = threading.Event()
+    replacement_launch_started = threading.Event()
+    real_send_control = supervisor._send_control
+    real_launch_candidate = supervisor._launch_candidate
+
+    def block_stop(runtime, frame_type, payload):
+        if (
+            frame_type is FrameType.STOP
+            and runtime.status.agent_id == "agt_serial"
+            and runtime.status.generation == 1
+        ):
+            stop_entered.set()
+            assert allow_stop.wait(2.0)
+        return real_send_control(runtime, frame_type, payload)
+
+    def observe_replacement_launch(*args, **kwargs):
+        if kwargs.get("agent_id") == "agt_serial" and kwargs.get("generation") == 2:
+            replacement_launch_started.set()
+        return real_launch_candidate(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_send_control", block_stop)
+    monkeypatch.setattr(supervisor, "_launch_candidate", observe_replacement_launch)
+    try:
+        first = supervisor.start(
+            "agt_serial",
+            "cli_serial",
+            "cred_serial",
+            1,
+            lambda _: None,
+        )
+        first_runtime = supervisor._runtimes["agt_serial"]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            stop_future = executor.submit(supervisor.stop, "agt_serial")
+            assert stop_entered.wait(1.0)
+            start_future = executor.submit(
+                supervisor.start,
+                "agt_serial",
+                "cli_serial",
+                "cred_serial",
+                2,
+                lambda _: None,
+            )
+            try:
+                assert not replacement_launch_started.wait(0.2)
+                assert not start_future.done()
+                assert first_runtime.process.poll() is None
+            finally:
+                allow_stop.set()
+
+            stopped = stop_future.result(timeout=3.0)
+            replacement = start_future.result(timeout=3.0)
+
+        assert first.state is ChannelProcessState.READY
+        assert stopped is not None and stopped.state is ChannelProcessState.STOPPED
+        assert first_runtime.process.poll() is not None
+        assert replacement.state is ChannelProcessState.READY
+        assert replacement.generation == 2
+        assert replacement.pid != first.pid
+    finally:
+        allow_stop.set()
+        supervisor.close()
+
+
+def test_close_waits_for_inflight_start_and_reaps_unpublished_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor, _secret, _calls = _supervisor(tmp_path)
+    original_launch = supervisor._launch_candidate
+    launch_entered = threading.Event()
+    allow_launch = threading.Event()
+    launched_runtimes = []
+
+    def hold_candidate_launch(*args, **kwargs):
+        launch_entered.set()
+        assert allow_launch.wait(2.0)
+        result = original_launch(*args, **kwargs)
+        launched_runtimes.append(result[0])
+        return result
+
+    monkeypatch.setattr(supervisor, "_launch_candidate", hold_candidate_launch)
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            start_future = executor.submit(
+                supervisor.start,
+                "agt_close_race",
+                "cli_close_race",
+                "cred_close_race",
+                1,
+                lambda _: None,
+            )
+            assert launch_entered.wait(1.0)
+            close_future = executor.submit(supervisor.close)
+            try:
+                deadline = time.monotonic() + 1.0
+                while not supervisor._closed and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert supervisor._closed
+                assert not close_future.done()
+            finally:
+                allow_launch.set()
+
+            with pytest.raises(RuntimeError, match="supervisor is closed"):
+                start_future.result(timeout=3.0)
+            close_future.result(timeout=3.0)
+
+        assert launched_runtimes
+        assert launched_runtimes[0].process.poll() is not None
+        assert "agt_close_race" not in supervisor._runtimes
+    finally:
+        allow_launch.set()
+        supervisor.stop("agt_close_race")
+
+
+def test_concurrent_close_callers_wait_for_shared_teardown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor, _secret, _calls = _supervisor(tmp_path)
+    stop_entered = threading.Event()
+    allow_stop = threading.Event()
+    real_send_control = supervisor._send_control
+
+    def block_stop(runtime, frame_type, payload):
+        if frame_type is FrameType.STOP:
+            stop_entered.set()
+            assert allow_stop.wait(2.0)
+        return real_send_control(runtime, frame_type, payload)
+
+    monkeypatch.setattr(supervisor, "_send_control", block_stop)
+    ready = supervisor.start(
+        "agt_concurrent_close",
+        "cli_concurrent_close",
+        "cred_concurrent_close",
+        1,
+        lambda _: None,
+    )
+    runtime = supervisor._runtimes["agt_concurrent_close"]
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_close = executor.submit(supervisor.close)
+            assert stop_entered.wait(1.0)
+            second_close_started = threading.Event()
+
+            def close_again() -> None:
+                second_close_started.set()
+                supervisor.close()
+
+            second_close = executor.submit(close_again)
+            try:
+                assert second_close_started.wait(1.0)
+                assert not second_close.done()
+                assert runtime.process.poll() is None
+            finally:
+                allow_stop.set()
+
+            first_close.result(timeout=3.0)
+            second_close.result(timeout=3.0)
+
+        assert ready.state is ChannelProcessState.READY
+        assert runtime.process.poll() is not None
+        assert not runtime.reader.is_alive()
+    finally:
+        allow_stop.set()
+        supervisor.stop("agt_concurrent_close")
 
 
 def test_ready_event_pipe_eof_revokes_readiness_and_reaps_live_worker(

@@ -192,9 +192,20 @@ class AtomicEmployeeArchive:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except Exception:
             return None
+        expected_disposition = (
+            "manual_disposition_confirmed"
+            if state.external_disposition_confirmed
+            else "manual_deletion_required"
+        )
         return (
             manifest.get("agent_id") == state.agent_id
-            and manifest.get("external_app_disposition") == "manual_deletion_required"
+            and manifest.get("external_app_disposition") == expected_disposition
+            and manifest.get("external_disposition_ref")
+            == (state.external_disposition_ref or None)
+            and manifest.get("external_disposed_by")
+            == (state.external_disposed_by or None)
+            and manifest.get("external_disposed_at")
+            == (state.external_disposed_at or None)
             and manifest.get("app_id_sha256")
             == hashlib.sha256(state.app_id.encode()).hexdigest()
             and manifest.get("credential_destroyed") is True
@@ -274,9 +285,16 @@ class AtomicEmployeeArchive:
             },
             "credential_destroyed": True,
             "archived_at": datetime.now(UTC).isoformat(),
-            "external_app_disposition": "manual_deletion_required",
-            "external_disposed_at": None,
-            "external_disposed_by": None,
+            "external_app_disposition": (
+                "manual_disposition_confirmed"
+                if state.external_disposition_confirmed
+                else "manual_deletion_required"
+            ),
+            "external_disposition_ref": (
+                state.external_disposition_ref or None
+            ),
+            "external_disposed_at": state.external_disposed_at or None,
+            "external_disposed_by": state.external_disposed_by or None,
         }
 
     @staticmethod

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shlex
 import threading
 from numbers import Real
@@ -34,6 +35,19 @@ if TYPE_CHECKING:
     from ..handler_context import HandlerContext
 
 logger = logging.getLogger(__name__)
+
+_EXISTING_HIRE_APP_ID_RE = re.compile(r"cli_[A-Za-z0-9_-]{3,128}")
+
+
+def _normalize_existing_hire_app_id(value: object) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("existing hire App ID must be text")
+    normalized = value.strip()
+    if normalized and _EXISTING_HIRE_APP_ID_RE.fullmatch(normalized) is None:
+        raise ValueError("invalid existing hire App ID")
+    return normalized
 
 
 def _positive_seconds(value: object, default: float) -> float:
@@ -2003,7 +2017,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         """Create a Slock virtual role or dispatch an independent employee hire.
 
         Supports parameter syntax:
-            /hire <name> [--tool <type>] [--model <model>] [--emoji <e>] [--role <role>] [--prompt <text>]
+            /hire <name> [--app-id <cli_...>] [--tool <type>] [--model <model>]
             /new-role <name> [--tool <type>] [--model <model>] [--emoji <e>] [--role <role>] [--prompt <text>]
 
         ``global_hire=True`` never writes the legacy registry. It dispatches to
@@ -2013,7 +2027,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             self.reply_text(
                 message_id,
                 "请提供员工名称\n\n用法: `/hire <名称>` [--tool codex] [--model o3-pro] "
-                "[--emoji 🔧] [--role coder] [--prompt <约束描述>]",
+                "[--app-id cli_...] [--emoji 🔧] [--role coder] [--prompt <约束描述>]",
             )
             return
 
@@ -2037,14 +2051,6 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             tokens = name.split()
 
         role_name = tokens[0] if tokens else name
-        if len(tokens) == 1:
-            self.show_new_role_tool_selection(
-                message_id,
-                role_name,
-                project,
-                global_hire=global_hire,
-            )
-            return
 
         tool_type = "traex"
         model_name = ""
@@ -2060,6 +2066,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         model_explicit = False
         emoji_explicit = False
         prompt_explicit = False
+        existing_app_id = ""
 
         i = 1
         while i < len(tokens):
@@ -2089,6 +2096,16 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 system_prompt = tokens[i + 1]
                 prompt_explicit = True
                 i += 2
+            elif tok in {"--app-id", "--existing-app-id"}:
+                if i + 1 >= len(tokens):
+                    self.reply_text(message_id, "请在 `--app-id` 后提供有效的飞书 App ID（cli_...）。")
+                    return
+                try:
+                    existing_app_id = _normalize_existing_hire_app_id(tokens[i + 1])
+                except ValueError:
+                    self.reply_text(message_id, "飞书 App ID 无效；应为 `cli_` 开头的开放平台应用 ID。")
+                    return
+                i += 2
             elif tok == "--template" and i + 1 < len(tokens):
                 template_name = tokens[i + 1]
                 i += 2
@@ -2101,6 +2118,24 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             else:
                 i += 1
 
+        if existing_app_id and not global_hire:
+            self.reply_text(message_id, "`--app-id` 仅用于 `/hire` 独立飞书员工。")
+            return
+
+        app_only_selection = len(tokens) == 3 and tokens[1] in {
+            "--app-id",
+            "--existing-app-id",
+        }
+        if len(tokens) == 1 or (global_hire and app_only_selection):
+            self.show_new_role_tool_selection(
+                message_id,
+                role_name,
+                project,
+                global_hire=global_hire,
+                existing_app_id=existing_app_id,
+            )
+            return
+
         if global_hire:
             self._start_visible_employee_hire(
                 message_id=message_id,
@@ -2110,6 +2145,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 model=model_name,
                 profile=profile,
                 effort=effort,
+                existing_app_id=existing_app_id,
             )
             return
 
@@ -2291,6 +2327,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         project: Optional["ProjectContext"] = None,
         *,
         global_hire: bool = False,
+        existing_app_id: str = "",
     ) -> None:
         """Show unified /hire card: tool dropdown + model cascade in one card."""
 
@@ -2304,6 +2341,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         models = fetch_acp_models(default_tool, cwd=cwd, current_model=None)
 
         value_extra: dict = {"global_hire": True} if global_hire else {}
+        if global_hire and existing_app_id:
+            value_extra["existing_app_id"] = existing_app_id
         _, card_content = CardBuilder.build_slock_role_unified_select_card(
             role_name=role_name,
             tools=tool_options,
@@ -2335,6 +2374,11 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         requester_id = self._visible_hire_requester(message_id)
         if requester_id is None:
             return
+        try:
+            existing_app_id = _normalize_existing_hire_app_id(existing_app_id)
+        except ValueError:
+            self.reply_text(message_id, "飞书 App ID 无效；应为 `cli_` 开头的开放平台应用 ID。")
+            return
         if tool not in self.TOOL_TYPE_ROLE_MAP:
             self.reply_text(message_id, f"❌ 无效的员工工具: `{tool}`")
             return
@@ -2345,6 +2389,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 "release_evidence": "QA release evidence（独立发布证明未就绪）",
                 "registration_notifier": "注册链接通知通道未就绪",
                 "main_bot_send_audit": "主 Bot 零代发审计未就绪",
+                "main_bot_activation_fence": "主 Bot 激活并发围栏未就绪",
                 "production_anchor": "生产 Journal anchor 未就绪",
                 "worker_sandbox": "员工进程 sandbox 证明未就绪",
                 "durable_configuration": "Journal/Vault 持久化配置未就绪",
@@ -2415,6 +2460,12 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                     "可见员工数量已达到上限。请先执行 `/roster`，并用 `/fire <员工名称>` "
                     "完成不再需要员工的退役后重试。",
                 )
+            elif reason == "existing app already assigned":
+                self.reply_text(
+                    message_id,
+                    f"飞书应用 `{existing_app_id}` 已绑定其他未归档员工。请先执行 `/roster`，"
+                    "并用 `/fire <员工名称>` 完成原员工退役后再重试。",
+                )
             else:
                 self.reply_text(
                     message_id,
@@ -2429,12 +2480,23 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         """List all tenant employees with state and group membership count."""
 
         from ...autonomous.domain.enums import EmployeeState, WorkerType
-        from ...thread.manager import get_current_tenant_key
+        from ...thread.manager import (
+            get_current_is_p2p,
+            get_current_sender_id,
+            get_current_tenant_key,
+        )
 
         tenant_key = get_current_tenant_key() or ""
         if not tenant_key:
             self.reply_text(message_id, "⚠️ 无法确认租户身份。")
             return
+
+        requester_id = get_current_sender_id() or ""
+        show_admin_details = (
+            get_current_is_p2p()
+            and requester_id
+            in getattr(self.ctx.settings, "admin_user_ids", frozenset())
+        )
 
         hire_service = getattr(self.ctx, "employee_hire_service", None)
         if hire_service is None:
@@ -2479,6 +2541,43 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             EmployeeState.RETIRING: "🔄 退休中",
         }
 
+        hire_states: dict[str, object] = {}
+        pending_fire_states: dict[str, list[object]] = {}
+        if show_admin_details:
+            list_hires = getattr(hire_service, "list_states", None)
+            if callable(list_hires):
+                for state in list_hires():
+                    if getattr(state, "tenant_key", "") == tenant_key:
+                        hire_states[getattr(state, "agent_id", "")] = state
+            fire_service = getattr(self.ctx, "employee_fire_service", None)
+            list_fires = getattr(fire_service, "list_states", None)
+            if callable(list_fires):
+                from ...autonomous.provisioning.fire_state import (
+                    FireCleanupMode,
+                    FirePhase,
+                )
+
+                for state in list_fires():
+                    if (
+                        getattr(state, "tenant_key", "") == tenant_key
+                        and getattr(state, "phase", None)
+                        is FirePhase.ACTION_REQUIRED
+                        and getattr(state, "cleanup_mode", None)
+                        is FireCleanupMode.EXTERNAL_UNKNOWN
+                        and getattr(state, "error_code", "")
+                        == "external_cleanup_authority_unavailable"
+                        and getattr(
+                            state,
+                            "external_disposition_confirmed",
+                            False,
+                        )
+                        is False
+                    ):
+                        pending_fire_states.setdefault(
+                            getattr(state, "agent_id", ""),
+                            [],
+                        ).append(state)
+
         lines: list[str] = []
         for emp in sorted(employees, key=lambda e: e.name):
             state_label = _STATE_LABELS.get(emp.state, f"❓ {emp.state.value}")
@@ -2486,9 +2585,55 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             tool_model = emp.tool or "未配置"
             if emp.model:
                 tool_model = f"{emp.tool}/{emp.model}"
-            lines.append(
-                f"{emp.emoji} **{emp.name}**　{tool_model}　{state_label}　群×{group_count}"
+            line = (
+                f"{emp.emoji} **{emp.name}**　{tool_model}　"
+                f"{state_label}　群×{group_count}"
             )
+            if show_admin_details:
+                details = [f"Employee ID: `{emp.agent_id}`"]
+                principal = getattr(projection, "bot_principals", {}).get(
+                    getattr(emp, "bot_principal_id", "")
+                )
+                app_id = ""
+                if (
+                    principal is not None
+                    and getattr(principal, "tenant_key", "") == tenant_key
+                    and getattr(principal, "agent_id", "") == emp.agent_id
+                ):
+                    app_id = str(getattr(principal, "app_id", "") or "")
+                if not app_id:
+                    hire_state = hire_states.get(emp.agent_id)
+                    app_id = str(
+                        getattr(hire_state, "app_id", "")
+                        or getattr(hire_state, "existing_app_id", "")
+                        or ""
+                    )
+                pending = pending_fire_states.get(emp.agent_id, [])
+                if len(pending) == 1:
+                    pending_ref = str(
+                        getattr(pending[0], "app_id", "")
+                        or "NO_APP_FOUND"
+                    )
+                    if pending_ref == "NO_APP_FOUND":
+                        details.append("App ID: `未识别`（请先确认开放平台未创建应用）")
+                    else:
+                        app_id = pending_ref
+                if app_id:
+                    details.append(f"App ID: `{app_id}`")
+                if len(pending) == 1:
+                    pending_ref = str(
+                        getattr(pending[0], "app_id", "")
+                        or "NO_APP_FOUND"
+                    )
+                    details.append(
+                        "核验开放平台处置结果后执行："
+                        f"`/fire {emp.agent_id} --confirm-app-disposed "
+                        f"{pending_ref}`"
+                    )
+                elif len(pending) > 1:
+                    details.append("⚠️ 退役记录不一致，请查看安全审计日志。")
+                line = f"{line}\n  " + "　".join(details)
+            lines.append(line)
 
         card = {
             "config": {"wide_screen_mode": True},
@@ -2506,7 +2651,11 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             EmployeeFireRequest,
             FireServiceError,
         )
-        from ...autonomous.provisioning.fire_state import FireEffectState, FirePhase
+        from ...autonomous.provisioning.fire_state import (
+            FireCleanupMode,
+            FireEffectState,
+            FirePhase,
+        )
         from ...thread.manager import (
             get_current_is_p2p,
             get_current_sender_id,
@@ -2523,24 +2672,39 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
         tokens = args.split()
         drain = "--drain" in tokens
+        confirmation_ref = ""
+        confirmation_flag = "--confirm-app-disposed"
+        if confirmation_flag in tokens:
+            index = tokens.index(confirmation_flag)
+            if index + 1 >= len(tokens):
+                self.reply_text(
+                    message_id,
+                    "用法: `/fire <员工名称或ID> --confirm-app-disposed <AppID|NO_APP_FOUND>`",
+                )
+                return
+            confirmation_ref = tokens[index + 1]
+            tokens = tokens[:index] + tokens[index + 2 :]
         names = [token for token in tokens if token != "--drain"]
         if len(names) != 1:
             self.reply_text(message_id, "用法: `/fire <员工名称或ID> [--drain]`")
             return
+        request = EmployeeFireRequest(
+            employee=names[0],
+            tenant_key=get_current_tenant_key() or "",
+            message_id=message_id,
+            chat_id=chat_id,
+            requester_principal_id=requester_id,
+            drain=drain,
+        )
         service = getattr(self.ctx, "employee_fire_service", None)
         if service is None:
             self.reply_text(message_id, "员工退役服务未就绪；未执行任何删除操作。")
             return
         try:
-            state = service.start_fire(
-                EmployeeFireRequest(
-                    employee=names[0],
-                    tenant_key=get_current_tenant_key() or "",
-                    message_id=message_id,
-                    chat_id=chat_id,
-                    requester_principal_id=requester_id,
-                    drain=drain,
-                )
+            state = (
+                service.confirm_external_disposition(request, confirmation_ref)
+                if confirmation_ref
+                else service.start_fire(request)
             )
         except FireServiceError as exc:
             reason = str(exc)
@@ -2555,6 +2719,12 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                     message_id,
                     "未找到唯一的在职员工。请执行 `/roster` 核对名称或改用员工 ID。",
                 )
+            elif reason == "external disposition reference mismatch":
+                self.reply_text(
+                    message_id,
+                    "外部应用处置确认与待处理记录不匹配。请使用 `/roster` 核对员工，"
+                    "并提交记录中的精确 App ID；若开放平台确认从未创建应用，使用 `NO_APP_FOUND`。",
+                )
             else:
                 self.reply_text(
                     message_id,
@@ -2566,19 +2736,64 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             self.reply_text(message_id, "员工退役未能安全推进；请查看审计日志后处理。")
             return
         if state.phase is FirePhase.ARCHIVED:
-            self.reply_text(
-                message_id,
-                "✅ 员工已停止托管、清理命令和本地凭证并完成归档。"
-                "开放平台应用仍需管理员手动停用或删除，GhostAP 未声称已删除该应用。",
-            )
+            if getattr(state, "external_disposition_confirmed", False):
+                self.reply_text(
+                    message_id,
+                    "✅ 已记录管理员的开放平台处置确认，员工现已完成归档，名称和容量已释放。",
+                )
+            elif (
+                getattr(state, "cleanup_mode", None)
+                is FireCleanupMode.SAFE_ABORT
+            ):
+                if getattr(state, "app_id", ""):
+                    self.reply_text(
+                        message_id,
+                        "✅ 员工创建已在应用注册执行前安全中止并完成归档，名称和容量已释放。"
+                        f"GhostAP 未修改或删除已有应用 `{state.app_id}`；是否继续保留或由管理员"
+                        "手动停用，请按实际用途决定。",
+                    )
+                else:
+                    self.reply_text(
+                        message_id,
+                        "✅ 员工创建已在应用注册执行前安全中止并完成归档，名称和容量已释放。"
+                        "未创建或绑定飞书应用，也没有员工凭证、Slash 命令或 Channel 需要清理。",
+                    )
+            elif (
+                getattr(state, "cleanup_mode", None)
+                is FireCleanupMode.EXTERNAL_UNKNOWN
+            ):
+                self.reply_text(
+                    message_id,
+                    "⚠️ 退役 Journal 出现缺少外部处置确认的异常归档；请查看安全审计日志，"
+                    "GhostAP 未声称应用已删除。",
+                )
+            else:
+                self.reply_text(
+                    message_id,
+                    "✅ 员工已停止托管、清理命令和本地凭证并完成归档。"
+                    "开放平台应用仍需管理员手动停用或删除，GhostAP 未声称已删除该应用。",
+                )
         else:
             effects = dict(getattr(state, "effects", ()) or ())
-            if effects.get("slash_cleanup") is FireEffectState.ACTION_REQUIRED:
+            if (
+                state.error_code
+                == "external_cleanup_authority_unavailable"
+            ):
+                self.reply_text(
+                    message_id,
+                    "⚠️ 员工已关闭新任务入口，但应用注册已开始且本地没有可验证的完整凭据，"
+                    "因此 GhostAP 拒绝误报退役成功。请在飞书开放平台核对并停用或删除对应应用，"
+                    f"然后执行 `/fire {names[0]} --confirm-app-disposed "
+                    f"{state.app_id or 'NO_APP_FOUND'}`。完成确认前该员工名称和应用仍保持占用。",
+                )
+            elif effects.get("slash_cleanup") is FireEffectState.ACTION_REQUIRED:
                 employee_name = str(getattr(state, "employee_name", "") or names[0])
                 self.reply_text(
                     message_id,
                     "⚠️ 员工已关闭新任务入口，但 Slash 命令清理结果未确认。"
-                    f"请再次执行 `/fire {employee_name}` 安全重试；完成归档前不要重新 `/hire` 同名员工。",
+                    f"请再次执行 `/fire {employee_name}` 重新核验；系统不会盲目重复删除。"
+                    "若仍未确认，请先在开放平台完成命令清理后再次核验；"
+                    "完成归档前不要重新 `/hire` 同名员工。",
                 )
             else:
                 self.reply_text(
@@ -2639,6 +2854,15 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
 
         is_global = bool(value.get("global_hire"))
+        try:
+            existing_app_id = (
+                _normalize_existing_hire_app_id(value.get("existing_app_id"))
+                if is_global
+                else ""
+            )
+        except ValueError:
+            self.reply_text(message_id, "飞书 App ID 无效；请重新执行 `/hire`。")
+            return
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id) if not is_global else None
 
@@ -2650,6 +2874,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
         tool_options = self._selectable_role_tool_options()
         value_extra: dict = {"global_hire": is_global}
+        if existing_app_id:
+            value_extra["existing_app_id"] = existing_app_id
 
         _, card_content = CardBuilder.build_slock_role_unified_select_card(
             role_name=role_name,
@@ -2685,6 +2911,15 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
 
         is_global = bool(value.get("global_hire"))
+        try:
+            existing_app_id = (
+                _normalize_existing_hire_app_id(value.get("existing_app_id"))
+                if is_global
+                else ""
+            )
+        except ValueError:
+            self.reply_text(message_id, "飞书 App ID 无效；请重新执行 `/hire`。")
+            return
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id) if not is_global else None
         if not is_global and not engine:
@@ -2700,6 +2935,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
         # Try cascade card (with effort/thinking dropdown) for tools with many variants
         value_extra = {"role_name": role_name, "global_hire": is_global}
+        if existing_app_id:
+            value_extra["existing_app_id"] = existing_app_id
 
         # has_cascade_variants expects dicts; models are ACPModelOption objects
         # Use build_acp_model_cascade_card which handles both formats internally
@@ -2707,13 +2944,18 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             getattr(m, "selection_variants", None) or getattr(m, "reasoning_efforts", None)
             for m in (models or [])
         )
+        app_context = (
+            f" · 复用应用 `{existing_app_id}`" if existing_app_id else ""
+        )
 
         if has_variants:
             _, card_content = CardBuilder.build_acp_model_cascade_card(
                 models,
                 tool_name,
                 project_id=(project.project_id if project else value.get("project_id")),
-                context_markdown=f"员工: **{role_name}** · 选择模型和思考深度",
+                context_markdown=(
+                    f"员工: **{role_name}** · 选择模型和思考深度{app_context}"
+                ),
                 group_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_GROUP,
                 profile_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_PROFILE,
                 effort_action=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL_EFFORT,
@@ -2728,7 +2970,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 project_id=(project.project_id if project else value.get("project_id")),
                 action_name=action_ids.SLOCK_NEW_ROLE_SELECT_MODEL,
                 value_extra=value_extra,
-                context_markdown=f"员工: **{role_name}**",
+                context_markdown=f"员工: **{role_name}**{app_context}",
                 refresh_action_name=action_ids.SLOCK_NEW_ROLE_SELECT_TOOL,
                 model_page=model_page,
             )
@@ -2772,6 +3014,15 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
 
         is_global = bool(value.get("global_hire"))
+        try:
+            existing_app_id = (
+                _normalize_existing_hire_app_id(value.get("existing_app_id"))
+                if is_global
+                else ""
+            )
+        except ValueError:
+            self.reply_text(message_id, "飞书 App ID 无效；请重新执行 `/hire`。")
+            return
         manager = self._get_engine_manager()
         engine = manager.get_activated_engine(chat_id) if not is_global else None
         if not is_global and not engine:
@@ -2785,6 +3036,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         )
         models = fetch_acp_models(tool_name, cwd=cwd, current_model=None)
         value_extra = {"role_name": role_name, "global_hire": is_global}
+        if existing_app_id:
+            value_extra["existing_app_id"] = existing_app_id
         tool_options = self._selectable_role_tool_options()
         _, card_content = CardBuilder.build_slock_role_unified_select_card(
             role_name=role_name,
@@ -2811,6 +3064,15 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         role_name = str(value.get("role_name") or "").strip()
         tool_name = str(value.get("tool_name") or "").strip().lower()
         global_hire = bool(value.get("global_hire"))
+        try:
+            existing_app_id = (
+                _normalize_existing_hire_app_id(value.get("existing_app_id"))
+                if global_hire
+                else ""
+            )
+        except ValueError:
+            self.reply_text(message_id, "飞书 App ID 无效；请重新执行 `/hire`。")
+            return
         raw_model = value.get("_option") or (
             value.get("model_group") if global_hire else value.get("model_name")
         ) or value.get("model_name") or ""
@@ -2828,6 +3090,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         effort = str(value.get("model_effort") or "").strip()
         if global_hire and effort:
             args += f" --effort {shlex.quote(effort)}"
+        if global_hire and existing_app_id:
+            args += f" --app-id {shlex.quote(existing_app_id)}"
         self.create_role(
             message_id,
             chat_id,

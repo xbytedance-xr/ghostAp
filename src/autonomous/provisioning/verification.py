@@ -304,6 +304,49 @@ class VerificationRouter:
         current_generation: int,
         now: float | None = None,
     ) -> VerificationDecision:
+        return self._evaluate(
+            challenge,
+            slash=slash,
+            channel=channel,
+            ingress=ingress,
+            current_generation=current_generation,
+            now=now,
+            consume_nonce=True,
+        )
+
+    def evaluate_for_atomic_commit(
+        self,
+        challenge: VerificationChallenge,
+        *,
+        slash: SlashVerificationEvidence | None = None,
+        channel: ChannelVerificationEvidence | None = None,
+        ingress: TenantIngressEvidence | None = None,
+        current_generation: int,
+        now: float | None = None,
+    ) -> VerificationDecision:
+        """Validate evidence while leaving nonce consumption to the atomic commit."""
+
+        return self._evaluate(
+            challenge,
+            slash=slash,
+            channel=channel,
+            ingress=ingress,
+            current_generation=current_generation,
+            now=now,
+            consume_nonce=False,
+        )
+
+    def _evaluate(
+        self,
+        challenge: VerificationChallenge,
+        *,
+        slash: SlashVerificationEvidence | None,
+        channel: ChannelVerificationEvidence | None,
+        ingress: TenantIngressEvidence | None,
+        current_generation: int,
+        now: float | None,
+        consume_nonce: bool,
+    ) -> VerificationDecision:
         evaluated_at = float(self._clock() if now is None else now)
         _timestamp(evaluated_at, "evaluated_at")
         if current_generation != challenge.generation:
@@ -359,21 +402,24 @@ class VerificationRouter:
                 VerificationRejection.INVALID_TENANT_INGRESS,
                 evaluated_at,
             )
-        try:
-            consumed = self._nonce_consumer.consume_once(
-                challenge,
-                consumed_at=evaluated_at,
-            )
-        except Exception:
-            return self._reject(
-                VerificationRejection.NONCE_STORE_FAILURE,
-                evaluated_at,
-            )
-        if consumed is not True:
-            rejection = (
-                VerificationRejection.NONCE_REPLAY if consumed is False else VerificationRejection.NONCE_STORE_FAILURE
-            )
-            return self._reject(rejection, evaluated_at)
+        if consume_nonce:
+            try:
+                consumed = self._nonce_consumer.consume_once(
+                    challenge,
+                    consumed_at=evaluated_at,
+                )
+            except Exception:
+                return self._reject(
+                    VerificationRejection.NONCE_STORE_FAILURE,
+                    evaluated_at,
+                )
+            if consumed is not True:
+                rejection = (
+                    VerificationRejection.NONCE_REPLAY
+                    if consumed is False
+                    else VerificationRejection.NONCE_STORE_FAILURE
+                )
+                return self._reject(rejection, evaluated_at)
         activation_evidence = ActivationVerificationEvidence(
             coordinates=coordinates,
             slash_spec_hash=slash.observed_spec_hash,

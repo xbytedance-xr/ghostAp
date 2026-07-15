@@ -11,7 +11,11 @@ from src.agent.intent_recognizer import IntentResult, IntentType, TaskStep
 from src.config import get_settings
 from src.feishu.image_handler import FeishuImageHandler, ImageDownloadResult
 from src.feishu.slash_command_parser import SlashCommandParser
-from src.feishu.ws_client import FeishuWSClient
+from src.feishu.ws_client import (
+    FeishuWSClient,
+    _employee_hire_status_uuid,
+    _main_bot_outbound_wiring,
+)
 from src.mode import InteractionMode
 from src.project import ProjectContext
 from src.tasking import TaskPriority
@@ -130,11 +134,30 @@ def test_employee_department_runtime_is_wired_and_enabled_by_default(
     assert mock_ws_client._handler_ctx.employee_hire_readiness().ready is True
 
 
+def test_visible_employee_runtime_without_audit_fails_main_bot_outbound_closed() -> None:
+    audit, failure = _main_bot_outbound_wiring(
+        SimpleNamespace(main_bot_outbound_audit=None),
+        required=True,
+    )
+
+    assert failure is None
+    with pytest.raises(RuntimeError, match="audit.*unavailable"):
+        audit("tenant-a", "reply", "om_message")
+
+
+def test_dormant_employee_runtime_does_not_require_main_bot_outbound_audit() -> None:
+    assert _main_bot_outbound_wiring(None, required=False) == (None, None)
+
+
 def test_employee_registration_notifier_explains_pending_oauth_state(
     mock_ws_client: FeishuWSClient,
 ) -> None:
     runtime = mock_ws_client._employee_department_runtime
-    state = SimpleNamespace(message_id="msg_hire")
+    state = SimpleNamespace(
+        message_id="msg_hire",
+        employee_name="Atlas",
+        intent_id="hire_intent_1",
+    )
     mock_ws_client._reply_text = MagicMock()
 
     runtime._service._on_registration_status(state, "polling")
@@ -144,6 +167,7 @@ def test_employee_registration_notifier_explains_pending_oauth_state(
         "独立飞书智能体注册请求已提交，正在等待你在上方链接中完成授权确认。"
         "确认前注册接口会持续返回 400 authorization_pending，这是设备授权"
         "流程的正常等待状态；请按链接完成授权，期间请勿重复发送 /hire。",
+        idempotency_key=_employee_hire_status_uuid("hire_intent_1", "polling"),
     )
 
 

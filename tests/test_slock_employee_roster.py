@@ -6,6 +6,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.autonomous.domain.enums import EmployeeState, WorkerType
 from src.feishu.handlers.slock import SlockHandler
 from src.slock_engine.slash_commands import (
@@ -56,6 +58,7 @@ def _projected_employee(
     state: EmployeeState = EmployeeState.ACTIVE,
     tenant_key: str = "tenant_a",
     member_groups: tuple[str, ...] = ("oc_g1",),
+    bot_principal_id: str = "bot_test1",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         agent_id=agent_id,
@@ -67,15 +70,18 @@ def _projected_employee(
         worker_type=WorkerType.VISIBLE,
         tenant_key=tenant_key,
         member_groups=member_groups,
+        bot_principal_id=bot_principal_id,
     )
 
 
-def _handler_for_roster(*, hire_service=None) -> SlockHandler:
+def _handler_for_roster(*, hire_service=None, fire_service=None) -> SlockHandler:
     handler = object.__new__(SlockHandler)
     handler.ctx = SimpleNamespace(
         employee_hire_service=hire_service,
+        employee_fire_service=fire_service,
         employee_membership_service=None,
         project_manager=MagicMock(),
+        settings=SimpleNamespace(admin_user_ids=frozenset({"ou_admin"})),
     )
     handler.reply_text = MagicMock(return_value=True)
     handler.reply_card = MagicMock(return_value=True)
@@ -183,6 +189,183 @@ class TestListEmployeesRoster:
         assert "没有在职员工" in message
         assert "历史归档 1 人" in message
         assert "/hire" in message
+
+    def test_admin_dm_shows_app_identity_and_pending_confirmation(self, monkeypatch):
+        from src.autonomous.provisioning.fire_state import (
+            FireCleanupMode,
+            FirePhase,
+        )
+
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: "ou_admin"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: True
+        )
+        employee = _projected_employee(
+            agent_id="agt_atlas",
+            name="Atlas",
+            state=EmployeeState.RETIRING,
+        )
+        projection = SimpleNamespace(
+            employees={employee.agent_id: employee},
+            bot_principals={
+                "bot_test1": SimpleNamespace(
+                    tenant_key="tenant_a",
+                    agent_id="agt_atlas",
+                    app_id="cli_atlas",
+                    credential_ref="secret-must-not-render",
+                )
+            },
+        )
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = projection
+        hire_service.list_states.return_value = ()
+        fire_service = MagicMock()
+        fire_service.list_states.return_value = (
+            SimpleNamespace(
+                tenant_key="tenant_a",
+                agent_id="agt_atlas",
+                phase=FirePhase.ACTION_REQUIRED,
+                cleanup_mode=FireCleanupMode.EXTERNAL_UNKNOWN,
+                error_code="external_cleanup_authority_unavailable",
+                external_disposition_confirmed=False,
+                app_id="cli_atlas",
+            ),
+        )
+        handler = _handler_for_roster(
+            hire_service=hire_service,
+            fire_service=fire_service,
+        )
+
+        handler.list_employees_roster("om_1", "oc_dm")
+
+        card = handler.reply_card.call_args.args[1]
+        content = card["elements"][0]["text"]["content"]
+        assert "agt_atlas" in content
+        assert "cli_atlas" in content
+        assert (
+            "/fire agt_atlas --confirm-app-disposed cli_atlas" in content
+        )
+        assert "secret-must-not-render" not in content
+        assert "bot_test1" not in content
+
+    def test_admin_dm_no_app_confirmation_requires_prior_platform_check(
+        self,
+        monkeypatch,
+    ):
+        from src.autonomous.provisioning.fire_state import (
+            FireCleanupMode,
+            FirePhase,
+        )
+
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: "ou_admin"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: True
+        )
+        employee = _projected_employee(
+            agent_id="agt_no_app",
+            name="Atlas",
+            state=EmployeeState.RETIRING,
+            bot_principal_id="",
+        )
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = SimpleNamespace(
+            employees={employee.agent_id: employee},
+            bot_principals={},
+        )
+        hire_service.list_states.return_value = ()
+        fire_service = MagicMock()
+        fire_service.list_states.return_value = (
+            SimpleNamespace(
+                tenant_key="tenant_a",
+                agent_id="agt_no_app",
+                phase=FirePhase.ACTION_REQUIRED,
+                cleanup_mode=FireCleanupMode.EXTERNAL_UNKNOWN,
+                error_code="external_cleanup_authority_unavailable",
+                external_disposition_confirmed=False,
+                app_id="",
+            ),
+        )
+        handler = _handler_for_roster(
+            hire_service=hire_service,
+            fire_service=fire_service,
+        )
+
+        handler.list_employees_roster("om_1", "oc_dm")
+
+        content = handler.reply_card.call_args.args[1]["elements"][0]["text"][
+            "content"
+        ]
+        assert "请先确认开放平台未创建应用" in content
+        assert (
+            "/fire agt_no_app --confirm-app-disposed NO_APP_FOUND" in content
+        )
+        assert "已确认" not in content
+
+    @pytest.mark.parametrize(
+        ("sender_id", "is_p2p"),
+        (("ou_other", True), ("ou_admin", False)),
+    )
+    def test_sensitive_roster_details_require_admin_dm(
+        self,
+        monkeypatch,
+        sender_id,
+        is_p2p,
+    ):
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: sender_id
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: is_p2p
+        )
+        employee = _projected_employee(
+            agent_id="agt_private",
+            name="Atlas",
+            state=EmployeeState.RETIRING,
+        )
+        projection = SimpleNamespace(
+            employees={employee.agent_id: employee},
+            bot_principals={
+                "bot_test1": SimpleNamespace(
+                    tenant_key="tenant_a",
+                    agent_id="agt_private",
+                    app_id="cli_private",
+                    credential_ref="cred_private",
+                )
+            },
+        )
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = projection
+        fire_service = MagicMock()
+        fire_service.list_states.return_value = ()
+        handler = _handler_for_roster(
+            hire_service=hire_service,
+            fire_service=fire_service,
+        )
+
+        handler.list_employees_roster("om_1", "oc_chat")
+
+        content = handler.reply_card.call_args.args[1]["elements"][0]["text"][
+            "content"
+        ]
+        assert "Atlas" in content
+        assert "agt_private" not in content
+        assert "cli_private" not in content
+        assert "--confirm-app-disposed" not in content
+        assert "NO_APP_FOUND" not in content
+        fire_service.list_states.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

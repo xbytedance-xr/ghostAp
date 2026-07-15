@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -510,3 +511,240 @@ def test_broker_main_bot_audit_protocol_is_hash_only_and_complete(tmp_path: Path
             start=now - 1,
             end=now + 1,
         ) == (3, 7, lease.witness_sequence + 2)
+
+    path.unlink()
+
+    def target_count_response(request: dict[str, object]) -> dict[str, object]:
+        assert request["operation"] == "count_main_bot_target_send_attempts"
+        assert request["tenant_hash"] == "a" * 64
+        assert request["target_hash"] == "b" * 64
+        return {
+            "protocol_version": 1,
+            "decision": "allow",
+            "nonce": request["nonce"],
+            "lease_id": lease.lease_id,
+            "audit_sequence": 7,
+            "witness_sequence": lease.witness_sequence + 3,
+            "complete": True,
+            "count": 1,
+        }
+
+    with _BrokerServer(path, target_count_response):
+        assert broker.count_main_bot_target_send_attempts(
+            lease,
+            tenant_hash="a" * 64,
+            target_hash="b" * 64,
+            start=now - 1,
+            end=now + 1,
+        ) == (1, 7, lease.witness_sequence + 3)
+
+
+def test_runtime_release_session_supports_target_scoped_main_bot_audit() -> None:
+    now = time.time()
+    lease = _lease(BundleCheckpoint(23, "d" * 64), now=now)
+
+    class Provider:
+        def count_main_bot_target_send_attempts(self, _lease, **kwargs):
+            assert kwargs == {
+                "tenant_hash": hashlib.sha256(b"tenant-a").hexdigest(),
+                "target_hash": "b" * 64,
+                "start": now - 1,
+                "end": now + 1,
+            }
+            return 0, 7, lease.witness_sequence + 1
+
+        def close(self):
+            pass
+
+    from src.autonomous.acceptance.release_trust import RuntimeReleaseTrustSession
+
+    session = RuntimeReleaseTrustSession(Provider(), lease)
+    assert (
+        session.count_main_bot_target_send_attempts(
+            "tenant-a",
+            "b" * 64,
+            now - 1,
+            now + 1,
+        )
+        == 0
+    )
+
+
+def test_runtime_release_session_acquires_and_releases_bound_activation_fence() -> None:
+    now = time.time()
+    lease = _lease(BundleCheckpoint(23, "d" * 64), now=now)
+    target_hashes = ("a" * 64, "b" * 64)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class Provider:
+        def acquire_main_bot_activation_fence(self, _lease, **kwargs):
+            calls.append(("acquire", kwargs))
+            return "fence-001", 7, lease.witness_sequence + 1
+
+        def release_main_bot_activation_fence(self, _lease, **kwargs):
+            calls.append(("release", kwargs))
+            return 7, lease.witness_sequence + 2
+
+        def close(self):
+            pass
+
+    from src.autonomous.acceptance.release_trust import RuntimeReleaseTrustSession
+
+    session = RuntimeReleaseTrustSession(Provider(), lease)
+    fence_id = session.acquire_main_bot_activation_fence(
+        "tenant-a",
+        target_hashes,
+    )
+    session.release_main_bot_activation_fence(
+        "tenant-a",
+        target_hashes,
+        fence_id=fence_id,
+    )
+
+    tenant_hash = hashlib.sha256(b"tenant-a").hexdigest()
+    assert calls == [
+        (
+            "acquire",
+            {
+                "tenant_hash": tenant_hash,
+                "target_hashes": target_hashes,
+                "witness_sequence": lease.witness_sequence,
+            },
+        ),
+        (
+            "release",
+            {
+                "tenant_hash": tenant_hash,
+                "target_hashes": target_hashes,
+                "fence_id": "fence-001",
+                "witness_sequence": lease.witness_sequence + 1,
+            },
+        ),
+    ]
+
+
+def test_runtime_release_session_rejects_missing_or_mismatched_fence_provider() -> None:
+    now = time.time()
+    lease = _lease(BundleCheckpoint(23, "d" * 64), now=now)
+
+    class MissingProvider:
+        def close(self):
+            pass
+
+    from src.autonomous.acceptance.release_trust import RuntimeReleaseTrustSession
+
+    missing = RuntimeReleaseTrustSession(MissingProvider(), lease)
+    assert missing.main_bot_activation_fence_ready is False
+    with pytest.raises(ReleaseTrustError, match="activation fence"):
+        missing.acquire_main_bot_activation_fence("tenant-a", ("a" * 64,))
+
+    class MismatchedProvider(MissingProvider):
+        def acquire_main_bot_activation_fence(self, _lease, **_kwargs):
+            return "fence-001", 7, lease.witness_sequence
+
+        def release_main_bot_activation_fence(self, _lease, **_kwargs):
+            return 7, lease.witness_sequence + 1
+
+    mismatched = RuntimeReleaseTrustSession(MismatchedProvider(), lease)
+    with pytest.raises(ReleaseTrustError, match="witness"):
+        mismatched.acquire_main_bot_activation_fence("tenant-a", ("a" * 64,))
+
+
+def test_broker_activation_fence_protocol_binds_lease_tenant_targets_and_nonce(
+    tmp_path: Path,
+) -> None:
+    now = time.time()
+    lease = _lease(BundleCheckpoint(23, "d" * 64), now=now)
+    tenant_hash = "a" * 64
+    target_hashes = ("b" * 64, "c" * 64)
+    path = tmp_path / "release.sock"
+
+    def acquire_response(request: dict[str, object]) -> dict[str, object]:
+        assert request["operation"] == "acquire_main_bot_activation_fence"
+        assert request["lease_id"] == lease.lease_id
+        assert request["tenant_hash"] == tenant_hash
+        assert request["target_hashes"] == list(target_hashes)
+        assert request["witness_sequence"] == lease.witness_sequence
+        return {
+            "protocol_version": 1,
+            "decision": "allow",
+            "nonce": request["nonce"],
+            "lease_id": lease.lease_id,
+            "tenant_hash": tenant_hash,
+            "target_hashes": list(target_hashes),
+            "fence_id": "fence-001",
+            "audit_sequence": 7,
+            "witness_sequence": lease.witness_sequence + 1,
+        }
+
+    with _BrokerServer(path, acquire_response):
+        broker = RootOwnedUnixReleaseTrustBroker(
+            path,
+            expected_peer_uid=os.getuid(),
+            clock=lambda: now,
+        )
+        assert broker.acquire_main_bot_activation_fence(
+            lease,
+            tenant_hash=tenant_hash,
+            target_hashes=target_hashes,
+            witness_sequence=lease.witness_sequence,
+        ) == ("fence-001", 7, lease.witness_sequence + 1)
+
+    path.unlink()
+
+    def release_response(request: dict[str, object]) -> dict[str, object]:
+        assert request["operation"] == "release_main_bot_activation_fence"
+        assert request["fence_id"] == "fence-001"
+        assert request["witness_sequence"] == lease.witness_sequence + 1
+        return {
+            "protocol_version": 1,
+            "decision": "allow",
+            "nonce": request["nonce"],
+            "lease_id": lease.lease_id,
+            "tenant_hash": tenant_hash,
+            "target_hashes": list(target_hashes),
+            "fence_id": "fence-001",
+            "audit_sequence": 7,
+            "witness_sequence": lease.witness_sequence + 2,
+        }
+
+    with _BrokerServer(path, release_response):
+        assert broker.release_main_bot_activation_fence(
+            lease,
+            tenant_hash=tenant_hash,
+            target_hashes=target_hashes,
+            fence_id="fence-001",
+            witness_sequence=lease.witness_sequence + 1,
+        ) == (7, lease.witness_sequence + 2)
+
+
+def test_broker_activation_fence_rejects_response_target_mismatch(tmp_path: Path) -> None:
+    now = time.time()
+    lease = _lease(BundleCheckpoint(23, "d" * 64), now=now)
+    path = tmp_path / "release.sock"
+    with _BrokerServer(
+        path,
+        lambda request: {
+            "protocol_version": 1,
+            "decision": "allow",
+            "nonce": request["nonce"],
+            "lease_id": lease.lease_id,
+            "tenant_hash": "a" * 64,
+            "target_hashes": ["c" * 64],
+            "fence_id": "fence-001",
+            "audit_sequence": 7,
+            "witness_sequence": lease.witness_sequence + 1,
+        },
+    ):
+        broker = RootOwnedUnixReleaseTrustBroker(
+            path,
+            expected_peer_uid=os.getuid(),
+            clock=lambda: now,
+        )
+        with pytest.raises(ReleaseTrustError, match="binding"):
+            broker.acquire_main_bot_activation_fence(
+                lease,
+                tenant_hash="a" * 64,
+                target_hashes=("b" * 64,),
+                witness_sequence=lease.witness_sequence,
+            )

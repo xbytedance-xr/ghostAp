@@ -36,6 +36,6 @@
 | B037 | 2026-07-13 | Employee 真实租户验收工具当前只验证并封装预脱敏采集结果；测试/生产租户 Provisioning、员工收发、桌面/移动 Slash、主 Bot send-count 和 1/10/50 Bot soak 仍需独立 QA 在真实租户执行并签署 attestation | Medium | `/hire` acceptance review | ⏳ Open | - |
 | B038 | 2026-07-13 | 每员工 Channel 默认依赖 bwrap 的 user/mount/PID namespace 与最小只读文件系统；生产宿主需把实际 attestation 和 Feishu-only egress policy 作为部署前置探针，并准备独立容器后端覆盖禁用 namespace 的环境 | Medium | `/hire` channel review | ⏳ Open | - |
 | B039 | 2026-07-13 | Employee runtime release 当前有意 hard-close；启用前需接入不可变 build/image digest、workload identity、部署侧固定 QA trust root、外部单调 attestation ledger，以及带 expiry/tenant/release/instance 绑定且每次 dispatch 续验的 recovery capability | Medium | `/hire` release convergence review | ⏳ Open | - |
-| B040 | 2026-07-13 | 激活门禁已要求独立主 Bot send-count audit，但 `FeishuWSClient` 尚无真实租户审计 provider；启用前必须接入可按 tenant/challenge 时间窗查询的外部审计源，不能用进程内计数或常量零替代 | Medium | `/hire` activation security review | ⏳ Open | - |
+| B040 | 2026-07-13 | 本地 hash-chain 审计、WS/Handler 全 mutation 接线、跨进程缺失审计默认拒绝及外部 activation fence 协议已实现；真正多副本部署仍需让所有主 Bot 实例接入同一不可回滚外部审计/fence provider，并完成真实租户故障注入验收 | Medium | `/hire` activation security review | ⏳ Open | - |
 
 > **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。

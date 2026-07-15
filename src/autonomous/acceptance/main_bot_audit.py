@@ -7,6 +7,8 @@ import math
 import threading
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ class MainBotSendAuditLog:
             raise TypeError("writer must be JournalWriter")
         self.writer = writer
         self.external_audit = external_audit
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._complete = True
 
     @classmethod
@@ -65,12 +67,11 @@ class MainBotSendAuditLog:
             raise ValueError("invalid main Bot operation")
         if not isinstance(target, str) or not target or len(target) > 2048:
             raise ValueError("invalid main Bot target")
-        timestamp = time.time() if attempted_at is None else attempted_at
-        if (
-            isinstance(timestamp, bool)
-            or not isinstance(timestamp, (int, float))
-            or not math.isfinite(float(timestamp))
-            or timestamp <= 0
+        if attempted_at is not None and (
+            isinstance(attempted_at, bool)
+            or not isinstance(attempted_at, (int, float))
+            or not math.isfinite(float(attempted_at))
+            or attempted_at <= 0
         ):
             raise ValueError("invalid main Bot audit timestamp")
         attempt_id = uuid.uuid4().hex
@@ -80,20 +81,21 @@ class MainBotSendAuditLog:
             else ""
         )
         target_hash = hashlib.sha256(target.encode("utf-8")).hexdigest()
-        event = JournalEvent(
-            event_type=_EVENT_TYPE,
-            aggregate_id=_AGGREGATE_ID,
-            payload={
-                "attempt_id": attempt_id,
-                "tenant_hash": tenant_hash,
-                "operation": operation,
-                "target_hash": target_hash,
-                "attempted_at": float(timestamp),
-            },
-            timestamp=float(timestamp),
-        )
         with self._lock:
             try:
+                timestamp = time.time() if attempted_at is None else attempted_at
+                event = JournalEvent(
+                    event_type=_EVENT_TYPE,
+                    aggregate_id=_AGGREGATE_ID,
+                    payload={
+                        "attempt_id": attempt_id,
+                        "tenant_hash": tenant_hash,
+                        "operation": operation,
+                        "target_hash": target_hash,
+                        "attempted_at": float(timestamp),
+                    },
+                    timestamp=float(timestamp),
+                )
                 if self.external_audit is not None:
                     self.external_audit.record_main_bot_send_attempt(
                         attempt_id=attempt_id,
@@ -114,7 +116,137 @@ class MainBotSendAuditLog:
         with self._lock:
             self._complete = False
 
+    @property
+    def activation_fence_ready(self) -> bool:
+        """Whether activation can be fenced locally and by any external audit."""
+
+        with self._lock:
+            if not self._complete:
+                return False
+            external = self.external_audit
+            if external is None:
+                return True
+            advertised = getattr(
+                external,
+                "main_bot_activation_fence_ready",
+                None,
+            )
+            return (
+                advertised is True
+                and callable(
+                    getattr(external, "acquire_main_bot_activation_fence", None)
+                )
+                and callable(
+                    getattr(external, "release_main_bot_activation_fence", None)
+                )
+            )
+
+    @contextmanager
+    def activation_fence(
+        self,
+        tenant_key: str,
+        target_hashes: tuple[str, ...],
+    ) -> Iterator[None]:
+        """Exclude outbound admission across the final audit/activation commit."""
+
+        targets = self._validate_activation_fence_coordinates(
+            tenant_key,
+            target_hashes,
+        )
+        external_fence_id = ""
+        self._lock.acquire()
+        try:
+            if not self._complete:
+                raise RuntimeError("main Bot send audit is incomplete")
+            external = self.external_audit
+            if external is not None:
+                if not self.activation_fence_ready:
+                    self._complete = False
+                    raise RuntimeError(
+                        "external main Bot activation fence is unavailable"
+                    )
+                try:
+                    external_fence_id = external.acquire_main_bot_activation_fence(
+                        tenant_key,
+                        targets,
+                    )
+                except BaseException:
+                    self._complete = False
+                    raise
+                if not isinstance(external_fence_id, str) or not external_fence_id:
+                    self._complete = False
+                    raise RuntimeError("external main Bot activation fence is invalid")
+            try:
+                yield
+            finally:
+                if external is not None and external_fence_id:
+                    try:
+                        external.release_main_bot_activation_fence(
+                            tenant_key,
+                            targets,
+                            fence_id=external_fence_id,
+                        )
+                    except BaseException:
+                        self._complete = False
+                        raise
+        finally:
+            self._lock.release()
+
+    @staticmethod
+    def _validate_activation_fence_coordinates(
+        tenant_key: str,
+        target_hashes: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if not isinstance(tenant_key, str) or not tenant_key or len(tenant_key) > 512:
+            raise ValueError("invalid activation fence tenant")
+        if (
+            not isinstance(target_hashes, tuple)
+            or not target_hashes
+            or len(target_hashes) > 64
+            or target_hashes != tuple(sorted(set(target_hashes)))
+            or any(
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(character not in "0123456789abcdef" for character in value)
+                for value in target_hashes
+            )
+        ):
+            raise ValueError("invalid activation fence target set")
+        return target_hashes
+
     def count_attempts(self, tenant_key: str, start: float, end: float) -> int:
+        return self._count_attempts(tenant_key, start, end, target_hash=None)
+
+    def count_target_attempts(
+        self,
+        tenant_key: str,
+        target_hash: str,
+        start: float,
+        end: float,
+    ) -> int:
+        """Count main-Bot mutations aimed at one canonical ingress target."""
+
+        if (
+            not isinstance(target_hash, str)
+            or len(target_hash) != 64
+            or any(character not in "0123456789abcdef" for character in target_hash)
+        ):
+            raise ValueError("invalid target hash")
+        return self._count_attempts(
+            tenant_key,
+            start,
+            end,
+            target_hash=target_hash,
+        )
+
+    def _count_attempts(
+        self,
+        tenant_key: str,
+        start: float,
+        end: float,
+        *,
+        target_hash: str | None,
+    ) -> int:
         if not isinstance(tenant_key, str) or not tenant_key:
             raise ValueError("tenant key is required")
         if any(
@@ -136,20 +268,30 @@ class MainBotSendAuditLog:
                     payload = event.payload
                     attempted_at = payload.get("attempted_at")
                     event_tenant = payload.get("tenant_hash")
+                    event_target = payload.get("target_hash")
                     if (
                         isinstance(attempted_at, (int, float))
                         and not isinstance(attempted_at, bool)
                         and float(start) <= float(attempted_at) <= float(end)
                         and event_tenant in {"", tenant_hash}
+                        and (target_hash is None or event_target == target_hash)
                     ):
                         local_count += 1
             if self.external_audit is None:
                 return local_count
-            external_count = self.external_audit.count_main_bot_send_attempts(
-                tenant_key,
-                float(start),
-                float(end),
-            )
+            if target_hash is None:
+                external_count = self.external_audit.count_main_bot_send_attempts(
+                    tenant_key,
+                    float(start),
+                    float(end),
+                )
+            else:
+                external_count = self.external_audit.count_main_bot_target_send_attempts(
+                    tenant_key,
+                    target_hash,
+                    float(start),
+                    float(end),
+                )
             if (
                 isinstance(external_count, bool)
                 or not isinstance(external_count, int)

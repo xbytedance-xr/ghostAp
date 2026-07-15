@@ -704,7 +704,7 @@ class SlockEngine(BaseEngine):
                 if self._dispatch_stop.wait(timeout=backoff):
                     return
             else:
-                logger.error(
+                logger.warning(
                     "Bootstrap failed after %d retries, dispatch loop proceeding "
                     "with empty registry — tasks will be retained and retried on agent arrival",
                     max_retries,

@@ -849,6 +849,9 @@ class ProgrammingModeHandler(BaseHandler):
             outbound_audit=self.ctx.main_bot_outbound_audit,
             outbound_audit_failure=self.ctx.main_bot_outbound_audit_failure,
             tenant_key_resolver=self.ctx.tenant_key_resolver,
+            outbound_target_aliases=lambda target: self._reply_audit_aliases(
+                self._resolve_origin(target)
+            ),
         )
         delivery = create_card_delivery(api_client)
         from src.card.session.config import SessionConfig

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -64,6 +65,29 @@ def test_atomic_archive_records_empty_archive_when_workspace_was_never_created(t
     assert archive.observe(_state()) is True
     archive.execute(_state())
     assert archive.observe(_state()) is True
+
+
+def test_atomic_archive_records_confirmed_external_disposition_evidence(tmp_path):
+    root = tmp_path / "agents"
+    state = replace(
+        _state(),
+        external_disposition_confirmed=True,
+        external_disposition_ref="cli_alpha",
+        external_disposed_by="ou_admin",
+        external_disposed_at="2026-07-15T01:02:03+00:00",
+    )
+    archive = AtomicEmployeeArchive(root)
+
+    archive.execute(state)
+
+    manifest = json.loads(
+        (root / ".archive" / "agt_alpha" / "archive_manifest.json").read_text()
+    )
+    assert manifest["external_app_disposition"] == "manual_disposition_confirmed"
+    assert manifest["external_disposition_ref"] == "cli_alpha"
+    assert manifest["external_disposed_by"] == "ou_admin"
+    assert manifest["external_disposed_at"] == "2026-07-15T01:02:03+00:00"
+    assert archive.observe(state) is True
 
 
 def test_atomic_archive_rejects_symlink_content(tmp_path):

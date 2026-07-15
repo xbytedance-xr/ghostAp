@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 from src.feishu.handler_context import HandlerContext
 from src.feishu.handlers.base import BaseHandler
+from src.project.mapper import MessageLinker
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,6 +93,41 @@ class TestReplyText:
         assert result == "msg_123"
         h.im_client.reply_message.assert_called_once()
 
+    def test_passes_optional_idempotency_key_to_im_client(self):
+        h = _make_handler()
+        h.im_client.reply_message.return_value = _success_response("msg_123")
+
+        result = h.reply_text(
+            "origin_msg",
+            "hello",
+            idempotency_key="stable-reply-uuid",
+        )
+
+        assert result == "msg_123"
+        assert h.im_client.reply_message.call_args.kwargs["idempotency_key"] == (
+            "stable-reply-uuid"
+        )
+
+    def test_passes_canonical_dm_recipient_aliases_for_sibling_reply(self):
+        h = _make_handler()
+        linker = MessageLinker()
+        linker.register_origin(
+            "om_sibling",
+            chat_id="oc_requester_dm",
+            chat_type="p2p",
+            sender_id="ou_requester",
+        )
+        h.ctx.message_linker = linker
+        h.im_client.reply_message.return_value = _success_response("msg_123")
+
+        result = h.reply_text("om_sibling", "hello")
+
+        assert result == "msg_123"
+        assert h.im_client.reply_message.call_args.kwargs["audit_aliases"] == (
+            "oc_requester_dm",
+            "ou_requester",
+        )
+
     def test_none_input_returns_none(self, caplog):
         h = _make_handler()
         result = h.reply_text("origin_msg", None)
@@ -131,6 +167,26 @@ class TestReplyCard:
         result = h.reply_card("origin_msg", card)
         assert result == "card_msg_001"
 
+    def test_passes_origin_chat_as_audit_alias(self):
+        h = _make_handler()
+        linker = MessageLinker()
+        linker.register_origin(
+            "om_card_origin",
+            chat_id="oc_requester_dm",
+            chat_type="p2p",
+            sender_id="ou_requester",
+        )
+        h.ctx.message_linker = linker
+        h.im_client.reply_message.return_value = _success_response("card_msg_001")
+
+        result = h.reply_card("om_card_origin", {"body": {"elements": []}})
+
+        assert result == "card_msg_001"
+        assert h.im_client.reply_message.call_args.kwargs["audit_aliases"] == (
+            "oc_requester_dm",
+            "ou_requester",
+        )
+
     def test_response_failure_returns_none(self):
         h = _make_handler()
         h.im_client.reply_message.return_value = _failure_response()
@@ -169,6 +225,24 @@ class TestUpdateCard:
         h.im_client.patch_message.side_effect = RuntimeError("boom")
         result = h.update_card("msg_id", '{"body":{}}')
         assert result is False
+
+    def test_passes_canonical_dm_recipient_aliases_for_sibling_patch(self):
+        h = _make_handler()
+        linker = MessageLinker()
+        linker.register_origin(
+            "om_card",
+            chat_id="oc_requester_dm",
+            chat_type="p2p",
+            sender_id="ou_requester",
+        )
+        h.ctx.message_linker = linker
+        h.im_client.patch_message.return_value = _success_response()
+
+        assert h.update_card("om_card", '{"body":{}}') is True
+        assert h.im_client.patch_message.call_args.kwargs["audit_aliases"] == (
+            "oc_requester_dm",
+            "ou_requester",
+        )
 
 
 # ===========================================================================

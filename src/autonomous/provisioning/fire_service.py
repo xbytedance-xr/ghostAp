@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from threading import RLock
 from typing import Protocol
 
 from ..journal.frame import JournalEvent
@@ -11,6 +12,7 @@ from ..journal.writer import CommitState, JournalWriter
 from .fire_state import (
     FIRE_EFFECT_ORDER,
     DurableFireState,
+    FireCleanupMode,
     FireEffectState,
     FirePhase,
     rebuild_fire_projection,
@@ -49,9 +51,16 @@ class EmployeeFireTarget:
     bot_principal_id: str
     app_id: str
     credential_ref: str
+    cleanup_mode: FireCleanupMode = FireCleanupMode.BOUND
+
+    @property
+    def pre_binding(self) -> bool:
+        return self.cleanup_mode is not FireCleanupMode.BOUND
 
 
 class FireAuthority(Protocol):
+    def authorize_request(self, request: EmployeeFireRequest) -> None: ...
+
     def resolve(self, request: EmployeeFireRequest) -> EmployeeFireTarget: ...
 
     def admit(
@@ -59,13 +68,26 @@ class FireAuthority(Protocol):
         request: EmployeeFireRequest,
         target: EmployeeFireTarget,
         intent_id: str,
-    ) -> None: ...
+    ) -> EmployeeFireTarget: ...
 
     def mark_action_required(self, agent_id: str) -> None: ...
 
+    def confirm_external_disposition(
+        self,
+        request: EmployeeFireRequest,
+        state: DurableFireState,
+        disposition_ref: str,
+    ) -> None: ...
+
     def mark_credential_destroyed(self, target: EmployeeFireTarget) -> None: ...
 
-    def mark_archived(self, agent_id: str, intent_id: str) -> None: ...
+    def mark_archived(
+        self,
+        agent_id: str,
+        intent_id: str,
+        *,
+        external_disposition_confirmed: bool,
+    ) -> None: ...
 
 
 class FireEffectPort(Protocol):
@@ -89,27 +111,56 @@ class EmployeeFireService:
         self._writer = writer
         self._authority = authority
         self._effects = dict(effects)
+        self._mutex = RLock()
 
     def start_fire(self, request: EmployeeFireRequest) -> DurableFireState:
+        with self._mutex:
+            return self._start_fire(request)
+
+    def _start_fire(self, request: EmployeeFireRequest) -> DurableFireState:
         if not isinstance(request, EmployeeFireRequest):
             raise TypeError("request must be EmployeeFireRequest")
+        self._authority.authorize_request(request)
         intent_id = self._intent_id(request)
         state = self._states().get(intent_id)
         if state is not None:
             if not self._matches_existing(state, request):
                 raise FireServiceError("fire idempotency conflict")
+            if state.phase is FirePhase.SUPERSEDED:
+                raise FireServiceError("fire request was superseded")
             return self.resume(intent_id)
+        existing = self._coalesce_live_requests(request)
+        if existing is not None:
+            if existing.phase is FirePhase.ARCHIVED:
+                raise FireServiceError("employee already archived")
+            return self._retry_action_required(existing.intent_id)
         target = self._authority.resolve(request)
-        self._authority.admit(request, target, intent_id)
+        try:
+            target = self._authority.admit(request, target, intent_id)
+        except FireServiceError as exc:
+            if str(exc) != "employee retirement already in progress":
+                raise
+            existing = self._coalesce_live_requests(request)
+            if existing is None:
+                raise
+            if existing.phase is FirePhase.ARCHIVED:
+                raise FireServiceError("employee already archived")
+            return self._retry_action_required(existing.intent_id)
         state = self._require(intent_id)
         if not self._matches(state, request, target):
             raise FireServiceError("fire idempotency conflict")
         return self.resume(intent_id)
 
     def resume(self, intent_id: str) -> DurableFireState:
+        with self._mutex:
+            return self._resume(intent_id)
+
+    def _resume(self, intent_id: str) -> DurableFireState:
         state = self._require(intent_id)
         if state.phase is FirePhase.ARCHIVED:
             return state
+        if state.phase is FirePhase.SUPERSEDED:
+            raise FireServiceError("fire request was superseded")
         if state.phase is FirePhase.ACTION_REQUIRED:
             return state
         target = EmployeeFireTarget(
@@ -119,10 +170,53 @@ class EmployeeFireService:
             bot_principal_id=state.bot_principal_id,
             app_id=state.app_id,
             credential_ref=state.credential_ref,
+            cleanup_mode=state.cleanup_mode,
         )
+        if (
+            state.cleanup_mode is FireCleanupMode.EXTERNAL_UNKNOWN
+            and not state.external_disposition_confirmed
+        ):
+            effect_type = "credential_destroy"
+            if state.effect_state(effect_type) is None:
+                self._transition(intent_id, effect_type, FireEffectState.PREPARED)
+                self._transition(intent_id, effect_type, FireEffectState.EXECUTING)
+                return self._action_required(
+                    self._require(intent_id),
+                    effect_type,
+                    "external_cleanup_authority_unavailable",
+                )
+            return self._require(intent_id)
         for effect_type in FIRE_EFFECT_ORDER:
             state = self._require(intent_id)
             effect_state = state.effect_state(effect_type)
+            if (
+                state.cleanup_mode
+                in {FireCleanupMode.SAFE_ABORT, FireCleanupMode.EXTERNAL_UNKNOWN}
+                and effect_type != "archive_move"
+            ):
+                if effect_state is FireEffectState.ACTION_REQUIRED:
+                    return state
+                if effect_state is None:
+                    self._transition(
+                        intent_id,
+                        effect_type,
+                        FireEffectState.PREPARED,
+                    )
+                    effect_state = FireEffectState.PREPARED
+                if effect_state is FireEffectState.PREPARED:
+                    self._transition(
+                        intent_id,
+                        effect_type,
+                        FireEffectState.EXECUTING,
+                    )
+                    effect_state = FireEffectState.EXECUTING
+                if effect_state is FireEffectState.EXECUTING:
+                    self._transition(
+                        intent_id,
+                        effect_type,
+                        FireEffectState.COMMITTED,
+                    )
+                continue
             if effect_state is FireEffectState.COMMITTED:
                 if effect_type == "credential_destroy":
                     self._authority.mark_credential_destroyed(target)
@@ -145,17 +239,227 @@ class EmployeeFireService:
             self._transition(intent_id, effect_type, FireEffectState.COMMITTED)
             if effect_type == "credential_destroy":
                 self._authority.mark_credential_destroyed(target)
-        self._authority.mark_archived(state.agent_id, intent_id)
+        state = self._require(intent_id)
+        self._authority.mark_archived(
+            state.agent_id,
+            intent_id,
+            external_disposition_confirmed=state.external_disposition_confirmed,
+        )
         return self._require(intent_id)
 
+    def confirm_external_disposition(
+        self,
+        request: EmployeeFireRequest,
+        disposition_ref: str,
+    ) -> DurableFireState:
+        with self._mutex:
+            return self._confirm_external_disposition(
+                request,
+                disposition_ref,
+            )
+
+    def _confirm_external_disposition(
+        self,
+        request: EmployeeFireRequest,
+        disposition_ref: str,
+    ) -> DurableFireState:
+        if not isinstance(request, EmployeeFireRequest):
+            raise TypeError("request must be EmployeeFireRequest")
+        if (
+            not isinstance(disposition_ref, str)
+            or not disposition_ref
+            or disposition_ref != disposition_ref.strip()
+        ):
+            raise FireServiceError("external disposition reference is required")
+        self._authority.authorize_request(request)
+        candidates = [
+            state
+            for state in self._states().values()
+            if state.tenant_key == request.tenant_key
+            and request.employee in {state.agent_id, state.employee_name}
+            and state.cleanup_mode is FireCleanupMode.EXTERNAL_UNKNOWN
+            and state.phase is not FirePhase.SUPERSEDED
+            and (
+                state.external_disposition_confirmed
+                or (
+                    state.phase is FirePhase.ACTION_REQUIRED
+                    and state.error_code
+                    == "external_cleanup_authority_unavailable"
+                )
+            )
+        ]
+        pending = [
+            state
+            for state in candidates
+            if not state.external_disposition_confirmed
+        ]
+        if pending:
+            agent_ids = {state.agent_id for state in pending}
+            if len(agent_ids) > 1:
+                referenced = [
+                    state
+                    for state in pending
+                    if (state.app_id or "NO_APP_FOUND") == disposition_ref
+                ]
+                agent_ids = {state.agent_id for state in referenced}
+            if len(agent_ids) != 1:
+                raise FireServiceError(
+                    "external cleanup request was not uniquely resolved"
+                )
+            agent_id = next(iter(agent_ids))
+            matches = [
+                state for state in candidates if state.agent_id == agent_id
+            ]
+        else:
+            referenced = [
+                state
+                for state in candidates
+                if (state.app_id or "NO_APP_FOUND") == disposition_ref
+            ]
+            matches = referenced or candidates
+        if len(matches) > 1:
+            canonical = self._coalesce_equivalent(matches)
+            matches = [canonical]
+        if len(matches) != 1:
+            raise FireServiceError(
+                "external cleanup request was not uniquely resolved"
+            )
+        state = matches[0]
+        expected_ref = state.app_id or "NO_APP_FOUND"
+        if disposition_ref != expected_ref:
+            raise FireServiceError("external disposition reference mismatch")
+        if not state.external_disposition_confirmed:
+            self._authority.confirm_external_disposition(
+                request,
+                state,
+                disposition_ref,
+            )
+        return self.resume(state.intent_id)
+
+    def _coalesce_live_requests(
+        self,
+        request: EmployeeFireRequest,
+    ) -> DurableFireState | None:
+        states = tuple(self._states().values())
+        live = [
+            state
+            for state in states
+            if state.tenant_key == request.tenant_key
+            and request.employee in {state.agent_id, state.employee_name}
+            and state.phase in {FirePhase.RETIRING, FirePhase.ACTION_REQUIRED}
+        ]
+        if not live:
+            return None
+        agent_ids = {state.agent_id for state in live}
+        if len(agent_ids) != 1:
+            raise FireServiceError("employee retirement authority is ambiguous")
+        agent_id = next(iter(agent_ids))
+        matches = [
+            state
+            for state in states
+            if state.tenant_key == request.tenant_key
+            and state.agent_id == agent_id
+            and state.phase is not FirePhase.SUPERSEDED
+        ]
+        return self._coalesce_equivalent(matches)
+
+    def _retry_action_required(self, intent_id: str) -> DurableFireState:
+        state = self._require(intent_id)
+        if state.phase is not FirePhase.ACTION_REQUIRED:
+            return self.resume(intent_id)
+        if state.error_code == "external_cleanup_authority_unavailable":
+            return state
+        failed_effects = [
+            effect_type
+            for effect_type, effect_state in state.effects
+            if effect_state is FireEffectState.ACTION_REQUIRED
+        ]
+        if len(failed_effects) != 1:
+            raise FireServiceError("fire recovery effect is ambiguous")
+        effect_type = failed_effects[0]
+        if self._observe(state, effect_type) is not True:
+            return state
+        self._commit(
+            JournalEvent(
+                event_type="fire.effect.reconciled",
+                aggregate_id=intent_id,
+                payload={
+                    "effect_type": effect_type,
+                    "resolution_code": "observed_committed",
+                },
+            )
+        )
+        return self.resume(intent_id)
+
+    def _coalesce_equivalent(
+        self,
+        states: list[DurableFireState],
+    ) -> DurableFireState:
+        coordinates = {
+            (
+                state.tenant_key,
+                state.agent_id,
+                state.bot_principal_id,
+                state.app_id,
+                state.credential_ref,
+                state.cleanup_mode,
+            )
+            for state in states
+        }
+        if len(coordinates) != 1:
+            raise FireServiceError("employee retirement authority is ambiguous")
+        archived = [
+            state for state in states if state.phase is FirePhase.ARCHIVED
+        ]
+        canonical = min(
+            archived or states,
+            key=lambda state: (state.requested_sequence, state.intent_id),
+        )
+        for duplicate in states:
+            if (
+                duplicate.intent_id == canonical.intent_id
+                or duplicate.phase
+                not in {FirePhase.RETIRING, FirePhase.ACTION_REQUIRED}
+            ):
+                continue
+            self._commit(
+                JournalEvent(
+                    event_type="fire.superseded",
+                    aggregate_id=duplicate.intent_id,
+                    payload={"canonical_intent_id": canonical.intent_id},
+                )
+            )
+        return self._require(canonical.intent_id)
+
     def recover(self) -> tuple[DurableFireState, ...]:
-        recovered: list[DurableFireState] = []
-        for intent_id, state in self._states().items():
-            if state.phase is FirePhase.RETIRING:
-                recovered.append(self.resume(intent_id))
-            elif state.phase is FirePhase.ACTION_REQUIRED:
-                self._authority.mark_action_required(state.agent_id)
-        return tuple(recovered)
+        with self._mutex:
+            recovered: list[DurableFireState] = []
+            grouped: dict[tuple[str, str], list[DurableFireState]] = {}
+            for state in self._states().values():
+                if state.phase is FirePhase.SUPERSEDED:
+                    continue
+                grouped.setdefault(
+                    (state.tenant_key, state.agent_id),
+                    [],
+                ).append(state)
+            for identity in sorted(grouped):
+                state = self._coalesce_equivalent(grouped[identity])
+                if state.phase is FirePhase.RETIRING:
+                    recovered.append(self.resume(state.intent_id))
+                elif state.phase is FirePhase.ACTION_REQUIRED:
+                    self._authority.mark_action_required(state.agent_id)
+            return tuple(recovered)
+
+    def list_states(self) -> tuple[DurableFireState, ...]:
+        """Return a stable read-only snapshot for admin diagnostics."""
+
+        with self._mutex:
+            return tuple(
+                sorted(
+                    self._states().values(),
+                    key=lambda state: (state.requested_sequence, state.intent_id),
+                )
+            )
 
     def _reconcile_executing(
         self,
@@ -254,6 +558,7 @@ class EmployeeFireService:
             and state.bot_principal_id == target.bot_principal_id
             and state.app_id == target.app_id
             and state.credential_ref == target.credential_ref
+            and state.cleanup_mode is target.cleanup_mode
         )
 
     @staticmethod

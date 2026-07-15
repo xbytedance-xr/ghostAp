@@ -7,14 +7,18 @@ import inspect
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from pydantic import SecretStr
 
+from src.autonomous.acceptance.main_bot_audit import MainBotSendAuditLog
 from src.autonomous.context import (
     AuthorizedContextRequest,
     ContextLayer,
@@ -116,6 +120,20 @@ class _DistinctRegistrar:
         return RegistrationResult(
             f"cli_employee_{suffix}",
             f"runtime-vault-only-secret-{suffix}",
+        )
+
+
+class _RecordingExistingRegistrar:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def register(self, request, *, on_link, on_status=None):
+        del on_status
+        self.requests.append(request)
+        on_link("https://open.feishu.cn/register/existing", 60)
+        return RegistrationResult(
+            request.existing_app_id,
+            "runtime-vault-only-secret-existing",
         )
 
 
@@ -515,10 +533,6 @@ def _runtime(
 ) -> EmployeeDepartmentRuntime:
     """Compose the built-in local runtime; release verdicts are obsolete."""
     del release_evidence_ready
-    kwargs.setdefault(
-        "main_bot_send_audit",
-        lambda _tenant_key, _started_at, _ended_at: 0,
-    )
     kwargs.setdefault("slock_engine_manager", _SlockManager())
     kwargs.setdefault(
         "employee_environment_provider",
@@ -553,6 +567,38 @@ def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -
     assert runtime.outbox_delivery is not None
     assert runtime.fire_service is not None
     assert runtime.execution_readiness().ready is True
+    runtime.close()
+
+
+def test_existing_app_id_reaches_runtime_registrar(tmp_path: Path) -> None:
+    registrar = _RecordingExistingRegistrar()
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=registrar,
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+
+    admitted = runtime.hire_service.start_hire(
+        replace(_request(), existing_app_id="cli_existing_123")
+    )
+    deadline = time.monotonic() + 5
+    current = admitted
+    while time.monotonic() < deadline:
+        current = runtime.hire_service.get_state(admitted.intent_id) or current
+        if current.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+
+    assert current.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert len(registrar.requests) == 1
+    assert registrar.requests[0].existing_app_id == "cli_existing_123"
+    assert current.existing_app_id == "cli_existing_123"
+    assert current.app_id == "cli_existing_123"
     runtime.close()
 
 
@@ -913,30 +959,14 @@ def _activate_employee(
             break
         time.sleep(0.02)
     assert pending is not None
-    callback = channels.callbacks[pending.agent_id]
-    callback(
-        {
-            "event": "rawMessageMeta",
-            "data": {
-                "event_id": "evt_context_ready",
-                "tenant_key": "tenant-a",
-                "message_id": "om_context_ready",
-                "sender_union_id": "on_admin",
-            },
-        }
+    ack = _accept_durable_status(
+        runtime,
+        pending,
+        suffix="context_ready",
+        generation=pending.channel_generation,
+        connection_id=pending.channel_connection_id,
     )
-    callback(
-        {
-            "event": "message",
-            "data": {
-                "id": "om_context_ready",
-                "content_text": "/status",
-                "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_employee_app_admin"},
-                "raw": {},
-            },
-        }
-    )
+    runtime._handle_control_ingress(ack.acceptance.acceptance_id)
     active = None
     while time.monotonic() < deadline:
         active = runtime.hire_service.get_state(admitted.intent_id)
@@ -966,7 +996,6 @@ def test_local_composition_does_not_require_release_provider(tmp_path: Path) -> 
         channel_supervisor=_Channels(),
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
-        main_bot_send_audit=lambda *_: 0,
     )
 
     try:
@@ -999,7 +1028,6 @@ def test_local_composition_canonicalizes_symlinked_home_prefix(
         channel_supervisor=_Channels(),
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
-        main_bot_send_audit=lambda *_: 0,
     )
 
     try:
@@ -1058,6 +1086,101 @@ class _ExternalTrustSession:
     def count_main_bot_send_attempts(self, _tenant_key, _start, _end) -> int:
         return self.audit_sequence
 
+    def count_main_bot_target_send_attempts(
+        self,
+        _tenant_key,
+        _target_hash,
+        _start,
+        _end,
+    ) -> int:
+        return 0
+
+
+def test_external_main_bot_audit_without_activation_fence_blocks_hire_readiness(
+    tmp_path: Path,
+) -> None:
+    audit = MainBotSendAuditLog.open(
+        tmp_path / "external-main-bot-audit",
+        anchor_path=tmp_path / "external-main-bot-audit.anchor",
+        hmac_key=b"a" * 32,
+        external_audit=object(),
+    )
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        _settings(tmp_path, limit=1),
+        main_bot_send_audit=audit.count_target_attempts,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+
+    try:
+        assert runtime.hire_service is not None
+        assert runtime.hire_readiness().blockers == (
+            "main_bot_activation_fence",
+        )
+    finally:
+        runtime.close()
+        audit.close()
+
+
+def test_fenced_custom_main_bot_audit_is_shared_with_outbound_and_not_owned(
+    tmp_path: Path,
+) -> None:
+    audit = MainBotSendAuditLog.open(
+        tmp_path / "custom-main-bot-audit",
+        anchor_path=tmp_path / "custom-main-bot-audit.anchor",
+        hmac_key=b"a" * 32,
+    )
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        _settings(tmp_path, limit=1),
+        main_bot_send_audit=audit.count_target_attempts,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+
+    assert runtime.hire_readiness().ready is True
+    assert runtime.main_bot_outbound_audit is audit
+    runtime.main_bot_outbound_audit.record_attempt(
+        "tenant-a",
+        "reply",
+        "om-requester",
+        attempted_at=time.time(),
+    )
+    assert audit.count_target_attempts(
+        "tenant-a",
+        hashlib.sha256(b"om-requester").hexdigest(),
+        0.0,
+        time.time(),
+    ) == 1
+
+    runtime.close()
+    assert audit.count_attempts("tenant-a", 0.0, time.time()) == 1
+    audit.close()
+
+
+def test_plain_main_bot_audit_callable_without_activation_fence_blocks_hire_readiness(
+    tmp_path: Path,
+) -> None:
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        _settings(tmp_path, limit=1),
+        main_bot_send_audit=lambda *_: 0,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+
+    try:
+        assert runtime.hire_service is not None
+        assert runtime.hire_readiness().blockers == (
+            "main_bot_activation_fence",
+        )
+    finally:
+        runtime.close()
+
 
 def test_legacy_release_provider_is_closed_and_not_required(tmp_path: Path) -> None:
     provider = _ExternalTrustProvider()
@@ -1092,7 +1215,6 @@ def test_legacy_release_session_expiry_cannot_close_local_admission(tmp_path: Pa
     runtime = EmployeeDepartmentRuntime.from_settings(
         _settings(tmp_path, limit=1, context_configured=True),
         release_trust_provider=provider,
-        main_bot_send_audit=lambda *_: 0,
         registrar=_Registrar(),
         channel_supervisor=_Channels(),
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
@@ -1136,11 +1258,12 @@ def test_limit_zero_is_dormant_without_touching_durable_paths(tmp_path: Path) ->
 def test_context_configuration_failure_does_not_block_first_hire(
     tmp_path: Path,
 ) -> None:
+    channels = _Channels()
     runtime = _runtime(
         _settings(tmp_path, limit=1),
         release_evidence_ready=True,
         registrar=_Registrar(),
-        channel_supervisor=_Channels(),
+        channel_supervisor=channels,
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
     )
@@ -1738,30 +1861,14 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
             break
         time.sleep(0.05)
     assert pending is not None
-    callback = restarted_channels.callbacks[pending.agent_id]
-    callback(
-        {
-            "event": "rawMessageMeta",
-            "data": {
-                "event_id": "evt_context_restart",
-                "tenant_key": pending.tenant_key,
-                "message_id": "om_context_restart",
-                "sender_union_id": "on_admin",
-            },
-        }
+    ack = _accept_durable_status(
+        restarted,
+        pending,
+        suffix="context_restart",
+        generation=pending.channel_generation,
+        connection_id=pending.channel_connection_id,
     )
-    callback(
-        {
-            "event": "message",
-            "data": {
-                "id": "om_context_restart",
-                "content_text": "/status",
-                "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_admin"},
-                "raw": {},
-            },
-        }
-    )
+    restarted._handle_control_ingress(ack.acceptance.acceptance_id)
     recovered = None
     while time.monotonic() < deadline:
         recovered = restarted.hire_service.get_state(active.intent_id)
@@ -1872,7 +1979,6 @@ def test_release_claim_settings_are_not_required_for_local_runtime(
     runtime = EmployeeDepartmentRuntime.from_settings(
         settings,
         notification_link=lambda *_: None,
-        main_bot_send_audit=lambda *_: 0,
         channel_supervisor=_Channels(),
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
     )
@@ -1947,6 +2053,7 @@ def test_failed_channel_start_is_disposed_and_retried_with_next_generation(
     tmp_path: Path,
 ) -> None:
     channels = _FailOnceStartChannels()
+    statuses: list[str] = []
     runtime = _runtime(
         _settings(tmp_path, limit=1),
         release_evidence_ready=True,
@@ -1954,13 +2061,20 @@ def test_failed_channel_start_is_disposed_and_retried_with_next_generation(
         channel_supervisor=channels,
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
+        notification_status=lambda _state, status: (
+            statuses.append(status) or "om_notification"
+        ),
     )
     assert runtime.hire_service is not None
     admitted = runtime.hire_service.start_hire(_request())
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         state = runtime.hire_service.get_state(admitted.intent_id)
-        if state is not None and state.phase is HirePhase.READY_PENDING_VERIFICATION:
+        if (
+            state is not None
+            and state.phase is HirePhase.READY_PENDING_VERIFICATION
+            and statuses == ["ready"]
+        ):
             break
         time.sleep(0.02)
 
@@ -1970,6 +2084,48 @@ def test_failed_channel_start_is_disposed_and_retried_with_next_generation(
     assert channels.attempted_generations == [1, 2]
     assert state.effect_state("channel-start:1") is HireEffectState.ACTION_REQUIRED
     assert state.effect_state("channel-start:2") is HireEffectState.COMMITTED
+    assert statuses == ["ready"]
+    runtime.close()
+
+
+def test_channel_action_required_effect_emits_terminal_notification(
+    tmp_path: Path,
+) -> None:
+    statuses: list[str] = []
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_FailingStartChannels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        notification_status=lambda _state, status: (
+            statuses.append(status) or "om_action_required"
+        ),
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        state = runtime.hire_service.get_state(admitted.intent_id)
+        events = [
+            event.event_type
+            for frame in runtime.journal_frames()
+            for event in frame.events
+            if event.aggregate_id
+            == f"hire-notification:{admitted.intent_id}:action_required"
+        ]
+        if statuses == ["action_required"] and "hire.notification.committed" in events:
+            break
+        time.sleep(0.05)
+
+    assert state is not None
+    assert state.phase is HirePhase.CONFIGURING
+    assert any(
+        effect_state is HireEffectState.ACTION_REQUIRED
+        for _effect_id, effect_state in state.effects
+    )
+    assert statuses == ["action_required"]
+    assert events.count("hire.notification.committed") == 1
     runtime.close()
 
 
@@ -2180,7 +2336,9 @@ def test_new_hire_reports_ready_terminal_status(tmp_path: Path) -> None:
         channel_supervisor=_Channels(),
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
-        notification_status=lambda _state, status: statuses.append(status),
+        notification_status=lambda _state, status: (
+            statuses.append(status) or "om_notification"
+        ),
     )
     admitted = runtime.hire_service.start_hire(_request())
     deadline = time.monotonic() + 5
@@ -2210,6 +2368,180 @@ def test_new_hire_reports_ready_terminal_status(tmp_path: Path) -> None:
     runtime.close()
 
 
+def test_ready_notification_retries_automatically_after_unacknowledged_reply(
+    tmp_path: Path,
+) -> None:
+    attempts: list[str] = []
+
+    def notify(_state, status: str):
+        if status != "ready":
+            return "om_other_notification"
+        attempts.append(status)
+        return None if len(attempts) == 1 else "om_ready_notification"
+
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        notification_status=notify,
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        state = runtime.hire_service.get_state(admitted.intent_id)
+        events = [
+            event.event_type
+            for frame in runtime.journal_frames()
+            for event in frame.events
+            if event.aggregate_id
+            == f"hire-notification:{admitted.intent_id}:ready"
+        ]
+        if attempts == ["ready", "ready"] and "hire.notification.committed" in events:
+            break
+        time.sleep(0.05)
+
+    assert state is not None
+    assert state.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert attempts == ["ready", "ready"]
+    assert events.count("hire.notification.action_required") == 1
+    assert events.count("hire.notification.committed") == 1
+    runtime.close()
+
+
+def test_notification_lock_rechecks_phase_before_sending() -> None:
+    runtime = EmployeeDepartmentRuntime()
+    ready = DurableHireState(intent_id="hire_1", phase=HirePhase.READY_PENDING_VERIFICATION)
+    holder = SimpleNamespace(current=ready)
+    runtime._service = SimpleNamespace(
+        get_state=lambda _intent_id: holder.current,
+    )
+    calls: list[str] = []
+    runtime._notification_status = lambda _state, status: calls.append(status) or "om_1"
+
+    async def race() -> bool:
+        runtime._notification_async_lock = asyncio.Lock()
+        await runtime._notification_async_lock.acquire()
+        task = asyncio.create_task(runtime._notify_hire_terminal(ready, "ready"))
+        await asyncio.sleep(0)
+        holder.current = replace(ready, phase=HirePhase.ACTIVE)
+        runtime._notification_async_lock.release()
+        return await task
+
+    assert asyncio.run(race()) is False
+    assert calls == []
+
+
+def test_ready_notification_retries_after_runtime_restart(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, limit=1)
+    first_attempts: list[str] = []
+    first = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        notification_status=lambda _state, status: (
+            first_attempts.append(status) or None
+        ),
+    )
+    admitted = first.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        state = first.hire_service.get_state(admitted.intent_id)
+        events = [
+            event.event_type
+            for frame in first.journal_frames()
+            for event in frame.events
+            if event.aggregate_id
+            == f"hire-notification:{admitted.intent_id}:ready"
+        ]
+        if (
+            state is not None
+            and state.phase is HirePhase.READY_PENDING_VERIFICATION
+            and "hire.notification.action_required" in events
+        ):
+            break
+        time.sleep(0.02)
+    assert first_attempts == ["ready"]
+    first.close()
+
+    restarted_attempts: list[str] = []
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        notification_status=lambda _state, status: (
+            restarted_attempts.append(status) or "om_recovered_notification"
+        ),
+    )
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        events = [
+            event.event_type
+            for frame in restarted.journal_frames()
+            for event in frame.events
+            if event.aggregate_id
+            == f"hire-notification:{admitted.intent_id}:ready"
+        ]
+        if (
+            restarted_attempts == ["ready"]
+            and "hire.notification.committed" in events
+            and restarted.readiness().ready is True
+        ):
+            break
+        time.sleep(0.05)
+
+    assert restarted_attempts == ["ready"]
+    assert events.count("hire.notification.committed") == 1
+    assert restarted.readiness().ready is True
+    restarted.close()
+
+
+def test_active_notification_retries_after_unacknowledged_reply(tmp_path: Path) -> None:
+    active_attempts: list[str] = []
+
+    def notify(_state, status: str):
+        if status != "active":
+            return "om_ready_notification"
+        active_attempts.append(status)
+        return None if len(active_attempts) == 1 else "om_active_notification"
+
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        notification_status=notify,
+    )
+    active = _activate_employee(runtime, channels)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if active_attempts == ["active", "active"]:
+            break
+        time.sleep(0.02)
+
+    events = [
+        event.event_type
+        for frame in runtime.journal_frames()
+        for event in frame.events
+        if event.aggregate_id == f"hire-notification:{active.intent_id}:active"
+    ]
+    assert active_attempts == ["active", "active"]
+    assert events.count("hire.notification.action_required") == 1
+    assert events.count("hire.notification.committed") == 1
+    runtime.close()
+
+
 def test_new_hire_reports_action_required_after_bounded_retries(tmp_path: Path) -> None:
     statuses: list[str] = []
     runtime = _runtime(
@@ -2219,7 +2551,9 @@ def test_new_hire_reports_action_required_after_bounded_retries(tmp_path: Path) 
         channel_supervisor=_Channels(),
         slash_reconciler_factory=lambda _app_id, _secret: _FailingSlash(),
         notification_link=lambda *_: None,
-        notification_status=lambda _state, status: statuses.append(status),
+        notification_status=lambda _state, status: (
+            statuses.append(status) or "om_notification"
+        ),
     )
     admitted = runtime.hire_service.start_hire(_request())
     deadline = time.monotonic() + 6
@@ -2235,6 +2569,52 @@ def test_new_hire_reports_action_required_after_bounded_retries(tmp_path: Path) 
 
     assert state is not None and state.phase is HirePhase.ACTION_REQUIRED
     assert statuses == ["action_required"]
+    runtime.close()
+
+
+def test_action_required_notification_retries_automatically(tmp_path: Path) -> None:
+    attempts: list[str] = []
+
+    def notify(_state, status: str):
+        if status != "action_required":
+            return "om_other_notification"
+        attempts.append(status)
+        return None if len(attempts) == 1 else "om_action_required"
+
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _FailingSlash(),
+        notification_link=lambda *_: None,
+        notification_status=notify,
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        state = runtime.hire_service.get_state(admitted.intent_id)
+        events = [
+            event.event_type
+            for frame in runtime.journal_frames()
+            for event in frame.events
+            if event.aggregate_id
+            == f"hire-notification:{admitted.intent_id}:action_required"
+        ]
+        if (
+            state is not None
+            and state.phase is HirePhase.ACTION_REQUIRED
+            and attempts == ["action_required", "action_required"]
+            and "hire.notification.committed" in events
+        ):
+            break
+        time.sleep(0.05)
+
+    assert state is not None and state.phase is HirePhase.ACTION_REQUIRED
+    assert attempts == ["action_required", "action_required"]
+    assert events.count("hire.notification.action_required") == 1
+    assert events.count("hire.notification.retry_requested") == 1
+    assert events.count("hire.notification.committed") == 1
     runtime.close()
 
 
@@ -2276,31 +2656,14 @@ def test_real_employee_status_ingress_and_employee_send_are_required_for_active(
             break
         time.sleep(0.02)
     assert pending is not None
-    callback = channels.callbacks[pending.agent_id]
-
-    callback(  # type: ignore[operator]
-        {
-            "event": "rawMessageMeta",
-            "data": {
-                "event_id": "evt_status",
-                "tenant_key": "tenant-a",
-                "message_id": "om_status",
-                "sender_union_id": "on_admin",
-            },
-        }
+    ack = _accept_durable_status(
+        runtime,
+        pending,
+        suffix="status",
+        generation=pending.channel_generation,
+        connection_id=pending.channel_connection_id,
     )
-    callback(  # type: ignore[operator]
-        {
-            "event": "message",
-            "data": {
-                "id": "om_status",
-                "content_text": "/status",
-                "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_employee_app_admin"},
-                "raw": {"message_id": "om_status"},
-            },
-        }
-    )
+    runtime._handle_control_ingress(ack.acceptance.acceptance_id)
     while time.monotonic() < deadline:
         active = runtime.hire_service.get_state(admitted.intent_id)
         if active is not None and active.phase is HirePhase.ACTIVE:
@@ -2308,17 +2671,1308 @@ def test_real_employee_status_ingress_and_employee_send_are_required_for_active(
         time.sleep(0.02)
 
     assert active is not None and active.phase is HirePhase.ACTIVE
-    assert active.activation_ingress_event_id == "evt_status"
+    assert active.activation_ingress_event_id == (
+        "evt_" + hashlib.sha256(b"status").hexdigest()
+    )
     assert active.activation_send_request_id == "send_runtime"
     assert channels.sent == [
         (
             active.agent_id,
             1,
             "ou_employee_app_admin",
-            {"text": "Atlas is ready."},
-            {"reply_to": "om_status"},
+            {"text": "Atlas activation verification started; not active yet."},
+            {
+                "uuid": hashlib.sha256(
+                    (
+                        "employee-activation-preflight:evt_"
+                        + hashlib.sha256(b"status").hexdigest()
+                    ).encode()
+                ).hexdigest()[:50]
+            },
+        ),
+        (
+            active.agent_id,
+            1,
+            "ou_employee_app_admin",
+            {"text": "Atlas is active."},
+            {
+                "uuid": hashlib.sha256(
+                    (
+                        "employee-activation-success:evt_"
+                        + hashlib.sha256(b"status").hexdigest()
+                    ).encode()
+                ).hexdigest()[:50]
+            },
+        ),
+    ]
+    runtime.close()
+
+
+def test_activation_fence_blocks_main_bot_outbound_until_atomic_commit(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+    assert runtime.main_bot_outbound_audit is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+
+    commit_entered = threading.Event()
+    allow_commit = threading.Event()
+    outbound_done = threading.Event()
+    original_commit = runtime.hire_service.commit_activation
+
+    def blocked_commit(*args, **kwargs):
+        commit_entered.set()
+        assert allow_commit.wait(2)
+        return original_commit(*args, **kwargs)
+
+    runtime.hire_service.commit_activation = blocked_commit  # type: ignore[method-assign]
+    activation_result: list[bool] = []
+    activation = threading.Thread(
+        target=lambda: activation_result.append(
+            runtime._complete_status_activation(
+                state=pending,
+                challenge=runtime._challenges[pending.intent_id],
+                generation=pending.channel_generation,
+                event_id="evt_fenced_activation",
+                message_id="om_fenced_activation",
+                sender_id="ou_employee_app_admin",
+                sender_union_id=pending.requester_union_id,
+                command="/status",
+                is_p2p=True,
+                reply_options={},
+                received_at=time.time(),
+            )
+        )
+    )
+    activation.start()
+    assert commit_entered.wait(2)
+
+    outbound = threading.Thread(
+        target=lambda: (
+            runtime.main_bot_outbound_audit.record_attempt(
+                pending.tenant_key,
+                "reply",
+                pending.message_id,
+                attempted_at=time.time(),
+            ),
+            outbound_done.set(),
+        )
+    )
+    outbound.start()
+    assert not outbound_done.wait(0.1)
+
+    allow_commit.set()
+    activation.join(timeout=2)
+    outbound.join(timeout=2)
+    assert activation_result == [True]
+    assert outbound_done.is_set()
+    runtime.close()
+
+
+def test_sibling_main_bot_mutation_with_requester_alias_blocks_activation(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+    assert runtime.main_bot_outbound_audit is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+
+    runtime.main_bot_outbound_audit.record_attempt(
+        pending.tenant_key,
+        "reply",
+        "om_sibling_message",
+        attempted_at=time.time(),
+    )
+    runtime.main_bot_outbound_audit.record_attempt(
+        pending.tenant_key,
+        "reply",
+        pending.requester_principal_id,
+        attempted_at=time.time(),
+    )
+
+    assert runtime._complete_status_activation(
+        state=pending,
+        challenge=runtime._challenges[pending.intent_id],
+        generation=pending.channel_generation,
+        event_id="evt_sibling_mutation",
+        message_id="om_employee_status",
+        sender_id="ou_employee_app_admin",
+        sender_union_id=pending.requester_union_id,
+        command="/status",
+        is_p2p=True,
+        reply_options={},
+        received_at=time.time(),
+    ) is False
+    current = runtime.hire_service.get_state(admitted.intent_id)
+    assert current is not None
+    assert current.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert channels.sent[-1][3] == {
+        "text": (
+            "Activation window reset after a conflicting main Bot send. "
+            "Send /status again."
+        )
+    }
+    runtime.close()
+
+
+def test_main_bot_target_send_blocks_employee_reply_before_activation(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    audited_targets: list[str] = []
+    requester_target_hash = hashlib.sha256(b"ou_admin").hexdigest()
+    collision_at = 0.0
+
+    def audit(_tenant: str, target_hash: str, start: float, end: float) -> int:
+        audited_targets.append(target_hash)
+        return int(
+            target_hash == requester_target_hash
+            and start <= collision_at <= end
+        )
+
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    runtime._main_bot_send_audit = audit
+    assert runtime.hire_service is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    challenge = runtime._challenges[pending.intent_id]
+    collision_at = time.time()
+
+    activated = runtime._complete_status_activation(
+        state=pending,
+        challenge=challenge,
+        generation=pending.channel_generation,
+        event_id="evt_main_bot_collision",
+        message_id="om_main_bot_collision",
+        sender_id="ou_employee_app_admin",
+        sender_union_id=pending.requester_union_id,
+        command="/status",
+        is_p2p=True,
+        reply_options={},
+        received_at=time.time(),
+    )
+
+    assert activated is False
+    assert channels.sent == [
+        (
+            pending.agent_id,
+            pending.channel_generation,
+            "ou_employee_app_admin",
+            {
+                "text": (
+                    "Activation window reset after a conflicting main Bot send. "
+                    "Send /status again."
+                )
+            },
+            {
+                "uuid": hashlib.sha256(
+                    b"employee-activation-retry:evt_main_bot_collision"
+                ).hexdigest()[:50]
+            },
         )
     ]
+    assert set(audited_targets) == {
+        hashlib.sha256(value).hexdigest()
+        for value in (
+            b"om_main_bot_collision",
+            b"on_admin",
+            b"ou_admin",
+            b"oc_admin_dm",
+            b"om_composition",
+        )
+    }
+    current = runtime.hire_service.get_state(admitted.intent_id)
+    assert current is not None
+    assert current.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert current.verification_nonce != challenge.nonce
+    assert current.verification_issued_at > collision_at
+    assert current.effect_state("verification-status-reply:evt_main_bot_collision") is None
+    assert runtime._complete_status_activation(
+        state=current,
+        challenge=runtime._challenges[current.intent_id],
+        generation=current.channel_generation,
+        event_id="evt_main_bot_collision_retry",
+        message_id="om_main_bot_collision_retry",
+        sender_id="ou_employee_app_admin",
+        sender_union_id=current.requester_union_id,
+        command="/status",
+        is_p2p=True,
+        reply_options={},
+        received_at=time.time(),
+    )
+    active = runtime.hire_service.get_state(admitted.intent_id)
+    assert active is not None and active.phase is HirePhase.ACTIVE
+    assert [item[3] for item in channels.sent[-2:]] == [
+        {"text": "Atlas activation verification started; not active yet."},
+        {"text": "Atlas is active."},
+    ]
+    runtime.close()
+
+
+def test_post_reply_main_bot_collision_sends_durable_incomplete_notice(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    audit_calls = 0
+
+    def audit(_tenant: str, target_hash: str, _start: float, _end: float) -> int:
+        nonlocal audit_calls
+        audit_calls += 1
+        return int(
+            audit_calls > 5
+            and target_hash == hashlib.sha256(b"ou_admin").hexdigest()
+        )
+
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    runtime._main_bot_send_audit = audit
+    assert runtime.hire_service is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+
+    activated = runtime._complete_status_activation(
+        state=pending,
+        challenge=runtime._challenges[pending.intent_id],
+        generation=pending.channel_generation,
+        event_id="evt_post_reply_collision",
+        message_id="om_post_reply_collision",
+        sender_id="ou_employee_app_admin",
+        sender_union_id=pending.requester_union_id,
+        command="/status",
+        is_p2p=True,
+        reply_options={},
+        received_at=time.time(),
+    )
+
+    assert activated is False
+    assert [item[3] for item in channels.sent] == [
+        {"text": "Atlas activation verification started; not active yet."},
+        {"text": "Activation did not complete. Send /status again."},
+    ]
+    assert channels.sent[1][4] == {
+        "uuid": hashlib.sha256(
+            b"employee-activation-incomplete:evt_post_reply_collision"
+        ).hexdigest()[:50]
+    }
+    current = runtime.hire_service.get_state(admitted.intent_id)
+    assert current is not None and current.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert (
+        current.effect_state("verification-status-reply:evt_post_reply_collision")
+        is HireEffectState.COMMITTED
+    )
+    assert (
+        current.effect_state("verification-incomplete-reply:evt_post_reply_collision")
+        is HireEffectState.COMMITTED
+    )
+    runtime.close()
+
+
+def test_committed_preflight_reply_replay_sends_idempotent_incomplete_notice(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    effect_id = "verification-status-reply:evt_committed_preflight_replay"
+    for next_state in (HireEffectState.PREPARED, HireEffectState.EXECUTING):
+        pending = runtime.hire_service.commit_effect_transition(
+            pending.intent_id,
+            effect_id=effect_id,
+            effect_type="employee_status_reply",
+            next_state=next_state,
+        )
+    pending = runtime.hire_service.commit_effect_transition(
+        pending.intent_id,
+        effect_id=effect_id,
+        effect_type="employee_status_reply",
+        next_state=HireEffectState.COMMITTED,
+        metadata={
+            "send_request_id": "req_preflight",
+            "ingress_event_id": "evt_committed_preflight_replay",
+            "reply_app_id": pending.app_id,
+            "reply_message_id": "om_preflight",
+            "generation": str(pending.channel_generation),
+            "connection_id": pending.channel_connection_id,
+            "main_bot_send_count": "1",
+        },
+    )
+
+    def replay() -> bool:
+        return runtime._complete_status_activation(
+            state=pending,
+            challenge=runtime._challenges[pending.intent_id],
+            generation=pending.channel_generation,
+            event_id="evt_committed_preflight_replay",
+            message_id="om_committed_preflight_replay",
+            sender_id="ou_employee_app_admin",
+            sender_union_id=pending.requester_union_id,
+            command="/status",
+            is_p2p=True,
+            reply_options={},
+            received_at=time.time(),
+        )
+
+    assert replay() is False
+    assert replay() is False
+    assert [item[3] for item in channels.sent] == [
+        {"text": "Activation did not complete. Send /status again."}
+    ]
+    current = runtime.hire_service.get_state(pending.intent_id)
+    assert current is not None
+    assert (
+        current.effect_state(
+            "verification-incomplete-reply:evt_committed_preflight_replay"
+        )
+        is HireEffectState.COMMITTED
+    )
+    runtime.close()
+
+
+def test_challenge_expiring_during_employee_reply_sends_incomplete_notice(
+    tmp_path: Path,
+) -> None:
+    class _SlowChannels(_Channels):
+        def send(self, *args, **kwargs):
+            if not self.sent:
+                time.sleep(0.05)
+            return super().send(*args, **kwargs)
+
+    channels = _SlowChannels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    challenge = replace(
+        runtime._challenges[pending.intent_id],
+        expires_at=time.time() + 0.01,
+    )
+
+    activated = runtime._complete_status_activation(
+        state=pending,
+        challenge=challenge,
+        generation=pending.channel_generation,
+        event_id="evt_expired_during_reply",
+        message_id="om_expired_during_reply",
+        sender_id="ou_employee_app_admin",
+        sender_union_id=pending.requester_union_id,
+        command="/status",
+        is_p2p=True,
+        reply_options={},
+        received_at=time.time(),
+    )
+
+    assert activated is False
+    assert [item[3] for item in channels.sent] == [
+        {"text": "Atlas activation verification started; not active yet."},
+        {"text": "Activation did not complete. Send /status again."},
+    ]
+    assert channels.sent[1][4] == {
+        "uuid": hashlib.sha256(
+            b"employee-activation-incomplete:evt_expired_during_reply"
+        ).hexdigest()[:50]
+    }
+    current = runtime.hire_service.get_state(admitted.intent_id)
+    assert current is not None and current.phase is HirePhase.READY_PENDING_VERIFICATION
+    runtime.close()
+
+
+def test_expired_activation_notice_is_explicit_and_idempotent(tmp_path: Path) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+
+    for _ in range(2):
+        assert runtime._send_activation_retry_notice(
+            state=runtime.hire_service.get_state(pending.intent_id) or pending,
+            generation=pending.channel_generation,
+            event_id="evt_expired_status",
+            sender_id="ou_employee_app_admin",
+            message="Activation window refreshed. Send /status again.",
+        )
+
+    assert channels.sent == [
+        (
+            pending.agent_id,
+            pending.channel_generation,
+            "ou_employee_app_admin",
+            {"text": "Activation window refreshed. Send /status again."},
+            {
+                "uuid": hashlib.sha256(
+                    b"employee-activation-retry:evt_expired_status"
+                ).hexdigest()[:50]
+            },
+        )
+    ]
+    current = runtime.hire_service.get_state(pending.intent_id)
+    assert current is not None
+    assert current.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert (
+        current.effect_state("verification-retry-reply:evt_expired_status")
+        is HireEffectState.COMMITTED
+    )
+    runtime.close()
+
+
+def test_activation_retry_replay_reuses_uuid_after_unknown_receipt(
+    tmp_path: Path,
+) -> None:
+    class _UnknownFirstReceiptChannels(_Channels):
+        def send(self, *args, **kwargs):
+            receipt = super().send(*args, **kwargs)
+            if len(self.sent) == 1:
+                return replace(receipt, request_id="")
+            return receipt
+
+    channels = _UnknownFirstReceiptChannels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    assert runtime.hire_service is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+
+    event_id = "evt_retry_unknown_receipt"
+    expected_uuid = hashlib.sha256(
+        f"employee-activation-retry:{event_id}".encode()
+    ).hexdigest()[:50]
+    with pytest.raises(RuntimeError, match="retry receipt is invalid"):
+        runtime._send_activation_retry_notice(
+            state=pending,
+            generation=pending.channel_generation,
+            event_id=event_id,
+            sender_id="ou_employee_app_admin",
+            message="Activation window refreshed. Send /status again.",
+        )
+
+    assert runtime._send_activation_retry_notice(
+        state=runtime.hire_service.get_state(pending.intent_id) or pending,
+        generation=pending.channel_generation,
+        event_id=event_id,
+        sender_id="ou_employee_app_admin",
+        message="Activation window refreshed. Send /status again.",
+    )
+
+    assert [item[4] for item in channels.sent] == [
+        {"uuid": expected_uuid},
+        {"uuid": expected_uuid},
+    ]
+    current = runtime.hire_service.get_state(pending.intent_id)
+    assert current is not None
+    assert (
+        current.effect_state(f"verification-retry-reply:{event_id}")
+        is HireEffectState.COMMITTED
+    )
+    runtime.close()
+
+
+def _accept_durable_status(
+    runtime,
+    state,
+    *,
+    suffix: str,
+    generation: int,
+    connection_id: str,
+):
+    raw_message_id = f"om_{suffix}"
+    message_id = "om_" + hashlib.sha256(raw_message_id.encode()).hexdigest()
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id="ing_" + hashlib.sha256(suffix.encode()).hexdigest(),
+        normalized_parts=(
+            {
+                "type": "message",
+                "message_type": "text",
+                "chat_type": "p2p",
+                "content": {"text": "/status"},
+                "sender_id": "ou_employee_app_admin",
+                "sender_union_id": state.requester_union_id,
+                "sender_id_type": "open_id",
+                "sender_type": "user",
+                "sender_tenant_key": state.tenant_key,
+                "feishu_thread_id": "",
+            },
+        ),
+        attachment_descriptors=(),
+    )
+    metadata = EmployeeIngressMetadata(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        bot_principal_id=state.bot_principal_id,
+        app_id=state.app_id,
+        channel_generation=generation,
+        connection_id=connection_id,
+        event_id="evt_" + hashlib.sha256(suffix.encode()).hexdigest(),
+        message_id=message_id,
+        event_type="im.message.receive_v1",
+        action_identity="",
+        chat_id="oc_" + hashlib.sha256(f"chat-{suffix}".encode()).hexdigest(),
+        thread_root_message_id="",
+        sender_principal_id="ou_employee_app_admin",
+        received_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        ),
+        semantic_digest=payload.payload_sha256,
+        payload_sha256=payload.payload_sha256,
+        payload_size_bytes=payload.canonical_size_bytes,
+        attachment_count=0,
+        attachment_total_bytes=0,
+    )
+    return runtime.ingress_service.accept(
+        metadata,
+        payload,
+        request_id=f"req_{suffix}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("phase", "message_fragment"),
+    (
+        (HirePhase.VALIDATING, "currently validating"),
+        (HirePhase.ACTION_REQUIRED, "requires administrator action"),
+    ),
+)
+def test_status_before_activation_durably_explains_current_phase(
+    tmp_path: Path,
+    phase: HirePhase,
+    message_fragment: str,
+) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    current = runtime.hire_service._commit_phase_transition(pending, phase)
+    ack = _accept_durable_status(
+        runtime,
+        current,
+        suffix=f"early_status_{phase.value}",
+        generation=current.channel_generation,
+        connection_id=current.channel_connection_id,
+    )
+
+    assert runtime._handle_control_ingress(ack.acceptance.acceptance_id)
+    assert runtime._handle_control_ingress(ack.acceptance.acceptance_id)
+
+    runtime.ingress_service.rebuild_projection()
+    disposition = runtime.ingress_service.state.by_acceptance_id[
+        ack.acceptance.acceptance_id
+    ].disposition
+    assert disposition is not None
+    assert disposition.reason_code == f"activation_status_{phase.value}"
+    assert len(channels.sent) == 1
+    assert message_fragment in channels.sent[0][3]["text"]
+    runtime.close()
+
+
+def test_early_status_reply_unknown_outcome_replays_with_same_uuid(
+    tmp_path: Path,
+) -> None:
+    class _UnknownFirstReceiptChannels(_Channels):
+        def send(self, *args, **kwargs):
+            receipt = super().send(*args, **kwargs)
+            if len(self.sent) == 1:
+                return replace(receipt, request_id="")
+            return receipt
+
+    channels = _UnknownFirstReceiptChannels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    current = runtime.hire_service._commit_phase_transition(
+        pending,
+        HirePhase.ACTION_REQUIRED,
+    )
+    ack = _accept_durable_status(
+        runtime,
+        current,
+        suffix="early_status_unknown_receipt",
+        generation=current.channel_generation,
+        connection_id=current.channel_connection_id,
+    )
+
+    with pytest.raises(RuntimeError, match="retry receipt is invalid"):
+        runtime._handle_control_ingress(ack.acceptance.acceptance_id)
+    assert runtime._handle_control_ingress(ack.acceptance.acceptance_id)
+
+    expected_uuid = hashlib.sha256(
+        (
+            "employee-activation-retry:evt_"
+            + hashlib.sha256(b"early_status_unknown_receipt").hexdigest()
+        ).encode()
+    ).hexdigest()[:50]
+    assert [item[4]["uuid"] for item in channels.sent] == [
+        expected_uuid,
+        expected_uuid,
+    ]
+    runtime.close()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    (HirePhase.VALIDATING, HirePhase.ACTION_REQUIRED),
+)
+def test_early_status_unknown_reply_recovers_original_decision_after_restart(
+    tmp_path: Path,
+    phase: HirePhase,
+) -> None:
+    class _UnknownReceiptChannels(_Channels):
+        def send(self, *args, **kwargs):
+            receipt = super().send(*args, **kwargs)
+            return replace(receipt, request_id="")
+
+    settings = _settings(tmp_path, limit=1)
+    first_channels = _UnknownReceiptChannels()
+    first = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=first_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    admitted = first.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = first.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    current = first.hire_service._commit_phase_transition(pending, phase)
+    ack = _accept_durable_status(
+        first,
+        current,
+        suffix=f"restart_early_status_{phase.value}",
+        generation=current.channel_generation,
+        connection_id=current.channel_connection_id,
+    )
+    acceptance_id = ack.acceptance.acceptance_id
+    with pytest.raises(RuntimeError, match="retry receipt is invalid"):
+        first._handle_control_ingress(acceptance_id)
+    first_uuid = first_channels.sent[-1][4]["uuid"]
+    if phase is HirePhase.VALIDATING:
+        unresolved = first.hire_service.get_state(admitted.intent_id)
+        assert unresolved is not None
+        first.hire_service._commit_phase_transition(
+            unresolved,
+            HirePhase.READY_PENDING_VERIFICATION,
+        )
+    first.close()
+
+    restarted_channels = _Channels()
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=True,
+        channel_supervisor=restarted_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    deadline = time.monotonic() + 7
+    while time.monotonic() < deadline:
+        recovered_before_reply = restarted.hire_service.get_state(
+            admitted.intent_id
+        )
+        if (
+            recovered_before_reply is not None
+            and recovered_before_reply.channel_generation
+            == current.channel_generation + 1
+            and recovered_before_reply.agent_id in restarted_channels.statuses
+        ):
+            break
+        time.sleep(0.05)
+    assert recovered_before_reply is not None
+    assert (
+        recovered_before_reply.channel_generation
+        == current.channel_generation + 1
+    )
+
+    assert restarted._handle_control_ingress(acceptance_id)
+
+    restarted.ingress_service.rebuild_projection()
+    disposition = restarted.ingress_service.state.by_acceptance_id[
+        acceptance_id
+    ].disposition
+    recovered = restarted.hire_service.get_state(admitted.intent_id)
+    assert disposition is not None
+    assert disposition.reason_code == f"activation_status_{phase.value}"
+    assert restarted_channels.sent[-1][4]["uuid"] == first_uuid
+    assert recovered is not None
+    assert recovered.phase is (
+        HirePhase.READY_PENDING_VERIFICATION
+        if phase is HirePhase.VALIDATING
+        else HirePhase.ACTION_REQUIRED
+    )
+    assert recovered.activation_ingress_event_id == ""
+    restarted.close()
+
+
+def test_stale_generation_status_prompts_once_then_current_status_activates(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 7
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    old_generation = pending.channel_generation
+    old_connection_id = pending.channel_connection_id
+    channels.crash(pending.agent_id)
+    while time.monotonic() < deadline:
+        refreshed = runtime.hire_service.get_state(admitted.intent_id)
+        if (
+            refreshed is not None
+            and refreshed.phase is HirePhase.READY_PENDING_VERIFICATION
+            and refreshed.channel_generation == old_generation + 1
+        ):
+            break
+        time.sleep(0.05)
+    assert refreshed is not None
+    old_ack = _accept_durable_status(
+        runtime,
+        refreshed,
+        suffix="stale_generation_status",
+        generation=old_generation,
+        connection_id=old_connection_id,
+    )
+
+    assert runtime._handle_control_ingress(old_ack.acceptance.acceptance_id)
+    assert runtime._handle_control_ingress(old_ack.acceptance.acceptance_id)
+    runtime.ingress_service.rebuild_projection()
+    old_disposition = runtime.ingress_service.state.by_acceptance_id[
+        old_ack.acceptance.acceptance_id
+    ].disposition
+    assert old_disposition is not None
+    assert old_disposition.reason_code == "activation_generation_refreshed"
+    assert channels.sent == [
+        (
+            refreshed.agent_id,
+            refreshed.channel_generation,
+            "ou_employee_app_admin",
+            {"text": "Employee session refreshed. Send /status again."},
+            {
+                "uuid": hashlib.sha256(
+                    b"employee-activation-retry:evt_"
+                    + hashlib.sha256(b"stale_generation_status").hexdigest().encode()
+                ).hexdigest()[:50]
+            },
+        )
+    ]
+
+    current_ack = _accept_durable_status(
+        runtime,
+        refreshed,
+        suffix="current_generation_status",
+        generation=refreshed.channel_generation,
+        connection_id=refreshed.channel_connection_id,
+    )
+    assert runtime._handle_control_ingress(current_ack.acceptance.acceptance_id)
+    active = runtime.hire_service.get_state(admitted.intent_id)
+    assert active is not None and active.phase is HirePhase.ACTIVE
+    assert len(channels.sent) == 3
+    runtime.close()
+
+
+def test_distinct_status_event_after_activation_replies_already_active_once(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    active = _activate_employee(runtime, channels)
+    original_activation_event_id = active.activation_ingress_event_id
+    repeated = _accept_durable_status(
+        runtime,
+        active,
+        suffix="already_active_distinct_event",
+        generation=active.channel_generation,
+        connection_id=active.channel_connection_id,
+    )
+
+    assert runtime._handle_control_ingress(repeated.acceptance.acceptance_id)
+    assert runtime._handle_control_ingress(repeated.acceptance.acceptance_id)
+
+    runtime.ingress_service.rebuild_projection()
+    disposition = runtime.ingress_service.state.by_acceptance_id[
+        repeated.acceptance.acceptance_id
+    ].disposition
+    assert disposition is not None
+    assert disposition.reason_code == "activation_already_active"
+    assert channels.sent[-1] == (
+        active.agent_id,
+        active.channel_generation,
+        "ou_employee_app_admin",
+        {"text": "Atlas is already active."},
+        {
+            "uuid": hashlib.sha256(
+                (
+                    "employee-already-active:"
+                    + repeated.acceptance.acceptance_id
+                ).encode()
+            ).hexdigest()[:50]
+        },
+    )
+    assert len(channels.sent) == 3
+    current = runtime.hire_service.get_state(active.intent_id)
+    assert current is not None
+    assert current.phase is HirePhase.ACTIVE
+    assert current.activation_ingress_event_id == original_activation_event_id
+    assert sum(
+        event.event_type == "hire.activation.verified"
+        for frame in runtime.journal_frames()
+        for event in frame.events
+    ) == 1
+    runtime.close()
+
+
+def test_concurrent_duplicate_active_status_callbacks_send_one_reply(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+    )
+    active = _activate_employee(runtime, channels)
+    repeated = _accept_durable_status(
+        runtime,
+        active,
+        suffix="already_active_concurrent",
+        generation=active.channel_generation,
+        connection_id=active.channel_connection_id,
+    )
+    barrier = threading.Barrier(3)
+
+    def handle() -> bool:
+        barrier.wait()
+        return runtime._handle_control_ingress(repeated.acceptance.acceptance_id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(handle) for _ in range(2)]
+        barrier.wait()
+        assert [future.result(timeout=5) for future in futures] == [True, True]
+
+    runtime.ingress_service.rebuild_projection()
+    disposition = runtime.ingress_service.state.by_acceptance_id[
+        repeated.acceptance.acceptance_id
+    ].disposition
+    assert disposition is not None
+    assert disposition.reason_code == "activation_already_active"
+    assert len(channels.sent) == 3
+    assert channels.sent[-1][3] == {"text": "Atlas is already active."}
+    assert channels.sent[-1][4] == {
+        "uuid": hashlib.sha256(
+            (
+                "employee-already-active:"
+                + repeated.acceptance.acceptance_id
+            ).encode()
+        ).hexdigest()[:50]
+    }
+    assert sum(
+        event.event_type == "hire.activation.verified"
+        for frame in runtime.journal_frames()
+        for event in frame.events
+    ) == 1
+    runtime.close()
+
+
+def test_durable_employee_status_ingress_activates_before_general_router(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    audited_targets: list[str] = []
+    notification_statuses: list[str] = []
+
+    def audit(_tenant: str, target_hash: str, _start: float, _end: float) -> int:
+        audited_targets.append(target_hash)
+        return 0
+
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    settings.allowed_chat_ids = frozenset({"oc_employee_team"})
+    runtime = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+        notification_status=lambda _state, status: (
+            notification_statuses.append(status) or "om_notification"
+        ),
+    )
+    runtime._main_bot_send_audit = audit
+    assert runtime.hire_service is not None
+    assert runtime.ingress_service is not None
+    assert runtime.ingress_router is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = None
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id)
+        if pending is not None and pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending is not None
+    runtime._challenges.pop(pending.intent_id)
+    reconstructed_challenge = runtime._challenge_for_state(pending)
+    assert reconstructed_challenge is not None
+    runtime._challenges[pending.intent_id] = replace(
+        reconstructed_challenge,
+        expires_at=time.time() + 5,
+    )
+
+    raw_message_id = "om_durable_status"
+    event_id = "evt_" + hashlib.sha256(b"durable-status-event").hexdigest()
+    message_id = "om_" + hashlib.sha256(raw_message_id.encode()).hexdigest()
+    chat_id = "oc_" + hashlib.sha256(b"durable-status-chat").hexdigest()
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id="ing_" + hashlib.sha256(b"durable-status-envelope").hexdigest(),
+        normalized_parts=(
+            {
+                "type": "message",
+                "message_type": "text",
+                "chat_type": "p2p",
+                "content": {"text": "/status"},
+                "sender_id": "ou_employee_app_admin",
+                "sender_union_id": "on_admin",
+                "sender_id_type": "open_id",
+                "sender_type": "user",
+                "sender_tenant_key": pending.tenant_key,
+                "feishu_thread_id": "",
+            },
+        ),
+        attachment_descriptors=(),
+    )
+    metadata = EmployeeIngressMetadata(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        tenant_key=pending.tenant_key,
+        agent_id=pending.agent_id,
+        bot_principal_id=pending.bot_principal_id,
+        app_id=pending.app_id,
+        channel_generation=pending.channel_generation,
+        connection_id=pending.channel_connection_id,
+        event_id=event_id,
+        message_id=message_id,
+        event_type="im.message.receive_v1",
+        action_identity="",
+        chat_id=chat_id,
+        thread_root_message_id="",
+        sender_principal_id="ou_employee_app_admin",
+        received_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        ),
+        semantic_digest=payload.payload_sha256,
+        payload_sha256=payload.payload_sha256,
+        payload_size_bytes=payload.canonical_size_bytes,
+        attachment_count=0,
+        attachment_total_bytes=0,
+    )
+    ack = runtime.ingress_service.accept(
+        metadata,
+        payload,
+        request_id="req_durable_status",
+    )
+    original_record_disposition = runtime.ingress_service.record_disposition
+    dropped_verified_disposition = False
+
+    def drop_first_verified_disposition(
+        acceptance_id: str,
+        *,
+        state: str,
+        reason_code: str,
+    ) -> object:
+        nonlocal dropped_verified_disposition
+        if reason_code == "activation_verified" and not dropped_verified_disposition:
+            dropped_verified_disposition = True
+            return None
+        return original_record_disposition(
+            acceptance_id,
+            state=state,
+            reason_code=reason_code,
+        )
+
+    runtime.ingress_service.record_disposition = drop_first_verified_disposition  # type: ignore[method-assign]
+    callback = channels.callbacks[pending.agent_id]
+    callback(
+        {
+            "event": "durableIngressAccepted",
+            "data": {
+                "acceptance_id": ack.acceptance.acceptance_id,
+                "agent_id": pending.agent_id,
+                "generation": pending.channel_generation,
+            },
+        }
+    )
+
+    active = None
+    while time.monotonic() < deadline:
+        active = runtime.hire_service.get_state(admitted.intent_id)
+        if active is not None and active.phase is HirePhase.ACTIVE:
+            break
+        time.sleep(0.02)
+
+    assert active is not None and active.phase is HirePhase.ACTIVE
+    runtime.ingress_service.rebuild_projection()
+    assert (
+        runtime.ingress_service.state.by_acceptance_id[
+            ack.acceptance.acceptance_id
+        ].disposition
+        is None
+    )
+    callback(
+        {
+            "event": "durableIngressAccepted",
+            "data": {
+                "acceptance_id": ack.acceptance.acceptance_id,
+                "agent_id": pending.agent_id,
+                "generation": pending.channel_generation,
+            },
+        }
+    )
+    while time.monotonic() < deadline:
+        runtime.ingress_service.rebuild_projection()
+        if (
+            runtime.ingress_service.state.by_acceptance_id[
+                ack.acceptance.acceptance_id
+            ].disposition
+            is not None
+        ):
+            break
+        time.sleep(0.02)
+    disposition = runtime.ingress_service.state.by_acceptance_id[
+        ack.acceptance.acceptance_id
+    ].disposition
+    assert disposition is not None
+    assert disposition.reason_code == "activation_verified"
+    router_record = runtime.ingress_router.state.by_acceptance_id[
+        ack.acceptance.acceptance_id
+    ]
+    assert router_record.state == "terminal"
+    assert router_record.reason_code == "control_consumed"
+    expected_audit_targets = sorted(
+        {
+            hashlib.sha256(value).hexdigest()
+            for value in (
+                raw_message_id.encode(),
+                b"on_admin",
+                b"ou_admin",
+                b"oc_admin_dm",
+                b"om_composition",
+            )
+        }
+    )
+    assert audited_targets == expected_audit_targets * 2
+    activation_frame = next(
+        frame
+        for frame in runtime.journal_frames()
+        if any(event.event_type == "hire.activation.verified" for event in frame.events)
+    )
+    assert [event.event_type for event in activation_frame.events] == [
+        "hire.effect.committed",
+        "hire.verification.nonce_consumed",
+        "hire.activation.verified",
+        "employee.state_changed",
+    ]
+    assert channels.sent[-1] == (
+        active.agent_id,
+        active.channel_generation,
+        "ou_employee_app_admin",
+        {"text": "Atlas is active."},
+        {
+            "uuid": hashlib.sha256(
+                (
+                    "employee-activation-success:"
+                    + active.activation_ingress_event_id
+                ).encode()
+            ).hexdigest()[:50]
+        },
+    )
+    assert len(channels.sent) == 2
+    notification_deadline = time.monotonic() + 2
+    while (
+        time.monotonic() < notification_deadline
+        and "active" not in notification_statuses
+    ):
+        time.sleep(0.02)
+    assert notification_statuses.count("active") == 1
     runtime.close()
 
 
@@ -2341,31 +3995,15 @@ def test_forged_employee_send_identity_cannot_activate(tmp_path: Path) -> None:
             break
         time.sleep(0.02)
     assert pending is not None
-    callback = channels.callbacks[pending.agent_id]
-    callback(
-        {  # type: ignore[operator]
-            "event": "rawMessageMeta",
-            "data": {
-                "event_id": "evt_forged",
-                "tenant_key": "tenant-a",
-                "message_id": "om_forged_status",
-                "sender_union_id": "on_admin",
-            },
-        }
+    ack = _accept_durable_status(
+        runtime,
+        pending,
+        suffix="forged_status",
+        generation=pending.channel_generation,
+        connection_id=pending.channel_connection_id,
     )
-    callback(
-        {  # type: ignore[operator]
-            "event": "message",
-            "data": {
-                "id": "om_forged_status",
-                "content_text": "/status",
-                "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_admin"},
-                "raw": {},
-            },
-        }
-    )
-    time.sleep(0.2)
+    with pytest.raises(RuntimeError, match="receipt is invalid"):
+        runtime._handle_control_ingress(ack.acceptance.acceptance_id)
 
     rejected = runtime.hire_service.get_state(admitted.intent_id)
     assert rejected is not None
@@ -2472,30 +4110,14 @@ def test_crashed_active_channel_advances_generation_and_requires_reverification(
             break
         time.sleep(0.02)
     assert state is not None
-    callback = channels.callbacks[state.agent_id]
-    callback(
-        {  # type: ignore[operator]
-            "event": "rawMessageMeta",
-            "data": {
-                "event_id": "evt_1",
-                "tenant_key": "tenant-a",
-                "message_id": "om_1",
-                "sender_union_id": "on_admin",
-            },
-        }
+    ack = _accept_durable_status(
+        runtime,
+        state,
+        suffix="crash_revalidation",
+        generation=state.channel_generation,
+        connection_id=state.channel_connection_id,
     )
-    callback(
-        {  # type: ignore[operator]
-            "event": "message",
-            "data": {
-                "id": "om_1",
-                "content_text": "/status",
-                "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_admin"},
-                "raw": {},
-            },
-        }
-    )
+    runtime._handle_control_ingress(ack.acceptance.acceptance_id)
     while time.monotonic() < deadline:
         active = runtime.hire_service.get_state(admitted.intent_id)
         if active is not None and active.phase is HirePhase.ACTIVE:
@@ -2545,30 +4167,14 @@ def test_restart_replaces_active_channel_generation_and_challenge(
         time.sleep(0.02)
     assert pending is not None
     old_nonce = pending.verification_nonce
-    callback = first_channels.callbacks[pending.agent_id]
-    callback(
-        {  # type: ignore[operator]
-            "event": "rawMessageMeta",
-            "data": {
-                "event_id": "evt_restart",
-                "tenant_key": "tenant-a",
-                "message_id": "om_restart",
-                "sender_union_id": "on_admin",
-            },
-        }
+    ack = _accept_durable_status(
+        first,
+        pending,
+        suffix="restart",
+        generation=pending.channel_generation,
+        connection_id=pending.channel_connection_id,
     )
-    callback(
-        {  # type: ignore[operator]
-            "event": "message",
-            "data": {
-                "id": "om_restart",
-                "content_text": "/status",
-                "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_admin"},
-                "raw": {},
-            },
-        }
-    )
+    first._handle_control_ingress(ack.acceptance.acceptance_id)
     while time.monotonic() < deadline:
         active = first.hire_service.get_state(admitted.intent_id)
         if active is not None and active.phase is HirePhase.ACTIVE:

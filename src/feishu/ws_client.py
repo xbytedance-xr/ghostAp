@@ -35,6 +35,9 @@ except (ImportError, AttributeError):  # pragma: no cover
 from ..acp.manager import ACPSessionManager
 from ..acp.telemetry import build_idle_health_config_for_manager
 from ..agent.intent_recognizer import IntentRecognizer, IntentResult, TaskStep
+from ..autonomous.provisioning.notification_state import (
+    hire_notification_message_uuid,
+)
 from ..card.ui_text import UI_TEXT
 from ..config import get_settings
 from ..deep_engine import DeepEngineManager, ProgressReporter
@@ -93,6 +96,64 @@ from .ws_lifecycle import ObservedLarkWSClient
 from .ws_resource_manager import EngineResourceGroup
 
 logger = logging.getLogger(__name__)
+
+
+def _employee_hire_status_text(employee_name: str, status: str) -> str | None:
+    if status == "polling":
+        return (
+            "独立飞书智能体注册请求已提交，正在等待你在上方链接中完成授权确认。"
+            "确认前注册接口会持续返回 400 authorization_pending，这是设备授权"
+            "流程的正常等待状态；请按链接完成授权，期间请勿重复发送 /hire。"
+        )
+    if status == "ready":
+        return (
+            f"✅ 员工 **{employee_name}** 配置完成，正在等待激活。"
+            "请先私聊该员工发送 `/status`，激活成功后再将其加入 Slock 群。"
+        )
+    if status == "active":
+        return f"✅ 员工 **{employee_name}** 已激活，可以加入 Slock 群协作。"
+    if status == "action_required":
+        return (
+            f"⚠️ 员工 **{employee_name}** 创建未能自动收敛，已转为人工处理；"
+            f"可使用 `/fire {employee_name}` 清理后重试。"
+        )
+    return None
+
+
+def _employee_hire_status_uuid(intent_id: str, status: str) -> str:
+    return hire_notification_message_uuid(intent_id, status)
+
+
+def _unavailable_main_bot_outbound_audit(
+    _tenant_key: str,
+    _operation: str,
+    _target: str,
+) -> None:
+    raise RuntimeError("main Bot outbound audit is unavailable")
+
+
+def _main_bot_outbound_wiring(
+    runtime: object | None,
+    *,
+    required: bool,
+) -> tuple[
+    Callable[[str, str, str], None] | None,
+    Callable[[Exception], None] | None,
+]:
+    """Bind all main-Bot mutations to the same audit used by activation."""
+
+    try:
+        audit = getattr(runtime, "main_bot_outbound_audit", None)
+    except Exception:
+        audit = None
+    if audit is not None:
+        record_attempt = getattr(audit, "record_attempt", None)
+        mark_incomplete = getattr(audit, "mark_incomplete", None)
+        if callable(record_attempt) and callable(mark_incomplete):
+            return record_attempt, mark_incomplete
+    if required:
+        return _unavailable_main_bot_outbound_audit, None
+    return None, None
 
 # Sentinel used to distinguish "caller didn't provide command_match" from
 # "caller provided command_match=None". This ensures request-scoped SSOT:
@@ -301,17 +362,13 @@ class FeishuWSClient:
                 notification_status=lambda state, status: (
                     self._reply_text(
                         state.message_id,
-                        (
-                            "独立飞书智能体注册请求已提交，正在等待你在上方链接中完成授权确认。"
-                            "确认前注册接口会持续返回 400 authorization_pending，这是设备授权"
-                            "流程的正常等待状态；请按链接完成授权，期间请勿重复发送 /hire。"
-                            if status == "polling"
-                            else f"✅ 员工 **{state.employee_name}** 已就绪。请先私聊该员工发送 `/status` 完成激活，再将其加入 Slock 群。"
-                            if status == "ready"
-                            else f"⚠️ 员工 **{state.employee_name}** 创建未能自动收敛，已转为人工处理；可使用 `/fire {state.employee_name}` 清理后重试。"
+                        _employee_hire_status_text(state.employee_name, status),
+                        idempotency_key=_employee_hire_status_uuid(
+                            state.intent_id,
+                            status,
                         ),
                     )
-                    if status in {"polling", "ready", "action_required"}
+                    if status in {"polling", "ready", "active", "action_required"}
                     else None
                 ),
                 team_notification=lambda message_id, _chat_id, result: self._reply_text(
@@ -325,10 +382,18 @@ class FeishuWSClient:
                 type(exc).__name__,
             )
 
-        main_bot_send_audit = (
-            self._employee_department_runtime.main_bot_outbound_audit
-            if self._employee_department_runtime is not None
-            else None
+        main_bot_outbound_audit, main_bot_outbound_audit_failure = (
+            _main_bot_outbound_wiring(
+                self._employee_department_runtime,
+                required=(
+                    getattr(
+                        self.settings,
+                        "autonomous_visible_employee_limit",
+                        0,
+                    )
+                    > 0
+                ),
+            )
         )
 
         # ------------------------------------------------------------------
@@ -399,16 +464,8 @@ class FeishuWSClient:
                 if self._employee_department_runtime is not None
                 else None
             ),
-            main_bot_outbound_audit=(
-                main_bot_send_audit.record_attempt
-                if main_bot_send_audit is not None
-                else None
-            ),
-            main_bot_outbound_audit_failure=(
-                main_bot_send_audit.mark_incomplete
-                if main_bot_send_audit is not None
-                else None
-            ),
+            main_bot_outbound_audit=main_bot_outbound_audit,
+            main_bot_outbound_audit_failure=main_bot_outbound_audit_failure,
             tenant_key_resolver=get_current_tenant_key,
         )
 
@@ -2507,6 +2564,10 @@ class FeishuWSClient:
         """飞书 message read 事件回调（当前无需处理，保留占位）。"""
         pass
 
+    def _handle_bot_deleted(self, data):
+        """确认主 Bot 的群移除事件，避免飞书因无处理器持续重投。"""
+        pass
+
     # ==================================================================
     # WebSocket lifecycle
     # ==================================================================
@@ -2520,6 +2581,7 @@ class FeishuWSClient:
             .register_p2_im_message_receive_v1(self._handle_message)
             .register_p2_im_message_reaction_created_v1(self._handle_reaction_created)
             .register_p2_im_chat_access_event_bot_p2p_chat_entered_v1(self._handle_chat_entered)
+            .register_p2_im_chat_member_bot_deleted_v1(self._handle_bot_deleted)
             .register_p2_im_message_message_read_v1(self._handle_message_read)
             .register_p2_card_action_trigger(self._handle_card_action)
             .build()

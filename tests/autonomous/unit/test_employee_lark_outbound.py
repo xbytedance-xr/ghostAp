@@ -134,6 +134,7 @@ def test_employee_outbound_replies_to_document_comment() -> None:
         ({"text": "ok", "card": {}}, None),
         ({"post": []}, None),
         ({"text": "ok"}, {"unknown": True}),
+        ({"text": "ok"}, {"uuid": "x" * 51}),
         ({"text": "ok"}, {"comment_reply": {"file_token": "bad"}}),
     ],
 )

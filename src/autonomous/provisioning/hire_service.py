@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
+import re
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import contextmanager
@@ -22,11 +24,13 @@ from ..journal.projections import (
 from ..journal.writer import AnchorMismatchError, CommitState, JournalWriter
 from ..workforce.projection import (
     commit_workforce_events_unlocked,
+    validate_workforce_events,
     workforce_projection_guard,
 )
 from .callback_bridge import AsyncCallbackBridge
 from .hire_port import EmployeeHireRequest
 from .hire_state import (
+    ACTIVATION_CHALLENGE_RENEWAL_LEAD_SECONDS,
     DurableHireState,
     HireEffectState,
     HirePhase,
@@ -251,6 +255,14 @@ class ProductionEmployeeHireService:
                 readiness = self.readiness()
                 if not readiness.ready:
                     raise HireAdmissionError(",".join(readiness.blockers))
+                requested_app_assigned = (
+                    bool(request.existing_app_id)
+                    and self._app_id_assigned_locked(
+                        request.existing_app_id,
+                    )
+                )
+                if requested_app_assigned:
+                    raise HireAdmissionError("existing app already assigned")
                 visible_count = sum(
                     employee.worker_type is WorkerType.VISIBLE
                     and employee.state is not EmployeeState.ARCHIVED
@@ -509,6 +521,98 @@ class ProductionEmployeeHireService:
                 HirePhase.READY_PENDING_VERIFICATION,
             )
 
+    def renew_activation_verification(
+        self,
+        challenge: VerificationChallenge,
+    ) -> DurableHireState:
+        """Replace an expiring unconsumed challenge without changing generation."""
+
+        if not isinstance(challenge, VerificationChallenge):
+            raise HireAdmissionError("invalid verification challenge")
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            state = self._require_hire(challenge.hire_intent_id)
+            if (
+                state.phase is not HirePhase.READY_PENDING_VERIFICATION
+                or state.verification_consumed
+                or challenge.nonce == state.verification_nonce
+                or challenge.issued_at
+                < state.verification_expires_at
+                - ACTIVATION_CHALLENGE_RENEWAL_LEAD_SECONDS
+                or challenge.expires_at <= state.verification_expires_at
+                or challenge.tenant_key != state.tenant_key
+                or challenge.app_id != state.app_id
+                or challenge.agent_id != state.agent_id
+                or challenge.generation != state.channel_generation
+                or challenge.requester_principal_id
+                != state.requester_principal_id
+                or challenge.requester_union_id != state.requester_union_id
+                or challenge.expected_slash_spec_hash != state.slash_spec_hash
+            ):
+                raise HireAdmissionError("verification challenge renewal rejected")
+            return self._commit_hire_event_locked(
+                JournalEvent(
+                    event_type="hire.verification.challenge_issued",
+                    aggregate_id=state.intent_id,
+                    payload={
+                        "tenant_key": challenge.tenant_key,
+                        "app_id": challenge.app_id,
+                        "agent_id": challenge.agent_id,
+                        "generation": challenge.generation,
+                        "requester_principal_id": challenge.requester_principal_id,
+                        "requester_union_id": challenge.requester_union_id,
+                        "expected_slash_spec_hash": challenge.expected_slash_spec_hash,
+                        "nonce": challenge.nonce,
+                        "issued_at": challenge.issued_at,
+                        "expires_at": challenge.expires_at,
+                    },
+                )
+            )
+
+    def reissue_activation_verification_after_audit_collision(
+        self,
+        challenge: VerificationChallenge,
+    ) -> DurableHireState:
+        """Start a fresh window after a conflicting main-Bot audit fact."""
+
+        if not isinstance(challenge, VerificationChallenge):
+            raise HireAdmissionError("invalid verification challenge")
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            state = self._require_hire(challenge.hire_intent_id)
+            if (
+                state.phase is not HirePhase.READY_PENDING_VERIFICATION
+                or state.verification_consumed
+                or challenge.nonce == state.verification_nonce
+                or challenge.issued_at <= state.verification_issued_at
+                or challenge.expires_at <= challenge.issued_at
+                or challenge.tenant_key != state.tenant_key
+                or challenge.app_id != state.app_id
+                or challenge.agent_id != state.agent_id
+                or challenge.generation != state.channel_generation
+                or challenge.requester_principal_id
+                != state.requester_principal_id
+                or challenge.requester_union_id != state.requester_union_id
+                or challenge.expected_slash_spec_hash != state.slash_spec_hash
+            ):
+                raise HireAdmissionError("verification challenge reissue rejected")
+            return self._commit_hire_event_locked(
+                JournalEvent(
+                    event_type="hire.verification.challenge_reissued",
+                    aggregate_id=state.intent_id,
+                    payload={
+                        "tenant_key": challenge.tenant_key,
+                        "app_id": challenge.app_id,
+                        "agent_id": challenge.agent_id,
+                        "generation": challenge.generation,
+                        "requester_principal_id": challenge.requester_principal_id,
+                        "requester_union_id": challenge.requester_union_id,
+                        "expected_slash_spec_hash": challenge.expected_slash_spec_hash,
+                        "nonce": challenge.nonce,
+                        "issued_at": challenge.issued_at,
+                        "expires_at": challenge.expires_at,
+                    },
+                )
+            )
+
     def select_slash_reconcile_effect(
         self,
         intent_id: str,
@@ -576,6 +680,9 @@ class ProductionEmployeeHireService:
     def commit_activation(
         self,
         decision: VerificationDecision,
+        *,
+        reply_effect_id: str = "",
+        reply_effect_metadata: Mapping[str, str] | None = None,
     ) -> DurableHireState:
         """Serialize a READY decision and only then enter ACTIVE."""
         if (
@@ -590,41 +697,141 @@ class ProductionEmployeeHireService:
             state = self._require_hire(coordinates.hire_intent_id)
             if (
                 state.phase is not HirePhase.READY_PENDING_VERIFICATION
-                or not state.verification_consumed
                 or coordinates.tenant_key != state.tenant_key
                 or coordinates.app_id != state.app_id
                 or coordinates.agent_id != state.agent_id
                 or coordinates.generation != state.channel_generation
                 or coordinates.nonce != state.verification_nonce
+                or state.verification_consumed
                 or evidence.slash_spec_hash != state.slash_spec_hash
                 or evidence.channel_connection_id != state.channel_connection_id
                 or evidence.reply_app_id != state.app_id
                 or evidence.main_bot_send_count != 0
+                or evidence.sender_union_id != state.requester_union_id
+                or any(
+                    not isinstance(value, str) or not value
+                    for value in (
+                        evidence.ingress_event_id,
+                        evidence.ingress_message_id,
+                        evidence.employee_send_request_id,
+                    )
+                )
+                or isinstance(evidence.verified_at, bool)
+                or not isinstance(evidence.verified_at, (int, float))
+                or not math.isfinite(float(evidence.verified_at))
+                or not (
+                    state.verification_issued_at
+                    <= float(evidence.verified_at)
+                    <= state.verification_expires_at
+                )
             ):
                 raise HireAdmissionError("activation evidence binding mismatch")
-            state = self._commit_hire_event_locked(
+            activation_event = JournalEvent(
+                event_type="hire.activation.verified",
+                aggregate_id=state.intent_id,
+                payload={
+                    "tenant_key": coordinates.tenant_key,
+                    "app_id": coordinates.app_id,
+                    "agent_id": coordinates.agent_id,
+                    "generation": coordinates.generation,
+                    "nonce": coordinates.nonce,
+                    "slash_spec_hash": evidence.slash_spec_hash,
+                    "channel_connection_id": evidence.channel_connection_id,
+                    "ingress_event_id": evidence.ingress_event_id,
+                    "ingress_message_id": evidence.ingress_message_id,
+                    "employee_send_request_id": evidence.employee_send_request_id,
+                    "reply_app_id": evidence.reply_app_id,
+                    "main_bot_send_count": evidence.main_bot_send_count,
+                    "sender_union_id": evidence.sender_union_id,
+                    "verified_at": evidence.verified_at,
+                },
+            )
+            reply_metadata = dict(reply_effect_metadata or {})
+            expected_effect_id = (
+                f"verification-status-reply:{evidence.ingress_event_id}"
+            )
+            if (
+                reply_effect_id != expected_effect_id
+                or state.effect_state(reply_effect_id)
+                is not HireEffectState.EXECUTING
+                or dict(state.effect_types).get(reply_effect_id)
+                != "employee_status_reply"
+                or not reply_metadata
+                or not set(reply_metadata).issubset(_EFFECT_METADATA_KEYS)
+                or any(
+                    not isinstance(key, str)
+                    or not isinstance(value, str)
+                    or not value
+                    for key, value in reply_metadata.items()
+                )
+                or reply_metadata.get("send_request_id")
+                != evidence.employee_send_request_id
+                or reply_metadata.get("ingress_event_id")
+                != evidence.ingress_event_id
+                or reply_metadata.get("reply_app_id") != evidence.reply_app_id
+                or reply_metadata.get("main_bot_send_count") != "0"
+            ):
+                raise HireAdmissionError("activation reply effect binding mismatch")
+            if any(
+                effect_state
+                in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
+                and effect_id != reply_effect_id
+                for effect_id, effect_state in state.effects
+            ):
+                raise HireAdmissionError("activation has unresolved effects")
+            events = (
                 JournalEvent(
-                    event_type="hire.activation.verified",
+                    event_type="hire.effect.committed",
                     aggregate_id=state.intent_id,
                     payload={
-                        "tenant_key": coordinates.tenant_key,
-                        "app_id": coordinates.app_id,
-                        "agent_id": coordinates.agent_id,
-                        "generation": coordinates.generation,
-                        "nonce": coordinates.nonce,
-                        "slash_spec_hash": evidence.slash_spec_hash,
-                        "channel_connection_id": evidence.channel_connection_id,
-                        "ingress_event_id": evidence.ingress_event_id,
-                        "ingress_message_id": evidence.ingress_message_id,
-                        "employee_send_request_id": evidence.employee_send_request_id,
-                        "reply_app_id": evidence.reply_app_id,
-                        "main_bot_send_count": evidence.main_bot_send_count,
-                        "sender_union_id": evidence.sender_union_id,
-                        "verified_at": evidence.verified_at,
+                        "effect_id": reply_effect_id,
+                        "effect_type": "employee_status_reply",
+                        "metadata": reply_metadata,
                     },
-                )
+                ),
+                JournalEvent(
+                    event_type="hire.verification.nonce_consumed",
+                    aggregate_id=state.intent_id,
+                    payload={
+                        "nonce": coordinates.nonce,
+                        "consumed_at": evidence.verified_at,
+                    },
+                ),
+                activation_event,
+                JournalEvent(
+                    event_type="employee.state_changed",
+                    aggregate_id=state.agent_id,
+                    payload={"state": HirePhase.ACTIVE.value},
+                ),
             )
-            return self._commit_phase_transition_locked(state, HirePhase.ACTIVE)
+            self._synchronize_projection_to_journal_locked()
+            state = self._require_hire(state.intent_id)
+            last_frame = self._writer.get_last_frame()
+            writer_sequence = 0 if last_frame is None else last_frame.sequence
+            writer_hash = "" if last_frame is None else last_frame.frame_hash
+            expected_versions = self._writer.get_aggregate_versions(
+                (state.intent_id, state.agent_id)
+            )
+            try:
+                validate_workforce_events(self._projection_state, (events[-1],))
+            except ProjectionError as exc:
+                raise HireAdmissionError(
+                    "activation workforce transition rejected"
+                ) from exc
+            result = self._writer.commit(
+                events,
+                expected_versions,
+                expected_head_sequence=writer_sequence,
+                expected_head_hash=writer_hash,
+            )
+            if result.state is not CommitState.ANCHORED:
+                raise AnchorMismatchError("atomic activation commit was not anchored")
+            apply_frame(self._projection_state, result.frame)
+            self._hire_projection = HireProjection.rebuild(self._writer.replay())
+            activated = self._require_hire(state.intent_id)
+            if activated.phase is not HirePhase.ACTIVE:
+                raise HireAdmissionError("atomic activation did not enter ACTIVE")
+            return activated
 
     def _commit_hire_event(self, event: JournalEvent) -> DurableHireState:
         """Commit one already-validated hire-only fact and advance all cursors."""
@@ -760,13 +967,17 @@ class ProductionEmployeeHireService:
 
         app_id = registration_result.app_id
         app_secret = registration_result.app_secret
-        state = self.commit_effect_transition(
-            intent_id,
-            effect_id="register-app",
-            effect_type="app_registration",
-            next_state=HireEffectState.COMMITTED,
-            metadata={"app_id": app_id},
-        )
+        try:
+            state = self._commit_registered_app(intent_id, app_id)
+        except HireAdmissionError:
+            await self._mark_action_required(
+                intent_id,
+                effect_id="register-app",
+                effect_type="app_registration",
+            )
+            raise HireAdmissionError(
+                "app registration outcome requires manual action"
+            ) from None
         state = self.commit_effect_transition(
             intent_id,
             effect_id="store-credential",
@@ -1001,6 +1212,17 @@ class ProductionEmployeeHireService:
     def _reconcile_recovered_hires(self) -> None:
         for state in tuple(self._hire_projection.states.values()):
             if state.phase is HirePhase.VALIDATING and state.verification_nonce:
+                effect_types = dict(state.effect_types)
+                if any(
+                    effect_state
+                    in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
+                    and effect_types.get(effect_id) == "employee_status_reply"
+                    for effect_id, effect_state in state.effects
+                ):
+                    # The ingress replay owns this anchored phase-status reply.
+                    # Advancing first would reinterpret the same /status as an
+                    # activation attempt after restart.
+                    continue
                 self._commit_phase_transition(
                     state,
                     HirePhase.READY_PENDING_VERIFICATION,
@@ -1011,6 +1233,34 @@ class ProductionEmployeeHireService:
                 and state.activation_ingress_event_id
             ):
                 self._commit_phase_transition(state, HirePhase.ACTIVE)
+                continue
+            if (
+                state.phase is HirePhase.READY_PENDING_VERIFICATION
+                and state.verification_consumed
+            ):
+                effect_types = dict(state.effect_types)
+                for effect_id, effect_state in state.effects:
+                    if effect_state not in {
+                        HireEffectState.PREPARED,
+                        HireEffectState.EXECUTING,
+                    }:
+                        continue
+                    effect_type = effect_types.get(effect_id)
+                    if not effect_type:
+                        raise HireAdmissionError(
+                            "consumed activation effect type is missing"
+                        )
+                    state = self.commit_effect_transition(
+                        state.intent_id,
+                        effect_id=effect_id,
+                        effect_type=effect_type,
+                        next_state=HireEffectState.ACTION_REQUIRED,
+                        metadata={
+                            **dict(state.metadata_for(effect_id)),
+                            "error_code": "activation_nonce_consumed_without_commit",
+                        },
+                    )
+                self._commit_phase_transition(state, HirePhase.ACTION_REQUIRED)
                 continue
             if state.phase is HirePhase.READY_PENDING_VERIFICATION:
                 effect_types = dict(state.effect_types)
@@ -1025,15 +1275,19 @@ class ProductionEmployeeHireService:
                         HireEffectState.PREPARED,
                         HireEffectState.EXECUTING,
                     }:
-                        self._mark_action_required_sync(
-                            state,
+                        if dict(state.metadata_for(effect_id)).get(
+                            "error_code", ""
+                        ).startswith("phase_status:"):
+                            continue
+                        self.commit_effect_transition(
+                            state.intent_id,
                             effect_id=effect_id,
                             effect_type="employee_status_reply",
-                        )
-                    elif effect_state is HireEffectState.COMMITTED:
-                        self._commit_phase_transition(
-                            state,
-                            HirePhase.ACTION_REQUIRED,
+                            next_state=HireEffectState.ACTION_REQUIRED,
+                            metadata={
+                                **dict(state.metadata_for(effect_id)),
+                                "error_code": "activation_reply_outcome_unknown",
+                            },
                         )
                     continue
             if state.phase in {
@@ -1265,6 +1519,18 @@ class ProductionEmployeeHireService:
         if not isinstance(request.role, str) or not isinstance(request.persona, str):
             raise HireAdmissionError("role and persona must be strings")
         if (
+            not isinstance(request.existing_app_id, str)
+            or (
+                request.existing_app_id
+                and re.fullmatch(
+                    r"cli_[A-Za-z0-9_-]{3,128}",
+                    request.existing_app_id,
+                )
+                is None
+            )
+        ):
+            raise HireAdmissionError("existing_app_id is invalid")
+        if (
             not isinstance(request.requester_union_id, str)
             or request.requester_union_id != request.requester_union_id.strip()
         ):
@@ -1299,7 +1565,67 @@ class ProductionEmployeeHireService:
             and state.profile == request.profile
             and state.role == request.role
             and state.persona == request.persona
+            and state.existing_app_id == request.existing_app_id
         )
+
+    def _app_id_assigned_locked(
+        self,
+        app_id: str,
+        *,
+        exclude_intent_id: str = "",
+    ) -> bool:
+        """Check every durable/canonical app claim while admission locks are held."""
+
+        excluded = self._hire_projection.get(exclude_intent_id)
+        excluded_agent_id = excluded.agent_id if excluded is not None else ""
+
+        def employee_is_live(agent_id: str) -> bool:
+            employee = self._projection_state.employees.get(agent_id)
+            return employee is None or employee.state is not EmployeeState.ARCHIVED
+
+        for state in self._hire_projection.states.values():
+            if state.intent_id == exclude_intent_id or not employee_is_live(
+                state.agent_id
+            ):
+                continue
+            reserved = {
+                state.existing_app_id,
+                state.app_id,
+                dict(state.metadata_for("register-app")).get("app_id", ""),
+            }
+            if app_id in reserved:
+                return True
+        return any(
+            principal.agent_id != excluded_agent_id
+            and principal.app_id == app_id
+            and employee_is_live(principal.agent_id)
+            for principal in self._projection_state.bot_principals.values()
+        )
+
+    def _commit_registered_app(
+        self,
+        intent_id: str,
+        app_id: str,
+    ) -> DurableHireState:
+        """Atomically reserve a registrar result and commit its external effect."""
+
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            current = self._require_hire(intent_id)
+            if current.effect_state("register-app") is not HireEffectState.EXECUTING:
+                raise HireAdmissionError("invalid effect transition")
+            if self._app_id_assigned_locked(
+                app_id,
+                exclude_intent_id=intent_id,
+            ):
+                raise HireAdmissionError("registered app already assigned")
+            return self.commit_effect_transition(
+                intent_id,
+                effect_id="register-app",
+                effect_type="app_registration",
+                next_state=HireEffectState.COMMITTED,
+                metadata={"app_id": app_id},
+            )
 
     def bind_requester_union_id(
         self,

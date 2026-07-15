@@ -693,7 +693,9 @@ def _normalize_sdk_ingress(
     if kind == "message":
         message = getattr(body, "message", None)
         sender = getattr(body, "sender", None)
-        sender_id = getattr(getattr(sender, "sender_id", None), "open_id", "")
+        sender_identity = getattr(sender, "sender_id", None)
+        sender_id = getattr(sender_identity, "open_id", "")
+        sender_union_id = getattr(sender_identity, "union_id", "")
         message_id = getattr(message, "message_id", "")
         chat_id = getattr(message, "chat_id", "")
         root_id = getattr(message, "root_id", "") or getattr(message, "parent_id", "") or ""
@@ -709,6 +711,7 @@ def _normalize_sdk_ingress(
                 "chat_type": getattr(message, "chat_type", ""),
                 "content": content,
                 "sender_id": sender_id,
+                "sender_union_id": sender_union_id,
                 "sender_id_type": "open_id",
                 "sender_type": getattr(sender, "sender_type", ""),
                 "sender_tenant_key": getattr(sender, "tenant_key", ""),
@@ -912,6 +915,7 @@ class _FrameEmitter:
         self._requests: queue.Queue[_EmitRequest | None] = queue.Queue(
             maxsize=self._QUEUE_CAPACITY
         )
+        self._admission_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._failed: BaseException | None = None
         self._closed = False
@@ -938,9 +942,10 @@ class _FrameEmitter:
             error = TimeoutError("employee Channel IPC emit timed out")
             self._fail(error)
             raise error
-        self._raise_if_unavailable()
         try:
-            self._requests.put(request, timeout=remaining)
+            with self._admission_lock:
+                self._raise_if_unavailable()
+                self._requests.put(request, timeout=remaining)
         except queue.Full as exc:
             error = TimeoutError("employee Channel IPC emitter queue timed out")
             self._fail(error)
@@ -955,9 +960,6 @@ class _FrameEmitter:
 
     def try_emit(self, frame_type: FrameType, payload: dict[str, Any]) -> bool:
         """Queue a best-effort notification without blocking its SDK callback."""
-        with self._state_lock:
-            if self._closed or self._failed is not None:
-                return False
         request = _EmitRequest(
             frame_type,
             payload,
@@ -965,25 +967,25 @@ class _FrameEmitter:
             False,
         )
         try:
-            self._requests.put_nowait(request)
+            with self._admission_lock:
+                with self._state_lock:
+                    if self._closed or self._failed is not None:
+                        return False
+                self._requests.put_nowait(request)
         except queue.Full:
             self._fail(BufferError("employee Channel IPC emitter queue full"))
             return False
         return True
 
     def close(self) -> None:
-        with self._state_lock:
-            if self._closed:
-                return
-            self._closed = True
-        try:
-            self._requests.put_nowait(None)
-        except queue.Full:
-            pass
-        try:
-            os.close(self._fd)
-        except OSError:
-            pass
+        with self._admission_lock:
+            with self._state_lock:
+                already_closed = self._closed
+                self._closed = True
+            if not already_closed:
+                self._signal_stop()
+        if self._writer is not threading.current_thread():
+            self._writer.join()
 
     def _raise_if_unavailable(self) -> None:
         with self._state_lock:
@@ -993,18 +995,33 @@ class _FrameEmitter:
                 raise EOFError("employee Channel IPC emitter closed")
 
     def _write_loop(self) -> None:
-        while True:
-            request = self._requests.get()
-            if request is None:
-                return
-            try:
-                self._write_request(request)
-            except BaseException as exc:
-                request.error = exc
-                self._fail(exc)
-                return
-            finally:
-                request.completed.set()
+        try:
+            while True:
+                try:
+                    request = self._requests.get(timeout=0.1)
+                except queue.Empty:
+                    with self._state_lock:
+                        if self._closed:
+                            return
+                    continue
+                if request is None:
+                    return
+                try:
+                    self._write_request(request)
+                except BaseException as exc:
+                    request.error = exc
+                    self._fail(exc)
+                    return
+                finally:
+                    request.completed.set()
+        finally:
+            descriptor = self._fd
+            self._fd = -1
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
     def _write_request(self, request: _EmitRequest) -> None:
         self._raise_if_unavailable()
@@ -1021,6 +1038,7 @@ class _FrameEmitter:
         view = memoryview(raw)
         bytes_written = 0
         while view:
+            self._raise_if_unavailable()
             try:
                 written = os.write(self._fd, view)
             except BlockingIOError:
@@ -1041,25 +1059,28 @@ class _FrameEmitter:
                 raise TimeoutError("employee Channel IPC emit timed out")
 
     def _fail(self, error: BaseException) -> None:
-        with self._state_lock:
-            if self._failed is None:
-                self._failed = error
-            already_closed = self._closed
-            self._closed = True
-        if not already_closed:
-            try:
-                os.close(self._fd)
-            except OSError:
-                pass
-        while True:
-            try:
-                queued = self._requests.get_nowait()
-            except queue.Empty:
-                return
-            if queued is None:
-                continue
-            queued.error = EOFError("employee Channel IPC emitter failed")
-            queued.completed.set()
+        with self._admission_lock:
+            with self._state_lock:
+                if self._failed is None:
+                    self._failed = error
+                self._closed = True
+            while True:
+                try:
+                    queued = self._requests.get_nowait()
+                except queue.Empty:
+                    break
+                if queued is None:
+                    continue
+                queued.error = EOFError("employee Channel IPC emitter failed")
+                queued.completed.set()
+            if self._writer is not threading.current_thread():
+                self._signal_stop()
+
+    def _signal_stop(self) -> None:
+        try:
+            self._requests.put_nowait(None)
+        except queue.Full:
+            pass
 
 
 def register_channel_handlers(channel: Any, emit: Callable[[str, Any], None]) -> None:

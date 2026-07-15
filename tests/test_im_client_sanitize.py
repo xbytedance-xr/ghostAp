@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.feishu.im_client import FeishuIMClient, _sanitize_content
 
 
@@ -118,19 +120,147 @@ def test_all_main_bot_message_mutations_are_audited_before_dispatch():
     )
 
     client.send_message("chat_id", "oc_chat", '{"text":"x"}')
-    client.reply_message("om_message", '{"text":"x"}')
-    client.reply_file("om_message", "file_key")
-    client.patch_message("om_card", "{}")
+    client.reply_message(
+        "om_message",
+        '{"text":"x"}',
+        audit_aliases=("oc_requester_dm", "ou_requester"),
+    )
+    client.reply_file(
+        "om_message",
+        "file_key",
+        audit_aliases=("oc_requester_dm", "ou_requester"),
+    )
+    client.patch_message(
+        "om_card",
+        "{}",
+        audit_aliases=("oc_requester_dm", "ou_requester"),
+    )
 
     assert events == [
         ("tenant-a", "create", "oc_chat"),
         ("tenant-a", "reply", "om_message"),
+        ("tenant-a", "reply", "oc_requester_dm"),
+        ("tenant-a", "reply", "ou_requester"),
         ("tenant-a", "reply", "om_message"),
+        ("tenant-a", "reply", "oc_requester_dm"),
+        ("tenant-a", "reply", "ou_requester"),
         ("tenant-a", "patch", "om_card"),
+        ("tenant-a", "patch", "oc_requester_dm"),
+        ("tenant-a", "patch", "ou_requester"),
     ]
 
 
-def test_audit_failure_does_not_break_main_bot_but_is_reported():
+def test_reply_audits_literal_and_aliases_before_creating_network_client():
+    events: list[tuple[str, str, str]] = []
+
+    def client_factory():
+        assert events == [
+            ("tenant-a", "reply", "om_sibling"),
+            ("tenant-a", "reply", "oc_requester_dm"),
+            ("tenant-a", "reply", "ou_requester"),
+        ]
+        message_api = MagicMock()
+        message_api.reply.return_value = _Response(
+            data=MagicMock(message_id="replied")
+        )
+        client_obj = MagicMock()
+        client_obj.im.v1.message = message_api
+        return client_obj
+
+    client = FeishuIMClient(
+        client_factory,
+        MagicMock(im_api_max_retries=1),
+        outbound_audit=lambda tenant, operation, target: events.append(
+            (tenant, operation, target)
+        ),
+        tenant_key_resolver=lambda: "tenant-a",
+    )
+
+    response = client.reply_message(
+        "om_sibling",
+        '{"text":"x"}',
+        audit_aliases=("oc_requester_dm", "ou_requester"),
+    )
+
+    assert response is not None
+
+
+def test_audited_reply_without_recipient_scope_fails_before_network():
+    api_client_factory = MagicMock()
+    audit = MagicMock()
+    client = FeishuIMClient(
+        api_client_factory,
+        MagicMock(im_api_max_retries=1),
+        outbound_audit=audit,
+    )
+
+    with pytest.raises(RuntimeError, match="recipient scope"):
+        client.reply_message("om_unscoped", '{"text":"x"}')
+
+    audit.assert_not_called()
+    api_client_factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda client: client.reply_file("om_unscoped", "file_key"),
+        lambda client: client.patch_message("om_unscoped", "{}"),
+    ),
+)
+def test_audited_file_reply_and_patch_without_recipient_scope_fail_before_network(
+    mutation,
+):
+    api_client_factory = MagicMock()
+    audit = MagicMock()
+    client = FeishuIMClient(
+        api_client_factory,
+        MagicMock(im_api_max_retries=1),
+        outbound_audit=audit,
+    )
+
+    with pytest.raises(RuntimeError, match="recipient scope"):
+        mutation(client)
+
+    audit.assert_not_called()
+    api_client_factory.assert_not_called()
+
+
+def test_reply_message_sets_optional_idempotency_uuid_on_request_body():
+    message_api = MagicMock()
+    message_api.reply.return_value = _Response(data=MagicMock(message_id="replied"))
+    client_obj = MagicMock()
+    client_obj.im.v1.message = message_api
+    client = FeishuIMClient(lambda: client_obj, MagicMock(im_api_max_retries=1))
+
+    client.reply_message(
+        "om_message",
+        '{"text":"x"}',
+        idempotency_key="stable-reply-uuid",
+    )
+
+    request = message_api.reply.call_args.args[0]
+    assert request.request_body.uuid == "stable-reply-uuid"
+
+
+def test_reply_message_rejects_uuid_over_feishu_limit_before_network():
+    api_client_factory = MagicMock()
+    client = FeishuIMClient(
+        api_client_factory,
+        MagicMock(im_api_max_retries=1),
+    )
+
+    with pytest.raises(ValueError, match="message UUID"):
+        client.reply_message(
+            "om_message",
+            '{"text":"x"}',
+            idempotency_key="x" * 51,
+        )
+
+    api_client_factory.assert_not_called()
+
+
+def test_audit_failure_blocks_main_bot_network_dispatch_and_is_reported():
     message_api = MagicMock()
     message_api.reply.return_value = _Response(data=MagicMock(message_id="replied"))
     client_obj = MagicMock()
@@ -143,8 +273,13 @@ def test_audit_failure_does_not_break_main_bot_but_is_reported():
         outbound_audit_failure=failures.append,
     )
 
-    response = client.reply_message("om_message", '{"text":"x"}')
+    with pytest.raises(OSError, match="audit disk"):
+        client.reply_message(
+            "om_message",
+            '{"text":"x"}',
+            audit_aliases=("oc_requester_dm",),
+        )
 
-    assert response is not None
+    message_api.reply.assert_not_called()
     assert len(failures) == 1
-    assert isinstance(failures[0], OSError)
+    assert all(isinstance(failure, OSError) for failure in failures)

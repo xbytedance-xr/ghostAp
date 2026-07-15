@@ -85,6 +85,7 @@ class FeishuIMClient:
                     self._outbound_audit_failure(exc)
                 except Exception:
                     logger.error("main Bot audit failure callback failed", exc_info=True)
+            raise
 
     def _execute_with_retry(
         self, func: Callable[[], Any], action_name: str, max_retries: Optional[int] = None
@@ -153,21 +154,42 @@ class FeishuIMClient:
         msg_type: str = "text",
         reply_in_thread: bool = False,
         max_retries: Optional[int] = None,
+        idempotency_key: str | None = None,
+        audit_aliases: tuple[str, ...] | None = None,
     ) -> Optional[Any]:
         """Reply to a message."""
         content = _sanitize_content(content)
-        self._audit_outbound("reply", message_id)
+        if idempotency_key is not None and (
+            not isinstance(idempotency_key, str)
+            or not idempotency_key
+            or len(idempotency_key) > 50
+        ):
+            raise ValueError("invalid Feishu message UUID")
+        if self._outbound_audit is not None:
+            if (
+                not isinstance(audit_aliases, tuple)
+                or not audit_aliases
+                or any(
+                    not isinstance(alias, str) or not alias
+                    for alias in audit_aliases
+                )
+            ):
+                raise RuntimeError("main Bot reply recipient scope is unavailable")
+            for target in dict.fromkeys((message_id, *audit_aliases)):
+                self._audit_outbound("reply", target)
         client = self.api_client_factory()
+        body = (
+            ReplyMessageRequestBody.builder()
+            .content(content)
+            .msg_type(msg_type)
+            .reply_in_thread(reply_in_thread)
+        )
+        if idempotency_key:
+            body = body.uuid(idempotency_key)
         request = (
             ReplyMessageRequest.builder()
             .message_id(message_id)
-            .request_body(
-                ReplyMessageRequestBody.builder()
-                .content(content)
-                .msg_type(msg_type)
-                .reply_in_thread(reply_in_thread)
-                .build()
-            )
+            .request_body(body.build())
             .build()
         )
 
@@ -210,10 +232,22 @@ class FeishuIMClient:
         file_key: str,
         reply_in_thread: bool = False,
         max_retries: Optional[int] = None,
+        audit_aliases: tuple[str, ...] | None = None,
     ) -> Optional[Any]:
         """Reply to a message with a Feishu file attachment."""
         content = _sanitize_content(json.dumps({"file_key": file_key}, ensure_ascii=False))
-        self._audit_outbound("reply", message_id)
+        if self._outbound_audit is not None:
+            if (
+                not isinstance(audit_aliases, tuple)
+                or not audit_aliases
+                or any(
+                    not isinstance(alias, str) or not alias
+                    for alias in audit_aliases
+                )
+            ):
+                raise RuntimeError("main Bot reply recipient scope is unavailable")
+            for target in dict.fromkeys((message_id, *audit_aliases)):
+                self._audit_outbound("reply", target)
         client = self.api_client_factory()
         request = (
             ReplyMessageRequest.builder()
@@ -230,10 +264,28 @@ class FeishuIMClient:
 
         return self._execute_with_retry(lambda: client.im.v1.message.reply(request), "回复文件", max_retries)
 
-    def patch_message(self, message_id: str, content: str, max_retries: Optional[int] = None) -> Optional[Any]:
+    def patch_message(
+        self,
+        message_id: str,
+        content: str,
+        max_retries: Optional[int] = None,
+        *,
+        audit_aliases: tuple[str, ...] | None = None,
+    ) -> Optional[Any]:
         """Patch a message."""
         content = _sanitize_content(content)
-        self._audit_outbound("patch", message_id)
+        if self._outbound_audit is not None:
+            if (
+                not isinstance(audit_aliases, tuple)
+                or not audit_aliases
+                or any(
+                    not isinstance(alias, str) or not alias
+                    for alias in audit_aliases
+                )
+            ):
+                raise RuntimeError("main Bot patch recipient scope is unavailable")
+            for target in dict.fromkeys((message_id, *audit_aliases)):
+                self._audit_outbound("patch", target)
         client = self.api_client_factory()
         request = (
             PatchMessageRequest.builder()
