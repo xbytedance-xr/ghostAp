@@ -1032,6 +1032,13 @@ def start_session_with_retry(
                     ttadk_use_pty=bool(ttadk_use_pty),
                     env=dict(env),
                 )
+                try:
+                    setattr(session, "_log_failures", bool(log_failures))
+                except (AttributeError, TypeError):
+                    logger.debug(
+                        "session does not expose startup log policy",
+                        exc_info=True,
+                    )
                 effective_timeout = float(startup_timeout) * (
                     1.0 + 0.5 * (attempt - 1)
                 )
@@ -1059,6 +1066,13 @@ def start_session_with_retry(
                         session = session_cls(agent_type=agent_type, cwd=cwd)
             else:
                 session = session_cls(agent_type=agent_type, cwd=cwd, ttadk_use_pty=bool(ttadk_use_pty))
+            try:
+                setattr(session, "_log_failures", bool(log_failures))
+            except (AttributeError, TypeError):
+                logger.debug(
+                    "session does not expose startup log policy",
+                    exc_info=True,
+                )
             effective_timeout = float(startup_timeout) * (1.0 + 0.5 * (attempt - 1))
             session.start(startup_timeout=effective_timeout)
             logger.info("[ACP:%s] Engine session started (attempt=%d/%d)", agent_type.upper(), attempt, retries)
@@ -1486,6 +1500,7 @@ class SyncACPSession:
             self._agent_args = agent_args or args
         self._model_name = (model_name or "").strip() or None
         self._explicit_env = dict(env) if env is not None else None
+        self._log_failures = True
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop_thread: Optional[threading.Thread] = None
         self._acp_session: Optional[ACPSession] = None
@@ -1847,18 +1862,31 @@ class SyncACPSession:
         except TimeoutError as e:
             record_employee_session_outcome("timeout")
             agent_type_str = getattr(self, "_agent_type", "unknown")
-            logger.error("[ACP:%s] prompt 执行超时 (timeout=%ss): %s", agent_type_str, effective_timeout, get_error_detail(e), exc_info=True)
+            if getattr(self, "_log_failures", True):
+                logger.error("[ACP:%s] prompt 执行超时 (timeout=%ss): %s", agent_type_str, effective_timeout, get_error_detail(e), exc_info=True)
+            else:
+                logger.debug(
+                    "[ACP:%s] expected prompt timeout (timeout=%ss)",
+                    agent_type_str,
+                    effective_timeout,
+                )
             self.cancel(wait=True, timeout=2.0)
             raise TimeoutError(f"ACP prompt 执行超时 ({effective_timeout}s)") from e
         except Exception as e:
             err_detail = str(e).lower()
             if "terminal state" in err_detail or "broken pipe" in err_detail or "connection" in err_detail and "closed" in err_detail:
                 self._force_dead = True
-                logger.warning(
-                    "[ACP:%s] Session marked dead after prompt error: %s",
-                    getattr(self, "_agent_type", "unknown"),
-                    str(e)[:120],
-                )
+                if getattr(self, "_log_failures", True):
+                    logger.warning(
+                        "[ACP:%s] Session marked dead after prompt error: %s",
+                        getattr(self, "_agent_type", "unknown"),
+                        str(e)[:120],
+                    )
+                else:
+                    logger.debug(
+                        "[ACP:%s] expected prompt session closure",
+                        getattr(self, "_agent_type", "unknown"),
+                    )
             raise
         finally:
             self._active_future = None
@@ -2015,5 +2043,18 @@ class SyncACPSession:
             msg = sanitize_futures_msg(str(e))
             if not msg or msg == "操作超时，请稍后重试":
                 msg = f"ACP 异步操作超时 ({timeout}s): agent={self._agent_type}"
-            logger.error("[ACP:%s] _run_async 超时 (timeout=%ss): %s", self._agent_type, timeout, get_error_detail(e), exc_info=True)
+            if getattr(self, "_log_failures", True):
+                logger.error(
+                    "[ACP:%s] _run_async 超时 (timeout=%ss): %s",
+                    self._agent_type,
+                    timeout,
+                    get_error_detail(e),
+                    exc_info=True,
+                )
+            else:
+                logger.debug(
+                    "[ACP:%s] expected _run_async timeout (timeout=%ss)",
+                    self._agent_type,
+                    timeout,
+                )
             raise TimeoutError(msg) from e

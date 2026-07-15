@@ -527,7 +527,7 @@ class AgentRegistry:
                 try:
                     self._persist_request(request)
                 except StaleAuthorityEpoch as exc:
-                    logger.warning("Discarded stale registry write: %s", exc)
+                    logger.warning("Discarded stale registry write: %s", str(exc))
                 except OSError as exc:
                     logger.warning(
                         "Failed background registry write for %s: %s",

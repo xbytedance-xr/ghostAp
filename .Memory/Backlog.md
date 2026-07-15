@@ -37,5 +37,9 @@
 | B038 | 2026-07-13 | 每员工 Channel 默认依赖 bwrap 的 user/mount/PID namespace 与最小只读文件系统；生产宿主需把实际 attestation 和 Feishu-only egress policy 作为部署前置探针，并准备独立容器后端覆盖禁用 namespace 的环境 | Medium | `/hire` channel review | ⏳ Open | - |
 | B039 | 2026-07-13 | Employee runtime release 当前有意 hard-close；启用前需接入不可变 build/image digest、workload identity、部署侧固定 QA trust root、外部单调 attestation ledger，以及带 expiry/tenant/release/instance 绑定且每次 dispatch 续验的 recovery capability | Medium | `/hire` release convergence review | ⏳ Open | - |
 | B040 | 2026-07-13 | 本地 hash-chain 审计、WS/Handler 全 mutation 接线、跨进程缺失审计默认拒绝及外部 activation fence 协议已实现；真正多副本部署仍需让所有主 Bot 实例接入同一不可回滚外部审计/fence provider，并完成真实租户故障注入验收 | Medium | `/hire` activation security review | ⏳ Open | - |
+| B041 | 2026-07-15 | 已 ACTIVE 的已有应用不会因 manifest 新增权限而自动重跑官方 registrar；需提供不先 fire 的原地重授权/发布操作，并将 scope drift 明确展示给管理员 | Medium | employee Context log audit | ⏳ Open | - |
+| B042 | 2026-07-15 | Slock NLI 的 2.5 秒预算可短于 Coco 冷启动；当前已实现单 owner 关闭并将预期超时降为 DEBUG，后续应通过预热/复用会话或可配置预算提升首次分类成功率 | Medium | Coco connection grill review | ⏳ Open | - |
+| B043 | 2026-07-15 | transient Context durable retry 已跨重启计数并在第 3 次终止，但尚无 next-eligible 时间和指数退避；快速失败的上游可在很短时间内用完重试预算 | Medium | final grill review | ⏳ Open | - |
+| B044 | 2026-07-15 | Team recovery 已有调用顺序和 Journal-head CAS 并发回归，后续补一个包含真实 queued assignment 的完整重启 E2E，证明旧步骤零 ACP dispatch | Low | final grill review | ⏳ Open | - |
 
 > **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。

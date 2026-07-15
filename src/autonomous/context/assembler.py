@@ -138,10 +138,14 @@ class EmployeeThreadContext:
         scope: EmployeeMessageScope,
         resolved: ResolvedThread,
     ) -> None:
+        plain_group_root = not resolved.feishu_thread_id
         if (
             resolved.thread_root_message_id != scope.thread_root_message_id
             or resolved.current_message_id != scope.current_message_id
-            or not resolved.feishu_thread_id
+            or (
+                plain_group_root
+                and scope.thread_root_message_id != scope.current_message_id
+            )
             or (
                 scope.feishu_thread_id
                 and resolved.feishu_thread_id != scope.feishu_thread_id
@@ -241,6 +245,14 @@ class EmployeeThreadContext:
         resolved: ResolvedThread,
         messages: list[ContextMessage],
     ) -> None:
+        if not resolved.feishu_thread_id and (
+            len(messages) != 1
+            or messages[0].message_id != scope.current_message_id
+            or scope.thread_root_message_id != scope.current_message_id
+        ):
+            raise ContextUnavailableError(
+                ContextUnavailableReason.ROOT_THREAD_BINDING
+            )
         for message in messages:
             if message.chat_id != scope.chat_id:
                 raise ContextUnavailableError(ContextUnavailableReason.SCOPE)

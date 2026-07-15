@@ -9,6 +9,7 @@ from src.autonomous.context import (
     ContextUnavailableError,
     ContextUnavailableReason,
     EmployeeMessageScope,
+    EmployeeThreadContext,
 )
 from src.autonomous.context.lark_source import LarkEmployeeMessageSourceFactory
 from src.autonomous.domain.employees import BotPrincipal
@@ -167,6 +168,89 @@ def test_get_accepts_root_message_with_empty_root_id() -> None:
     )
     with source:
         assert source.resolve_thread().feishu_thread_id == "omt_1"
+
+
+def test_plain_group_root_is_exposed_as_stable_singleton_thread() -> None:
+    root = _message(
+        "om_root",
+        root_id=None,  # type: ignore[arg-type]
+        thread_id=None,  # type: ignore[arg-type]
+        position=0,
+        message_position=10,
+    )
+    source, api, _, _ = _open_source(
+        scope=_scope(current_message_id="om_root"),
+        get_responses=[
+            _Response(items=[root]),
+            _Response(items=[root]),
+            _Response(items=[root]),
+        ],
+    )
+
+    with source:
+        resolved = source.resolve_thread()
+        first = source.list_thread_messages()
+        second = source.list_thread_messages()
+
+    assert resolved.feishu_thread_id == ""
+    assert first == second
+    assert [message.message_id for message in first.messages] == ["om_root"]
+    assert first.messages[0].thread_id == ""
+    assert len(api.get_requests) == 3
+
+
+def test_group_history_capability_probe_uses_employee_client() -> None:
+    api = _MessageAPI(
+        get_responses=[],
+        list_responses=[_Response(items=[])],
+    )
+    vault = _Vault()
+    factory = LarkEmployeeMessageSourceFactory._with_client_builder_for_testing(
+        credential_resolver=vault,
+        client_builder=lambda **_kwargs: _Client(api),
+    )
+
+    assert factory.probe_group_history(_principal(), "oc_1") is True
+    assert api.list_requests[0].queries == [
+        ("container_id_type", "chat"),
+        ("container_id", "oc_1"),
+        ("sort_type", "ByCreateTimeDesc"),
+        ("page_size", "1"),
+        ("card_msg_content_type", "user_card_content"),
+    ]
+    factory.close()
+
+
+def test_plain_group_root_assembles_with_recent_group_window() -> None:
+    root = _message(
+        "om_root",
+        root_id=None,  # type: ignore[arg-type]
+        thread_id=None,  # type: ignore[arg-type]
+        position=0,
+        message_position=10,
+    )
+    source, _, _, _ = _open_source(
+        scope=_scope(current_message_id="om_root"),
+        get_responses=[
+            _Response(items=[root]),
+            _Response(items=[root]),
+            _Response(items=[root]),
+        ],
+        list_responses=[
+            _Response(items=[root]),
+            _Response(items=[root]),
+        ],
+    )
+
+    with source:
+        snapshot = EmployeeThreadContext(message_source=source).assemble()
+
+    assert [message.message_id for message in snapshot.thread_messages] == [
+        "om_root"
+    ]
+    assert snapshot.thread_messages[0].is_current is True
+    assert snapshot.watermark is not None
+    assert snapshot.watermark.feishu_thread_id == ""
 
 
 @pytest.mark.parametrize(

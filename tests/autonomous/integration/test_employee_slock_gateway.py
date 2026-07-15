@@ -1556,6 +1556,76 @@ def test_coordinator_terminally_rejects_non_unique_slock(
     harness.close()
 
 
+def test_context_failure_terminally_rejects_candidate_once(tmp_path, caplog) -> None:
+    from src.autonomous.context import (
+        ContextUnavailableError,
+        ContextUnavailableReason,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+
+    class _UnavailableContext:
+        calls = 0
+
+        def assemble(self, _request):
+            self.calls += 1
+            raise ContextUnavailableError(
+                ContextUnavailableReason.ROOT_THREAD_BINDING
+            )
+
+    unavailable = _UnavailableContext()
+    harness.coordinator._context = unavailable  # noqa: SLF001
+
+    assert harness.coordinator.prepare_next() is None
+    record = next(iter(harness.router.state.by_acceptance_id.values()))
+    assert record.state == "terminal"
+    assert record.reason_code == "context_unavailable"
+    assert harness.coordinator.prepare_next() is None
+    assert unavailable.calls == 1
+    assert not harness.coordinator.state.attempts
+    assert "reason=root_thread_binding" in caplog.text
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+    harness.close()
+
+
+def test_transient_context_failure_retries_durably_then_terminalizes(
+    tmp_path,
+) -> None:
+    from src.autonomous.context import (
+        ContextUnavailableError,
+        ContextUnavailableReason,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+
+    class _UnavailableContext:
+        calls = 0
+
+        def assemble(self, _request):
+            self.calls += 1
+            raise ContextUnavailableError(ContextUnavailableReason.SOURCE)
+
+    unavailable = _UnavailableContext()
+    harness.coordinator._context = unavailable  # noqa: SLF001
+
+    assert harness.coordinator.prepare_next() is None
+    first = next(iter(harness.router.state.by_acceptance_id.values()))
+    assert first.state == "queued" and first.context_failures == 1
+    second_coordinator = harness.restart()
+    second_coordinator._context = unavailable  # noqa: SLF001
+    assert second_coordinator.prepare_next() is None
+    second = next(iter(harness.router.state.by_acceptance_id.values()))
+    assert second.state == "queued" and second.context_failures == 2
+    restarted = harness.restart()
+    restarted._context = unavailable  # noqa: SLF001
+    assert restarted.prepare_next() is None
+    terminal = next(iter(harness.router.state.by_acceptance_id.values()))
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "context_unavailable"
+    assert unavailable.calls == 3
+    harness.close()
+
+
 def test_manager_membership_is_frozen_through_employee_activation_guard(
     tmp_path,
     monkeypatch,

@@ -21,12 +21,13 @@ from src.slock_engine.memory_manager import (
     MemoryManager,
     default_slock_storage_base,
 )
+from src.utils.async_helpers import safe_wait_for
 from src.utils.path import canonicalize_user_home_path
 
 from ..acceptance.main_bot_audit import MainBotSendAuditLog
 from ..acceptance.release_trust import ReleaseTrustProvider
 from ..context.lark_source import LarkEmployeeMessageSourceFactory
-from ..context.models import ThreadContextConfig
+from ..context.models import ContextUnavailableError, ThreadContextConfig
 from ..context.runtime import (
     RuntimeEmployeeGenerationAuthority,
     parse_requester_acl,
@@ -202,6 +203,10 @@ class _RuntimeTeamBackend:
     def list_active(self, tenant_key: str, chat_id: str) -> tuple[TeamTarget, ...]:
         runtime = self._runtime
         service = runtime._require_service()
+        ready_agent_ids = runtime._team_execution_ready_agent_ids(
+            tenant_key,
+            chat_id,
+        )
         projection = service.synchronize_projection()
         targets: list[TeamTarget] = []
         for state in service.list_states():
@@ -214,6 +219,7 @@ class _RuntimeTeamBackend:
                 and chat_id in employee.member_groups
                 and getattr(status, "state", None) is ChannelProcessState.READY
                 and getattr(status, "generation", None) == state.channel_generation
+                and employee.agent_id in ready_agent_ids
             ):
                 targets.append(TeamTarget(employee.agent_id, employee.name, employee.role))
         return tuple(sorted(targets, key=lambda item: item.agent_id))
@@ -575,7 +581,6 @@ class EmployeeDepartmentRuntime:
                 membership_health=membership_health or runtime._membership,
             )
             runtime._compose_fire(settings)
-            runtime.recover()
             if team_notification is not None and runtime._writer is not None:
                 runtime._team = EmployeeTeamService(
                     writer=runtime._writer,
@@ -590,6 +595,9 @@ class EmployeeDepartmentRuntime:
                         "employee team recovery isolated %d interrupted run(s)",
                         recovered_team_runs,
                     )
+            # Team recovery must terminalize interrupted effects before runtime
+            # recovery is allowed to start the durable dispatch worker.
+            runtime.recover()
             return runtime
         except Exception as exc:
             logger.error(
@@ -662,13 +670,71 @@ class EmployeeDepartmentRuntime:
         service_readiness: HireReadiness = self._service.readiness()
         return RuntimeReadiness(service_readiness.ready, service_readiness.blockers)
 
-    def execution_readiness(self, agent_id: str | None = None) -> RuntimeReadiness:
+    def execution_readiness(
+        self,
+        agent_id: str | None = None,
+        *,
+        chat_id: str | None = None,
+    ) -> RuntimeReadiness:
         """Probe ACTIVE employee Context without weakening hire readiness."""
+        if chat_id is not None and (
+            not isinstance(chat_id, str) or not chat_id.strip()
+        ):
+            return RuntimeReadiness(False, ("context_group_history",))
+        readiness, projection, active = self._prepare_execution_probe(agent_id)
+        if not readiness.ready or not active:
+            return readiness
+        for state in active:
+            employee_readiness = self._probe_employee_execution(
+                projection,
+                state,
+                chat_id=chat_id,
+            )
+            if not employee_readiness.ready:
+                return employee_readiness
+        return RuntimeReadiness(True, ())
+
+    def _team_execution_ready_agent_ids(
+        self,
+        tenant_key: str,
+        chat_id: str,
+    ) -> frozenset[str]:
+        """Probe one team snapshot once, then isolate per-employee failures."""
+
+        if not isinstance(chat_id, str) or not chat_id.strip():
+            return frozenset()
+        readiness, projection, active = self._prepare_execution_probe()
+        if not readiness.ready:
+            return frozenset()
+        ready: set[str] = set()
+        for state in active:
+            if state.tenant_key != tenant_key:
+                continue
+            employee = projection.employees.get(state.agent_id)
+            if employee is None or chat_id not in employee.member_groups:
+                continue
+            employee_readiness = self._probe_employee_execution(
+                projection,
+                state,
+                chat_id=chat_id,
+            )
+            if employee_readiness.ready:
+                ready.add(state.agent_id)
+        return frozenset(ready)
+
+    def _prepare_execution_probe(
+        self,
+        agent_id: str | None = None,
+    ) -> tuple[RuntimeReadiness, Any, tuple[DurableHireState, ...]]:
+        """Synchronize the common readiness boundary once per probe batch."""
+
+        projection = None
+        active: tuple[DurableHireState, ...] = ()
         hire = self.hire_readiness()
         if not hire.ready:
-            return hire
+            return hire, projection, active
         if self._execution_blockers:
-            return RuntimeReadiness(False, self._execution_blockers)
+            return RuntimeReadiness(False, self._execution_blockers), projection, active
         if (
             self._ingress is None
             or self._router is None
@@ -678,63 +744,112 @@ class EmployeeDepartmentRuntime:
             or self._data is None
             or self._context_service is None
         ):
-            return RuntimeReadiness(False, ("employee_gateway",))
+            return RuntimeReadiness(False, ("employee_gateway",)), projection, active
         if self._channels is None or not callable(getattr(self._channels, "update_card", None)):
-            return RuntimeReadiness(False, ("employee_outbox",))
+            return RuntimeReadiness(False, ("employee_outbox",)), projection, active
         if self._service is None:
-            return RuntimeReadiness(False, ("not_composed",))
+            return RuntimeReadiness(False, ("not_composed",)), projection, active
         try:
             projection = self._service.synchronize_projection()
             active = tuple(
                 state
                 for state in self._service.list_states()
-                if state.phase is HirePhase.ACTIVE and (agent_id is None or state.agent_id == agent_id)
+                if state.phase is HirePhase.ACTIVE
+                and (agent_id is None or state.agent_id == agent_id)
             )
             if not active:
-                if agent_id is not None:
-                    return RuntimeReadiness(False, ("employee_not_active",))
-                return RuntimeReadiness(True, ())
-            if self._context_service is None or self._context_source_factory is None or self._data is None:
-                return RuntimeReadiness(
-                    False,
-                    self._context_blockers or ("employee_context",),
+                blocker = ("employee_not_active",) if agent_id is not None else ()
+                return RuntimeReadiness(not blocker, blocker), projection, active
+            if self._context_source_factory is None:
+                return (
+                    RuntimeReadiness(
+                        False,
+                        self._context_blockers or ("employee_context",),
+                    ),
+                    projection,
+                    active,
                 )
             if not getattr(self._context_acl, "configured", False):
-                return RuntimeReadiness(
-                    False,
-                    ("context_request_authority",),
+                return (
+                    RuntimeReadiness(False, ("context_request_authority",)),
+                    projection,
+                    active,
                 )
             self._data.service.rebuild_projection()
             projection = self._service.synchronize_projection()
             if not self._refresh_context_bindings(projection):
-                return RuntimeReadiness(False, ("context_binding_sync",))
+                return (
+                    RuntimeReadiness(False, ("context_binding_sync",)),
+                    projection,
+                    active,
+                )
             head = self._data.service.get_head()
-            if head.sequence != projection.cursor_sequence or head.logical_hash != projection.cursor_hash:
-                return RuntimeReadiness(False, ("context_projection_stale",))
-            for state in active:
-                employee = projection.employees.get(state.agent_id)
-                principal = projection.bot_principals.get(state.bot_principal_id)
-                status = self._channels.status(state.agent_id) if self._channels else None
-                status_state = getattr(status, "state", None)
-                if (
-                    employee is None
-                    or principal is None
-                    or employee.bot_principal_id != state.bot_principal_id
-                    or principal.agent_id != state.agent_id
-                    or principal.tenant_key != state.tenant_key
-                    or principal.app_id != state.app_id
-                    or not principal.credential_ref
-                ):
-                    return RuntimeReadiness(False, ("context_binding",))
-                if (
-                    status_state is not ChannelProcessState.READY
-                    or getattr(status, "generation", None) != state.channel_generation
-                    or getattr(status, "identity", {}).get("app_id") != state.app_id
-                    or getattr(status, "ready_metadata", {}).get("connection_id") != state.channel_connection_id
-                ):
-                    return RuntimeReadiness(False, ("context_generation",))
-                if self._context_source_factory.probe(principal) is not True:
-                    return RuntimeReadiness(False, ("context_credentials",))
+            if (
+                head.sequence != projection.cursor_sequence
+                or head.logical_hash != projection.cursor_hash
+            ):
+                return (
+                    RuntimeReadiness(False, ("context_projection_stale",)),
+                    projection,
+                    active,
+                )
+            return RuntimeReadiness(True, ()), projection, active
+        except Exception:
+            return RuntimeReadiness(False, ("employee_context",)), projection, active
+
+    def _probe_employee_execution(
+        self,
+        projection: Any,
+        state: DurableHireState,
+        *,
+        chat_id: str | None,
+    ) -> RuntimeReadiness:
+        if chat_id is not None and (
+            not isinstance(chat_id, str) or not chat_id.strip()
+        ):
+            return RuntimeReadiness(False, ("context_group_history",))
+        try:
+            employee = projection.employees.get(state.agent_id)
+            principal = projection.bot_principals.get(state.bot_principal_id)
+            status = self._channels.status(state.agent_id) if self._channels else None
+            status_state = getattr(status, "state", None)
+            if (
+                employee is None
+                or principal is None
+                or employee.bot_principal_id != state.bot_principal_id
+                or principal.agent_id != state.agent_id
+                or principal.tenant_key != state.tenant_key
+                or principal.app_id != state.app_id
+                or not principal.credential_ref
+            ):
+                return RuntimeReadiness(False, ("context_binding",))
+            if (
+                status_state is not ChannelProcessState.READY
+                or getattr(status, "generation", None) != state.channel_generation
+                or getattr(status, "identity", {}).get("app_id") != state.app_id
+                or getattr(status, "ready_metadata", {}).get("connection_id")
+                != state.channel_connection_id
+            ):
+                return RuntimeReadiness(False, ("context_generation",))
+            if chat_id is not None and chat_id not in employee.member_groups:
+                return RuntimeReadiness(False, ("context_group_membership",))
+            if self._context_source_factory.probe(principal) is not True:
+                return RuntimeReadiness(False, ("context_credentials",))
+            probe_group_history = getattr(
+                self._context_source_factory,
+                "probe_group_history",
+                None,
+            )
+            groups_to_probe = (
+                (chat_id,)
+                if chat_id is not None
+                else tuple(sorted(employee.member_groups))
+            )
+            if groups_to_probe and not callable(probe_group_history):
+                return RuntimeReadiness(False, ("context_group_history",))
+            for group_id in groups_to_probe:
+                if probe_group_history(principal, group_id) is not True:
+                    return RuntimeReadiness(False, ("context_group_history",))
             return RuntimeReadiness(True, ())
         except Exception:
             return RuntimeReadiness(False, ("employee_context",))
@@ -1414,10 +1529,16 @@ class EmployeeDepartmentRuntime:
                     worked = self._drain_employee_dispatch_once()
                     delay = 0.05 if worked else min(delay * 2.0, 1.0)
                 except Exception as exc:
-                    logger.error(
-                        "employee dispatch worker failed closed: %s",
-                        type(exc).__name__,
-                    )
+                    if isinstance(exc, ContextUnavailableError):
+                        logger.warning(
+                            "employee dispatch rejected unavailable context: reason=%s",
+                            exc.reason.value,
+                        )
+                    else:
+                        logger.error(
+                            "employee dispatch worker failed closed: %s",
+                            type(exc).__name__,
+                        )
                     delay = min(max(delay, 0.05) * 2.0, 5.0)
 
         self._dispatch_thread = threading.Thread(
@@ -2859,9 +2980,10 @@ class EmployeeDepartmentRuntime:
         state = current
         commit("hire.notification.executing")
         try:
-            receipt = await asyncio.wait_for(
+            receipt = await safe_wait_for(
                 asyncio.to_thread(callback, state, status),
                 timeout=15.0,
+                action="employee hire notification",
             )
         except Exception:
             commit("hire.notification.action_required")

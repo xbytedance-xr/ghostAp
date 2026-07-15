@@ -435,6 +435,7 @@ class TestRunAsyncTimeoutWrapping:
         return adapter
 
     def _cleanup(self, adapter):
+        adapter._drain_loop_before_close()
         adapter._loop.call_soon_threadsafe(adapter._loop.stop)
         adapter._loop_thread.join(timeout=2)
 
@@ -452,6 +453,21 @@ class TestRunAsyncTimeoutWrapping:
                 assert msg, "_run_async produced empty TimeoutError message"
                 assert "(empty message)" not in msg
                 assert "test_agent" in msg
+        finally:
+            self._cleanup(adapter)
+
+    def test_expected_timeout_can_suppress_error_trace(self, caplog):
+        adapter = self._make_adapter()
+        adapter._log_failures = False
+        try:
+            async def hang():
+                await asyncio.sleep(999)
+
+            with caplog.at_level(logging.ERROR, logger="src.acp.sync_adapter"):
+                with pytest.raises(TimeoutError):
+                    adapter._run_async(hang(), timeout=0.01)
+
+            assert not caplog.records
         finally:
             self._cleanup(adapter)
 

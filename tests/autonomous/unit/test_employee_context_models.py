@@ -207,6 +207,21 @@ def test_snapshot_metadata_is_frozen_and_diagnostics_do_not_repeat_plaintext() -
         snapshot.snapshot_hash = "other"  # type: ignore[misc]
 
 
+def test_plain_group_watermark_allows_empty_feishu_thread_id() -> None:
+    watermark = ThreadWatermark(
+        thread_root_id="om_root",
+        last_message_id="om_root",
+        last_timestamp=1.0,
+        message_count=1,
+        tenant_key="tenant_1",
+        chat_id="oc_1",
+        feishu_thread_id="",
+        revision_digest="a" * 64,
+    )
+
+    assert watermark.feishu_thread_id == ""
+
+
 @pytest.mark.parametrize(
     "factory",
     [

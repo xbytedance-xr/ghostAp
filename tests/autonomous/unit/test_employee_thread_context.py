@@ -196,6 +196,22 @@ def test_requires_two_equal_traversals_and_excludes_messages_after_current() -> 
     assert len(snapshot.snapshot_hash) == 64
 
 
+def test_empty_thread_binding_cannot_expand_beyond_plain_group_root() -> None:
+    source = _FakeSource(
+        traversals=[_pages(_stable_thread()), _pages(_stable_thread())]
+    )
+    source.resolve_thread = lambda: ResolvedThread(  # type: ignore[method-assign]
+        "om_root",
+        "",
+        "om_current",
+    )
+
+    with pytest.raises(ContextUnavailableError) as raised:
+        _assembler(source).assemble()
+
+    assert raised.value.reason is ContextUnavailableReason.ROOT_THREAD_BINDING
+
+
 def test_unstable_pair_retries_once_then_accepts_stable_pair() -> None:
     first = _stable_thread(_msg("om_before", "v1", create=2_000, position=1))
     second = _stable_thread(

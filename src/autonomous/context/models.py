@@ -264,7 +264,8 @@ class ThreadWatermark:
         if not isinstance(self.tenant_key, str) or not self.tenant_key.strip():
             raise ValueError("tenant_key is required")
         _require_prefix(self.chat_id, "chat_id", "oc_")
-        _require_prefix(self.feishu_thread_id, "feishu_thread_id", "omt_")
+        if self.feishu_thread_id:
+            _require_prefix(self.feishu_thread_id, "feishu_thread_id", "omt_")
         if re.fullmatch(r"[0-9a-f]{64}", self.revision_digest) is None:
             raise ValueError("revision_digest must be a SHA-256 hex digest")
 

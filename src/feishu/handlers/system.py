@@ -634,7 +634,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 else:
                     self.reply_text(message_id, f"❌ 目标创建失败: {result.error}")
             except Exception as exc:
-                self.reply_text(message_id, f"❌ 目标创建异常: {exc}")
+                self.reply_text(
+                    message_id,
+                    f"❌ 目标创建异常: {safe_error_message(exc)}",
+                )
             return
 
         if cmd == "/goals":
@@ -650,7 +653,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                         lines.append(f"{state_emoji} `{g['goal_id']}` — {g['description']} ({g['state']})")
                     self.reply_text(message_id, "\n".join(lines))
             except Exception as exc:
-                self.reply_text(message_id, f"❌ 查询失败: {exc}")
+                self.reply_text(
+                    message_id,
+                    f"❌ 查询失败: {safe_error_message(exc)}",
+                )
             return
 
         if cmd == "/runs":

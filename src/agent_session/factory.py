@@ -196,6 +196,7 @@ def create_engine_session(
     require_tool_filter: bool = False,
     startup_timeout: Optional[float] = None,
     startup_retries: Optional[int] = None,
+    startup_log_failures: Optional[bool] = None,
 ) -> SyncSession:
     """Create and start a session for Deep/Spec/Slock engines.
 
@@ -212,6 +213,8 @@ def create_engine_session(
         require_tool_filter: If True, choose a backend that exposes set_tool_filter.
         startup_timeout: Optional ACP startup budget override.
         startup_retries: Optional ACP startup attempt override.
+        startup_log_failures: Override startup diagnostics logging for expected
+            best-effort callers such as the one-shot NLI classifier.
     """
     from ..acp.sync_adapter import start_session_with_retry
     from ..coco_model import get_coco_model_manager
@@ -305,6 +308,8 @@ def create_engine_session(
         startup_kwargs: dict[str, object] = {}
         if startup_retries is not None:
             startup_kwargs["retries"] = startup_retries
+        if startup_log_failures is not None:
+            startup_kwargs["log_failures"] = startup_log_failures
         if employee_env is not None:
             startup_kwargs["env"] = employee_env
         session = start_session_with_retry(

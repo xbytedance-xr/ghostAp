@@ -588,7 +588,13 @@ class _LarkEmployeeMessageSource:
             message = items[0]
             message_id = getattr(message, "message_id", None)
             chat_id = getattr(message, "chat_id", None)
-            thread_id = getattr(message, "thread_id", None)
+            raw_thread_id = getattr(message, "thread_id", None)
+            if raw_thread_id is None:
+                thread_id = ""
+            elif isinstance(raw_thread_id, str):
+                thread_id = raw_thread_id
+            else:
+                raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
             raw_root_id = getattr(message, "root_id", None)
             if raw_root_id is None:
                 root_id = ""
@@ -599,9 +605,15 @@ class _LarkEmployeeMessageSource:
             if (
                 message_id != self.scope.current_message_id
                 or chat_id != self.scope.chat_id
-                or not isinstance(thread_id, str)
-                or re.fullmatch(r"omt_[A-Za-z0-9][A-Za-z0-9_-]*", thread_id)
-                is None
+                or (
+                    bool(thread_id)
+                    and re.fullmatch(
+                        r"omt_[A-Za-z0-9][A-Za-z0-9_-]*",
+                        thread_id,
+                    )
+                    is None
+                )
+                or (not thread_id and bool(self.scope.feishu_thread_id))
             ):
                 raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
             if message_id == self.scope.thread_root_message_id:
@@ -609,6 +621,11 @@ class _LarkEmployeeMessageSource:
             else:
                 root_matches = root_id == self.scope.thread_root_message_id
             if not root_matches:
+                raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
+            if not thread_id and (
+                message_id != self.scope.thread_root_message_id
+                or self.scope.current_message_id != self.scope.thread_root_message_id
+            ):
                 raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
             if self.scope.feishu_thread_id and thread_id != self.scope.feishu_thread_id:
                 raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
@@ -665,6 +682,11 @@ class _LarkEmployeeMessageSource:
                 if resolved is None:
                     raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
                 thread_id = resolved.feishu_thread_id
+            if not thread_id:
+                return self._get_plain_group_current_message(
+                    page_token=page_token,
+                    page_size=page_size,
+                )
             return self._list_messages(
                 container_id_type="thread",
                 container_id=thread_id,
@@ -673,6 +695,59 @@ class _LarkEmployeeMessageSource:
                 page_size=page_size,
                 expected_thread_id=thread_id,
             )
+
+    def _get_plain_group_current_message(
+        self,
+        *,
+        page_token: str,
+        page_size: int,
+    ) -> MessagePage:
+        """Re-read a non-topic current message as a stable singleton layer."""
+
+        generation = self._begin_operation()
+        if (
+            page_token
+            or isinstance(page_size, bool)
+            or not isinstance(page_size, int)
+            or not 1 <= page_size <= 50
+        ):
+            raise _fail(ContextUnavailableReason.PAGINATION)
+        request = (
+            GetMessageRequest.builder()
+            .message_id(self.scope.current_message_id)
+            .user_id_type("open_id")
+            .card_msg_content_type("user_card_content")
+            .build()
+        )
+        try:
+            response = self._message_api().get(request)
+        except ContextUnavailableError as exc:
+            raise _fail(exc.reason) from None
+        except Exception as exc:
+            raise _transport_failure(exc) from None
+        self._require_open()
+        try:
+            data = self._require_response_data(
+                response,
+                deleted_reason=ContextUnavailableReason.CURRENT_MESSAGE,
+            )
+            items = getattr(data, "items", None)
+            if not isinstance(items, (list, tuple)) or len(items) != 1:
+                raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
+            message = _normalize_message(
+                items[0],
+                scope=self.scope,
+                expected_thread_id="",
+            )
+            if message.message_id != self.scope.current_message_id:
+                raise _fail(ContextUnavailableReason.ROOT_THREAD_BINDING)
+            with self._state_lock:
+                self._require_generation(generation)
+            return MessagePage(messages=(message,), has_more=False, page_token="")
+        except ContextUnavailableError as exc:
+            raise _fail(exc.reason) from None
+        except Exception as exc:
+            raise _transport_failure(exc) from None
 
     def list_chat_messages(
         self,
@@ -1083,6 +1158,82 @@ class LarkEmployeeMessageSourceFactory:
                     and success() is True
                     and getattr(response, "code", None) == 0
                     and getattr(app, "app_id", None) == principal.app_id
+                    and not self._closed.is_set()
+                    and principal.agent_id not in self._invalidated_agents
+                )
+        except Exception:
+            return False
+        finally:
+            if "secret" in locals():
+                del secret
+            if "client" in locals():
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                del client
+            if "request" in locals():
+                del request
+            if "response" in locals():
+                del response
+            with self._condition:
+                self._pending_acquires -= 1
+                self._decrement_agent_count(
+                    self._pending_by_agent,
+                    principal.agent_id,
+                )
+                self._condition.notify_all()
+
+    def probe_group_history(self, principal: BotPrincipal, chat_id: str) -> bool:
+        """Verify the employee can read bounded group history in a real team."""
+
+        if re.fullmatch(r"oc_[A-Za-z0-9][A-Za-z0-9_-]*", chat_id) is None:
+            return False
+        with self._condition:
+            if (
+                self._closed.is_set()
+                or not isinstance(principal, BotPrincipal)
+                or not principal.app_id
+                or not principal.credential_ref
+                or principal.agent_id in self._invalidated_agents
+            ):
+                return False
+            self._pending_acquires += 1
+            self._increment_agent_count(
+                self._pending_by_agent,
+                principal.agent_id,
+            )
+        try:
+            secret = self.credential_resolver.resolve(
+                principal.credential_ref,
+                principal.agent_id,
+                principal.app_id,
+            )
+            if not isinstance(secret, str) or not secret:
+                return False
+            client = self._client_builder(
+                app_id=principal.app_id,
+                app_secret=secret,
+                timeout=float(self.request_timeout_seconds),
+            )
+            request = (
+                ListMessageRequest.builder()
+                .container_id_type("chat")
+                .container_id(chat_id)
+                .sort_type("ByCreateTimeDesc")
+                .page_size(1)
+                .card_msg_content_type("user_card_content")
+                .build()
+            )
+            response = client.im.v1.message.list(request)
+            success = getattr(response, "success", None)
+            with self._condition:
+                return (
+                    callable(success)
+                    and success() is True
+                    and getattr(response, "code", None) == 0
                     and not self._closed.is_set()
                     and principal.agent_id not in self._invalidated_agents
                 )

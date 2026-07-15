@@ -33,7 +33,10 @@ from src.autonomous.gateway.env_scope import EmployeeProcessEnvironmentMaterial
 from src.autonomous.ingress.models import EmployeeIngressMetadata, EmployeeIngressPayload
 from src.autonomous.journal.anchor import MemoryAnchor
 from src.autonomous.journal.frame import JournalEvent
-from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+from src.autonomous.provisioning.composition import (
+    EmployeeDepartmentRuntime,
+    RuntimeReadiness,
+)
 from src.autonomous.provisioning.hire_port import EmployeeHireRequest
 from src.autonomous.provisioning.hire_state import (
     DurableHireState,
@@ -43,6 +46,7 @@ from src.autonomous.provisioning.hire_state import (
 from src.autonomous.provisioning.lark_app import RegistrationResult
 from src.autonomous.provisioning.slash_commands import VerifiedSlashState
 from src.autonomous.supervisor.employee_channels import ChannelProcessState, ChannelSendReceipt
+from src.autonomous.team.service import EmployeeTeamService
 from src.autonomous.workforce.projection import commit_workforce_events
 
 
@@ -267,9 +271,16 @@ class _HealthyMembership:
 
 
 class _ContextSourceFactory:
-    def __init__(self, *, probe_ready: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        probe_ready: bool = True,
+        group_probe_ready: bool | dict[str, bool] = True,
+    ) -> None:
         self.probe_ready = probe_ready
+        self.group_probe_ready = group_probe_ready
         self.probed: list[tuple[str, str, str]] = []
+        self.group_probed: list[tuple[str, str]] = []
         self.invalidated: list[str] = []
         self.reactivated: list[str] = []
         self.closed = False
@@ -277,6 +288,12 @@ class _ContextSourceFactory:
     def probe(self, principal):
         self.probed.append((principal.agent_id, principal.app_id, principal.credential_ref))
         return self.probe_ready
+
+    def probe_group_history(self, principal, chat_id):
+        self.group_probed.append((principal.agent_id, chat_id))
+        if isinstance(self.group_probe_ready, dict):
+            return self.group_probe_ready.get(chat_id, False)
+        return self.group_probe_ready
 
     def open(self, **_kwargs):
         raise AssertionError("readiness must not perform message API calls")
@@ -567,7 +584,41 @@ def test_task7_runtime_owns_durable_ingress_router_and_gateway(tmp_path: Path) -
     assert runtime.outbox_delivery is not None
     assert runtime.fire_service is not None
     assert runtime.execution_readiness().ready is True
+    invalid_chat = runtime.execution_readiness(chat_id=" ")
+    assert invalid_chat.ready is False
+    assert invalid_chat.blockers == ("context_group_history",)
     runtime.close()
+
+
+def test_team_batch_skips_nonmembers_before_employee_probe() -> None:
+    runtime = EmployeeDepartmentRuntime()
+    member = SimpleNamespace(agent_id="agent-member", tenant_key="tenant-a")
+    nonmember = SimpleNamespace(agent_id="agent-other", tenant_key="tenant-a")
+    projection = SimpleNamespace(
+        employees={
+            member.agent_id: SimpleNamespace(member_groups=frozenset({"oc_team"})),
+            nonmember.agent_id: SimpleNamespace(member_groups=frozenset({"oc_other"})),
+        }
+    )
+    runtime._prepare_execution_probe = lambda _agent_id=None: (  # type: ignore[method-assign]  # noqa: SLF001
+        RuntimeReadiness(True, ()),
+        projection,
+        (member, nonmember),
+    )
+    probed: list[str] = []
+
+    def probe(_projection, state, *, chat_id):
+        assert chat_id == "oc_team"
+        probed.append(state.agent_id)
+        return RuntimeReadiness(True, ())
+
+    runtime._probe_employee_execution = probe  # type: ignore[method-assign]  # noqa: SLF001
+
+    assert runtime._team_execution_ready_agent_ids(  # noqa: SLF001
+        "tenant-a",
+        "oc_team",
+    ) == frozenset({"agent-member"})
+    assert probed == ["agent-member"]
 
 
 def test_existing_app_id_reaches_runtime_registrar(tmp_path: Path) -> None:
@@ -923,6 +974,16 @@ def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -
     runtime._dispatch = _NoDispatch()  # type: ignore[assignment]
     backend = runtime.team_service._backend
     target = backend.list_active(active.tenant_key, "oc_employee_team")[0]
+    runtime.team_service._commit_effect(  # noqa: SLF001
+        "teamrun_integration:analysis",
+        "employee_dispatch",
+        "prepared",
+    )
+    runtime.team_service._commit_effect(  # noqa: SLF001
+        "teamrun_integration:analysis",
+        "employee_dispatch",
+        "executing",
+    )
     acceptance_id = backend.submit(
         run_id="teamrun_integration",
         step_id="analysis",
@@ -940,8 +1001,66 @@ def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -
     payload = runtime.ingress_service.get_payload(acceptance_id)
     assert payload.normalized_parts[0]["type"] == "team_assignment"
     assert payload.normalized_parts[0]["team_instruction"] == "分析并修复团队模式"
+    original_check = real_dispatch._team_assignment_effect_is_active  # noqa: SLF001
+    race_injected = False
+
+    def race_after_active_check(part):
+        nonlocal race_injected
+        active = original_check(part)
+        if not race_injected:
+            assert active is True
+            race_injected = True
+            runtime.team_service._commit_effect(  # noqa: SLF001
+                "teamrun_integration:analysis",
+                "employee_dispatch",
+                "action_required",
+            )
+        return active
+
+    real_dispatch._team_assignment_effect_is_active = race_after_active_check  # type: ignore[method-assign]  # noqa: SLF001
+    # The effect changes after the check but before dispatch commit. The head
+    # CAS must force a retry, which then terminalizes the stale assignment.
+    assert real_dispatch.prepare_next() is None
+    assert race_injected is True
+    terminal = runtime.ingress_router.state.by_acceptance_id[acceptance_id]
+    assert terminal.state == "terminal"
+    assert terminal.reason_code == "team_step_inactive"
     runtime._dispatch = real_dispatch
     runtime._dispatch_thread = None
+    runtime.close()
+
+
+def test_team_recovery_runs_before_runtime_can_start_dispatch(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed: list[str] = []
+    original_team_recover = EmployeeTeamService.recover
+    original_runtime_recover = EmployeeDepartmentRuntime.recover
+
+    def recover_team(service):
+        observed.append("team")
+        return original_team_recover(service)
+
+    def recover_runtime(runtime):
+        assert observed == ["team"]
+        observed.append("runtime")
+        return original_runtime_recover(runtime)
+
+    monkeypatch.setattr(EmployeeTeamService, "recover", recover_team)
+    monkeypatch.setattr(EmployeeDepartmentRuntime, "recover", recover_runtime)
+    runtime = EmployeeDepartmentRuntime.from_settings(
+        _settings(tmp_path, limit=1, context_configured=True),
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        team_notification=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+    )
+
+    assert observed == ["team", "runtime"]
     runtime.close()
 
 
@@ -1342,6 +1461,96 @@ def test_active_employee_probe_failure_blocks_execution_not_hiring(
     readiness = runtime.execution_readiness(active.agent_id)
     assert readiness.ready is False
     assert readiness.blockers == ("context_credentials",)
+    runtime.close()
+
+
+def test_group_history_permission_blocks_execution_and_team_routing(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    source_factory = _ContextSourceFactory(group_probe_ready=False)
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        team_notification=lambda *_: None,
+        context_source_factory=source_factory,
+        group_memory_backend=_GroupMemory(),
+    )
+    active = _activate_employee(runtime, channels)
+    assert runtime._writer is not None
+    assert runtime.hire_service is not None
+    commit_workforce_events(
+        runtime._writer,
+        runtime.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=active.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+
+    readiness = runtime.execution_readiness(active.agent_id)
+
+    assert readiness.ready is False
+    assert readiness.blockers == ("context_group_history",)
+    assert source_factory.group_probed == [
+        (active.agent_id, "oc_employee_team")
+    ]
+    assert runtime.team_service is not None
+    assert runtime.team_service._backend.list_active(  # noqa: SLF001
+        active.tenant_key,
+        "oc_employee_team",
+    ) == ()
+    runtime.close()
+
+
+def test_team_readiness_probes_the_target_chat_not_another_membership(
+    tmp_path: Path,
+) -> None:
+    channels = _Channels()
+    source_factory = _ContextSourceFactory(
+        group_probe_ready={"oc_bad_team": False, "oc_good_team": True}
+    )
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        team_notification=lambda *_: None,
+        context_source_factory=source_factory,
+        group_memory_backend=_GroupMemory(),
+    )
+    active = _activate_employee(runtime, channels)
+    assert runtime._writer is not None
+    assert runtime.hire_service is not None
+    commit_workforce_events(
+        runtime._writer,
+        runtime.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=active.agent_id,
+                payload={"member_groups": ["oc_bad_team", "oc_good_team"]},
+            ),
+        ),
+    )
+    assert runtime.team_service is not None
+    backend = runtime.team_service._backend  # noqa: SLF001
+
+    assert backend.list_active(active.tenant_key, "oc_bad_team") == ()
+    assert len(backend.list_active(active.tenant_key, "oc_good_team")) == 1
+    assert source_factory.group_probed[-2:] == [
+        (active.agent_id, "oc_bad_team"),
+        (active.agent_id, "oc_good_team"),
+    ]
     runtime.close()
 
 

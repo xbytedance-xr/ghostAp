@@ -69,6 +69,7 @@ async def test_registrar_uses_official_agent_manifest_and_forwards_callbacks() -
                 "im:chat:update",
                 "im:message.group_at_msg:readonly",
                 "im:message.group_at_msg.include_bot:readonly",
+                "im:message.group_msg",
                 "im:message.p2p_msg:readonly",
                 "im:message.pins:read",
                 "im:message.pins:write_only",
@@ -156,6 +157,32 @@ async def test_existing_app_registration_rejects_mismatched_client_id() -> None:
             ),
             on_link=lambda _url, _ttl: None,
         )
+
+
+@pytest.mark.asyncio
+async def test_existing_app_registration_updates_full_required_manifest() -> None:
+    captured: dict = {}
+
+    async def register(**kwargs):
+        captured.update(kwargs)
+        return {
+            "client_id": "cli_existing_123",
+            "client_secret": "secret-value",
+        }
+
+    result = await LarkAppRegistrar(register_fn=register).register(
+        RegistrationRequest(
+            name="Atlas",
+            description="GhostAP employee",
+            existing_app_id="cli_existing_123",
+        ),
+        on_link=lambda _url, _ttl: None,
+    )
+
+    assert result.app_id == "cli_existing_123"
+    assert captured["app_id"] == "cli_existing_123"
+    assert "create_only" not in captured
+    assert "im:message.group_msg" in captured["addons"]["scopes"]["tenant"]
 
 
 def test_registration_request_rejects_blank_or_control_characters() -> None:

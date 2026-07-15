@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from collections.abc import Callable, Mapping
 from contextlib import ExitStack
@@ -15,6 +16,7 @@ from typing import Protocol
 from src.slock_engine.activation import slock_activation_guard
 from src.slock_engine.manager import SlockEngineResolutionError
 
+from ..context.models import ContextUnavailableError, ContextUnavailableReason
 from ..data.models import (
     DataKind,
     ExecutionAttemptContext,
@@ -51,6 +53,19 @@ from .projection import (
     reduce_gateway_frame,
 )
 from .slock import EmployeeSlockGateway
+
+logger = logging.getLogger(__name__)
+
+_TRANSIENT_CONTEXT_REASONS = frozenset(
+    {
+        ContextUnavailableReason.PAGINATION,
+        ContextUnavailableReason.ORDERING,
+        ContextUnavailableReason.REVISION,
+        ContextUnavailableReason.DEADLINE,
+        ContextUnavailableReason.MEMORY,
+        ContextUnavailableReason.SOURCE,
+    }
+)
 
 
 class EmployeeDispatchError(RuntimeError):
@@ -170,7 +185,24 @@ class EmployeeDispatchCoordinator:
         grant = self._router.peek_dispatch_candidate()
         if grant is None:
             return None
-        snapshot = self._context.assemble(grant.request)
+        try:
+            snapshot = self._context.assemble(grant.request)
+        except ContextUnavailableError as exc:
+            if exc.reason in _TRANSIENT_CONTEXT_REASONS:
+                record = self._router.defer_dispatch_candidate(
+                    grant.record.acceptance_id,
+                )
+            else:
+                record = self._router.reject_dispatch_candidate(
+                    grant.record.acceptance_id,
+                    reason_code="context_unavailable",
+                )
+            logger.warning(
+                "employee dispatch context unavailable; candidate %s: reason=%s",
+                "terminal" if record.state == "terminal" else "deferred",
+                exc.reason.value,
+            )
+            return None
         self._validate_context_watermark(grant.request, snapshot)
 
         registry = self._registry_factory(self._hire.projection_state)
@@ -227,6 +259,16 @@ class EmployeeDispatchCoordinator:
             credential_env=material.credential_env,
         )
         captured_head = self._presynchronize_domains()
+        if team_instruction and not self._team_assignment_effect_is_active(part):
+            self._router.reject_dispatch_candidate(
+                grant.record.acceptance_id,
+                reason_code="team_step_inactive",
+            )
+            return None
+        # Detect a team stop committed during the lock-free effect scan before
+        # entering any Slock activation boundary; the guarded check below is
+        # repeated to close later races as well.
+        self._require_presynchronized_head(captured_head)
 
         try:
             activation_context = self._slock_manager.employee_activation_guard(
@@ -327,6 +369,32 @@ class EmployeeDispatchCoordinator:
         if self._attempt_lifecycle is not None:
             self._attempt_lifecycle.queued(binding)
         return PreparedEmployeeDispatch(binding, permit, rendered.prompt)
+
+    def _team_assignment_effect_is_active(
+        self,
+        part: Mapping[str, object] | None,
+    ) -> bool:
+        """Read the owning team effect before the Journal-head CAS section."""
+
+        if part is None:
+            return False
+        run_id = part.get("team_run_id")
+        step_id = part.get("team_step_id")
+        if not isinstance(run_id, str) or not run_id:
+            return False
+        if not isinstance(step_id, str) or not step_id:
+            return False
+        aggregate_id = f"{run_id}:{step_id}"
+        state = ""
+        for frame in self._writer.replay():
+            for event in frame.events:
+                if (
+                    event.aggregate_id == aggregate_id
+                    and event.event_type.startswith("team.effect.")
+                    and event.payload.get("effect_type") == "employee_dispatch"
+                ):
+                    state = event.event_type.rsplit(".", 1)[-1]
+        return state in {"prepared", "executing"}
 
     def _presynchronize_domains(self) -> tuple[int, str]:
         """Perform potentially full projection repair before the commit section."""

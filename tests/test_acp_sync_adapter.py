@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,33 @@ import pytest
 
 from src.acp import diagnostics as diag
 from src.acp import sync_adapter as sa
+
+
+def test_expected_prompt_connection_close_does_not_warn(monkeypatch, caplog):
+    session = sa.SyncACPSession.__new__(sa.SyncACPSession)
+    session._agent_type = "coco"
+    session._acp_session = SimpleNamespace(prompt=lambda *_args, **_kwargs: asyncio.sleep(0))
+    session._loop = object()
+    session._log_failures = False
+    session._active_future = None
+    session._start_watchdog = lambda: None
+    session.last_active = 0.0
+    session.message_count = 0
+    session.last_query = ""
+
+    def submit(coro, _loop):
+        coro.close()
+        future = concurrent.futures.Future()
+        future.set_exception(ConnectionError("Connection closed"))
+        return future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", submit)
+    with caplog.at_level("WARNING", logger="src.acp.sync_adapter"):
+        with pytest.raises(ConnectionError, match="Connection closed"):
+            session.send_prompt("classify", timeout=0.1)
+
+    assert not caplog.records
+    assert session._force_dead is True
 
 
 @pytest.mark.asyncio

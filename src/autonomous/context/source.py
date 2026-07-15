@@ -62,6 +62,8 @@ class EmployeeScopedMessageSource(Protocol):
 class EmployeeMessageSourceFactory(Protocol):
     def probe(self, principal: BotPrincipal) -> bool: ...
 
+    def probe_group_history(self, principal: BotPrincipal, chat_id: str) -> bool: ...
+
     def open(
         self,
         *,

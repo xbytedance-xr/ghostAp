@@ -481,9 +481,10 @@ Output:"""
                 cancel_event=cancel_requested,
                 startup_timeout=remaining,
                 startup_retries=1,
+                startup_log_failures=False,
             )
             if session is None:
-                logger.warning("Failed to create NLI classification session")
+                logger.debug("Failed to create NLI classification session")
                 return unknown
             remaining = deadline - time.monotonic()
             if cancel_requested.is_set() or remaining <= 0:
@@ -493,7 +494,7 @@ Output:"""
                 return result.text
             return unknown
         except Exception as exc:
-            logger.warning("LLM classification call failed: %s", str(exc))
+            logger.debug("LLM classification call failed: %s", str(exc))
             return unknown
         finally:
             if session is not None:

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,33 @@ def _worker(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _track_current_thread_pipes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[int]:
+    """Track only pipes opened by the synchronous launcher under test."""
+
+    owner = threading.get_ident()
+    real_pipe = os.pipe
+    opened: list[int] = []
+
+    def tracked_pipe() -> tuple[int, int]:
+        descriptors = real_pipe()
+        if threading.get_ident() == owner:
+            opened.extend(descriptors)
+        return descriptors
+
+    monkeypatch.setattr(os, "pipe", tracked_pipe)
+    return opened
+
+
+def _assert_pipe_descriptors_closed(descriptors: list[int]) -> None:
+    assert descriptors
+    for descriptor in descriptors:
+        with pytest.raises(OSError) as raised:
+            os.fstat(descriptor)
+        assert raised.value.errno == errno.EBADF
 
 
 def _mac_proof_worker(tmp_path: Path, *, denied_errno: int = errno.EACCES) -> Path:
@@ -219,8 +247,11 @@ def test_send_payload_rejects_credential_material_before_ipc(tmp_path: Path) -> 
         supervisor.close()
 
 
-def test_launcher_failure_closes_every_parent_and_child_pipe_fd(tmp_path: Path) -> None:
-    before = len(tuple(Path("/proc/self/fd").iterdir()))
+def test_launcher_failure_closes_every_parent_and_child_pipe_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened = _track_current_thread_pipes(monkeypatch)
 
     def fail_launch(*_args, **_kwargs):
         raise OSError("injected launcher failure")
@@ -234,14 +265,17 @@ def test_launcher_failure_closes_every_parent_and_child_pipe_fd(tmp_path: Path) 
     with pytest.raises(RuntimeError, match="launch failed"):
         supervisor.start("agt_1", "cli_1", "cred_1", 1, lambda _: None)
 
-    assert len(tuple(Path("/proc/self/fd").iterdir())) == before
+    _assert_pipe_descriptors_closed(opened)
     supervisor.close()
 
 
-def test_default_linux_launcher_failure_closes_bwrap_info_pipe(tmp_path: Path) -> None:
+def test_default_linux_launcher_failure_closes_bwrap_info_pipe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     if sys.platform != "linux":
         pytest.skip("Linux bwrap metadata contract")
-    before = len(tuple(Path("/proc/self/fd").iterdir()))
+    opened = _track_current_thread_pipes(monkeypatch)
 
     def fail_launch(*_args, **_kwargs):
         raise OSError("injected launcher failure")
@@ -254,7 +288,7 @@ def test_default_linux_launcher_failure_closes_bwrap_info_pipe(tmp_path: Path) -
     with pytest.raises(RuntimeError, match="launch failed"):
         supervisor.start("agt_1", "cli_1", "cred_1", 1, lambda _: None)
 
-    assert len(tuple(Path("/proc/self/fd").iterdir())) == before
+    _assert_pipe_descriptors_closed(opened)
     supervisor.close()
 
 
@@ -262,7 +296,7 @@ def test_macos_temp_setup_failure_closes_all_launch_fds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    before = len(tuple(Path("/proc/self/fd").iterdir()))
+    opened = _track_current_thread_pipes(monkeypatch)
     resolved = False
 
     def fail_temp(*_args, **_kwargs):
@@ -287,7 +321,7 @@ def test_macos_temp_setup_failure_closes_all_launch_fds(
         supervisor.start("agt_1", "cli_1", "cred_1", 1, lambda _: None)
 
     assert resolved is False
-    assert len(tuple(Path("/proc/self/fd").iterdir())) == before
+    _assert_pipe_descriptors_closed(opened)
     supervisor.close()
 
 

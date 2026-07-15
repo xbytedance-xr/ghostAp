@@ -935,6 +935,24 @@ class TestNLITimeoutProtection:
             assert result.action == SlockCommandAction.UNKNOWN
             assert result.confidence == 0.0
 
+    def test_one_shot_session_suppresses_expected_startup_error_logging(self):
+        router = IntentRouter(timeout=1.0)
+        captured: dict[str, object] = {}
+
+        def create_session(**kwargs):
+            captured.update(kwargs)
+            return None
+
+        with patch("src.agent_session.create_engine_session", side_effect=create_session):
+            result = router._run_llm_session(
+                "classify",
+                time.monotonic() + 1.0,
+                threading.Event(),
+            )
+
+        assert result == '{"action": "unknown", "confidence": 0.0, "params": {}}'
+        assert captured["startup_log_failures"] is False
+
     @pytest.mark.asyncio
     async def test_slow_session_creation_does_not_block_loop_or_send_after_budget(self):
         router = IntentRouter(timeout=0.02)

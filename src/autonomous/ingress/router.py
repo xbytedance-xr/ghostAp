@@ -35,6 +35,7 @@ _ROUTER_EVENTS = frozenset(
         _ROUTER_PREFIX + "authorized",
         _ROUTER_PREFIX + "staging",
         _ROUTER_PREFIX + "queued",
+        _ROUTER_PREFIX + "context_retry",
         _ROUTER_PREFIX + "dispatching",
         _ROUTER_PREFIX + "terminal",
     }
@@ -83,6 +84,8 @@ _TERMINAL_REASONS = frozenset(
         "timeout",
         "action_required",
         "slock_unavailable",
+        "context_unavailable",
+        "team_step_inactive",
         "control_consumed",
     }
 )
@@ -249,6 +252,7 @@ class RouterLifecycleRecord:
     authority: RouterAuthoritySnapshot | None = None
     queue_position: int = 0
     queued_sequence: int = 0
+    context_failures: int = 0
     reason_code: str = ""
 
 
@@ -386,6 +390,20 @@ def _reduce_router_event(
         if set(payload) != {"acceptance_id"} or record.state != "queued":
             raise RouterProjectionError("invalid Router dispatch transition")
         updated = replace(record, state="dispatching")
+    elif event.event_type == _ROUTER_PREFIX + "context_retry":
+        if (
+            set(payload) != {"acceptance_id", "failure_count"}
+            or record.state != "queued"
+        ):
+            raise RouterProjectionError("invalid Router context retry transition")
+        failure_count = payload["failure_count"]
+        if (
+            isinstance(failure_count, bool)
+            or not isinstance(failure_count, int)
+            or failure_count != record.context_failures + 1
+        ):
+            raise RouterProjectionError("invalid Router context retry count")
+        updated = replace(record, context_failures=failure_count)
     elif event.event_type == _ROUTER_PREFIX + "terminal":
         if set(payload) != {"acceptance_id", "reason_code"} or record.state not in {
             "accepted",
@@ -824,7 +842,11 @@ class DurableEmployeeIngressRouter:
     ) -> RouterLifecycleRecord:
         """Durably reject queued work that cannot enter the unique coordinator."""
 
-        if reason_code != "slock_unavailable":
+        if reason_code not in {
+            "slock_unavailable",
+            "context_unavailable",
+            "team_step_inactive",
+        }:
             raise ValueError("invalid dispatch rejection reason")
         with self._mutex, self._writer.transaction_guard():
             self.rebuild_projection()
@@ -836,6 +858,40 @@ class DurableEmployeeIngressRouter:
             if record.state != "queued":
                 raise RouterProjectionError("only queued Router work can be rejected")
             return self._terminal_unlocked(record, reason_code)
+
+    def defer_dispatch_candidate(
+        self,
+        acceptance_id: str,
+        *,
+        max_failures: int = 3,
+    ) -> RouterLifecycleRecord:
+        """Persist one transient Context failure and bound retries durably."""
+
+        if isinstance(max_failures, bool) or not isinstance(max_failures, int):
+            raise TypeError("max_failures must be an integer")
+        if max_failures < 1:
+            raise ValueError("max_failures must be positive")
+        with self._mutex, self._writer.transaction_guard():
+            self.rebuild_projection()
+            record = self._record(acceptance_id)
+            if record.state == "terminal":
+                if record.reason_code != "context_unavailable":
+                    raise RouterProjectionError(
+                        "Router context retry conflicts with terminal"
+                    )
+                return record
+            if record.state != "queued":
+                raise RouterProjectionError(
+                    "only queued Router work can defer Context assembly"
+                )
+            failure_count = record.context_failures + 1
+            if failure_count >= max_failures:
+                return self._terminal_unlocked(record, "context_unavailable")
+            return self._transition_unlocked(
+                record,
+                "context_retry",
+                {"failure_count": failure_count},
+            )
 
     def peek_dispatch_candidate(self) -> RouterDispatchGrant | None:
         """Return one fully revalidated grant without changing Router state."""

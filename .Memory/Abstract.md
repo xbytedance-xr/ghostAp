@@ -2,6 +2,7 @@
 
 > **维护性 Backlog**: 后续 Review/Audit 发现的非紧急维护项按分级规则录入 [Backlog.md](Backlog.md) 并在维护窗口集中处理；本轮 Refactoring Analysis 1–28 的问题矩阵入口是 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵，2026-05-12 是执行验证日志。
 ## 2026-07-15
+- **员工普通群Context与团队派发修复** - root singleton、目标群权限、旧任务CAS、Coco降噪 → [2026-07-15.md](2026-07-15.md)
 - **员工群路由与Coco竞态修复** - 加密真实坐标绑定、严格成员确认与NLI单owner超时 → [2026-07-15.md](2026-07-15.md)
 - **员工激活与退役闭环修复** - `/status`持久激活、已有应用Hire、可恢复Fire/通知及主Bot审计围栏 → [2026-07-15.md](2026-07-15.md)
 - **员工Channel跨平台隔离** - bwrap真实PID验真、macOS Seatbelt凭证前proof与启动依赖自装 → [2026-07-15.md](2026-07-15.md)
