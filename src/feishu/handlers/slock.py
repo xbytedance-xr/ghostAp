@@ -2327,6 +2327,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         existing_app_id: str = "",
     ) -> None:
         from ...autonomous.provisioning.hire_port import EmployeeHireRequest
+        from ...autonomous.provisioning.hire_service import HireAdmissionError
         from ...thread.manager import get_current_tenant_key
         requester_id = self._visible_hire_requester(message_id)
         if requester_id is None:
@@ -2385,6 +2386,30 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         )
         try:
             service.start_hire(request)
+        except HireAdmissionError as exc:
+            reason = str(exc)
+            logger.warning(
+                "visible employee hire admission rejected: %s",
+                reason,
+            )
+            if reason == "hire name conflict":
+                self.reply_text(
+                    message_id,
+                    f"同名员工 `{employee_name}` 已存在或尚未完成退役。请先执行 `/roster`；"
+                    f"若仍显示待处理，请再次执行 `/fire {employee_name}`。确认归档后再重新 `/hire`。",
+                )
+            elif reason == "visible_employee_limit capacity reached":
+                self.reply_text(
+                    message_id,
+                    "可见员工数量已达到上限。请先执行 `/roster`，并用 `/fire <员工名称>` "
+                    "完成不再需要员工的退役后重试。",
+                )
+            else:
+                self.reply_text(
+                    message_id,
+                    "独立飞书智能体创建被准入层安全拒绝。请先执行 `/roster` 查看员工状态；"
+                    "不要连续重复提交 `/hire`。",
+                )
         except Exception as exc:
             logger.error("visible employee hire dispatch failed: %s", type(exc).__name__)
             self.reply_text(message_id, "独立飞书智能体创建启动失败，请查看安全日志后重试。")
@@ -2457,7 +2482,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         """Retire a visible employee through the production Journal-backed service."""
 
         from ...autonomous.provisioning.fire_service import EmployeeFireRequest
-        from ...autonomous.provisioning.fire_state import FirePhase
+        from ...autonomous.provisioning.fire_state import FireEffectState, FirePhase
         from ...thread.manager import (
             get_current_is_p2p,
             get_current_sender_id,
@@ -2504,11 +2529,20 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 "开放平台应用仍需管理员手动停用或删除，GhostAP 未声称已删除该应用。",
             )
         else:
-            self.reply_text(
-                message_id,
-                f"⚠️ 员工已关闭新任务入口，但退役需要人工处理：{state.error_code or 'unknown'}。"
-                "凭证与归档不会被误报为已完成。",
-            )
+            effects = dict(getattr(state, "effects", ()) or ())
+            if effects.get("slash_cleanup") is FireEffectState.ACTION_REQUIRED:
+                employee_name = str(getattr(state, "employee_name", "") or names[0])
+                self.reply_text(
+                    message_id,
+                    "⚠️ 员工已关闭新任务入口，但 Slash 命令清理结果未确认。"
+                    f"请再次执行 `/fire {employee_name}` 安全重试；完成归档前不要重新 `/hire` 同名员工。",
+                )
+            else:
+                self.reply_text(
+                    message_id,
+                    f"⚠️ 员工已关闭新任务入口，但退役需要人工处理：{state.error_code or 'unknown'}。"
+                    "凭证与归档不会被误报为已完成。",
+                )
 
     def _visible_hire_readiness_blockers(self) -> tuple[str, ...]:
         provider = getattr(self.ctx, "employee_hire_readiness", None)

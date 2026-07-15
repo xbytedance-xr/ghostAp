@@ -148,6 +148,39 @@ async def test_list_accepts_server_omitting_optional_description_i18n() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_accepts_live_response_icon_metadata_missing_from_sdk_model() -> None:
+    api = LarkSlashCommandAPI(
+        _RecordingClient(
+            [
+                _response(
+                    {
+                        "code": 0,
+                        "msg": "success",
+                        "data": {
+                            "items": [
+                                {
+                                    "command_id": "cmd_task",
+                                    "command": "task",
+                                    "create_time": "1784090000000",
+                                    "update_time": "1784090000001",
+                                    "description": {"default_value": "Assign a task"},
+                                    "icon": {"icon_key": "task_outlined"},
+                                }
+                            ]
+                        },
+                    }
+                )
+            ]
+        )
+    )
+
+    observed = await api.list_commands()
+
+    assert observed[0].command_id == "cmd_task"
+    assert observed[0].command == "task"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
     [
@@ -192,6 +225,20 @@ async def test_list_accepts_server_omitting_optional_description_i18n() -> None:
                             "i18n": {},
                             "usage_hint": "/task",
                         },
+                    }
+                ]
+            },
+        },
+        {
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "items": [
+                    {
+                        "command_id": "cmd_task",
+                        "command": "task",
+                        "description": {"default_value": "Assign"},
+                        "icon": {"icon_key": "task_outlined", "unknown": "field"},
                     }
                 ]
             },

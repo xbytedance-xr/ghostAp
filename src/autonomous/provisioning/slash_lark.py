@@ -24,6 +24,8 @@ from .slash_commands import (
 _COLLECTION_URI = "/open-apis/application/v7/app_slash_commands"
 _ITEM_URI = f"{_COLLECTION_URI}/:command_id"
 _SAFE_ID = re.compile(r"[A-Za-z0-9_-]{1,256}\Z")
+_RESPONSE_ITEM_FIELDS = frozenset(AppSlashCommand._types) | {"icon"}
+_RESPONSE_ICON_FIELDS = frozenset({"icon_key"})
 
 
 class _AsyncLarkClient(Protocol):
@@ -45,11 +47,12 @@ class LarkSlashCommandAPI:
         commands: list[ObservedSlashCommand] = []
         try:
             for item in data["items"]:
-                if not isinstance(item, dict) or not set(item) <= set(AppSlashCommand._types):
+                if not isinstance(item, dict) or not set(item) <= _RESPONSE_ITEM_FIELDS:
                     raise ValueError
                 command_id = item.get("command_id")
                 command = item.get("command")
                 description = item.get("description")
+                icon = item.get("icon", {})
                 if (
                     not isinstance(command_id, str)
                     or _SAFE_ID.fullmatch(command_id) is None
@@ -57,6 +60,16 @@ class LarkSlashCommandAPI:
                     or not isinstance(description, dict)
                     or not set(description) <= set(AppSlashCommandI18nText._types)
                     or "default_value" not in description
+                    or not isinstance(icon, dict)
+                    or not set(icon) <= _RESPONSE_ICON_FIELDS
+                    or (
+                        "icon_key" in icon
+                        and not isinstance(icon.get("icon_key"), str)
+                    )
+                    or any(
+                        field in item and not isinstance(item[field], str)
+                        for field in ("create_time", "update_time")
+                    )
                 ):
                     raise ValueError
                 default_value = description.get("default_value")

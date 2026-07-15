@@ -530,6 +530,64 @@ class TestCreateRoleDefaults:
         assert "autonomous_visible_employee_limit=0" in message
         assert "QA release evidence" in message
 
+    def test_global_hire_name_conflict_explains_incomplete_retirement(self):
+        from src.autonomous.provisioning.hire_service import HireAdmissionError
+
+        handler = self._make_handler()
+        service = MagicMock()
+        service.start_hire.side_effect = HireAdmissionError("hire name conflict")
+        handler.ctx.employee_hire_service = service
+        handler.ctx.employee_hire_readiness = MagicMock(
+            return_value=SimpleNamespace(ready=True, blockers=())
+        )
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool codex --model gpt-5 --profile standard --effort high",
+                global_hire=True,
+            )
+
+        message = handler.reply_text.call_args.args[1]
+        assert "同名员工" in message
+        assert "/roster" in message
+        assert "/fire Atlas" in message
+
+    def test_global_fire_slash_cleanup_failure_explains_safe_retry(self):
+        from src.autonomous.provisioning.fire_state import (
+            FireEffectState,
+            FirePhase,
+        )
+
+        handler = self._make_handler()
+        service = MagicMock()
+        service.start_fire.return_value = SimpleNamespace(
+            phase=FirePhase.ACTION_REQUIRED,
+            error_code="outcome_unknown",
+            effects=(("slash_cleanup", FireEffectState.ACTION_REQUIRED),),
+            employee_name="Atlas",
+        )
+        handler.ctx.employee_fire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.fire_employee("msg_1", "chat_dm", "Atlas")
+
+        message = handler.reply_text.call_args.args[1]
+        assert "Slash 命令清理结果未确认" in message
+        assert "/fire Atlas" in message
+        assert "不要重新 `/hire` 同名员工" in message
+
     def test_global_hire_cascade_projects_one_runtime_model_selection(self, tmp_path):
         from src.autonomous.journal.anchor import FileAnchor
         from src.autonomous.journal.projections import ProjectionState
