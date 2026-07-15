@@ -194,6 +194,8 @@ def create_engine_session(
     thread_id: Optional[str] = None,
     auto_approve: bool = False,
     require_tool_filter: bool = False,
+    startup_timeout: Optional[float] = None,
+    startup_retries: Optional[int] = None,
 ) -> SyncSession:
     """Create and start a session for Deep/Spec/Slock engines.
 
@@ -208,6 +210,8 @@ def create_engine_session(
         thread_id: Optional isolation key for concurrent sessions (e.g. slock agents).
         auto_approve: If True, suppress interactive confirmation prompts (slock mode).
         require_tool_filter: If True, choose a backend that exposes set_tool_filter.
+        startup_timeout: Optional ACP startup budget override.
+        startup_retries: Optional ACP startup attempt override.
     """
     from ..acp.sync_adapter import start_session_with_retry
     from ..coco_model import get_coco_model_manager
@@ -298,12 +302,21 @@ def create_engine_session(
                 pass
 
         effective_model = _normalize_acp_startup_model(agent_type or "coco", effective_model)
+        startup_kwargs: dict[str, object] = {}
+        if startup_retries is not None:
+            startup_kwargs["retries"] = startup_retries
+        if employee_env is not None:
+            startup_kwargs["env"] = employee_env
         session = start_session_with_retry(
             agent_type=agent_type or "coco",
             cwd=cwd,
-            startup_timeout=settings.acp_startup_timeout,
+            startup_timeout=(
+                settings.acp_startup_timeout
+                if startup_timeout is None
+                else startup_timeout
+            ),
             model_name=effective_model,
-            env=employee_env,
+            **startup_kwargs,
         )
 
     if settings.rate_limit_retry_enabled:

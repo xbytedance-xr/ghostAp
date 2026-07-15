@@ -141,7 +141,7 @@ _DEFAULT_SCOPES = [
     "im:message.group_at_msg",
     "im:message.p2p_msg",
     "im:chat",
-    "im:chat:readonly",
+    "im:chat.members:read",
 ]
 
 _DEFAULT_EVENTS = [

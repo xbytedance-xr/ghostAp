@@ -12,6 +12,9 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -931,6 +934,143 @@ class TestNLITimeoutProtection:
             result = _run(router.classify_intent("复杂的输入内容"))
             assert result.action == SlockCommandAction.UNKNOWN
             assert result.confidence == 0.0
+
+    @pytest.mark.asyncio
+    async def test_slow_session_creation_does_not_block_loop_or_send_after_budget(self):
+        router = IntentRouter(timeout=0.02)
+        events: list[str] = []
+        session = MagicMock()
+
+        def create_session(**_kwargs):
+            events.append("create_start")
+            time.sleep(0.05)
+            events.append("create_done")
+            return session
+
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.005)
+            events.append("heartbeat")
+
+        with (
+            patch("src.agent_session.create_engine_session", side_effect=create_session),
+            patch("src.agent_session.close_session_safely") as close_session,
+        ):
+            heartbeat_task = asyncio.create_task(heartbeat())
+            result = await router._call_llm("classify")
+            await heartbeat_task
+
+        assert result == '{"action": "unknown", "confidence": 0.0, "params": {}}'
+        assert events.index("heartbeat") < events.index("create_done")
+        session.send_prompt.assert_not_called()
+        close_session.assert_called_once_with(session)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_during_creation_leaves_worker_as_session_owner(self):
+        router = IntentRouter(timeout=0.5)
+        create_started = threading.Event()
+        release_create = threading.Event()
+        close_done = threading.Event()
+        session = MagicMock()
+
+        def create_session(**_kwargs):
+            create_started.set()
+            assert release_create.wait(1)
+            return session
+
+        def close_session(value) -> None:
+            assert value is session
+            close_done.set()
+
+        with (
+            patch("src.agent_session.create_engine_session", side_effect=create_session),
+            patch("src.agent_session.close_session_safely", side_effect=close_session),
+        ):
+            task = asyncio.create_task(router._call_llm("classify"))
+            assert await asyncio.to_thread(create_started.wait, 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            release_create.set()
+            assert await asyncio.to_thread(close_done.wait, 1)
+
+        session.send_prompt.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_fast_session_prompt_and_close_share_one_worker(self):
+        router = IntentRouter(timeout=0.5)
+        events: list[tuple[str, int]] = []
+        create_kwargs: dict[str, object] = {}
+        session = MagicMock()
+        session.send_prompt.side_effect = lambda *_args, **_kwargs: (
+            events.append(("prompt", threading.get_ident()))
+            or SimpleNamespace(text='{"action":"status","confidence":0.9,"params":{}}')
+        )
+
+        def create_session(**kwargs):
+            create_kwargs.update(kwargs)
+            events.append(("create", threading.get_ident()))
+            return session
+
+        def close_session(_session) -> None:
+            events.append(("close", threading.get_ident()))
+
+        with (
+            patch("src.agent_session.create_engine_session", side_effect=create_session),
+            patch("src.agent_session.close_session_safely", side_effect=close_session),
+        ):
+            result = await router._call_llm("classify")
+
+        assert '"status"' in result
+        assert [event for event, _thread_id in events] == ["create", "prompt", "close"]
+        assert len({thread_id for _event, thread_id in events}) == 1
+        assert create_kwargs["startup_retries"] == 1
+        assert 0 < create_kwargs["startup_timeout"] <= 0.5
+        assert isinstance(create_kwargs["cancel_event"], threading.Event)
+
+    @pytest.mark.asyncio
+    async def test_prompt_timeout_signals_worker_before_single_owner_close(self):
+        from src.utils.async_helpers import safe_wait_for
+
+        router = IntentRouter(timeout=0.5)
+        cancel_event: threading.Event | None = None
+        prompt_started = threading.Event()
+        close_done = threading.Event()
+        events: list[str] = []
+        session = MagicMock()
+
+        def send_prompt(*_args, **_kwargs):
+            prompt_started.set()
+            assert cancel_event is not None
+            assert cancel_event.wait(1)
+            events.append("prompt_exit")
+            raise RuntimeError("cancelled")
+
+        session.send_prompt.side_effect = send_prompt
+
+        def create_session(**kwargs):
+            nonlocal cancel_event
+            cancel_event = kwargs["cancel_event"]
+            return session
+
+        def close_session(_session) -> None:
+            events.append("close")
+            close_done.set()
+
+        with (
+            patch("src.agent_session.create_engine_session", side_effect=create_session),
+            patch("src.agent_session.close_session_safely", side_effect=close_session),
+        ):
+            with pytest.raises(TimeoutError):
+                await safe_wait_for(
+                    router._call_llm("classify"),
+                    timeout=0.02,
+                    action="NLI test",
+                )
+            assert await asyncio.to_thread(prompt_started.wait, 1)
+            assert await asyncio.to_thread(close_done.wait, 1)
+
+        assert events == ["prompt_exit", "close"]
+        assert cancel_event is not None and cancel_event.is_set()
 
 
 # ===========================================================================

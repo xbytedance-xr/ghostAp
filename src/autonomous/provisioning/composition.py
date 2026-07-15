@@ -121,6 +121,39 @@ def _stable_feishu_uuid(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()[:50]
 
 
+def _bound_remote_coordinates(
+    metadata: EmployeeIngressMetadata,
+    part: Mapping[str, object],
+) -> tuple[str, str, str] | None:
+    """Recover raw Feishu coordinates from the encrypted, hash-bound payload."""
+
+    values: list[str] = []
+    for indexed, field, prefix in (
+        (metadata.chat_id, "remote_chat_id", "oc_"),
+        (metadata.message_id, "remote_message_id", "om_"),
+        (metadata.thread_root_message_id, "remote_root_id", "om_"),
+    ):
+        raw = part.get(field)
+        if raw is None:
+            # Internal team assignments retain raw coordinates in metadata.
+            # SDK ingress always writes all three encrypted raw fields.
+            if indexed.startswith(prefix) and len(indexed) == len(prefix) + 64:
+                return None
+            values.append(indexed)
+            continue
+        if not isinstance(raw, str):
+            return None
+        if not raw:
+            if indexed:
+                return None
+            values.append("")
+            continue
+        if prefix + hashlib.sha256(raw.encode()).hexdigest() != indexed:
+            return None
+        values.append(raw)
+    return (values[0], values[1], values[2])
+
+
 class _ChannelSupervisor(Protocol):
     def start(
         self,
@@ -1454,11 +1487,33 @@ class EmployeeDepartmentRuntime:
                     pass
                 return True
             metadata = record.metadata
+            remote_chat_id = first.get("remote_chat_id")
+            operation = first.get("operation")
+            expected_chat_index = (
+                "oc_" + hashlib.sha256(remote_chat_id.encode()).hexdigest()
+                if isinstance(remote_chat_id, str) and remote_chat_id
+                else ""
+            )
+            if (
+                expected_chat_index != metadata.chat_id
+                or operation not in {"added", "deleted"}
+            ):
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="ignored",
+                        reason_code="membership_unmanaged",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
             try:
                 outcome = self._membership.reconcile_event(
                     tenant_key=metadata.tenant_key,
-                    chat_id=metadata.chat_id,
+                    chat_id=remote_chat_id,
                     agent_id=metadata.agent_id,
+                    app_id=metadata.app_id,
+                    observed_is_member=operation == "added",
                 )
             except MembershipBindingError:
                 try:
@@ -1527,17 +1582,29 @@ class EmployeeDepartmentRuntime:
         if dispatch is None or lifecycle is None:
             return False
         metadata = record.metadata
+        coordinates = _bound_remote_coordinates(metadata, first)
+        if coordinates is None:
+            try:
+                ingress.record_disposition(
+                    acceptance_id,
+                    state="terminal",
+                    reason_code="stop_coordinates_invalid",
+                )
+            except IngressConflictError:
+                pass
+            return True
+        remote_chat_id, _remote_message_id, remote_root_id = coordinates
         outcome = dispatch.request_cancel(
             agent_id=metadata.agent_id,
-            chat_id=metadata.chat_id,
+            chat_id=remote_chat_id,
             requester_principal_id=metadata.sender_principal_id,
             command_acceptance_id=acceptance_id,
         )
         lifecycle.command_response(
             tenant_key=metadata.tenant_key,
             agent_id=metadata.agent_id,
-            chat_id=metadata.chat_id,
-            thread_root_message_id=metadata.thread_root_message_id,
+            chat_id=remote_chat_id,
+            thread_root_message_id=remote_root_id or _remote_message_id,
             command_acceptance_id=acceptance_id,
             status=outcome.status,
         )
@@ -1596,6 +1663,18 @@ class EmployeeDepartmentRuntime:
                 first.get("sender_union_id") if isinstance(first, Mapping) else None
             )
             metadata = record.metadata
+            coordinates = _bound_remote_coordinates(metadata, first)
+            if coordinates is None:
+                try:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_denied",
+                    )
+                except IngressConflictError:
+                    pass
+                return True
+            _remote_chat_id, remote_message_id, _remote_root_id = coordinates
             received_at = datetime.fromisoformat(
                 metadata.received_at.replace("Z", "+00:00")
             ).timestamp()
@@ -1805,7 +1884,7 @@ class EmployeeDepartmentRuntime:
                 challenge=challenge,
                 generation=metadata.channel_generation,
                 event_id=metadata.event_id,
-                message_id=metadata.message_id,
+                message_id=remote_message_id,
                 sender_id=sender_id,
                 sender_union_id=sender_union_id,
                 command=command.strip(),
@@ -2264,14 +2343,30 @@ class EmployeeDepartmentRuntime:
             return False
         metadata = record.metadata
         first = payload.normalized_parts[0]
+        coordinates = (
+            _bound_remote_coordinates(metadata, first)
+            if isinstance(first, Mapping)
+            else None
+        )
+        if coordinates is None:
+            try:
+                ingress.record_disposition(
+                    acceptance_id,
+                    state="terminal",
+                    reason_code=f"{command.removeprefix('/')}_coordinates_invalid",
+                )
+            except IngressConflictError:
+                pass
+            return True
+        remote_chat_id, remote_message_id, remote_root_id = coordinates
         chat_type = first.get("chat_type", "") if isinstance(first, Mapping) else ""
         request = AuthenticatedDataRequest(
             principal_id=metadata.sender_principal_id,
             tenant_key=metadata.tenant_key,
             receiving_bot_app_id=metadata.app_id,
-            chat_id=metadata.chat_id,
+            chat_id=remote_chat_id,
             chat_type=chat_type,
-            thread_root_id=metadata.thread_root_message_id,
+            thread_root_id=remote_root_id or remote_message_id,
             requested_agent_id=metadata.agent_id,
         )
         succeeded = False
@@ -2317,8 +2412,8 @@ class EmployeeDepartmentRuntime:
         lifecycle.read_response(
             tenant_key=metadata.tenant_key,
             agent_id=metadata.agent_id,
-            chat_id=metadata.chat_id,
-            thread_root_message_id=metadata.thread_root_message_id,
+            chat_id=remote_chat_id,
+            thread_root_message_id=remote_root_id or remote_message_id,
             command_acceptance_id=acceptance_id,
             command=command,
             summary=summary,

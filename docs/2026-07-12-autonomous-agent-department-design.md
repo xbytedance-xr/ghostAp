@@ -211,7 +211,7 @@ Hire 链接过期、用户取消或 activity 无终态分别提交 `hire.expired
 
 Provisioning 使用版本化、带 hash 的最小权限 manifest，并设置 `addons.preset=False`，避免官方宽泛默认 preset 自动加入文档/通讯录等无关权限。初始 desired manifest：
 
-- tenant scopes：`application:application:self_manage`、`application:bot.basic_info:read`、`application:app_slash_command:read`、`application:app_slash_command:write`、`cardkit:card:read`、`cardkit:card:write`、`im:chat.members:bot_access`、`im:chat:read`、`im:message.group_at_msg:readonly`、`im:message.group_at_msg.include_bot:readonly`、`im:message.p2p_msg:readonly`、`im:message:readonly`、`im:message:send_as_bot`、`im:message:update`、`im:resource`；
+- tenant scopes：`application:application:self_manage`、`application:bot.basic_info:read`、`application:app_slash_command:read`、`application:app_slash_command:write`、`cardkit:card:read`、`cardkit:card:write`、`im:chat.members:bot_access`、`im:chat.members:read`、`im:message.group_at_msg:readonly`、`im:message.group_at_msg.include_bot:readonly`、`im:message.p2p_msg:readonly`、`im:message:readonly`、`im:message:send_as_bot`、`im:message:update`、`im:resource`；
 - tenant events：`im.message.receive_v1`、`im.chat.member.bot.added_v1`、`im.chat.member.bot.deleted_v1`；
 - callbacks：`card.action.trigger`；
 - capability：Bot enabled、WebSocket event mode、Slash desired spec version。

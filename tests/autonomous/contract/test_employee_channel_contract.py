@@ -102,9 +102,11 @@ def test_bot_membership_events_normalize_as_durable_ingress(kind, operation) -> 
     )
 
     assert metadata.chat_id.startswith("oc_")
+    assert metadata.chat_id != "oc_team"
     assert metadata.sender_principal_id == "ou_operator"
     assert payload.normalized_parts[0]["type"] == "membership_event"
     assert payload.normalized_parts[0]["operation"] == operation
+    assert payload.normalized_parts[0]["remote_chat_id"] == "oc_team"
     assert correlation is None
 
 
@@ -726,6 +728,9 @@ def test_card_action_never_self_attests_user_value_as_trusted_correlation() -> N
             "sender_id_type": "open_id",
             "sender_type": "",
             "sender_tenant_key": "",
+            "remote_chat_id": "oc_external",
+            "remote_message_id": "om_external",
+            "remote_root_id": "",
         },
     )
 

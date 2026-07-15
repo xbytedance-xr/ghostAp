@@ -928,6 +928,100 @@ def test_worker_normalizer_encrypts_sender_and_optional_thread_provenance() -> N
     assert part["sender_type"] == "user"
     assert part["sender_tenant_key"] == "tenant_1"
     assert part["feishu_thread_id"] == ""
+    assert part["remote_chat_id"] == "oc_team"
+    assert part["remote_message_id"] == "om_current"
+    assert part["remote_root_id"] == ""
+    assert metadata.chat_id != part["remote_chat_id"]
+    assert metadata.message_id != part["remote_message_id"]
+
+
+def test_worker_dual_coordinates_route_with_raw_feishu_context(tmp_path: Path) -> None:
+    from src.autonomous.provisioning.channel_worker import _normalize_sdk_ingress
+
+    event = SimpleNamespace(
+        header=SimpleNamespace(
+            event_id="event-dual",
+            event_type="im.message.receive_v1",
+            create_time="1783900800000",
+            tenant_key="tenant_1",
+            app_id="cli_alpha",
+        ),
+        event=SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(
+                    open_id="ou_requester",
+                    union_id="on_requester",
+                ),
+                sender_type="user",
+                tenant_key="tenant_1",
+            ),
+            message=SimpleNamespace(
+                message_id="om_current",
+                root_id="om_root",
+                parent_id="",
+                thread_id="omt_1",
+                chat_id="oc_team",
+                chat_type="group",
+                message_type="text",
+                content='{"text":"inspect this change"}',
+            ),
+        ),
+    )
+    metadata, payload, _ = _normalize_sdk_ingress(
+        event,
+        kind="message",
+        agent_id="agt_alpha",
+        app_id="cli_alpha",
+        generation=3,
+        connection_id="conn_3",
+        tenant_key="tenant_1",
+        bot_principal_id="bot_alpha",
+    )
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    ack = ingress.accept(metadata, payload, request_id="req_dual")
+
+    queued = router.route(ack.acceptance.acceptance_id)
+    grant = router.dequeue()
+
+    assert queued.state == "queued"
+    assert queued.team_id == "oc_team"
+    assert grant is not None
+    assert grant.request.chat_id == "oc_team"
+    assert grant.request.current_message_id == "om_current"
+    assert grant.request.thread_root_message_id == "om_root"
+    ingress.close()
+    writer.close()
+
+
+def test_worker_tampered_raw_coordinate_is_denied(tmp_path: Path) -> None:
+    payload = _payload()
+    part = dict(payload.normalized_parts[0])
+    part.update(
+        remote_chat_id="oc_other",
+        remote_message_id="om_current",
+        remote_root_id="om_root",
+    )
+    tampered = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        normalized_parts=(part,),
+        attachment_descriptors=(),
+    )
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    metadata = _metadata(
+        tampered,
+        chat_id="oc_" + hashlib.sha256(b"oc_team").hexdigest(),
+        message_id="om_" + hashlib.sha256(b"om_current").hexdigest(),
+        thread_root_message_id="om_" + hashlib.sha256(b"om_root").hexdigest(),
+    )
+    ack = ingress.accept(metadata, tampered, request_id="req_tampered")
+
+    record = router.route(ack.acceptance.acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "sender_invalid"
+    ingress.close()
+    writer.close()
 
 
 def test_non_message_event_type_cannot_grant_message_authority(tmp_path: Path) -> None:

@@ -716,6 +716,11 @@ def _normalize_sdk_ingress(
                 "sender_type": getattr(sender, "sender_type", ""),
                 "sender_tenant_key": getattr(sender, "tenant_key", ""),
                 "feishu_thread_id": getattr(message, "thread_id", "") or "",
+                # Remote coordinates stay inside the encrypted blob.  Public
+                # ingress metadata contains only their one-way indexes.
+                "remote_chat_id": chat_id,
+                "remote_message_id": message_id,
+                "remote_root_id": root_id,
             },
         )
         action_identity = ""
@@ -734,6 +739,9 @@ def _normalize_sdk_ingress(
                 "sender_id_type": "open_id",
                 "sender_type": getattr(operator, "sender_type", "") or "",
                 "sender_tenant_key": getattr(operator, "tenant_key", "") or "",
+                "remote_chat_id": chat_id,
+                "remote_message_id": message_id,
+                "remote_root_id": root_id,
             },
         )
     elif kind in {"membership_added", "membership_deleted"}:
@@ -748,6 +756,10 @@ def _normalize_sdk_ingress(
                 "operation": (
                     "added" if kind == "membership_added" else "deleted"
                 ),
+                # The public metadata keeps only a one-way index.  The raw
+                # Feishu chat identifier is required for the official API and
+                # therefore travels only inside the encrypted ingress blob.
+                "remote_chat_id": chat_id,
                 "operator_tenant_key": getattr(body, "operator_tenant_key", ""),
                 "external": getattr(body, "external", False),
             },

@@ -92,7 +92,7 @@ _TENANT_SCOPES = (
     "drive:drive.metadata:readonly",
     "im:chat.members:bot_access",
     "im:chat:create",
-    "im:chat:read",
+    "im:chat.members:read",
     "im:chat:update",
     "im:message.group_at_msg:readonly",
     "im:message.group_at_msg.include_bot:readonly",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -155,6 +156,7 @@ def test_runtime_consumes_exact_stop_before_router_admission() -> None:
         metadata=SimpleNamespace(
             agent_id="agt_alpha",
             chat_id="oc_team",
+            message_id="om_current",
             sender_principal_id="ou_requester",
             tenant_key="tenant_1",
             thread_root_message_id="om_root",
@@ -205,6 +207,90 @@ def test_runtime_does_not_consume_non_control_text() -> None:
     runtime._dispatch.request_cancel.assert_not_called()
 
 
+def test_runtime_reconciles_membership_event_with_hash_bound_remote_chat() -> None:
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    acceptance_id = "acc_membership"
+    remote_chat_id = "oc_team"
+    metadata = SimpleNamespace(
+        tenant_key="tenant_1",
+        agent_id="agt_alpha",
+        app_id="cli_alpha",
+        chat_id="oc_" + hashlib.sha256(remote_chat_id.encode()).hexdigest(),
+    )
+    record = SimpleNamespace(disposition=None, metadata=metadata)
+    ingress = MagicMock()
+    ingress.state = SimpleNamespace(by_acceptance_id={acceptance_id: record})
+    ingress.get_payload.return_value = SimpleNamespace(
+        normalized_parts=(
+            {
+                "type": "membership_event",
+                "operation": "added",
+                "remote_chat_id": remote_chat_id,
+            },
+        ),
+    )
+    membership = MagicMock()
+    membership.reconcile_event.return_value = SimpleNamespace(state=SimpleNamespace(value="active"))
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = ingress
+    runtime._membership = membership
+
+    assert runtime._handle_control_ingress(acceptance_id) is True
+
+    membership.reconcile_event.assert_called_once_with(
+        tenant_key="tenant_1",
+        chat_id=remote_chat_id,
+        agent_id="agt_alpha",
+        app_id="cli_alpha",
+        observed_is_member=True,
+    )
+    ingress.record_disposition.assert_called_once_with(
+        acceptance_id,
+        state="terminal",
+        reason_code="membership_active",
+    )
+
+
+def test_runtime_rejects_membership_event_with_unbound_remote_chat() -> None:
+    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
+
+    acceptance_id = "acc_membership_tampered"
+    metadata = SimpleNamespace(
+        tenant_key="tenant_1",
+        agent_id="agt_alpha",
+        app_id="cli_alpha",
+        chat_id="oc_" + hashlib.sha256(b"oc_expected").hexdigest(),
+    )
+    ingress = MagicMock()
+    ingress.state = SimpleNamespace(
+        by_acceptance_id={
+            acceptance_id: SimpleNamespace(disposition=None, metadata=metadata)
+        }
+    )
+    ingress.get_payload.return_value = SimpleNamespace(
+        normalized_parts=(
+            {
+                "type": "membership_event",
+                "operation": "added",
+                "remote_chat_id": "oc_tampered",
+            },
+        ),
+    )
+    runtime = EmployeeDepartmentRuntime()
+    runtime._ingress = ingress
+    runtime._membership = MagicMock()
+
+    assert runtime._handle_control_ingress(acceptance_id) is True
+
+    runtime._membership.reconcile_event.assert_not_called()
+    ingress.record_disposition.assert_called_once_with(
+        acceptance_id,
+        state="ignored",
+        reason_code="membership_unmanaged",
+    )
+
+
 def test_runtime_consumes_history_through_authoritative_read_and_outbox() -> None:
     from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
 
@@ -213,6 +299,7 @@ def test_runtime_consumes_history_through_authoritative_read_and_outbox() -> Non
         agent_id="agt_alpha",
         app_id="employee_app",
         chat_id="oc_team",
+        message_id="om_current",
         sender_principal_id="ou_member",
         tenant_key="tenant_1",
         thread_root_message_id="om_root",
@@ -264,6 +351,7 @@ def test_runtime_memory_ignores_payload_authority_and_uses_ingress_metadata() ->
         agent_id="agt_alpha",
         app_id="employee_app",
         chat_id="oc_team",
+        message_id="om_current",
         sender_principal_id="ou_member",
         tenant_key="tenant_1",
         thread_root_message_id="om_root",
@@ -301,40 +389,3 @@ def test_runtime_memory_ignores_payload_authority_and_uses_ingress_metadata() ->
     assert request.tenant_key == "tenant_1"
     assert request.requested_agent_id == "agt_alpha"
     assert memory.query.call_args.args[1].full_l1 is False
-
-
-def test_runtime_consumes_durable_membership_event_for_reconciliation() -> None:
-    from src.autonomous.provisioning.composition import EmployeeDepartmentRuntime
-
-    acceptance_id = "acc_membership"
-    record = SimpleNamespace(
-        disposition=None,
-        metadata=SimpleNamespace(
-            agent_id="agt_alpha",
-            chat_id="oc_team",
-            tenant_key="tenant_1",
-        ),
-    )
-    ingress = MagicMock()
-    ingress.state = SimpleNamespace(by_acceptance_id={acceptance_id: record})
-    ingress.get_payload.return_value = SimpleNamespace(
-        normalized_parts=({"type": "membership_event", "operation": "added"},),
-    )
-    membership = MagicMock()
-    membership.reconcile_event.return_value = SimpleNamespace(state=SimpleNamespace(value="active"))
-    runtime = EmployeeDepartmentRuntime()
-    runtime._ingress = ingress
-    runtime._membership = membership
-
-    assert runtime._handle_control_ingress(acceptance_id) is True
-
-    membership.reconcile_event.assert_called_once_with(
-        tenant_key="tenant_1",
-        chat_id="oc_team",
-        agent_id="agt_alpha",
-    )
-    ingress.record_disposition.assert_called_once_with(
-        acceptance_id,
-        state="terminal",
-        reason_code="membership_active",
-    )

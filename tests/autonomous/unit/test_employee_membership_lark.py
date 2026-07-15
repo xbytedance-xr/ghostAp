@@ -56,11 +56,16 @@ def test_mutation_uses_app_id_and_one_bot(
     operation: MembershipOperation,
     method: str,
 ) -> None:
-    members = _ChatMembers(_response(data=SimpleNamespace(invalid_id_list=[])))
+    data = SimpleNamespace(invalid_id_list=[])
+    if operation is MembershipOperation.ADD:
+        data.not_existed_id_list = []
+        data.pending_approval_id_list = []
+    members = _ChatMembers(_response(data=data))
     api = LarkMembershipAPI(_client(members), employee_client_provider=lambda *_: None)
 
-    api.mutate(operation, chat_id="oc_team", app_id="cli_employee")
+    confirmed = api.mutate(operation, chat_id="oc_team", app_id="cli_employee")
 
+    assert confirmed is True
     called_method, request = members.calls[0]
     assert called_method == method
     assert request.chat_id == "oc_team"
@@ -72,7 +77,13 @@ def test_mutation_uses_app_id_and_one_bot(
 
 def test_success_with_invalid_bot_is_rejected() -> None:
     members = _ChatMembers(
-        _response(data=SimpleNamespace(invalid_id_list=["cli_employee"]))
+        _response(
+            data=SimpleNamespace(
+                invalid_id_list=["cli_employee"],
+                not_existed_id_list=[],
+                pending_approval_id_list=[],
+            )
+        )
     )
     api = LarkMembershipAPI(_client(members), employee_client_provider=lambda *_: None)
 
@@ -88,6 +99,24 @@ def test_transport_exception_is_unknown_not_rejected() -> None:
 
     with pytest.raises(MembershipRemoteUnknown, match="membership_mutation_unknown"):
         api.mutate(MembershipOperation.REMOVE, chat_id="oc_team", app_id="cli_employee")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        None,
+        SimpleNamespace(invalid_id_list=""),
+        SimpleNamespace(invalid_id_list=[], not_existed_id_list=[]),
+    ],
+)
+def test_mutation_requires_complete_typed_success_evidence(data: object) -> None:
+    api = LarkMembershipAPI(
+        _client(_ChatMembers(_response(data=data))),
+        employee_client_provider=lambda *_: None,
+    )
+
+    with pytest.raises(MembershipRemoteUnknown, match="membership_mutation_unknown"):
+        api.mutate(MembershipOperation.ADD, chat_id="oc_team", app_id="cli_employee")
 
 
 def test_reconciliation_uses_target_employee_client() -> None:
@@ -132,3 +161,24 @@ def test_reconciliation_rejects_non_boolean_evidence(value: object) -> None:
             app_id="cli_employee",
             credential_ref="cred_1",
         )
+
+
+def test_reconciliation_classifies_permission_denial_without_remote_message() -> None:
+    response = _response(success=False, code=99991672)
+    api = LarkMembershipAPI(
+        _client(_ChatMembers()),
+        employee_client_provider=lambda *_: _client(_ChatMembers(response)),
+    )
+
+    with pytest.raises(
+        MembershipRemoteUnknown,
+        match="membership_observation_permission_denied",
+    ) as exc_info:
+        api.is_member(
+            chat_id="oc_team",
+            agent_id="agt_1",
+            app_id="cli_employee",
+            credential_ref="cred_1",
+        )
+
+    assert "safe remote message" not in str(exc_info.value)

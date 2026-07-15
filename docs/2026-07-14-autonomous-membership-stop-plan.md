@@ -25,6 +25,9 @@ employees never fall back to legacy membership writes.
 - The normal member-list API cannot verify Bot membership because it filters
   bots. Reconciliation therefore uses the target employee credential with
   `GET /open-apis/im/v1/chats/:chat_id/members/is_in_chat`.
+- Employee applications request the least-privilege `im:chat.members:read`
+  tenant scope for that observation. Existing applications may temporarily
+  lack it until an administrator publishes the updated manifest.
 - Main Bot permission or presence failures are explicit failures and never
   become local membership success.
 
@@ -49,9 +52,12 @@ PREPARED -> EXECUTING -> COMMITTED
 ```
 
 `COMMITTED` and `employee.membership_changed` are anchored in the same Journal
-frame. `ACTION_REQUIRED` marks the membership `DEGRADED`; Router health denies
-new work until reconciliation proves the remote state. A successful remove
-closes ingress/outbox authority immediately through the projected member list.
+frame. Confirmation means either a complete typed mutation response with no
+invalid, missing, or pending member IDs, or a live employee `is_in_chat`
+observation. Unknown or partial mutation responses never count as success.
+`ACTION_REQUIRED` marks the membership `DEGRADED`; Router health denies new
+work until reconciliation proves the remote state. A successful remove closes
+ingress/outbox authority immediately through the projected member list.
 
 The service owns a per-chat lock. It validates tenant, ACTIVE visible employee,
 principal/App ID binding, requester admin/team-owner authority, and activated
@@ -113,6 +119,8 @@ fallback is added.
   confirmed desired state commits, otherwise remains degraded. A recovered
   `PREPARED` effect never replays or claims an external call and moves directly
   to `ACTION_REQUIRED`.
+- Added/deleted events are app- and chat-hash-bound but remain unordered hints:
+  they trigger live observation and cannot directly rewrite a degraded state.
 - A replayed cancel request without terminal state is finalized as canceled
   without rerunning ACP.
 - Existing crash semantics remain: a dispatch-committed attempt without cancel

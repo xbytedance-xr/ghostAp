@@ -413,6 +413,42 @@ def test_start_session_with_retry_ttadk_startup_error_empty_message_has_fail_rea
     assert "error_text=" in logs
 
 
+def test_start_session_with_retry_honors_single_attempt_override(monkeypatch):
+    class _Cfg:
+        acp_startup_retries = 4
+
+    attempts: list[float] = []
+
+    class _FakeSession:
+        def __init__(self, agent_type: str, cwd: str, ttadk_use_pty=None):
+            self._agent_cmd = agent_type
+            self._agent_args = []
+
+        def start(self, startup_timeout: float = 60, **_kwargs):
+            attempts.append(startup_timeout)
+            raise RuntimeError("startup failed")
+
+        def describe_agent(self):
+            return "fake"
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(sa, "get_settings", lambda: _Cfg())
+
+    with pytest.raises(sa.ACPStartupError):
+        sa.start_session_with_retry(
+            agent_type="coco",
+            cwd="/tmp",
+            startup_timeout=0.25,
+            session_cls=_FakeSession,
+            log_failures=False,
+            retries=1,
+        )
+
+    assert attempts == [0.25]
+
+
 def test_start_agent_session_with_diagnostics_attaches_non_empty_error_text(monkeypatch):
     """冻结：通用启动器失败时，异常上必须携带 diagnostics 且 error_text 非空。"""
 

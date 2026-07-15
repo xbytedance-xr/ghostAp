@@ -8,6 +8,7 @@ can only make this Router reject an acceptance, never grant authority.
 from __future__ import annotations
 
 import copy
+import hashlib
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -38,6 +39,28 @@ _ROUTER_EVENTS = frozenset(
         _ROUTER_PREFIX + "terminal",
     }
 )
+
+
+def _remote_index(value: str, prefix: str) -> str:
+    return prefix + hashlib.sha256(value.encode()).hexdigest()
+
+
+def _bound_remote_coordinate(
+    indexed_value: str,
+    raw_value: object,
+    prefix: str,
+) -> str | None:
+    """Return a raw encrypted coordinate only when it matches its public index."""
+
+    if raw_value is None:
+        # Synthetic/internal ingress predating dual-coordinate payloads keeps
+        # raw coordinates in metadata. Real SDK ingress always supplies raw.
+        return indexed_value
+    if not isinstance(raw_value, str):
+        return None
+    if not raw_value:
+        return "" if not indexed_value else None
+    return raw_value if _remote_index(raw_value, prefix) == indexed_value else None
 _TERMINAL_REASONS = frozenset(
     {
         "authority_denied",
@@ -317,7 +340,6 @@ def _reduce_router_event(
             record.app_id,
             record.channel_generation,
             record.connection_id,
-            record.team_id,
             record.requester_principal_id,
         )
         authority_coordinates = (
@@ -327,12 +349,19 @@ def _reduce_router_event(
             authority.app_id,
             authority.channel_generation,
             authority.connection_id,
-            authority.team_id,
             authority.requester_principal_id,
         )
-        if authority_coordinates != accepted_coordinates:
+        team_matches = record.team_id == authority.team_id or (
+            record.team_id == _remote_index(authority.team_id, "oc_")
+        )
+        if authority_coordinates != accepted_coordinates or not team_matches:
             raise RouterProjectionError("Router authority acceptance mismatch")
-        updated = replace(record, state="authorized", authority=authority)
+        updated = replace(
+            record,
+            state="authorized",
+            team_id=authority.team_id,
+            authority=authority,
+        )
     elif event.event_type == _ROUTER_PREFIX + "staging":
         if set(payload) != {"acceptance_id"} or record.state != "authorized":
             raise RouterProjectionError("invalid Router staging transition")
@@ -1197,6 +1226,13 @@ class DurableEmployeeIngressRouter:
         part, reason = self._message_provenance(metadata, payload)
         if part is None:
             return None, reason
+        remote_chat_id = _bound_remote_coordinate(
+            metadata.chat_id,
+            part.get("remote_chat_id"),
+            "oc_",
+        )
+        if not remote_chat_id:
+            return None, "sender_invalid"
         try:
             registry = self._registry_provider()
             if type(registry) is not ProjectedAgentRegistry:
@@ -1206,7 +1242,7 @@ class DurableEmployeeIngressRouter:
                 agent_id=metadata.agent_id,
                 bot_principal_id=metadata.bot_principal_id,
                 app_id=metadata.app_id,
-                chat_id=metadata.chat_id,
+                chat_id=remote_chat_id,
             )
             if type(binding) is not ProjectedContextBinding:
                 return None, "authority_denied"
@@ -1218,7 +1254,7 @@ class DurableEmployeeIngressRouter:
                 or employee.tenant_key != metadata.tenant_key
                 or employee.agent_id != metadata.agent_id
                 or employee.bot_principal_id != metadata.bot_principal_id
-                or metadata.chat_id not in employee.member_groups
+                or remote_chat_id not in employee.member_groups
                 or principal.bot_principal_id != metadata.bot_principal_id
                 or principal.tenant_key != metadata.tenant_key
                 or principal.agent_id != metadata.agent_id
@@ -1277,7 +1313,7 @@ class DurableEmployeeIngressRouter:
             try:
                 membership_degraded = self._membership_health.is_degraded(
                     metadata.agent_id,
-                    metadata.chat_id,
+                    remote_chat_id,
                 )
             except Exception:
                 return None, "membership_degraded"
@@ -1290,7 +1326,7 @@ class DurableEmployeeIngressRouter:
                 app_id=principal.app_id,
                 channel_generation=metadata.channel_generation,
                 connection_id=metadata.connection_id,
-                team_id=metadata.chat_id,
+                team_id=remote_chat_id,
                 requester_principal_id=metadata.sender_principal_id,
                 projection_sequence=binding.projection_sequence,
                 projection_hash=(
@@ -1382,6 +1418,31 @@ class DurableEmployeeIngressRouter:
             or part.get("sender_tenant_key") != metadata.tenant_key
         ):
             return None, "sender_invalid"
+        remote_fields = (
+            "remote_chat_id",
+            "remote_message_id",
+            "remote_root_id",
+        )
+        if any(field in part for field in remote_fields):
+            if not all(field in part for field in remote_fields):
+                return None, "sender_invalid"
+            bound_chat = _bound_remote_coordinate(
+                metadata.chat_id,
+                part.get("remote_chat_id"),
+                "oc_",
+            )
+            bound_message = _bound_remote_coordinate(
+                metadata.message_id,
+                part.get("remote_message_id"),
+                "om_",
+            )
+            bound_root = _bound_remote_coordinate(
+                metadata.thread_root_message_id,
+                part.get("remote_root_id"),
+                "om_",
+            )
+            if bound_chat is None or bound_message is None or bound_root is None:
+                return None, "sender_invalid"
         return part, ""
 
     def _context_request(
@@ -1403,6 +1464,18 @@ class DurableEmployeeIngressRouter:
         thread_id = part.get("feishu_thread_id", "")
         if not isinstance(thread_id, str):
             raise ValueError("invalid Feishu thread identity")
+        remote_message_id = _bound_remote_coordinate(
+            metadata.message_id,
+            part.get("remote_message_id"),
+            "om_",
+        )
+        remote_root_id = _bound_remote_coordinate(
+            metadata.thread_root_message_id,
+            part.get("remote_root_id"),
+            "om_",
+        )
+        if not remote_message_id or remote_root_id is None:
+            raise ValueError("invalid remote message coordinates")
         return AuthorizedContextRequest(
             tenant_key=authority.tenant_key,
             agent_id=authority.agent_id,
@@ -1410,9 +1483,9 @@ class DurableEmployeeIngressRouter:
             app_id=authority.app_id,
             channel_generation=authority.channel_generation,
             chat_id=authority.team_id,
-            thread_root_message_id=metadata.thread_root_message_id or metadata.message_id,
+            thread_root_message_id=remote_root_id or remote_message_id,
             feishu_thread_id=thread_id,
-            current_message_id=metadata.message_id,
+            current_message_id=remote_message_id,
             requester_principal_id=authority.requester_principal_id,
             system_prompt_token_reserve=authority.system_prompt_token_reserve,
             constraints_digest=authority.constraints_digest,
@@ -1558,10 +1631,18 @@ class DurableEmployeeIngressRouter:
         authority = resolution.snapshot
         if self._completed_attachment_stage(acceptance_id) is not None:
             return
+        part = payload.normalized_parts[0]
+        remote_message_id = _bound_remote_coordinate(
+            metadata.message_id,
+            part.get("remote_message_id"),
+            "om_",
+        )
+        if not remote_message_id:
+            raise AttachmentStateError("invalid remote attachment message coordinate")
         descriptors = tuple(
             EmployeeAttachmentDescriptor(
                 schema_version=1,
-                message_id=metadata.message_id,
+                message_id=remote_message_id,
                 resource_type=str(item["resource_type"]),
                 resource_id=str(item["resource_id"]),
                 declared_mime_type=str(item["mime_type"]),

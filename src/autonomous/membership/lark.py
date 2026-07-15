@@ -43,7 +43,7 @@ class LarkMembershipAPI:
         *,
         chat_id: str,
         app_id: str,
-    ) -> None:
+    ) -> bool:
         try:
             operation_value = MembershipOperation(operation)
         except (TypeError, ValueError):
@@ -53,7 +53,8 @@ class LarkMembershipAPI:
                 response = self._create(chat_id, app_id)
             else:
                 response = self._delete(chat_id, app_id)
-            self._require_mutation_success(response)
+            self._require_mutation_success(response, operation_value)
+            return True
         except MembershipRemoteError:
             raise
         except Exception:
@@ -78,6 +79,10 @@ class LarkMembershipAPI:
             request = IsInChatChatMembersRequest.builder().chat_id(chat_id).build()
             response = client.im.v1.chat_members.is_in_chat(request)
             if not response.success():
+                if getattr(response, "code", None) == 99991672:
+                    raise MembershipRemoteUnknown(
+                        "membership_observation_permission_denied"
+                    )
                 raise MembershipRemoteUnknown("membership_observation_unknown")
             value = getattr(getattr(response, "data", None), "is_in_chat", None)
             if type(value) is not bool:
@@ -122,7 +127,10 @@ class LarkMembershipAPI:
         return self._manager.im.v1.chat_members.delete(request)
 
     @staticmethod
-    def _require_mutation_success(response: Any) -> None:
+    def _require_mutation_success(
+        response: Any,
+        operation: MembershipOperation,
+    ) -> None:
         if response is None or not callable(getattr(response, "success", None)):
             raise MembershipRemoteUnknown("membership_mutation_unknown")
         if response.success() is not True:
@@ -131,12 +139,21 @@ class LarkMembershipAPI:
                 raise MembershipRemoteRejected(f"remote_rejected_{code}")
             raise MembershipRemoteRejected("remote_rejected")
         data = getattr(response, "data", None)
-        for field in (
-            "invalid_id_list",
-            "not_existed_id_list",
-            "pending_approval_id_list",
-        ):
+        fields = (
+            (
+                "invalid_id_list",
+                "not_existed_id_list",
+                "pending_approval_id_list",
+            )
+            if operation is MembershipOperation.ADD
+            else ("invalid_id_list",)
+        )
+        if data is None or any(not hasattr(data, field) for field in fields):
+            raise MembershipRemoteUnknown("membership_mutation_unknown")
+        for field in fields:
             values = getattr(data, field, None)
+            if values is not None and not isinstance(values, list):
+                raise MembershipRemoteUnknown("membership_mutation_unknown")
             if values:
                 raise MembershipRemoteRejected("invalid_member")
 

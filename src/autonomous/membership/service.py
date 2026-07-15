@@ -211,12 +211,15 @@ class EmployeeMembershipService:
             effect = self._prepare(request, authority)
             self._mark_executing(effect.effect_id)
             mutation_error = ""
+            mutation_confirmed = False
             try:
-                self._remote.mutate(
+                mutation_confirmed = self._remote.mutate(
                     request.operation,
                     chat_id=request.chat_id,
                     app_id=authority.app_id,
-                )
+                ) is True
+                if not mutation_confirmed:
+                    mutation_error = "remote_unknown"
             except MembershipRemoteRejected:
                 mutation_error = "remote_rejected"
             except Exception:
@@ -224,6 +227,13 @@ class EmployeeMembershipService:
             try:
                 observed = self._observe(request, authority)
             except MembershipRemoteUnknown:
+                # A strict successful create/delete response (including empty
+                # invalid/pending lists) is direct remote evidence.  The
+                # follow-up employee probe is defense in depth and can be
+                # temporarily unavailable while an existing app's scopes are
+                # being upgraded.
+                if mutation_confirmed:
+                    return self._commit_confirmed(effect.effect_id, desired)
                 return self._mark_action_required(
                     effect.effect_id,
                     mutation_error or "remote_unknown",
@@ -274,8 +284,10 @@ class EmployeeMembershipService:
         tenant_key: str,
         chat_id: str,
         agent_id: str,
+        app_id: str,
+        observed_is_member: bool,
     ) -> MembershipMutationOutcome:
-        """Use a durable membership event only to trigger employee observation."""
+        """Use an app-bound durable event only to trigger live observation."""
 
         with self._chat_lock(chat_id):
             if self._team_active_resolver(chat_id) is not True:
@@ -299,6 +311,12 @@ class EmployeeMembershipService:
                 or not principal.credential_ref
             ):
                 raise MembershipBindingError("employee principal authority unavailable")
+            if (
+                type(observed_is_member) is not bool
+                or not app_id
+                or principal.app_id != app_id
+            ):
+                raise MembershipBindingError("membership event evidence is not bound")
             authority = _Authority(
                 app_id=principal.app_id,
                 credential_ref=principal.credential_ref,
@@ -311,13 +329,31 @@ class EmployeeMembershipService:
                 requester_principal_id="system_membership_event",
                 operation=(
                     MembershipOperation.ADD
-                    if chat_id in employee.member_groups
+                    if observed_is_member
                     else MembershipOperation.REMOVE
                 ),
             )
             try:
                 observed = self._observe(probe, authority)
             except MembershipRemoteUnknown:
+                stable_state = (
+                    MembershipState.ACTIVE if observed_is_member else MembershipState.ABSENT
+                )
+                current = self.get(tenant_key, chat_id, agent_id)
+                if (
+                    current is not None
+                    and current.state is stable_state
+                    and (chat_id in employee.member_groups) is observed_is_member
+                ):
+                    return MembershipMutationOutcome(
+                        state=stable_state,
+                        confirmed=True,
+                        changed=False,
+                    )
+                # An unordered/replayed event is not enough to rewrite the
+                # durable membership projection. Keep the desired transition
+                # degraded until either a live employee probe or a strict
+                # create/delete API response confirms it.
                 effect = self._prepare(probe, authority)
                 self._mark_executing(effect.effect_id)
                 return self._mark_action_required(

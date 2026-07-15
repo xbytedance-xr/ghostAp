@@ -47,6 +47,7 @@ class _Remote:
             if self.mutation_error:
                 raise self.mutation_error
             self.observed = operation is MembershipOperation.ADD
+            return True
         finally:
             with self._lock:
                 self.inflight -= 1
@@ -202,6 +203,35 @@ def test_unknown_mutation_and_observation_fail_closed_as_degraded(tmp_path) -> N
     assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == ()
 
 
+def test_confirmed_mutation_survives_unavailable_followup_observation(tmp_path) -> None:
+    fx = _fixture(tmp_path)
+    fx.remote.observation_error = MembershipRemoteUnknown(
+        "membership_observation_permission_denied"
+    )
+
+    outcome = fx.service.mutate(_request())
+
+    assert outcome.state is MembershipState.ACTIVE
+    assert outcome.confirmed is True
+    assert outcome.changed is True
+    assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == (
+        "oc_team",
+    )
+
+    event_outcome = fx.service.reconcile_event(
+        tenant_key="tenant_1",
+        chat_id="oc_team",
+        agent_id="agt_1",
+        app_id="cli_1",
+        observed_is_member=True,
+    )
+
+    assert event_outcome.state is MembershipState.ACTIVE
+    assert event_outcome.confirmed is True
+    assert event_outcome.changed is False
+    assert fx.service.is_degraded("agt_1", "oc_team") is False
+
+
 def test_idempotent_projection_with_unknown_observation_does_not_replay_mutation(tmp_path) -> None:
     fx = _fixture(tmp_path, member_groups=("oc_team",))
     fx.remote.observation_error = MembershipRemoteUnknown(
@@ -296,6 +326,8 @@ def test_membership_event_reconciles_from_employee_observation_without_mutation(
         tenant_key="tenant_1",
         chat_id="oc_team",
         agent_id="agt_1",
+        app_id="cli_1",
+        observed_is_member=True,
     )
 
     assert outcome.state is MembershipState.ACTIVE
@@ -314,6 +346,8 @@ def test_bot_deleted_event_removes_only_observed_chat(tmp_path) -> None:
         tenant_key="tenant_1",
         chat_id="oc_team",
         agent_id="agt_1",
+        app_id="cli_1",
+        observed_is_member=False,
     )
 
     assert outcome.state is MembershipState.ABSENT
@@ -321,3 +355,45 @@ def test_bot_deleted_event_removes_only_observed_chat(tmp_path) -> None:
     assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == (
         "oc_other",
     )
+
+
+def test_correlated_employee_event_cannot_recover_degraded_membership_without_query(
+    tmp_path,
+) -> None:
+    fx = _fixture(tmp_path)
+    fx.remote.mutation_error = TimeoutError("unknown")
+    fx.remote.observation_error = MembershipRemoteUnknown(
+        "membership_observation_permission_denied"
+    )
+    degraded = fx.service.mutate(_request())
+    assert degraded.state is MembershipState.DEGRADED
+
+    outcome = fx.service.reconcile_event(
+        tenant_key="tenant_1",
+        chat_id="oc_team",
+        agent_id="agt_1",
+        app_id="cli_1",
+        observed_is_member=True,
+    )
+
+    assert outcome.state is MembershipState.DEGRADED
+    assert outcome.confirmed is False
+    assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == ()
+
+
+def test_uncorrelated_employee_event_cannot_override_membership(tmp_path) -> None:
+    fx = _fixture(tmp_path)
+    fx.remote.observation_error = MembershipRemoteUnknown(
+        "membership_observation_permission_denied"
+    )
+
+    with pytest.raises(MembershipBindingError, match="event evidence"):
+        fx.service.reconcile_event(
+            tenant_key="tenant_1",
+            chat_id="oc_team",
+            agent_id="agt_1",
+            app_id="cli_other",
+            observed_is_member=True,
+        )
+
+    assert fx.hire.synchronize_projection().employees["agt_1"].member_groups == ()

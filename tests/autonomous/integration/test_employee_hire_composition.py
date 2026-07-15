@@ -3292,6 +3292,7 @@ def _accept_durable_status(
     connection_id: str,
 ):
     raw_message_id = f"om_{suffix}"
+    raw_chat_id = f"chat-{suffix}"
     message_id = "om_" + hashlib.sha256(raw_message_id.encode()).hexdigest()
     payload = EmployeeIngressPayload(
         schema_version=1,
@@ -3308,6 +3309,9 @@ def _accept_durable_status(
                 "sender_type": "user",
                 "sender_tenant_key": state.tenant_key,
                 "feishu_thread_id": "",
+                "remote_chat_id": raw_chat_id,
+                "remote_message_id": raw_message_id,
+                "remote_root_id": "",
             },
         ),
         attachment_descriptors=(),
@@ -3325,7 +3329,7 @@ def _accept_durable_status(
         message_id=message_id,
         event_type="im.message.receive_v1",
         action_identity="",
-        chat_id="oc_" + hashlib.sha256(f"chat-{suffix}".encode()).hexdigest(),
+        chat_id="oc_" + hashlib.sha256(raw_chat_id.encode()).hexdigest(),
         thread_root_message_id="",
         sender_principal_id="ou_employee_app_admin",
         received_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace(
@@ -3816,6 +3820,9 @@ def test_durable_employee_status_ingress_activates_before_general_router(
                 "sender_type": "user",
                 "sender_tenant_key": pending.tenant_key,
                 "feishu_thread_id": "",
+                "remote_chat_id": "durable-status-chat",
+                "remote_message_id": raw_message_id,
+                "remote_root_id": "",
             },
         ),
         attachment_descriptors=(),

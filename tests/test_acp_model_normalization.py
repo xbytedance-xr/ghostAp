@@ -130,6 +130,39 @@ def test_create_engine_session_preserves_traex_selection_until_start(monkeypatch
     normalize.assert_not_called()
 
 
+def test_create_engine_session_forwards_explicit_startup_budget(monkeypatch):
+    from src.agent_session import factory
+
+    calls: dict[str, object] = {}
+    fake_session = MagicMock()
+
+    class _Settings:
+        acp_startup_timeout = 20
+        rate_limit_retry_enabled = False
+
+    def fake_start_session_with_retry(**kwargs):
+        calls.update(kwargs)
+        return fake_session
+
+    monkeypatch.setattr(factory, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        "src.acp.sync_adapter.start_session_with_retry",
+        fake_start_session_with_retry,
+    )
+    monkeypatch.setattr(factory, "ModelFailureAwareSession", lambda inner, **_: inner)
+
+    result = factory.create_engine_session(
+        agent_type="coco",
+        cwd="/tmp/p1",
+        startup_timeout=0.25,
+        startup_retries=1,
+    )
+
+    assert result is fake_session
+    assert calls["startup_timeout"] == 0.25
+    assert calls["retries"] == 1
+
+
 def test_acp_manager_preserves_traex_selection_until_sync_session():
     from src.acp.manager import _normalize_manager_acp_model
 

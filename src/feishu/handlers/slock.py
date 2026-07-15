@@ -102,15 +102,18 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         self._rate_limit_tracker: dict[str, list[float]] = {}
         # Singleton IntentRouter (AC-10: only instantiated once per handler lifecycle)
         from src.slock_engine.intent_router import IntentRouter
+
+        # Use the bounded shared compute pool for one-shot ACP classification.
+        from src.utils.thread_pools import get_compute_pool
+
+        self._nli_executor = get_compute_pool()
         self._intent_router = IntentRouter(
             confidence_threshold=_confidence_threshold(
                 getattr(ctx.settings, "slock_nli_confidence_threshold", 0.7), 0.7
             ),
             timeout=_positive_seconds(getattr(ctx.settings, "slock_nli_timeout", 5), 5.0),
+            executor=self._nli_executor,
         )
-        # Use shared compute pool for NLI classification
-        from src.utils.thread_pools import get_compute_pool
-        self._nli_executor = get_compute_pool()
 
     def cleanup(self) -> None:
         """Release resources held by this handler instance.

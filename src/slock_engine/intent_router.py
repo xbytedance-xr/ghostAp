@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
+from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -112,9 +115,16 @@ class IntentRouter:
         "文档": "writer",
     }
 
-    def __init__(self, *, confidence_threshold: float = 0.7, timeout: float = 0.5) -> None:
+    def __init__(
+        self,
+        *,
+        confidence_threshold: float = 0.7,
+        timeout: float = 0.5,
+        executor: Executor | None = None,
+    ) -> None:
         self._confidence_threshold = confidence_threshold
         self._timeout = timeout
+        self._executor = executor
 
     # ------------------------------------------------------------------
     # Public API
@@ -425,36 +435,69 @@ Output:"""
         """
         import asyncio
 
-        from ..agent_session import close_session_safely, create_engine_session
-
         logger.debug("LLM classification requested (prompt length=%d)", len(prompt))
+        deadline = time.monotonic() + self._timeout
+        cancel_requested = threading.Event()
 
         try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                self._executor,
+                self._run_llm_session,
+                prompt,
+                deadline,
+                cancel_requested,
+            )
+        except asyncio.CancelledError:
+            # The worker is the sole session owner.  Signal it to skip the
+            # prompt after a slow create, but never race it by closing here.
+            cancel_requested.set()
+            raise
+        except Exception as exc:
+            logger.warning("LLM classification call failed: %s", str(exc))
+            return '{"action": "unknown", "confidence": 0.0, "params": {}}'
+
+    def _run_llm_session(
+        self,
+        prompt: str,
+        deadline: float,
+        cancel_requested: threading.Event,
+    ) -> str:
+        """Own one NLI session from creation through close in one worker."""
+
+        from ..agent_session import close_session_safely, create_engine_session
+
+        unknown = '{"action": "unknown", "confidence": 0.0, "params": {}}'
+        session = None
+        try:
+            remaining = deadline - time.monotonic()
+            if cancel_requested.is_set() or remaining <= 0:
+                return unknown
             session = create_engine_session(
                 agent_type="coco",
                 cwd=".",
                 thread_id="slock_nli_classify",
                 auto_approve=True,
+                cancel_event=cancel_requested,
+                startup_timeout=remaining,
+                startup_retries=1,
             )
             if session is None:
                 logger.warning("Failed to create NLI classification session")
-                return '{"action": "unknown", "confidence": 0.0, "params": {}}'
-
-            try:
-                # Run blocking send_prompt in a thread to avoid blocking the event loop
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: session.send_prompt(prompt, timeout=self._timeout * 0.8)
-                )
-                if result and result.text:
-                    return result.text
-                return '{"action": "unknown", "confidence": 0.0, "params": {}}'
-            finally:
-                close_session_safely(session)
-
+                return unknown
+            remaining = deadline - time.monotonic()
+            if cancel_requested.is_set() or remaining <= 0:
+                return unknown
+            result = session.send_prompt(prompt, timeout=remaining)
+            if result and result.text:
+                return result.text
+            return unknown
         except Exception as exc:
             logger.warning("LLM classification call failed: %s", str(exc))
-            return '{"action": "unknown", "confidence": 0.0, "params": {}}'
+            return unknown
+        finally:
+            if session is not None:
+                close_session_safely(session)
 
     # ------------------------------------------------------------------
     # Internal: Parameter Extraction

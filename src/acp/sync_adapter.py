@@ -998,6 +998,7 @@ def start_session_with_retry(
     ttadk_use_pty: bool = False,
     log_failures: bool = True,
     env: Optional[dict[str, str]] = None,
+    retries: Optional[int] = None,
 ) -> SyncACPSession:
     """Start an ACP session with retry and progressive timeout.
 
@@ -1005,7 +1006,14 @@ def start_session_with_retry(
     can benefit from the same robustness without per-chat session management.
     """
     settings = get_settings()
-    retries = max(1, int(getattr(settings, "acp_startup_retries", 2) or 2))
+    retries = max(
+        1,
+        int(
+            retries
+            if retries is not None
+            else (getattr(settings, "acp_startup_retries", 2) or 2)
+        ),
+    )
 
     last_err: Exception | None = None
     session: SyncACPSession | None = None
