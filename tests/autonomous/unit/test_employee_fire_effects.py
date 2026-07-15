@@ -52,6 +52,20 @@ def test_atomic_archive_writes_manifest_hashes_and_moves_source_once(tmp_path):
     assert archive.observe(_state()) is False
 
 
+def test_atomic_archive_records_empty_archive_when_workspace_was_never_created(tmp_path):
+    root = tmp_path / "agents"
+    archive = AtomicEmployeeArchive(root)
+
+    archive.execute(_state())
+
+    destination = root / ".archive" / "agt_alpha"
+    manifest = json.loads((destination / "archive_manifest.json").read_text())
+    assert manifest["files"] == {}
+    assert archive.observe(_state()) is True
+    archive.execute(_state())
+    assert archive.observe(_state()) is True
+
+
 def test_atomic_archive_rejects_symlink_content(tmp_path):
     root = tmp_path / "agents"
     source = root / "agt_alpha"

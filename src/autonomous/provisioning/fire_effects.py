@@ -143,6 +143,14 @@ class AtomicEmployeeArchive:
         destination = self._archive_root / state.agent_id
         if destination.is_dir():
             return
+        self._root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not source.exists():
+            try:
+                source.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            else:
+                self._fsync(self._root)
         if not source.is_dir() or source.is_symlink():
             raise RuntimeError("employee archive source unavailable")
         self._archive_root.mkdir(mode=0o700, parents=True, exist_ok=True)
