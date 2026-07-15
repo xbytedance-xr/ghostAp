@@ -294,11 +294,31 @@ class ProductionEmployeeHireService:
                         "provisioning_attempt_id": attempt_id,
                     },
                 )
+                name_owner_id = self._projection_state.employee_name_keys.get(
+                    (request.tenant_key, request.employee_name.casefold())
+                )
+                name_owner = (
+                    self._projection_state.employees.get(name_owner_id)
+                    if name_owner_id is not None
+                    else None
+                )
+                release_events = (
+                    (
+                        JournalEvent(
+                            event_type="employee.name_released",
+                            aggregate_id=name_owner.agent_id,
+                            payload={"name": name_owner.name},
+                        ),
+                    )
+                    if name_owner is not None
+                    and name_owner.state is EmployeeState.ARCHIVED
+                    else ()
+                )
                 try:
                     commit_workforce_events_unlocked(
                         self._writer,
                         self._projection_state,
-                        (event,),
+                        (*release_events, event),
                     )
                 except ProjectionError as exc:
                     detail = (

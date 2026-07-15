@@ -588,6 +588,27 @@ class TestCreateRoleDefaults:
         assert "/fire Atlas" in message
         assert "不要重新 `/hire` 同名员工" in message
 
+    def test_global_fire_reports_already_archived_without_generic_failure(self):
+        from src.autonomous.provisioning.fire_service import FireServiceError
+
+        handler = self._make_handler()
+        service = MagicMock()
+        service.start_fire.side_effect = FireServiceError("employee already archived")
+        handler.ctx.employee_fire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.fire_employee("msg_1", "chat_dm", "Atlas")
+
+        message = handler.reply_text.call_args.args[1]
+        assert "已经归档" in message
+        assert "无需重复" in message
+        assert "可以重新 `/hire Atlas`" in message
+
     def test_global_hire_cascade_projects_one_runtime_model_selection(self, tmp_path):
         from src.autonomous.journal.anchor import FileAnchor
         from src.autonomous.journal.projections import ProjectionState

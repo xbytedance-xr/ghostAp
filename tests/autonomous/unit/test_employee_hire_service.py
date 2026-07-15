@@ -10,6 +10,7 @@ import pytest
 
 from src.autonomous.domain import EmployeeState, WorkerType
 from src.autonomous.journal.anchor import FileAnchor, MemoryAnchor
+from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.journal.projections import ProjectionState
 from src.autonomous.journal.writer import JournalWriter
 from src.autonomous.provisioning.hire_port import EmployeeHireRequest
@@ -23,6 +24,7 @@ from src.autonomous.provisioning.hire_state import (
     HirePhase,
     HireProjection,
 )
+from src.autonomous.workforce.projection import commit_workforce_events
 from src.config.settings import Settings
 
 HMAC_KEY = b"employee-hire-test-hmac-key-32-bytes"
@@ -164,6 +166,34 @@ def test_duplicate_tenant_name_is_rejected_without_second_frame(tmp_path: Path) 
         service.start_hire(_request(message_id="om_hire_2", employee_name="atlas"))
 
     assert len(tuple(writer.replay())) == 1
+
+
+def test_same_name_rehire_atomically_releases_archived_tombstone(tmp_path: Path) -> None:
+    service, writer, projection = _service(tmp_path, visible_employee_limit=2)
+    previous = service.start_hire(_request())
+    commit_workforce_events(
+        writer,
+        projection,
+        (
+            JournalEvent(
+                event_type="employee.state_changed",
+                aggregate_id=previous.agent_id,
+                payload={"state": "archived"},
+            ),
+        ),
+    )
+
+    current = service.start_hire(
+        _request(message_id="om_hire_2", employee_name="ATLAS")
+    )
+
+    assert current.agent_id != previous.agent_id
+    assert projection.employees[previous.agent_id].state is EmployeeState.ARCHIVED
+    assert projection.employee_name_keys[("tenant-a", "atlas")] == current.agent_id
+    assert [event.event_type for event in tuple(writer.replay())[-1].events] == [
+        "employee.name_released",
+        "employee.created",
+    ]
 
 
 @pytest.mark.parametrize(

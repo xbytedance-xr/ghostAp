@@ -56,6 +56,7 @@ class WorkforceProjectionState:
 _WORKFORCE_EVENTS = frozenset(
     {
         "employee.created",
+        "employee.name_released",
         "employee.state_changed",
         "employee.profile_changed",
         "employee.membership_changed",
@@ -172,6 +173,26 @@ def _create_employee(state: WorkforceProjectionState, event: JournalEvent) -> No
         raise _projection_error(f"invalid employee.created: {exc}") from exc
     _reserve_name(state, employee)
     state.employees[agent_id] = employee
+
+
+def _release_employee_name(
+    state: WorkforceProjectionState,
+    event: JournalEvent,
+) -> None:
+    employee = _employee(state, event.aggregate_id)
+    if employee.state is not EmployeeState.ARCHIVED:
+        raise _projection_error("only archived employee names can be released")
+    if set(event.payload) != {"name"}:
+        raise _projection_error("employee name release payload is invalid")
+    name = event.payload.get("name")
+    if not isinstance(name, str) or name.casefold() != employee.name.casefold():
+        raise _projection_error("employee name release does not match archive")
+    key = _name_key(employee.tenant_key, employee.name)
+    owner = state.employee_name_keys.get(key)
+    if owner not in {None, employee.agent_id}:
+        raise _projection_error("employee name release owner mismatch")
+    if owner == employee.agent_id:
+        del state.employee_name_keys[key]
 
 
 def _change_employee_state(
@@ -374,6 +395,7 @@ def _cutover_authority(state: WorkforceProjectionState, event: JournalEvent) -> 
 
 _APPLIERS = {
     "employee.created": _create_employee,
+    "employee.name_released": _release_employee_name,
     "employee.state_changed": _change_employee_state,
     "employee.profile_changed": _change_employee_profile,
     "employee.membership_changed": _change_membership,

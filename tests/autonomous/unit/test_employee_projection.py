@@ -442,6 +442,47 @@ def test_archived_employee_keeps_name_tombstone(tmp_path) -> None:
         commit_events(writer, state, employee_created("agt_2", "ATLAS"))
 
 
+def test_explicit_release_transfers_archived_name_without_reactivating_identity(
+    tmp_path,
+) -> None:
+    writer = make_writer(tmp_path)
+    state = ProjectionState()
+    commit_events(writer, state, employee_created())
+    commit_events(
+        writer,
+        state,
+        JournalEvent(
+            event_type="employee.state_changed",
+            aggregate_id="agt_1",
+            payload={"state": "archived"},
+        ),
+    )
+
+    commit_events(
+        writer,
+        state,
+        JournalEvent(
+            event_type="employee.name_released",
+            aggregate_id="agt_1",
+            payload={"name": "Atlas"},
+        ),
+        employee_created("agt_2", "ATLAS"),
+    )
+
+    assert state.employees["agt_1"].state is EmployeeState.ARCHIVED
+    assert state.employee_name_keys[("tenant_1", "atlas")] == "agt_2"
+    with pytest.raises(ProjectionError, match="archived employee is terminal"):
+        commit_events(
+            writer,
+            state,
+            JournalEvent(
+                event_type="employee.state_changed",
+                aggregate_id="agt_1",
+                payload={"state": "active"},
+            ),
+        )
+
+
 def test_archived_employee_profile_cannot_free_name_tombstone(tmp_path) -> None:
     writer = make_writer(tmp_path)
     state = ProjectionState()

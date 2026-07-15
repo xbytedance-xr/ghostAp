@@ -36,12 +36,17 @@ class JournalFireAuthority:
         if request.requester_principal_id not in self._admins:
             raise FireServiceError("fire is not authorized")
         projection = self._hire.synchronize_projection()
-        matches = tuple(
+        identity_matches = tuple(
             employee
             for employee in projection.employees.values()
             if employee.tenant_key == request.tenant_key
             and employee.worker_type is WorkerType.VISIBLE
-            and employee.state
+            and request.employee in {employee.agent_id, employee.name}
+        )
+        matches = tuple(
+            employee
+            for employee in identity_matches
+            if employee.state
             in {
                 EmployeeState.PROVISIONING_APP,
                 EmployeeState.STORING_CREDENTIAL,
@@ -51,9 +56,13 @@ class JournalFireAuthority:
                 EmployeeState.ACTIVE,
                 EmployeeState.ACTION_REQUIRED,
             }
-            and request.employee in {employee.agent_id, employee.name}
         )
         if len(matches) != 1:
+            if not matches and any(
+                employee.state is EmployeeState.ARCHIVED
+                for employee in identity_matches
+            ):
+                raise FireServiceError("employee already archived")
             raise FireServiceError("retirable employee was not uniquely resolved")
         employee = matches[0]
         if not employee.bot_principal_id:

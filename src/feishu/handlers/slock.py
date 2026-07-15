@@ -2436,13 +2436,24 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             self.reply_text(message_id, "⚠️ 员工投影同步失败，请稍后重试。")
             return
 
-        employees = [
+        tenant_employees = [
             emp for emp in projection.employees.values()
             if emp.tenant_key == tenant_key and emp.worker_type is WorkerType.VISIBLE
         ]
+        archived_count = sum(
+            emp.state is EmployeeState.ARCHIVED for emp in tenant_employees
+        )
+        employees = [
+            emp for emp in tenant_employees
+            if emp.state is not EmployeeState.ARCHIVED
+        ]
 
         if not employees:
-            self.reply_text(message_id, "当前租户还没有员工。使用 `/hire <名字>` 开始雇佣。")
+            history = f"（历史归档 {archived_count} 人）" if archived_count else ""
+            self.reply_text(
+                message_id,
+                f"当前租户没有在职员工{history}。使用 `/hire <名字>` 开始雇佣。",
+            )
             return
 
         _STATE_LABELS = {
@@ -2455,7 +2466,6 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             EmployeeState.READY_PENDING_VERIFICATION: "⏳ 待验证",
             EmployeeState.ACTION_REQUIRED: "⚠️ 待处理",
             EmployeeState.RETIRING: "🔄 退休中",
-            EmployeeState.ARCHIVED: "📦 已归档",
         }
 
         lines: list[str] = []
@@ -2481,7 +2491,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     def fire_employee(self, message_id: str, chat_id: str, args: str) -> None:
         """Retire a visible employee through the production Journal-backed service."""
 
-        from ...autonomous.provisioning.fire_service import EmployeeFireRequest
+        from ...autonomous.provisioning.fire_service import (
+            EmployeeFireRequest,
+            FireServiceError,
+        )
         from ...autonomous.provisioning.fire_state import FireEffectState, FirePhase
         from ...thread.manager import (
             get_current_is_p2p,
@@ -2518,6 +2531,25 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                     drain=drain,
                 )
             )
+        except FireServiceError as exc:
+            reason = str(exc)
+            logger.warning("visible employee fire rejected: %s", reason)
+            if reason == "employee already archived":
+                self.reply_text(
+                    message_id,
+                    f"员工 `{names[0]}` 已经归档，无需重复 `/fire`；现在可以重新 `/hire {names[0]}`。",
+                )
+            elif reason == "retirable employee was not uniquely resolved":
+                self.reply_text(
+                    message_id,
+                    "未找到唯一的在职员工。请执行 `/roster` 核对名称或改用员工 ID。",
+                )
+            else:
+                self.reply_text(
+                    message_id,
+                    "员工退役被安全门禁拒绝；未执行或误报任何清理操作。",
+                )
+            return
         except Exception as exc:
             logger.error("visible employee fire failed: %s", type(exc).__name__)
             self.reply_text(message_id, "员工退役未能安全推进；请查看审计日志后处理。")

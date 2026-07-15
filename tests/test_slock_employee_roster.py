@@ -167,6 +167,23 @@ class TestListEmployeesRoster:
         handler.reply_text.assert_called_once()
         assert "/hire" in handler.reply_text.call_args.args[1]
 
+    def test_archived_employees_are_history_not_current_roster(self, monkeypatch):
+        monkeypatch.setattr("src.thread.manager.get_current_tenant_key", lambda: "tenant_a")
+
+        archived = _projected_employee(state=EmployeeState.ARCHIVED, member_groups=())
+        projection = SimpleNamespace(employees={"agt_test1": archived})
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = projection
+        handler = _handler_for_roster(hire_service=hire_service)
+
+        handler.list_employees_roster("om_1", "oc_chat")
+
+        handler.reply_card.assert_not_called()
+        message = handler.reply_text.call_args.args[1]
+        assert "没有在职员工" in message
+        assert "历史归档 1 人" in message
+        assert "/hire" in message
+
 
 # ---------------------------------------------------------------------------
 # /role add pick→confirm flow tests
