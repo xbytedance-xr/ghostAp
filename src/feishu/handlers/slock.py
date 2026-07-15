@@ -2328,7 +2328,10 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
     ) -> None:
         from ...autonomous.provisioning.hire_port import EmployeeHireRequest
         from ...autonomous.provisioning.hire_service import HireAdmissionError
-        from ...thread.manager import get_current_tenant_key
+        from ...thread.manager import (
+            get_current_sender_union_id,
+            get_current_tenant_key,
+        )
         requester_id = self._visible_hire_requester(message_id)
         if requester_id is None:
             return
@@ -2372,6 +2375,13 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 "独立飞书智能体创建尚未接入生产服务；已拒绝降级创建本地虚拟角色。",
             )
             return
+        requester_union_id = get_current_sender_union_id() or ""
+        if not requester_union_id:
+            self.reply_text(
+                message_id,
+                "无法确认跨应用用户身份（union_id 缺失），已拒绝创建员工。请从飞书主应用重新发起 /hire。",
+            )
+            return
         request = EmployeeHireRequest(
             employee_name=employee_name,
             tool=tool,
@@ -2381,6 +2391,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             chat_id=chat_id,
             message_id=message_id,
             requester_principal_id=requester_id,
+            requester_union_id=requester_union_id,
             tenant_key=get_current_tenant_key() or "",
             existing_app_id=existing_app_id,
         )

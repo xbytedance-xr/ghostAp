@@ -235,6 +235,9 @@ _manager_lock = threading.Lock()  # leaf lock: never held while acquiring a Lock
 
 _current_thread_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_thread_id", default=None)
 _current_sender_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("current_sender_id", default=None)
+_current_sender_union_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "current_sender_union_id", default=None
+)
 _current_sender_name: contextvars.ContextVar[str] = contextvars.ContextVar("current_sender_name", default="")
 _current_is_p2p: contextvars.ContextVar[bool] = contextvars.ContextVar("current_is_p2p", default=False)
 _current_tenant_key: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
@@ -272,6 +275,14 @@ def set_current_sender_id(sender_id: Optional[str]) -> None:
 
 def get_current_sender_id() -> Optional[str]:
     return _current_sender_id.get()
+
+
+def set_current_sender_union_id(sender_union_id: Optional[str]) -> None:
+    _current_sender_union_id.set(sender_union_id)
+
+
+def get_current_sender_union_id() -> Optional[str]:
+    return _current_sender_union_id.get()
 
 
 def set_current_is_p2p(is_p2p: bool) -> None:

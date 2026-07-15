@@ -45,6 +45,7 @@ def _binding(**overrides: object) -> VerificationBinding:
         "agent_id": "agt_employee_1",
         "generation": 7,
         "requester_principal_id": "ou_admin",
+        "requester_union_id": "on_admin",
         "expected_slash_spec_hash": "sha256:desired",
     }
     values.update(overrides)
@@ -93,7 +94,8 @@ def _evidence(
             coordinates=coordinates,
             event_id="evt_1",
             message_id="om_1",
-            sender_principal_id="ou_admin",
+            sender_principal_id="ou_employee_app_admin",
+            sender_union_id="on_admin",
             command="/status",
             is_p2p=True,
             reply_succeeded=True,
@@ -139,6 +141,7 @@ def test_issue_challenge_binds_tenant_app_agent_generation_nonce_and_ttl() -> No
         {"agent_id": ""},
         {"generation": 0},
         {"requester_principal_id": ""},
+        {"requester_union_id": ""},
         {"expected_slash_spec_hash": ""},
     ],
 )
@@ -342,7 +345,7 @@ def test_evidence_must_be_ordered_inside_the_challenge_window(
         ),
         (
             "ingress",
-            {"sender_principal_id": "ou_other"},
+            {"sender_union_id": "on_other"},
             VerificationRejection.INVALID_TENANT_INGRESS,
         ),
         (

@@ -502,6 +502,7 @@ def _request() -> EmployeeHireRequest:
         chat_id="oc_admin_dm",
         message_id="om_composition",
         requester_principal_id="ou_admin",
+        requester_union_id="on_admin",
         tenant_key="tenant-a",
     )
 
@@ -920,6 +921,7 @@ def _activate_employee(
                 "event_id": "evt_context_ready",
                 "tenant_key": "tenant-a",
                 "message_id": "om_context_ready",
+                "sender_union_id": "on_admin",
             },
         }
     )
@@ -930,7 +932,7 @@ def _activate_employee(
                 "id": "om_context_ready",
                 "content_text": "/status",
                 "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_admin"},
+                "sender": {"open_id": "ou_employee_app_admin"},
                 "raw": {},
             },
         }
@@ -1533,6 +1535,7 @@ def test_hire_and_data_writes_resynchronize_shared_journal_heads(
         chat_id="oc_admin_dm",
         message_id="om_composition_second",
         requester_principal_id="ou_admin",
+        requester_union_id="on_admin",
         tenant_key="tenant-a",
     )
     attempt = ExecutionAttemptContext(
@@ -1743,6 +1746,7 @@ def test_context_binding_and_probe_recover_after_restart_reverification(
                 "event_id": "evt_context_restart",
                 "tenant_key": pending.tenant_key,
                 "message_id": "om_context_restart",
+                "sender_union_id": "on_admin",
             },
         }
     )
@@ -2281,6 +2285,7 @@ def test_real_employee_status_ingress_and_employee_send_are_required_for_active(
                 "event_id": "evt_status",
                 "tenant_key": "tenant-a",
                 "message_id": "om_status",
+                "sender_union_id": "on_admin",
             },
         }
     )
@@ -2291,7 +2296,7 @@ def test_real_employee_status_ingress_and_employee_send_are_required_for_active(
                 "id": "om_status",
                 "content_text": "/status",
                 "conversation": {"chat_type": "p2p"},
-                "sender": {"open_id": "ou_admin"},
+                "sender": {"open_id": "ou_employee_app_admin"},
                 "raw": {"message_id": "om_status"},
             },
         }
@@ -2309,7 +2314,7 @@ def test_real_employee_status_ingress_and_employee_send_are_required_for_active(
         (
             active.agent_id,
             1,
-            "ou_admin",
+            "ou_employee_app_admin",
             {"text": "Atlas is ready."},
             {"reply_to": "om_status"},
         )
@@ -2344,6 +2349,7 @@ def test_forged_employee_send_identity_cannot_activate(tmp_path: Path) -> None:
                 "event_id": "evt_forged",
                 "tenant_key": "tenant-a",
                 "message_id": "om_forged_status",
+                "sender_union_id": "on_admin",
             },
         }
     )
@@ -2470,7 +2476,12 @@ def test_crashed_active_channel_advances_generation_and_requires_reverification(
     callback(
         {  # type: ignore[operator]
             "event": "rawMessageMeta",
-            "data": {"event_id": "evt_1", "tenant_key": "tenant-a", "message_id": "om_1"},
+            "data": {
+                "event_id": "evt_1",
+                "tenant_key": "tenant-a",
+                "message_id": "om_1",
+                "sender_union_id": "on_admin",
+            },
         }
     )
     callback(
@@ -2542,6 +2553,7 @@ def test_restart_replaces_active_channel_generation_and_challenge(
                 "event_id": "evt_restart",
                 "tenant_key": "tenant-a",
                 "message_id": "om_restart",
+                "sender_union_id": "on_admin",
             },
         }
     )

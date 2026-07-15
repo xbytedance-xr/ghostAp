@@ -386,7 +386,9 @@ class EmployeeDepartmentRuntime:
         self._notification_status: Callable[[DurableHireState, str], object] | None = None
         self._owned_main_bot_send_audit: MainBotSendAuditLog | None = None
         self._monitor_task: asyncio.Task[None] | None = None
-        self._raw_message_metadata: dict[tuple[str, int, str], tuple[str, str]] = {}
+        self._raw_message_metadata: dict[
+            tuple[str, int, str], tuple[str, str, str]
+        ] = {}
 
     @classmethod
     def from_settings(
@@ -2122,6 +2124,7 @@ class EmployeeDepartmentRuntime:
                 agent_id=state.agent_id,
                 generation=channel.generation,
                 requester_principal_id=state.requester_principal_id,
+                requester_union_id=state.requester_union_id,
                 expected_slash_spec_hash=slash.spec_hash,
             )
             router = self._verification_router
@@ -2340,7 +2343,16 @@ class EmployeeDepartmentRuntime:
                 event_id = metadata.get("event_id")
                 tenant_key = metadata.get("tenant_key")
                 message_id = metadata.get("message_id")
-                if all(isinstance(value, str) and value for value in (event_id, tenant_key, message_id)):
+                sender_union_id = metadata.get("sender_union_id")
+                if all(
+                    isinstance(value, str) and value
+                    for value in (
+                        event_id,
+                        tenant_key,
+                        message_id,
+                        sender_union_id,
+                    )
+                ):
                     if len(self._raw_message_metadata) >= 2048:
                         self._raw_message_metadata.pop(
                             next(iter(self._raw_message_metadata)),
@@ -2349,6 +2361,7 @@ class EmployeeDepartmentRuntime:
                     self._raw_message_metadata[(intent_id, generation, message_id)] = (
                         event_id,
                         tenant_key,
+                        sender_union_id,
                     )
             return
         if (
@@ -2372,10 +2385,18 @@ class EmployeeDepartmentRuntime:
         parsed = self._parse_status_ingress(data, raw_metadata)
         if parsed is None:
             return
-        event_id, message_id, tenant_key, sender_id, command, is_p2p = parsed
+        (
+            event_id,
+            message_id,
+            tenant_key,
+            sender_id,
+            sender_union_id,
+            command,
+            is_p2p,
+        ) = parsed
         if (
             tenant_key != state.tenant_key
-            or sender_id != state.requester_principal_id
+            or sender_union_id != state.requester_union_id
             or command != "/status"
             or is_p2p is not True
         ):
@@ -2485,6 +2506,7 @@ class EmployeeDepartmentRuntime:
                 event_id=event_id,
                 message_id=message_id,
                 sender_principal_id=sender_id,
+                sender_union_id=sender_union_id,
                 command=command,
                 is_p2p=is_p2p,
                 reply_succeeded=True,
@@ -2504,26 +2526,37 @@ class EmployeeDepartmentRuntime:
     @staticmethod
     def _parse_status_ingress(
         data: object,
-        raw_metadata: tuple[str, str] | None,
-    ) -> tuple[str, str, str, str, str, bool] | None:
+        raw_metadata: tuple[str, str, str] | None,
+    ) -> tuple[str, str, str, str, str, str, bool] | None:
         if not isinstance(data, dict) or raw_metadata is None:
             return None
         conversation = data.get("conversation")
         sender = data.get("sender")
         if not all(isinstance(value, dict) for value in (conversation, sender)):
             return None
-        event_id, tenant_key = raw_metadata
+        event_id, tenant_key, sender_union_id = raw_metadata
         message_id = data.get("id")
         sender_id = sender.get("open_id")
         text = data.get("safe_content_text") or data.get("content_text")
         chat_type = conversation.get("chat_type")
-        if not all(isinstance(value, str) and value for value in (event_id, tenant_key, message_id, sender_id, text)):
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                event_id,
+                tenant_key,
+                message_id,
+                sender_id,
+                sender_union_id,
+                text,
+            )
+        ):
             return None
         return (
             event_id,
             message_id,
             tenant_key,
             sender_id,
+            sender_union_id,
             text.strip(),
             chat_type == "p2p",
         )

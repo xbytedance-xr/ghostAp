@@ -59,6 +59,7 @@ class VerificationBinding:
     agent_id: str
     generation: int
     requester_principal_id: str
+    requester_union_id: str
     expected_slash_spec_hash: str
 
     def __post_init__(self) -> None:
@@ -68,6 +69,7 @@ class VerificationBinding:
             "app_id",
             "agent_id",
             "requester_principal_id",
+            "requester_union_id",
             "expected_slash_spec_hash",
         ):
             _required(getattr(self, field_name), field_name)
@@ -82,6 +84,7 @@ class VerificationChallenge:
     agent_id: str
     generation: int
     requester_principal_id: str
+    requester_union_id: str
     expected_slash_spec_hash: str
     nonce: str = field(repr=False)
     issued_at: float
@@ -95,6 +98,7 @@ class VerificationChallenge:
             agent_id=self.agent_id,
             generation=self.generation,
             requester_principal_id=self.requester_principal_id,
+            requester_union_id=self.requester_union_id,
             expected_slash_spec_hash=self.expected_slash_spec_hash,
         )
         _required(self.nonce, "nonce")
@@ -165,6 +169,7 @@ class TenantIngressEvidence:
     event_id: str
     message_id: str
     sender_principal_id: str
+    sender_union_id: str
     command: str
     is_p2p: bool
     reply_succeeded: bool
@@ -178,6 +183,7 @@ class TenantIngressEvidence:
             "event_id",
             "message_id",
             "sender_principal_id",
+            "sender_union_id",
             "command",
             "reply_app_id",
             "employee_send_request_id",
@@ -202,6 +208,7 @@ class ActivationVerificationEvidence:
     employee_send_request_id: str
     reply_app_id: str
     main_bot_send_count: int
+    sender_union_id: str
     verified_at: float
 
 
@@ -280,6 +287,7 @@ class VerificationRouter:
             agent_id=binding.agent_id,
             generation=binding.generation,
             requester_principal_id=binding.requester_principal_id,
+            requester_union_id=binding.requester_union_id,
             expected_slash_spec_hash=binding.expected_slash_spec_hash,
             nonce=nonce,
             issued_at=issued_at,
@@ -340,7 +348,7 @@ class VerificationRouter:
                 evaluated_at,
             )
         if (
-            ingress.sender_principal_id != challenge.requester_principal_id
+            ingress.sender_union_id != challenge.requester_union_id
             or ingress.is_p2p is not True
             or ingress.command.strip() != "/status"
             or ingress.reply_succeeded is not True
@@ -375,6 +383,7 @@ class VerificationRouter:
             employee_send_request_id=ingress.employee_send_request_id,
             reply_app_id=ingress.reply_app_id,
             main_bot_send_count=ingress.main_bot_send_count,
+            sender_union_id=ingress.sender_union_id,
             verified_at=evaluated_at,
         )
         return VerificationDecision(

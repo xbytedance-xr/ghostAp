@@ -544,6 +544,10 @@ class TestCreateRoleDefaults:
 
         with (
             patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch(
+                "src.thread.manager.get_current_sender_union_id",
+                return_value="on_admin",
+            ),
             patch("src.thread.manager.get_current_is_p2p", return_value=True),
             patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
         ):
@@ -639,6 +643,10 @@ class TestCreateRoleDefaults:
 
         with (
             patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch(
+                "src.thread.manager.get_current_sender_union_id",
+                return_value="on_admin",
+            ),
             patch("src.thread.manager.get_current_is_p2p", return_value=True),
             patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
         ):

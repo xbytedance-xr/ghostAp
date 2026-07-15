@@ -43,6 +43,7 @@ def _request(
         chat_id="oc_admin_dm",
         message_id=message_id,
         requester_principal_id="ou_admin",
+        requester_union_id="on_admin",
         tenant_key="tenant-a",
         profile="standard",
         role="software engineer",
@@ -126,6 +127,7 @@ def test_admission_is_anchored_single_frame_and_updates_projection_cursor(
     assert event.payload["planned_bot_principal_id"] == state.bot_principal_id
     assert event.payload["state"] == EmployeeState.PROVISIONING_APP.value
     assert event.payload["worker_type"] == WorkerType.VISIBLE.value
+    assert event.payload["requester_union_id"] == "on_admin"
     assert projection.cursor_sequence == frames[0].sequence
     assert projection.cursor_hash == frames[0].frame_hash
     assert projection.employees[state.agent_id].state is EmployeeState.PROVISIONING_APP
@@ -358,12 +360,29 @@ def test_hire_request_keeps_old_callers_compatible_but_service_requires_tenant(
     assert legacy.profile == "standard"
     assert legacy.role == ""
     assert legacy.persona == ""
+    assert legacy.requester_union_id == ""
     service, writer, _projection = _service(tmp_path)
 
     with pytest.raises(HireAdmissionError, match="tenant_key"):
         service.start_hire(legacy)
 
     assert tuple(writer.replay()) == ()
+
+
+def test_legacy_pending_hire_can_durably_bind_cross_app_identity(
+    tmp_path: Path,
+) -> None:
+    service, writer, _projection = _service(tmp_path)
+    pending = service.start_hire(replace(_request(), requester_union_id=""))
+
+    bound = service.bind_requester_union_id(pending.intent_id, "on_admin")
+    replayed = service.recover().get(pending.intent_id)
+
+    assert bound.requester_union_id == "on_admin"
+    assert replayed is not None and replayed.requester_union_id == "on_admin"
+    assert [
+        event.event_type for frame in writer.replay() for event in frame.events
+    ][-1] == "hire.requester_identity_bound"
 
 
 @pytest.mark.parametrize(

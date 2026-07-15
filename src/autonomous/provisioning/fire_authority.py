@@ -232,7 +232,11 @@ class JournalFireAuthority:
         with self._hire.employee_dispatch_guard(), self._writer.transaction_guard():
             projection = self._hire.synchronize_projection_unlocked()
             current = projection.employees.get(agent_id)
-            if current is None or current.state is state:
+            if (
+                current is None
+                or current.state is state
+                or current.state is EmployeeState.ARCHIVED
+            ):
                 return
             validate_workforce_events(projection, (event,))
             frame = self._commit_unlocked((event,))

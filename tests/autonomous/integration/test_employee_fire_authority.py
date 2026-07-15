@@ -180,3 +180,43 @@ def test_archived_employee_is_reported_as_already_archived(tmp_path):
 
     ingress.close()
     writer.close()
+
+
+def test_action_required_recovery_is_noop_for_already_archived_employee(tmp_path):
+    writer = make_writer(tmp_path)
+    state = ProjectionState()
+    commit_events(writer, state, employee_created())
+    commit_events(
+        writer,
+        state,
+        JournalEvent(
+            event_type="employee.state_changed",
+            aggregate_id="agt_1",
+            payload={"state": "archived"},
+        ),
+    )
+    ingress = EmployeeIngressService(
+        writer=writer,
+        blob_store=BlobStore(
+            tmp_path / "blobs",
+            AesGcmEncryptionProvider(
+                lambda _key: b"fire-ingress-data-key-32-bytes!!"
+            ),
+        ),
+        ingress_state=IngressProjectionState(),
+        active_key_id="k1",
+    )
+    authority = JournalFireAuthority(
+        writer=writer,
+        hire_service=_HireProjectionOwner(state),
+        ingress_service=ingress,
+        admin_principal_ids=frozenset({"ou_admin"}),
+    )
+    sequence = writer.get_last_frame().sequence
+
+    authority.mark_action_required("agt_1")
+
+    assert state.employees["agt_1"].state.value == "archived"
+    assert writer.get_last_frame().sequence == sequence
+    ingress.close()
+    writer.close()

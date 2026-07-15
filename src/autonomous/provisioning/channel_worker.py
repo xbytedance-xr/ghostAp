@@ -1044,12 +1044,19 @@ def extract_raw_message_metadata(event: Any) -> dict[str, str] | None:
     header = event.get("header")
     event_body = event.get("event")
     message = event_body.get("message") if isinstance(event_body, dict) else None
-    if not isinstance(header, dict) or not isinstance(message, dict):
+    sender = event_body.get("sender") if isinstance(event_body, dict) else None
+    sender_id = sender.get("sender_id") if isinstance(sender, dict) else None
+    if (
+        not isinstance(header, dict)
+        or not isinstance(message, dict)
+        or not isinstance(sender_id, dict)
+    ):
         return None
     values = {
         "event_id": header.get("event_id"),
         "tenant_key": header.get("tenant_key"),
         "message_id": message.get("message_id"),
+        "sender_union_id": sender_id.get("union_id"),
     }
     if not all(isinstance(value, str) and value for value in values.values()):
         return None

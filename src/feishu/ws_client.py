@@ -1051,6 +1051,13 @@ class FeishuWSClient:
             "open_id", None,
         )
         _sender_id = _raw_sender if isinstance(_raw_sender, str) else ""
+        _raw_sender_union_id = getattr(
+            getattr(getattr(data.event, "sender", None), "sender_id", None),
+            "union_id", None,
+        )
+        _sender_union_id = (
+            _raw_sender_union_id if isinstance(_raw_sender_union_id, str) else ""
+        )
         _raw_tenant_key = getattr(getattr(data, "header", None), "tenant_key", None)
         tenant_key = _raw_tenant_key if isinstance(_raw_tenant_key, str) else ""
 
@@ -1152,6 +1159,7 @@ class FeishuWSClient:
                 is_system_command=is_system,
                 is_p2p=is_p2p,
                 sender_id=_sender_id,
+                sender_union_id=_sender_union_id,
                 tenant_key=tenant_key,
                 queue_key=queue_key,
             )
@@ -1247,6 +1255,7 @@ class FeishuWSClient:
             set_current_is_p2p,
             set_current_sender_id,
             set_current_sender_name,
+            set_current_sender_union_id,
             set_current_tenant_key,
             set_current_thread_id,
         )
@@ -1272,6 +1281,18 @@ class FeishuWSClient:
             )
             # Propagate to thread-local so downstream handlers (e.g. /lock) can access it.
             set_current_sender_id(_sender_id)
+            _sender_union_id = (
+                task_ctx.spec.sender_union_id
+                if task_ctx and hasattr(task_ctx, "spec")
+                else (
+                    getattr(
+                        getattr(getattr(event, "sender", None), "sender_id", None),
+                        "union_id", None,
+                    )
+                    or ""
+                )
+            )
+            set_current_sender_union_id(_sender_union_id or None)
             # Resolve display name via cached Feishu contact API lookup;
             # falls back to truncated sender_id if unavailable.
             from .user_cache import resolve_display_name
@@ -1423,6 +1444,7 @@ class FeishuWSClient:
         finally:
             set_current_thread_id(None)
             set_current_sender_id(None)
+            set_current_sender_union_id(None)
             set_current_sender_name("")
             set_current_is_p2p(False)
             set_current_tenant_key(None)
@@ -1974,6 +1996,7 @@ class FeishuWSClient:
             logger.debug("failed to check system command gate", exc_info=True)
 
         operator_id = ""
+        operator_union_id = ""
         try:
             operator = data.event.operator
             operator_id = (
@@ -1981,6 +2004,12 @@ class FeishuWSClient:
                 or getattr(operator, "user_id", None)
                 or getattr(operator, "union_id", None)
                 or ""
+            )
+            raw_operator_union_id = getattr(operator, "union_id", None)
+            operator_union_id = (
+                raw_operator_union_id
+                if isinstance(raw_operator_union_id, str)
+                else ""
             )
         except (AttributeError, TypeError):
             operator_id = ""
@@ -2060,6 +2089,7 @@ class FeishuWSClient:
                 is_system_command=is_system,
                 is_p2p=card_is_p2p,
                 sender_id=operator_id,
+                sender_union_id=operator_union_id,
                 tenant_key=tenant_key,
             )
             handle = self._scheduler.submit(spec, lambda ctx: self._process_card_action_async(data, task_ctx=ctx))
@@ -2198,6 +2228,7 @@ class FeishuWSClient:
             set_current_is_p2p,
             set_current_sender_id,
             set_current_sender_name,
+            set_current_sender_union_id,
             set_current_tenant_key,
             set_current_thread_id,
         )
@@ -2235,6 +2266,12 @@ class FeishuWSClient:
                 else getattr(getattr(data.event, "context", None), "chat_type", None) == "p2p"
             )
             set_current_sender_id(_operator_id)
+            _operator_union_id = (
+                task_ctx.spec.sender_union_id
+                if task_ctx and hasattr(task_ctx, "spec")
+                else (getattr(operator, "union_id", None) or "")
+            )
+            set_current_sender_union_id(_operator_union_id or None)
             from .user_cache import resolve_display_name as _resolve_name
             _op_name = _resolve_name(_operator_id, self._get_api_client) if _operator_id else ""
             set_current_sender_name(_op_name or (_operator_id[:8] if _operator_id else ""))
@@ -2379,6 +2416,7 @@ class FeishuWSClient:
         finally:
             set_current_thread_id(None)
             set_current_sender_id(None)
+            set_current_sender_union_id(None)
             set_current_sender_name("")
             set_current_is_p2p(False)
             set_current_tenant_key(None)

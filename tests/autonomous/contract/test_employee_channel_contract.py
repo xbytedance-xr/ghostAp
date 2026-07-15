@@ -571,7 +571,12 @@ def test_worker_extracts_only_authoritative_non_secret_raw_message_metadata() ->
         },
         "event": {
             "message": {"message_id": "om_1", "content": "secret user text"},
-            "sender": {"sender_id": {"open_id": "ou_admin"}},
+            "sender": {
+                "sender_id": {
+                    "open_id": "ou_employee_app_admin",
+                    "union_id": "on_admin",
+                }
+            },
         },
     }
 
@@ -579,6 +584,7 @@ def test_worker_extracts_only_authoritative_non_secret_raw_message_metadata() ->
         "event_id": "evt_1",
         "tenant_key": "tenant_a",
         "message_id": "om_1",
+        "sender_union_id": "on_admin",
     }
 
 

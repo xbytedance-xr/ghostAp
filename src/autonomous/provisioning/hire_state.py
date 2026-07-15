@@ -41,6 +41,7 @@ class DurableHireState:
     message_id: str = ""
     chat_id: str = ""
     requester_principal_id: str = ""
+    requester_union_id: str = ""
     employee_name: str = ""
     tool: str = ""
     model: str = ""
@@ -184,12 +185,16 @@ def _created_state(event: JournalEvent, sequence: int) -> DurableHireState | Non
     agent_id = _required_string(payload, "agent_id")
     if agent_id != event.aggregate_id:
         raise HireProjectionError("hire employee aggregate mismatch")
+    requester_union_id = payload.get("requester_union_id", "")
+    if not isinstance(requester_union_id, str):
+        raise HireProjectionError("requester_union_id must be a string")
     return DurableHireState(
         intent_id=_required_string(payload, "hire_intent_id"),
         tenant_key=_required_string(payload, "tenant_key"),
         message_id=_required_string(payload, "hire_message_id"),
         chat_id=_required_string(payload, "hire_chat_id"),
         requester_principal_id=_required_string(payload, "owner_principal_id"),
+        requester_union_id=requester_union_id,
         employee_name=_required_string(payload, "name"),
         tool=_required_string(payload, "tool"),
         model=_required_string(payload, "model"),
@@ -266,6 +271,27 @@ class HireProjection:
                 if intent_id is None:
                     continue
                 current = states[intent_id]
+                if event.event_type == "hire.requester_identity_bound":
+                    if set(event.payload) != {"requester_union_id"}:
+                        raise HireProjectionError("invalid requester identity payload")
+                    requester_union_id = _required_string(
+                        event.payload,
+                        "requester_union_id",
+                    )
+                    if (
+                        event.aggregate_id != current.intent_id
+                        or (
+                            current.requester_union_id
+                            and current.requester_union_id != requester_union_id
+                        )
+                    ):
+                        raise HireProjectionError("requester identity binding mismatch")
+                    states[intent_id] = replace(
+                        current,
+                        requester_union_id=requester_union_id,
+                        last_sequence=frame.sequence,
+                    )
+                    continue
                 if event.event_type == "employee.state_changed":
                     if set(event.payload) != {"state"}:
                         raise HireProjectionError("invalid hire phase payload")
@@ -306,12 +332,14 @@ class HireProjection:
                         "agent_id",
                         "generation",
                         "requester_principal_id",
+                        "requester_union_id",
                         "expected_slash_spec_hash",
                         "nonce",
                         "issued_at",
                         "expires_at",
                     }
-                    if set(event.payload) != expected_keys:
+                    legacy_keys = expected_keys - {"requester_union_id"}
+                    if set(event.payload) != expected_keys and set(event.payload) != legacy_keys:
                         raise HireProjectionError("invalid verification challenge payload")
                     generation = event.payload["generation"]
                     issued_at = event.payload["issued_at"]
@@ -324,6 +352,11 @@ class HireProjection:
                         or event.payload["agent_id"] != current.agent_id
                         or event.payload["requester_principal_id"]
                         != current.requester_principal_id
+                        or (
+                            "requester_union_id" in event.payload
+                            and event.payload["requester_union_id"]
+                            != current.requester_union_id
+                        )
                         or event.payload["expected_slash_spec_hash"]
                         != current.slash_spec_hash
                         or isinstance(generation, bool)
@@ -388,9 +421,11 @@ class HireProjection:
                         "employee_send_request_id",
                         "reply_app_id",
                         "main_bot_send_count",
+                        "sender_union_id",
                         "verified_at",
                     }
-                    if set(event.payload) != expected_keys:
+                    legacy_keys = expected_keys - {"sender_union_id"}
+                    if set(event.payload) != expected_keys and set(event.payload) != legacy_keys:
                         raise HireProjectionError("invalid activation evidence payload")
                     if (
                         event.aggregate_id != current.intent_id
@@ -406,6 +441,11 @@ class HireProjection:
                         != current.channel_connection_id
                         or event.payload["reply_app_id"] != current.app_id
                         or event.payload["main_bot_send_count"] != 0
+                        or (
+                            "sender_union_id" in event.payload
+                            and event.payload["sender_union_id"]
+                            != current.requester_union_id
+                        )
                     ):
                         raise HireProjectionError("invalid activation evidence binding")
                     states[intent_id] = replace(

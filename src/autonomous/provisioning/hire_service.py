@@ -276,6 +276,7 @@ class ProductionEmployeeHireService:
                         "agent_id": agent_id,
                         "tenant_key": request.tenant_key,
                         "owner_principal_id": request.requester_principal_id,
+                        "requester_union_id": request.requester_union_id,
                         "name": request.employee_name,
                         "tool": request.tool,
                         "model": request.model,
@@ -477,6 +478,7 @@ class ProductionEmployeeHireService:
                 or challenge.agent_id != state.agent_id
                 or challenge.requester_principal_id
                 != state.requester_principal_id
+                or challenge.requester_union_id != state.requester_union_id
             ):
                 raise HireAdmissionError("verification challenge binding mismatch")
             if state.phase is HirePhase.CONFIGURING:
@@ -494,6 +496,7 @@ class ProductionEmployeeHireService:
                         "agent_id": challenge.agent_id,
                         "generation": challenge.generation,
                         "requester_principal_id": challenge.requester_principal_id,
+                        "requester_union_id": challenge.requester_union_id,
                         "expected_slash_spec_hash": challenge.expected_slash_spec_hash,
                         "nonce": challenge.nonce,
                         "issued_at": challenge.issued_at,
@@ -616,6 +619,7 @@ class ProductionEmployeeHireService:
                         "employee_send_request_id": evidence.employee_send_request_id,
                         "reply_app_id": evidence.reply_app_id,
                         "main_bot_send_count": evidence.main_bot_send_count,
+                        "sender_union_id": evidence.sender_union_id,
                         "verified_at": evidence.verified_at,
                     },
                 )
@@ -1260,6 +1264,11 @@ class ProductionEmployeeHireService:
                 raise HireAdmissionError(f"{field_name} is required")
         if not isinstance(request.role, str) or not isinstance(request.persona, str):
             raise HireAdmissionError("role and persona must be strings")
+        if (
+            not isinstance(request.requester_union_id, str)
+            or request.requester_union_id != request.requester_union_id.strip()
+        ):
+            raise HireAdmissionError("requester_union_id is invalid")
         from src.acp.employee_selection import validate_employee_model_components
 
         try:
@@ -1282,6 +1291,7 @@ class ProductionEmployeeHireService:
             and state.message_id == request.message_id
             and state.chat_id == request.chat_id
             and state.requester_principal_id == request.requester_principal_id
+            and state.requester_union_id == request.requester_union_id
             and state.employee_name == request.employee_name
             and state.tool == request.tool
             and state.model == request.model
@@ -1290,6 +1300,33 @@ class ProductionEmployeeHireService:
             and state.role == request.role
             and state.persona == request.persona
         )
+
+    def bind_requester_union_id(
+        self,
+        intent_id: str,
+        requester_union_id: str,
+    ) -> DurableHireState:
+        """Durably attach a cross-app identity to a legacy pending hire."""
+
+        if (
+            not isinstance(requester_union_id, str)
+            or not requester_union_id.strip()
+            or requester_union_id != requester_union_id.strip()
+        ):
+            raise HireAdmissionError("requester_union_id is required")
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            state = self._require_hire(intent_id)
+            if state.requester_union_id:
+                if state.requester_union_id != requester_union_id:
+                    raise HireAdmissionError("requester identity binding mismatch")
+                return state
+            return self._commit_hire_event_locked(
+                JournalEvent(
+                    event_type="hire.requester_identity_bound",
+                    aggregate_id=state.intent_id,
+                    payload={"requester_union_id": requester_union_id},
+                )
+            )
 
 
 __all__ = [

@@ -11,10 +11,12 @@ from concurrent.futures import ThreadPoolExecutor
 from src.thread import (
     get_current_is_p2p,
     get_current_sender_id,
+    get_current_sender_union_id,
     get_current_tenant_key,
     get_current_thread_id,
     set_current_is_p2p,
     set_current_sender_id,
+    set_current_sender_union_id,
     set_current_tenant_key,
     set_current_thread_id,
 )
@@ -26,6 +28,7 @@ class TestContextVarPropagation:
     def test_contextvar_auto_propagation_via_copy_context(self) -> None:
         """Parent sets values → copy_context() → run() in worker sees them."""
         set_current_sender_id("user_abc")
+        set_current_sender_union_id("union_abc")
         set_current_is_p2p(True)
         set_current_tenant_key("tenant_a")
         set_current_thread_id("thread_xyz")
@@ -35,6 +38,7 @@ class TestContextVarPropagation:
 
         def _worker() -> None:
             results["sender_id"] = get_current_sender_id()
+            results["sender_union_id"] = get_current_sender_union_id()
             results["is_p2p"] = get_current_is_p2p()
             results["tenant_key"] = get_current_tenant_key()
             results["thread_id"] = get_current_thread_id()
@@ -44,12 +48,14 @@ class TestContextVarPropagation:
             fut.result()
 
         assert results["sender_id"] == "user_abc"
+        assert results["sender_union_id"] == "union_abc"
         assert results["is_p2p"] is True
         assert results["tenant_key"] == "tenant_a"
         assert results["thread_id"] == "thread_xyz"
 
         # Cleanup parent context
         set_current_sender_id(None)
+        set_current_sender_union_id(None)
         set_current_is_p2p(False)
         set_current_tenant_key(None)
         set_current_thread_id(None)

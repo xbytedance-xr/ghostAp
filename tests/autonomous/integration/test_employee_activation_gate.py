@@ -83,6 +83,7 @@ def _request() -> EmployeeHireRequest:
         chat_id="oc_admin_dm",
         message_id="om_activation",
         requester_principal_id="ou_admin",
+        requester_union_id="on_admin",
         tenant_key="tenant-a",
     )
 
@@ -156,6 +157,7 @@ async def test_active_requires_durable_slash_channel_ingress_and_employee_send(
             agent_id=configured.agent_id,
             generation=1,
             requester_principal_id=configured.requester_principal_id,
+            requester_union_id=configured.requester_union_id,
             expected_slash_spec_hash="spec_hash",
         ),
         ttl_seconds=60,
@@ -194,6 +196,7 @@ async def test_active_requires_durable_slash_channel_ingress_and_employee_send(
             "evt_1",
             "om_status",
             pending.requester_principal_id,
+            pending.requester_union_id,
             "/status",
             True,
             True,
@@ -230,6 +233,7 @@ async def test_verification_cannot_start_without_committed_exact_configuration(
             configured.agent_id,
             1,
             configured.requester_principal_id,
+            configured.requester_union_id,
             "spec_hash",
         )
     )
@@ -280,6 +284,7 @@ async def test_activation_nonce_and_terminal_state_survive_replay(tmp_path: Path
             configured.agent_id,
             1,
             configured.requester_principal_id,
+            configured.requester_union_id,
             "spec_hash",
         )
     )
@@ -340,6 +345,7 @@ async def test_challenge_issue_resumes_after_crash_in_validating_phase(
             configured.agent_id,
             1,
             configured.requester_principal_id,
+            configured.requester_union_id,
             "spec_hash",
         )
     )

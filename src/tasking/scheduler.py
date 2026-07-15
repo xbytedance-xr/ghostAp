@@ -56,6 +56,7 @@ class TaskSpec(BaseModel):
     is_system_command: bool = False
     is_p2p: bool = False  # True when message originates from a private (p2p) chat
     sender_id: str = ""  # Feishu open_id of the message sender
+    sender_union_id: str = ""  # Cross-app stable Feishu union_id of the sender
     tenant_key: str = ""  # Authoritative tenant from the Lark event header
 
     def get_effective_queue_key(self) -> str:

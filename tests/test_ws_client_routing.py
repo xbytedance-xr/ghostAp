@@ -104,6 +104,7 @@ def test_handle_message_records_trusted_chat_origin(mock_ws_client: FeishuWSClie
     msg = create_mock_message("/hire 柳七月", message_id="msg_hire", chat_id="chat_dm")
     msg.event.message.chat_type = "p2p"
     msg.event.sender.sender_id.open_id = "ou_admin"
+    msg.event.sender.sender_id.union_id = "on_admin"
 
     mock_ws_client._handle_message(msg)
 
@@ -112,6 +113,8 @@ def test_handle_message_records_trusted_chat_origin(mock_ws_client: FeishuWSClie
     assert origin["chat_id"] == "chat_dm"
     assert origin["chat_type"] == "p2p"
     assert origin["sender_id"] == "ou_admin"
+    spec, _ = mock_ws_client._scheduler.submit.call_args.args
+    assert spec.sender_union_id == "on_admin"
 
 
 def test_employee_department_runtime_is_wired_and_enabled_by_default(
@@ -761,6 +764,7 @@ def test_card_action_deduplication_and_routing(mock_ws_client: FeishuWSClient):
     data.event.action.value = '{"action": "show_status", "project_id": "proj_1"}'
     data.event.operator.open_id = "ou_test"
     data.event.operator.user_id = "u_test"
+    data.event.operator.union_id = "on_test"
 
     # Mock deduplication cache to False
     mock_ws_client._card_event_cache.is_duplicate = MagicMock(return_value=False)
@@ -778,6 +782,7 @@ def test_card_action_deduplication_and_routing(mock_ws_client: FeishuWSClient):
     assert spec.task_type == "feishu_card_action"
     assert spec.tenant_key == "tenant_card"
     assert spec.project_id == "proj_1"
+    assert spec.sender_union_id == "on_test"
     # System card actions like show_status are HIGH priority and is_system_command
     assert spec.priority == TaskPriority.HIGH
     assert spec.is_system_command is True

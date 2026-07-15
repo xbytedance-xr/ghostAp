@@ -18,6 +18,7 @@ class EmployeeHireRequest:
     chat_id: str
     message_id: str
     requester_principal_id: str
+    requester_union_id: str = ""
     tenant_key: str = ""
     profile: str = "standard"
     role: str = ""
