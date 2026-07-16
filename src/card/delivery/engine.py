@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
+import re
 import threading
 
 from src.card.delivery.binding import BindingStore, PageBinding
@@ -18,10 +20,6 @@ from src.card.types import RenderedCard
 logger = logging.getLogger(__name__)
 
 _RECREATE_OUTCOME_PREFIX = "recreate:"
-
-# Maximum pages to create at once when binding is None (recreation scenario).
-# Prevents flooding the chat with many historical pages after a stale binding discard.
-_MAX_RECREATE_PAGES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +141,11 @@ class CardDelivery:
         - Only text changed → element_content
         - No change → skip
 
-        When ``is_terminal`` is True (completion/failure/cancel), history pages
-        are NOT frozen: every page is flushed to its final state so the first
-        (and any intermediate) card message shows the completed header and the
-        full final content instead of staying stuck on a mid-run snapshot.
+        Pagination follows an append-only message contract: pages are created in
+        ascending order, a page is flushed once when it becomes history, and only
+        the highest visible page continues to receive live or terminal updates.
+        This preserves Feishu message chronology even when rendered page counts
+        grow or shrink.
 
         Idempotent: returns empty list if session is already closed.
 
@@ -196,54 +195,139 @@ class CardDelivery:
             return []
         binding = self._bindings.get(session_id)
         outcomes: list[MutationOutcome] = []
-        rendered_indices = {card.page_index for card in rendered}
-        latest_page_idx = max(rendered_indices) if rendered_indices else 0
-        # Freeze non-latest pages during streaming updates to avoid churn, but
-        # NOT on terminal delivery — the completed/failed state (final full text,
-        # terminal header, trailing summary) must reach every page, including the
-        # first card message the user sees.
-        freeze_history_pages = (
-            binding is not None and len(rendered_indices) > 1 and not is_terminal
-        )
+        ordered = sorted(rendered, key=lambda card: card.page_index)
+        if not ordered:
+            return outcomes
+        latest_rendered_idx = ordered[-1].page_index
 
         if binding is None:
             binding = self._bindings.create(session_id, chat_id)
-            # Limit pages created at once to prevent flooding after stale binding discard.
-            # Only create the most recent pages (latest content is most relevant).
-            pages_to_create = rendered[-_MAX_RECREATE_PAGES:] if len(rendered) > _MAX_RECREATE_PAGES else rendered
-            for card in pages_to_create:
+            for card in ordered:
                 outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
                 outcomes.append(outcome)
-        else:
-            for card in rendered:
-                page_idx = card.page_index
-                if freeze_history_pages and page_idx < latest_page_idx:
-                    outcomes.append(MutationOutcome(kind="skipped", message="history_page_frozen"))
-                    continue
-                existing_page = binding.pages.get(page_idx)
-
-                if existing_page is None:
-                    outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
-                elif existing_page.signature != card.structure_signature:
-                    outcome = self._update_page(session_id, existing_page, card)
-                elif (
-                    card.active_element is not None
-                    and sanitize_card_text_for_audit(card.active_element.text) != existing_page.last_text
-                ):
-                    outcome = self._stream_element(session_id, existing_page, card)
-                else:
-                    outcome = MutationOutcome(kind="skipped")
-                outcomes.append(outcome)
-                if self._is_recreate_outcome(outcome):
-                    self._discard_binding_for_recreate(session_id, binding)
+                if outcome.kind != "applied":
                     break
+                if card.page_index < latest_rendered_idx:
+                    self._bindings.mark_frozen(session_id, card.page_index)
+            return outcomes
 
-            # Finalize stale pages (pages in binding but not in current rendered set)
-            for stale_idx in list(binding.pages.keys()):
-                if stale_idx not in rendered_indices:
-                    self._finalize_page(session_id, binding.pages[stale_idx])
+        if not binding.pages:
+            for card in ordered:
+                outcome = self._create_page(session_id, chat_id, card, reply_to=reply_to, reply_in_thread=reply_in_thread)
+                outcomes.append(outcome)
+                if outcome.kind != "applied":
+                    break
+                if card.page_index < latest_rendered_idx:
+                    self._bindings.mark_frozen(session_id, card.page_index)
+            return outcomes
+
+        message_high_watermark = max(binding.pages)
+
+        # Renderer compaction can reduce its page count. Never delete or reuse an
+        # older Feishu message: move the renderer's newest state onto the existing
+        # highest message and preserve all lower bindings as immutable history.
+        if latest_rendered_idx < message_high_watermark:
+            latest_card = self._remap_latest_card(
+                ordered[-1],
+                page_index=message_high_watermark,
+                total_pages=message_high_watermark + 1,
+            )
+            latest_page = binding.pages[message_high_watermark]
+            self._bindings.mark_frozen(
+                session_id,
+                message_high_watermark,
+                frozen=False,
+            )
+            outcomes.append(self._mutate_page(session_id, latest_page, latest_card))
+            return outcomes
+
+        for card in ordered:
+            page_idx = card.page_index
+            existing_page = binding.pages.get(page_idx)
+
+            if (
+                page_idx < message_high_watermark
+                or (existing_page is not None and existing_page.is_frozen)
+            ):
+                outcomes.append(MutationOutcome(kind="skipped", message="history_page_frozen"))
+                continue
+
+            if existing_page is None:
+                outcome = self._create_page(
+                    session_id,
+                    chat_id,
+                    card,
+                    reply_to=reply_to,
+                    reply_in_thread=reply_in_thread,
+                )
+            else:
+                outcome = self._mutate_page(session_id, existing_page, card)
+            outcomes.append(outcome)
+
+            if self._is_recreate_outcome(outcome):
+                break
+            if outcome.kind == "reconcile":
+                break
+
+            # When pagination grows, the previous live page is first flushed with
+            # its boundary content above, then becomes immutable. Intermediate new
+            # pages are likewise frozen; only the newest page remains live.
+            if page_idx < latest_rendered_idx:
+                self._bindings.mark_frozen(session_id, page_idx)
 
         return outcomes
+
+    @staticmethod
+    def _remap_latest_card(
+        card: RenderedCard,
+        *,
+        page_index: int,
+        total_pages: int,
+    ) -> RenderedCard:
+        """Move compacted output to the newest message and keep its page label truthful."""
+        payload = card.to_feishu_json()
+        header = payload.get("header")
+        if isinstance(header, dict):
+            for field in ("title", "subtitle"):
+                value = header.get(field)
+                if not isinstance(value, dict) or not isinstance(value.get("content"), str):
+                    continue
+                value["content"] = re.sub(
+                    r"(?:\s*·\s*)?页\s+\d+/\d+",
+                    "",
+                    value["content"],
+                ).strip()
+            title = header.get("title")
+            if isinstance(title, dict) and isinstance(title.get("content"), str):
+                title["content"] = (
+                    f"{title['content']} · 页 {page_index + 1}/{total_pages}"
+                )
+
+        return dataclasses.replace(
+            card,
+            _card_json=payload,
+            structure_signature=(
+                f"{card.structure_signature}:message-page:{page_index + 1}/{total_pages}"
+            ),
+            page_index=page_index,
+            total_pages=total_pages,
+        )
+
+    def _mutate_page(
+        self,
+        session_id: str,
+        page: PageBinding,
+        card: RenderedCard,
+    ) -> MutationOutcome:
+        """Apply the smallest safe mutation to one existing page."""
+        if page.signature != card.structure_signature:
+            return self._update_page(session_id, page, card)
+        if (
+            card.active_element is not None
+            and sanitize_card_text_for_audit(card.active_element.text) != page.last_text
+        ):
+            return self._stream_element(session_id, page, card)
+        return MutationOutcome(kind="skipped")
 
     def close(self, session_id: str) -> None:
         """Finalize a session: remove bindings, sequences, and session lock.
@@ -307,15 +391,3 @@ class CardDelivery:
     @staticmethod
     def _is_recreate_outcome(outcome: MutationOutcome) -> bool:
         return outcome.kind == "reconcile" and outcome.message.startswith(_RECREATE_OUTCOME_PREFIX)
-
-    def _discard_binding_for_recreate(self, session_id: str, binding: object) -> None:
-        """Drop all pages after one stale message proves this session binding is expired."""
-        removed = self._bindings.remove(session_id)
-        target = removed or binding
-        pages = getattr(target, "pages", None)
-        if not isinstance(pages, dict):
-            return
-        for page in list(pages.values()):
-            if page.card_id:
-                self._sequences.reset(page.card_id)
-        pages.clear()

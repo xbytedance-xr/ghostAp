@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ...acp import ACPEvent, ACPEventType
 from ...card.events import CardEvent, CardEventType
 from ...card.orchestrator import TaskOrchestrator
+from ...card.render.build_heartbeat import BuildHeartbeat
+from ...card.stream_bridge import ACPStreamBridge
 from ...card.task_registry import TaskRegistry, tasks_from_plan_entries
 from ...card.ui_text import UI_TEXT
+from ...config import get_settings
 from ...deep_engine import DeepEngineCallbacks
 from ...deep_engine.models import DeepProject, DeepProjectStatus
 from ..emoji import EmojiReaction
@@ -25,6 +29,7 @@ class DeepStreamProcessor(BaseStreamProcessor):
     """Render Deep engine progress through the shared Spec-style card pipeline."""
 
     _CYCLE = 1
+    _MAIN_TASK_ID = "_deep_main"
 
     def __init__(
         self,
@@ -40,10 +45,30 @@ class DeepStreamProcessor(BaseStreamProcessor):
         self._root_path = root_path
         self._project = project
         self._task_registry = TaskRegistry()
+        self._task_registry.register(
+            task_id=self._MAIN_TASK_ID,
+            name=UI_TEXT["deep_main_task"],
+            status="in_progress",
+        )
         self._tool_count = 0
         self._plan_steps = 0
         self._phase = "analyzing"
-        self._current_task_id = ""
+        self._current_task_id = self._MAIN_TASK_ID
+        self._has_real_plan = False
+
+        settings = get_settings()
+        self._subagent_orchestrator = TaskOrchestrator(
+            chat_id=chat_id,
+            session_creator=self._create_subagent_session,
+            bridge_factory=ACPStreamBridge,
+            max_task_cards=max(1, int(settings.card.max_task_cards)),
+        )
+        self._subagent_orchestrator.set_thinking_session(rotator.current)
+        self._heartbeat = BuildHeartbeat(
+            session_id=rotator.session_id,
+            on_tick=self._on_heartbeat_tick,
+            interval=float(settings.card.build_heartbeat_interval),
+        )
 
     def build_callbacks(self) -> DeepEngineCallbacks:
         return DeepEngineCallbacks(
@@ -61,11 +86,17 @@ class DeepStreamProcessor(BaseStreamProcessor):
         self._dispatch_start(deep_project)
 
     def _dispatch_start(self, deep_project: DeepProject | None = None) -> None:
-        if not self._dispatch_started_once():
+        if self._started_dispatched:
             return
+        self._started_dispatched = True
 
         project_name = self._resolve_project_name(deep_project)
         root_path = self._resolve_root_path(deep_project)
+        # Seed sticky task state before STARTED creates the first Feishu message.
+        # STARTED preserves existing blocks, so the first visible card already
+        # satisfies the "task list on every main card" contract.
+        self._dispatch_task_list(self._MAIN_TASK_ID)
+        self._rotator.dispatch(CardEvent.started())
         self._rotator.dispatch(CardEvent.cycle_started(self._CYCLE, 1))
         self._rotator.dispatch(CardEvent.phase_started(
             self._CYCLE,
@@ -77,6 +108,23 @@ class DeepStreamProcessor(BaseStreamProcessor):
             ),
         ))
         self._phase = "analyzing"
+        self._heartbeat.start()
+
+    def _create_subagent_session(self, task_id: str):
+        """Create a child card without inheriting main-session terminal hooks."""
+        parent = self._rotator.current
+        metadata = replace(
+            parent._metadata,
+            unit_id=task_id,
+            unit_kind="subagent",
+        )
+        return self._renderer.create_session(
+            self._chat_id,
+            self._message_id,
+            metadata,
+            hooks=(),
+            budget=parent._budget,
+        )
 
     def _resolve_project_name(self, deep_project: DeepProject | None) -> str:
         if deep_project and deep_project.name:
@@ -100,6 +148,15 @@ class DeepStreamProcessor(BaseStreamProcessor):
     def on_event(self, event: ACPEvent) -> None:
         """Process ACP events and dispatch Spec-style card events."""
         self._acp_renderer.process_event(event)
+        activity = (
+            "tool_running"
+            if event.event_type in {
+                ACPEventType.TOOL_CALL_START,
+                ACPEventType.TOOL_CALL_UPDATE,
+            }
+            else "thinking"
+        )
+        self._heartbeat.reset(activity)
 
         if event.event_type == ACPEventType.PLAN_UPDATE:
             if self._handle_plan_task_list(event):
@@ -113,7 +170,7 @@ class DeepStreamProcessor(BaseStreamProcessor):
         if event.event_type != ACPEventType.TOOL_CALL_DONE:
             self._handle_agent_task_list(event)
 
-        self._stream_bridge.on_event(event)
+        self._subagent_orchestrator.route_acp_event(event, self._stream_bridge)
 
         if event.event_type == ACPEventType.TOOL_CALL_DONE:
             self._handle_agent_task_list(event)
@@ -125,9 +182,8 @@ class DeepStreamProcessor(BaseStreamProcessor):
                 label=UI_TEXT["deep_phase_executing"],
             ))
 
-        self._dispatch_warning_if_needed(is_executing=self._phase == "build")
-
     def on_project_done(self, deep_project: DeepProject) -> None:
+        self._heartbeat.stop()
         self._stream_bridge.close_open_blocks()
         self._complete_active_phase()
         self._rotator.dispatch(CardEvent.cycle_done(self._CYCLE))
@@ -137,28 +193,72 @@ class DeepStreamProcessor(BaseStreamProcessor):
         summary = UI_TEXT["deep_exec_completed"].format(tool_calls_count=tool_calls_count)
 
         if deep_project.status == DeepProjectStatus.COMPLETED:
+            self._finalize_main_tasks(success=True)
             self._rotator.dispatch(CardEvent.completed(summary=summary))
             self._renderer.handler.add_reaction(self._message_id, EmojiReaction.on_multi_task_done())
+            self._subagent_orchestrator.close()
         else:
             tasks = self._task_payload()
             completed = sum(1 for task in tasks if task.get("status") == "completed")
-            self._rotator.dispatch(CardEvent.failed(UI_TEXT["deep_exec_incomplete"].format(
+            failure = UI_TEXT["deep_exec_incomplete"].format(
                 completed=completed,
                 total=len(tasks),
-            )))
+            )
+            self._finalize_main_tasks(success=False)
+            self._rotator.dispatch(CardEvent.failed(failure))
+            self._subagent_orchestrator.close(
+                terminal_status="failed",
+                summary=failure,
+            )
         self._renderer._current_session = None
 
     def on_error(self, error: str) -> None:
+        self._heartbeat.stop()
+        self._finalize_main_tasks(success=False)
         self._dispatch_failed(error)
+        self._subagent_orchestrator.close(
+            terminal_status="failed",
+            summary=error,
+        )
+
+    def _on_heartbeat_tick(self, _elapsed: float, activity: str) -> None:
+        """Refresh elapsed time and the latest execution status during quiet gaps."""
+        if self._phase == "done":
+            return
+        is_executing = self._phase == "build" or activity == "tool_running"
+        self._rotator.dispatch(CardEvent.progress_updated(
+            current=self._tool_count,
+            total=max(self._plan_steps, self._tool_count),
+            label=UI_TEXT[
+                "deep_phase_executing" if is_executing else "deep_phase_planning"
+            ],
+        ))
+
+    def _finalize_main_tasks(self, *, success: bool) -> None:
+        """Finalize unfinished sticky tasks before delivering the terminal card."""
+        terminal_status = "completed" if success else "failed"
+        for task in self._task_registry.get_snapshot():
+            if task.status in {"pending", "in_progress"}:
+                self._task_registry.update_status(
+                    task.task_id,
+                    terminal_status,
+                    notify=False,
+                )
+        self._dispatch_task_list()
 
     def _task_payload(self) -> list[dict]:
         return [
             {"task_id": task.task_id, "name": task.name, "status": task.status}
             for task in self._task_registry.get_snapshot()
+            if not (self._has_real_plan and task.task_id == self._MAIN_TASK_ID)
         ]
 
     def _pick_current_task_id(self, preferred: str = "") -> str:
-        snapshot = self._task_registry.get_snapshot()
+        snapshot = [
+            task
+            for task in self._task_registry.get_snapshot()
+            if not (self._has_real_plan and task.task_id == self._MAIN_TASK_ID)
+        ]
         if preferred:
             for item in snapshot:
                 if item.task_id == preferred and item.status == "in_progress":
@@ -207,6 +307,7 @@ class DeepStreamProcessor(BaseStreamProcessor):
         if not tasks:
             return False
 
+        self._has_real_plan = True
         self._plan_steps = len(tasks)
         current = ""
         for task in tasks:
@@ -237,7 +338,10 @@ class DeepStreamProcessor(BaseStreamProcessor):
             status = "failed" if raw_status == "failed" else "completed"
         else:
             status = "in_progress"
-        self._upsert_task(task_id, TaskOrchestrator._extract_agent_task_label(tool_call), status)
+        label = TaskOrchestrator._extract_agent_task_label(tool_call)
+        if is_agent_task_event and not label.startswith("🧬 "):
+            label = f"🧬 {label}"
+        self._upsert_task(task_id, label, status)
         self._dispatch_task_list(task_id)
         return True
 

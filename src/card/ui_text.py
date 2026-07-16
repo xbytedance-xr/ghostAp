@@ -958,6 +958,7 @@ UI_TEXT = {
     "deep_exec_start": "🚀 ACP Deep 执行开始\n\n📂 **{project_name}**\n🔗 路径: `{root_path}`",
     "deep_phase_executing": "🔄 执行中",
     "deep_phase_planning": "🧠 分析/规划中",
+    "deep_main_task": "分析与执行主流程",
     "deep_spec_style_subtitle_analyzing": "Deep · 分析",
     "deep_spec_style_subtitle_build": "Deep · 执行",
     "deep_spec_style_analyzing_done": "分析与任务拆解已完成。",

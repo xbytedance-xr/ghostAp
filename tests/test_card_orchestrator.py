@@ -721,6 +721,20 @@ class TestClose:
         orch.dispatch_to_task("t1", CardEvent(type=CardEventType.TEXT_DELTA, payload={"block_id": "x", "text": "y"}))
         assert sessions["t1"].event_count == initial_count
 
+    def test_close_can_fail_all_active_sessions(self):
+        orch, _, sessions = _make_orchestrator()
+        orch.on_plan_received([
+            {"task_id": "t1", "name": "A"},
+            {"task_id": "t2", "name": "B"},
+        ])
+
+        orch.close(terminal_status="failed", summary="parent failed")
+
+        for session in sessions.values():
+            failed = session.events_of_type(CardEventType.FAILED)
+            assert len(failed) == 1
+            assert failed[0].payload["error"] == "parent failed"
+
 
 
 class TestThinkingSession:

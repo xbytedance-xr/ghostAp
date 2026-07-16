@@ -68,6 +68,25 @@ class TestCardSessionDispatch:
         assert session.state is not None
         assert session.state.terminal == "running"
 
+    def test_task_list_can_seed_the_first_created_card_before_started(self):
+        session, client, _ = self._make_session()
+
+        session.dispatch(CardEvent(
+            type=CardEventType.TASK_LIST_UPDATED,
+            payload={
+                "tasks": [{
+                    "task_id": "_deep_main",
+                    "name": "分析与执行主流程",
+                    "status": "in_progress",
+                }],
+                "current_task_id": "_deep_main",
+            },
+        ))
+        session.dispatch(CardEvent.started())
+
+        assert len(client.creates) == 1
+        assert "分析与执行主流程" in str(client.creates[0]["card_json"])
+
     def test_dispatch_text_delta_updates_state(self):
         session, client, _ = self._make_session()
         session.dispatch(CardEvent(type=CardEventType.STARTED))
@@ -127,6 +146,138 @@ class TestCardSessionDispatch:
         fn, args, kwargs = pool.jobs.pop(0)
         fn(*args, **kwargs)
         assert delivered == [["first"], ["latest"]]
+
+    def test_async_delivery_rejects_older_render_that_finishes_after_newer_state(self, monkeypatch):
+        """A slow render of version N must not be queued after version N+1."""
+        session, _, _ = self._make_session()
+        session._sync_delivery = False
+        delivered = []
+        old_render_started = threading.Event()
+        release_old_render = threading.Event()
+
+        class FakePool:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.jobs.append((fn, args, kwargs))
+
+        def render_by_version(state, _budget):
+            if state.version == 1:
+                old_render_started.set()
+                assert release_old_render.wait(timeout=2)
+            return [f"version-{state.version}"]
+
+        pool = FakePool()
+        monkeypatch.setattr("src.card.delivery.pool.get_delivery_pool", lambda: pool)
+        monkeypatch.setattr("src.card.session.core.render_card", render_by_version)
+        monkeypatch.setattr(
+            session,
+            "_deliver_and_track",
+            lambda rendered, is_terminal, *, event=None: delivered.append(rendered),
+        )
+
+        old_dispatch = threading.Thread(target=lambda: session.dispatch(CardEvent.started()))
+        old_dispatch.start()
+        assert old_render_started.wait(timeout=2)
+
+        session.dispatch(CardEvent.text_started("newer"))
+        release_old_render.set()
+        old_dispatch.join(timeout=2)
+        assert not old_dispatch.is_alive()
+
+        while pool.jobs:
+            fn, args, kwargs = pool.jobs.pop(0)
+            fn(*args, **kwargs)
+
+        assert delivered == [["version-2"]]
+
+    def test_late_non_terminal_event_cannot_overtake_slow_terminal_render(self, monkeypatch):
+        """Once state reaches terminal, late stream events cannot steal its delivery slot."""
+        session, _, _ = self._make_session()
+        session.dispatch(CardEvent.started())
+        session._sync_delivery = False
+        delivered = []
+        terminal_render_started = threading.Event()
+        release_terminal_render = threading.Event()
+
+        class FakePool:
+            def __init__(self):
+                self.jobs = []
+
+            def submit(self, fn, *args, **kwargs):
+                self.jobs.append((fn, args, kwargs))
+
+        def render_by_version(state, _budget):
+            if state.version == 2:
+                terminal_render_started.set()
+                assert release_terminal_render.wait(timeout=2)
+            return [f"{state.terminal}-version-{state.version}"]
+
+        pool = FakePool()
+        monkeypatch.setattr("src.card.delivery.pool.get_delivery_pool", lambda: pool)
+        monkeypatch.setattr("src.card.session.core.render_card", render_by_version)
+        monkeypatch.setattr(
+            session,
+            "_deliver_and_track",
+            lambda rendered, is_terminal, *, event=None: delivered.append((rendered, is_terminal)),
+        )
+
+        terminal_dispatch = threading.Thread(
+            target=lambda: session.dispatch(CardEvent.completed())
+        )
+        terminal_dispatch.start()
+        assert terminal_render_started.wait(timeout=2)
+
+        session.dispatch(CardEvent.text_started("late-stream-block"))
+        release_terminal_render.set()
+        terminal_dispatch.join(timeout=2)
+        assert not terminal_dispatch.is_alive()
+
+        while pool.jobs:
+            fn, args, kwargs = pool.jobs.pop(0)
+            fn(*args, **kwargs)
+
+        assert delivered == [(["completed-version-2"], True)]
+        assert session.state.version == 2
+
+    def test_sync_delivery_serializes_revision_acceptance_with_visible_mutation(self, monkeypatch):
+        """The deterministic sync path must not let a newer write overtake an older one."""
+        session, _, _ = self._make_session()
+        session._sync_delivery = True
+        delivered = []
+        first_delivery_started = threading.Event()
+        release_first_delivery = threading.Event()
+        second_rendered = threading.Event()
+
+        def render_by_version(state, _budget):
+            if state.version == 2:
+                second_rendered.set()
+            return [f"version-{state.version}"]
+
+        monkeypatch.setattr("src.card.session.core.render_card", render_by_version)
+
+        def controlled_delivery(rendered, is_terminal, *, event=None):
+            if rendered == ["version-1"]:
+                first_delivery_started.set()
+                assert release_first_delivery.wait(timeout=2)
+            delivered.append(rendered)
+
+        monkeypatch.setattr(session, "_deliver_and_track", controlled_delivery)
+
+        first = threading.Thread(target=lambda: session.dispatch(CardEvent.started()))
+        second = threading.Thread(target=lambda: session.dispatch(CardEvent.text_started("newer")))
+        first.start()
+        assert first_delivery_started.wait(timeout=2)
+        second.start()
+
+        assert second_rendered.wait(timeout=2)
+        assert delivered == []
+        release_first_delivery.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        assert delivered == [["version-1"], ["version-2"]]
 
     def test_async_delivery_terminal_replaces_pending_non_terminal_update(self, monkeypatch):
         session, _, _ = self._make_session()

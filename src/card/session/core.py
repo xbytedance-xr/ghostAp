@@ -164,7 +164,8 @@ class CardSession:
         self._delivery_gate = threading.Condition(threading.Lock())  # leaf lock: never held while acquiring a LockLevel lock
         self._delivery_in_flight = False
         self._delivery_in_flight_terminal = False
-        self._delivery_pending: tuple[list, bool, CardEvent] | None = None
+        self._delivery_pending: tuple[list, bool, CardEvent, int | None] | None = None
+        self._delivery_highest_revision = -1
 
         self._first_deliver_fired: bool = False
 
@@ -417,7 +418,7 @@ class CardSession:
         state_snapshot = None
         is_terminal = False
         with self._lock:
-            if self._closed.is_set():
+            if self._should_ignore_dispatch_locked(event):
                 return
             ttl_expired = self._check_ttl_inline()
             if not ttl_expired:
@@ -444,7 +445,22 @@ class CardSession:
 
         # Phase 2: Deliver outside lock (I/O-bound) — submit to thread pool
         self._hook_firer.fire_dispatched(event, self._state)
-        self._submit_delivery(rendered, is_terminal, event)
+        self._submit_delivery(rendered, is_terminal, event, revision=state_snapshot.version)
+
+    def _should_ignore_dispatch_locked(self, event: CardEvent) -> bool:
+        """Fence dispatches after close or a logical terminal transition."""
+        if self._closed.is_set():
+            return True
+        # Feishu delivery closes asynchronously; terminal state is authoritative
+        # during that gap so late ACP/tool/text revisions cannot overtake it.
+        if self._state is None or self._state.terminal_reason is None:
+            return False
+        logger.debug(
+            "CardSession %s: dispatch after terminal state, ignoring %s",
+            self._session_id,
+            event.type,
+        )
+        return True
 
     def _handle_card_split(self, event: CardEvent) -> None:
         """Close this session at a semantic split boundary and notify upstream."""
@@ -531,30 +547,62 @@ class CardSession:
             )
             return None
 
-    def _submit_delivery(self, rendered: list, is_terminal: bool, event: CardEvent) -> None:
+    def _submit_delivery(
+        self,
+        rendered: list,
+        is_terminal: bool,
+        event: CardEvent,
+        *,
+        revision: int | None = None,
+    ) -> None:
         """Submit delivery to the global thread pool (non-blocking).
 
         When ``_sync_delivery`` is True (configured via SessionConfig.sync_delivery),
         delivery runs synchronously on the calling thread for deterministic test behavior.
+
+        ``revision`` is the monotonic CardState version that produced ``rendered``.
+        Rendering happens outside the state lock, so a lower revision may finish after
+        a newer one. The delivery gate fences those stale renders before they can make
+        the visible card move backwards.
         """
         closed_event = getattr(self, "_closed", None)
         if closed_event is not None and closed_event.is_set():
             return
-        if self._sync_delivery:
-            self._deliver_and_track(rendered, is_terminal, event=event)
-            return
         CardSession._ensure_delivery_coalescing_state(self)
+        if self._sync_delivery:
+            with self._delivery_gate:
+                if not self._accept_delivery_revision(revision):
+                    return
+                self._deliver_and_track(rendered, is_terminal, event=event)
+            return
         with self._delivery_gate:
+            if not self._accept_delivery_revision(revision):
+                return
             if self._delivery_in_flight:
                 if self._delivery_in_flight_terminal:
                     return
                 pending_is_terminal = bool(self._delivery_pending and self._delivery_pending[1])
                 if is_terminal or not pending_is_terminal:
-                    self._delivery_pending = (rendered, is_terminal, event)
+                    self._delivery_pending = (rendered, is_terminal, event, revision)
                 return
             self._delivery_in_flight = True
             self._delivery_in_flight_terminal = is_terminal
         CardSession._submit_delivery_job(self, rendered, is_terminal, event)
+
+    def _accept_delivery_revision(self, revision: int | None) -> bool:
+        """Accept one render revision while ``_delivery_gate`` is held."""
+        if revision is None:
+            return True
+        if revision < self._delivery_highest_revision:
+            logger.debug(
+                "CardSession %s: dropping stale render revision %d < %d",
+                self._session_id,
+                revision,
+                self._delivery_highest_revision,
+            )
+            return False
+        self._delivery_highest_revision = revision
+        return True
 
     def _ensure_delivery_coalescing_state(self) -> None:
         if not hasattr(self, "_delivery_gate"):
@@ -565,6 +613,8 @@ class CardSession:
             self._delivery_in_flight_terminal = False
         if not hasattr(self, "_delivery_pending"):
             self._delivery_pending = None
+        if not hasattr(self, "_delivery_highest_revision"):
+            self._delivery_highest_revision = -1
 
     def _submit_delivery_job(self, rendered: list, is_terminal: bool, event: CardEvent) -> None:
         from src.card.delivery.pool import get_delivery_pool
@@ -618,7 +668,7 @@ class CardSession:
                 return
             self._delivery_pending = None
             self._delivery_in_flight_terminal = pending[1]
-        rendered, is_terminal, event = pending
+        rendered, is_terminal, event, _revision = pending
         CardSession._submit_delivery_job(self, rendered, is_terminal, event)
 
     def _deliver_and_track(self, rendered: list, is_terminal: bool, *, event: CardEvent | None = None) -> None:

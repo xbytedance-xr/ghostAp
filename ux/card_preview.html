@@ -575,15 +575,56 @@ body {
 <h2 class="section-title">Deep Engine 卡片</h2>
 <div class="cards-grid">
 
+<!-- Deep - Frozen history page -->
+<div class="card-wrapper">
+  <div class="card-label">Deep 主流程 · 历史分页快照（不再回写）</div>
+  <div class="feishu-card">
+    <div class="card-header header-violet">
+      <div class="title">优化Deep卡片顺序</div>
+      <div class="subtitle">总耗时 0时01分18秒 · #1 · 页 1/2</div>
+    </div>
+    <div class="card-body">
+      <div class="panel panel-indigo">
+        <div class="panel-header">
+          <span class="arrow">▼</span>
+          <span class="panel-title">📋 <strong>任务进展（本页冻结快照）</strong></span>
+        </div>
+        <div class="panel-content task-list">
+          <div class="task-done">✅ 1. 定位会话乱序窗口</div>
+          <div class="task-current">🔄 2. 重设计追加式分页</div>
+          <div class="task-pending">⏳ 3. 验证 Deep 主流程</div>
+        </div>
+      </div>
+      <div class="text-content">
+        已确认旧状态渲染可能晚于新状态提交；分页增长时，本页会先补齐边界内容，然后永久冻结。
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Deep - Running -->
 <div class="card-wrapper">
-  <div class="card-label">Deep Engine · 执行中</div>
+  <div class="card-label">Deep 主流程 · 最新分页（唯一实时更新）</div>
   <div class="feishu-card">
     <div class="card-header header-violet">
       <div class="title">优化Deep卡片标题</div>
-      <div class="subtitle">总耗时 0时03分42秒 · #1</div>
+      <div class="subtitle">总耗时 0时03分42秒 · #1 · 页 2/2</div>
     </div>
     <div class="card-body">
+      <!-- Sticky task list: every main-flow page has one; only latest stays live -->
+      <div class="panel panel-indigo">
+        <div class="panel-header">
+          <span class="arrow">▼</span>
+          <span class="panel-title">📋 <strong>任务进展（实时）</strong></span>
+        </div>
+        <div class="panel-content task-list">
+          <div class="task-done">✅ 1. 定位会话乱序窗口</div>
+          <div class="task-done">✅ 2. 重设计追加式分页</div>
+          <div class="task-current">🔄 3. 验证 Deep 主流程</div>
+          <div class="task-current">🧬 Subagent：补充分页回归测试</div>
+        </div>
+      </div>
+
       <!-- Plan Panel -->
       <div class="panel panel-indigo">
         <div class="panel-header">
@@ -652,13 +693,40 @@ tests/test_tools.py::test_tool_history_fold PASSED
           </span>
         </div>
         <div class="footer-meta">🔧 coco · 🧩 claude-sonnet-4-20250514 · ⏱ 3 分钟 42 秒</div>
-        <div class="notation">执行中任务会保持连接 · 长时间无更新接近超时时会提醒续期 · 最后更新于 3 秒前</div>
+        <div class="notation">耗时角标每 5 秒心跳刷新，执行内容随新事件同步 · 最后更新于 3 秒前</div>
       </div>
 
       <!-- Buttons -->
       <div class="button-row">
         <button class="btn btn-danger">⏹️ 停止</button>
         <button class="btn btn-default">📄 精简模式</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Deep - Subagent -->
+<div class="card-wrapper">
+  <div class="card-label">Deep · Subagent 独立卡片（可并行更新）</div>
+  <div class="feishu-card">
+    <div class="card-header header-orange">
+      <div class="title">🧬 Subagent · 补充分页回归测试</div>
+      <div class="subtitle">父卡 #1 · 分支 #1.a · Explore</div>
+    </div>
+    <div class="card-body">
+      <div class="panel panel-orange">
+        <div class="panel-header">
+          <span class="arrow">▼</span>
+          <span class="panel-title">⏳ <strong>正在验证五页首次投递顺序</strong></span>
+        </div>
+        <div class="panel-content">
+          检查无 binding 时的消息创建序列必须是 <code>0 → 1 → 2 → 3 → 4</code>，并确认不会在终态回填早期页。
+        </div>
+      </div>
+      <hr class="card-hr">
+      <div class="card-footer">
+        <div class="footer-status">🧬 Subagent 执行中 · 与主卡并行更新</div>
+        <div class="footer-meta">🔧 codex · 🧩 gpt-5 · ⏱ 46 秒</div>
       </div>
     </div>
   </div>

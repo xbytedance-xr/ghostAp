@@ -1140,11 +1140,29 @@ class TaskOrchestrator:
         if self._closed_event.is_set() or self._fallback_mode:
             return
 
-        # Register the new subtask
-        self._registry.register(task_id=task_id, name=name, status="in_progress")
+        overflow_target = ""
         with self._lock:
+            if task_id in self._subagent_task_ids:
+                return
+            visible_subagents = [
+                existing_id
+                for existing_id in self._sessions
+                if existing_id in self._subagent_task_ids
+                and existing_id not in self._overflow_target
+            ]
+            if len(visible_subagents) >= self._max_task_cards:
+                overflow_target = visible_subagents[-1] if visible_subagents else ""
+                if not overflow_target:
+                    return
+                self._overflow_target[task_id] = overflow_target
             self._subagent_task_ids.add(task_id)
-        self._create_task_session(task_id, is_subagent=True)
+
+        # Register every subtask for the shared task list, but stop creating new
+        # Feishu messages at the configured cap. Overflow details reuse the last
+        # visible subagent card through the normal overflow routing path.
+        self._registry.register(task_id=task_id, name=name, status="in_progress")
+        if not overflow_target:
+            self._create_task_session(task_id, is_subagent=True)
         self._broadcast_subagent_task_list()
 
     def _rename_task_from_tool_label(self, task_id: str, tool_call) -> bool:
@@ -1403,10 +1421,30 @@ class TaskOrchestrator:
             is_subagent = task_id in self._subagent_task_ids
         if is_subagent:
             self._registry.update_status(task_id, status, notify=False)
+            self._broadcast_subagent_task_list()
         else:
             self.broadcast_status_change(task_id, status)
         if self._resolver is not None:
             self._resolver.mark_inactive(task_id)
+
+        if is_subagent:
+            with self._lock:
+                grouped_task_ids = {
+                    resolved_id,
+                    *(
+                        overflow_id
+                        for overflow_id, target_id in self._overflow_target.items()
+                        if target_id == resolved_id
+                    ),
+                }
+            if any(
+                (item := self._registry.get(grouped_id)) is not None
+                and item.status not in {"completed", "failed"}
+                for grouped_id in grouped_task_ids
+            ):
+                return
+        else:
+            grouped_task_ids = {task_id}
 
         with self._lock:
             session = self._sessions.get(resolved_id)
@@ -1420,7 +1458,7 @@ class TaskOrchestrator:
 
         with self._lock:
             self._finalized_task_ids.add(resolved_id)
-            self._finalized_task_ids.add(task_id)
+            self._finalized_task_ids.update(grouped_task_ids)
 
     def finish_with_summary(self, summary: str, *, failed: bool = False) -> None:
         """Close task cards, then create one fresh final summary card."""
@@ -1522,7 +1560,12 @@ class TaskOrchestrator:
                 self._chat_id,
             )
 
-    def close(self) -> None:
+    def close(
+        self,
+        *,
+        terminal_status: TaskStatus = "completed",
+        summary: str = "",
+    ) -> None:
         """Close all sessions and clean up.
 
         Includes timeout protection: bridge.close_open_blocks() and session.dispatch()
@@ -1548,13 +1591,17 @@ class TaskOrchestrator:
 
         self._close_bridges(bridges)
 
-        completed_event = CardEvent.completed()
+        terminal_event = (
+            CardEvent.failed(summary)
+            if terminal_status == "failed"
+            else CardEvent.completed(summary=summary)
+        )
         for task_id, session in sessions:
             if task_id in finalized:
                 continue
             try:
                 self._run_with_timeout(
-                    lambda s=session: s.dispatch(completed_event),  # type: ignore[misc]
+                    lambda s=session: s.dispatch(terminal_event),  # type: ignore[misc]
                     timeout=5.0,
                 )
             except Exception:

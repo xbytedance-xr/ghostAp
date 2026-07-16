@@ -15,6 +15,7 @@ class PageBinding:
     signature: str = ""
     last_text: str = ""
     page_index: int = 0
+    is_frozen: bool = False
 
 
 @dataclass
@@ -92,6 +93,16 @@ class BindingStore:
             page = binding.pages.get(page_index)
             if page is not None:
                 page.signature = signature
+
+    def mark_frozen(self, session_id: str, page_index: int, *, frozen: bool = True) -> None:
+        """Mark whether a page is an immutable history snapshot."""
+        with self._lock:
+            binding = self._bindings.get(session_id)
+            if binding is None:
+                return
+            page = binding.pages.get(page_index)
+            if page is not None:
+                page.is_frozen = frozen
 
     def remove_page(self, session_id: str, page_index: int) -> PageBinding | None:
         """Remove a page from the binding."""

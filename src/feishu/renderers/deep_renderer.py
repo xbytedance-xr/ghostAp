@@ -202,14 +202,6 @@ class DeepRenderer(BaseRenderer):
                 label=UI_TEXT["deep_progress_executing"] if progress_info["is_executing"] else UI_TEXT["deep_progress_done"],
             ))
 
-        # Warning banner
-        warning_banner = self.check_warning_banner(
-            snap.duration_seconds,
-            is_executing=progress_info["is_executing"],
-        )
-        if warning_banner:
-            session.dispatch(CardEvent.warning_updated(warning_banner))
-
         # Terminal state
         if not progress_info["is_executing"]:
             session.dispatch(CardEvent.completed())

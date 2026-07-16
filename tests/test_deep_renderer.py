@@ -56,6 +56,9 @@ class TestDeepRenderer:
 
     def test_render_deep_status(self, mock_handler):
         renderer = DeepRenderer(mock_handler)
+        renderer.check_warning_banner = MagicMock(
+            return_value="⚠️ 执行耗时较长，若无响应可尝试停止后重试"
+        )
 
         # Mock Project and Engine
         proj = MagicMock(spec=ProjectContext)
@@ -103,6 +106,7 @@ class TestDeepRenderer:
             text_deltas = [c for c in calls if c.type.value == "text_delta"]
             assert any("Status Content" in c.payload.get("text", "") for c in text_deltas)
             assert any("Status Title" in c.payload.get("text", "") for c in text_deltas)
+            assert not any(c.type.value == "warning_updated" for c in calls)
 
     def test_render_deep_status_no_engine(self, mock_handler):
         """Test render_deep_status when no engine is running."""

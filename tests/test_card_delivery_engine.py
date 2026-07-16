@@ -163,6 +163,57 @@ class TestMultiPage:
         assert len(outcomes) == 2
         assert all(o.kind == "applied" for o in outcomes)
 
+    def test_first_five_page_delivery_creates_messages_in_page_order(self):
+        """Initial pagination must never create tail pages before history pages."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        rendered = [
+            RenderedCard(
+                _card_json={"page": page_index},
+                structure_signature=f"sig_{page_index}",
+                page_index=page_index,
+                total_pages=5,
+            )
+            for page_index in range(5)
+        ]
+
+        outcomes = delivery.deliver("deep_five_pages", "chat_abc", rendered)
+
+        assert [item["card_json"]["page"] for item in client.creates] == [0, 1, 2, 3, 4]
+        assert [outcome.kind for outcome in outcomes] == ["applied"] * 5
+
+    def test_initial_page_failure_stops_before_creating_later_messages(self):
+        """A failed earlier page must fence all later Feishu message creation."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+        real_create = client.create_card
+        attempts = 0
+
+        def fail_first_create(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TransportError("first page unavailable")
+            return real_create(*args, **kwargs)
+
+        client.create_card = fail_first_create
+        rendered = [
+            RenderedCard(
+                _card_json={"page": page_index},
+                structure_signature=f"sig_{page_index}",
+                page_index=page_index,
+                total_pages=3,
+            )
+            for page_index in range(3)
+        ]
+
+        outcomes = delivery.deliver("deep_failed_first", "chat_abc", rendered)
+
+        assert attempts == 1
+        assert client.creates == []
+        assert [outcome.kind for outcome in outcomes] == ["reconcile"]
+
     def test_new_page_created_on_growth(self):
         client = MockCardClient()
         delivery = CardDelivery(client)
@@ -177,6 +228,47 @@ class TestMultiPage:
         outcomes = delivery.deliver("sess_1", "chat_abc", r2)
         assert outcomes[1].kind == "applied"
         assert len(client.creates) == 2
+
+    def test_growth_flushes_previous_latest_page_once_before_freezing_it(self):
+        """The page-boundary chunk must reach the old latest message before append."""
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        delivery.deliver(
+            "deep_growth",
+            "chat_abc",
+            [RenderedCard(
+                _card_json={"page": 0, "content": "before-boundary"},
+                structure_signature="p0_before",
+                page_index=0,
+                total_pages=1,
+            )],
+        )
+
+        outcomes = delivery.deliver(
+            "deep_growth",
+            "chat_abc",
+            [
+                RenderedCard(
+                    _card_json={"page": 0, "content": "includes-boundary"},
+                    structure_signature="p0_boundary",
+                    page_index=0,
+                    total_pages=2,
+                ),
+                RenderedCard(
+                    _card_json={"page": 1, "content": "after-boundary"},
+                    structure_signature="p1_live",
+                    page_index=1,
+                    total_pages=2,
+                ),
+            ],
+        )
+
+        assert [outcome.kind for outcome in outcomes] == ["applied", "applied"]
+        assert client.updates[-1]["card_json"]["content"] == "includes-boundary"
+        binding = delivery.get_binding("deep_growth")
+        assert binding.pages[0].is_frozen is True
+        assert binding.pages[1].is_frozen is False
 
     def test_existing_history_pages_are_not_updated_after_continuation(self):
         client = MockCardClient()
@@ -195,13 +287,8 @@ class TestMultiPage:
         outcomes = delivery.deliver("sess_1", "chat_abc", second)
         assert [o.kind for o in outcomes] == ["skipped", "applied"]
 
-    def test_terminal_delivery_updates_all_pages_including_history(self):
-        """Regression: on terminal (completed/failed) delivery, history pages must
-        NOT be frozen. The first card message has to reach the final completed
-        state (full text + terminal header + trailing summary), otherwise Deep's
-        multi-page result looks incomplete and its cards look out of order —
-        page 0 stuck on 'running' while page 1 shows 'completed'.
-        """
+    def test_terminal_delivery_updates_only_latest_page(self):
+        """Historical messages stay snapshots; only the newest card reaches terminal."""
         client = MockCardClient()
         delivery = CardDelivery(client)
 
@@ -217,12 +304,10 @@ class TestMultiPage:
         ]
         outcomes = delivery.deliver("deep_sess", "chat_abc", terminal, is_terminal=True)
 
-        # Both pages must be applied — no history_page_frozen skip on terminal.
-        assert [o.kind for o in outcomes] == ["applied", "applied"]
-        assert all(o.message != "history_page_frozen" for o in outcomes)
-        # Page 0 (first message) must actually be PATCHed to the completed state.
+        assert [o.kind for o in outcomes] == ["skipped", "applied"]
+        assert outcomes[0].message == "history_page_frozen"
         patched_pages = [u["card_json"].get("page") for u in client.updates]
-        assert 0 in patched_pages
+        assert patched_pages == [1]
 
     def test_non_terminal_still_freezes_history_pages(self):
         """Streaming (non-terminal) updates keep freezing history pages to avoid
@@ -245,7 +330,7 @@ class TestMultiPage:
 
 
 class TestPageShrink:
-    def test_shrink_removes_stale_page_from_binding(self):
+    def test_shrink_keeps_message_high_watermark_and_updates_latest_message(self):
         client = MockCardClient()
         delivery = CardDelivery(client)
 
@@ -255,12 +340,80 @@ class TestPageShrink:
         ]
         delivery.deliver("sess_1", "chat_abc", r2)
 
-        r1 = [RenderedCard(_card_json={"page": 0}, structure_signature="sig_2", page_index=0, total_pages=1)]
-        delivery.deliver("sess_1", "chat_abc", r1)
+        r1 = [RenderedCard(
+            _card_json={"content": "final compact state"},
+            structure_signature="sig_2",
+            page_index=0,
+            total_pages=1,
+        )]
+        outcomes = delivery.deliver("sess_1", "chat_abc", r1, is_terminal=True)
 
         binding = delivery.get_binding("sess_1")
-        assert 0 in binding.pages
-        assert 1 not in binding.pages
+        assert set(binding.pages) == {0, 1}
+        assert outcomes[-1].kind == "applied"
+        assert client.updates[-1]["card_id"] == "card_2"
+        assert client.updates[-1]["card_json"]["content"] == "final compact state"
+
+    def test_shrink_relabels_latest_message_with_visible_high_watermark_page(self):
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        delivery.deliver("sess_1", "chat_abc", [
+            RenderedCard(
+                _card_json={"header": {"title": {"content": f"Deep 任务 · 页 {idx + 1}/3"}}},
+                structure_signature=f"sig_{idx}",
+                page_index=idx,
+                total_pages=3,
+            )
+            for idx in range(3)
+        ])
+
+        compact = RenderedCard(
+            _card_json={"header": {"title": {"content": "Deep 任务"}}},
+            structure_signature="sig_compact",
+            page_index=0,
+            total_pages=1,
+        )
+        delivery.deliver("sess_1", "chat_abc", [compact], is_terminal=True)
+
+        assert client.updates[-1]["card_id"] == "card_3"
+        assert client.updates[-1]["card_json"]["header"]["title"]["content"] == (
+            "Deep 任务 · 页 3/3"
+        )
+
+    def test_three_to_two_page_shrink_preserves_ordered_content_across_messages(self):
+        client = MockCardClient()
+        delivery = CardDelivery(client)
+
+        delivery.deliver("sess_1", "chat_abc", [
+            RenderedCard(
+                _card_json={"content": marker},
+                structure_signature=f"old_{marker}",
+                page_index=idx,
+                total_pages=3,
+            )
+            for idx, marker in enumerate(("A", "B", "C"))
+        ])
+        delivery.deliver("sess_1", "chat_abc", [
+            RenderedCard(
+                _card_json={"content": content},
+                structure_signature=f"compact_{idx}",
+                page_index=idx,
+                total_pages=2,
+            )
+            for idx, content in enumerate(("AB", "CD"))
+        ])
+
+        remote_payloads = [
+            client.creates[0]["card_json"],
+            client.creates[1]["card_json"],
+            client.updates[-1]["card_json"],
+        ]
+        visible_content = "|".join(payload["content"] for payload in remote_payloads)
+        positions = [visible_content.index(marker) for marker in "ABCD"]
+
+        assert positions == sorted(positions)
+        assert client.updates[-1]["card_id"] == "card_3"
 
 
 class TestStreamingFallback:
@@ -332,7 +485,7 @@ class TestTransportError:
         assert outcomes[0].kind == "reconcile"
         assert "connection timeout" in outcomes[0].message
 
-    def test_stale_binding_discards_session_and_short_circuits_remaining_pages(self):
+    def test_stale_latest_binding_preserves_history_and_recreates_only_latest(self):
         client = MockCardClient()
         delivery = CardDelivery(client)
 
@@ -357,11 +510,15 @@ class TestTransportError:
 
         assert [outcome.message for outcome in outcomes] == ["history_page_frozen", "recreate:99992354"]
         assert update_attempts["n"] == 1
-        assert delivery.get_binding("sess_stale") is None
+        binding = delivery.get_binding("sess_stale")
+        assert binding is not None
+        assert set(binding.pages) == {0}
+        assert binding.pages[0].is_frozen is True
 
         client.update_card = MockCardClient.update_card.__get__(client, MockCardClient)
         outcomes = delivery.deliver("sess_stale", "chat_abc", rendered_v2)
-        assert [outcome.kind for outcome in outcomes] == ["applied", "applied"]
+        assert [outcome.kind for outcome in outcomes] == ["skipped", "applied"]
+        assert [item["card_json"]["page"] for item in client.creates] == [0, 1, 1]
 
     def test_transport_error_on_element_falls_back_to_update(self):
         client = MockCardClient()
