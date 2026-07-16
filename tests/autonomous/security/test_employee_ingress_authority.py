@@ -784,6 +784,91 @@ def test_accepted_router_projection_retains_requester_principal(
     writer.close()
 
 
+def test_cross_app_union_maps_to_main_bot_owner_before_requester_acl(
+    tmp_path: Path,
+) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    original = _payload(sender_id="ou_employee_app_owner")
+    part = dict(original.normalized_parts[0])
+    part["sender_union_id"] = "on_owner"
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id="ing_cross_app_owner",
+        normalized_parts=(part,),
+        attachment_descriptors=(),
+    )
+    router._requester_acl = RuntimeRequesterChatAcl(  # noqa: SLF001
+        allowed_requesters=("ou_owner",),
+        allowed_chats=("oc_team",),
+    )
+    calls: list[dict[str, str]] = []
+
+    def resolve_requester(**binding: str) -> str | None:
+        calls.append(binding)
+        if (
+            binding["tenant_key"] == "tenant_1"
+            and binding["agent_id"] == "agt_alpha"
+            and binding["owner_principal_id"] == "ou_owner"
+            and binding["sender_principal_id"] == "ou_employee_app_owner"
+            and binding["sender_union_id"] == "on_owner"
+        ):
+            return "ou_owner"
+        return None
+
+    router._requester_principal_resolver = resolve_requester  # noqa: SLF001
+    acceptance_id = _accept(
+        ingress,
+        payload,
+        sender_principal_id="ou_employee_app_owner",
+    )
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "queued", record.reason_code
+    assert record.authority is not None
+    assert record.authority.requester_principal_id == "ou_owner"
+    expected_binding = {
+        "tenant_key": "tenant_1",
+        "agent_id": "agt_alpha",
+        "owner_principal_id": "ou_owner",
+        "sender_principal_id": "ou_employee_app_owner",
+        "sender_union_id": "on_owner",
+    }
+    assert calls == [expected_binding, expected_binding]
+    ingress.close()
+    writer.close()
+
+
+def test_cross_app_union_mismatch_remains_requester_denied(tmp_path: Path) -> None:
+    _, writer, ingress, _, _, router = _stack(tmp_path)
+    original = _payload(sender_id="ou_employee_app_attacker")
+    part = dict(original.normalized_parts[0])
+    part["sender_union_id"] = "on_attacker"
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id="ing_cross_app_attacker",
+        normalized_parts=(part,),
+        attachment_descriptors=(),
+    )
+    router._requester_acl = RuntimeRequesterChatAcl(  # noqa: SLF001
+        allowed_requesters=("ou_owner",),
+        allowed_chats=("oc_team",),
+    )
+    router._requester_principal_resolver = lambda **_binding: None  # noqa: SLF001
+    acceptance_id = _accept(
+        ingress,
+        payload,
+        sender_principal_id="ou_employee_app_attacker",
+    )
+
+    record = router.route(acceptance_id)
+
+    assert record.state == "terminal"
+    assert record.reason_code == "requester_denied"
+    ingress.close()
+    writer.close()
+
+
 @pytest.mark.parametrize(
     ("field_name", "forged_value"),
     (

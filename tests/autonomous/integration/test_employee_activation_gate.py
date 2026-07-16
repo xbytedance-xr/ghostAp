@@ -400,6 +400,81 @@ async def test_unknown_status_reply_outcome_recovers_without_blocking_hire(
 
 
 @pytest.mark.asyncio
+async def test_unknown_pending_group_reply_outcome_does_not_block_activation(
+    tmp_path: Path,
+) -> None:
+    service = _service(_writer(tmp_path))
+    configured = await _configured(service)
+    _effect(
+        service,
+        configured.intent_id,
+        "slash-reconcile:1",
+        "slash_reconciliation",
+        {
+            "slash_spec_hash": "spec_hash",
+            "slash_observed_hash": "spec_hash",
+            "slash_verified_at": "98.0",
+        },
+    )
+    _effect(
+        service,
+        configured.intent_id,
+        "channel-start:1",
+        "employee_channel_start",
+        {
+            "app_id": configured.app_id,
+            "generation": "1",
+            "identity_app_id": configured.app_id,
+            "connection_id": "conn_1",
+            "channel_verified_at": "99.0",
+        },
+    )
+    router = VerificationRouter(nonce_consumer=service, clock=lambda: 100.0)
+    challenge = router.issue_challenge(
+        VerificationBinding(
+            configured.intent_id,
+            configured.tenant_key,
+            configured.app_id,
+            configured.agent_id,
+            1,
+            configured.requester_principal_id,
+            configured.requester_union_id,
+            "spec_hash",
+        )
+    )
+    service.begin_activation_verification(challenge)
+    effect_id = "activation-required-reply:evt_unknown"
+    service.commit_effect_transition(
+        configured.intent_id,
+        effect_id=effect_id,
+        effect_type="employee_activation_required_reply",
+        next_state=HireEffectState.PREPARED,
+        metadata={"ingress_event_id": "evt_unknown"},
+    )
+    service.commit_effect_transition(
+        configured.intent_id,
+        effect_id=effect_id,
+        effect_type="employee_activation_required_reply",
+        next_state=HireEffectState.EXECUTING,
+    )
+    service.close()
+
+    reopened = _service(_writer(tmp_path, epoch=2))
+    recovered = reopened.recover().get(configured.intent_id)
+
+    assert recovered is not None
+    assert recovered.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert recovered.effect_state(effect_id) is HireEffectState.ACTION_REQUIRED
+    assert recovered.metadata_for(effect_id)["error_code"] == (
+        "activation_required_reply_outcome_unknown"
+    )
+    assert all(
+        effect_state not in {HireEffectState.PREPARED, HireEffectState.EXECUTING}
+        for _effect_id, effect_state in recovered.effects
+    )
+
+
+@pytest.mark.asyncio
 async def test_consumed_nonce_without_activation_fails_closed_on_replay(
     tmp_path: Path,
 ) -> None:

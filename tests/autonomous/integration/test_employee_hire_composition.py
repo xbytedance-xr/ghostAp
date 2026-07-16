@@ -885,7 +885,8 @@ def test_task7_runtime_routes_anchored_inbox_into_owned_queue(tmp_path: Path) ->
                 "message_type": "text",
                 "chat_type": "group",
                 "content": {"text": "route me"},
-                "sender_id": "ou_admin",
+                "sender_id": "ou_employee_app_admin",
+                "sender_union_id": "on_admin",
                 "sender_id_type": "open_id",
                 "sender_type": "user",
                 "sender_tenant_key": active.tenant_key,
@@ -909,7 +910,7 @@ def test_task7_runtime_routes_anchored_inbox_into_owned_queue(tmp_path: Path) ->
         action_identity="",
         chat_id="oc_employee_team",
         thread_root_message_id="om_runtime_root",
-        sender_principal_id="ou_admin",
+        sender_principal_id="ou_employee_app_admin",
         received_at="2026-07-14T00:00:00Z",
         semantic_digest=payload.payload_sha256,
         payload_sha256=payload.payload_sha256,
@@ -927,9 +928,525 @@ def test_task7_runtime_routes_anchored_inbox_into_owned_queue(tmp_path: Path) ->
     acceptance_id = acceptance.acceptance.acceptance_id
     routed = runtime.ingress_router.state.by_acceptance_id[acceptance_id]
     assert routed.state == "queued", routed.reason_code
+    assert routed.requester_principal_id == active.requester_principal_id
     assert runtime.ingress_service.state.by_acceptance_id[acceptance_id].disposition is None
     runtime._dispatch_thread = None
     runtime.close()
+
+
+def test_pending_group_direct_mention_is_durable_and_not_routed(
+    tmp_path: Path,
+) -> None:
+    class _UnknownFirstReceiptChannels(_Channels):
+        def send(self, agent_id, *, generation, target, message, options=None):
+            receipt = super().send(
+                agent_id,
+                generation=generation,
+                target=target,
+                message=message,
+                options=options,
+            )
+            if len(self.sent) == 1:
+                return replace(receipt, request_id="", message_id="")
+            return receipt
+
+    channels = _UnknownFirstReceiptChannels()
+    runtime = _runtime(
+        _settings(tmp_path, limit=1, context_configured=True),
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    assert runtime.hire_service is not None
+    assert runtime.ingress_service is not None
+    assert runtime.ingress_router is not None
+    assert runtime._writer is not None
+    admitted = runtime.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = admitted
+    while time.monotonic() < deadline:
+        pending = runtime.hire_service.get_state(admitted.intent_id) or pending
+        if pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending.phase is HirePhase.READY_PENDING_VERIFICATION
+    channels.statuses[pending.agent_id].tenant_key = pending.tenant_key
+    channels.statuses[pending.agent_id].bot_principal_id = pending.bot_principal_id
+    commit_workforce_events(
+        runtime._writer,
+        runtime.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=pending.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    runtime._dispatch_stop.set()
+    assert runtime._dispatch_thread is not None
+    runtime._dispatch_thread.join(timeout=1)
+
+    class _NoDispatch:
+        def dispatch_next(self):
+            return None
+
+    runtime._dispatch = _NoDispatch()  # type: ignore[assignment]
+    raw_chat_id = "oc_employee_team"
+    raw_message_id = "om_pending_direct_mention"
+    suffix = hashlib.sha256(b"pending-direct-mention").hexdigest()
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id=f"ing_{suffix}",
+        normalized_parts=(
+            {
+                "type": "message",
+                "message_type": "text",
+                "chat_type": "group",
+                "content": {"text": "@_user_1 你好"},
+                "mentions": (
+                    {
+                        "key": "@_user_1",
+                        "mentioned_type": "bot",
+                        "open_id": channels.statuses[pending.agent_id].identity[
+                            "open_id"
+                        ],
+                        "tenant_key": pending.tenant_key,
+                    },
+                ),
+                "sender_id": "ou_employee_app_admin",
+                "sender_union_id": pending.requester_union_id,
+                "sender_id_type": "open_id",
+                "sender_type": "user",
+                "sender_tenant_key": pending.tenant_key,
+                "feishu_thread_id": "",
+                "remote_chat_id": raw_chat_id,
+                "remote_message_id": raw_message_id,
+                "remote_root_id": "",
+            },
+        ),
+        attachment_descriptors=(),
+    )
+    metadata = EmployeeIngressMetadata(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        tenant_key=pending.tenant_key,
+        agent_id=pending.agent_id,
+        bot_principal_id=pending.bot_principal_id,
+        app_id=pending.app_id,
+        channel_generation=pending.channel_generation,
+        connection_id=pending.channel_connection_id,
+        event_id=f"evt_{suffix}",
+        message_id="om_" + hashlib.sha256(raw_message_id.encode()).hexdigest(),
+        event_type="im.message.receive_v1",
+        action_identity="",
+        chat_id="oc_" + hashlib.sha256(raw_chat_id.encode()).hexdigest(),
+        thread_root_message_id="",
+        sender_principal_id="ou_employee_app_admin",
+        received_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        ),
+        semantic_digest=payload.payload_sha256,
+        payload_sha256=payload.payload_sha256,
+        payload_size_bytes=payload.canonical_size_bytes,
+        attachment_count=0,
+        attachment_total_bytes=0,
+    )
+    accepted = runtime.ingress_service.accept(
+        metadata,
+        payload,
+        request_id="req_pending_direct_mention",
+    )
+
+    acceptance_id = accepted.acceptance.acceptance_id
+    effect_id = f"activation-required-reply:{metadata.event_id}"
+    with pytest.raises(
+        RuntimeError,
+        match="activation-required receipt is invalid",
+    ):
+        runtime._drain_employee_dispatch_once()
+    executing = runtime.hire_service.get_state(pending.intent_id)
+    assert executing is not None
+    assert executing.effect_state(effect_id) is HireEffectState.EXECUTING
+    runtime.ingress_service.rebuild_projection()
+    assert (
+        runtime.ingress_service.state.by_acceptance_id[acceptance_id].disposition
+        is None
+    )
+    assert runtime._drain_employee_dispatch_once() is True
+    runtime.ingress_service.rebuild_projection()
+    disposition = runtime.ingress_service.state.by_acceptance_id[
+        acceptance_id
+    ].disposition
+    assert disposition is not None
+    assert disposition.state == "terminal"
+    assert disposition.reason_code == "activation_required"
+    unrouted = runtime.ingress_router.state.by_acceptance_id[acceptance_id]
+    assert unrouted.state == "accepted"
+    assert unrouted.authority is None
+    assert len(channels.sent) == 2
+    assert channels.sent[0][2] == raw_chat_id
+    expected_options = {
+        "uuid": hashlib.sha256(
+            f"employee-activation-required:{pending.agent_id}:{acceptance_id}".encode()
+        ).hexdigest()[:50],
+        "reply_to": raw_message_id,
+    }
+    assert channels.sent[0][4] == channels.sent[1][4] == expected_options
+    effect_events = [
+        event.event_type
+        for frame in runtime.journal_frames()
+        for event in frame.events
+        if event.payload.get("effect_id") == effect_id
+    ]
+    assert effect_events == [
+        "hire.effect.prepared",
+        "hire.effect.executing",
+        "hire.effect.committed",
+    ]
+    runtime.hire_service.recover()
+    recovered = runtime.hire_service.get_state(pending.intent_id)
+    assert recovered is not None
+    assert recovered.effect_state(effect_id) is HireEffectState.COMMITTED
+    runtime._drain_employee_dispatch_once()
+    assert len(channels.sent) == 2
+    runtime._dispatch_thread = None
+    runtime.close()
+
+
+def test_pending_group_reply_unknown_outcome_is_disposed_across_runtime_restart(
+    tmp_path: Path,
+) -> None:
+    class _UnknownReceiptChannels(_Channels):
+        def send(self, *args, **kwargs):
+            receipt = super().send(*args, **kwargs)
+            return replace(receipt, request_id="", message_id="")
+
+    class _RestartChannels(_Channels):
+        def start(self, *args, **kwargs):
+            status = super().start(*args, **kwargs)
+            status.ready_metadata["connection_id"] = "conn_runtime_restarted"
+            return status
+
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    first_channels = _UnknownReceiptChannels()
+    first = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=first_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    admitted = first.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = admitted
+    while time.monotonic() < deadline:
+        pending = first.hire_service.get_state(admitted.intent_id) or pending
+        if pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending.phase is HirePhase.READY_PENDING_VERIFICATION
+    first_channels.statuses[pending.agent_id].tenant_key = pending.tenant_key
+    first_channels.statuses[pending.agent_id].bot_principal_id = (
+        pending.bot_principal_id
+    )
+    commit_workforce_events(
+        first._writer,
+        first.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=pending.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    first._dispatch_stop.set()
+    assert first._dispatch_thread is not None
+    first._dispatch_thread.join(timeout=1)
+
+    class _NoDispatch:
+        def dispatch_next(self):
+            return None
+
+    first._dispatch = _NoDispatch()  # type: ignore[assignment]
+    accepted = _accept_pending_group_mention(
+        first,
+        pending,
+        bot_open_id=first_channels.statuses[pending.agent_id].identity[
+            "open_id"
+        ],
+        suffix="pending_restart_unknown",
+    )
+    acceptance_id = accepted.acceptance.acceptance_id
+    event_id = "evt_" + hashlib.sha256(
+        b"pending_restart_unknown"
+    ).hexdigest()
+    effect_id = f"activation-required-reply:{event_id}"
+    with pytest.raises(
+        RuntimeError,
+        match="activation-required receipt is invalid",
+    ):
+        first._drain_employee_dispatch_once()
+    unresolved = first.hire_service.get_state(pending.intent_id)
+    assert unresolved is not None
+    assert unresolved.effect_state(effect_id) is HireEffectState.EXECUTING
+    first._dispatch_thread = None
+    first.close()
+
+    restarted_channels = _RestartChannels()
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=True,
+        channel_supervisor=restarted_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    deadline = time.monotonic() + 7
+    recovered = None
+    while time.monotonic() < deadline:
+        recovered = restarted.hire_service.get_state(pending.intent_id)
+        if (
+            recovered is not None
+            and recovered.phase is HirePhase.READY_PENDING_VERIFICATION
+            and recovered.channel_generation == pending.channel_generation + 1
+            and recovered.channel_connection_id == "conn_runtime_restarted"
+        ):
+            break
+        time.sleep(0.05)
+    assert recovered is not None
+    assert recovered.phase is HirePhase.READY_PENDING_VERIFICATION
+    assert recovered.channel_generation == pending.channel_generation + 1
+    assert recovered.effect_state(effect_id) is HireEffectState.ACTION_REQUIRED
+    assert recovered.metadata_for(effect_id)["error_code"] == (
+        "activation_required_reply_outcome_unknown"
+    )
+    assert restarted_channels.sent == []
+
+    status = _accept_durable_status(
+        restarted,
+        recovered,
+        suffix="pending_restart_status",
+        generation=recovered.channel_generation,
+        connection_id=recovered.channel_connection_id,
+    )
+    restarted._handle_control_ingress(status.acceptance.acceptance_id)
+    while time.monotonic() < deadline:
+        active = restarted.hire_service.get_state(pending.intent_id)
+        if active is not None and active.phase is HirePhase.ACTIVE:
+            break
+        time.sleep(0.02)
+    assert active is not None
+    assert active.phase is HirePhase.ACTIVE
+    assert len(restarted_channels.sent) == 2
+    restarted.ingress_service.rebuild_projection()
+    old_disposition = restarted.ingress_service.state.by_acceptance_id[
+        acceptance_id
+    ].disposition
+    assert old_disposition is not None
+    assert old_disposition.reason_code == "activation_reply_outcome_unknown"
+    restarted.close()
+
+
+@pytest.mark.parametrize(
+    "retain_membership",
+    [True, False],
+    ids=("binding-valid", "membership-revoked"),
+)
+def test_prepared_group_reply_resumes_on_new_channel_generation(
+    tmp_path: Path,
+    retain_membership: bool,
+) -> None:
+    class _RestartChannels(_Channels):
+        def start(self, *args, **kwargs):
+            status = super().start(*args, **kwargs)
+            status.bot_principal_id = pending.bot_principal_id
+            status.ready_metadata["connection_id"] = "conn_prepared_restarted"
+            return status
+
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    first_channels = _Channels()
+    first = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=first_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    admitted = first.hire_service.start_hire(_request())
+    deadline = time.monotonic() + 5
+    pending = admitted
+    while time.monotonic() < deadline:
+        pending = first.hire_service.get_state(admitted.intent_id) or pending
+        if pending.phase is HirePhase.READY_PENDING_VERIFICATION:
+            break
+        time.sleep(0.02)
+    assert pending.phase is HirePhase.READY_PENDING_VERIFICATION
+    first_channels.statuses[pending.agent_id].tenant_key = pending.tenant_key
+    first_channels.statuses[pending.agent_id].bot_principal_id = (
+        pending.bot_principal_id
+    )
+    commit_workforce_events(
+        first._writer,
+        first.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=pending.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    first._dispatch_stop.set()
+    assert first._dispatch_thread is not None
+    first._dispatch_thread.join(timeout=1)
+
+    class _NoDispatch:
+        def dispatch_next(self):
+            return None
+
+    first._dispatch = _NoDispatch()  # type: ignore[assignment]
+    accepted = _accept_pending_group_mention(
+        first,
+        pending,
+        bot_open_id=first_channels.statuses[pending.agent_id].identity[
+            "open_id"
+        ],
+        suffix="pending_restart_prepared",
+    )
+    acceptance_id = accepted.acceptance.acceptance_id
+    event_id = "evt_" + hashlib.sha256(
+        b"pending_restart_prepared"
+    ).hexdigest()
+    effect_id = f"activation-required-reply:{event_id}"
+    original_transition = first.hire_service.commit_effect_transition
+
+    def fail_before_execute(intent_id, **kwargs):
+        if (
+            kwargs.get("effect_type")
+            == "employee_activation_required_reply"
+            and kwargs.get("next_state") is HireEffectState.EXECUTING
+        ):
+            raise RuntimeError("injected crash before external dispatch")
+        return original_transition(intent_id, **kwargs)
+
+    first.hire_service.commit_effect_transition = fail_before_execute  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="before external dispatch"):
+        first._drain_employee_dispatch_once()
+    prepared = first.hire_service.get_state(pending.intent_id)
+    assert prepared is not None
+    assert prepared.effect_state(effect_id) is HireEffectState.PREPARED
+    assert first_channels.sent == []
+    first.hire_service.commit_effect_transition = original_transition  # type: ignore[method-assign]
+    if not retain_membership:
+        commit_workforce_events(
+            first._writer,
+            first.hire_service.projection_state,
+            (
+                JournalEvent(
+                    event_type="employee.membership_changed",
+                    aggregate_id=pending.agent_id,
+                    payload={"member_groups": []},
+                ),
+            ),
+        )
+    first._dispatch_thread = None
+    first.close()
+
+    restarted_channels = _RestartChannels()
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=True,
+        channel_supervisor=restarted_channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        context_source_factory=_ContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    deadline = time.monotonic() + 7
+    recovered = None
+    disposition = None
+    expected_effect_state = (
+        HireEffectState.COMMITTED
+        if retain_membership
+        else HireEffectState.ACTION_REQUIRED
+    )
+    while time.monotonic() < deadline:
+        recovered = restarted.hire_service.get_state(pending.intent_id)
+        restarted.ingress_service.rebuild_projection()
+        disposition = restarted.ingress_service.state.by_acceptance_id[
+            acceptance_id
+        ].disposition
+        if (
+            recovered is not None
+            and recovered.phase is HirePhase.READY_PENDING_VERIFICATION
+            and recovered.channel_generation == pending.channel_generation + 1
+            and recovered.channel_connection_id == "conn_prepared_restarted"
+            and recovered.effect_state(effect_id) is expected_effect_state
+            and disposition is not None
+        ):
+            break
+        time.sleep(0.05)
+    assert recovered is not None
+    assert recovered.channel_generation == pending.channel_generation + 1
+    assert recovered.effect_state(effect_id) is expected_effect_state
+    assert disposition is not None
+    if retain_membership:
+        assert disposition.reason_code == "activation_required"
+        assert len(restarted_channels.sent) == 1
+        assert restarted_channels.sent[0][4] == {
+            "uuid": hashlib.sha256(
+                f"employee-activation-required:{pending.agent_id}:{acceptance_id}".encode()
+            ).hexdigest()[:50],
+            "reply_to": "om_pending_restart_prepared",
+        }
+        assert recovered.metadata_for(effect_id)["generation"] == str(
+            recovered.channel_generation
+        )
+        assert recovered.metadata_for(effect_id)["connection_id"] == (
+            "conn_prepared_restarted"
+        )
+    else:
+        assert disposition.reason_code == "activation_reply_recovery_rejected"
+        assert recovered.metadata_for(effect_id)["error_code"] == (
+            "activation_required_reply_recovery_rejected"
+        )
+        assert restarted_channels.sent == []
+
+    status = _accept_durable_status(
+        restarted,
+        recovered,
+        suffix="prepared_restart_status",
+        generation=recovered.channel_generation,
+        connection_id=recovered.channel_connection_id,
+    )
+    restarted._handle_control_ingress(status.acceptance.acceptance_id)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        active = restarted.hire_service.get_state(pending.intent_id)
+        if active is not None and active.phase is HirePhase.ACTIVE:
+            break
+        time.sleep(0.02)
+    assert active is not None
+    assert active.phase is HirePhase.ACTIVE
+    restarted.close()
 
 
 def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -> None:
@@ -3709,6 +4226,78 @@ def test_activation_retry_replay_reuses_uuid_after_unknown_receipt(
         is HireEffectState.COMMITTED
     )
     runtime.close()
+
+
+def _accept_pending_group_mention(
+    runtime,
+    state,
+    *,
+    bot_open_id: str,
+    suffix: str,
+):
+    raw_chat_id = "oc_employee_team"
+    raw_message_id = f"om_{suffix}"
+    digest = hashlib.sha256(suffix.encode()).hexdigest()
+    payload = EmployeeIngressPayload(
+        schema_version=1,
+        envelope_id=f"ing_{digest}",
+        normalized_parts=(
+            {
+                "type": "message",
+                "message_type": "text",
+                "chat_type": "group",
+                "content": {"text": "@_user_1 你好"},
+                "mentions": (
+                    {
+                        "key": "@_user_1",
+                        "mentioned_type": "bot",
+                        "open_id": bot_open_id,
+                        "tenant_key": state.tenant_key,
+                    },
+                ),
+                "sender_id": "ou_employee_app_admin",
+                "sender_union_id": state.requester_union_id,
+                "sender_id_type": "open_id",
+                "sender_type": "user",
+                "sender_tenant_key": state.tenant_key,
+                "feishu_thread_id": "",
+                "remote_chat_id": raw_chat_id,
+                "remote_message_id": raw_message_id,
+                "remote_root_id": "",
+            },
+        ),
+        attachment_descriptors=(),
+    )
+    metadata = EmployeeIngressMetadata(
+        schema_version=1,
+        envelope_id=payload.envelope_id,
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        bot_principal_id=state.bot_principal_id,
+        app_id=state.app_id,
+        channel_generation=state.channel_generation,
+        connection_id=state.channel_connection_id,
+        event_id=f"evt_{digest}",
+        message_id="om_" + hashlib.sha256(raw_message_id.encode()).hexdigest(),
+        event_type="im.message.receive_v1",
+        action_identity="",
+        chat_id="oc_" + hashlib.sha256(raw_chat_id.encode()).hexdigest(),
+        thread_root_message_id="",
+        sender_principal_id="ou_employee_app_admin",
+        received_at=datetime.now(UTC).isoformat(timespec="milliseconds").replace(
+            "+00:00", "Z"
+        ),
+        semantic_digest=payload.payload_sha256,
+        payload_sha256=payload.payload_sha256,
+        payload_size_bytes=payload.canonical_size_bytes,
+        attachment_count=0,
+        attachment_total_bytes=0,
+    )
+    return runtime.ingress_service.accept(
+        metadata,
+        payload,
+        request_id=f"req_{suffix}",
+    )
 
 
 def _accept_durable_status(

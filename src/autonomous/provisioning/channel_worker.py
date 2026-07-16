@@ -321,12 +321,20 @@ def run_low_level_employee_channel(
     from src.autonomous.provisioning.lark_outbound import LarkEmployeeOutbound
 
     security = _strict_sdk_security_config()
-    outbound = LarkEmployeeOutbound(
+    lark_client = (
         lark.Client.builder()
         .app_id(bootstrap.app_id)
         .app_secret(bootstrap.app_secret)
+        .domain(domain)
+        .timeout(10.0)
+        .source("employee-channel")
         .build()
     )
+    bot_open_id = _fetch_employee_bot_open_id(
+        lark_client,
+        expected_app_id=bootstrap.app_id,
+    )
+    outbound = LarkEmployeeOutbound(lark_client)
     control_reader = threading.Thread(
         target=_read_low_level_control,
         args=(
@@ -441,6 +449,7 @@ def run_low_level_employee_channel(
         _publish_observed_low_level_connection(
             client,
             bootstrap,
+            bot_open_id,
             connection_id,
             emitter,
             admission,
@@ -451,7 +460,14 @@ def run_low_level_employee_channel(
     client.on_reconnected = on_reconnected
     readiness = threading.Thread(
         target=_observe_low_level_connection,
-        args=(client, bootstrap, emitter, stop_requested, admission),
+        args=(
+            client,
+            bootstrap,
+            bot_open_id,
+            emitter,
+            stop_requested,
+            admission,
+        ),
         name=f"employee-channel-ready-{bootstrap.agent_id}-{bootstrap.generation}",
         daemon=True,
     )
@@ -476,6 +492,66 @@ def _strict_sdk_security_config() -> Any:
         max_concurrent_ws_handlers=1,
         resource_overflow_policy="drop",
     )
+
+
+def _fetch_employee_bot_open_id(
+    client: Any,
+    *,
+    expected_app_id: str,
+) -> str:
+    """Resolve this employee app's bot identity through official OpenAPI."""
+
+    from lark_oapi.core.enum import AccessTokenType, HttpMethod
+    from lark_oapi.core.model.base_request import BaseRequest
+    from lark_oapi.core.model.base_response import BaseResponse
+
+    request = (
+        BaseRequest.builder()
+        .http_method(HttpMethod.GET)
+        .uri("/open-apis/bot/v3/info")
+        .token_types({AccessTokenType.TENANT})
+        .paths({})
+        .body(None)
+        .build()
+    )
+    try:
+        response = client.request(request)
+    except Exception as exc:
+        raise WorkerSecurityError(
+            f"employee bot identity lookup failed ({type(exc).__name__})"
+        ) from None
+    raw = response.raw if isinstance(response, BaseResponse) else None
+    if (
+        not isinstance(response, BaseResponse)
+        or not response.success()
+        or raw is None
+        or not isinstance(raw.status_code, int)
+        or not 200 <= raw.status_code < 300
+        or not isinstance(raw.content, bytes)
+    ):
+        raise WorkerSecurityError("employee bot identity lookup was rejected")
+    try:
+        payload = json.loads(raw.content)
+    except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        raise WorkerSecurityError("employee bot identity response is invalid") from None
+    if not isinstance(payload, dict):
+        raise WorkerSecurityError("employee bot identity response is invalid")
+    bot = payload.get("bot")
+    open_id = bot.get("open_id") if isinstance(bot, dict) else None
+    observed_app_id = bot.get("app_id") if isinstance(bot, dict) else None
+    if (
+        payload.get("code") != 0
+        or not isinstance(bot, dict)
+        or not isinstance(open_id, str)
+        or not open_id.startswith("ou_")
+        or len(open_id) > 256
+        or (
+            observed_app_id is not None
+            and observed_app_id != expected_app_id
+        )
+    ):
+        raise WorkerSecurityError("employee bot identity response is invalid")
+    return open_id
 
 
 def _read_low_level_control(
@@ -595,6 +671,7 @@ def _handle_low_level_outbound(
 def _observe_low_level_connection(
     client: Any,
     bootstrap: Any,
+    bot_open_id: str,
     emitter: _FrameEmitter,
     stop_requested: threading.Event,
     admission: _ConnectionAdmission,
@@ -605,6 +682,7 @@ def _observe_low_level_connection(
         if _publish_observed_low_level_connection(
             client,
             bootstrap,
+            bot_open_id,
             connection_id,
             emitter,
             admission,
@@ -619,6 +697,7 @@ def _observe_low_level_connection(
 def _publish_observed_low_level_connection(
     client: Any,
     bootstrap: Any,
+    bot_open_id: str,
     connection_id: str,
     emitter: _FrameEmitter,
     admission: _ConnectionAdmission,
@@ -640,7 +719,10 @@ def _publish_observed_low_level_connection(
     ):
         return False
     ready_payload = {
-        "identity": {"app_id": bootstrap.app_id},
+        "identity": {
+            "app_id": bootstrap.app_id,
+            "open_id": bot_open_id,
+        },
         "connection_id": connection_id,
         "connection": {
             "observed": True,
@@ -668,6 +750,32 @@ def _emit_nonblocking(
         FrameType.EVENT,
         {"event": event_name, "data": _json_safe(data)},
     )
+
+
+def _normalize_message_mentions(message: Any) -> tuple[dict[str, str], ...]:
+    """Keep canonical SDK mention identity fields in the encrypted blob."""
+
+    raw_mentions = getattr(message, "mentions", None)
+    if raw_mentions is None:
+        return ()
+    if not isinstance(raw_mentions, (list, tuple)) or len(raw_mentions) > 50:
+        raise ValueError("employee ingress mentions are invalid")
+    normalized: list[dict[str, str]] = []
+    for mention in raw_mentions:
+        identity = getattr(mention, "id", None)
+        fields = {
+            "key": getattr(mention, "key", None),
+            "mentioned_type": getattr(mention, "mentioned_type", None),
+            "open_id": getattr(identity, "open_id", None),
+            "tenant_key": getattr(mention, "tenant_key", None),
+        }
+        if any(
+            not isinstance(value, str) or not value or len(value) > 256
+            for value in fields.values()
+        ):
+            raise ValueError("employee ingress mention identity is invalid")
+        normalized.append(fields)
+    return tuple(normalized)
 
 
 def _normalize_sdk_ingress(
@@ -704,24 +812,28 @@ def _normalize_sdk_ingress(
             content = json.loads(content_raw)
         except (TypeError, json.JSONDecodeError):
             content = content_raw
+        mentions = _normalize_message_mentions(message)
+        normalized_message = {
+            "type": "message",
+            "message_type": getattr(message, "message_type", ""),
+            "chat_type": getattr(message, "chat_type", ""),
+            "content": content,
+            "sender_id": sender_id,
+            "sender_union_id": sender_union_id,
+            "sender_id_type": "open_id",
+            "sender_type": getattr(sender, "sender_type", ""),
+            "sender_tenant_key": getattr(sender, "tenant_key", ""),
+            "feishu_thread_id": getattr(message, "thread_id", "") or "",
+            # Remote coordinates stay inside the encrypted blob.  Public
+            # ingress metadata contains only their one-way indexes.
+            "remote_chat_id": chat_id,
+            "remote_message_id": message_id,
+            "remote_root_id": root_id,
+        }
+        if mentions:
+            normalized_message["mentions"] = mentions
         parts = (
-            {
-                "type": "message",
-                "message_type": getattr(message, "message_type", ""),
-                "chat_type": getattr(message, "chat_type", ""),
-                "content": content,
-                "sender_id": sender_id,
-                "sender_union_id": sender_union_id,
-                "sender_id_type": "open_id",
-                "sender_type": getattr(sender, "sender_type", ""),
-                "sender_tenant_key": getattr(sender, "tenant_key", ""),
-                "feishu_thread_id": getattr(message, "thread_id", "") or "",
-                # Remote coordinates stay inside the encrypted blob.  Public
-                # ingress metadata contains only their one-way indexes.
-                "remote_chat_id": chat_id,
-                "remote_message_id": message_id,
-                "remote_root_id": root_id,
-            },
+            normalized_message,
         )
         action_identity = ""
     elif kind == "card":

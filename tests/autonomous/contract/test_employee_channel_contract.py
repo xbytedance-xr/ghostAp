@@ -29,6 +29,8 @@ from src.autonomous.provisioning.channel_protocol import (
     encode_frame,
 )
 from src.autonomous.provisioning.channel_worker import (
+    WorkerSecurityError,
+    _fetch_employee_bot_open_id,
     _handle_low_level_outbound,
     _handle_update_card,
     _normalize_sdk_ingress,
@@ -41,6 +43,32 @@ from src.autonomous.provisioning.channel_worker import (
     main as channel_worker_main,
 )
 from src.autonomous.supervisor.employee_channels import EmployeeChannelSupervisor
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {},
+        {"code": 0, "bot": {"open_id": "invalid"}},
+        {
+            "code": 0,
+            "bot": {"app_id": "cli_other", "open_id": "ou_employee"},
+        },
+    ),
+)
+def test_worker_fails_closed_on_untrusted_bot_identity(payload: object) -> None:
+    from lark_oapi.core.model.base_response import BaseResponse
+    from lark_oapi.core.model.raw_response import RawResponse
+
+    response = BaseResponse()
+    response.code = 0
+    response.raw = RawResponse()
+    response.raw.status_code = 200
+    response.raw.content = json.dumps(payload).encode()
+    client = type("Client", (), {"request": lambda _self, _request: response})()
+
+    with pytest.raises(WorkerSecurityError, match="identity response is invalid"):
+        _fetch_employee_bot_open_id(client, expected_app_id="cli_employee")
 
 
 def test_parent_durable_ingress_call_graph_excludes_router_and_acp_execution() -> None:
@@ -588,6 +616,68 @@ def test_worker_extracts_only_authoritative_non_secret_raw_message_metadata() ->
         "message_id": "om_1",
         "sender_union_id": "on_admin",
     }
+
+
+def test_worker_normalizes_direct_bot_mentions_inside_encrypted_payload() -> None:
+    from types import SimpleNamespace
+
+    event = SimpleNamespace(
+        header=SimpleNamespace(
+            event_id="event-mention",
+            event_type="im.message.receive_v1",
+            create_time="1783900800000",
+            tenant_key="tenant_1",
+            app_id="cli_employee",
+        ),
+        event=SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_id=SimpleNamespace(
+                    open_id="ou_employee_app_admin",
+                    union_id="on_admin",
+                ),
+                sender_type="user",
+                tenant_key="tenant_1",
+            ),
+            message=SimpleNamespace(
+                message_id="om_mention",
+                root_id="",
+                parent_id="",
+                thread_id="",
+                chat_id="oc_team",
+                chat_type="group",
+                message_type="text",
+                content='{"text":"@_user_1 hello"}',
+                mentions=(
+                    SimpleNamespace(
+                        key="@_user_1",
+                        mentioned_type="bot",
+                        id=SimpleNamespace(open_id="ou_employee_bot"),
+                        tenant_key="tenant_1",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    _metadata, payload, _correlation = _normalize_sdk_ingress(
+        event,
+        kind="message",
+        agent_id="agt_employee",
+        app_id="cli_employee",
+        generation=7,
+        connection_id="conn_employee",
+        tenant_key="tenant_1",
+        bot_principal_id="bot_employee",
+    )
+
+    assert payload.normalized_parts[0]["mentions"] == (
+        {
+            "key": "@_user_1",
+            "mentioned_type": "bot",
+            "open_id": "ou_employee_bot",
+            "tenant_key": "tenant_1",
+        },
+    )
 
 
 def test_worker_channel_forces_strict_direct_wss_and_error_only_logs(

@@ -1663,6 +1663,31 @@ class ProductionEmployeeHireService:
 
     def _reconcile_recovered_hires(self) -> None:
         for state in tuple(self._hire_projection.states.values()):
+            effect_types = dict(state.effect_types)
+            pending_group_replies = [
+                effect_id
+                for effect_id, effect_state in state.effects
+                if effect_state is HireEffectState.EXECUTING
+                and effect_types.get(effect_id)
+                == "employee_activation_required_reply"
+            ]
+            for effect_id in pending_group_replies:
+                # EXECUTING belongs to an old Channel generation after process
+                # recovery, so its external outcome cannot be proven. Dispose
+                # only the effect; PREPARED is still safe for composition to
+                # dispatch on the replacement Channel.
+                state = self.commit_effect_transition(
+                    state.intent_id,
+                    effect_id=effect_id,
+                    effect_type="employee_activation_required_reply",
+                    next_state=HireEffectState.ACTION_REQUIRED,
+                    metadata={
+                        **dict(state.metadata_for(effect_id)),
+                        "error_code": (
+                            "activation_required_reply_outcome_unknown"
+                        ),
+                    },
+                )
             if state.phase is HirePhase.VALIDATING and state.verification_nonce:
                 effect_types = dict(state.effect_types)
                 if any(

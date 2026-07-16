@@ -173,12 +173,31 @@ def _run_sdk_client(
 
 class _EndpointHandler(BaseHTTPRequestHandler):
     endpoint_url = ""
+    bot_open_id = "ou_capability_bot"
+
+    def _send_json(self, payload: dict[str, Any]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802 - stdlib HTTP hook
+        if self.path == "/open-apis/auth/v3/tenant_access_token/internal":
+            self._send_json(
+                {
+                    "code": 0,
+                    "msg": "ok",
+                    "tenant_access_token": "t-capability",
+                    "expire": 7200,
+                }
+            )
+            return
         if self.path != "/callback/ws/endpoint":
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        body = json.dumps(
+        self._send_json(
             {
                 "code": 0,
                 "msg": "ok",
@@ -191,14 +210,24 @@ class _EndpointHandler(BaseHTTPRequestHandler):
                         "PingInterval": 1,
                     },
                 },
-            },
-            separators=(",", ":"),
-        ).encode()
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            }
+        )
+
+    def do_GET(self) -> None:  # noqa: N802 - stdlib HTTP hook
+        if self.path != "/open-apis/bot/v3/info":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self._send_json(
+            {
+                "code": 0,
+                "msg": "ok",
+                "bot": {
+                    "app_id": "cli_capability",
+                    "open_id": self.bot_open_id,
+                    "app_name": "Capability Employee",
+                },
+            }
+        )
 
     def log_message(self, _format: str, *_args: Any) -> None:
         return
@@ -252,6 +281,7 @@ class _WireHarness(AbstractContextManager["_WireHarness"]):
         self._connection_lock = threading.Lock()
         self.ca_file = self._write_test_certificate()
         self.domain = ""
+        self.bot_open_id = _EndpointHandler.bot_open_id
 
     def __enter__(self) -> _WireHarness:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)

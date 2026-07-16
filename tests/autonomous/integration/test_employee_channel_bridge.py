@@ -160,6 +160,7 @@ class _ParentDurableAck:
         self.accept_invocations = 0
         self.execution_calls: list[str] = []
         self.frame_types: list[FrameType] = []
+        self.ready_payload: dict[str, object] | None = None
         self.ingress_frame: ChannelFrame | None = None
         self.ingress_frames: list[ChannelFrame] = []
         self.ingress_before_ready = False
@@ -225,6 +226,7 @@ class _ParentDurableAck:
                 frame = decode_frame(raw)
                 self.frame_types.append(frame.frame_type)
                 if frame.frame_type is FrameType.READY:
+                    self.ready_payload = frame.payload
                     self.ready.set()
                     continue
                 if frame.frame_type is not FrameType.INGRESS:
@@ -532,6 +534,11 @@ def _assert_wire_response_waits_for_durable_parent_ack(
             if not ready and process.poll() is not None and process.stderr is not None:
                 diagnostic = process.stderr.read()
             assert ready, (process.poll(), diagnostic.decode(errors="replace"))
+            assert parent.ready_payload is not None
+            assert parent.ready_payload["identity"] == {
+                "app_id": "cli_capability",
+                "open_id": harness.bot_open_id,
+            }
             assert parent.ingress_received.wait(_WAIT_SECONDS)
             assert parent.frame_types[:2] == [FrameType.READY, FrameType.INGRESS]
             assert not harness.response_received.wait(0.2)

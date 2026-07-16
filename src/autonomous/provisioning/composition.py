@@ -953,6 +953,7 @@ class EmployeeDepartmentRuntime:
                 assert self._dispatch is not None
                 assert self._outbox is not None
                 self._ingress.rebuild_projection()
+                self._reconcile_recovered_activation_required_ingress()
                 self._router.rebuild_projection()
                 self._outbox.rebuild_projection()
                 self._dispatch.recover_incomplete_attempts()
@@ -1539,6 +1540,9 @@ class EmployeeDepartmentRuntime:
                     settings,
                     "autonomous_context_retry_max_seconds",
                 ),
+                requester_principal_resolver=(
+                    self._resolve_employee_requester_principal
+                ),
             )
             outbox_lifecycle = EmployeeOutboxLifecycle(self._outbox)
             self._dispatch = EmployeeDispatchCoordinator(
@@ -1628,6 +1632,50 @@ class EmployeeDepartmentRuntime:
         )
         self._dispatch_thread.start()
 
+    def _resolve_employee_requester_principal(
+        self,
+        *,
+        tenant_key: str,
+        agent_id: str,
+        owner_principal_id: str,
+        sender_principal_id: str,
+        sender_union_id: str,
+    ) -> str | None:
+        """Map an employee-app Open ID to the main-bot owner via union ID."""
+
+        values = (
+            tenant_key,
+            agent_id,
+            owner_principal_id,
+            sender_principal_id,
+            sender_union_id,
+        )
+        if any(not isinstance(value, str) for value in values):
+            return None
+        if sender_principal_id == owner_principal_id and sender_principal_id:
+            return owner_principal_id
+        if not sender_union_id:
+            return None
+        service = self._service
+        if service is None:
+            return None
+        service.synchronize_projection()
+        candidates = tuple(
+            state
+            for state in service.list_states()
+            if state.tenant_key == tenant_key and state.agent_id == agent_id
+        )
+        if len(candidates) != 1:
+            return None
+        state = candidates[0]
+        if (
+            state.phase is not HirePhase.ACTIVE
+            or state.requester_principal_id != owner_principal_id
+            or state.requester_union_id != sender_union_id
+        ):
+            return None
+        return owner_principal_id
+
     def _drain_employee_dispatch_once(self) -> bool:
         ingress = self._ingress
         router = self._router
@@ -1656,6 +1704,200 @@ class EmployeeDepartmentRuntime:
         if self._outbox is not None:
             worked = self._outbox.gc_superseded_snapshots() > 0 or worked
         return ingress.gc_terminal_payloads() > 0 or worked
+
+    def _reconcile_recovered_activation_required_ingress(self) -> int:
+        """Terminalize old Inbox records whose reply is unknown or rejected."""
+
+        service = self._service
+        ingress = self._ingress
+        if service is None or ingress is None:
+            return 0
+        unresolved_events: dict[tuple[str, str, str, str, str], str] = {}
+        terminal_reasons = {
+            "activation_required_reply_outcome_unknown": (
+                "activation_reply_outcome_unknown"
+            ),
+            "activation_required_reply_recovery_rejected": (
+                "activation_reply_recovery_rejected"
+            ),
+        }
+        for state in service.list_states():
+            effect_types = dict(state.effect_types)
+            for effect_id, effect_state in state.effects:
+                metadata = dict(state.metadata_for(effect_id))
+                if (
+                    effect_state is HireEffectState.ACTION_REQUIRED
+                    and effect_types.get(effect_id)
+                    == "employee_activation_required_reply"
+                    and metadata.get("error_code") in terminal_reasons
+                    and isinstance(metadata.get("ingress_event_id"), str)
+                    and metadata["ingress_event_id"]
+                ):
+                    error_code = metadata["error_code"]
+                    unresolved_events[
+                        (
+                            state.tenant_key,
+                            state.agent_id,
+                            state.bot_principal_id,
+                            state.app_id,
+                            metadata["ingress_event_id"],
+                        )
+                    ] = terminal_reasons[error_code]
+        reconciled = 0
+        for acceptance_id, record in tuple(ingress.state.by_acceptance_id.items()):
+            metadata = record.metadata
+            key = (
+                metadata.tenant_key,
+                metadata.agent_id,
+                metadata.bot_principal_id,
+                metadata.app_id,
+                metadata.event_id,
+            )
+            reason_code = unresolved_events.get(key)
+            if record.disposition is not None or reason_code is None:
+                continue
+            try:
+                ingress.record_disposition(
+                    acceptance_id,
+                    state="terminal",
+                    reason_code=reason_code,
+                )
+                reconciled += 1
+            except IngressConflictError:
+                pass
+        return reconciled
+
+    def _resume_recoverable_activation_required_replies(self) -> int:
+        """Finish PREPARED/COMMITTED old replies before Router admission starts."""
+
+        service = self._service
+        ingress = self._ingress
+        if service is None or ingress is None:
+            return 0
+        service.synchronize_projection()
+        ingress.rebuild_projection()
+        recoverable: dict[
+            tuple[str, str, str, str, str],
+            tuple[str, str],
+        ] = {}
+        for state in service.list_states():
+            effect_types = dict(state.effect_types)
+            for effect_id, effect_state in state.effects:
+                metadata = dict(state.metadata_for(effect_id))
+                event_id = metadata.get("ingress_event_id")
+                if (
+                    effect_state
+                    in {HireEffectState.PREPARED, HireEffectState.COMMITTED}
+                    and effect_types.get(effect_id)
+                    == "employee_activation_required_reply"
+                    and isinstance(event_id, str)
+                    and event_id
+                ):
+                    recoverable[
+                        (
+                            state.tenant_key,
+                            state.agent_id,
+                            state.bot_principal_id,
+                            state.app_id,
+                            event_id,
+                        )
+                    ] = (state.intent_id, effect_id)
+        resumed = 0
+        for acceptance_id, record in tuple(ingress.state.by_acceptance_id.items()):
+            metadata = record.metadata
+            key = (
+                metadata.tenant_key,
+                metadata.agent_id,
+                metadata.bot_principal_id,
+                metadata.app_id,
+                metadata.event_id,
+            )
+            effect_binding = recoverable.get(key)
+            if record.disposition is not None or effect_binding is None:
+                continue
+            intent_id, effect_id = effect_binding
+            try:
+                if self._handle_control_ingress(acceptance_id):
+                    resumed += 1
+                    continue
+                current = service.get_state(intent_id)
+                if current is None:
+                    raise RuntimeError("employee activation reply state is unavailable")
+                effect_state = current.effect_state(effect_id)
+                if effect_state is HireEffectState.COMMITTED:
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_required",
+                    )
+                    resumed += 1
+                elif effect_state is HireEffectState.PREPARED:
+                    service.commit_effect_transition(
+                        current.intent_id,
+                        effect_id=effect_id,
+                        effect_type="employee_activation_required_reply",
+                        next_state=HireEffectState.ACTION_REQUIRED,
+                        metadata={
+                            **dict(current.metadata_for(effect_id)),
+                            "error_code": (
+                                "activation_required_reply_recovery_rejected"
+                            ),
+                        },
+                    )
+                    self._reconcile_recovered_activation_required_ingress()
+            except Exception as exc:
+                logger.error(
+                    "employee activation-required reply recovery failed closed: %s",
+                    type(exc).__name__,
+                )
+                current = service.get_state(intent_id)
+                if (
+                    current is not None
+                    and current.effect_state(effect_id)
+                    is HireEffectState.EXECUTING
+                ):
+                    service.commit_effect_transition(
+                        current.intent_id,
+                        effect_id=effect_id,
+                        effect_type="employee_activation_required_reply",
+                        next_state=HireEffectState.ACTION_REQUIRED,
+                        metadata={
+                            **dict(current.metadata_for(effect_id)),
+                            "error_code": (
+                                "activation_required_reply_outcome_unknown"
+                            ),
+                        },
+                    )
+                    self._reconcile_recovered_activation_required_ingress()
+                elif (
+                    current is not None
+                    and current.effect_state(effect_id)
+                    is HireEffectState.PREPARED
+                ):
+                    service.commit_effect_transition(
+                        current.intent_id,
+                        effect_id=effect_id,
+                        effect_type="employee_activation_required_reply",
+                        next_state=HireEffectState.ACTION_REQUIRED,
+                        metadata={
+                            **dict(current.metadata_for(effect_id)),
+                            "error_code": (
+                                "activation_required_reply_recovery_rejected"
+                            ),
+                        },
+                    )
+                    self._reconcile_recovered_activation_required_ingress()
+                elif (
+                    current is not None
+                    and current.effect_state(effect_id)
+                    is HireEffectState.COMMITTED
+                ):
+                    ingress.record_disposition(
+                        acceptance_id,
+                        state="terminal",
+                        reason_code="activation_required",
+                    )
+        return resumed
 
     def _handle_control_ingress(self, acceptance_id: str) -> bool:
         """Consume exact durable employee controls before Router admission."""
@@ -1767,6 +2009,15 @@ class EmployeeDepartmentRuntime:
                 except IngressConflictError:
                     pass
             return True
+        if (
+            isinstance(first, Mapping)
+            and self._handle_pending_verification_group_mention(
+                acceptance_id=acceptance_id,
+                record=record,
+                first=first,
+            )
+        ):
+            return True
         data_control = self._parse_data_control(texts)
         if data_control is not None:
             return self._handle_data_control(
@@ -1818,6 +2069,211 @@ class EmployeeDepartmentRuntime:
         except IngressConflictError:
             pass
         self._drain_employee_outbox_once()
+        return True
+
+    def _handle_pending_verification_group_mention(
+        self,
+        *,
+        acceptance_id: str,
+        record: Any,
+        first: Mapping[str, object],
+    ) -> bool:
+        """Reply only to a hash-bound group message solely @mentioning this bot."""
+
+        service = self._service
+        channels = self._channels
+        ingress = self._ingress
+        if service is None or channels is None or ingress is None:
+            return False
+        metadata = getattr(record, "metadata", None)
+        if not isinstance(metadata, EmployeeIngressMetadata):
+            return False
+        coordinates = _bound_remote_coordinates(metadata, first)
+        if coordinates is None:
+            return False
+        remote_chat_id, remote_message_id, _remote_root_id = coordinates
+        mentions = first.get("mentions")
+        if not isinstance(mentions, tuple) or len(mentions) != 1:
+            return False
+        mention = mentions[0]
+        if not isinstance(mention, Mapping) or set(mention) != {
+            "key",
+            "mentioned_type",
+            "open_id",
+            "tenant_key",
+        }:
+            return False
+        status = channels.status(metadata.agent_id)
+        identity = getattr(status, "identity", None)
+        ready_metadata = getattr(status, "ready_metadata", None)
+        employee_open_id = (
+            identity.get("open_id") if isinstance(identity, Mapping) else None
+        )
+        connection_id = (
+            ready_metadata.get("connection_id")
+            if isinstance(ready_metadata, Mapping)
+            else None
+        )
+        if (
+            first.get("type") != "message"
+            or first.get("message_type") != "text"
+            or first.get("chat_type") != "group"
+            or first.get("sender_type") != "user"
+            or first.get("sender_id_type") != "open_id"
+            or first.get("sender_id") != metadata.sender_principal_id
+            or first.get("sender_tenant_key") != metadata.tenant_key
+            or metadata.event_type != "im.message.receive_v1"
+            or mention.get("mentioned_type") != "bot"
+            or not isinstance(mention.get("key"), str)
+            or not mention.get("key")
+            or mention.get("open_id") != employee_open_id
+            or mention.get("tenant_key") != metadata.tenant_key
+            or getattr(status, "state", None) is not ChannelProcessState.READY
+            or getattr(status, "agent_id", None) != metadata.agent_id
+            or getattr(status, "app_id", None) != metadata.app_id
+            or getattr(status, "tenant_key", None) != metadata.tenant_key
+            or getattr(status, "bot_principal_id", None)
+            != metadata.bot_principal_id
+            or not isinstance(identity, Mapping)
+            or identity.get("app_id") != metadata.app_id
+            or not isinstance(employee_open_id, str)
+            or not employee_open_id
+        ):
+            return False
+        projection = service.synchronize_projection()
+        candidates = tuple(
+            state
+            for state in service.list_states()
+            if state.agent_id == metadata.agent_id
+        )
+        if len(candidates) != 1:
+            return False
+        state = candidates[0]
+        employee = projection.employees.get(state.agent_id)
+        effect_id = f"activation-required-reply:{metadata.event_id}"
+        effect_state = state.effect_state(effect_id)
+        effect_type = dict(state.effect_types).get(effect_id)
+        effect_metadata = dict(state.metadata_for(effect_id))
+        current_ingress_binding = (
+            state.channel_generation == metadata.channel_generation
+            and state.channel_connection_id == metadata.connection_id
+        )
+        recoverable_old_ingress = (
+            state.channel_generation > metadata.channel_generation
+            and effect_state
+            in {HireEffectState.PREPARED, HireEffectState.COMMITTED}
+            and effect_type == "employee_activation_required_reply"
+            and effect_metadata.get("ingress_event_id") == metadata.event_id
+        )
+        if (
+            state.phase is not HirePhase.READY_PENDING_VERIFICATION
+            or state.tenant_key != metadata.tenant_key
+            or state.app_id != metadata.app_id
+            or state.bot_principal_id != metadata.bot_principal_id
+            or getattr(status, "generation", None) != state.channel_generation
+            or connection_id != state.channel_connection_id
+            or not (current_ingress_binding or recoverable_old_ingress)
+            or employee is None
+            or employee.owner_principal_id != state.requester_principal_id
+            or remote_chat_id not in employee.member_groups
+        ):
+            return False
+        if not self._send_activation_required_notice(
+            state=state,
+            acceptance_id=acceptance_id,
+            event_id=metadata.event_id,
+            target_chat_id=remote_chat_id,
+            reply_message_id=remote_message_id,
+        ):
+            return False
+        try:
+            ingress.record_disposition(
+                acceptance_id,
+                state="terminal",
+                reason_code="activation_required",
+            )
+        except IngressConflictError:
+            pass
+        return True
+
+    def _send_activation_required_notice(
+        self,
+        *,
+        state: DurableHireState,
+        acceptance_id: str,
+        event_id: str,
+        target_chat_id: str,
+        reply_message_id: str,
+    ) -> bool:
+        """Durably send one stable group reply explaining pending verification."""
+
+        service = self._require_service()
+        channels = self._channels
+        if channels is None:
+            return False
+        effect_id = f"activation-required-reply:{event_id}"
+        effect_state = state.effect_state(effect_id)
+        if effect_state is None:
+            state = service.commit_effect_transition(
+                state.intent_id,
+                effect_id=effect_id,
+                effect_type="employee_activation_required_reply",
+                next_state=HireEffectState.PREPARED,
+                metadata={"ingress_event_id": event_id},
+            )
+            effect_state = state.effect_state(effect_id)
+        if effect_state is HireEffectState.PREPARED:
+            state = service.commit_effect_transition(
+                state.intent_id,
+                effect_id=effect_id,
+                effect_type="employee_activation_required_reply",
+                next_state=HireEffectState.EXECUTING,
+            )
+            effect_state = state.effect_state(effect_id)
+        if effect_state is HireEffectState.COMMITTED:
+            return True
+        if effect_state is not HireEffectState.EXECUTING:
+            return False
+        stable_uuid = _stable_feishu_uuid(
+            f"employee-activation-required:{state.agent_id}:{acceptance_id}"
+        )
+        receipt = channels.send(
+            state.agent_id,
+            generation=state.channel_generation,
+            target=target_chat_id,
+            message={
+                "text": (
+                    f"{state.employee_name} 当前尚未完成身份验证。"
+                    "请先私聊该员工发送 /status，激活成功后再回到群里 @ 它。"
+                )
+            },
+            options={"uuid": stable_uuid, "reply_to": reply_message_id},
+        )
+        if (
+            getattr(receipt, "success", False) is not True
+            or getattr(receipt, "app_id", "") != state.app_id
+            or getattr(receipt, "generation", 0) != state.channel_generation
+            or getattr(receipt, "connection_id", "")
+            != state.channel_connection_id
+            or not getattr(receipt, "request_id", "")
+            or not getattr(receipt, "message_id", "")
+        ):
+            raise RuntimeError("employee activation-required receipt is invalid")
+        service.commit_effect_transition(
+            state.intent_id,
+            effect_id=effect_id,
+            effect_type="employee_activation_required_reply",
+            next_state=HireEffectState.COMMITTED,
+            metadata={
+                "send_request_id": receipt.request_id,
+                "ingress_event_id": event_id,
+                "reply_app_id": receipt.app_id,
+                "reply_message_id": receipt.message_id,
+                "generation": str(receipt.generation),
+                "connection_id": receipt.connection_id,
+                "main_bot_send_count": "0",
+            },
+        )
         return True
 
     def _handle_durable_activation_status(self, acceptance_id: str) -> bool:
@@ -3193,6 +3649,7 @@ class EmployeeDepartmentRuntime:
                     failures,
                 )
         await self._retry_terminal_notifications()
+        self._resume_recoverable_activation_required_replies()
         self._require_service().mark_runtime_recovered()
         if not self._execution_blockers:
             self._start_dispatch_worker()

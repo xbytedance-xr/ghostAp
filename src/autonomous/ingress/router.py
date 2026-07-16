@@ -87,6 +87,22 @@ def _bound_remote_coordinate(
     if not raw_value:
         return "" if not indexed_value else None
     return raw_value if _remote_index(raw_value, prefix) == indexed_value else None
+
+
+def _same_app_requester_principal(
+    *,
+    tenant_key: str,
+    agent_id: str,
+    owner_principal_id: str,
+    sender_principal_id: str,
+    sender_union_id: str,
+) -> str | None:
+    """Preserve the historical same-app requester identity by default."""
+
+    del tenant_key, agent_id, owner_principal_id, sender_union_id
+    return sender_principal_id or None
+
+
 _TERMINAL_REASONS = frozenset(
     {
         "authority_denied",
@@ -370,7 +386,13 @@ def _reduce_router_event(
     if record is None or event.aggregate_id != record.aggregate_id:
         raise RouterProjectionError("Router transition references unknown acceptance")
     if event.event_type == _ROUTER_PREFIX + "authorized":
-        if set(payload) != {"acceptance_id", "authority"} or record.state != "accepted":
+        legacy_keys = {"acceptance_id", "authority"}
+        resolved_keys = legacy_keys | {"source_requester_principal_id"}
+        if (
+            frozenset(payload)
+            not in {frozenset(legacy_keys), frozenset(resolved_keys)}
+            or record.state != "accepted"
+        ):
             raise RouterProjectionError("invalid Router authorized transition")
         try:
             authority = RouterAuthoritySnapshot.from_dict(payload["authority"])
@@ -383,7 +405,6 @@ def _reduce_router_event(
             record.app_id,
             record.channel_generation,
             record.connection_id,
-            record.requester_principal_id,
         )
         authority_coordinates = (
             authority.tenant_key,
@@ -392,17 +413,27 @@ def _reduce_router_event(
             authority.app_id,
             authority.channel_generation,
             authority.connection_id,
-            authority.requester_principal_id,
         )
         team_matches = record.team_id == authority.team_id or (
             record.team_id == _remote_index(authority.team_id, "oc_")
         )
-        if authority_coordinates != accepted_coordinates or not team_matches:
+        requester_matches = (
+            authority.requester_principal_id == record.requester_principal_id
+            if set(payload) == legacy_keys
+            else payload["source_requester_principal_id"]
+            == record.requester_principal_id
+        )
+        if (
+            authority_coordinates != accepted_coordinates
+            or not team_matches
+            or not requester_matches
+        ):
             raise RouterProjectionError("Router authority acceptance mismatch")
         updated = replace(
             record,
             state="authorized",
             team_id=authority.team_id,
+            requester_principal_id=authority.requester_principal_id,
             authority=authority,
         )
     elif event.event_type == _ROUTER_PREFIX + "staging":
@@ -501,6 +532,7 @@ class DurableEmployeeIngressRouter:
         context_retry_base_seconds: float = 1.0,
         context_retry_max_seconds: float = 30.0,
         clock: Callable[[], datetime] | None = None,
+        requester_principal_resolver: Callable[..., str | None] | None = None,
     ) -> None:
         if not isinstance(writer, JournalWriter):
             raise TypeError("writer must be JournalWriter")
@@ -512,6 +544,10 @@ class DurableEmployeeIngressRouter:
             raise TypeError("Router authority providers are invalid")
         if not hasattr(requester_acl, "is_authorized"):
             raise TypeError("requester_acl is invalid")
+        if requester_principal_resolver is not None and not callable(
+            requester_principal_resolver
+        ):
+            raise TypeError("requester_principal_resolver is invalid")
         if not callable(getattr(membership_health, "is_degraded", None)):
             raise TypeError("membership_health is invalid")
         # Reuse the request contract for strict trusted reserve validation.
@@ -537,6 +573,9 @@ class DurableEmployeeIngressRouter:
         self._registry_provider = registry_provider
         self._channels = channel_status_provider
         self._requester_acl = requester_acl
+        self._requester_principal_resolver = (
+            requester_principal_resolver or _same_app_requester_principal
+        )
         self._limits = queue_limits
         self._attachment_staging = attachment_staging
         self._membership_health = membership_health
@@ -801,7 +840,12 @@ class DurableEmployeeIngressRouter:
                     record = self._transition_unlocked(
                         record,
                         "authorized",
-                        {"authority": authority.to_dict()},
+                        {
+                            "authority": authority.to_dict(),
+                            "source_requester_principal_id": (
+                                record.requester_principal_id
+                            ),
+                        },
                     )
                 elif not self._authority_matches(record.authority, authority):
                     return self._terminal_unlocked(record, "authority_stale")
@@ -1484,6 +1528,21 @@ class DurableEmployeeIngressRouter:
                 return None, "membership_degraded"
             if type(membership_degraded) is not bool or membership_degraded is not False:
                 return None, "membership_degraded"
+            sender_union_id = part.get("sender_union_id", "")
+            if not isinstance(sender_union_id, str):
+                return None, "sender_invalid"
+            try:
+                requester_principal_id = self._requester_principal_resolver(
+                    tenant_key=metadata.tenant_key,
+                    agent_id=metadata.agent_id,
+                    owner_principal_id=employee.owner_principal_id,
+                    sender_principal_id=metadata.sender_principal_id,
+                    sender_union_id=sender_union_id,
+                )
+            except Exception:
+                return None, "requester_denied"
+            if not isinstance(requester_principal_id, str) or not requester_principal_id:
+                return None, "requester_denied"
             snapshot = RouterAuthoritySnapshot(
                 tenant_key=metadata.tenant_key,
                 agent_id=employee.agent_id,
@@ -1492,7 +1551,7 @@ class DurableEmployeeIngressRouter:
                 channel_generation=metadata.channel_generation,
                 connection_id=metadata.connection_id,
                 team_id=remote_chat_id,
-                requester_principal_id=metadata.sender_principal_id,
+                requester_principal_id=requester_principal_id,
                 projection_sequence=binding.projection_sequence,
                 projection_hash=(
                     binding.projection_hash
