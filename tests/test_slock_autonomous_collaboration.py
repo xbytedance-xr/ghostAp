@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from src.autonomous.team import TeamAdmissionError
 from src.slock_engine.intent_router import IntentResult
 from src.slock_engine.models import AgentIdentity, SlockTask
 from src.slock_engine.slash_commands import SlockCommandAction
@@ -105,6 +106,54 @@ def test_plain_task_prefers_durable_visible_employee_team_service():
         task="实现登录功能并补充测试",
     )
     engine.add_task.assert_not_called()
+
+
+def test_plain_task_without_ready_employee_is_not_reported_as_accepted():
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler.ctx.employee_team_service.start_task.side_effect = TeamAdmissionError(
+        "no_active_team_employee"
+    )
+
+    with patch(
+        "src.thread.manager.get_current_tenant_key",
+        return_value="tenant_1",
+    ), patch(
+        "src.thread.manager.get_current_sender_id",
+        return_value="ou_user",
+    ):
+        handler.handle_message("om_task", "oc_team", "大家能做个自我介绍嘛？", None)
+
+    reply = handler.reply_text.call_args.args[1]
+    assert "已受理" not in reply
+    assert "/status" in reply
+    assert "/role add" in reply
+    engine.add_task.assert_not_called()
+
+
+def test_replayed_terminal_team_run_is_not_reported_as_accepted():
+    handler = _make_handler()
+    engine = _make_engine_for_plan()
+    handler.ctx.slock_engine_manager.get_activated_engine.return_value = engine
+    handler.ctx.employee_team_service = MagicMock()
+    handler.ctx.employee_team_service.start_task.side_effect = TeamAdmissionError(
+        "team_run_action_required"
+    )
+
+    with patch(
+        "src.thread.manager.get_current_tenant_key",
+        return_value="tenant_1",
+    ), patch(
+        "src.thread.manager.get_current_sender_id",
+        return_value="ou_user",
+    ):
+        handler.handle_message("om_task", "oc_team", "重复投递", None)
+
+    reply = handler.reply_text.call_args.args[1]
+    assert "已受理" not in reply
+    assert "已经结束" in reply
 
 
 def test_autonomous_collaboration_keeps_explicit_mention_on_direct_route():

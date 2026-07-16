@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -8,10 +9,12 @@ import pytest
 
 from src.autonomous.team import (
     EmployeeTeamService,
+    TeamAdmissionError,
     TeamAttemptResult,
     TeamRunState,
     TeamTarget,
 )
+from src.autonomous.team.service import TeamServiceError
 from tests.autonomous.workforce_helpers import make_writer
 
 
@@ -107,6 +110,206 @@ class _BlockingNotifyBackend(_Backend):
         self.notify_entered.set()
         assert self.notify_release.wait(2)
         super().notify(message_id, chat_id, result)
+
+
+class _NoActiveEmployeeBackend(_Backend):
+    def list_active(self, tenant_key: str, chat_id: str):
+        assert (tenant_key, chat_id) == ("tenant_1", "oc_team")
+        return ()
+
+
+class _BlockingAdmissionBackend(_Backend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_entered = threading.Event()
+        self.list_release = threading.Event()
+
+    def list_active(self, tenant_key: str, chat_id: str):
+        self.list_entered.set()
+        assert self.list_release.wait(2)
+        return super().list_active(tenant_key, chat_id)
+
+
+class _ConcurrentAdmissionBackend(_Backend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.list_barrier = threading.Barrier(2)
+        self.result_release = threading.Event()
+
+    def list_active(self, tenant_key: str, chat_id: str):
+        self.list_barrier.wait(2)
+        return super().list_active(tenant_key, chat_id)
+
+    def result(self, acceptance_id: str):
+        assert self.result_release.wait(2)
+        return super().result(acceptance_id)
+
+
+def test_team_admission_rejects_before_creating_run_without_active_employee(
+    tmp_path,
+) -> None:
+    writer = make_writer(tmp_path)
+    backend = _NoActiveEmployeeBackend()
+    service = EmployeeTeamService(writer=writer, backend=backend)
+
+    with pytest.raises(TeamAdmissionError, match="no_active_team_employee") as error:
+        service.start_task(
+            tenant_key="tenant_1",
+            message_id="om_no_employee",
+            chat_id="oc_team",
+            requester_principal_id="ou_user",
+            task="大家能做个自我介绍嘛？",
+        )
+
+    assert error.value.error_code == "no_active_team_employee"
+    assert not any(
+        event.event_type == "team.run.created"
+        for frame in writer.replay()
+        for event in frame.events
+    )
+    assert backend.notifications == []
+    service.close()
+    writer.close()
+
+
+def test_existing_terminal_team_run_is_not_readmitted(tmp_path) -> None:
+    from src.autonomous.journal.frame import JournalEvent
+
+    writer = make_writer(tmp_path)
+    service = EmployeeTeamService(writer=writer, backend=_Backend())
+    run_id = "teamrun_" + hashlib.sha256(b"tenant_1\0om_terminal_replay").hexdigest()
+    service._commit(  # noqa: SLF001
+        JournalEvent(
+            event_type="team.run.created",
+            aggregate_id=run_id,
+            payload={
+                "tenant_key": "tenant_1",
+                "message_id": "om_terminal_replay",
+                "chat_id": "oc_team",
+                "requester_principal_id": "ou_user",
+                "task_digest": "0" * 64,
+                "max_handoffs": 8,
+                "max_depth": 4,
+                "max_fanout": 4,
+            },
+        )
+    )
+    service._commit(  # noqa: SLF001
+        JournalEvent(
+            event_type="team.run.action_required",
+            aggregate_id=run_id,
+            payload={"error_code": "analysis_failed"},
+        )
+    )
+
+    with pytest.raises(TeamAdmissionError, match="team_run_action_required"):
+        service.start_task(
+            tenant_key="tenant_1",
+            message_id="om_terminal_replay",
+            chat_id="oc_team",
+            requester_principal_id="ou_user",
+            task="重复投递",
+        )
+
+    service.close()
+    writer.close()
+
+
+def test_close_during_admission_prevents_run_creation(tmp_path) -> None:
+    writer = make_writer(tmp_path)
+    backend = _BlockingAdmissionBackend()
+    service = EmployeeTeamService(writer=writer, backend=backend)
+    errors: list[BaseException] = []
+
+    def admit() -> None:
+        try:
+            service.start_task(
+                tenant_key="tenant_1",
+                message_id="om_close_race",
+                chat_id="oc_team",
+                requester_principal_id="ou_user",
+                task="关闭竞态",
+            )
+        except BaseException as error:  # noqa: BLE001 - captured from worker thread
+            errors.append(error)
+
+    thread = threading.Thread(target=admit)
+    thread.start()
+    assert backend.list_entered.wait(2)
+    service.close()
+    backend.list_release.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], TeamServiceError)
+    assert str(errors[0]) == "team service is closed"
+    assert not any(
+        event.event_type == "team.run.created"
+        for frame in writer.replay()
+        for event in frame.events
+    )
+    assert backend.submissions == []
+    assert backend.notifications == []
+    writer.close()
+
+
+def test_concurrent_same_message_creates_one_team_run(tmp_path) -> None:
+    writer = make_writer(tmp_path)
+    backend = _ConcurrentAdmissionBackend()
+    service = EmployeeTeamService(
+        writer=writer,
+        backend=backend,
+        attempt_timeout_seconds=1,
+        poll_seconds=0.001,
+    )
+    states: list[TeamRunState] = []
+    errors: list[BaseException] = []
+
+    def admit() -> None:
+        try:
+            states.append(
+                service.start_task(
+                    tenant_key="tenant_1",
+                    message_id="om_concurrent",
+                    chat_id="oc_team",
+                    requester_principal_id="ou_user",
+                    task="并发准入",
+                )
+            )
+        except BaseException as error:  # noqa: BLE001 - captured from worker thread
+            errors.append(error)
+
+    threads = [threading.Thread(target=admit) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(states) == 2
+    assert states[0].run_id == states[1].run_id
+    created = [
+        event
+        for frame in writer.replay()
+        for event in frame.events
+        if event.event_type == "team.run.created"
+    ]
+    assert len(created) == 1
+
+    backend.result_release.set()
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        completed = service.get_run(states[0].run_id)
+        if completed is not None and completed.status == "completed":
+            break
+        time.sleep(0.01)
+    assert completed is not None and completed.status == "completed"
+    assert len(backend.submissions) == 3
+    assert len(backend.notifications) == 1
+    service.close()
+    writer.close()
 
 
 def test_team_run_hands_off_reviews_and_synthesizes(tmp_path) -> None:
@@ -502,13 +705,46 @@ def test_close_cannot_fence_after_notify_has_started(tmp_path, active, expected)
     writer = make_writer(tmp_path)
     backend = _BlockingNotifyBackend(active=active)
     service = EmployeeTeamService(writer=writer, backend=backend)
-    state = service.start_task(
-        tenant_key="tenant_1",
-        message_id=f"om_notify_{active}",
-        chat_id="oc_team",
-        requester_principal_id="ou_user",
-        task="notify fence",
-    )
+    if active:
+        state = service.start_task(
+            tenant_key="tenant_1",
+            message_id="om_notify_true",
+            chat_id="oc_team",
+            requester_principal_id="ou_user",
+            task="notify fence",
+        )
+    else:
+        from src.autonomous.journal.frame import JournalEvent
+
+        state = TeamRunState(
+            run_id="teamrun_failure_notify",
+            tenant_key="tenant_1",
+            message_id="om_notify_false",
+            chat_id="oc_team",
+            requester_principal_id="ou_user",
+            task_digest="0" * 64,
+        )
+        service._commit(  # noqa: SLF001
+            JournalEvent(
+                event_type="team.run.created",
+                aggregate_id=state.run_id,
+                payload={
+                    "tenant_key": state.tenant_key,
+                    "message_id": state.message_id,
+                    "chat_id": state.chat_id,
+                    "requester_principal_id": state.requester_principal_id,
+                    "task_digest": state.task_digest,
+                    "max_handoffs": 8,
+                    "max_depth": 4,
+                    "max_fanout": 4,
+                },
+            )
+        )
+        service._executor.submit(  # noqa: SLF001
+            service._action_required,  # noqa: SLF001
+            state,
+            "analysis_failed",
+        )
     assert backend.notify_entered.wait(1)
     closer = threading.Thread(target=service.close)
     closer.start()

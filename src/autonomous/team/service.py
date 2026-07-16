@@ -76,6 +76,14 @@ def _required_text(value: object, name: str) -> str:
     return value
 
 
+class TeamAdmissionError(TeamServiceError):
+    """A team run was rejected before durable admission."""
+
+    def __init__(self, error_code: str) -> None:
+        super().__init__(_required_text(error_code, "admission error_code"))
+        self.error_code = error_code
+
+
 def _reduce_team_run_event(
     state: TeamRunState | None,
     event: JournalEvent,
@@ -204,7 +212,21 @@ class EmployeeTeamService:
                 raise TeamServiceError("team service is closed")
             existing = self.get_run(run_id)
             if existing is not None:
+                if existing.status != "running":
+                    raise TeamAdmissionError(f"team_run_{existing.status}")
                 return existing
+
+        targets = tuple(self._backend.list_active(tenant_key, chat_id))
+        with self._lock:
+            if self._closed:
+                raise TeamServiceError("team service is closed")
+            existing = self.get_run(run_id)
+            if existing is not None:
+                if existing.status != "running":
+                    raise TeamAdmissionError(f"team_run_{existing.status}")
+                return existing
+            if not targets:
+                raise TeamAdmissionError("no_active_team_employee")
             state = TeamRunState(
                 run_id=run_id,
                 tenant_key=tenant_key,
@@ -229,7 +251,7 @@ class EmployeeTeamService:
                     },
                 )
             )
-            self._executor.submit(self._execute, state, task)
+            self._executor.submit(self._execute, state, task, targets)
         return state
 
     def get_run(self, run_id: str) -> TeamRunState | None:
@@ -287,12 +309,13 @@ class EmployeeTeamService:
         current = self.get_run(state.run_id)
         return current is None or current.status == "running"
 
-    def _execute(self, state: TeamRunState, task: str) -> None:
+    def _execute(
+        self,
+        state: TeamRunState,
+        task: str,
+        targets: tuple[TeamTarget, ...],
+    ) -> None:
         try:
-            targets = self._backend.list_active(state.tenant_key, state.chat_id)
-            if not targets:
-                self._action_required(state, "no_active_team_employee")
-                return
             lead = targets[0]
             reviewer = targets[1] if len(targets) > 1 else lead
             alternate = targets[2] if len(targets) > 2 else None

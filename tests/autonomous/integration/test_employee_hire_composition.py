@@ -4528,13 +4528,19 @@ def test_crashed_active_channel_advances_generation_and_requires_reverification(
     tmp_path: Path,
 ) -> None:
     channels = _Channels()
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    settings.allowed_chat_ids = frozenset({"oc_employee_team"})
     runtime = _runtime(
-        _settings(tmp_path, limit=1),
+        settings,
         release_evidence_ready=True,
         registrar=_Registrar(),
         channel_supervisor=channels,
         slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
         notification_link=lambda *_: None,
+        team_notification=lambda *_: None,
+        context_source_factory=_AssemblingContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
     )
     assert runtime.hire_service is not None
     admitted = runtime.hire_service.start_hire(_request())
@@ -4559,6 +4565,23 @@ def test_crashed_active_channel_advances_generation_and_requires_reverification(
             break
         time.sleep(0.02)
     assert active is not None and active.phase is HirePhase.ACTIVE
+    channels.statuses[active.agent_id].tenant_key = active.tenant_key
+    channels.statuses[active.agent_id].bot_principal_id = active.bot_principal_id
+    assert runtime._writer is not None
+    commit_workforce_events(
+        runtime._writer,
+        runtime.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=active.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    assert runtime.team_service is not None
+    backend = runtime.team_service._backend  # noqa: SLF001
+    old_target = backend.list_active(active.tenant_key, "oc_employee_team")[0]
 
     channels.crash(active.agent_id)
     deadline = time.monotonic() + 7
@@ -4576,6 +4599,49 @@ def test_crashed_active_channel_advances_generation_and_requires_reverification(
     assert revalidating.phase is HirePhase.READY_PENDING_VERIFICATION
     assert revalidating.channel_generation == 2
     assert [item[3] for item in channels.started] == [1, 2]
+
+    acceptance_ids = set(runtime.ingress_service.state.by_acceptance_id)
+    with pytest.raises(RuntimeError, match="channel authority is unavailable"):
+        backend.submit(
+            run_id="teamrun_stale_generation",
+            step_id="analysis",
+            target=old_target,
+            tenant_key=active.tenant_key,
+            chat_id="oc_employee_team",
+            message_id="om_stale_generation",
+            requester_principal_id="ou_admin",
+            instruction="旧 Channel 快照不得执行",
+            deadline_at="2099-01-01T00:00:00Z",
+        )
+    assert set(runtime.ingress_service.state.by_acceptance_id) == acceptance_ids
+
+    ack = _accept_durable_status(
+        runtime,
+        revalidating,
+        suffix="crash_revalidation_generation_2",
+        generation=revalidating.channel_generation,
+        connection_id=revalidating.channel_connection_id,
+    )
+    runtime._handle_control_ingress(ack.acceptance.acceptance_id)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        reverified = runtime.hire_service.get_state(admitted.intent_id)
+        if reverified is not None and reverified.phase is HirePhase.ACTIVE:
+            break
+        time.sleep(0.02)
+    assert reverified is not None and reverified.phase is HirePhase.ACTIVE
+    acceptance_id = backend.submit(
+        run_id="teamrun_reverified_generation",
+        step_id="analysis",
+        target=old_target,
+        tenant_key=active.tenant_key,
+        chat_id="oc_employee_team",
+        message_id="om_reverified_generation",
+        requester_principal_id="ou_admin",
+        instruction="完成验证后允许执行",
+        deadline_at="2099-01-01T00:00:00Z",
+    )
+    assert acceptance_id in runtime.ingress_service.state.by_acceptance_id
     runtime.close()
 
 

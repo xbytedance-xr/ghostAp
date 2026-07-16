@@ -12,6 +12,7 @@ from numbers import Real
 from typing import TYPE_CHECKING, Optional
 
 from ...acp.helper import fetch_acp_models
+from ...autonomous.team import TeamAdmissionError
 from ...card import CardBuilder
 from ...card.actions import dispatch as action_ids
 from ...card.shared import build_responsive_layout
@@ -573,6 +574,20 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                     requester_principal_id=requester_principal_id,
                     task=text.strip(),
                 )
+            except TeamAdmissionError as exc:
+                if exc.error_code == "no_active_team_employee":
+                    self.reply_text(
+                        message_id,
+                        "⚠️ 当前群没有可执行员工，团队任务尚未受理。"
+                        "请先在员工 Bot 私聊发送 `/status` 完成当前 Channel 验证，"
+                        "再确认已通过 `/role add <名字>` 加入本群。",
+                    )
+                else:
+                    self.reply_text(
+                        message_id,
+                        "ℹ️ 该消息对应的团队任务已经结束，请发送一条新消息重试。",
+                    )
+                return True
             except Exception:
                 logger.exception("Visible employee team admission failed")
                 self.reply_text(message_id, "⚠️ 团队任务未能安全入队，请检查员工与群成员状态。")
