@@ -13,6 +13,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Mapping, Protocol
 
 from ..context.models import AuthorizedContextRequest
@@ -40,6 +41,30 @@ _ROUTER_EVENTS = frozenset(
         _ROUTER_PREFIX + "terminal",
     }
 )
+
+
+def _canonical_utc(value: datetime) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError("Router UTC timestamp requires an aware datetime")
+    text = value.astimezone(UTC).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
+    return text.replace(".000000Z", "Z")
+
+
+def _parse_canonical_utc(value: object) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError("Router timestamp must be canonical UTC")
+    parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    if _canonical_utc(parsed) != value:
+        raise ValueError("Router timestamp must be canonical UTC")
+    return parsed
+
+
+def _is_eligible(record: "RouterLifecycleRecord", now: datetime) -> bool:
+    if not record.next_eligible_at:
+        return True
+    return _parse_canonical_utc(record.next_eligible_at) <= now.astimezone(UTC)
 
 
 def _remote_index(value: str, prefix: str) -> str:
@@ -86,11 +111,24 @@ _TERMINAL_REASONS = frozenset(
         "slock_unavailable",
         "context_unavailable",
         "team_step_inactive",
+        "team_step_expired",
+        "team_step_canceled",
+        "team_assignment_invalid",
         "control_consumed",
     }
 )
 _DISPATCH_TERMINAL_REASONS = frozenset(
     {"completed", "failed", "canceled", "timeout", "action_required"}
+)
+_DISPATCH_REJECTION_REASONS = frozenset(
+    {
+        "slock_unavailable",
+        "context_unavailable",
+        "team_step_inactive",
+        "team_step_expired",
+        "team_step_canceled",
+        "team_assignment_invalid",
+    }
 )
 
 
@@ -253,6 +291,7 @@ class RouterLifecycleRecord:
     queue_position: int = 0
     queued_sequence: int = 0
     context_failures: int = 0
+    next_eligible_at: str = ""
     reason_code: str = ""
 
 
@@ -391,10 +430,10 @@ def _reduce_router_event(
             raise RouterProjectionError("invalid Router dispatch transition")
         updated = replace(record, state="dispatching")
     elif event.event_type == _ROUTER_PREFIX + "context_retry":
-        if (
-            set(payload) != {"acceptance_id", "failure_count"}
-            or record.state != "queued"
-        ):
+        fields = frozenset(payload)
+        legacy_fields = frozenset({"acceptance_id", "failure_count"})
+        current_fields = legacy_fields | {"next_eligible_at"}
+        if fields not in {legacy_fields, current_fields} or record.state != "queued":
             raise RouterProjectionError("invalid Router context retry transition")
         failure_count = payload["failure_count"]
         if (
@@ -403,7 +442,23 @@ def _reduce_router_event(
             or failure_count != record.context_failures + 1
         ):
             raise RouterProjectionError("invalid Router context retry count")
-        updated = replace(record, context_failures=failure_count)
+        if fields == legacy_fields:
+            # Pre-v2 retries had no durable eligibility instant. Replaying them
+            # as immediately eligible preserves availability without inventing
+            # a wall-clock value that was never Journal-anchored.
+            canonical_eligibility = ""
+        else:
+            next_eligible_at = payload["next_eligible_at"]
+            try:
+                parsed_eligibility = _parse_canonical_utc(next_eligible_at)
+            except (TypeError, ValueError) as exc:
+                raise RouterProjectionError("invalid Router context retry eligibility") from exc
+            canonical_eligibility = _canonical_utc(parsed_eligibility)
+        updated = replace(
+            record,
+            context_failures=failure_count,
+            next_eligible_at=canonical_eligibility,
+        )
     elif event.event_type == _ROUTER_PREFIX + "terminal":
         if set(payload) != {"acceptance_id", "reason_code"} or record.state not in {
             "accepted",
@@ -443,6 +498,9 @@ class DurableEmployeeIngressRouter:
         constraints_digest: str = "",
         system_prompt_token_reserve: int = 0,
         fault_hook: Callable[[str, RouterLifecycleRecord], None] | None = None,
+        context_retry_base_seconds: float = 1.0,
+        context_retry_max_seconds: float = 30.0,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not isinstance(writer, JournalWriter):
             raise TypeError("writer must be JournalWriter")
@@ -464,6 +522,16 @@ class DurableEmployeeIngressRouter:
             or any(character not in "0123456789abcdef" for character in constraints_digest)
         ):
             raise ValueError("constraints_digest must be lowercase SHA-256")
+        for name, value in (
+            ("context_retry_base_seconds", context_retry_base_seconds),
+            ("context_retry_max_seconds", context_retry_max_seconds),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be numeric")
+            if not (0 < float(value) < float("inf")):
+                raise ValueError(f"{name} must be finite and positive")
+        if context_retry_base_seconds > context_retry_max_seconds:
+            raise ValueError("context retry base cannot exceed maximum")
         self._writer = writer
         self._ingress = ingress_service
         self._registry_provider = registry_provider
@@ -475,7 +543,10 @@ class DurableEmployeeIngressRouter:
         self._constraints_digest = constraints_digest
         self._reserve = system_prompt_token_reserve
         self._fault_hook = fault_hook
-        self._mutex = threading.RLock()
+        self._context_retry_base_seconds = float(context_retry_base_seconds)
+        self._context_retry_max_seconds = float(context_retry_max_seconds)
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._state = RouterProjectionState()
         self._last_attachment_cleanup_report = RouterAttachmentCleanupReport()
         self.rebuild_projection()
@@ -555,6 +626,35 @@ class DurableEmployeeIngressRouter:
                 event,
                 sequence=self._state.cursor_sequence + 1,
             )
+        return event
+
+    def preflight_rejection_event_unlocked(
+        self,
+        *,
+        acceptance_id: str,
+        reason_code: str,
+    ) -> JournalEvent:
+        """Build a queued rejection for a caller holding the Ingress tier."""
+
+        if reason_code not in _DISPATCH_REJECTION_REASONS:
+            raise ValueError("invalid dispatch rejection reason")
+        record = self._record(acceptance_id)
+        if record.state != "queued":
+            raise RouterProjectionError("only queued Router work can be rejected")
+        event = JournalEvent(
+            event_type=_ROUTER_PREFIX + "terminal",
+            aggregate_id=record.aggregate_id,
+            payload={
+                "acceptance_id": record.acceptance_id,
+                "reason_code": reason_code,
+            },
+        )
+        probe = self._state.clone()
+        _reduce_router_event(
+            probe,
+            event,
+            sequence=self._state.cursor_sequence + 1,
+        )
         return event
 
     def preflight_frame_unlocked(self, frame: TransactionFrame) -> None:
@@ -842,11 +942,7 @@ class DurableEmployeeIngressRouter:
     ) -> RouterLifecycleRecord:
         """Durably reject queued work that cannot enter the unique coordinator."""
 
-        if reason_code not in {
-            "slock_unavailable",
-            "context_unavailable",
-            "team_step_inactive",
-        }:
+        if reason_code not in _DISPATCH_REJECTION_REASONS:
             raise ValueError("invalid dispatch rejection reason")
         with self._mutex, self._writer.transaction_guard():
             self.rebuild_projection()
@@ -887,10 +983,18 @@ class DurableEmployeeIngressRouter:
             failure_count = record.context_failures + 1
             if failure_count >= max_failures:
                 return self._terminal_unlocked(record, "context_unavailable")
+            delay = min(
+                self._context_retry_max_seconds,
+                self._context_retry_base_seconds * (2 ** (failure_count - 1)),
+            )
+            eligible_at = _canonical_utc(self._clock() + timedelta(seconds=delay))
             return self._transition_unlocked(
                 record,
                 "context_retry",
-                {"failure_count": failure_count},
+                {
+                    "failure_count": failure_count,
+                    "next_eligible_at": eligible_at,
+                },
             )
 
     def peek_dispatch_candidate(self) -> RouterDispatchGrant | None:
@@ -904,11 +1008,16 @@ class DurableEmployeeIngressRouter:
                     for record in self._state.by_acceptance_id.values()
                     if record.state == "dispatching"
                 }
+                now = self._clock()
+                if now.tzinfo is None or now.utcoffset() is None:
+                    raise ValueError("Router clock must return an aware datetime")
                 candidates = sorted(
                     (
                         record
                         for record in self._state.by_acceptance_id.values()
-                        if record.state == "queued" and record.agent_id not in active
+                        if record.state == "queued"
+                        and record.agent_id not in active
+                        and _is_eligible(record, now)
                     ),
                     key=lambda record: (record.queued_sequence, record.acceptance_id),
                 )

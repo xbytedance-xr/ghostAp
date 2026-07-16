@@ -1047,7 +1047,7 @@ class LarkEmployeeMessageSourceFactory:
         self._client_builder = _default_client_builder
         self._active_sources = set()
         self._invalidated_agents: set[str] = set()
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._condition = threading.Condition(self._lock)
         self._closed = threading.Event()
         self._pending_acquires = 0

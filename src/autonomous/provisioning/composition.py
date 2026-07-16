@@ -235,6 +235,7 @@ class _RuntimeTeamBackend:
         message_id: str,
         requester_principal_id: str,
         instruction: str,
+        deadline_at: str,
     ) -> str:
         runtime = self._runtime
         service = runtime._require_service()
@@ -285,6 +286,7 @@ class _RuntimeTeamBackend:
                     "feishu_thread_id": "",
                     "team_run_id": run_id,
                     "team_step_id": step_id,
+                    "team_deadline_at": deadline_at,
                 },
             ),
             attachment_descriptors=(),
@@ -318,31 +320,89 @@ class _RuntimeTeamBackend:
     def result(self, acceptance_id: str) -> TeamAttemptResult | None:
         runtime = self._runtime
         dispatch = runtime._dispatch
-        router = runtime._router
-        data = runtime._data
-        if dispatch is None or router is None or data is None:
-            return TeamAttemptResult("action_required", error_code="team_gateway_unavailable")
-        gateway = dispatch.state
-        attempt_id = gateway.attempt_by_acceptance_id.get(acceptance_id)
-        if attempt_id:
-            attempt = gateway.attempts.get(attempt_id)
-            if attempt is not None and attempt.terminal_status:
-                if attempt.terminal_status == "completed":
-                    payload = data.service.get_history_payload(attempt.history_record_id)
+        if dispatch is None:
+            return TeamAttemptResult(
+                "action_required",
+                error_code="team_gateway_unavailable",
+                retry_allowed=False,
+            )
+        try:
+            snapshot = dispatch.team_attempt_result(acceptance_id)
+        except Exception:
+            return TeamAttemptResult(
+                "action_required",
+                error_code="team_gateway_unavailable",
+                retry_allowed=False,
+            )
+        return None if snapshot is None else TeamAttemptResult(
+            snapshot.status,
+            output=snapshot.output,
+            history_record_id=snapshot.history_record_id,
+            error_code=snapshot.error_code,
+            retry_allowed=True,
+        )
+
+    def cancel(
+        self,
+        acceptance_id: str,
+        *,
+        run_id: str,
+        step_id: str,
+    ) -> TeamAttemptResult:
+        dispatch = self._runtime._dispatch
+        if dispatch is None:
+            return TeamAttemptResult(
+                "action_required",
+                error_code="team_gateway_unavailable",
+                retry_allowed=False,
+            )
+        try:
+            outcome = dispatch.request_team_cancel(
+                acceptance_id=acceptance_id,
+                team_run_id=run_id,
+                team_step_id=step_id,
+            )
+        except Exception:
+            return TeamAttemptResult(
+                "action_required",
+                error_code="team_gateway_unavailable",
+                retry_allowed=False,
+            )
+        if outcome.status in {"cancel_requested", "already_terminal"}:
+            # A retry is safe only after the canceled attempt has a durable
+            # Gateway terminal frame. Give the live interruption a bounded
+            # window to finish; absence of a terminal remains non-retryable.
+            terminal_deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    terminal = dispatch.team_attempt_result(acceptance_id)
+                except Exception:
                     return TeamAttemptResult(
-                        "completed",
-                        output=payload.result_text,
-                        history_record_id=attempt.history_record_id,
+                        "action_required",
+                        error_code="team_gateway_unavailable",
+                        retry_allowed=False,
                     )
-                return TeamAttemptResult(
-                    attempt.terminal_status,
-                    history_record_id=attempt.history_record_id,
-                    error_code=attempt.terminal_status,
-                )
-        routed = router.state.by_acceptance_id.get(acceptance_id)
-        if routed is not None and routed.state == "terminal":
-            return TeamAttemptResult("action_required", error_code=routed.reason_code)
-        return None
+                if terminal is not None:
+                    return TeamAttemptResult(
+                        terminal.status,
+                        output=terminal.output,
+                        history_record_id=terminal.history_record_id,
+                        error_code=terminal.error_code,
+                        retry_allowed=True,
+                    )
+                if time.monotonic() >= terminal_deadline:
+                    break
+                time.sleep(0.01)
+            return TeamAttemptResult(
+                "canceled",
+                error_code="team_step_timeout",
+                retry_allowed=False,
+            )
+        return TeamAttemptResult(
+            "action_required",
+            error_code="team_cancel_failed",
+            retry_allowed=False,
+        )
 
     def notify(self, message_id: str, chat_id: str, result: str) -> None:
         self._notify(message_id, chat_id, result)
@@ -425,14 +485,14 @@ class EmployeeDepartmentRuntime:
         self._context_bindings: dict[str, tuple[str, str, int]] = {}
         self._context_projection_invalidations: set[str] = set()
         self._context_explicit_invalidations: set[str] = set()
-        self._context_binding_lock = threading.RLock()
+        self._context_binding_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._slash_factory: SlashReconcilerFactory | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._loop_ready = threading.Event()
         self._futures: set[concurrent.futures.Future[Any]] = set()
         self._intent_futures: dict[str, concurrent.futures.Future[Any]] = {}
-        self._future_lock = threading.Lock()
+        self._future_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closing = False
         self._challenges: dict[str, VerificationChallenge] = {}
         self._verification_router: VerificationRouter | None = None
@@ -441,7 +501,7 @@ class EmployeeDepartmentRuntime:
         self._notification_status: Callable[[DurableHireState, str], object] | None = None
         self._owned_main_bot_send_audit: MainBotSendAuditLog | None = None
         self._monitor_task: asyncio.Task[None] | None = None
-        self._activation_lock = threading.RLock()
+        self._activation_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._notification_async_lock: asyncio.Lock | None = None
 
     @classmethod
@@ -563,6 +623,9 @@ class EmployeeDepartmentRuntime:
                 on_registration_link=notification_link,
                 on_registration_status=notification_status,
                 provisioning_submitter=runtime._submit_intent,
+                manifest_reauthorization_submitter=(
+                    runtime._submit_manifest_reauthorization
+                ),
                 runtime_recovery_ready=False,
             )
             runtime._service = service
@@ -586,7 +649,7 @@ class EmployeeDepartmentRuntime:
                     writer=runtime._writer,
                     backend=_RuntimeTeamBackend(runtime, team_notification),
                     attempt_timeout_seconds=float(
-                        getattr(settings, "autonomous_team_step_timeout_seconds", 600.0)
+                        settings.autonomous_team_step_timeout_seconds
                     ),
                 )
                 recovered_team_runs = runtime._team.recover()
@@ -859,6 +922,9 @@ class EmployeeDepartmentRuntime:
         if self._service is None:
             return
         projection = self._service.recover()
+        pending_manifest_reauthorizations = (
+            self._service.recover_manifest_reauthorizations()
+        )
         if self._membership is not None:
             self._membership.rebuild_projection()
             if self._runtime_enabled:
@@ -978,6 +1044,8 @@ class EmployeeDepartmentRuntime:
                 for state in projection.states.values()
             )
         )
+        for operation_id in pending_manifest_reauthorizations:
+            self._submit_manifest_reauthorization(operation_id)
         if pending_intents or status_reply_intents or recover_notifications:
             self._submit_coroutine(
                 self._recover_runtime(
@@ -1463,6 +1531,14 @@ class EmployeeDepartmentRuntime:
                     settings,
                     "autonomous_employee_system_prompt_token_reserve",
                 ),
+                context_retry_base_seconds=getattr(
+                    settings,
+                    "autonomous_context_retry_base_seconds",
+                ),
+                context_retry_max_seconds=getattr(
+                    settings,
+                    "autonomous_context_retry_max_seconds",
+                ),
             )
             outbox_lifecycle = EmployeeOutboxLifecycle(self._outbox)
             self._dispatch = EmployeeDispatchCoordinator(
@@ -1495,6 +1571,10 @@ class EmployeeDepartmentRuntime:
                         "",
                     )
                     or ""
+                ),
+                timeout_seconds=getattr(
+                    settings,
+                    "autonomous_team_step_timeout_seconds",
                 ),
             )
             self._outbox_lifecycle = outbox_lifecycle
@@ -2874,6 +2954,13 @@ class EmployeeDepartmentRuntime:
                 )
 
         future.add_done_callback(complete)
+
+    def _submit_manifest_reauthorization(self, operation_id: str) -> None:
+        service = self._require_service()
+        self._submit_coroutine(
+            service.run_manifest_reauthorization(operation_id),
+            label="manifest reauthorization",
+        )
 
     async def _configure_and_notify(self, intent_id: str) -> None:
         succeeded = False

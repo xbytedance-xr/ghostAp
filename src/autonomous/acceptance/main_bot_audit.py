@@ -29,7 +29,7 @@ class MainBotSendAuditLog:
             raise TypeError("writer must be JournalWriter")
         self.writer = writer
         self.external_audit = external_audit
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._complete = True
 
     @classmethod

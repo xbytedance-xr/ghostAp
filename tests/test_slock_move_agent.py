@@ -13,9 +13,17 @@ Validates:
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
-from src.slock_engine.agent_registry import AgentRegistry, MoveOutcome, MoveResult
+from src.feishu.handlers.slock import SlockHandler
+from src.slock_engine.agent_registry import (
+    AgentRegistry,
+    DuplicateAgentNameError,
+    MoveOutcome,
+    MoveResult,
+)
 from src.slock_engine.memory_manager import MemoryManager
 from src.slock_engine.models import AgentIdentity, SlockMemory
 
@@ -179,6 +187,171 @@ class TestMoveAgentUpdatesChannelMembership:
         assert loaded.owner_group == "disk-dst"
         assert "disk-dst" in loaded.member_groups
         assert "disk-src" not in loaded.member_groups
+
+
+def test_move_rejects_casefold_name_collision_in_target_channel(storage):
+    """Moving into a channel with the same case-folded name fails closed."""
+    registry = storage["registry"]
+    existing = _make_agent("target-alice", name="Alice", owner_group="target")
+    moving = _make_agent("source-alice", name="ALICE", owner_group="source")
+    registry.register(existing)
+    registry.register(moving)
+
+    result = registry.move_agent(moving.agent_id, "source", "target")
+
+    assert result.status.value == "duplicate_name"
+    assert registry.get(moving.agent_id).owner_group == "source"
+    assert [agent.agent_id for agent in registry.list_agents("target")] == [existing.agent_id]
+
+
+def test_concurrent_moves_allow_only_one_same_name_in_target_channel(storage):
+    """The registry lock makes same-name move admission atomic per channel."""
+    registry = storage["registry"]
+    first = _make_agent("first-alice", name="Alice", owner_group="source-a")
+    second = _make_agent("second-alice", name="alice", owner_group="source-b")
+    registry.register(first)
+    registry.register(second)
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def move(agent_id: str, source: str) -> None:
+        barrier.wait()
+        outcomes.append(registry.move_agent(agent_id, source, "target"))
+
+    threads = [
+        threading.Thread(target=move, args=(first.agent_id, "source-a")),
+        threading.Thread(target=move, args=(second.agent_id, "source-b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(outcome.success for outcome in outcomes) == 1
+    assert sum(outcome.status.value == "duplicate_name" for outcome in outcomes) == 1
+    target_names = [agent.name.casefold() for agent in registry.list_agents("target")]
+    assert target_names == ["alice"]
+
+
+def test_cross_registry_concurrent_register_allows_only_one_same_name(tmp_path):
+    """Two registry instances share one authoritative register linearization point."""
+    base_path = str(tmp_path / "cross-register")
+    registries = [AgentRegistry.legacy(base_path), AgentRegistry.legacy(base_path)]
+    for registry in registries:
+        assert registry.list_agents() == []
+    barrier = threading.Barrier(2)
+    successes = []
+    duplicates = []
+
+    def register(registry: AgentRegistry, agent_id: str, name: str) -> None:
+        barrier.wait()
+        try:
+            successes.append(
+                registry.register(_make_agent(agent_id, name=name, owner_group="target"))
+            )
+        except DuplicateAgentNameError as exc:
+            duplicates.append(exc)
+
+    threads = [
+        threading.Thread(target=register, args=(registries[0], "alice-a", "Alice")),
+        threading.Thread(target=register, args=(registries[1], "alice-b", "alice")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+    for registry in registries:
+        if registry._persist_thread:
+            registry._persist_thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(successes) == 1
+    assert len(duplicates) == 1
+    persisted = AgentRegistry.legacy(base_path).list_agents("target")
+    assert [agent.name.casefold() for agent in persisted] == ["alice"]
+
+
+def test_cross_registry_concurrent_update_allows_only_one_same_name(tmp_path):
+    """Two registry instances cannot concurrently rename peers to one channel name."""
+    base_path = str(tmp_path / "cross-update")
+    seed = AgentRegistry.legacy(base_path)
+    seed.register(_make_agent("update-a", name="First", owner_group="target"))
+    seed.register(_make_agent("update-b", name="Second", owner_group="target"))
+    if seed._persist_thread:
+        seed._persist_thread.join(timeout=2)
+
+    registries = [AgentRegistry.legacy(base_path), AgentRegistry.legacy(base_path)]
+    for registry in registries:
+        assert len(registry.list_agents("target")) == 2
+    barrier = threading.Barrier(2)
+    successes = []
+    duplicates = []
+
+    def update(registry: AgentRegistry, agent_id: str, name: str) -> None:
+        barrier.wait()
+        try:
+            successes.append(
+                registry.update(_make_agent(agent_id, name=name, owner_group="target"))
+            )
+        except DuplicateAgentNameError as exc:
+            duplicates.append(exc)
+
+    threads = [
+        threading.Thread(target=update, args=(registries[0], "update-a", "Straße")),
+        threading.Thread(target=update, args=(registries[1], "update-b", "STRASSE")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+    for registry in registries:
+        if registry._persist_thread:
+            registry._persist_thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert successes == [True]
+    assert len(duplicates) == 1
+    persisted_names = [
+        agent.name.casefold()
+        for agent in AgentRegistry.legacy(base_path).list_agents("target")
+    ]
+    assert persisted_names.count("strasse") == 1
+
+
+def test_cross_registry_concurrent_move_allows_only_one_same_name(tmp_path):
+    """Two source registries serialize target-channel move admission and persistence."""
+    base_path = str(tmp_path / "cross-move")
+    seed = AgentRegistry.legacy(base_path)
+    seed.register(_make_agent("move-a", name="Alice", owner_group="source-a"))
+    seed.register(_make_agent("move-b", name="alice", owner_group="source-b"))
+    if seed._persist_thread:
+        seed._persist_thread.join(timeout=2)
+
+    registries = [AgentRegistry.legacy(base_path), AgentRegistry.legacy(base_path)]
+    for registry in registries:
+        assert len(registry.list_agents()) == 2
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def move(registry: AgentRegistry, agent_id: str, source: str) -> None:
+        barrier.wait()
+        outcomes.append(registry.move_agent(agent_id, source, "target"))
+
+    threads = [
+        threading.Thread(target=move, args=(registries[0], "move-a", "source-a")),
+        threading.Thread(target=move, args=(registries[1], "move-b", "source-b")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert sum(outcome.success for outcome in outcomes) == 1
+    assert sum(outcome.status == MoveResult.DUPLICATE_NAME for outcome in outcomes) == 1
+    persisted = AgentRegistry.legacy(base_path).list_agents("target")
+    assert [agent.name.casefold() for agent in persisted] == ["alice"]
 
 
 class TestMoveAgentRejectsNonIdle:
@@ -434,8 +607,6 @@ from unittest.mock import MagicMock, patch
 
 def _make_handler_with_mocks():
     """Create a SlockHandler with mocked messaging methods."""
-    from src.feishu.handlers.slock import SlockHandler
-
     ctx = MagicMock()
     handler = SlockHandler(ctx)
     handler.reply_text = MagicMock(return_value="msg_id_001")
@@ -1228,6 +1399,51 @@ class TestMoveRoleExecutionOrder:
         handler.reply_text.assert_called()
         err = handler.reply_text.call_args[0][1]
         assert "移动失败" in err
+
+    @pytest.mark.parametrize("implementation", ["main", "mixin"])
+    def test_duplicate_name_failure_has_dedicated_handler_message(self, implementation):
+        """Both legacy move handlers explain a target-channel name collision."""
+        from src.feishu.handlers.slock import SlockHandler
+        from src.feishu.handlers.slock_roles import SlockRoleMixin
+        from src.slock_engine.models import AgentIdentity
+
+        handler = _make_handler_with_mocks()
+        handler._check_slock_permission = MagicMock(return_value=True)
+        source_engine = _make_engine_mock(
+            chat_id="chat-source", team_name="Source", owner_id="operator"
+        )
+        target_engine = _make_engine_mock(
+            chat_id="chat-target", team_name="Target", owner_id="operator"
+        )
+        agent = AgentIdentity(
+            agent_id="duplicate-agent",
+            name="Alice",
+            owner_group="chat-source",
+            member_groups=["chat-source"],
+        )
+        source_engine.registry.find_by_name.return_value = agent
+        source_engine.try_lock_for_move.return_value = True
+        source_engine.registry.move_agent.return_value = MoveOutcome(
+            status=MoveResult.DUPLICATE_NAME,
+            error_msg="Agent name 'Alice' already exists in channel chat-target",
+        )
+        manager = MagicMock()
+        manager.get_activated_engine.return_value = source_engine
+        manager.find_team.return_value = target_engine
+        handler._get_engine_manager = MagicMock(return_value=manager)
+        move_role = (
+            SlockHandler.move_role
+            if implementation == "main"
+            else SlockRoleMixin.move_role
+        )
+
+        with patch("src.thread.manager.get_current_sender_id", return_value="operator"):
+            move_role(handler, "message", "chat-source", "Alice", "Target")
+
+        message = handler.reply_text.call_args.args[1]
+        assert "同名" in message
+        assert "目标团队" in message
+        handler.send_card_to_chat.assert_not_called()
 
     @patch("src.feishu.handlers.slock.SlockHandler._get_engine_manager")
     @patch("src.thread.manager.get_current_sender_id", return_value="op-order")

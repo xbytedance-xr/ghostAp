@@ -101,6 +101,9 @@ def _settings(
         settings.autonomous_thread_context_page_size = 50
         settings.autonomous_group_context_page_size = 20
         settings.autonomous_context_fetch_timeout_seconds = 30.0
+        settings.autonomous_context_retry_base_seconds = 1.0
+        settings.autonomous_context_retry_max_seconds = 30.0
+        settings.autonomous_team_step_timeout_seconds = 600.0
         settings.autonomous_context_max_pages = 200
         settings.autonomous_manager_acl = "ou_admin"
         settings.admin_user_ids = frozenset({"ou_admin"})
@@ -993,6 +996,7 @@ def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -
         message_id="om_team_task",
         requester_principal_id="ou_admin",
         instruction="分析并修复团队模式",
+        deadline_at="2099-01-01T00:00:00Z",
     )
 
     assert runtime._drain_employee_dispatch_once() is True
@@ -1062,6 +1066,221 @@ def test_team_recovery_runs_before_runtime_can_start_dispatch(
 
     assert observed == ["team", "runtime"]
     runtime.close()
+
+
+def _persist_queued_team_assignment_then_crash(root: str, pipe) -> None:
+    """Subprocess half of the restart E2E; deliberately skips runtime.close()."""
+
+    import os
+
+    settings = _settings(Path(root), limit=1, context_configured=True)
+    settings.allowed_chat_ids = frozenset({"oc_employee_team"})
+    channels = _Channels()
+    runtime = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=channels,
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        team_notification=lambda *_: None,
+        context_source_factory=_AssemblingContextSourceFactory(),
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+    )
+    active = _activate_employee(runtime, channels)
+    channels.statuses[active.agent_id].tenant_key = active.tenant_key
+    channels.statuses[active.agent_id].bot_principal_id = active.bot_principal_id
+    assert runtime._writer is not None
+    assert runtime.hire_service is not None
+    assert runtime.team_service is not None
+    commit_workforce_events(
+        runtime._writer,
+        runtime.hire_service.projection_state,
+        (
+            JournalEvent(
+                event_type="employee.membership_changed",
+                aggregate_id=active.agent_id,
+                payload={"member_groups": ["oc_employee_team"]},
+            ),
+        ),
+    )
+    runtime._dispatch_stop.set()
+    assert runtime._dispatch_thread is not None
+    runtime._dispatch_thread.join(timeout=2)
+    assert not runtime._dispatch_thread.is_alive()
+    runtime.team_service._commit(  # noqa: SLF001
+        JournalEvent(
+            event_type="team.run.created",
+            aggregate_id="teamrun_restart_e2e",
+            payload={
+                "tenant_key": active.tenant_key,
+                "message_id": "om_team_restart",
+                "chat_id": "oc_employee_team",
+                "requester_principal_id": "ou_admin",
+                "task_digest": "0" * 64,
+                "max_handoffs": 8,
+                "max_depth": 4,
+                "max_fanout": 4,
+            },
+        )
+    )
+    aggregate = "teamrun_restart_e2e:analysis"
+    runtime.team_service._commit_effect(  # noqa: SLF001
+        aggregate, "employee_dispatch", "prepared"
+    )
+    runtime.team_service._commit_effect(  # noqa: SLF001
+        aggregate, "employee_dispatch", "executing"
+    )
+    backend = runtime.team_service._backend  # noqa: SLF001
+    target = backend.list_active(active.tenant_key, "oc_employee_team")[0]
+    acceptance_id = backend.submit(
+        run_id="teamrun_restart_e2e",
+        step_id="analysis",
+        target=target,
+        tenant_key=active.tenant_key,
+        chat_id="oc_employee_team",
+        message_id="om_team_restart",
+        requester_principal_id="ou_admin",
+        instruction="queued before abrupt process exit",
+        deadline_at="2099-01-01T00:00:00Z",
+    )
+    assert runtime.ingress_router is not None
+    routed = runtime.ingress_router.route(acceptance_id)
+    assert routed.state == "queued", routed.reason_code
+    # Persist the exact pre-v2 retry frame so runtime reconstruction, rather
+    # than only the Router unit, proves upgrade compatibility after the crash.
+    runtime.team_service._commit(  # noqa: SLF001
+        JournalEvent(
+            event_type="employee.ingress.router_context_retry",
+            aggregate_id=routed.aggregate_id,
+            payload={"acceptance_id": acceptance_id, "failure_count": 1},
+        )
+    )
+    pipe.send(acceptance_id)
+    pipe.close()
+    os._exit(0)
+
+
+def test_queued_team_assignment_restart_never_dispatches_acp(tmp_path: Path) -> None:
+    """A real process crash is recovered before Context/Slock/ACP dispatch."""
+
+    import multiprocessing
+
+    settings = _settings(tmp_path, limit=1, context_configured=True)
+    settings.allowed_chat_ids = frozenset({"oc_employee_team"})
+    process_context = multiprocessing.get_context("spawn")
+    parent_pipe, child_pipe = process_context.Pipe(
+        duplex=False
+    )
+    process = process_context.Process(
+        target=_persist_queued_team_assignment_then_crash,
+        args=(str(tmp_path), child_pipe),
+    )
+    process.start()
+    child_pipe.close()
+    assert parent_pipe.poll(10), "crashed runtime did not persist queued assignment"
+    acceptance_id = parent_pipe.recv()
+    process.join(10)
+    assert process.exitcode == 0
+
+    from src.slock_engine.manager import ActivatedSlockBinding
+
+    class _CountingEngine:
+        def __init__(self):
+            self.run_agent_session_calls = 0
+
+        def run_agent_session(self, *_args, **_kwargs):
+            self.run_agent_session_calls += 1
+            return "must not execute"
+
+    class _CountingSlock:
+        def __init__(self, engine):
+            self.engine = engine
+            self.activation_calls = 0
+
+        @contextmanager
+        def employee_activation_guard(self, *, chat_id, **_kwargs):
+            self.activation_calls += 1
+            yield ActivatedSlockBinding(
+                engine_identity="e" * 64,
+                chat_id=chat_id,
+                root_identity="r" * 64,
+                canonical_root=str(tmp_path),
+                channel_id=chat_id,
+                engine=self.engine,
+            )
+
+        def resolve_employee_engine(self, **_kwargs):
+            return self.engine
+
+        def close(self):
+            return None
+
+    class _CountingContextSource(_RuntimeMessageSource):
+        def __init__(self, scope, factory):
+            super().__init__(scope)
+            self._factory = factory
+
+        def list_thread_messages(self, **kwargs):
+            self._factory.api_calls += 1
+            return super().list_thread_messages(**kwargs)
+
+        def list_chat_messages(self, **kwargs):
+            self._factory.api_calls += 1
+            return super().list_chat_messages(**kwargs)
+
+    class _CountingContextFactory(_ContextSourceFactory):
+        def __init__(self):
+            super().__init__()
+            self.open_calls = 0
+            self.api_calls = 0
+
+        @contextmanager
+        def open(self, *, scope, principal):
+            del principal
+            self.open_calls += 1
+            yield _CountingContextSource(scope, self)
+
+    engine = _CountingEngine()
+    slock = _CountingSlock(engine)
+    context_source = _CountingContextFactory()
+    restarted = _runtime(
+        settings,
+        release_evidence_ready=True,
+        registrar=_Registrar(),
+        channel_supervisor=_Channels(),
+        slash_reconciler_factory=lambda _app_id, _secret: _Slash(),
+        notification_link=lambda *_: None,
+        team_notification=lambda *_: None,
+        context_source_factory=context_source,
+        group_memory_backend=_GroupMemory(),
+        membership_health=_HealthyMembership(),
+        slock_engine_manager=slock,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        record = None
+        while time.monotonic() < deadline:
+            assert restarted.ingress_router is not None
+            restarted.ingress_router.rebuild_projection()
+            record = restarted.ingress_router.state.by_acceptance_id.get(
+                acceptance_id
+            )
+            if record is not None and record.state == "terminal":
+                break
+            restarted._drain_employee_dispatch_once()
+            time.sleep(0.01)
+
+        assert record is not None and record.state == "terminal"
+        assert restarted.dispatch_coordinator is not None
+        assert not restarted.dispatch_coordinator.state.attempts
+        assert context_source.open_calls == 0
+        assert context_source.api_calls == 0
+        assert slock.activation_calls == 0
+        assert engine.run_agent_session_calls == 0
+    finally:
+        restarted.close()
 
 
 def _activate_employee(

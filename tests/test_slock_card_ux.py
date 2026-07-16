@@ -104,26 +104,25 @@ class TestTaskBoardRefreshButton:
 class TestWelcomeCardCommands:
     """Welcome card lists all required commands."""
 
-    def test_has_new_role_command(self):
+    def test_has_hire_command(self):
         card = build_welcome_card(team_name="Alpha")
         content = self._get_markdown_content(card)
-        assert "/new-role" in content
+        assert "/hire" in content
 
-    def test_has_task_assign_command(self):
+    def test_has_role_add_command(self):
         card = build_welcome_card(team_name="Alpha")
         content = self._get_markdown_content(card)
-        assert "/task assign" in content
+        assert "/role add" in content
 
     def test_has_slock_status_command(self):
         card = build_welcome_card(team_name="Alpha")
         content = self._get_markdown_content(card)
-        # NL-first card uses natural language examples; verify NL status example
-        assert "看看谁在" in content
+        assert "/slock status" in content
 
-    def test_has_slock_help_command(self):
+    def test_has_goal_command(self):
         card = build_welcome_card(team_name="Alpha")
         content = self._get_markdown_content(card)
-        assert "/slock help" in content
+        assert "/goal" in content
 
     def test_has_role_list_command(self):
         """AC: welcome card includes /role list command."""

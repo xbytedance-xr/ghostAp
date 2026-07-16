@@ -164,7 +164,7 @@ class RuntimeReleaseTrustSession:
             str,
             tuple[str, tuple[str, ...]],
         ] = {}
-        self._lock = threading.RLock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closed = False
 
     @property
@@ -539,7 +539,7 @@ class ExternalWitnessAnchor:
         self._session = session
         self._scope = scope
         self._witness_sequence = session.lease.witness_sequence
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def read(self) -> AnchorState:
         with self._lock:

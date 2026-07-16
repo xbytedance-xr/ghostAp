@@ -51,9 +51,10 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
     """Help, exit, shell, directory, and intercepted-command handling."""
 
     # `/status` remains the established Deep/Spec diagnostics command. The
-    # dormant Autonomous manager's conflicting `/status` spelling is not
-    # advertised until that runtime is composed into production.
-    _UNWIRED_AUTONOMOUS_COMMANDS = frozenset({
+    # Standalone v5 Manager was superseded by the Journal-backed employee/Slock
+    # runtime. Keep its old spellings fail-closed with an explicit migration
+    # message instead of reviving the obsolete process-local command surface.
+    _RETIRED_AUTONOMOUS_MANAGER_COMMANDS = frozenset({
         "/goal",
         "/goals",
         "/run",
@@ -479,7 +480,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/goals",
             "/runs",
         }
-        exact_commands.update(SystemHandler._UNWIRED_AUTONOMOUS_COMMANDS)
+        exact_commands.update(SystemHandler._RETIRED_AUTONOMOUS_MANAGER_COMMANDS)
         if not m.has_args and cmd in exact_commands:
             return True
         prefix_commands = {
@@ -499,7 +500,7 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             "/approve",
             "/runs",
         }
-        prefix_commands.update(SystemHandler._UNWIRED_AUTONOMOUS_COMMANDS)
+        prefix_commands.update(SystemHandler._RETIRED_AUTONOMOUS_MANAGER_COMMANDS)
         return cmd in prefix_commands
 
     # ------------------------------------------------------------------
@@ -576,8 +577,13 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
                 return
 
         # 3. Autonomous system commands
-        if text_lower in self._UNWIRED_AUTONOMOUS_COMMANDS:
-            self._handle_autonomous_command(message_id, chat_id, m, project)
+        if text_lower in self._RETIRED_AUTONOMOUS_MANAGER_COMMANDS:
+            self._handle_retired_autonomous_manager_command(
+                message_id,
+                chat_id,
+                m,
+                project,
+            )
             return
 
         self.reply_text(
@@ -585,92 +591,16 @@ class SystemHandler(LockCommandsMixin, TTADKCommandsMixin, BaseHandler):
             UI_TEXT["system_unknown_slash_command"].format(command=m.raw_command or text_lower),
         )
 
-    def _handle_autonomous_command(
+    def _handle_retired_autonomous_manager_command(
         self,
         message_id: str,
         chat_id: str,
         m: "CommandMatch",
         project: "Optional[ProjectContext]" = None,
     ) -> None:
-        """Route autonomous system commands to the Coordinator."""
-        from ...autonomous.coordinator import Coordinator
-        from ...thread import get_current_sender_id
-
-        cmd = m.command
-        args = m.args or ""
-        sender_id = get_current_sender_id() or ""
-        tenant_key = chat_id
-
-        # Lazy-init coordinator (singleton per process)
-        if not hasattr(self, "_autonomous_coordinator"):
-            class _InMemoryJournal:
-                async def write_event(self, event_type: str, payload: dict) -> None:
-                    pass
-            import asyncio
-            self._autonomous_coordinator = Coordinator(journal=_InMemoryJournal())
-
-        coordinator = self._autonomous_coordinator
-
-        if cmd == "/goal":
-            if not args:
-                self.reply_text(message_id, "用法: `/goal <目标描述>`\n示例: `/goal 帮我重构 utils 模块`")
-                return
-            import asyncio
-            try:
-                result = asyncio.run(coordinator.create_goal(
-                    description=args,
-                    owner_principal_id=sender_id,
-                    tenant_key=tenant_key,
-                ))
-                if result.success:
-                    self.reply_text(
-                        message_id,
-                        f"🎯 目标已创建\n"
-                        f"• Goal ID: `{result.goal_id}`\n"
-                        f"• Run ID: `{result.run_id}`\n"
-                        f"• 描述: {args}\n\n"
-                        f"系统正在编译执行计划...",
-                    )
-                else:
-                    self.reply_text(message_id, f"❌ 目标创建失败: {result.error}")
-            except Exception as exc:
-                self.reply_text(
-                    message_id,
-                    f"❌ 目标创建异常: {safe_error_message(exc)}",
-                )
-            return
-
-        if cmd == "/goals":
-            import asyncio
-            try:
-                goals = asyncio.run(coordinator.list_goals(tenant_key))
-                if not goals:
-                    self.reply_text(message_id, "📋 暂无目标。使用 `/goal <描述>` 创建。")
-                else:
-                    lines = ["📋 **目标列表**\n"]
-                    for g in goals:
-                        state_emoji = {"active": "🟢", "paused": "⏸️", "canceled": "❌"}.get(g["state"], "⚪")
-                        lines.append(f"{state_emoji} `{g['goal_id']}` — {g['description']} ({g['state']})")
-                    self.reply_text(message_id, "\n".join(lines))
-            except Exception as exc:
-                self.reply_text(
-                    message_id,
-                    f"❌ 查询失败: {safe_error_message(exc)}",
-                )
-            return
-
-        if cmd == "/runs":
-            self.reply_text(message_id, "🏃 运行列表: 使用 `/goals` 查看目标及其关联 Run。")
-            return
-
-        if cmd == "/approve":
-            if not args:
-                self.reply_text(message_id, "用法: `/approve <approval_id>`")
-                return
-            self.reply_text(message_id, f"✅ 已批准: `{args}`")
-            return
-
-        self.reply_text(message_id, UI_TEXT["system_autonomous_unavailable"])
+        """Fail closed for the retired standalone Autonomous Manager surface."""
+        del chat_id, m, project
+        self.reply_text(message_id, UI_TEXT["system_autonomous_manager_retired"])
 
     def _handle_setadmin_command(self, message_id: str, chat_id: str, args: str = "") -> None:
         from ...admin_bootstrap import AdminBootstrapService

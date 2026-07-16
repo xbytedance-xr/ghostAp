@@ -51,6 +51,7 @@ def test_button_is_blocked_while_system_command_inflight():
         mock_settings.spec_circuit_breaker_threshold = 10
         mock_settings.spec_circuit_breaker_recovery = 5.0
         mock_settings.message_expire_seconds = 30
+        mock_settings.autonomous_visible_employee_limit = 0
         mock_get_settings.return_value = mock_settings
 
         client = FeishuWSClient(MagicMock())
@@ -100,6 +101,7 @@ def test_same_worktree_action_with_different_tool_payloads_is_not_deduped():
         mock_settings.spec_circuit_breaker_threshold = 10
         mock_settings.spec_circuit_breaker_recovery = 5.0
         mock_settings.message_expire_seconds = 30
+        mock_settings.autonomous_visible_employee_limit = 0
         mock_get_settings.return_value = mock_settings
 
         client = FeishuWSClient(MagicMock())
@@ -160,6 +162,7 @@ def test_same_worktree_tool_after_selection_change_is_not_deduped():
         mock_settings.spec_circuit_breaker_threshold = 10
         mock_settings.spec_circuit_breaker_recovery = 5.0
         mock_settings.message_expire_seconds = 30
+        mock_settings.autonomous_visible_employee_limit = 0
         mock_get_settings.return_value = mock_settings
 
         client = FeishuWSClient(MagicMock())
@@ -221,6 +224,7 @@ def test_button_rapid_clicks_are_deduped_and_only_one_task_is_submitted():
         mock_settings.spec_circuit_breaker_threshold = 10
         mock_settings.spec_circuit_breaker_recovery = 5.0
         mock_settings.message_expire_seconds = 30
+        mock_settings.autonomous_visible_employee_limit = 0
         mock_get_settings.return_value = mock_settings
 
         client = FeishuWSClient(MagicMock())

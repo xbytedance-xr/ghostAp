@@ -85,6 +85,7 @@ def _handler_for_roster(*, hire_service=None, fire_service=None) -> SlockHandler
     )
     handler.reply_text = MagicMock(return_value=True)
     handler.reply_card = MagicMock(return_value=True)
+    handler.send_text_to_chat = MagicMock(return_value=True)
     return handler
 
 
@@ -252,6 +253,236 @@ class TestListEmployeesRoster:
         )
         assert "secret-must-not-render" not in content
         assert "bot_test1" not in content
+
+    def test_admin_roster_marks_empty_observed_manifest_unknown(self, monkeypatch):
+        from src.autonomous.provisioning import lark_app
+
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: "ou_admin"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: True
+        )
+        employee = _projected_employee(agent_id="agt_legacy", name="Legacy")
+        manifest_hash = lark_app.current_registration_manifest().fingerprint()
+        projection = SimpleNamespace(
+            employees={employee.agent_id: employee},
+            bot_principals={
+                "bot_test1": SimpleNamespace(
+                    tenant_key="tenant_a",
+                    agent_id="agt_legacy",
+                    app_id="cli_legacy",
+                    desired_manifest_hash=manifest_hash,
+                    observed_manifest_hash="",
+                    manifest_evidence_source="",
+                )
+            },
+        )
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = projection
+        hire_service.list_states.return_value = ()
+        handler = _handler_for_roster(hire_service=hire_service)
+
+        handler.list_employees_roster("om_1", "oc_dm")
+
+        content = handler.reply_card.call_args.args[1]["elements"][0]["text"][
+            "content"
+        ]
+        assert "权限证据：❔ 未知" in content
+        assert "本地期望" in content
+        assert "远端未知" in content
+        assert "权限证据：✅ 当前 manifest" not in content
+        card = handler.reply_card.call_args.args[1]
+        assert json.dumps(card).count("slock_reauthorize_employee_app") == 1
+
+    def test_admin_roster_marks_mismatched_manifest_as_drift_with_manual_action(
+        self,
+        monkeypatch,
+    ):
+        from src.autonomous.provisioning import lark_app
+
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: "ou_admin"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: True
+        )
+        employee = _projected_employee(agent_id="agt_drift", name="Drift")
+        desired_hash = lark_app.current_registration_manifest().fingerprint()
+        observed_hash = "sha256:" + "0" * 64
+        projection = SimpleNamespace(
+            employees={employee.agent_id: employee},
+            bot_principals={
+                "bot_test1": SimpleNamespace(
+                    tenant_key="tenant_a",
+                    agent_id="agt_drift",
+                    app_id="cli_drift",
+                    desired_manifest_hash=desired_hash,
+                    observed_manifest_hash=observed_hash,
+                    manifest_evidence_source=(
+                        "lark_oapi.aregister_app/exact_app_id"
+                    ),
+                )
+            },
+        )
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = projection
+        hire_service.list_states.return_value = ()
+        handler = _handler_for_roster(hire_service=hire_service)
+
+        handler.list_employees_roster("om_1", "oc_dm")
+
+        content = handler.reply_card.call_args.args[1]["elements"][0]["text"][
+            "content"
+        ]
+        assert "权限证据：⚠️ 漂移" in content
+        assert "sha256:0000000000…" in content
+        assert f"sha256:{desired_hash.removeprefix('sha256:')[:10]}…" in content
+        assert "为原 App 原地重新授权并发布" in content
+        assert "无需 `/fire`" in content
+        assert "未验证飞书远端状态" in content
+
+    def test_admin_roster_marks_only_trusted_exact_app_receipt_current(
+        self,
+        monkeypatch,
+    ):
+        from src.autonomous.provisioning import lark_app
+
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: "ou_admin"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: True
+        )
+        employee = _projected_employee(agent_id="agt_current", name="Current")
+        manifest_hash = lark_app.current_registration_manifest().fingerprint()
+        projection = SimpleNamespace(
+            employees={employee.agent_id: employee},
+            bot_principals={
+                "bot_test1": SimpleNamespace(
+                    tenant_key="tenant_a",
+                    agent_id="agt_current",
+                    app_id="cli_current",
+                    desired_manifest_hash=manifest_hash,
+                    observed_manifest_hash=manifest_hash,
+                    manifest_evidence_source=(
+                        "lark_oapi.aregister_app/exact_app_id"
+                    ),
+                )
+            },
+        )
+        hire_service = MagicMock()
+        hire_service.synchronize_projection.return_value = projection
+        hire_service.list_states.return_value = ()
+        handler = _handler_for_roster(hire_service=hire_service)
+
+        handler.list_employees_roster("om_1", "oc_dm")
+
+        card = handler.reply_card.call_args.args[1]
+        content = card["elements"][0]["text"]["content"]
+        assert "权限证据：✅ 当前 manifest" in content
+        assert "飞书官方原 App 授权回执已锚定" in content
+        assert "slock_reauthorize_employee_app" not in json.dumps(card)
+
+    def test_admin_reauthorization_action_starts_durable_existing_app_flow(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: "ou_admin"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: True
+        )
+        hire_service = MagicMock()
+        hire_service.request_manifest_reauthorization.return_value = SimpleNamespace(
+            operation_id="manifestreauth_1"
+        )
+        handler = _handler_for_roster(hire_service=hire_service)
+
+        handler.handle_card_action(
+            "om_roster",
+            "oc_admin_dm",
+            "slock_reauthorize_employee_app",
+            {"agent_id": "agt_test1"},
+        )
+
+        hire_service.request_manifest_reauthorization.assert_called_once_with(
+            tenant_key="tenant_a",
+            agent_id="agt_test1",
+            request_id="om_roster",
+        )
+        assert "官方授权链接" in handler.send_text_to_chat.call_args.args[1]
+
+    def test_stale_reauthorization_action_reports_already_committed(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: "ou_admin"
+        )
+        monkeypatch.setattr("src.thread.manager.get_current_is_p2p", lambda: True)
+        hire_service = MagicMock()
+        hire_service.request_manifest_reauthorization.return_value = SimpleNamespace(
+            operation_id="manifestreauth_1",
+            phase=SimpleNamespace(value="committed"),
+        )
+        handler = _handler_for_roster(hire_service=hire_service)
+
+        handler.handle_card_action(
+            "om_roster",
+            "oc_admin_dm",
+            "slock_reauthorize_employee_app",
+            {"agent_id": "agt_test1"},
+        )
+
+        message = handler.send_text_to_chat.call_args.args[1]
+        assert "无需重复授权" in message
+        assert "随后发送" not in message
+
+    @pytest.mark.parametrize("sender_id,is_p2p", [("ou_other", True), ("ou_admin", False)])
+    def test_reauthorization_action_requires_admin_dm(
+        self,
+        monkeypatch,
+        sender_id,
+        is_p2p,
+    ):
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_tenant_key", lambda: "tenant_a"
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_sender_id", lambda: sender_id
+        )
+        monkeypatch.setattr(
+            "src.thread.manager.get_current_is_p2p", lambda: is_p2p
+        )
+        hire_service = MagicMock()
+        handler = _handler_for_roster(hire_service=hire_service)
+
+        handler.handle_card_action(
+            "om_roster",
+            "oc_admin_dm",
+            "slock_reauthorize_employee_app",
+            {"agent_id": "agt_test1"},
+        )
+
+        hire_service.request_manifest_reauthorization.assert_not_called()
+        assert "仅允许配置管理员" in handler.send_text_to_chat.call_args.args[1]
 
     def test_admin_dm_no_app_confirmation_requires_prior_platform_check(
         self,

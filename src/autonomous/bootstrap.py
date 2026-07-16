@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class AutonomousContainer:
-    """Single entry point for autonomous system lifecycle.
+    """Legacy standalone composition shell; not wired into production routing.
 
-    Owns: journal, projections, scheduler, supervisor, manager, feishu adapter.
-    Injected into HandlerContext for Feishu callbacks.
+    Production autonomous work is composed by ``EmployeeDepartmentRuntime`` and
+    entered from Slock. This compatibility shell remains importable for older
+    callers, but its Manager command surface is deliberately retired.
 
     Uses:
     - lark-oapi (REST): message delivery, card updates, bot management

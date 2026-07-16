@@ -155,6 +155,19 @@ def _main_bot_outbound_wiring(
         return _unavailable_main_bot_outbound_audit, None
     return None, None
 
+
+def _visible_employee_runtime_requires_outbound_audit(settings: object) -> bool:
+    """Fail closed when an injected settings object has an invalid limit shape."""
+
+    limit = getattr(settings, "autonomous_visible_employee_limit", 0)
+    if type(limit) is not int:
+        logger.error(
+            "Invalid autonomous_visible_employee_limit type: %s",
+            type(limit).__name__,
+        )
+        return True
+    return limit > 0
+
 # Sentinel used to distinguish "caller didn't provide command_match" from
 # "caller provided command_match=None". This ensures request-scoped SSOT:
 # parse exactly once at WS ingress, then thread the result through.
@@ -385,13 +398,8 @@ class FeishuWSClient:
         main_bot_outbound_audit, main_bot_outbound_audit_failure = (
             _main_bot_outbound_wiring(
                 self._employee_department_runtime,
-                required=(
-                    getattr(
-                        self.settings,
-                        "autonomous_visible_employee_limit",
-                        0,
-                    )
-                    > 0
+                required=_visible_employee_runtime_requires_outbound_audit(
+                    self.settings,
                 ),
             )
         )

@@ -68,7 +68,7 @@ class FeishuCardAPIClient:
         self._tenant_key_resolver = tenant_key_resolver
         self._outbound_target_aliases = outbound_target_aliases
         self._audit_aliases_by_message: dict[str, tuple[str, ...]] = {}
-        self._audit_alias_lock = threading.Lock()
+        self._audit_alias_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def _audit_outbound(self, operation: str, target: str) -> tuple[str, ...]:
         audit = self._outbound_audit

@@ -52,9 +52,15 @@ release trust. For a positive visible employee limit it:
 
 The release broker implementation may remain available as unused compatibility
 code, but `FeishuWSClient`, hire readiness, recovery, and execution readiness
-do not require it. Local audit failure is logged and marks the audit
-incomplete; it does not prevent a new employee application from being
-created. Main-Bot delivery remains separate from employee-Bot delivery.
+do not require it. The local main-Bot audit and activation fence are part of
+the built-in composition: failure to open or maintain them blocks employee
+runtime mutation rather than silently reporting zero sends. Main-Bot delivery
+remains separate from employee-Bot delivery.
+
+This document describes the built-in single-host contract. It does not claim
+host-admin rollback resistance or multi-replica trust; the separate hardened
+profile and its external acceptance requirements are defined in
+`docs/adr-employee-runtime-profiles.md`.
 
 ## Employee Channel compatibility
 

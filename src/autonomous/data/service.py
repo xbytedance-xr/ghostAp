@@ -117,7 +117,7 @@ class EmployeeDataService:
         self._shard_timezone = shard_timezone
         self._authority_required = authority_required
         self._legacy_import_depth = threading.local()
-        self._mutex = threading.RLock()
+        self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._known_cursor = (
             data_state.cursor_sequence,
             data_state.cursor_hash,

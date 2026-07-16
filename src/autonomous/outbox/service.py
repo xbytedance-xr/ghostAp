@@ -81,7 +81,7 @@ class EmployeeOutboxService:
         self._blob_store = blob_store
         self._state = outbox_state
         self._active_key_id = active_key_id
-        self._mutex = threading.RLock()
+        self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._admission_closed = False
         self._closed = False
         self.rebuild_projection()

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,6 +23,14 @@ import pytest
 from src.feishu.handlers.slock import SlockHandler
 from src.slock_engine.intent_router import IntentResult, IntentRouter
 from src.slock_engine.slash_commands import SlockCommandAction, is_slock_command
+
+
+def test_nli_timeout_is_discoverable_in_env_example() -> None:
+    env_example = Path(".env.example").read_text(encoding="utf-8")
+
+    assert "SLOCK_NLI_TIMEOUT=2.5" in env_example
+    assert "冷启动" in env_example
+    assert "安全回退" in env_example
 
 
 def _run(coro):

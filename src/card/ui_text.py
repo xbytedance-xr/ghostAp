@@ -76,7 +76,10 @@ UI_TEXT = {
     # System Commands
     "system_help_deep_prompt": "💭 启动 Deep Engine\n\n请发送: `/deep <你的需求>`\n\n例如: `/deep 帮我重构 src/feishu 模块`",
     "system_help_project_section": "\n\n📋 **项目管理命令**\n• `/projects` - 查看项目看板\n• `/new 名称 路径` - 创建新项目\n• `/switch 名称` - 切换项目\n• `/status` - 查看所有引擎任务状态（Deep/Spec）\n• `/status <task_id>` - 查看指定任务详情\n• `/diff` - 查看最近两次版本变更（Diff 报告）",
-    "system_autonomous_unavailable": "⚠️ 自主工作系统尚未接入当前消息调度器，本次命令未执行。",
+    "system_autonomous_manager_retired": (
+        "⚠️ 独立 Autonomous Manager 命令面已退役，本次命令未执行。"
+        "请在 Slock 团队群使用 `/goal <描述>`；团队与任务状态使用 `/slock status`、`/task status`。"
+    ),
     "system_new_project_usage": "用法: `/new 项目名 [路径]`",
     "system_close_project_usage": "用法: `/close <项目名>`\n例如: `/close myApp`",
     "system_setadmin_bootstrap_success": "✅ 已完成管理员初始化。当前发送者已写入 `.env`，并成为唯一 Bot 管理员。",

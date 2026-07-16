@@ -665,6 +665,24 @@ class Settings(BaseSettings):
         le=300,
         allow_inf_nan=False,
     )
+    autonomous_context_retry_base_seconds: float = Field(
+        default=1.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+    )
+    autonomous_context_retry_max_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        le=300,
+        allow_inf_nan=False,
+    )
+    autonomous_team_step_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        le=3600,
+        allow_inf_nan=False,
+    )
     autonomous_fire_grace_seconds: float = Field(
         default=30.0,
         gt=0,
@@ -760,6 +778,9 @@ class Settings(BaseSettings):
         "autonomous_thread_context_page_size",
         "autonomous_group_context_page_size",
         "autonomous_context_fetch_timeout_seconds",
+        "autonomous_context_retry_base_seconds",
+        "autonomous_context_retry_max_seconds",
+        "autonomous_team_step_timeout_seconds",
         "autonomous_fire_grace_seconds",
         "autonomous_context_max_pages",
         "autonomous_employee_ingress_ack_timeout_seconds",
@@ -787,6 +808,15 @@ class Settings(BaseSettings):
             <= self.autonomous_employee_queue_global_limit
         ):
             raise ValueError("employee queue limits require per_employee <= per_team <= global")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_context_retry_delay_order(self) -> "Settings":
+        if (
+            self.autonomous_context_retry_base_seconds
+            > self.autonomous_context_retry_max_seconds
+        ):
+            raise ValueError("context retry requires base seconds <= maximum seconds")
         return self
 
     @field_validator("autonomous_journal_hmac_key", mode="before")

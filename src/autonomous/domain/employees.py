@@ -149,6 +149,7 @@ class BotPrincipal:
     scopes: tuple[str, ...] = ()
     desired_manifest_hash: str = ""
     observed_manifest_hash: str = ""
+    manifest_evidence_source: str = ""
     aggregate_version: int = 0
 
     def __post_init__(self) -> None:
@@ -166,6 +167,7 @@ class BotPrincipal:
             "scopes": list(self.scopes),
             "desired_manifest_hash": self.desired_manifest_hash,
             "observed_manifest_hash": self.observed_manifest_hash,
+            "manifest_evidence_source": self.manifest_evidence_source,
             "aggregate_version": self.aggregate_version,
         }
 
@@ -194,6 +196,10 @@ class BotPrincipal:
             observed_manifest_hash=strict_str(
                 data.get("observed_manifest_hash", ""),
                 "observed_manifest_hash",
+            ),
+            manifest_evidence_source=strict_str(
+                data.get("manifest_evidence_source", ""),
+                "manifest_evidence_source",
             ),
             aggregate_version=strict_int(
                 data.get("aggregate_version", 0),

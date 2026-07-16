@@ -602,6 +602,8 @@ class SlockRoleMixin:
                     err_msg = f"❌ 移动失败：角色 **{redact_sensitive(name)}** 未找到"
                 elif outcome.status == MoveResult.NOT_IN_SOURCE:
                     err_msg = "❌ 移动失败，请确认角色属于当前团队"
+                elif outcome.status == MoveResult.DUPLICATE_NAME:
+                    err_msg = "❌ 移动失败：目标团队已存在同名角色，请先修改角色名称"
                 elif outcome.status == MoveResult.PERSIST_FAILED:
                     err_msg = "❌ 迁移失败：数据持久化异常，角色仍留在原团队，请稍后重试"
                 else:
@@ -791,4 +793,3 @@ class SlockRoleMixin:
     # ------------------------------------------------------------------
     # Task management
     # ------------------------------------------------------------------
-

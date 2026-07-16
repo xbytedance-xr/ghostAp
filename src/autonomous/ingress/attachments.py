@@ -410,7 +410,7 @@ class AttachmentStagingService:
         self._timeout = float(download_timeout_seconds)
         self._fault_hook = fault_hook
         self._name_factory = name_factory or (lambda: secrets.token_hex(16))
-        self._mutex = threading.RLock()
+        self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closed = False
         self._root_fd = _open_secure_root(self._root)
         root_stat = os.fstat(self._root_fd)

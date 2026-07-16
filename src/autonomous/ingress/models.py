@@ -169,6 +169,22 @@ def _utc_timestamp(value: Any, name: str) -> str:
     return text
 
 
+def parse_canonical_utc(value: Any, name: str = "timestamp") -> datetime:
+    """Validate and parse the repository's canonical RFC3339 UTC form."""
+
+    text = _utc_timestamp(value, name)
+    return datetime.fromisoformat(text.removesuffix("Z") + "+00:00")
+
+
+def canonical_utc(value: datetime, name: str = "timestamp") -> str:
+    """Serialize an aware UTC instant without discarding microseconds."""
+
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{name} must be an aware datetime")
+    utc_value = value.astimezone(UTC)
+    return utc_value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
 def _validate_secret_key(key: Any, path: str) -> str:
     if not isinstance(key, str) or not key:
         raise ValueError(f"{path} keys must be non-empty strings")
@@ -238,6 +254,9 @@ class EmployeeIngressPayload:
         )
         if not isinstance(parts, tuple) or not all(isinstance(item, Mapping) for item in parts):
             raise ValueError("normalized_parts must contain objects")
+        for item in parts:
+            if item.get("type") == "team_assignment" and "team_deadline_at" in item:
+                _utc_timestamp(item["team_deadline_at"], "team_deadline_at")
         if not isinstance(attachments, tuple):
             raise ValueError("attachment_descriptors must be a collection")
         if len(attachments) > MAX_INGRESS_ATTACHMENT_COUNT:

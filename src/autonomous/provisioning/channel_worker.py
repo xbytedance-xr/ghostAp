@@ -64,7 +64,7 @@ class IngressAckMailbox:
     """Contextual owner for bounded, current-generation durable ACK waits."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._pending: dict[str, _PendingIngressAck] = {}
         self._closed = False
 
@@ -927,8 +927,8 @@ class _FrameEmitter:
         self._requests: queue.Queue[_EmitRequest | None] = queue.Queue(
             maxsize=self._QUEUE_CAPACITY
         )
-        self._admission_lock = threading.Lock()
-        self._state_lock = threading.Lock()
+        self._admission_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._state_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._failed: BaseException | None = None
         self._closed = False
         os.set_blocking(fd, False)

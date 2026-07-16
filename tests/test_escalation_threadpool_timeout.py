@@ -9,9 +9,13 @@ Verifies:
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -164,3 +168,121 @@ class TestWorkerAvailableAfterTimeout:
         assert results == ["ok"]
 
         mgr.shutdown_timers()
+
+
+def test_timeout_io_rejects_fifth_call_while_four_callbacks_are_blocked():
+    """A saturated timeout pool rejects instead of queueing another callback."""
+    mgr, _ = _make_manager()
+    mgr._IO_CALL_TIMEOUT_S = 0.2
+    release = threading.Event()
+    all_started = threading.Event()
+    fifth_started = threading.Event()
+    started_count = 0
+    started_lock = threading.Lock()
+
+    def blocked_callback() -> None:
+        nonlocal started_count
+        with started_lock:
+            started_count += 1
+            if started_count == 4:
+                all_started.set()
+        release.wait()
+
+    def fifth_callback() -> None:
+        fifth_started.set()
+
+    try:
+        for _ in range(4):
+            with pytest.raises(TimeoutError):
+                mgr._call_with_timeout(blocked_callback, label="blocked")
+        assert all_started.wait(timeout=1)
+
+        started_at = time.perf_counter()
+        with pytest.raises(TimeoutError):
+            mgr._call_with_timeout(fifth_callback, label="saturated")
+        rejection_elapsed = time.perf_counter() - started_at
+
+        shutdown_started_at = time.perf_counter()
+        mgr.shutdown_timers()
+        shutdown_elapsed = time.perf_counter() - shutdown_started_at
+    finally:
+        release.set()
+
+    assert rejection_elapsed < 0.1
+    assert shutdown_elapsed < 0.1
+    assert not fifth_started.wait(timeout=0.2)
+
+
+def test_half_time_reminder_uses_bounded_timeout_submission():
+    """The reminder's Feishu callback shares the bounded timeout capacity."""
+    send_text = MagicMock()
+    mgr, _ = _make_manager(send_text_fn=send_text)
+    escalation = EscalationRequest(agent_id="agent", agent_name="Agent")
+    mgr._escalations.append(escalation)
+
+    try:
+        with patch.object(mgr, "_call_with_timeout", wraps=mgr._call_with_timeout) as bounded:
+            mgr._half_time_reminder(escalation.escalation_id)
+
+        assert bounded.call_args.kwargs["label"] == "half_time_reminder"
+    finally:
+        mgr.shutdown_timers()
+
+
+def test_resume_failure_alert_uses_bounded_timeout_submission():
+    """The recovery alert cannot bypass timeout callback backpressure."""
+    send_text = MagicMock()
+    mgr, _ = _make_manager(send_text_fn=send_text)
+    escalation = EscalationRequest(
+        agent_id="agent",
+        agent_name="Agent",
+        task_id="task",
+        reason="blocked",
+    )
+
+    try:
+        with (
+            patch.object(mgr, "resume_after_escalation", side_effect=RuntimeError("boom")),
+            patch.object(mgr, "_call_with_timeout", wraps=mgr._call_with_timeout) as bounded,
+        ):
+            mgr._do_timeout_io(escalation)
+
+        labels = [call.kwargs["label"] for call in bounded.call_args_list]
+        assert labels == ["send_text", "resume_failure_alert"]
+    finally:
+        mgr.shutdown_timers()
+
+
+def test_never_returning_timeout_callback_does_not_block_subprocess_exit():
+    """Timeout callback workers cannot keep Python alive during interpreter shutdown."""
+    script = textwrap.dedent(
+        """
+        import threading
+        from tests.test_escalation_threadpool_timeout import _make_manager
+
+        manager, _ = _make_manager()
+        manager._IO_CALL_TIMEOUT_S = 0.05
+
+        def never_returns():
+            threading.Event().wait()
+
+        try:
+            manager._call_with_timeout(never_returns, label="never")
+        except TimeoutError:
+            pass
+        manager.shutdown_timers()
+        print("shutdown-returned", flush=True)
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=os.getcwd(),
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "shutdown-returned" in completed.stdout

@@ -113,9 +113,9 @@ class EmployeeMembershipService:
         self._team_owner_resolver = team_owner_resolver
         self._team_active_resolver = team_active_resolver
         self._state = MembershipProjectionState()
-        self._mutex = threading.RLock()
+        self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._chat_locks: dict[str, threading.RLock] = {}
-        self._chat_locks_guard = threading.Lock()
+        self._chat_locks_guard = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self.rebuild_projection()
 
     @property
@@ -672,7 +672,7 @@ class EmployeeMembershipService:
 
     def _chat_lock(self, chat_id: str) -> threading.RLock:
         with self._chat_locks_guard:
-            return self._chat_locks.setdefault(chat_id, threading.RLock())
+            return self._chat_locks.setdefault(chat_id, threading.RLock())  # leaf lock: never held while acquiring a LockLevel lock
 
 
 __all__ = [

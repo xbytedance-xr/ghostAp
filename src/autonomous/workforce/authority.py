@@ -43,7 +43,7 @@ class LegacyMutationGuard:
     ) -> None:
         self._snapshot_provider = snapshot_provider
         self._expected_epoch = expected_epoch
-        self._serialization_lock = threading.RLock()
+        self._serialization_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
 
     def assert_writable(
         self,

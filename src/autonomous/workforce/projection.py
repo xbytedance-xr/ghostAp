@@ -67,6 +67,7 @@ _WORKFORCE_EVENTS = frozenset(
         "employee.legacy_alias_bound",
         "employee.bot_principal_bound",
         "bot_principal.bound",
+        "bot_principal.manifest_desired",
         "bot_principal.manifest_observed",
         "credential.destroyed",
         "authority.cutover",
@@ -94,7 +95,7 @@ _PROFILE_FIELDS = frozenset(
         "budget_template",
     }
 )
-_WORKFORCE_COMMIT_LOCK = threading.RLock()
+_WORKFORCE_COMMIT_LOCK = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
 _AGENT_ID_PATTERN = re.compile(r"agt_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _BOT_PRINCIPAL_ID_PATTERN = re.compile(r"bot_[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 
@@ -346,12 +347,45 @@ def _bind_bot_principal(state: WorkforceProjectionState, event: JournalEvent) ->
 
 def _observe_manifest(state: WorkforceProjectionState, event: JournalEvent) -> None:
     principal = _principal(state, event.aggregate_id)
+    if set(event.payload) not in (
+        {"observed_manifest_hash"},
+        {"observed_manifest_hash", "evidence_source"},
+    ):
+        raise _projection_error("manifest observation payload is invalid")
     observed = event.payload.get("observed_manifest_hash")
     if not isinstance(observed, str) or not observed:
         raise _projection_error("observed_manifest_hash is required")
+    evidence_source = event.payload.get("evidence_source")
+    if evidence_source is not None and evidence_source != (
+        "lark_oapi.aregister_app/exact_app_id"
+    ):
+        raise _projection_error("manifest evidence source is invalid")
     state.bot_principals[principal.bot_principal_id] = replace(
         principal,
         observed_manifest_hash=observed,
+        manifest_evidence_source=str(evidence_source or ""),
+        aggregate_version=principal.aggregate_version + 1,
+    )
+
+
+def _desire_manifest(state: WorkforceProjectionState, event: JournalEvent) -> None:
+    principal = _principal(state, event.aggregate_id)
+    if set(event.payload) != {"desired_manifest_hash", "scopes"}:
+        raise _projection_error("manifest desired payload is invalid")
+    desired = event.payload.get("desired_manifest_hash")
+    scopes = event.payload.get("scopes")
+    if not isinstance(desired, str) or not desired:
+        raise _projection_error("desired_manifest_hash is required")
+    if (
+        isinstance(scopes, (str, bytes))
+        or not isinstance(scopes, list)
+        or any(not isinstance(scope, str) or not scope for scope in scopes)
+    ):
+        raise _projection_error("manifest scopes are invalid")
+    state.bot_principals[principal.bot_principal_id] = replace(
+        principal,
+        desired_manifest_hash=desired,
+        scopes=tuple(scopes),
         aggregate_version=principal.aggregate_version + 1,
     )
 
@@ -406,6 +440,7 @@ _APPLIERS = {
     "employee.legacy_alias_bound": _bind_legacy_alias,
     "employee.bot_principal_bound": _bind_employee_principal,
     "bot_principal.bound": _bind_bot_principal,
+    "bot_principal.manifest_desired": _desire_manifest,
     "bot_principal.manifest_observed": _observe_manifest,
     "credential.destroyed": _destroy_credential,
     "authority.cutover": _cutover_authority,

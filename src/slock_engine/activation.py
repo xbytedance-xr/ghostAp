@@ -6,7 +6,7 @@ import threading
 from contextlib import contextmanager
 from functools import wraps
 
-_SLOCK_ACTIVATION_LOCK = threading.RLock()
+_SLOCK_ACTIVATION_LOCK = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
 
 
 @contextmanager

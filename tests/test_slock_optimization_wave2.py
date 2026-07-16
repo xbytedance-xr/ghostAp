@@ -342,6 +342,39 @@ class TestAgentRegistryEnhancements:
         with pytest.raises(DuplicateAgentNameError):
             reg.register(self._make_agent(agent_id="a3", name="alice", owner_group="g1"))
 
+    def test_register_rejects_casefold_collision_in_incoming_member_group(self, tmp_path):
+        """Every incoming membership channel participates in name admission."""
+        reg = AgentRegistry.legacy(base_path=str(tmp_path))
+        reg.register(self._make_agent(agent_id="a1", name="Straße", owner_group="g1"))
+
+        with pytest.raises(DuplicateAgentNameError, match="g1"):
+            reg.register(
+                self._make_agent(
+                    agent_id="a2",
+                    name="STRASSE",
+                    owner_group="g2",
+                    member_groups=["g2", "g1"],
+                )
+            )
+
+    def test_update_rejects_casefold_name_collision(self, tmp_path):
+        """Updating an identity cannot bypass per-channel name uniqueness."""
+        reg = AgentRegistry.legacy(base_path=str(tmp_path))
+        reg.register(self._make_agent(agent_id="a1", name="Maße", owner_group="g1"))
+        reg.register(self._make_agent(agent_id="a2", name="Bob", owner_group="g1"))
+
+        with pytest.raises(DuplicateAgentNameError, match="g1"):
+            reg.update(self._make_agent(agent_id="a2", name="MASSE", owner_group="g1"))
+
+    def test_unscoped_ambiguous_name_lookup_fails_closed(self, tmp_path):
+        """Allowed cross-channel duplicates cannot resolve by first-match globally."""
+        reg = AgentRegistry.legacy(base_path=str(tmp_path))
+        reg.register(self._make_agent(agent_id="a1", name="Alice", owner_group="g1"))
+        reg.register(self._make_agent(agent_id="a2", name="alice", owner_group="g2"))
+
+        with pytest.raises(LookupError, match="ambiguous"):
+            reg.find_by_name("ALICE")
+
     def test_lazy_load_from_disk(self, tmp_path):
         # Register agent with first registry instance
         reg1 = AgentRegistry.legacy(base_path=str(tmp_path))

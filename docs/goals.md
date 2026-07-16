@@ -58,6 +58,10 @@
     - `EmployeeDepartmentRuntime` 生产 composition、恢复 supervisor 和 FeishuWSClient 生命周期接线
     - 首次启动自动生成本地 Journal/Vault/Data 密钥并使用本地 FileAnchor
   - `/hire` 不再降级写入 `AgentRegistry.legacy()`；`/new-role` 继续只负责 Slock 虚拟角色。没有 production service 或 readiness 时必须 fail-close。
+  - 旧的独立 Autonomous Manager 命令面（`/goal`、`/goals`、`/run`、`/runs`、
+    `/approve`、`/approvals`、`/decisions`）不再作为生产入口，已明确退役并 fail-close；
+    自主目标从 Journal-backed Employee/Slock 团队入口 `/goal <描述>` 创建。兼容模块可导入不代表
+    它已接入消息调度器。
   - `/hire` 管理员 DM 卡片权限 Bug 已修复：消息事件入口保存官方 `event.message.chat_type` 与 origin/chat/operator；卡片回调不再读取不存在的 `context.chat_type`。只有服务端明确无 provenance 记录时才查询 Chat API，并且只读结构字段 `chat_mode`；API 结果必须原子写回完整可信绑定。来源查询/写入失败、残缺、过期、跨 chat、跨 operator 或并发冲突均 fail-close。
   - readiness 反馈已接入处理器：只有 provider 明确返回 `ready=True` 且无 blockers 才派发真实 Hire；否则向管理员显示具体安全门禁，不再误报“不是管理员”，也不降级创建本地虚拟角色。
   - Visible Employee 已改为内置启动能力：默认 `autonomous_visible_employee_limit=8`，不再需要 root-owned release broker、evidence/attestation、release binding 或人工 sandbox 标记。首次启动在 `AUTONOMOUS_STATE_DIR` 下创建 mode `0600` 的本地密钥；显式设为 `0` 仍可完全关闭员工 runtime。
@@ -92,7 +96,9 @@
       restart 可补齐文档而不重跑 ACP；read ACL 只信任 transport 与 workforce 投影，完整 L1 仅管理员主
       Bot DM 可读；迁移拒绝 symlink/冲突/损坏，恢复校验全部 live Blob 并重建投影文件
     - Phase 8 已重构为内置员工启动：本地私有密钥原子生成并跨重启复用；完整显式密钥仍可使用，
-      但禁止显式与自动配置混用。主 Bot 本地审计保留为诊断，不再阻断 `/hire`。
+      但禁止显式与自动配置混用。主 Bot 本地审计属于员工 runtime 的完整性门禁；打开、校验或
+      记录失败会 fail-close 员工 mutation。该审计仍是单机本地证据，不等同于强化多副本档的
+      外部不可回滚 witness。
     - 员工 Channel 优先使用 bwrap；宿主 user namespace 不可用时会销毁失败子进程及其 pipe，随后
       用同一 `python -I`、一次性 secret pipe 和最小环境协议重试一次，并明确记录
       `verified=false, mechanism=process-fallback`，不会伪报强隔离。
@@ -204,8 +210,9 @@
      - Task 3 mandatory matrix 已覆盖 IPC backpressure/partial frame、parent close、
        anchor/projection/ACK encode/control write、late/lost ACK、child crash、SDK write、
        reconnect/STOP/generation rotation；connection epoch 与 READY/INGRESS 顺序 fail-close
-     - Task 3 独立 Spec/Code review 已批准；Task 7 已聚合本地生产门禁，
-       外部 release trust 仍未建立，`autonomous_visible_employee_limit` 保持 0
+     - Task 3 独立 Spec/Code review 已批准；该阶段当时仍把外部 release trust 作为门禁。
+       这一历史状态已被 2026-07-14 的内置员工决策取代；当前默认 limit 为 8，严格外部
+       trust 属于 hardened multi-replica profile，见 `docs/adr-employee-runtime-profiles.md`
      - 已纠正 Channel ACK 假设：高层 `FeishuChannel` 消息回调会先 schedule 后返回，
        不能证明平台 ACK 发生在 Journal fsync/anchor 之后；实现必须通过锁定版本的
        low-level dispatcher 黑盒验证消息和 CardAction 两条路径，任一路径不满足即
@@ -253,7 +260,8 @@
        `authority_stale` 的组合缺陷，并覆盖真实 anchored Inbox → owned Router queue
      - 已完成 Task 7：九个 `EI-*` exact selector 全部本地通过；全局 FI-29 只接受绑定
        `EI-IPC-01`、commit、构建 artifact 与结果摘要的严格 bridge，任意 `passed=true` 仍为 PENDING。
-       本地 evidence 不能自我晋级，真实租户与外部 trust 未就绪前 visible limit 必须保持 0
+       本地 evidence 不能自我晋级为真实租户或外部 trust 证据；该阶段的 limit=0 发布门禁
+       已被内置 single-host profile 取代，真实验收仍由部署方独立完成
      - Phase 3 最终 Autonomous `1700 passed, 2 skipped, 1 warning in 397.24s`
   4. Employee Response Channel：
      - **已完成**。实施与证据见 `docs/2026-07-14-autonomous-employee-response-plan.md`；采用稳定 UUID
@@ -285,8 +293,8 @@
        投递，无主 Bot fallback。重启对已锚定 cancel 直接收敛 canceled，不重跑 ACP
      - fresh Autonomous `1763 passed, 2 skipped, 1 warning in 401.21s`；共享 Slock/WS 回归
        `269 passed`；`ruff check src/autonomous/`、配置校验与 `git diff --check` 通过
-     - Phase 5 不提升 release readiness；`autonomous_visible_employee_limit` 继续保持 0，下一阶段为
-       `/fire` durable Saga
+     - Phase 5 当时不提升旧 release readiness；后续内置员工决策已把默认 limit 调整为 8，
+       显式设为 0 仍是关闭开关，下一阶段为 `/fire` durable Saga
   6. `/fire` durable Saga：
      - 已完成：`fire.requested`、`employee.state_changed=retiring` 与
        `employee.ingress.closed` 在同一 Journal frame 锚定，Router/Channel 新 ACK 立即 fail-close

@@ -1,6 +1,6 @@
 """Tests for SLOCK_TEAM_NAME_PREFIX → slock_team_name_suffix compatibility migration (AC-17)."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -125,3 +125,82 @@ class TestSlockEngineSettings:
         assert s.slock_max_queue_size == 16
         assert s.slock_queue_wait_timeout == 120
         assert s.slock_max_open_tasks == 100
+
+    @pytest.mark.parametrize("configured_parallelism", [2, 8])
+    def test_engine_dispatch_and_executor_share_configured_parallelism(
+        self,
+        monkeypatch,
+        tmp_path,
+        configured_parallelism,
+    ):
+        """Default dispatch batches and executor workers use one Settings value."""
+        from src.slock_engine.engine import SlockEngine
+        from src.slock_engine.models import AgentIdentity, SlockTask
+
+        monkeypatch.setenv("SLOCK_MAX_PARALLEL_AGENTS", str(configured_parallelism))
+        monkeypatch.delenv("SLOCK_TEAM_NAME_PREFIX", raising=False)
+        settings = Settings(_env_file=None)
+
+        with patch("src.slock_engine.engine.get_settings", return_value=settings):
+            engine = SlockEngine(
+                chat_id="parallelism-chat",
+                root_path=str(tmp_path),
+                memory_base_path=str(tmp_path),
+            )
+
+        agents = [
+            AgentIdentity(
+                agent_id=f"agent-{index}",
+                name=f"Agent {index}",
+                owner_group="parallelism-chat",
+            )
+            for index in range(8)
+        ]
+        engine._registry = MagicMock()
+        engine._registry.list_agents.return_value = agents
+        engine._tasks.extend(SlockTask(content=f"Task {index}") for index in range(8))
+
+        try:
+            executor = engine._get_executor()
+            with (
+                patch.object(
+                    engine._router,
+                    "route_message",
+                    side_effect=lambda _content, available: available[0],
+                ),
+                patch.object(engine, "execute_parallel", return_value={}) as execute_parallel,
+            ):
+                engine.dispatch_pending_tasks()
+
+            assignments = execute_parallel.call_args.args[0]
+            assert len(assignments) == configured_parallelism
+            assert executor._executor._max_workers == configured_parallelism
+        finally:
+            engine.cleanup()
+
+    @pytest.mark.parametrize("invalid_override", [0, -1, 1.5, True])
+    def test_engine_rejects_invalid_explicit_parallelism(
+        self,
+        monkeypatch,
+        tmp_path,
+        invalid_override,
+    ):
+        """Explicit dispatch overrides must be positive integers, not truthy values."""
+        from src.slock_engine.engine import SlockEngine
+        monkeypatch.delenv("SLOCK_TEAM_NAME_PREFIX", raising=False)
+        settings = Settings(_env_file=None)
+        with patch("src.slock_engine.engine.get_settings", return_value=settings):
+            engine = SlockEngine(
+                chat_id="invalid-parallelism-chat",
+                root_path=str(tmp_path),
+                memory_base_path=str(tmp_path),
+            )
+
+        engine._registry = MagicMock()
+        engine._registry.list_agents.return_value = []
+        assert engine._tasks == []
+        try:
+            with pytest.raises(ValueError, match="positive integer"):
+                engine.dispatch_pending_tasks(max_concurrent=invalid_override)
+        finally:
+            engine.cleanup()

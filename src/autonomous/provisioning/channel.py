@@ -68,7 +68,7 @@ class ChannelConnectionManager:
         self._max_reconnects = max_reconnects
         self._channels: dict[str, ChannelStatus] = {}
         self._connections: dict[str, Any] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._generation = 0
 
     def start(

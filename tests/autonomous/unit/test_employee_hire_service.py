@@ -15,6 +15,7 @@ from src.autonomous.journal.anchor import FileAnchor, MemoryAnchor
 from src.autonomous.journal.frame import JournalEvent
 from src.autonomous.journal.projections import ProjectionState
 from src.autonomous.journal.writer import JournalWriter
+from src.autonomous.provisioning import lark_app
 from src.autonomous.provisioning.hire_port import EmployeeHireRequest
 from src.autonomous.provisioning.hire_service import (
     HireAdmissionError,
@@ -65,6 +66,9 @@ def _service(
     memory_anchor: bool = False,
     runtime_recovery_ready: bool = True,
     provisioning_submitter=None,
+    manifest_reauthorization_submitter=None,
+    registrar=None,
+    manifest_reauthorization_timeout_seconds: float = 300.0,
 ) -> tuple[ProductionEmployeeHireService, JournalWriter, ProjectionState]:
     anchor = MemoryAnchor() if memory_anchor else FileAnchor(tmp_path / "anchor.json")
     writer = JournalWriter.open(
@@ -82,6 +86,11 @@ def _service(
         credential_keyring_ready=credential_keyring_ready,
         runtime_recovery_ready=runtime_recovery_ready,
         provisioning_submitter=provisioning_submitter,
+        manifest_reauthorization_submitter=manifest_reauthorization_submitter,
+        registrar=registrar,
+        manifest_reauthorization_timeout_seconds=(
+            manifest_reauthorization_timeout_seconds
+        ),
     )
     return service, writer, projection
 
@@ -195,6 +204,453 @@ def test_existing_app_cannot_be_claimed_by_two_live_hires(tmp_path: Path) -> Non
         )
 
     assert len(tuple(writer.replay())) == 1
+
+
+def test_new_hire_principal_records_desired_manifest_without_remote_evidence(
+    tmp_path: Path,
+) -> None:
+    service, _writer, _projection = _service(tmp_path)
+    state = service.start_hire(_request())
+
+    service._bind_principal(state, "cli_employee_123", "cred_employee_123")
+
+    principal = service.synchronize_projection().bot_principals[
+        state.bot_principal_id
+    ]
+    manifest = lark_app.current_registration_manifest()
+    assert principal.scopes == manifest.tenant_scopes
+    assert principal.desired_manifest_hash == manifest.fingerprint()
+    assert principal.observed_manifest_hash == ""
+
+
+class _ManifestRegistrar:
+    def __init__(
+        self,
+        *,
+        result_app_id: str = "cli_employee_123",
+        result_manifest_hash: str | None = None,
+        trusted: bool = True,
+        fail: bool = False,
+    ):
+        self.result_app_id = result_app_id
+        self.result_manifest_hash = result_manifest_hash
+        self.trusted = trusted
+        self.fail = fail
+        self.requests = []
+
+    async def register(self, request, *, on_link, on_status=None):
+        self.requests.append(request)
+        on_link("https://open.feishu.cn/reauthorize", 60)
+        if on_status is not None:
+            on_status("polling")
+        if self.fail:
+            raise RuntimeError("remote registration failed")
+        return lark_app.RegistrationResult(
+            app_id=self.result_app_id,
+            app_secret="remote-secret-123",
+            manifest_hash=(
+                self.result_manifest_hash
+                or lark_app.current_registration_manifest().fingerprint()
+            )
+            if self.trusted
+            else "",
+            evidence_source=(
+                lark_app.MANIFEST_EVIDENCE_SOURCE if self.trusted else ""
+            ),
+        )
+
+
+class _BlockingManifestRegistrar(_ManifestRegistrar):
+    async def register(self, request, *, on_link, on_status=None):
+        import asyncio
+
+        self.requests.append(request)
+        await asyncio.sleep(60)
+        raise AssertionError("timeout must cancel the registrar")
+
+
+def _active_principal(service, writer):
+    state = service.start_hire(_request())
+    service._bind_principal(state, "cli_employee_123", "cred_employee_123")
+    for phase in (
+        EmployeeState.VALIDATING,
+        EmployeeState.READY_PENDING_VERIFICATION,
+        EmployeeState.ACTIVE,
+    ):
+        commit_workforce_events(
+            writer,
+            service.projection_state,
+            (
+                JournalEvent(
+                    event_type="employee.state_changed",
+                    aggregate_id=state.agent_id,
+                    payload={"state": phase.value},
+                ),
+            ),
+        )
+    service.synchronize_projection()
+    return state
+
+
+@pytest.mark.asyncio
+async def test_active_app_reauthorization_records_observed_only_after_trusted_result(
+    tmp_path: Path,
+) -> None:
+    registrar = _ManifestRegistrar()
+    submitted = []
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=submitted.append,
+    )
+    state = _active_principal(service, writer)
+
+    operation = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id="om_roster_1",
+    )
+    before = service.synchronize_projection().bot_principals[state.bot_principal_id]
+    assert before.observed_manifest_hash == ""
+    assert submitted == [operation.operation_id]
+
+    completed = await service.run_manifest_reauthorization(operation.operation_id)
+
+    manifest_hash = lark_app.current_registration_manifest().fingerprint()
+    principal = service.synchronize_projection().bot_principals[state.bot_principal_id]
+    assert completed.phase.value == "committed"
+    assert principal.observed_manifest_hash == manifest_hash
+    assert registrar.requests[0].existing_app_id == "cli_employee_123"
+    observed_events = [
+        event
+        for frame in writer.replay()
+        for event in frame.events
+        if event.event_type == "bot_principal.manifest_observed"
+    ]
+    assert len(observed_events) == 1
+    assert observed_events[0].payload == {
+        "observed_manifest_hash": manifest_hash,
+        "evidence_source": "lark_oapi.aregister_app/exact_app_id",
+    }
+
+
+@pytest.mark.asyncio
+async def test_active_app_reauthorization_failure_is_durable_and_keeps_unknown(
+    tmp_path: Path,
+) -> None:
+    registrar = _ManifestRegistrar(fail=True)
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+    state = _active_principal(service, writer)
+    operation = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id="om_roster_fail",
+    )
+
+    with pytest.raises(HireAdmissionError, match="manual action"):
+        await service.run_manifest_reauthorization(operation.operation_id)
+
+    principal = service.synchronize_projection().bot_principals[state.bot_principal_id]
+    assert principal.observed_manifest_hash == ""
+    assert service.get_manifest_reauthorization(operation.operation_id).phase.value == (
+        "action_required"
+    )
+    assert not any(
+        event.event_type == "bot_principal.manifest_observed"
+        for frame in writer.replay()
+        for event in frame.events
+    )
+
+
+@pytest.mark.asyncio
+async def test_active_app_reauthorization_rejects_mismatched_remote_app(
+    tmp_path: Path,
+) -> None:
+    registrar = _ManifestRegistrar(result_app_id="cli_other_456")
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+    state = _active_principal(service, writer)
+    operation = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id="om_roster_wrong_app",
+    )
+
+    with pytest.raises(HireAdmissionError, match="manual action"):
+        await service.run_manifest_reauthorization(operation.operation_id)
+
+    principal = service.synchronize_projection().bot_principals[state.bot_principal_id]
+    assert principal.observed_manifest_hash == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "registrar",
+    [
+        _ManifestRegistrar(trusted=False),
+        _ManifestRegistrar(result_manifest_hash="sha256:stale-manifest"),
+    ],
+    ids=["missing-provenance", "manifest-mismatch"],
+)
+async def test_active_app_reauthorization_rejects_untrusted_receipt(
+    tmp_path: Path,
+    registrar: _ManifestRegistrar,
+) -> None:
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+    state = _active_principal(service, writer)
+    operation = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id="om_roster_untrusted",
+    )
+
+    with pytest.raises(HireAdmissionError, match="manual action"):
+        await service.run_manifest_reauthorization(operation.operation_id)
+
+    current = service.get_manifest_reauthorization(operation.operation_id)
+    assert current.phase.value == "action_required"
+    assert service.synchronize_projection().bot_principals[
+        state.bot_principal_id
+    ].observed_manifest_hash == ""
+
+
+def test_manifest_reauthorization_is_single_flight_per_principal(
+    tmp_path: Path,
+) -> None:
+    submitted: list[str] = []
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=_ManifestRegistrar(),
+        manifest_reauthorization_submitter=submitted.append,
+    )
+    state = _active_principal(service, writer)
+
+    def request(request_id: str):
+        return service.request_manifest_reauthorization(
+            tenant_key=state.tenant_key,
+            agent_id=state.agent_id,
+            request_id=request_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        operations = tuple(
+            pool.map(request, ("om_roster_old_1", "om_roster_old_2"))
+        )
+
+    assert operations[0].operation_id == operations[1].operation_id
+    assert submitted == [operations[0].operation_id]
+    prepared = [
+        event
+        for frame in writer.replay()
+        for event in frame.events
+        if event.event_type == "manifest.reauthorization.prepared"
+    ]
+    assert len(prepared) == 1
+
+
+@pytest.mark.asyncio
+async def test_active_app_reauthorization_timeout_keeps_remote_unknown(
+    tmp_path: Path,
+) -> None:
+    registrar = _BlockingManifestRegistrar()
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+        manifest_reauthorization_timeout_seconds=0.01,
+    )
+    state = _active_principal(service, writer)
+    operation = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id="om_roster_timeout",
+    )
+
+    with pytest.raises(HireAdmissionError, match="manual action"):
+        await service.run_manifest_reauthorization(operation.operation_id)
+
+    current = service.get_manifest_reauthorization(operation.operation_id)
+    assert current.phase.value == "action_required"
+    assert current.error_code == "registration_timeout"
+    assert service.synchronize_projection().bot_principals[
+        state.bot_principal_id
+    ].observed_manifest_hash == ""
+    with pytest.raises(HireAdmissionError, match="fresh request"):
+        service.request_manifest_reauthorization(
+            tenant_key=state.tenant_key,
+            agent_id=state.agent_id,
+            request_id="om_roster_timeout",
+        )
+
+
+def test_recovery_fail_closes_interrupted_remote_reauthorization(
+    tmp_path: Path,
+) -> None:
+    registrar = _ManifestRegistrar()
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+    state = _active_principal(service, writer)
+    operation = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id="om_roster_interrupted",
+    )
+    service._commit_manifest_reauthorization_event(
+        JournalEvent(
+            event_type="manifest.reauthorization.executing",
+            aggregate_id=operation.operation_id,
+            payload={},
+        )
+    )
+    restarted = ProductionEmployeeHireService(
+        writer,
+        ProjectionState(),
+        visible_employee_limit=1,
+        release_evidence_ready=True,
+        credential_keyring_ready=True,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+
+    assert restarted.recover_manifest_reauthorizations() == ()
+    recovered = restarted.get_manifest_reauthorization(operation.operation_id)
+    assert recovered.phase.value == "action_required"
+    assert recovered.error_code == "interrupted_remote_outcome"
+    assert restarted.synchronize_projection().bot_principals[
+        state.bot_principal_id
+    ].observed_manifest_hash == ""
+
+
+def test_recovery_submits_only_one_legacy_duplicate_prepared_operation(
+    tmp_path: Path,
+) -> None:
+    registrar = _ManifestRegistrar()
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+    state = _active_principal(service, writer)
+    first = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id="om_roster_first",
+    )
+    duplicate_id = "manifestreauth_legacy_duplicate"
+    service._commit_manifest_reauthorization_event(
+        JournalEvent(
+            event_type="manifest.reauthorization.prepared",
+            aggregate_id=duplicate_id,
+            payload={
+                "tenant_key": first.tenant_key,
+                "agent_id": first.agent_id,
+                "bot_principal_id": first.bot_principal_id,
+                "app_id": first.app_id,
+                "desired_manifest_hash": first.desired_manifest_hash,
+                "message_id": "om_roster_duplicate",
+                "employee_name": first.employee_name,
+            },
+        )
+    )
+    restarted = ProductionEmployeeHireService(
+        writer,
+        ProjectionState(),
+        visible_employee_limit=1,
+        release_evidence_ready=True,
+        credential_keyring_ready=True,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+
+    pending = restarted.recover_manifest_reauthorizations()
+
+    assert pending == (first.operation_id,)
+    duplicate = restarted.get_manifest_reauthorization(duplicate_id)
+    assert duplicate is not None
+    assert duplicate.phase.value == "action_required"
+    assert duplicate.error_code == "duplicate_active_operation"
+
+
+@pytest.mark.parametrize("blocking_phase", ["executing", "committed"])
+def test_recovery_does_not_restart_prepared_behind_uncertain_or_committed_flow(
+    tmp_path: Path,
+    blocking_phase: str,
+) -> None:
+    registrar = _ManifestRegistrar()
+    service, writer, _projection = _service(
+        tmp_path,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+    state = _active_principal(service, writer)
+    first = service.request_manifest_reauthorization(
+        tenant_key=state.tenant_key,
+        agent_id=state.agent_id,
+        request_id=f"om_roster_{blocking_phase}",
+    )
+    service._commit_manifest_reauthorization_event(
+        JournalEvent(
+            event_type="manifest.reauthorization.executing",
+            aggregate_id=first.operation_id,
+            payload={},
+        )
+    )
+    if blocking_phase == "committed":
+        service._commit_manifest_reauthorization_event(
+            JournalEvent(
+                event_type="manifest.reauthorization.committed",
+                aggregate_id=first.operation_id,
+                payload={
+                    "observed_manifest_hash": first.desired_manifest_hash,
+                    "evidence_source": lark_app.MANIFEST_EVIDENCE_SOURCE,
+                },
+            )
+        )
+    duplicate_id = f"manifestreauth_legacy_{blocking_phase}_duplicate"
+    service._commit_manifest_reauthorization_event(
+        JournalEvent(
+            event_type="manifest.reauthorization.prepared",
+            aggregate_id=duplicate_id,
+            payload={
+                "tenant_key": first.tenant_key,
+                "agent_id": first.agent_id,
+                "bot_principal_id": first.bot_principal_id,
+                "app_id": first.app_id,
+                "desired_manifest_hash": first.desired_manifest_hash,
+                "message_id": f"om_roster_{blocking_phase}_duplicate",
+                "employee_name": first.employee_name,
+            },
+        )
+    )
+    restarted = ProductionEmployeeHireService(
+        writer,
+        ProjectionState(),
+        visible_employee_limit=1,
+        release_evidence_ready=True,
+        credential_keyring_ready=True,
+        registrar=registrar,
+        manifest_reauthorization_submitter=lambda _operation_id: None,
+    )
+
+    assert restarted.recover_manifest_reauthorizations() == ()
+    duplicate = restarted.get_manifest_reauthorization(duplicate_id)
+    assert duplicate is not None
+    assert duplicate.phase.value == "action_required"
+    assert duplicate.error_code == "duplicate_active_operation"
 
 
 def test_hire_replay_rejects_duplicate_live_existing_app_claim(tmp_path: Path) -> None:

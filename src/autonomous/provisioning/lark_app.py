@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import logging
 import re
 import threading
@@ -44,7 +46,7 @@ class _RegistrationPollNoiseFilter(logging.Filter):
 
 
 _poll_noise_filter = _RegistrationPollNoiseFilter()
-_poll_noise_lock = threading.Lock()
+_poll_noise_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
 _poll_noise_refcount = 0
 
 
@@ -122,6 +124,98 @@ _TENANT_EVENTS = (
 _CALLBACKS = ("card.action.trigger",)
 
 
+@dataclass(frozen=True)
+class RegistrationManifest:
+    """Immutable description of the app authorization surface."""
+
+    schema_version: int = 1
+    preset: bool = True
+    tenant_scopes: tuple[str, ...] = ()
+    user_scopes: tuple[str, ...] = ()
+    tenant_events: tuple[str, ...] = ()
+    callbacks: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1:
+            raise ValueError("unsupported registration manifest schema_version")
+        if not isinstance(self.preset, bool):
+            raise ValueError("registration manifest preset must be boolean")
+        for field_name in (
+            "tenant_scopes",
+            "user_scopes",
+            "tenant_events",
+            "callbacks",
+        ):
+            raw_values = getattr(self, field_name)
+            if isinstance(raw_values, (str, bytes)):
+                raise ValueError(f"registration manifest {field_name} is invalid")
+            values = tuple(raw_values)
+            if any(not isinstance(value, str) or not value for value in values):
+                raise ValueError(f"registration manifest {field_name} is invalid")
+            object.__setattr__(self, field_name, values)
+
+    def _authorization_surface(self) -> dict[str, Any]:
+        return {
+            "preset": self.preset,
+            "scopes": {
+                "tenant": list(self.tenant_scopes),
+                "user": list(self.user_scopes),
+            },
+            "events": {"items": {"tenant": list(self.tenant_events)}},
+            "callbacks": {"items": list(self.callbacks)},
+        }
+
+    def addons(self) -> dict[str, Any]:
+        return self._authorization_surface()
+
+    @classmethod
+    def _canonicalize_authorization_surface(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: cls._canonicalize_authorization_surface(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            normalized = [
+                cls._canonicalize_authorization_surface(item) for item in value
+            ]
+            return sorted(
+                normalized,
+                key=lambda item: json.dumps(
+                    item,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ),
+            )
+        return value
+
+    def fingerprint(self) -> str:
+        authorization_surface = self._canonicalize_authorization_surface(
+            self._authorization_surface()
+        )
+        canonical = json.dumps(
+            authorization_surface,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+        return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def current_registration_manifest() -> RegistrationManifest:
+    """Return the authorization manifest required by this GhostAP build."""
+
+    return RegistrationManifest(
+        tenant_scopes=_TENANT_SCOPES,
+        user_scopes=_USER_SCOPES,
+        tenant_events=_TENANT_EVENTS,
+        callbacks=_CALLBACKS,
+    )
+
+
 def _strict_text(value: str, field_name: str, *, max_length: int = 200) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{field_name} must be a string")
@@ -169,6 +263,11 @@ class RegistrationRequest:
 class RegistrationResult:
     app_id: str
     app_secret: str
+    manifest_hash: str = ""
+    evidence_source: str = ""
+
+
+MANIFEST_EVIDENCE_SOURCE = "lark_oapi.aregister_app/exact_app_id"
 
 
 RegistrationFunction = Callable[..., Awaitable[dict[str, Any]]]
@@ -227,6 +326,7 @@ class LarkAppRegistrar:
 
         seen_statuses: set[str] = set()
 
+        manifest = current_registration_manifest()
         app_preset: dict[str, Any] = {
             "name": request.name,
             "desc": request.description,
@@ -239,15 +339,7 @@ class LarkAppRegistrar:
             "on_status_change": handle_status,
             "source": "ghostap",
             "app_preset": app_preset,
-            "addons": {
-                "preset": True,
-                "scopes": {
-                    "tenant": list(_TENANT_SCOPES),
-                    "user": list(_USER_SCOPES),
-                },
-                "events": {"items": {"tenant": list(_TENANT_EVENTS)}},
-                "callbacks": {"items": list(_CALLBACKS)},
-            },
+            "addons": manifest.addons(),
         }
         if request.existing_app_id:
             register_kwargs["app_id"] = request.existing_app_id
@@ -280,12 +372,22 @@ class LarkAppRegistrar:
             or any(ord(char) < 32 or ord(char) == 127 for char in app_secret)
         ):
             raise AppRegistrationError("one-click registration returned incomplete credentials")
-        return RegistrationResult(app_id=app_id, app_secret=app_secret)
+        return RegistrationResult(
+            app_id=app_id,
+            app_secret=app_secret,
+            manifest_hash=(manifest.fingerprint() if request.existing_app_id else ""),
+            evidence_source=(
+                MANIFEST_EVIDENCE_SOURCE if request.existing_app_id else ""
+            ),
+        )
 
 
 __all__ = [
     "AppRegistrationError",
     "LarkAppRegistrar",
+    "MANIFEST_EVIDENCE_SOURCE",
+    "RegistrationManifest",
     "RegistrationRequest",
     "RegistrationResult",
+    "current_registration_manifest",
 ]

@@ -11,7 +11,6 @@ import logging
 import queue
 import threading as _threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..utils.redact import redact_sensitive
@@ -36,6 +35,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BOUNDED_IO_MAX_QUEUE = 16
+_MAX_TIMEOUT_CALLS = 4
 
 
 class _BoundedIOExecutor:
@@ -184,9 +184,8 @@ class EscalationManager:
         self._timeout_timers: dict[str, _threading.Timer] = {}
         self._half_timers: dict[str, _threading.Timer] = {}
         self._io_executor = _BoundedIOExecutor()
-        self._timeout_call_executor = ThreadPoolExecutor(
-            max_workers=4, thread_name_prefix="slock-esc-call"
-        )
+        self._timeout_call_slots = _threading.BoundedSemaphore(_MAX_TIMEOUT_CALLS)
+        self._timeout_calls_shutdown = _threading.Event()
 
     def set_task_callbacks(
         self,
@@ -476,7 +475,12 @@ class EscalationManager:
                     f"剩余: 约 {remaining_min} 分钟\n"
                     f"请尽快处理，否则将自动中止。"
                 )
-                self._send_text_fn(chat_id, text)
+                self._call_with_timeout(
+                    self._send_text_fn,
+                    chat_id,
+                    text,
+                    label="half_time_reminder",
+                )
             except Exception as e:
                 logger.warning("Failed to send half-time reminder: %s", repr(e))
 
@@ -605,7 +609,12 @@ class EscalationManager:
                         f"任务: {esc_copy.task_id or 'N/A'}\n"
                         f"请管理员手动介入处理。"
                     )
-                    self._send_text_fn(chat_id, alert_text)
+                    self._call_with_timeout(
+                        self._send_text_fn,
+                        chat_id,
+                        alert_text,
+                        label="resume_failure_alert",
+                    )
                 except Exception:
                     logger.error("Failed to send system alert after resume failure")
 
@@ -614,24 +623,51 @@ class EscalationManager:
     ) -> None:
         """Call *fn(*args)* with a deadline of _IO_CALL_TIMEOUT_S seconds.
 
-        Submits the call to a bounded ThreadPoolExecutor (max_workers=4) and
-        waits on the future with a timeout.  If the deadline expires, a
-        TimeoutError is raised so the caller's except block can skip gracefully.
-        The underlying lark_oapi socket timeout (30s) serves as the hard upper
-        bound for abandoned calls.
+        Starts at most four daemon call threads and waits on a one-result queue.
+        A timed-out call keeps its capacity slot until the callback really returns,
+        while a permanently stuck callback cannot keep interpreter shutdown alive.
         """
-        future = self._timeout_call_executor.submit(fn, *args)
+        if self._timeout_calls_shutdown.is_set():
+            raise RuntimeError("escalation timeout callbacks are shut down")
+        if not self._timeout_call_slots.acquire(blocking=False):
+            logger.error(
+                "Timeout callback capacity (%d) exhausted calling %s, skipping",
+                _MAX_TIMEOUT_CALLS,
+                label,
+            )
+            raise TimeoutError(f"{label} rejected because timeout callback capacity is exhausted")
+        result: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+        def invoke() -> None:
+            try:
+                fn(*args)
+                result.put(None, block=False)
+            except BaseException as exc:
+                result.put(exc, block=False)
+            finally:
+                self._timeout_call_slots.release()
+
+        worker = _threading.Thread(
+            target=invoke,
+            name=f"slock-esc-call-{label}",
+            daemon=True,
+        )
         try:
-            future.result(timeout=self._IO_CALL_TIMEOUT_S)
-        except TimeoutError:
+            worker.start()
+        except Exception:
+            self._timeout_call_slots.release()
+            raise
+        try:
+            error = result.get(timeout=self._IO_CALL_TIMEOUT_S)
+        except queue.Empty:
             logger.error(
                 "Timeout (%ds) calling %s in escalation auto-abort, skipping",
                 self._IO_CALL_TIMEOUT_S,
                 label,
             )
             raise TimeoutError(f"{label} exceeded {self._IO_CALL_TIMEOUT_S}s deadline")
-        except Exception:
-            raise
+        if error is not None:
+            raise error
 
     def shutdown_timers(self) -> None:
         """Cancel all active timeout timers — called during engine cleanup."""
@@ -644,5 +680,5 @@ class EscalationManager:
             timer.cancel()
         for timer in half_timers:
             timer.cancel()
+        self._timeout_calls_shutdown.set()
         self._io_executor.shutdown(wait=False)
-        self._timeout_call_executor.shutdown(wait=False)

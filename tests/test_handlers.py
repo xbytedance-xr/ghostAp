@@ -512,12 +512,16 @@ class TestSystemHandlerRouting:
     @pytest.mark.parametrize(
         "text",
         [
+            "/goal refactor auth",
+            "/goals",
+            "/runs",
+            "/approve ap_1",
             "/run goal_1",
             "/approvals",
             "/decisions",
         ],
     )
-    def test_unwired_autonomous_commands_fail_closed_without_false_success(self, text):
+    def test_retired_autonomous_manager_commands_never_claim_success(self, text):
         h = self._make()
         h.reply_text = MagicMock()
         h.reply_card = MagicMock()
@@ -532,34 +536,11 @@ class TestSystemHandlerRouting:
 
         h.reply_text.assert_called_once()
         response = h.reply_text.call_args.args[1]
-        assert "未接入" in response
+        assert "已退役" in response
         assert "未执行" in response
+        assert "Slock" in response
+        assert "/goal" in response
         h.reply_card.assert_not_called()
-
-    @pytest.mark.parametrize(
-        "text,expected_fragment",
-        [
-            ("/goal 重构认证模块", "目标已创建"),
-            ("/goals", "目标"),
-            ("/runs", "运行列表"),
-            ("/approve approval_1", "已批准"),
-        ],
-    )
-    def test_wired_autonomous_commands_produce_real_response(self, text, expected_fragment):
-        h = self._make()
-        h.reply_text = MagicMock()
-
-        h.handle_intercepted_command(
-            "m1",
-            "c1",
-            text,
-            None,
-            command_match=SlashCommandParser.parse(text),
-        )
-
-        h.reply_text.assert_called_once()
-        response = h.reply_text.call_args.args[1]
-        assert expected_fragment in response
 
     @patch("src.thread.get_current_thread_id", return_value=None)
     def test_btw_forwards_to_active_programming_handler(self, _):

@@ -2483,6 +2483,9 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         """List all tenant employees with state and group membership count."""
 
         from ...autonomous.domain.enums import EmployeeState, WorkerType
+        from ...autonomous.provisioning.lark_app import (
+            current_registration_manifest,
+        )
         from ...thread.manager import (
             get_current_is_p2p,
             get_current_sender_id,
@@ -2582,6 +2585,14 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                         ).append(state)
 
         lines: list[str] = []
+        manifest_actions: list[dict] = []
+        current_manifest_hash = current_registration_manifest().fingerprint()
+        trusted_manifest_evidence = "lark_oapi.aregister_app/exact_app_id"
+
+        def short_manifest_hash(value: str) -> str:
+            digest = value.removeprefix("sha256:")
+            return f"sha256:{digest[:10]}…"
+
         for emp in sorted(employees, key=lambda e: e.name):
             state_label = _STATE_LABELS.get(emp.state, f"❓ {emp.state.value}")
             group_count = len(emp.member_groups)
@@ -2623,6 +2634,70 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                         app_id = pending_ref
                 if app_id:
                     details.append(f"App ID: `{app_id}`")
+                if principal is not None:
+                    recorded_desired_hash = str(
+                        getattr(principal, "desired_manifest_hash", "") or ""
+                    )
+                    observed_hash = str(
+                        getattr(principal, "observed_manifest_hash", "") or ""
+                    )
+                    evidence_source = str(
+                        getattr(principal, "manifest_evidence_source", "") or ""
+                    )
+                    has_trusted_evidence = (
+                        evidence_source == trusted_manifest_evidence
+                    )
+                    if not has_trusted_evidence:
+                        details.append(
+                            "权限证据：❔ 未知（本地期望 "
+                            f"`{short_manifest_hash(current_manifest_hash)}`；"
+                            "远端未知，尚无可信官方回执）"
+                        )
+                    elif (
+                        recorded_desired_hash == current_manifest_hash
+                        and observed_hash == current_manifest_hash
+                    ):
+                        details.append(
+                            "权限证据：✅ 当前 manifest "
+                            f"`{short_manifest_hash(current_manifest_hash)}`"
+                            "（飞书官方原 App 授权回执已锚定）"
+                        )
+                    else:
+                        details.append(
+                            "权限证据：⚠️ 漂移 "
+                            f"`{short_manifest_hash(observed_hash)}` → "
+                            f"`{short_manifest_hash(current_manifest_hash)}`\n"
+                            "  请为原 App 原地重新授权并发布，无需 `/fire`；"
+                            "旧回执不能证明当前远端状态，未验证飞书远端状态。"
+                        )
+                    if (
+                        emp.state is EmployeeState.ACTIVE
+                        and not (
+                            has_trusted_evidence
+                            and recorded_desired_hash == current_manifest_hash
+                            and observed_hash == current_manifest_hash
+                        )
+                    ):
+                        manifest_actions.extend(
+                            build_responsive_layout(
+                                [
+                                    {
+                                        "tag": "button",
+                                        "text": {
+                                            "tag": "plain_text",
+                                            "content": f"为 {emp.name} 原地授权并发布",
+                                        },
+                                        "type": "primary",
+                                        "value": {
+                                            "action": (
+                                                "slock_reauthorize_employee_app"
+                                            ),
+                                            "agent_id": emp.agent_id,
+                                        },
+                                    }
+                                ]
+                            )
+                        )
                 if len(pending) == 1:
                     pending_ref = str(
                         getattr(pending[0], "app_id", "")
@@ -2643,6 +2718,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             "header": {"title": {"tag": "plain_text", "content": f"员工花名册（{len(employees)}人）"}, "template": "blue"},
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}},
+                *manifest_actions,
             ],
         }
         self.reply_card(message_id, card)
@@ -3476,6 +3552,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                     err_msg = f"❌ 移动失败：角色 **{redact_sensitive(name)}** 未找到"
                 elif outcome.status == MoveResult.NOT_IN_SOURCE:
                     err_msg = "❌ 移动失败，请确认角色属于当前团队"
+                elif outcome.status == MoveResult.DUPLICATE_NAME:
+                    err_msg = "❌ 移动失败：目标团队已存在同名角色，请先修改角色名称"
                 elif outcome.status == MoveResult.PERSIST_FAILED:
                     err_msg = "❌ 迁移失败：数据持久化异常，角色仍留在原团队，请稍后重试"
                 else:
@@ -5113,6 +5191,66 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
 
     def handle_card_action(self, open_message_id: str, open_chat_id: str, action_type: str, value: dict):
         """Handle slock_* card actions."""
+        if action_type == "slock_reauthorize_employee_app":
+            from ...autonomous.provisioning.hire_service import HireAdmissionError
+            from ...thread.manager import (
+                get_current_is_p2p,
+                get_current_sender_id,
+                get_current_tenant_key,
+            )
+
+            sender_id = get_current_sender_id() or ""
+            tenant_key = get_current_tenant_key() or ""
+            admins = frozenset(
+                getattr(self.ctx.settings, "admin_user_ids", ()) or ()
+            )
+            if not get_current_is_p2p() or not sender_id or sender_id not in admins:
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "⛔ 原地授权仅允许配置管理员在主 Bot 私聊中执行。",
+                )
+                return
+            service = getattr(self.ctx, "employee_hire_service", None)
+            agent_id = str(value.get("agent_id") or "")
+            if service is None or not tenant_key or not agent_id:
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "⚠️ 员工授权服务当前不可用，请稍后重试。",
+                )
+                return
+            try:
+                operation = service.request_manifest_reauthorization(
+                    tenant_key=tenant_key,
+                    agent_id=agent_id,
+                    request_id=open_message_id,
+                )
+            except HireAdmissionError:
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "⚠️ 原地授权未能安全启动；远端状态仍为未知，请刷新 `/roster` 后重试。",
+                )
+                return
+            except Exception:
+                logger.exception("employee manifest reauthorization dispatch failed")
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "⚠️ 原地授权未能安全启动；远端状态仍为未知。",
+                )
+                return
+            phase = str(getattr(getattr(operation, "phase", None), "value", ""))
+            if phase == "committed":
+                self.send_text_to_chat(
+                    open_chat_id,
+                    "✅ 该员工的当前 manifest 已有可信飞书官方回执，无需重复授权。",
+                )
+                return
+            self.send_text_to_chat(
+                open_chat_id,
+                "已锚定原地授权请求。请按随后发送的飞书官方授权链接完成授权和发布；"
+                "只有官方同 App 回执成功后，`/roster` 才会显示当前。",
+            )
+            return
+
         if action_type in ("slock_role_add_pick", "slock_role_add_select"):
             manager = self._get_engine_manager()
             engine = manager.get_activated_engine(open_chat_id)

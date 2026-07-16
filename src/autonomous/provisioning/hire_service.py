@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ...utils.async_helpers import safe_wait_for
 from ..domain import EmployeeState, WorkerType
 from ..journal.frame import JournalEvent, TransactionFrame
 from ..journal.projections import (
@@ -24,6 +25,7 @@ from ..journal.projections import (
 from ..journal.writer import AnchorMismatchError, CommitState, JournalWriter
 from ..workforce.projection import (
     commit_workforce_events_unlocked,
+    is_workforce_event,
     validate_workforce_events,
     workforce_projection_guard,
 )
@@ -36,7 +38,19 @@ from .hire_state import (
     HirePhase,
     HireProjection,
 )
-from .lark_app import RegistrationRequest, RegistrationResult
+from .lark_app import (
+    MANIFEST_EVIDENCE_SOURCE,
+    RegistrationRequest,
+    RegistrationResult,
+    current_registration_manifest,
+)
+from .manifest_reauthorization import (
+    ManifestReauthorizationPhase,
+    ManifestReauthorizationState,
+    apply_manifest_reauthorization_event,
+    is_manifest_reauthorization_event,
+    rebuild_manifest_reauthorizations,
+)
 from .verification import (
     VerificationChallenge,
     VerificationDecision,
@@ -130,6 +144,8 @@ class ProductionEmployeeHireService:
         on_registration_link: RegistrationLinkCallback | None = None,
         on_registration_status: RegistrationStatusCallback | None = None,
         provisioning_submitter: Callable[[str], object] | None = None,
+        manifest_reauthorization_submitter: Callable[[str], object] | None = None,
+        manifest_reauthorization_timeout_seconds: float = 300.0,
         runtime_recovery_ready: bool = True,
     ) -> None:
         if (
@@ -148,12 +164,33 @@ class ProductionEmployeeHireService:
         self._on_registration_link = on_registration_link
         self._on_registration_status = on_registration_status
         self._provisioning_submitter = provisioning_submitter
+        self._manifest_reauthorization_submitter = (
+            manifest_reauthorization_submitter
+        )
+        if (
+            isinstance(manifest_reauthorization_timeout_seconds, bool)
+            or not isinstance(manifest_reauthorization_timeout_seconds, (int, float))
+            or not math.isfinite(float(manifest_reauthorization_timeout_seconds))
+            or manifest_reauthorization_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "manifest_reauthorization_timeout_seconds must be positive"
+            )
+        self._manifest_reauthorization_timeout_seconds = float(
+            manifest_reauthorization_timeout_seconds
+        )
         self._runtime_recovery_ready = runtime_recovery_ready is True
-        self._mutex = threading.RLock()
+        self._mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._activities: dict[str, asyncio.Task[DurableHireState]] = {}
+        self._manifest_activities: dict[
+            str, asyncio.Task[ManifestReauthorizationState]
+        ] = {}
         self._admission_closed = False
         self._closed = False
         self._hire_projection = HireProjection.empty()
+        self._manifest_reauthorizations: dict[
+            str, ManifestReauthorizationState
+        ] = {}
         self.recover()
 
     @property
@@ -179,6 +216,411 @@ class ProductionEmployeeHireService:
         self._synchronize_projection_to_journal_locked()
         return self._projection_state
 
+    def get_manifest_reauthorization(
+        self,
+        operation_id: str,
+    ) -> ManifestReauthorizationState | None:
+        with self._mutex:
+            self._synchronize_projection_to_journal_locked()
+            return self._manifest_reauthorizations.get(operation_id)
+
+    def request_manifest_reauthorization(
+        self,
+        *,
+        tenant_key: str,
+        agent_id: str,
+        request_id: str,
+    ) -> ManifestReauthorizationState:
+        """Durably request an in-place official authorization flow for an ACTIVE App."""
+
+        for name, value in (
+            ("tenant_key", tenant_key),
+            ("agent_id", agent_id),
+            ("request_id", request_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise HireAdmissionError(f"{name} is required")
+        if self._registrar is None or self._manifest_reauthorization_submitter is None:
+            raise HireAdmissionError("manifest reauthorization dependencies unavailable")
+        manifest = current_registration_manifest()
+        desired_hash = manifest.fingerprint()
+        operation_id = _stable_id(
+            "manifestreauth",
+            tenant_key,
+            f"{request_id}:{agent_id}:{desired_hash}",
+        )
+        submit = False
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            if self._closed or self._admission_closed:
+                raise HireAdmissionError("closed")
+            existing = self._manifest_reauthorizations.get(operation_id)
+            if existing is not None:
+                if existing.phase is ManifestReauthorizationPhase.ACTION_REQUIRED:
+                    raise HireAdmissionError(
+                        "manifest reauthorization requires a fresh request"
+                    )
+                return existing
+            employee = self._projection_state.employees.get(agent_id)
+            if (
+                employee is None
+                or employee.tenant_key != tenant_key
+                or employee.state is not EmployeeState.ACTIVE
+                or not employee.bot_principal_id
+            ):
+                raise HireAdmissionError("active employee is required")
+            principal = self._projection_state.bot_principals.get(
+                employee.bot_principal_id
+            )
+            if (
+                principal is None
+                or principal.tenant_key != tenant_key
+                or principal.agent_id != agent_id
+                or not principal.app_id
+            ):
+                raise HireAdmissionError("bot principal binding is unavailable")
+            active = next(
+                (
+                    item
+                    for item in self._manifest_reauthorizations.values()
+                    if item.tenant_key == tenant_key
+                    and item.bot_principal_id == principal.bot_principal_id
+                    and item.app_id == principal.app_id
+                    and item.desired_manifest_hash == desired_hash
+                    and item.phase
+                    in {
+                        ManifestReauthorizationPhase.PREPARED,
+                        ManifestReauthorizationPhase.EXECUTING,
+                        ManifestReauthorizationPhase.COMMITTED,
+                    }
+                ),
+                None,
+            )
+            if active is not None:
+                return active
+            events = (
+                JournalEvent(
+                    event_type="bot_principal.manifest_desired",
+                    aggregate_id=principal.bot_principal_id,
+                    payload={
+                        "desired_manifest_hash": desired_hash,
+                        "scopes": list(manifest.tenant_scopes),
+                    },
+                ),
+                JournalEvent(
+                    event_type="manifest.reauthorization.prepared",
+                    aggregate_id=operation_id,
+                    payload={
+                        "tenant_key": tenant_key,
+                        "agent_id": agent_id,
+                        "bot_principal_id": principal.bot_principal_id,
+                        "app_id": principal.app_id,
+                        "desired_manifest_hash": desired_hash,
+                        "message_id": request_id,
+                        "employee_name": employee.name,
+                    },
+                ),
+            )
+            state = self._commit_manifest_reauthorization_events_locked(events)
+            submit = True
+        if submit:
+            try:
+                self._manifest_reauthorization_submitter(operation_id)
+            except Exception:
+                with self.employee_dispatch_guard(), self._writer.transaction_guard():
+                    self._synchronize_projection_to_journal_locked()
+                    self._commit_manifest_reauthorization_events_locked(
+                        (
+                            JournalEvent(
+                                event_type=(
+                                    "manifest.reauthorization.action_required"
+                                ),
+                                aggregate_id=operation_id,
+                                payload={"error_code": "activity_submit_failed"},
+                            ),
+                        )
+                    )
+                raise HireAdmissionError(
+                    "manifest reauthorization requires manual action"
+                ) from None
+        return state
+
+    async def run_manifest_reauthorization(
+        self,
+        operation_id: str,
+    ) -> ManifestReauthorizationState:
+        """Run one deduplicated official existing-App registration activity."""
+
+        if not isinstance(operation_id, str) or not operation_id:
+            raise HireAdmissionError("operation_id is required")
+        with self._mutex:
+            if self._closed:
+                raise HireAdmissionError("closed")
+            task = self._manifest_activities.get(operation_id)
+            if task is None:
+                task = asyncio.create_task(
+                    self._run_manifest_reauthorization_activity(operation_id)
+                )
+                self._manifest_activities[operation_id] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done():
+                with self._mutex:
+                    if self._manifest_activities.get(operation_id) is task:
+                        self._manifest_activities.pop(operation_id, None)
+
+    async def _run_manifest_reauthorization_activity(
+        self,
+        operation_id: str,
+    ) -> ManifestReauthorizationState:
+        state = self.get_manifest_reauthorization(operation_id)
+        if state is None:
+            raise HireAdmissionError("unknown manifest reauthorization")
+        if state.phase is ManifestReauthorizationPhase.COMMITTED:
+            return state
+        if state.phase is not ManifestReauthorizationPhase.PREPARED:
+            raise HireAdmissionError("manifest reauthorization requires manual action")
+        state = self._commit_manifest_reauthorization_event(
+            JournalEvent(
+                event_type="manifest.reauthorization.executing",
+                aggregate_id=operation_id,
+                payload={},
+            )
+        )
+        bridge = AsyncCallbackBridge()
+        link_callback = bridge.callback(self._on_registration_link, state)
+        status_callback = bridge.callback(self._on_registration_status, state)
+
+        async def register_and_drain() -> RegistrationResult:
+            if self._registrar is None:
+                raise HireAdmissionError("manifest registrar unavailable")
+            result: RegistrationResult | None = None
+            registration_error: Exception | None = None
+            try:
+                result = await self._registrar.register(
+                    RegistrationRequest(
+                        name=state.employee_name,
+                        description="GhostAP employee manifest authorization",
+                        existing_app_id=state.app_id,
+                    ),
+                    on_link=link_callback,
+                    on_status=status_callback,
+                )
+            except Exception as exc:
+                registration_error = exc
+            try:
+                await bridge.drain()
+            except Exception as exc:
+                registration_error = exc
+            if registration_error is not None or result is None:
+                raise HireAdmissionError("official registration failed")
+            return result
+
+        result: RegistrationResult | None = None
+        try:
+            result = await safe_wait_for(
+                register_and_drain(),
+                timeout=self._manifest_reauthorization_timeout_seconds,
+                action="employee manifest reauthorization",
+            )
+            if (
+                result.app_id != state.app_id
+                or result.manifest_hash != state.desired_manifest_hash
+                or result.evidence_source != MANIFEST_EVIDENCE_SOURCE
+            ):
+                raise HireAdmissionError("manifest authorization receipt mismatch")
+        except Exception as exc:
+            error_code = (
+                "registration_timeout"
+                if isinstance(exc, TimeoutError)
+                else "registration_failed"
+            )
+            self._commit_manifest_reauthorization_event(
+                JournalEvent(
+                    event_type="manifest.reauthorization.action_required",
+                    aggregate_id=operation_id,
+                    payload={"error_code": error_code},
+                )
+            )
+            raise HireAdmissionError(
+                "manifest reauthorization requires manual action"
+            ) from None
+        if result is None:  # pragma: no cover - guarded by the successful await above
+            raise HireAdmissionError("manifest reauthorization requires manual action")
+        evidence_source = result.evidence_source
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            current = self._manifest_reauthorizations.get(operation_id)
+            employee = self._projection_state.employees.get(state.agent_id)
+            principal = self._projection_state.bot_principals.get(
+                state.bot_principal_id
+            )
+            if (
+                current is None
+                or current.phase is not ManifestReauthorizationPhase.EXECUTING
+                or employee is None
+                or employee.state is not EmployeeState.ACTIVE
+                or employee.tenant_key != state.tenant_key
+                or principal is None
+                or principal.app_id != state.app_id
+                or principal.agent_id != state.agent_id
+                or principal.desired_manifest_hash != state.desired_manifest_hash
+            ):
+                if current is not None and current.phase is (
+                    ManifestReauthorizationPhase.EXECUTING
+                ):
+                    self._commit_manifest_reauthorization_events_locked(
+                        (
+                            JournalEvent(
+                                event_type=(
+                                    "manifest.reauthorization.action_required"
+                                ),
+                                aggregate_id=operation_id,
+                                payload={"error_code": "binding_changed"},
+                            ),
+                        )
+                    )
+                raise HireAdmissionError(
+                    "manifest reauthorization requires manual action"
+                )
+            return self._commit_manifest_reauthorization_events_locked(
+                (
+                    JournalEvent(
+                        event_type="manifest.reauthorization.committed",
+                        aggregate_id=operation_id,
+                        payload={
+                            "observed_manifest_hash": state.desired_manifest_hash,
+                            "evidence_source": evidence_source,
+                        },
+                    ),
+                    JournalEvent(
+                        event_type="bot_principal.manifest_observed",
+                        aggregate_id=state.bot_principal_id,
+                        payload={
+                            "observed_manifest_hash": state.desired_manifest_hash,
+                            "evidence_source": evidence_source,
+                        },
+                    ),
+                )
+            )
+
+    def recover_manifest_reauthorizations(self) -> tuple[str, ...]:
+        """Fail-close interrupted calls and return safe PREPARED work to resume."""
+
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            active_keys: set[tuple[str, str, str, str]] = {
+                (
+                    state.tenant_key,
+                    state.bot_principal_id,
+                    state.app_id,
+                    state.desired_manifest_hash,
+                )
+                for state in self._manifest_reauthorizations.values()
+                if state.phase
+                in {
+                    ManifestReauthorizationPhase.EXECUTING,
+                    ManifestReauthorizationPhase.COMMITTED,
+                }
+            }
+            interrupted = tuple(
+                state.operation_id
+                for state in self._manifest_reauthorizations.values()
+                if state.phase is ManifestReauthorizationPhase.EXECUTING
+            )
+            for operation_id in interrupted:
+                self._commit_manifest_reauthorization_events_locked(
+                    (
+                        JournalEvent(
+                            event_type="manifest.reauthorization.action_required",
+                            aggregate_id=operation_id,
+                            payload={"error_code": "interrupted_remote_outcome"},
+                        ),
+                    )
+                )
+            pending: list[str] = []
+            prepared = tuple(
+                state
+                for state in self._manifest_reauthorizations.values()
+                if state.phase is ManifestReauthorizationPhase.PREPARED
+            )
+            for state in prepared:
+                key = (
+                    state.tenant_key,
+                    state.bot_principal_id,
+                    state.app_id,
+                    state.desired_manifest_hash,
+                )
+                if key not in active_keys:
+                    active_keys.add(key)
+                    pending.append(state.operation_id)
+                    continue
+                self._commit_manifest_reauthorization_events_locked(
+                    (
+                        JournalEvent(
+                            event_type=(
+                                "manifest.reauthorization.action_required"
+                            ),
+                            aggregate_id=state.operation_id,
+                            payload={"error_code": "duplicate_active_operation"},
+                        ),
+                    )
+                )
+            return tuple(pending)
+
+    def _commit_manifest_reauthorization_event(
+        self,
+        event: JournalEvent,
+    ) -> ManifestReauthorizationState:
+        with self.employee_dispatch_guard(), self._writer.transaction_guard():
+            self._synchronize_projection_to_journal_locked()
+            return self._commit_manifest_reauthorization_events_locked((event,))
+
+    def _commit_manifest_reauthorization_events_locked(
+        self,
+        events: tuple[JournalEvent, ...],
+    ) -> ManifestReauthorizationState:
+        manifest_events = tuple(
+            event
+            for event in events
+            if is_manifest_reauthorization_event(event.event_type)
+        )
+        if len(manifest_events) != 1:
+            raise HireAdmissionError(
+                "manifest reauthorization transaction requires one state event"
+            )
+        event = manifest_events[0]
+        apply_manifest_reauthorization_event(
+            self._manifest_reauthorizations.get(event.aggregate_id),
+            event,
+        )
+        workforce_events = tuple(
+            item for item in events if is_workforce_event(item.event_type)
+        )
+        if workforce_events:
+            validate_workforce_events(self._projection_state, workforce_events)
+        last = self._writer.get_last_frame()
+        writer_sequence = 0 if last is None else last.sequence
+        writer_hash = "" if last is None else last.frame_hash
+        result = self._writer.commit(
+            events,
+            self._writer.get_aggregate_versions(
+                {item.aggregate_id for item in events}
+            ),
+            expected_head_sequence=writer_sequence,
+            expected_head_hash=writer_hash,
+        )
+        if result.state is not CommitState.ANCHORED:
+            raise AnchorMismatchError(
+                "manifest reauthorization event was not anchored"
+            )
+        apply_frame(self._projection_state, result.frame)
+        frames = tuple(self._writer.replay())
+        self._hire_projection = HireProjection.rebuild(frames)
+        self._manifest_reauthorizations = rebuild_manifest_reauthorizations(frames)
+        return self._manifest_reauthorizations[event.aggregate_id]
+
     def apply_committed_frame_unlocked(self, frame: TransactionFrame) -> None:
         """Advance workforce and hire views for a sibling-domain anchored frame."""
 
@@ -189,7 +631,9 @@ class ProductionEmployeeHireService:
         if frame.sequence != self._projection_state.cursor_sequence + 1:
             raise HireAdmissionError("hire frame sequence is not continuous")
         apply_frame(self._projection_state, frame)
-        self._hire_projection = HireProjection.rebuild(tuple(self._writer.replay()))
+        frames = tuple(self._writer.replay())
+        self._hire_projection = HireProjection.rebuild(frames)
+        self._manifest_reauthorizations = rebuild_manifest_reauthorizations(frames)
 
     def readiness(self) -> HireReadiness:
         blockers: list[str] = []
@@ -221,6 +665,9 @@ class ProductionEmployeeHireService:
             if frames:
                 self._projection_state = rebuilt
             self._hire_projection = HireProjection.rebuild(frames)
+            self._manifest_reauthorizations = rebuild_manifest_reauthorizations(
+                frames
+            )
         self._reconcile_recovered_hires()
         with self.employee_dispatch_guard():
             return self._hire_projection
@@ -878,6 +1325,7 @@ class ProductionEmployeeHireService:
         frames = tuple(self._writer.replay())
         self._projection_state = ProjectionRepository().rebuild(iter(frames))
         self._hire_projection = HireProjection.rebuild(frames)
+        self._manifest_reauthorizations = rebuild_manifest_reauthorizations(frames)
 
     async def run_provisioning(self, intent_id: str) -> DurableHireState:
         """Run one deduplicated asynchronous provisioning activity."""
@@ -1148,6 +1596,8 @@ class ProductionEmployeeHireService:
                 ):
                     raise HireAdmissionError("bot principal binding conflict")
                 return self._require_hire(state.intent_id)
+            manifest = current_registration_manifest()
+            manifest_hash = manifest.fingerprint()
             events = (
                 JournalEvent(
                     event_type="employee.bot_principal_bound",
@@ -1166,7 +1616,9 @@ class ProductionEmployeeHireService:
                         "agent_id": state.agent_id,
                         "app_id": app_id,
                         "credential_ref": credential_ref,
-                        "scopes": [],
+                        "scopes": list(manifest.tenant_scopes),
+                        "desired_manifest_hash": manifest_hash,
+                        "observed_manifest_hash": "",
                     },
                 ),
                 JournalEvent(

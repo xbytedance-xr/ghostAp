@@ -119,7 +119,7 @@ class JournalWriter:
         # Serialize cross-domain projection refresh + commit without reusing the
         # writer's non-reentrant leaf lock. Public writer operations called in a
         # transaction continue to acquire ``_mutex`` independently.
-        self._transaction_mutex = threading.RLock()
+        self._transaction_mutex = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._closed = False
         self._write_disabled = False
         self._lock_file = open(self.lock_path, "a+b")

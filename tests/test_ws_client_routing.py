@@ -15,6 +15,7 @@ from src.feishu.ws_client import (
     FeishuWSClient,
     _employee_hire_status_uuid,
     _main_bot_outbound_wiring,
+    _visible_employee_runtime_requires_outbound_audit,
 )
 from src.mode import InteractionMode
 from src.project import ProjectContext
@@ -147,6 +148,12 @@ def test_visible_employee_runtime_without_audit_fails_main_bot_outbound_closed()
 
 def test_dormant_employee_runtime_does_not_require_main_bot_outbound_audit() -> None:
     assert _main_bot_outbound_wiring(None, required=False) == (None, None)
+
+
+def test_invalid_visible_employee_limit_shape_requires_outbound_audit() -> None:
+    settings = SimpleNamespace(autonomous_visible_employee_limit=MagicMock())
+
+    assert _visible_employee_runtime_requires_outbound_audit(settings) is True
 
 
 def test_employee_registration_notifier_explains_pending_oauth_state(

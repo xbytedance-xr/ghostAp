@@ -256,8 +256,8 @@ class EmployeeChannelSupervisor:
             self._sandbox_prefix = ()
         self._runtimes: dict[str, _Runtime] = {}
         self._generation_high_watermark: dict[str, int] = {}
-        self._lock = threading.RLock()
-        self._lifecycle_registry_lock = threading.Lock()
+        self._lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._lifecycle_registry_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._lifecycle_locks: dict[str, threading.RLock] = {}
         self._lifecycle_condition = threading.Condition()
         self._starts_in_flight = 0
@@ -358,7 +358,7 @@ class EmployeeChannelSupervisor:
 
     def _agent_lifecycle_lock(self, agent_id: str) -> threading.RLock:
         with self._lifecycle_registry_lock:
-            return self._lifecycle_locks.setdefault(agent_id, threading.RLock())
+            return self._lifecycle_locks.setdefault(agent_id, threading.RLock())  # leaf lock: never held while acquiring a LockLevel lock
 
     def launch_contract(
         self,

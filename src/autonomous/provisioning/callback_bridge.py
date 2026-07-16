@@ -27,7 +27,7 @@ class AsyncCallbackBridge:
 
     def __init__(self) -> None:
         self._loop = asyncio.get_running_loop()
-        self._mutex = threading.Lock()
+        self._mutex = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._pending: set[asyncio.Future[Any] | ConcurrentFuture[Any]] = set()
 
     def callback(

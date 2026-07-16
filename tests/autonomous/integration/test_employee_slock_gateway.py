@@ -204,7 +204,32 @@ def _runtime_model(binding) -> str:
     )
 
 
-def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
+def _commit_team_effect(writer, aggregate_id: str, state: str) -> None:
+    from src.autonomous.journal.frame import JournalEvent
+
+    event = JournalEvent(
+        event_type=f"team.effect.{state}",
+        aggregate_id=aggregate_id,
+        payload={"effect_type": "employee_dispatch"},
+    )
+    with writer.transaction_guard():
+        last = writer.get_last_frame()
+        writer.commit(
+            (event,),
+            writer.get_aggregate_versions((aggregate_id,)),
+            expected_head_sequence=0 if last is None else last.sequence,
+            expected_head_hash="" if last is None else last.frame_hash,
+        )
+
+
+def _real_coordinator_harness(
+    tmp_path,
+    team_assignment: bool = False,
+    second_candidate: bool = False,
+    team_deadline_at: str = "",
+    team_content_overrides: dict[str, object] | None = None,
+    expected_route_rejection: str = "",
+):
     import threading as local_threading
     from contextlib import contextmanager
     from datetime import UTC, datetime
@@ -292,19 +317,36 @@ def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
         app_id="cli_alpha",
         credential_ref="cred_alpha",
     )
+    if second_candidate:
+        workforce.employees["agt_beta"] = replace(
+            workforce.employees["agt_alpha"],
+            agent_id="agt_beta",
+            name="beta",
+            bot_principal_id="bot_beta",
+        )
+        workforce.bot_principals["bot_beta"] = replace(
+            workforce.bot_principals["bot_alpha"],
+            bot_principal_id="bot_beta",
+            agent_id="agt_beta",
+            app_id="cli_beta",
+            credential_ref="cred_beta",
+        )
 
     class _RouterChannels:
-        def status(self, _agent_id):
+        def status(self, agent_id):
+            beta = agent_id == "agt_beta"
             return ChannelProcessStatus(
-                agent_id="agt_alpha",
-                app_id="cli_alpha",
+                agent_id=agent_id,
+                app_id="cli_beta" if beta else "cli_alpha",
                 generation=3,
                 pid=101,
                 state=ChannelProcessState.READY,
                 tenant_key="tenant_1",
-                bot_principal_id="bot_alpha",
-                identity={"app_id": "cli_alpha"},
-                ready_metadata={"connection_id": "conn_alpha"},
+                bot_principal_id="bot_beta" if beta else "bot_alpha",
+                identity={"app_id": "cli_beta" if beta else "cli_alpha"},
+                ready_metadata={
+                    "connection_id": "conn_beta" if beta else "conn_alpha"
+                },
             )
 
     class _Membership:
@@ -312,7 +354,7 @@ def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
             return False
 
     router_channels = _RouterChannels()
-    router = DurableEmployeeIngressRouter(
+    router_kwargs = dict(
         writer=writer,
         ingress_service=ingress,
         registry_provider=lambda: ProjectedAgentRegistry(
@@ -329,6 +371,7 @@ def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
         constraints_digest="c" * 64,
         system_prompt_token_reserve=128,
     )
+    router = DurableEmployeeIngressRouter(**router_kwargs)
     content = {
         "type": "message",
         "message_type": "text",
@@ -355,6 +398,13 @@ def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
             "team_run_id": "teamrun_inactive",
             "team_step_id": "analysis",
         }
+        if team_deadline_at:
+            content["team_deadline_at"] = team_deadline_at
+        for key, value in (team_content_overrides or {}).items():
+            if value is None:
+                content.pop(key, None)
+            else:
+                content[key] = value
     payload = EmployeeIngressPayload(
         schema_version=1,
         envelope_id="ing_" + "1" * 64,
@@ -405,9 +455,42 @@ def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
     )
     assert binding_probe is not None
     resolution, resolution_reason = router._resolve_authority(metadata, payload)  # noqa: SLF001
-    assert resolution is not None, resolution_reason
     queued = router.route(acceptance_id)
-    assert queued.state == "queued", queued
+    if expected_route_rejection:
+        assert resolution is None
+        assert queued.state == "terminal"
+        assert queued.reason_code == expected_route_rejection
+    else:
+        assert resolution is not None, resolution_reason
+        assert queued.state == "queued", queued
+    acceptance_ids = [acceptance_id]
+    if second_candidate:
+        second_payload = EmployeeIngressPayload(
+            schema_version=1,
+            envelope_id="ing_" + "2" * 64,
+            normalized_parts=(content,),
+            attachment_descriptors=(),
+        )
+        second_metadata = replace(
+            metadata,
+            envelope_id=second_payload.envelope_id,
+            agent_id="agt_beta",
+            bot_principal_id="bot_beta",
+            app_id="cli_beta",
+            connection_id="conn_beta",
+            event_id="evt_2",
+            message_id="om_second",
+            semantic_digest=second_payload.payload_sha256,
+            payload_sha256=second_payload.payload_sha256,
+            payload_size_bytes=second_payload.canonical_size_bytes,
+        )
+        second_id = ingress.accept(
+            second_metadata,
+            second_payload,
+            request_id="req_2",
+        ).acceptance.acceptance_id
+        assert router.route(second_id).state == "queued"
+        acceptance_ids.append(second_id)
 
     class _Hire:
         projection_state = workforce
@@ -522,6 +605,9 @@ def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
     def restart():
         return EmployeeDispatchCoordinator(**coordinator_kwargs)
 
+    def restart_router():
+        return DurableEmployeeIngressRouter(**router_kwargs)
+
     def close():
         data.close()
         ingress.close()
@@ -540,11 +626,13 @@ def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
         workforce=workforce,
         channels=channels,
         context=context,
+        acceptance_ids=tuple(acceptance_ids),
         dispatch=__import__(
             "src.autonomous.ingress.dispatch",
             fromlist=["DispatchPermitAuthorityError"],
         ),
         restart=restart,
+        restart_router=restart_router,
         close=close,
     )
 
@@ -1610,7 +1698,11 @@ def test_context_failure_terminally_rejects_candidate_once(tmp_path, caplog) -> 
 
 
 def test_inactive_team_assignment_is_rejected_before_context_assembly(tmp_path) -> None:
-    harness = _real_coordinator_harness(tmp_path, team_assignment=True)
+    harness = _real_coordinator_harness(
+        tmp_path,
+        team_assignment=True,
+        team_deadline_at="2026-07-14T00:02:00Z",
+    )
 
     class _ContextMustNotRun:
         def assemble(self, _request):
@@ -1626,15 +1718,241 @@ def test_inactive_team_assignment_is_rejected_before_context_assembly(tmp_path) 
     harness.close()
 
 
+def test_team_absolute_deadline_propagates_remaining_permit_duration(tmp_path) -> None:
+    harness = _real_coordinator_harness(
+        tmp_path,
+        team_assignment=True,
+        team_deadline_at="2026-07-14T00:01:05Z",
+    )
+    aggregate = "teamrun_inactive:analysis"
+    _commit_team_effect(harness.writer, aggregate, "prepared")
+    _commit_team_effect(harness.writer, aggregate, "executing")
+
+    prepared = harness.coordinator.prepare_next()
+
+    assert prepared is not None
+    assert prepared.permit.timeout_seconds == pytest.approx(5.0)
+    harness.close()
+
+
+@pytest.mark.parametrize(
+    "deadline, overrides",
+    [
+        ("", {}),
+        ("2026-07-14T00:02:00Z", {"team_run_id": ""}),
+        ("2026-07-14T00:02:00Z", {"unexpected": "extra"}),
+    ],
+)
+def test_invalid_team_assignment_schema_fails_closed_before_context(
+    tmp_path,
+    deadline,
+    overrides,
+) -> None:
+    harness = _real_coordinator_harness(
+        tmp_path,
+        team_assignment=True,
+        team_deadline_at=deadline,
+        team_content_overrides=overrides,
+    )
+    aggregate = "teamrun_inactive:analysis"
+    _commit_team_effect(harness.writer, aggregate, "prepared")
+    _commit_team_effect(harness.writer, aggregate, "executing")
+    calls: list[str] = []
+
+    class _ContextMustNotRun:
+        def assemble(self, _request):
+            calls.append("context")
+            raise AssertionError("invalid Team assignment reached Context")
+
+    harness.coordinator._context = _ContextMustNotRun()  # noqa: SLF001
+
+    assert harness.coordinator.prepare_next() is None
+    record = harness.router.state.by_acceptance_id[harness.acceptance_ids[0]]
+    assert record.state == "terminal"
+    assert record.reason_code == "team_assignment_invalid"
+    assert calls == []
+    assert not harness.coordinator.state.attempts
+    harness.close()
+
+
+def test_empty_team_instruction_is_terminalized_at_router_authority_boundary(
+    tmp_path,
+) -> None:
+    harness = _real_coordinator_harness(
+        tmp_path,
+        team_assignment=True,
+        team_deadline_at="2026-07-14T00:02:00Z",
+        team_content_overrides={"team_instruction": ""},
+        expected_route_rejection="sender_invalid",
+    )
+
+    assert harness.coordinator.prepare_next() is None
+    record = harness.router.state.by_acceptance_id[harness.acceptance_ids[0]]
+    assert record.state == "terminal"
+    assert record.reason_code == "sender_invalid"
+    assert not harness.coordinator.state.attempts
+    harness.close()
+
+
+def test_expired_team_assignment_never_reaches_acp(tmp_path, monkeypatch) -> None:
+    harness = _real_coordinator_harness(
+        tmp_path,
+        team_assignment=True,
+        team_deadline_at="2026-07-14T00:00:59.999999Z",
+    )
+    aggregate = "teamrun_inactive:analysis"
+    _commit_team_effect(harness.writer, aggregate, "prepared")
+    _commit_team_effect(harness.writer, aggregate, "executing")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        harness.engine,
+        "_run_acp_session",
+        lambda *_args, **_kwargs: calls.append("acp") or "unexpected",
+    )
+
+    assert harness.coordinator.prepare_next() is None
+    record = harness.router.state.by_acceptance_id[harness.acceptance_ids[0]]
+    assert record.reason_code == "team_step_expired"
+    assert calls == []
+    assert not harness.coordinator.state.attempts
+    harness.close()
+
+
+@pytest.mark.parametrize(
+    ("status_name", "safe_error", "expected_error"),
+    [
+        ("COMPLETED", "", ""),
+        ("FAILED", "slock_session_failed", "slock_session_failed"),
+        ("CANCELED", "cancel_requested", "cancel_requested"),
+        ("TIMEOUT", "slock_session_timeout", "slock_session_timeout"),
+        ("ACTION_REQUIRED", "approval_required", "approval_required"),
+    ],
+)
+def test_team_attempt_result_preserves_all_gateway_terminals_at_one_projection_head(
+    tmp_path, status_name, safe_error, expected_error
+) -> None:
+    from src.autonomous.ingress.dispatch import (
+        GatewayExecutionResult,
+        GatewayExecutionStatus,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+    prepared = harness.coordinator.prepare_next()
+    assert prepared is not None
+    status = getattr(GatewayExecutionStatus, status_name)
+    harness.coordinator.finalize_attempt(
+        prepared.binding.attempt_id,
+        GatewayExecutionResult(
+            status,
+            output="done" if status is GatewayExecutionStatus.COMPLETED else "",
+            safe_error_code=safe_error,
+        ),
+        request_text=prepared.prompt,
+    )
+
+    result = harness.coordinator.team_attempt_result(
+        prepared.binding.acceptance_id
+    )
+
+    assert result is not None
+    assert result.status == status.value
+    assert result.error_code == expected_error
+    assert result.output == ("done" if status is GatewayExecutionStatus.COMPLETED else "")
+    harness.close()
+
+
+def test_team_attempt_result_retries_head_change_without_success_downgrade(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from src.autonomous.ingress.dispatch import (
+        GatewayExecutionResult,
+        GatewayExecutionStatus,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+    prepared = harness.coordinator.prepare_next()
+    assert prepared is not None
+    harness.coordinator.finalize_attempt(
+        prepared.binding.attempt_id,
+        GatewayExecutionResult(GatewayExecutionStatus.COMPLETED, output="done"),
+        request_text=prepared.prompt,
+    )
+    original = harness.data.get_history_payload
+    calls = 0
+
+    def move_once(record_id):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            _commit_team_effect(
+                harness.writer,
+                "teamrun_real_head_interleave:probe",
+                "prepared",
+            )
+        return original(record_id)
+
+    monkeypatch.setattr(
+        harness.data,
+        "get_history_payload",
+        move_once,
+    )
+
+    result = harness.coordinator.team_attempt_result(
+        prepared.binding.acceptance_id
+    )
+
+    assert calls == 2
+    assert result is not None and result.status == "completed"
+    assert result.output == "done"
+    harness.close()
+
+
+def test_team_attempt_result_fails_closed_on_authenticated_history_read_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from src.autonomous.ingress.dispatch import (
+        GatewayExecutionResult,
+        GatewayExecutionStatus,
+    )
+
+    harness = _real_coordinator_harness(tmp_path)
+    prepared = harness.coordinator.prepare_next()
+    assert prepared is not None
+    finalized = harness.coordinator.finalize_attempt(
+        prepared.binding.attempt_id,
+        GatewayExecutionResult(GatewayExecutionStatus.COMPLETED, output="secret"),
+        request_text=prepared.prompt,
+    )
+    monkeypatch.setattr(
+        harness.data._blob_store,  # noqa: SLF001
+        "read",
+        lambda _ref: (_ for _ in ()).throw(ValueError("authentication failed")),
+    )
+
+    result = harness.coordinator.team_attempt_result(prepared.binding.acceptance_id)
+
+    assert result is not None
+    assert result.status == "action_required"
+    assert result.history_record_id == finalized.history_record_id
+    assert result.error_code == "team_history_unavailable"
+    harness.close()
+
+
 def test_transient_context_failure_retries_durably_then_terminalizes(
     tmp_path,
 ) -> None:
+    from datetime import UTC, datetime, timedelta
+
     from src.autonomous.context import (
         ContextUnavailableError,
         ContextUnavailableReason,
     )
 
     harness = _real_coordinator_harness(tmp_path)
+    now = [datetime(2026, 7, 14, tzinfo=UTC)]
+    harness.router._clock = lambda: now[0]  # noqa: SLF001
 
     class _UnavailableContext:
         calls = 0
@@ -1651,16 +1969,169 @@ def test_transient_context_failure_retries_durably_then_terminalizes(
     assert first.state == "queued" and first.context_failures == 1
     second_coordinator = harness.restart()
     second_coordinator._context = unavailable  # noqa: SLF001
+    now[0] += timedelta(seconds=1)
     assert second_coordinator.prepare_next() is None
     second = next(iter(harness.router.state.by_acceptance_id.values()))
     assert second.state == "queued" and second.context_failures == 2
     restarted = harness.restart()
     restarted._context = unavailable  # noqa: SLF001
+    now[0] += timedelta(seconds=2)
     assert restarted.prepare_next() is None
     terminal = next(iter(harness.router.state.by_acceptance_id.values()))
     assert terminal.state == "terminal"
     assert terminal.reason_code == "context_unavailable"
     assert unavailable.calls == 3
+    harness.close()
+
+
+def test_transient_context_retry_waits_until_durable_eligibility_after_restart(
+    tmp_path,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from src.autonomous.context import (
+        ContextUnavailableError,
+        ContextUnavailableReason,
+    )
+
+    now = [datetime(2026, 7, 14, tzinfo=UTC)]
+    harness = _real_coordinator_harness(tmp_path)
+    harness.router._clock = lambda: now[0]  # noqa: SLF001
+    harness.router._context_retry_base_seconds = 2.0  # noqa: SLF001
+    harness.router._context_retry_max_seconds = 8.0  # noqa: SLF001
+
+    class _UnavailableContext:
+        calls = 0
+
+        def assemble(self, _request):
+            self.calls += 1
+            raise ContextUnavailableError(ContextUnavailableReason.SOURCE)
+
+    unavailable = _UnavailableContext()
+    harness.coordinator._context = unavailable  # noqa: SLF001
+
+    assert harness.coordinator.prepare_next() is None
+    first = harness.router.state.by_acceptance_id[harness.acceptance_ids[0]]
+    assert first.next_eligible_at == "2026-07-14T00:00:02Z"
+
+    restarted = harness.restart()
+    restarted._context = unavailable  # noqa: SLF001
+    assert restarted.prepare_next() is None
+    assert unavailable.calls == 1
+
+    now[0] += timedelta(seconds=2)
+    assert restarted.prepare_next() is None
+    assert unavailable.calls == 2
+    harness.close()
+
+
+def test_ineligible_head_does_not_block_another_ready_candidate(tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    harness = _real_coordinator_harness(tmp_path, second_candidate=True)
+    harness.router._clock = lambda: datetime(2026, 7, 14, tzinfo=UTC)  # noqa: SLF001
+    harness.router._context_retry_base_seconds = 10.0  # noqa: SLF001
+    harness.router._context_retry_max_seconds = 10.0  # noqa: SLF001
+    harness.router.defer_dispatch_candidate(harness.acceptance_ids[0])
+
+    grant = harness.router.peek_dispatch_candidate()
+
+    assert grant is not None
+    assert grant.record.acceptance_id == harness.acceptance_ids[1]
+    harness.close()
+
+
+def test_context_retry_fractional_delay_is_not_truncated(tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    from src.autonomous.context import ContextUnavailableError, ContextUnavailableReason
+
+    now = datetime(2026, 7, 14, tzinfo=UTC)
+    harness = _real_coordinator_harness(tmp_path)
+    harness.router._clock = lambda: now  # noqa: SLF001
+    harness.router._context_retry_base_seconds = 0.5  # noqa: SLF001
+    harness.router._context_retry_max_seconds = 0.5  # noqa: SLF001
+
+    class _UnavailableContext:
+        calls = 0
+
+        def assemble(self, _request):
+            self.calls += 1
+            raise ContextUnavailableError(ContextUnavailableReason.SOURCE)
+
+    unavailable = _UnavailableContext()
+    harness.coordinator._context = unavailable  # noqa: SLF001
+    assert harness.coordinator.prepare_next() is None
+
+    record = harness.router.state.by_acceptance_id[harness.acceptance_ids[0]]
+    assert record.next_eligible_at == "2026-07-14T00:00:00.500000Z"
+    assert harness.coordinator.prepare_next() is None
+    assert unavailable.calls == 1
+    harness.close()
+
+
+def test_legacy_context_retry_replays_immediately_eligible_then_emits_v2(
+    tmp_path,
+) -> None:
+    from datetime import UTC, datetime
+
+    from src.autonomous.journal.frame import JournalEvent
+
+    harness = _real_coordinator_harness(tmp_path)
+    acceptance_id = harness.acceptance_ids[0]
+    record = harness.router.state.by_acceptance_id[acceptance_id]
+    legacy = JournalEvent(
+        event_type="employee.ingress.router_context_retry",
+        aggregate_id=record.aggregate_id,
+        payload={"acceptance_id": acceptance_id, "failure_count": 1},
+    )
+    with harness.writer.transaction_guard():
+        last = harness.writer.get_last_frame()
+        harness.writer.commit(
+            (legacy,),
+            harness.writer.get_aggregate_versions((record.aggregate_id,)),
+            expected_head_sequence=last.sequence,
+            expected_head_hash=last.frame_hash,
+        )
+
+    rebuilt = harness.restart_router()
+    replayed = rebuilt.state.by_acceptance_id[acceptance_id]
+    assert replayed.context_failures == 1
+    assert replayed.next_eligible_at == ""
+    rebuilt._clock = lambda: datetime(2026, 7, 14, tzinfo=UTC)  # noqa: SLF001
+    rebuilt.defer_dispatch_candidate(acceptance_id)
+
+    event = tuple(harness.writer.replay())[-1].events[0]
+    assert set(event.payload) == {
+        "acceptance_id",
+        "failure_count",
+        "next_eligible_at",
+    }
+    harness.close()
+
+
+def test_candidate_pass_samples_one_utc_now_for_all_records(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    harness = _real_coordinator_harness(tmp_path, second_candidate=True)
+    base = datetime(2026, 7, 14, tzinfo=UTC)
+    harness.router._clock = lambda: base  # noqa: SLF001
+    harness.router._context_retry_base_seconds = 10.0  # noqa: SLF001
+    harness.router._context_retry_max_seconds = 10.0  # noqa: SLF001
+    harness.router.defer_dispatch_candidate(harness.acceptance_ids[0])
+    calls = 0
+
+    def advancing_clock():
+        nonlocal calls
+        value = base + timedelta(seconds=calls)
+        calls += 1
+        return value
+
+    harness.router._clock = advancing_clock  # noqa: SLF001
+    grant = harness.router.peek_dispatch_candidate()
+
+    assert grant is not None
+    assert calls == 1
     harness.close()
 
 

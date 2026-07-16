@@ -36,7 +36,7 @@ class EmployeeSlockGateway:
     """Mint and consume process-local capabilities for already-anchored attempts."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
         self._issued: dict[str, _IssuedPermit] = {}
         self._running: dict[str, _IssuedPermit] = {}
         self._pre_canceled: set[str] = set()

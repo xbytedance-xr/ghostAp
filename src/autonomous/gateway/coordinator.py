@@ -27,6 +27,7 @@ from ..data.models import (
 from ..data.ports import EmployeeDataSink, PublishEmployeeDocumentCommand
 from ..data.service import EmployeeDataService
 from ..domain import EmployeeState, WorkerType
+from ..ingress.models import parse_canonical_utc
 from ..journal.frame import JournalEvent
 from ..journal.projections import apply_frame
 from ..journal.writer import CommitState, JournalWriter
@@ -66,6 +67,23 @@ _TRANSIENT_CONTEXT_REASONS = frozenset(
         ContextUnavailableReason.SOURCE,
     }
 )
+_TEAM_ASSIGNMENT_FIELDS = frozenset(
+    {
+        "type",
+        "message_type",
+        "chat_type",
+        "content",
+        "team_instruction",
+        "sender_id",
+        "sender_id_type",
+        "sender_type",
+        "sender_tenant_key",
+        "feishu_thread_id",
+        "team_run_id",
+        "team_step_id",
+        "team_deadline_at",
+    }
+)
 
 
 class EmployeeDispatchError(RuntimeError):
@@ -96,6 +114,14 @@ class EmployeeCancellationOutcome:
     status: str
     attempt_id: str = ""
     changed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TeamAttemptSnapshot:
+    status: str
+    output: str = ""
+    history_record_id: str = ""
+    error_code: str = ""
 
 
 EnvironmentProvider = Callable[
@@ -159,8 +185,8 @@ class EmployeeDispatchCoordinator:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._attempt_lifecycle = attempt_lifecycle
         self._gateway_state = GatewayProjectionState()
-        self._projection_sync_lock = threading.RLock()
-        self._terminal_lock = threading.RLock()
+        self._projection_sync_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
+        self._terminal_lock = threading.RLock()  # leaf lock: never held while acquiring a LockLevel lock
         self._admin_principal_ids = frozenset(admin_principal_ids)
         self._team_owner_resolver = team_owner_resolver or (lambda _chat_id: "")
 
@@ -190,16 +216,48 @@ class EmployeeDispatchCoordinator:
             if len(grant.payload.normalized_parts) == 1
             else None
         )
-        team_instruction = (
-            part.get("team_instruction", "") if isinstance(part, Mapping) else ""
-        )
-        if team_instruction:
-            if (
-                grant.record.event_type != "ghostap.team.assignment.v1"
-                or not isinstance(team_instruction, str)
-                or len(team_instruction) > 14_000
-            ):
-                raise EmployeeDispatchError("team instruction authority is invalid")
+        is_team_assignment = grant.record.event_type == "ghostap.team.assignment.v1"
+        team_instruction = ""
+        team_deadline: datetime | None = None
+        if is_team_assignment:
+            valid_team_part = isinstance(part, Mapping) and frozenset(part) == _TEAM_ASSIGNMENT_FIELDS
+            if valid_team_part:
+                team_instruction = part.get("team_instruction")  # type: ignore[assignment]
+                valid_team_part = (
+                    isinstance(team_instruction, str)
+                    and bool(team_instruction)
+                    and team_instruction == team_instruction.strip()
+                    and len(team_instruction) <= 14_000
+                    and part.get("type") == "team_assignment"
+                    and part.get("content") == team_instruction
+                    and all(
+                        isinstance(part.get(key), str)
+                        and bool(part.get(key))
+                        and part.get(key) == str(part.get(key)).strip()
+                        for key in (
+                            "sender_id",
+                            "sender_tenant_key",
+                            "team_run_id",
+                            "team_step_id",
+                        )
+                    )
+                )
+            if not valid_team_part:
+                self._router.reject_dispatch_candidate(
+                    grant.record.acceptance_id,
+                    reason_code="team_assignment_invalid",
+                )
+                return None
+            try:
+                team_deadline = parse_canonical_utc(
+                    part["team_deadline_at"], "team_deadline_at"
+                )
+            except (TypeError, ValueError):
+                self._router.reject_dispatch_candidate(
+                    grant.record.acceptance_id,
+                    reason_code="team_assignment_invalid",
+                )
+                return None
             if not self._team_assignment_effect_is_active(part):
                 self._router.reject_dispatch_candidate(
                     grant.record.acceptance_id,
@@ -225,6 +283,12 @@ class EmployeeDispatchCoordinator:
             )
             return None
         self._validate_context_watermark(grant.request, snapshot)
+        if team_deadline is not None and team_deadline <= self._clock():
+            self._router.reject_dispatch_candidate(
+                grant.record.acceptance_id,
+                reason_code="team_step_expired",
+            )
+            return None
 
         registry = self._registry_factory(self._hire.projection_state)
         employee = registry.get(grant.request.tenant_key, grant.request.agent_id)
@@ -370,12 +434,28 @@ class EmployeeDispatchCoordinator:
                 reason_code="slock_unavailable",
             )
             return None
+        timeout_seconds = self._timeout_seconds
+        if team_deadline is not None:
+            timeout_seconds = min(
+                timeout_seconds,
+                (team_deadline - self._clock()).total_seconds(),
+            )
+            if timeout_seconds <= 0:
+                self.finalize_attempt(
+                    binding.attempt_id,
+                    GatewayExecutionResult(
+                        GatewayExecutionStatus.TIMEOUT,
+                        safe_error_code="team_step_deadline_expired",
+                    ),
+                    request_text=rendered.prompt,
+                )
+                return None
         permit = self._gateway.issue_permit(
             binding=binding,
             prompt=rendered.prompt,
             engine=slock_binding.engine,
             agent=agent,
-            timeout_seconds=self._timeout_seconds,
+            timeout_seconds=timeout_seconds,
             env=env,
         )
         if self._attempt_lifecycle is not None:
@@ -456,6 +536,57 @@ class EmployeeDispatchCoordinator:
             result,
             request_text=prepared.prompt,
         )
+
+    def team_attempt_result(self, acceptance_id: str) -> TeamAttemptSnapshot | None:
+        """Read Router, Gateway, and History at one verified Journal head."""
+
+        if not isinstance(acceptance_id, str) or not acceptance_id.startswith("acc_"):
+            raise ValueError("team acceptance_id is required")
+        for _attempt in range(3):
+            captured_head = self._presynchronize_domains()
+            with self._projection_sync_lock:
+                gateway = self._gateway_state.clone()
+            router = self._router.state.clone()
+            attempt_id = gateway.attempt_by_acceptance_id.get(acceptance_id)
+            snapshot: TeamAttemptSnapshot | None = None
+            if attempt_id:
+                lifecycle = gateway.attempts.get(attempt_id)
+                if lifecycle is not None and lifecycle.terminal_status:
+                    try:
+                        payload = self._data.get_history_payload(
+                            lifecycle.history_record_id
+                        )
+                    except Exception:
+                        snapshot = TeamAttemptSnapshot(
+                            "action_required",
+                            history_record_id=lifecycle.history_record_id,
+                            error_code="team_history_unavailable",
+                        )
+                    else:
+                        completed = lifecycle.terminal_status == "completed"
+                        snapshot = TeamAttemptSnapshot(
+                            lifecycle.terminal_status,
+                            output=payload.result_text if completed else "",
+                            history_record_id=lifecycle.history_record_id,
+                            error_code="" if completed else payload.error_detail,
+                        )
+            if snapshot is None:
+                routed = router.by_acceptance_id.get(acceptance_id)
+                if routed is not None and routed.state == "terminal":
+                    status = {
+                        "team_step_expired": "timeout",
+                        "team_step_canceled": "canceled",
+                    }.get(routed.reason_code, "action_required")
+                    snapshot = TeamAttemptSnapshot(
+                        status,
+                        error_code=routed.reason_code,
+                    )
+            try:
+                self._require_presynchronized_head(captured_head)
+            except _ProjectionHeadChanged:
+                continue
+            return snapshot
+        raise EmployeeDispatchError("team attempt result head remained unstable")
 
     def dispatch_next(self) -> FinalizedEmployeeAttempt | None:
         prepared = self.prepare_next()
@@ -612,6 +743,128 @@ class EmployeeDispatchCoordinator:
                 except _ProjectionHeadChanged:
                     continue
             raise EmployeeDispatchError("employee cancellation head remained unstable")
+
+    def request_team_cancel(
+        self,
+        *,
+        acceptance_id: str,
+        team_run_id: str,
+        team_step_id: str,
+    ) -> EmployeeCancellationOutcome:
+        """Cancel only the attempt bound to the encrypted Team assignment owner."""
+
+        if not all(
+            isinstance(value, str) and value and value == value.strip()
+            for value in (acceptance_id, team_run_id, team_step_id)
+        ) or not acceptance_id.startswith("acc_"):
+            raise ValueError("team cancellation coordinates are required")
+        try:
+            payload = self._ingress.get_payload(acceptance_id)
+        except Exception:
+            raise EmployeeDispatchError("team cancellation authority unavailable") from None
+        part = (
+            payload.normalized_parts[0]
+            if len(payload.normalized_parts) == 1
+            else None
+        )
+        if (
+            not isinstance(part, Mapping)
+            or part.get("type") != "team_assignment"
+            or part.get("team_run_id") != team_run_id
+            or part.get("team_step_id") != team_step_id
+        ):
+            raise EmployeeDispatchError("team cancellation owner mismatch")
+        requester = part.get("sender_id")
+        if not isinstance(requester, str) or not requester:
+            raise EmployeeDispatchError("team cancellation requester unavailable")
+        with self._terminal_lock:
+            requested_at = self._timestamp()
+            for _attempt in range(3):
+                captured_head = self._presynchronize_domains()
+                owner_active = self._team_assignment_effect_is_active(part)
+                try:
+                    with slock_activation_guard(), ExitStack() as stack:
+                        stack.enter_context(self._projection_sync_lock)
+                        stack.enter_context(self._hire.employee_dispatch_guard())
+                        stack.enter_context(
+                            self._ingress.employee_dispatch_guard(router=self._router)
+                        )
+                        stack.enter_context(self._data.employee_dispatch_guard())
+                        stack.enter_context(self._channels.employee_dispatch_guard())
+                        stack.enter_context(self._writer.transaction_guard())
+                        self._require_presynchronized_head(captured_head)
+                        attempt_id = self._gateway_state.attempt_by_acceptance_id.get(
+                            acceptance_id
+                        )
+                        routed = self._router.state.by_acceptance_id.get(acceptance_id)
+                        if attempt_id is None:
+                            if routed is None:
+                                return EmployeeCancellationOutcome("no_active")
+                            if routed.state == "terminal":
+                                status = (
+                                    "cancel_requested"
+                                    if routed.reason_code == "team_step_canceled"
+                                    else "already_terminal"
+                                )
+                                return EmployeeCancellationOutcome(status)
+                            if routed.state != "queued":
+                                return EmployeeCancellationOutcome("no_active")
+                            if not owner_active:
+                                raise EmployeeDispatchError(
+                                    "team cancellation owner mismatch"
+                                )
+                            event = self._router.preflight_rejection_event_unlocked(
+                                acceptance_id=acceptance_id,
+                                reason_code="team_step_canceled",
+                            )
+                            commit = self._commit_events_unlocked((event,))
+                            self._apply_committed_frame_unlocked(commit.frame)
+                            return EmployeeCancellationOutcome(
+                                "cancel_requested",
+                                changed=True,
+                            )
+                        current = self._gateway_state.attempts.get(attempt_id)
+                        if current is None:
+                            raise EmployeeDispatchError(
+                                "team cancellation attempt mismatch"
+                            )
+                        if current.binding.acceptance_id != acceptance_id:
+                            raise EmployeeDispatchError(
+                                "team cancellation attempt mismatch"
+                            )
+                        if current.terminal_status:
+                            return EmployeeCancellationOutcome(
+                                "already_terminal", attempt_id
+                            )
+                        if current.cancel_requested:
+                            return EmployeeCancellationOutcome(
+                                "cancel_requested", attempt_id, False
+                            )
+                        if not owner_active:
+                            raise EmployeeDispatchError(
+                                "team cancellation owner mismatch"
+                            )
+                        event = JournalEvent(
+                            event_type=ATTEMPT_CANCEL_REQUESTED,
+                            aggregate_id=attempt_id,
+                            payload={
+                                "attempt_id": attempt_id,
+                                "cancel_epoch": 1,
+                                "requester_principal_id": requester,
+                                "command_acceptance_id": acceptance_id,
+                                "requested_at": requested_at,
+                            },
+                        )
+                        commit = self._commit_events_unlocked((event,))
+                        self._apply_committed_frame_unlocked(commit.frame)
+                        binding = current.binding
+                    self._gateway.cancel_attempt(binding)
+                    return EmployeeCancellationOutcome(
+                        "cancel_requested", attempt_id, True
+                    )
+                except _ProjectionHeadChanged:
+                    continue
+            raise EmployeeDispatchError("team cancellation head remained unstable")
 
     def _finalize_attempt_without_reporting(
         self,

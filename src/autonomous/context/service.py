@@ -132,7 +132,7 @@ class EmployeeContextService:
         self._group_memory = group_memory_reader
         self._source_factory = source_factory
         self._config = config or ThreadContextConfig()
-        self._condition = threading.Condition(threading.RLock())
+        self._condition = threading.Condition(threading.RLock())  # leaf lock: never held while acquiring a LockLevel lock
         self._admission_closed = False
         self._active_assemblies = 0
 

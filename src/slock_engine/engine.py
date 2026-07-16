@@ -346,7 +346,6 @@ class SlockEngine(BaseEngine):
         # Thread pool for parallel agent execution
         self._executor: Optional[BoundedExecutor] = None
         self._executor_lock = threading.Lock()  # leaf lock: never held while acquiring a LockLevel lock
-        self._max_parallel_agents = 4
 
         # Independent executor for inter-agent discussions (decoupled from main agent execution)
         self._discussion_executor = BoundedExecutor(max_workers=2, max_queue_size=6)
@@ -3777,14 +3776,20 @@ class SlockEngine(BaseEngine):
     # Parallel Execution
     # ------------------------------------------------------------------
 
+    def _parallel_agent_limit(self, override: Optional[int] = None) -> int:
+        """Return the validated parallel-agent limit from the engine settings snapshot."""
+        value = self._settings.slock_max_parallel_agents if override is None else override
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("max_concurrent must be a positive integer")
+        return value
+
     def _get_executor(self) -> BoundedExecutor:
         """Lazy-initialize the bounded thread pool executor."""
         with self._executor_lock:
             if self._executor is None:
-                settings = get_settings()
                 self._executor = BoundedExecutor(
-                    max_workers=settings.slock_max_parallel_agents,
-                    max_queue_size=settings.slock_max_queue_size,
+                    max_workers=self._parallel_agent_limit(),
+                    max_queue_size=self._settings.slock_max_queue_size,
                 )
             return self._executor
 
@@ -3882,11 +3887,12 @@ class SlockEngine(BaseEngine):
 
         Args:
             callbacks: Engine lifecycle callbacks.
-            max_concurrent: Override max parallel tasks (defaults to _max_parallel_agents).
+            max_concurrent: Positive integer overriding the configured parallel-agent limit.
 
         Returns:
             Dict mapping task_id → formatted result (or None on failure/skip).
         """
+        limit = self._parallel_agent_limit(max_concurrent)
         channel_id = self._channel.channel_id if self._channel else self.chat_id
         agents = self._registry.list_agents(channel_id=channel_id)
 
@@ -3899,7 +3905,6 @@ class SlockEngine(BaseEngine):
         if not pending:
             return {}
 
-        limit = max_concurrent or self._max_parallel_agents
         assignments: list[tuple[str, str]] = []
         assigned_agents: set[str] = set()
 
