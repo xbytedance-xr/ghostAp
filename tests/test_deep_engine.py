@@ -10,7 +10,7 @@ import pytest
 
 from src.acp.models import PlanEntryInfo, PlanInfo, ToolCallInfo
 from src.agent_session import ClaudeCLIConfig, SyncClaudeCLISession, create_engine_session
-from src.deep_engine.engine import DeepEngine, DeepEngineManager
+from src.deep_engine.engine import DeepEngine, DeepEngineCallbacks, DeepEngineManager
 from src.deep_engine.models import DeepProject, DeepProjectStatus, EngineRunState
 from src.deep_engine.progress import DeepProgress, _truncate_nested_data
 
@@ -227,6 +227,32 @@ class TestDeepEngine:
     def test_get_task_summary_no_project(self):
         engine = self._make_engine()
         assert engine.get_task_summary() == "暂无任务"
+
+    def test_error_callback_observes_frozen_failed_project(self):
+        engine = self._make_engine()
+        session = MagicMock()
+        session.send_prompt_with_retry.side_effect = TimeoutError("deadline")
+        observed: list[tuple[DeepProjectStatus, float | None, float | None]] = []
+
+        callbacks = DeepEngineCallbacks(
+            on_error=lambda _message: observed.append((
+                engine.project.status,
+                engine.project.completed_at,
+                engine.project.duration(),
+            )),
+        )
+
+        with patch(
+            "src.deep_engine.engine.create_engine_session",
+            return_value=session,
+        ):
+            result = engine.plan_and_execute("trigger timeout", callbacks)
+
+        assert len(observed) == 1
+        status, completed_at, duration = observed[0]
+        assert status == DeepProjectStatus.FAILED
+        assert completed_at is not None
+        assert duration == result.duration()
 
     def test_ttadk_startup_model_log_uses_real_or_auto(self, caplog):
         """启动点日志语义：model 字段只能是真实名或 (auto)，不应等于输入友好名。"""

@@ -106,8 +106,16 @@ class BaseStreamProcessor:
         self._rotator.dispatch(CardEvent.completed(summary=summary))
         self._renderer._current_session = None
 
-    def _dispatch_failed(self, error: str) -> None:
+    def _dispatch_failed(
+        self,
+        error: str,
+        *,
+        duration_seconds: float | None = None,
+    ) -> None:
         """Close open blocks, dispatch failed event, clear renderer session."""
         self._stream_bridge.close_open_blocks()
-        self._rotator.dispatch(CardEvent.failed(error))
+        self._rotator.dispatch(CardEvent.failed(
+            error,
+            duration_seconds=duration_seconds,
+        ))
         self._renderer._current_session = None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from collections.abc import Mapping
@@ -79,7 +80,12 @@ class CardEvent(Generic[P]):
         return cls(type=CardEventType.STARTED)
 
     @classmethod
-    def completed(cls, summary: str = "") -> CardEvent[CompletedPayload]:
+    def completed(
+        cls,
+        summary: str = "",
+        *,
+        duration_seconds: float | None = None,
+    ) -> CardEvent[CompletedPayload]:
         """Signal successful completion of the engine session.
 
         Payload: {summary?: str} — optional completion summary text.
@@ -90,6 +96,15 @@ class CardEvent(Generic[P]):
         payload = {}
         if summary:
             payload["summary"] = summary
+        if duration_seconds is not None:
+            if (
+                isinstance(duration_seconds, bool)
+                or not isinstance(duration_seconds, (int, float))
+                or not math.isfinite(float(duration_seconds))
+                or duration_seconds < 0
+            ):
+                raise ValueError("duration_seconds must be a finite non-negative number")
+            payload["duration_seconds"] = float(duration_seconds)
         return cls(type=CardEventType.COMPLETED, payload=payload)
 
     @classmethod
@@ -100,6 +115,7 @@ class CardEvent(Generic[P]):
         details: str = "",
         detail_action: Mapping[str, Any] | None = None,
         retry_action: Mapping[str, Any] | None = None,
+        duration_seconds: float | None = None,
     ) -> CardEvent[FailedPayload]:
         """Signal that the engine session has failed.
 
@@ -133,6 +149,15 @@ class CardEvent(Generic[P]):
             payload["detail_action"] = action_payload
         if retry_action:
             payload["retry_action"] = dict(retry_action)
+        if duration_seconds is not None:
+            if (
+                isinstance(duration_seconds, bool)
+                or not isinstance(duration_seconds, (int, float))
+                or not math.isfinite(float(duration_seconds))
+                or duration_seconds < 0
+            ):
+                raise ValueError("duration_seconds must be a finite non-negative number")
+            payload["duration_seconds"] = float(duration_seconds)
         return cls(type=CardEventType.FAILED, payload=payload)
 
     @classmethod

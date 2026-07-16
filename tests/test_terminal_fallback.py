@@ -86,10 +86,11 @@ class TestTerminalRetryFallback:
         time.sleep(0.5)
 
         # reply_text_fn should have been called with a message about task ended
-        if reply_fn.called:
-            call_args = reply_fn.call_args[0]
-            assert "msg_origin" == call_args[0]
-            assert "任务已结束" in call_args[1]
+        reply_fn.assert_called_once()
+        call_args = reply_fn.call_args[0]
+        assert "msg_origin" == call_args[0]
+        assert "任务已结束" in call_args[1]
+        assert call_args[1].count("任务已结束") == 1
 
     def test_rejected_no_notify_callback_uses_reply_text(self):
         """When delivery rejects and notify_callback is None, reply_text_fn is used."""

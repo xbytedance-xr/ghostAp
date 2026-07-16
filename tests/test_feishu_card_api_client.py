@@ -190,6 +190,51 @@ def test_created_card_remembers_recipient_aliases_for_later_patch() -> None:
     ]
 
 
+def test_streaming_card_entity_remembers_recipient_aliases_for_later_patch() -> None:
+    """CardKit patches target the entity id, not the message id carrying it."""
+    message_api = _FakeMessageApi()
+    message_api.patch = lambda _request: _FakeResponse()
+    element_api = SimpleNamespace(content=lambda _request: _FakeResponse())
+    sdk_client = _client_for(message_api)
+    sdk_client.cardkit = SimpleNamespace(
+        v1=SimpleNamespace(card_element=element_api),
+    )
+    events: list[tuple[str, str]] = []
+    resolver_calls = 0
+
+    def resolve_aliases(_target: str) -> tuple[str, ...]:
+        nonlocal resolver_calls
+        resolver_calls += 1
+        if resolver_calls > 1:
+            raise RuntimeError("provenance store unavailable")
+        return ("oc_requester_dm", "ou_requester")
+
+    client = FeishuCardAPIClient(
+        sdk_client,
+        outbound_audit=lambda _tenant, operation, target: events.append(
+            (operation, target)
+        ),
+        outbound_target_aliases=resolve_aliases,
+    )
+
+    message_id = client.send_card_reference(
+        "oc_requester_dm",
+        "card_entity_1",
+        reply_to="om_origin",
+    )
+    client.update_card("card_entity_1", {"body": {}})
+    client.update_element("card_entity_1", "element_1", "done")
+
+    assert message_id == "msg_1"
+    assert resolver_calls == 1
+    assert events[-4:] == [
+        ("patch", "card_entity_1"),
+        ("patch", "om_origin"),
+        ("patch", "oc_requester_dm"),
+        ("patch", "ou_requester"),
+    ]
+
+
 def test_call_api_times_out_without_waiting_for_stuck_sdk_call(monkeypatch) -> None:
     message_api = _FakeMessageApi()
     client = FeishuCardAPIClient(_client_for(message_api))

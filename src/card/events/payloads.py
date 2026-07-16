@@ -11,11 +11,13 @@ from typing import Any, Literal, NotRequired, TypedDict
 class CompletedPayload(TypedDict, total=False):
     """Payload for COMPLETED event."""
     summary: str
+    duration_seconds: float
 
 
 class FailedPayload(TypedDict):
     """Payload for FAILED event."""
     error: str
+    duration_seconds: NotRequired[float]
 
 
 class BlockedPayload(TypedDict, total=False):

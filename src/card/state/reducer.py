@@ -257,7 +257,12 @@ def _refresh_runtime_stats(state: CardState, event: CardEvent) -> CardState:
 
     now = _as_float((event.payload or {}).get("_now"))
     started_at = _as_float(state.metadata.session_started_at)
-    if now is not None and started_at is not None:
+    authoritative_duration = _as_float(
+        (event.payload or {}).get("duration_seconds")
+    )
+    if authoritative_duration is not None:
+        elapsed_seconds = max(0.0, authoritative_duration)
+    elif now is not None and started_at is not None:
         elapsed_seconds = max(0.0, now - started_at)
 
     spec_cycle = runtime.spec_cycle

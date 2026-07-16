@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +25,8 @@ if TYPE_CHECKING:
     from ...card.session.rotator import SessionRotator
     from ...project import ProjectContext
     from .deep_renderer import DeepRenderer
+
+logger = logging.getLogger(__name__)
 
 
 class DeepStreamProcessor(BaseStreamProcessor):
@@ -191,10 +195,14 @@ class DeepStreamProcessor(BaseStreamProcessor):
         snap = self._renderer._get_engine(self._chat_id, self._root_path, self._project)
         tool_calls_count = snap.tool_calls_count if snap else self._tool_count
         summary = UI_TEXT["deep_exec_completed"].format(tool_calls_count=tool_calls_count)
+        duration_seconds = self._project_duration(deep_project)
 
         if deep_project.status == DeepProjectStatus.COMPLETED:
             self._finalize_main_tasks(success=True)
-            self._rotator.dispatch(CardEvent.completed(summary=summary))
+            self._rotator.dispatch(CardEvent.completed(
+                summary=summary,
+                duration_seconds=duration_seconds,
+            ))
             self._renderer.handler.add_reaction(self._message_id, EmojiReaction.on_multi_task_done())
             self._subagent_orchestrator.close()
         else:
@@ -205,7 +213,10 @@ class DeepStreamProcessor(BaseStreamProcessor):
                 total=len(tasks),
             )
             self._finalize_main_tasks(success=False)
-            self._rotator.dispatch(CardEvent.failed(failure))
+            self._rotator.dispatch(CardEvent.failed(
+                failure,
+                duration_seconds=duration_seconds,
+            ))
             self._subagent_orchestrator.close(
                 terminal_status="failed",
                 summary=failure,
@@ -215,11 +226,46 @@ class DeepStreamProcessor(BaseStreamProcessor):
     def on_error(self, error: str) -> None:
         self._heartbeat.stop()
         self._finalize_main_tasks(success=False)
-        self._dispatch_failed(error)
+        self._dispatch_failed(
+            error,
+            duration_seconds=self._current_project_duration(),
+        )
         self._subagent_orchestrator.close(
             terminal_status="failed",
             summary=error,
         )
+
+    def _current_project_duration(self) -> float | None:
+        """Return the authoritative Deep duration without weakening failures."""
+        try:
+            snap = self._renderer._get_engine(
+                self._chat_id,
+                self._root_path,
+                self._project,
+            )
+            ext = getattr(snap, "ext", None)
+            deep_project = ext.get("project") if isinstance(ext, dict) else None
+            return self._project_duration(deep_project)
+        except Exception:
+            logger.debug("Deep duration snapshot unavailable", exc_info=True)
+            return None
+
+    @staticmethod
+    def _project_duration(deep_project: object) -> float | None:
+        """Normalize a domain duration, falling back on invalid wall-clock data."""
+        duration_fn = getattr(deep_project, "duration", None)
+        try:
+            duration = duration_fn() if callable(duration_fn) else None
+        except Exception:
+            return None
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(float(duration))
+            or duration < 0
+        ):
+            return None
+        return float(duration)
 
     def _on_heartbeat_tick(self, _elapsed: float, activity: str) -> None:
         """Refresh elapsed time and the latest execution status during quiet gaps."""

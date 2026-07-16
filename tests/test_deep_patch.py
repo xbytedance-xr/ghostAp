@@ -68,6 +68,7 @@ class TestDeepHandlerPatch:
             mock_project.root_path = "/tmp"
             mock_project.project_id = "proj_123"
             mock_project.status = DeepProjectStatus.COMPLETED
+            mock_project.duration.return_value = 313.6
 
             callbacks.on_project_done(mock_project)
 

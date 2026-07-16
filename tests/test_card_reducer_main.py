@@ -2,6 +2,7 @@
 import pytest
 
 from src.card.events import CardEvent, CardEventType
+from src.card.render.header import render_header
 from src.card.state.models import CardMetadata
 from src.card.state.reducer import reduce_card_state
 
@@ -319,6 +320,40 @@ class TestBlockedReducer:
         )
 
         assert s.footer.duration_seconds == 120.0
+
+    def test_completed_prefers_authoritative_task_duration_over_session_elapsed(self):
+        """Deep terminal headers use the domain task duration when supplied."""
+        metadata = CardMetadata(engine_type="deep", session_started_at=100.0)
+        s = reduce_card_state(
+            None,
+            CardEvent(type=CardEventType.STARTED, payload={"_now": 100.0}),
+            metadata=metadata,
+        )
+
+        s = reduce_card_state(
+            s,
+            CardEvent.completed(duration_seconds=313.6),
+        )
+
+        assert s.footer.duration_seconds == 313.6
+        assert s.runtime_stats.elapsed_seconds == 313.6
+        assert render_header(s)["subtitle"]["content"] == "总耗时 0时05分13秒"
+
+    def test_failed_prefers_authoritative_task_duration_over_session_elapsed(self):
+        metadata = CardMetadata(engine_type="deep", session_started_at=100.0)
+        s = reduce_card_state(
+            None,
+            CardEvent(type=CardEventType.STARTED, payload={"_now": 100.0}),
+            metadata=metadata,
+        )
+
+        s = reduce_card_state(
+            s,
+            CardEvent.failed("boom", duration_seconds=187.2),
+        )
+
+        assert s.footer.duration_seconds == 187.2
+        assert s.runtime_stats.elapsed_seconds == 187.2
 
 
 class TestReducerPurity:

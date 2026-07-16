@@ -34,6 +34,29 @@ class TestCardEventCreation:
         e = CardEvent.completed()
         assert e.type == CardEventType.COMPLETED
 
+    @pytest.mark.parametrize(
+        "duration",
+        [-1.0, float("nan"), float("inf"), True],
+    )
+    def test_terminal_factory_rejects_invalid_authoritative_duration(
+        self,
+        duration,
+    ):
+        with pytest.raises(ValueError, match="finite non-negative"):
+            CardEvent.completed(duration_seconds=duration)
+
+        with pytest.raises(ValueError, match="finite non-negative"):
+            CardEvent.failed("boom", duration_seconds=duration)
+
+    def test_terminal_factory_accepts_zero_authoritative_duration(self):
+        assert CardEvent.completed(
+            duration_seconds=0,
+        ).payload["duration_seconds"] == 0.0
+        assert CardEvent.failed(
+            "boom",
+            duration_seconds=0,
+        ).payload["duration_seconds"] == 0.0
+
     def test_failed_factory(self):
         e = CardEvent.failed("oops")
         assert e.type == CardEventType.FAILED

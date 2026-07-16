@@ -38,13 +38,23 @@ _RETRY_CTA_TEXT: dict[str, str] = {
 }
 
 
-def _compute_duration(state: CardState, now: float | None) -> float | None:
+def _compute_duration(
+    state: CardState,
+    now: float | None,
+    authoritative_duration: object = None,
+) -> float | None:
     """Compute terminal total duration from the card session start to now.
 
     Args:
         state: Current card state.
         now: Monotonic timestamp injected by CardSession (via event payload '_now').
     """
+    if (
+        not isinstance(authoritative_duration, bool)
+        and isinstance(authoritative_duration, (int, float))
+    ):
+        return max(0.0, float(authoritative_duration))
+
     started_at = state.metadata.session_started_at
     if started_at is not None and now is not None:
         return max(0.0, float(now) - float(started_at))
@@ -187,7 +197,15 @@ def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
             engine_cmd = _ENGINE_CMD.get(state.metadata.engine_type or "", "").lstrip("/")
             cta_text = UI_TEXT["card_completed_cta_fmt"].format(engine_cmd=engine_cmd) if engine_cmd else ""
             return replace(state, terminal="completed", terminal_reason="completed",
-                           header=header, footer=FooterState(progress_pct=100, duration_seconds=_compute_duration(state, now), status_text=cta_text),
+                           header=header, footer=FooterState(
+                               progress_pct=100,
+                               duration_seconds=_compute_duration(
+                                   state,
+                                   now,
+                                   payload_c.get("duration_seconds"),
+                               ),
+                               status_text=cta_text,
+                           ),
                            buttons=(), blocks=blocks)
 
         case CardEventType.FAILED:
@@ -248,7 +266,11 @@ def reduce_lifecycle(state: CardState, event: CardEvent) -> CardState:
                 ))
             buttons = tuple(buttons_list)
             return replace(state, terminal="failed", terminal_reason="failed",
-                           header=header, footer=FooterState(duration_seconds=_compute_duration(state, now)),
+                           header=header, footer=FooterState(duration_seconds=_compute_duration(
+                               state,
+                               now,
+                               payload_f.get("duration_seconds"),
+                           )),
                            buttons=buttons, blocks=blocks)
 
         case CardEventType.CANCELLED:

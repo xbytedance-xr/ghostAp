@@ -422,4 +422,8 @@ class FeishuCardAPIClient:
 
         message_id = response.data.message_id
         self._remember_message_audit_aliases(message_id, audit_aliases)
+        # CardKit mutations address the card entity, while IM delivery returns a
+        # separate message id.  Both targets represent the same recipient scope
+        # and must survive provenance lookup failures after the initial send.
+        self._remember_message_audit_aliases(card_id, audit_aliases)
         return message_id

@@ -167,6 +167,32 @@ class DeepEngine(BaseEngine):
 
         return on_event
 
+    def _fail_project_and_notify(
+        self,
+        error: Exception,
+        label: str,
+        *,
+        is_timeout: bool,
+        callbacks: DeepEngineCallbacks,
+    ) -> str:
+        """Freeze the Deep project before exposing its terminal state to UI."""
+        error_msg = self._format_engine_error(
+            error,
+            label,
+            is_timeout=is_timeout,
+            callbacks=None,
+        )
+        if self._project is None:
+            project_name = os.path.basename(self.root_path) or "deep_project"
+            self._project = DeepProject.create(
+                name=project_name,
+                root_path=self.root_path,
+            )
+        self._project.fail(error_msg)
+        if callbacks.on_error:
+            callbacks.on_error(error_msg)
+        return error_msg
+
     def plan_and_execute(
         self,
         requirement_text: str,
@@ -264,17 +290,21 @@ class DeepEngine(BaseEngine):
                 return self._project
 
         except TimeoutError as e:
-            if self._project is None:
-                self._project = DeepProject.create(name=project_name, root_path=self.root_path)
-            error_msg = self._format_engine_error(e, "执行", is_timeout=True, callbacks=callbacks)
-            self._project.fail(error_msg)
+            self._fail_project_and_notify(
+                e,
+                "执行",
+                is_timeout=True,
+                callbacks=callbacks,
+            )
             return self._project
 
         except Exception as e:
-            if self._project is None:
-                self._project = DeepProject.create(name=project_name, root_path=self.root_path)
-            error_msg = self._format_engine_error(e, "执行", is_timeout=False, callbacks=callbacks)
-            self._project.fail(error_msg)
+            self._fail_project_and_notify(
+                e,
+                "执行",
+                is_timeout=False,
+                callbacks=callbacks,
+            )
             return self._project
 
         finally:
@@ -415,12 +445,20 @@ class DeepEngine(BaseEngine):
                 callbacks.on_project_done(self._project)
 
         except TimeoutError as e:
-            error_msg = self._format_engine_error(e, "恢复执行", is_timeout=True, callbacks=callbacks)
-            self._project.fail(error_msg)
+            self._fail_project_and_notify(
+                e,
+                "恢复执行",
+                is_timeout=True,
+                callbacks=callbacks,
+            )
 
         except Exception as e:
-            error_msg = self._format_engine_error(e, "恢复执行", is_timeout=False, callbacks=callbacks)
-            self._project.fail(error_msg)
+            self._fail_project_and_notify(
+                e,
+                "恢复执行",
+                is_timeout=False,
+                callbacks=callbacks,
+            )
 
         finally:
             with self._lock:

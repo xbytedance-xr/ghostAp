@@ -168,9 +168,8 @@ class TTLHandler:
             except Exception as exc:
                 logger.error("CardSession %s: terminal retry failed: %s", state.session_id, repr(exc))
                 a.mark_closed()
-                fallback_text = UI_TEXT["card_session_terminal_retry_failed"].format(engine_cmd=d.engine_cmd)
                 notice_text = UI_TEXT["card_session_terminal_fallback_notice"].format(engine_cmd=d.engine_cmd)
-                a.notify_user(f"{notice_text}\n{fallback_text}")
+                a.notify_user(notice_text)
             a.close_delivery()
 
         a.schedule_retry(_retry)

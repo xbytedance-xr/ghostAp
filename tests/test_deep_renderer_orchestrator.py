@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.acp.models import ACPEvent, ACPEventType, PlanEntryInfo, PlanInfo, ToolCallInfo
@@ -25,11 +26,15 @@ class FakeDeepProject:
     root_path: str = "/tmp/test"
     project_id: str = "dp_test"
     status: object = None
+    duration_seconds: float = 313.6
 
     def __post_init__(self):
         if self.status is None:
             from src.deep_engine.models import DeepProjectStatus
             self.status = DeepProjectStatus.COMPLETED
+
+    def duration(self) -> float:
+        return self.duration_seconds
 
 
 class FakeHandler:
@@ -801,6 +806,60 @@ class TestDeepRendererSingleCard:
 
         callbacks.on_error("stop heartbeat")
         assert heartbeat.running is False
+
+    def test_deep_terminal_event_uses_authoritative_project_duration(self):
+        renderer, tracker = self._setup_renderer()
+        callbacks = self._create_callbacks(renderer)
+        project = FakeDeepProject(duration_seconds=313.6)
+
+        callbacks.on_analyzing_start("show whole deep runtime")
+        callbacks.on_project_done(project)
+
+        completed = [
+            call.args[0]
+            for call in tracker.sessions_created[0].dispatch.call_args_list
+            if call.args
+            and getattr(call.args[0], "type", None) == CardEventType.COMPLETED
+        ]
+        assert len(completed) == 1
+        assert completed[0].payload["duration_seconds"] == 313.6
+
+    def test_invalid_project_duration_falls_back_without_losing_terminal(self):
+        renderer, tracker = self._setup_renderer()
+        callbacks = self._create_callbacks(renderer)
+        project = FakeDeepProject(duration_seconds=-1.0)
+
+        callbacks.on_analyzing_start("survive wall clock rollback")
+        callbacks.on_project_done(project)
+
+        completed = [
+            call.args[0]
+            for call in tracker.sessions_created[0].dispatch.call_args_list
+            if call.args
+            and getattr(call.args[0], "type", None) == CardEventType.COMPLETED
+        ]
+        assert len(completed) == 1
+        assert "duration_seconds" not in completed[0].payload
+
+    def test_deep_error_event_uses_authoritative_project_duration(self):
+        renderer, tracker = self._setup_renderer()
+        project = FakeDeepProject(duration_seconds=187.2)
+        renderer._get_engine = MagicMock(
+            return_value=SimpleNamespace(ext={"project": project})
+        )
+        callbacks = self._create_callbacks(renderer)
+
+        callbacks.on_analyzing_start("preserve failed deep runtime")
+        callbacks.on_error("boom")
+
+        failed = [
+            call.args[0]
+            for call in tracker.sessions_created[0].dispatch.call_args_list
+            if call.args
+            and getattr(call.args[0], "type", None) == CardEventType.FAILED
+        ]
+        assert len(failed) == 1
+        assert failed[0].payload["duration_seconds"] == 187.2
 
     def test_error_fails_main_card(self):
         """on_error fails the same Deep card."""
