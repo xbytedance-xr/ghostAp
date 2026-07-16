@@ -41,5 +41,9 @@
 | B042 | 2026-07-15 | Slock NLI 的 2.5 秒预算可短于 Coco 冷启动；当前已实现单 owner 关闭并将预期超时降为 DEBUG，后续应通过预热/复用会话或可配置预算提升首次分类成功率 | Medium | Coco connection grill review | ⏳ Open | - |
 | B043 | 2026-07-15 | transient Context durable retry 已跨重启计数并在第 3 次终止，但尚无 next-eligible 时间和指数退避；快速失败的上游可在很短时间内用完重试预算 | Medium | final grill review | ⏳ Open | - |
 | B044 | 2026-07-15 | Team recovery 已有调用顺序和 Journal-head CAS 并发回归，后续补一个包含真实 queued assignment 的完整重启 E2E，证明旧步骤零 ACP dispatch | Low | final grill review | ⏳ Open | - |
+| B045 | 2026-07-16 | Team step timeout 目前只把 owning effect 标为 `action_required`；已 dispatch-committed 的员工 attempt 没有 durable abandon/cancel，可能继续执行并占用 per-agent active 槽，阻塞 retry 或后续 synthesis | Medium | team timeout incident audit | ⏳ Open | - |
+| B046 | 2026-07-16 | Team 外层与员工 Gateway 默认 timeout 都是 600 秒，但起点不同；`autonomous_team_step_timeout_seconds` 又未声明为生产 `Settings` 字段。需统一 deadline budget/进度语义并补严格可配置契约，避免外层先于真实 Gateway 终态 | Medium | team timeout incident audit | ⏳ Open | - |
+| B047 | 2026-07-16 | `_RuntimeTeamBackend.result()` 分别读取 Gateway/Router 投影而非一致终态快照，且非 completed attempt 丢失 history safe error 详情；并发可见窗口可能把 Router `completed` 降为 `action_required` | Medium | team timeout result audit | ⏳ Open | - |
+| B048 | 2026-07-16 | `EmployeeTeamService.close()` 设置 stop 后，analysis/review 失败分支仍可能继续创建 retry step；需用 Journal-backed run stopping fence 阻止 shutdown 后新 submit，并补并发回归 | Medium | team timeout shutdown audit | ⏳ Open | - |
 
 > **注**: B001-B005、B014-B019 已全部修复并清理；Refactoring Analysis 1–28 已以 [.Memory/2026-05-11.md](2026-05-11.md) 顶部最终矩阵完成收口，已完成项不再留在 Backlog。
