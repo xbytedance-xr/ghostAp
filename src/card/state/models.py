@@ -31,6 +31,7 @@ BlockStatus = Literal["active", "completed", "failed"]
 class CardMetadata:
     """Project/tool/model metadata for the card."""
     project_name: str | None = None
+    question_title: str | None = None
     mode_name: str = "Coco"
     mode_emoji: str = "🤖"
     unit_id: str | None = None

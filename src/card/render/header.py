@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.card.render.banner_computer import format_elapsed
 from src.card.state.models import CardState
+from src.utils.text import summarize_question_title
 
 _TOOL_DISPLAY = {
     "coco": "Coco",
@@ -67,12 +68,15 @@ def _render_v2_header(state: CardState, *, page_index: int = 0, total_pages: int
     iteration = _iteration_label(state)
     unit = _unit_label(metadata, iteration)
     page = _page_label(page_index=page_index, total_pages=total_pages)
-    if iteration:
+    deep_question_title = _deep_question_title(state, iteration)
+    if deep_question_title:
+        title = f"{deep_question_title}{model_suffix}{elapsed_suffix}{archived}"
+    elif iteration:
         title = f"{iteration}{model_suffix}{elapsed_suffix}{archived}"
     else:
         context_suffix = _title_context_suffix(state)
         title = f"📁 {project_name} · 🤖 {tool_label}{context_suffix} · #{seq}{page}{model_suffix}{elapsed_suffix}{archived}"
-    if state.terminal == "failed" and "错误" not in title:
+    if state.terminal == "failed" and not deep_question_title and "错误" not in title:
         title = f"❌ 错误 · {title}"
 
     subtitle = _build_v2_subtitle(
@@ -137,6 +141,16 @@ def _iteration_label(state: CardState) -> str:
     if total and total > 1:
         return f"第 {index}/{total} 轮"
     return f"第 {index} 轮"
+
+
+def _deep_question_title(state: CardState, iteration_label: str) -> str:
+    """Return the Deep main-card question label without changing cycle state."""
+    metadata = state.metadata
+    if metadata.engine_type != "deep" or metadata.unit_kind:
+        return ""
+    if metadata.question_title is not None:
+        return summarize_question_title(metadata.question_title)
+    return "Deep 任务" if iteration_label else ""
 
 
 def _spec_elapsed_suffix(state: CardState) -> str:

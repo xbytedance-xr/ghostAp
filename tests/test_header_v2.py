@@ -286,6 +286,135 @@ def test_deep_task_header_subtitle_uses_elapsed_instead_of_repeating_task():
     assert result["subtitle"]["content"] == "总耗时 0时01分23秒"
 
 
+def test_deep_iteration_header_uses_question_summary_and_keeps_page_context():
+    state = CardState(
+        header=HeaderState(title="legacy", template="violet"),
+        metadata=CardMetadata(
+            engine_type="deep",
+            project_name="ghostAp",
+            mode_name="Deep",
+            mode_emoji="🧠",
+            tool_name="Coco",
+            question_title="优化Deep卡片标题",
+            iteration_index=1,
+            iteration_total=1,
+            session_started_at=100.0,
+        ),
+        runtime_stats=RuntimeStats(elapsed_seconds=83.0),
+    )
+
+    result = render_header(state, page_index=1, total_pages=2)
+
+    assert result["title"]["content"] == "优化Deep卡片标题"
+    assert "第 1 轮" not in result["title"]["content"]
+    assert result["subtitle"]["content"] == "总耗时 0时01分23秒 · #1 · 页 2/2"
+
+
+def test_deep_iteration_header_without_question_uses_stable_fallback():
+    state = CardState(
+        header=HeaderState(title="legacy", template="violet"),
+        metadata=CardMetadata(
+            engine_type="deep",
+            mode_name="Deep",
+            mode_emoji="🧠",
+            tool_name="Coco",
+            iteration_index=1,
+            iteration_total=1,
+            session_started_at=100.0,
+        ),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "Deep 任务"
+    assert "第 1 轮" not in result["title"]["content"]
+
+
+def test_deep_header_uses_question_summary_before_iteration_starts():
+    state = CardState(
+        header=HeaderState(title="legacy", template="violet"),
+        metadata=CardMetadata(
+            engine_type="deep",
+            project_name="ghostAp",
+            mode_name="Deep",
+            mode_emoji="🧠",
+            tool_name="Coco",
+            question_title="优化Deep卡片标题",
+            session_started_at=100.0,
+        ),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "优化Deep卡片标题"
+
+
+def test_deep_failed_header_keeps_question_summary_as_title():
+    state = CardState(
+        header=HeaderState(title="legacy", template="red"),
+        terminal="failed",
+        metadata=CardMetadata(
+            engine_type="deep",
+            project_name="ghostAp",
+            mode_name="Deep",
+            mode_emoji="🧠",
+            tool_name="Coco",
+            question_title="优化Deep卡片标题",
+            iteration_index=1,
+            iteration_total=1,
+            session_started_at=100.0,
+        ),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "优化Deep卡片标题"
+    assert len(result["title"]["content"]) <= 15
+    assert result["template"] == "red"
+
+
+def test_deep_frozen_page_does_not_repeat_question_in_subtitle():
+    state = CardState(
+        header=HeaderState(title="legacy", template="grey"),
+        terminal="archived",
+        metadata=CardMetadata(
+            engine_type="deep",
+            mode_name="Deep",
+            mode_emoji="🧠",
+            tool_name="Coco",
+            question_title="优化Deep卡片标题",
+            iteration_index=1,
+            iteration_total=1,
+            frozen=True,
+            session_started_at=100.0,
+        ),
+    )
+
+    result = render_header(state, page_index=0, total_pages=2)
+
+    assert result["title"]["content"] == "优化Deep卡片标题 · 已封存"
+    assert result["subtitle"]["content"] == "#1 · 页 1/2"
+
+
+def test_deep_header_rebounds_restored_question_title_to_15_chars():
+    state = CardState(
+        header=HeaderState(title="legacy", template="violet"),
+        metadata=CardMetadata(
+            engine_type="deep",
+            mode_name="Deep",
+            mode_emoji="🧠",
+            tool_name="Coco",
+            question_title="优化Deep模式消息卡片标题并展示用户问题",
+            session_started_at=100.0,
+        ),
+    )
+
+    result = render_header(state)
+
+    assert result["title"]["content"] == "优化Deep模式消息卡片标题…"
+    assert len(result["title"]["content"]) <= 15
+
+
 # ---------------------------------------------------------------------------
 # AC-1 regex pattern validation
 # ---------------------------------------------------------------------------

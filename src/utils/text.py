@@ -107,6 +107,21 @@ def append_duration_to_title(title: str, duration_secs: float | None) -> str:
     return title
 
 
+def summarize_question_title(
+    value: str | None,
+    *,
+    max_chars: int = 15,
+    fallback: str = "Deep 任务",
+) -> str:
+    """Normalize a user question into a deterministic, bounded card title."""
+    normalized = " ".join(str(value or "").split())
+    if not normalized:
+        normalized = " ".join(str(fallback or "").split())
+    if max_chars <= 0 or len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 1].rstrip() + "…"
+
+
 def format_time_ago(seconds: float) -> str:
     """统一的相对时间文案（"X 时间前" 风格）。
 

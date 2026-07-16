@@ -455,6 +455,7 @@ class BaseRenderer:
         project=None,
         context_update_fn=None,
         ttl_seconds: float | None = None,
+        question_title: str | None = None,
     ) -> "SessionRotator":
         """Create a full session from an EngineProfile in one call.
 
@@ -477,6 +478,7 @@ class BaseRenderer:
             tool_name=engine_name or None,
             model_name=model_name or None,
             working_dir=project.root_path if project else None,
+            question_title=question_title,
             project_name=(
                 getattr(project, "project_name", None)
                 or (project.project_id if project else None)

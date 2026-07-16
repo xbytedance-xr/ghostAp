@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from src.utils import text as text_utils
 from src.utils.text import (
     append_duration_to_title,
     format_duration,
@@ -51,6 +52,24 @@ class TestFooterFormatDuration:
     def test_footer_format_duration(self, seconds, expected):
         from src.card.render.footer import _format_duration
         assert _format_duration(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("优化 Deep 模式卡片", "优化 Deep 模式卡片"),
+        ("  优化\nDeep\t模式卡片  ", "优化 Deep 模式卡片"),
+        ("优化Deep模式消息卡片标题并展示用户问题", "优化Deep模式消息卡片标题…"),
+        ("123456789012345", "123456789012345"),
+        ("   ", "Deep 任务"),
+        (None, "Deep 任务"),
+    ],
+)
+def test_summarize_question_title(value, expected):
+    result = text_utils.summarize_question_title(value)
+
+    assert result == expected
+    assert len(result) <= 15
 
 
 # ──────────────────────────────────────────────────────────────────────

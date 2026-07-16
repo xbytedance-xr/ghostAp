@@ -144,6 +144,7 @@ class TestDeepRendererSingleCard:
         task_level_cards_enabled: bool = False,
         project=None,
         engine_name: str = "Coco",
+        requirement_text: str | None = None,
     ):
         mock_settings = MagicMock()
         mock_settings.card.task_level_cards_enabled = task_level_cards_enabled
@@ -154,7 +155,27 @@ class TestDeepRendererSingleCard:
                 chat_id="chat_1",
                 project=project,
                 engine_name=engine_name,
+                requirement_text=requirement_text,
             )
+
+    def test_deep_session_has_question_summary_before_first_dispatch(self):
+        renderer, tracker = self._setup_renderer()
+
+        self._create_callbacks(
+            renderer,
+            requirement_text="  优化Deep模式消息卡片标题并展示用户问题  ",
+        )
+
+        metadata = tracker.sessions_created[0]._metadata
+        assert metadata.question_title == "优化Deep模式消息卡片标题…"
+        assert len(metadata.question_title) <= 15
+
+    def test_deep_session_without_requirement_has_stable_fallback_before_dispatch(self):
+        renderer, tracker = self._setup_renderer()
+
+        self._create_callbacks(renderer)
+
+        assert tracker.sessions_created[0]._metadata.question_title == "Deep 任务"
 
     def test_multi_task_plan_stays_single_card_by_default(self):
         """3 plan steps stay in one Feishu card by default."""

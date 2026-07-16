@@ -193,6 +193,7 @@ class DeepHandler(BaseEngineHandler):
                     engine_name,
                     root_path=root_path,
                     initial_message_id=None,
+                    requirement_text=requirement,
                 )
                 engine.plan_and_execute(requirement, callbacks, task_id=task_id, on_rate_limit=_on_rate_limit)
 

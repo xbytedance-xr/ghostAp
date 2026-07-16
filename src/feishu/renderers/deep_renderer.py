@@ -9,6 +9,7 @@ from ...card.state.models import CardMetadata
 from ...card.ui_text import UI_TEXT
 from ...deep_engine import DeepEngineCallbacks
 from ...project import ContextSourceMode
+from ...utils.text import summarize_question_title
 from ._deep_stream_processor import DeepStreamProcessor
 from .base import BaseRenderer, EngineProfile
 
@@ -49,6 +50,7 @@ class DeepRenderer(BaseRenderer):
         engine_name: str = "Coco",
         root_path: Optional[str] = None,
         initial_message_id: Optional[str] = None,
+        requirement_text: str | None = None,
     ) -> DeepEngineCallbacks:
         self.handler.ensure_request_id(
             message_id, chat_id=chat_id, project_id=(project.project_id if project else None)
@@ -78,6 +80,7 @@ class DeepRenderer(BaseRenderer):
             engine_name=engine_name,
             project=project,
             context_update_fn=context_update_fn,
+            question_title=summarize_question_title(requirement_text),
         )
 
         return DeepStreamProcessor(

@@ -1731,6 +1731,43 @@ class TestDeepHandler:
             model_name="deepseek-v4pro",
         )
 
+    def test_start_deep_engine_passes_requirement_to_card_renderer(self):
+        h, ctx = self._make()
+        project = SimpleNamespace(
+            project_id="p1",
+            project_name="Project",
+            root_path="/repo/project",
+            acp_tool_name="coco",
+            acp_model_name=None,
+            ttadk_tool_name=None,
+            ttadk_model_name=None,
+        )
+        engine = MagicMock()
+        callbacks = MagicMock()
+        ctx.mode_manager.get_mode.return_value = InteractionMode.SMART
+        ctx.deep_engine_manager.get.return_value = None
+        ctx.deep_engine_manager.get_or_create.return_value = engine
+        h._ensure_topic_engine_context = MagicMock(return_value="m1")
+        h.ensure_request_id = MagicMock(return_value="req1")
+        h.get_engine_name = MagicMock(return_value="Coco")
+        h.renderer.create_deep_callbacks = MagicMock(return_value=callbacks)
+        h._submit_engine_task = MagicMock(side_effect=lambda task, *_args: task())
+        h._safe_execute_engine = MagicMock(
+            side_effect=lambda *, executor_func, **_kwargs: executor_func()
+        )
+
+        h.start_deep_engine("m1", "c1", "优化 Deep 消息卡片", project)
+
+        h.renderer.create_deep_callbacks.assert_called_once_with(
+            "m1",
+            "c1",
+            project,
+            "Coco",
+            root_path="/repo/project",
+            initial_message_id=None,
+            requirement_text="优化 Deep 消息卡片",
+        )
+
     def test_handle_deep_command_update(self):
         h, ctx = self._make()
         h.update_deep_context = MagicMock()
