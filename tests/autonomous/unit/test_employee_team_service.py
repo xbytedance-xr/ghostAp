@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import time
 
-from src.autonomous.team import EmployeeTeamService, TeamAttemptResult, TeamTarget
+from src.autonomous.team import (
+    EmployeeTeamService,
+    TeamAttemptResult,
+    TeamRunState,
+    TeamTarget,
+)
 from tests.autonomous.workforce_helpers import make_writer
 
 
@@ -32,6 +37,22 @@ class _Backend:
 
     def notify(self, message_id: str, chat_id: str, result: str) -> None:
         self.notifications.append((message_id, chat_id, result))
+
+
+class _DeadlineBackend(_Backend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.result_calls = 0
+
+    def result(self, acceptance_id: str):
+        self.result_calls += 1
+        if self.result_calls == 1:
+            return None
+        return TeamAttemptResult(
+            "timeout",
+            history_record_id="hist_timeout",
+            error_code="slock_session_timeout",
+        )
 
 
 def test_team_run_hands_off_reviews_and_synthesizes(tmp_path) -> None:
@@ -100,4 +121,45 @@ def test_restart_marks_unfinished_run_action_required(tmp_path) -> None:
 
     assert service.recover() == 1
     assert service.get_run("teamrun_crashed").status == "action_required"
+    writer.close()
+
+
+def test_deadline_final_poll_observes_gateway_terminal_result(tmp_path, monkeypatch) -> None:
+    writer = make_writer(tmp_path)
+    backend = _DeadlineBackend()
+    service = EmployeeTeamService(
+        writer=writer,
+        backend=backend,
+        attempt_timeout_seconds=1,
+        poll_seconds=0,
+    )
+    state = TeamRunState(
+        run_id="teamrun_deadline",
+        tenant_key="tenant_1",
+        message_id="om_deadline",
+        chat_id="oc_team",
+        requester_principal_id="ou_user",
+        task_digest="0" * 64,
+    )
+    monotonic_values = iter((0.0, 0.0, 1.0))
+    monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values))
+
+    result = service._run_step(
+        state,
+        step_id="analysis",
+        depth=1,
+        target=TeamTarget("agt_lead", "Lead", "coder"),
+        instruction="deadline boundary",
+    )
+
+    assert backend.result_calls == 2
+    assert result.status == "timeout"
+    assert result.error_code == "slock_session_timeout"
+    assert any(
+        event.event_type == "team.step.failed"
+        and event.payload["error_code"] == "slock_session_timeout"
+        for frame in writer.replay()
+        for event in frame.events
+    )
+    service.close()
     writer.close()

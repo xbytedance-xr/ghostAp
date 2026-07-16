@@ -332,33 +332,45 @@ class EmployeeTeamService:
         while time.monotonic() < deadline and not self._stop.is_set():
             result = self._backend.result(acceptance_id)
             if result is not None:
-                self._commit_effect(
-                    aggregate,
-                    "employee_dispatch",
-                    "committed" if result.status == "completed" else "action_required",
-                )
-                event_type = "team.step.completed" if result.status == "completed" else "team.step.failed"
-                self._commit(
-                    JournalEvent(
-                        event_type=event_type,
-                        aggregate_id=aggregate,
-                        payload={
-                            "run_id": state.run_id,
-                            "step_id": step_id,
-                            "status": result.status,
-                            "history_record_id": result.history_record_id or "none",
-                            "result_digest": hashlib.sha256(result.output.encode()).hexdigest(),
-                            "error_code": result.error_code or "none",
-                        },
-                    )
-                )
-                return result
+                return self._terminalize_step_result(state, step_id, aggregate, result)
             time.sleep(self._poll)
         if self._stop.is_set():
             self._commit_effect(aggregate, "employee_dispatch", "action_required")
             return TeamAttemptResult("action_required", error_code="team_service_stopping")
+        result = self._backend.result(acceptance_id)
+        if result is not None:
+            return self._terminalize_step_result(state, step_id, aggregate, result)
         self._commit_effect(aggregate, "employee_dispatch", "action_required")
         return TeamAttemptResult("timeout", error_code="team_step_timeout")
+
+    def _terminalize_step_result(
+        self,
+        state: TeamRunState,
+        step_id: str,
+        aggregate: str,
+        result: TeamAttemptResult,
+    ) -> TeamAttemptResult:
+        self._commit_effect(
+            aggregate,
+            "employee_dispatch",
+            "committed" if result.status == "completed" else "action_required",
+        )
+        event_type = "team.step.completed" if result.status == "completed" else "team.step.failed"
+        self._commit(
+            JournalEvent(
+                event_type=event_type,
+                aggregate_id=aggregate,
+                payload={
+                    "run_id": state.run_id,
+                    "step_id": step_id,
+                    "status": result.status,
+                    "history_record_id": result.history_record_id or "none",
+                    "result_digest": hashlib.sha256(result.output.encode()).hexdigest(),
+                    "error_code": result.error_code or "none",
+                },
+            )
+        )
+        return result
 
     def _action_required(self, state: TeamRunState, error_code: str) -> None:
         current = self.get_run(state.run_id)

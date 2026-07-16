@@ -204,7 +204,7 @@ def _runtime_model(binding) -> str:
     )
 
 
-def _real_coordinator_harness(tmp_path):
+def _real_coordinator_harness(tmp_path, team_assignment: bool = False):
     import threading as local_threading
     from contextlib import contextmanager
     from datetime import UTC, datetime
@@ -340,6 +340,21 @@ def _real_coordinator_harness(tmp_path):
         "sender_tenant_key": "tenant_1",
         "feishu_thread_id": "omt_1",
     }
+    if team_assignment:
+        content = {
+            "type": "team_assignment",
+            "message_type": "text",
+            "chat_type": "group",
+            "content": "run the employee task",
+            "team_instruction": "run the employee task",
+            "sender_id": "ou_requester",
+            "sender_id_type": "open_id",
+            "sender_type": "user",
+            "sender_tenant_key": "tenant_1",
+            "feishu_thread_id": "omt_1",
+            "team_run_id": "teamrun_inactive",
+            "team_step_id": "analysis",
+        }
     payload = EmployeeIngressPayload(
         schema_version=1,
         envelope_id="ing_" + "1" * 64,
@@ -357,8 +372,14 @@ def _real_coordinator_harness(tmp_path):
         connection_id="conn_alpha",
         event_id="evt_1",
         message_id="om_current",
-        event_type="im.message.receive_v1",
-        action_identity="",
+        event_type=(
+            "ghostap.team.assignment.v1"
+            if team_assignment
+            else "im.message.receive_v1"
+        ),
+        action_identity=(
+            "team:teamrun_inactive:analysis" if team_assignment else ""
+        ),
         chat_id="oc_team",
         thread_root_message_id="om_root",
         sender_principal_id="ou_requester",
@@ -1585,6 +1606,23 @@ def test_context_failure_terminally_rejects_candidate_once(tmp_path, caplog) -> 
     assert not harness.coordinator.state.attempts
     assert "reason=root_thread_binding" in caplog.text
     assert not [record for record in caplog.records if record.levelname == "ERROR"]
+    harness.close()
+
+
+def test_inactive_team_assignment_is_rejected_before_context_assembly(tmp_path) -> None:
+    harness = _real_coordinator_harness(tmp_path, team_assignment=True)
+
+    class _ContextMustNotRun:
+        def assemble(self, _request):
+            raise AssertionError("inactive team assignment reached Context")
+
+    harness.coordinator._context = _ContextMustNotRun()  # noqa: SLF001
+
+    assert harness.coordinator.prepare_next() is None
+    record = next(iter(harness.router.state.by_acceptance_id.values()))
+    assert record.state == "terminal"
+    assert record.reason_code == "team_step_inactive"
+    assert not harness.coordinator.state.attempts
     harness.close()
 
 

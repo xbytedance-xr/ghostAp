@@ -1002,14 +1002,14 @@ def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -
     assert payload.normalized_parts[0]["type"] == "team_assignment"
     assert payload.normalized_parts[0]["team_instruction"] == "分析并修复团队模式"
     original_check = real_dispatch._team_assignment_effect_is_active  # noqa: SLF001
-    race_injected = False
+    check_calls = 0
 
     def race_after_active_check(part):
-        nonlocal race_injected
+        nonlocal check_calls
+        check_calls += 1
         active = original_check(part)
-        if not race_injected:
+        if check_calls == 2:
             assert active is True
-            race_injected = True
             runtime.team_service._commit_effect(  # noqa: SLF001
                 "teamrun_integration:analysis",
                 "employee_dispatch",
@@ -1021,7 +1021,7 @@ def test_team_assignment_uses_canonical_employee_ingress_queue(tmp_path: Path) -
     # The effect changes after the check but before dispatch commit. The head
     # CAS must force a retry, which then terminalizes the stale assignment.
     assert real_dispatch.prepare_next() is None
-    assert race_injected is True
+    assert check_calls == 3
     terminal = runtime.ingress_router.state.by_acceptance_id[acceptance_id]
     assert terminal.state == "terminal"
     assert terminal.reason_code == "team_step_inactive"
