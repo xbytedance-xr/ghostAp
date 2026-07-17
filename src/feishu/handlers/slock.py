@@ -2187,6 +2187,17 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             return
 
         if global_hire:
+            if prompt_explicit:
+                self.reply_text(
+                    message_id,
+                    "`/hire` 不接受任意 `--prompt`；员工工作风格由受控角色模板生成。",
+                )
+                return
+            traits = tuple(
+                value.strip()
+                for value in (explicit_traits or "").split(",")
+                if value.strip()
+            )
             self._start_visible_employee_hire(
                 message_id=message_id,
                 chat_id=chat_id,
@@ -2195,6 +2206,8 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 model=model_name,
                 profile=profile,
                 effort=effort,
+                role=explicit_role or "",
+                personality_traits=traits,
                 existing_app_id=existing_app_id,
             )
             return
@@ -2399,9 +2412,30 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             models=models,
             tool_name=default_tool,
             project_id=(project.project_id if project else None),
+            profile_markdown=self._visible_employee_profile_markdown(
+                role_name,
+                default_tool,
+                "",
+            ) if global_hire else None,
             value_extra=value_extra,
         )
         self.reply_card(message_id, card_content)
+
+    @staticmethod
+    def _visible_employee_profile_markdown(
+        employee_name: str,
+        tool: str,
+        model: str,
+    ) -> str:
+        from ...autonomous.manager.cards import build_employee_profile_markdown
+        from ...autonomous.provisioning.hire_port import recommended_employee_profile
+
+        return build_employee_profile_markdown(
+            employee_name=employee_name,
+            tool=tool,
+            model=model,
+            profile=recommended_employee_profile(tool),
+        )
 
     def _start_visible_employee_hire(
         self,
@@ -2413,9 +2447,14 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
         model: str,
         profile: str,
         effort: str,
+        role: str = "",
+        personality_traits: tuple[str, ...] = (),
         existing_app_id: str = "",
     ) -> None:
-        from ...autonomous.provisioning.hire_port import EmployeeHireRequest
+        from ...autonomous.provisioning.hire_port import (
+            EmployeeHireRequest,
+            recommended_employee_profile,
+        )
         from ...autonomous.provisioning.hire_service import HireAdmissionError
         from ...thread.manager import (
             get_current_sender_union_id,
@@ -2477,6 +2516,7 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
                 "无法确认跨应用用户身份（union_id 缺失），已拒绝创建员工。请从飞书主应用重新发起 /hire。",
             )
             return
+        template = recommended_employee_profile(tool, role)
         request = EmployeeHireRequest(
             employee_name=employee_name,
             tool=tool,
@@ -2488,6 +2528,11 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             requester_principal_id=requester_id,
             requester_union_id=requester_union_id,
             tenant_key=get_current_tenant_key() or "",
+            role=template.role,
+            persona=template.persona,
+            personality_traits=personality_traits or template.personality_traits,
+            capabilities=template.capabilities,
+            permissions=template.permissions,
             existing_app_id=existing_app_id,
         )
         try:
@@ -3009,6 +3054,11 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             models=models,
             tool_name=tool_name,
             project_id=(project.project_id if project else value.get("project_id")),
+            profile_markdown=self._visible_employee_profile_markdown(
+                role_name,
+                tool_name,
+                "",
+            ) if is_global else None,
             value_extra=value_extra,
         )
         self.update_card(message_id, card_content)
@@ -3174,6 +3224,11 @@ class SlockHandler(SlockRoleMixin, SlockTaskMixin, BaseEngineHandler):
             pending_group=pending_group,
             pending_profile=pending_profile,
             pending_effort=pending_effort,
+            profile_markdown=self._visible_employee_profile_markdown(
+                role_name,
+                tool_name,
+                str(pending_group or ""),
+            ) if is_global else None,
             value_extra=value_extra,
         )
         self.update_card(message_id, card_content)

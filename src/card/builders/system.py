@@ -1086,6 +1086,7 @@ class SystemBuilder:
         pending_group: Optional[str] = None,
         pending_profile: Optional[str] = None,
         pending_effort: Optional[str] = None,
+        profile_markdown: Optional[str] = None,
         value_extra: Optional[dict] = None,
     ) -> tuple[str, str]:
         """Build a unified /hire card with tool dropdown + model cascade."""
@@ -1137,6 +1138,11 @@ class SystemBuilder:
                 "tag": "markdown",
                 "content": f"为员工 **{role}** 选择工具和模型{app_context}",
             },
+            *(
+                [{"tag": "markdown", "content": profile_markdown}]
+                if profile_markdown
+                else []
+            ),
             tool_dropdown,
             {"tag": "hr"},
         ]

@@ -30,6 +30,11 @@ def test_employee_creation_card_has_required_fields() -> None:
                 all_buttons.append(a)
     create_buttons = [b for b in all_buttons if b.get("value", {}).get("action") == "create_employee"]
     assert len(create_buttons) == 1
+    content = str(card)
+    assert "Work Style" in content
+    assert "Capabilities" in content
+    assert "Permission Profile" in content
+    assert "system prompt" in content
 
 
 def test_employee_creation_card_custom_options() -> None:

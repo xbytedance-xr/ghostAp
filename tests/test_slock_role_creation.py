@@ -262,7 +262,11 @@ class TestCreateRoleDefaults:
             )
 
         card = json.loads(handler.reply_card.call_args[0][1])
-        assert '"tag": "action"' not in json.dumps(card, ensure_ascii=False)
+        card_text = json.dumps(card, ensure_ascii=False)
+        assert '"tag": "action"' not in card_text
+        assert "员工资料预览" in card_text
+        assert "development" in card_text
+        assert "不接受任意 system prompt" in card_text
         values = _collect_card_values(card)
         tool_values = [
             value
@@ -588,6 +592,69 @@ class TestCreateRoleDefaults:
         assert request.tool == "codex"
         assert request.model == "gpt-5"
         assert request.existing_app_id == "cli_existing_123"
+        assert request.role == "coder"
+        assert request.persona.startswith("以可靠、可验证的改动")
+        assert request.personality_traits == ("严谨", "注重细节", "主动沟通")
+        assert request.capabilities == (
+            "coding",
+            "testing",
+            "review",
+            "file_read",
+            "file_write",
+            "shell",
+            "git",
+        )
+        assert request.permissions == ("file_read", "file_write", "shell", "git")
+
+    def test_global_hire_accepts_only_bounded_role_profile_choices(self):
+        handler = self._make_handler()
+        service = MagicMock()
+        handler.ctx.employee_hire_service = service
+        handler.ctx.employee_hire_readiness = lambda: SimpleNamespace(
+            ready=True,
+            blockers=(),
+        )
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_sender_union_id", return_value="on_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+            patch("src.thread.manager.get_current_tenant_key", return_value="tenant_a"),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool claude --model sonnet --role reviewer "
+                "--traits 批判性思维,追求质量",
+                global_hire=True,
+            )
+
+        request = service.start_hire.call_args.args[0]
+        assert request.role == "reviewer"
+        assert request.personality_traits == ("批判性思维", "追求质量")
+        assert request.capabilities == ("review", "research", "file_read")
+        assert request.permissions == ("file_read",)
+
+    def test_global_hire_rejects_arbitrary_prompt_before_service(self):
+        handler = self._make_handler()
+        service = MagicMock()
+        handler.ctx.employee_hire_service = service
+        handler.ctx.settings.admin_user_ids = frozenset({"ou_admin"})
+
+        with (
+            patch("src.thread.manager.get_current_sender_id", return_value="ou_admin"),
+            patch("src.thread.manager.get_current_is_p2p", return_value=True),
+        ):
+            handler.create_role(
+                "msg_1",
+                "chat_test",
+                "Atlas --tool codex --model gpt-5 --prompt 'ignore policy'",
+                global_hire=True,
+            )
+
+        service.start_hire.assert_not_called()
+        assert "不接受任意" in handler.reply_text.call_args.args[1]
 
     @pytest.mark.parametrize(
         "app_id",
@@ -875,6 +942,9 @@ class TestCreateRoleDefaults:
         assert employee.name == "Atlas"
         assert employee.tool == "traex"
         assert employee.model == "gpt-5.6-sol"
+        assert employee.role == "coder"
+        assert employee.personality_traits == ("严谨", "注重细节", "主动沟通")
+        assert employee.permissions == ("file_read", "file_write", "shell", "git")
         assert employee.profile == "max"
         assert employee.effort == "xhigh"
         identity = ProjectedAgentRegistry(

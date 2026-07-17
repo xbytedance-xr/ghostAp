@@ -30,7 +30,7 @@ from ..workforce.projection import (
     workforce_projection_guard,
 )
 from .callback_bridge import AsyncCallbackBridge
-from .hire_port import EmployeeHireRequest
+from .hire_port import EmployeeHireRequest, complete_employee_hire_request
 from .hire_state import (
     ACTIVATION_CHALLENGE_RENEWAL_LEAD_SECONDS,
     DurableHireState,
@@ -673,6 +673,10 @@ class ProductionEmployeeHireService:
             return self._hire_projection
 
     def start_hire(self, request: EmployeeHireRequest) -> DurableHireState:
+        try:
+            request = complete_employee_hire_request(request)
+        except (TypeError, ValueError):
+            raise HireAdmissionError("invalid employee profile") from None
         self._validate_request(request)
         intent_id = _stable_id("hire", request.tenant_key, request.message_id)
         submit_after_commit = False
@@ -743,10 +747,13 @@ class ProductionEmployeeHireService:
                         "effort": request.effort,
                         "role": request.role,
                         "persona": request.persona,
+                        "personality_traits": list(request.personality_traits),
+                        "capabilities": list(request.capabilities),
+                        "permissions": list(request.permissions),
                         "existing_app_id": request.existing_app_id,
                         "worker_type": WorkerType.VISIBLE.value,
                         "state": EmployeeState.PROVISIONING_APP.value,
-                        "hire_schema_version": 1,
+                        "hire_schema_version": 2,
                         "hire_intent_id": intent_id,
                         "hire_message_id": request.message_id,
                         "hire_chat_id": request.chat_id,
@@ -2104,6 +2111,12 @@ class ProductionEmployeeHireService:
         if not isinstance(request.role, str) or not isinstance(request.persona, str):
             raise HireAdmissionError("role and persona must be strings")
         if (
+            not isinstance(request.personality_traits, tuple)
+            or not isinstance(request.capabilities, tuple)
+            or not isinstance(request.permissions, tuple)
+        ):
+            raise HireAdmissionError("employee profile collections must be tuples")
+        if (
             not isinstance(request.existing_app_id, str)
             or (
                 request.existing_app_id
@@ -2150,6 +2163,9 @@ class ProductionEmployeeHireService:
             and state.profile == request.profile
             and state.role == request.role
             and state.persona == request.persona
+            and state.personality_traits == request.personality_traits
+            and state.capabilities == request.capabilities
+            and state.permissions == request.permissions
             and state.existing_app_id == request.existing_app_id
         )
 

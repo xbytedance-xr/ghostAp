@@ -372,31 +372,31 @@ class CoordinatorDecision:
 - Card produces role/persona template and bounded trait/capability choices.
 - Hire Journal event persists every selected field before external App creation.
 
-- [ ] **Step 1: 先做 Hire 资料卡 HTML 预览**
+- [x] **Step 1: 先做 Hire 资料卡 HTML 预览**
 
   显示名字、职责、工作风格、能力、工具/模型摘要和权限预览；不让用户在卡片输入任意 system prompt。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
   验证 visible `/hire` 不再丢弃 role/persona/traits/capabilities/permissions，空字段使用受版本控制的安全默认模板。
 
-- [ ] **Step 3: 运行目标测试**
+- [x] **Step 3: 运行目标测试**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_hire_service.py tests/test_slock_role_creation.py -q`
 
   Expected: FAIL because request contract/UI payload does not carry the new fields.
 
-- [ ] **Step 4: 扩展 request、卡片和 Journal payload**
+- [x] **Step 4: 扩展 request、卡片和 Journal payload**
 
   对 trait/capability 使用 allowlist；permission 只允许管理员从 policy profile 选择，员工名字和 persona 不能隐式扩权。
 
-- [ ] **Step 5: 验证身份投影重建**
+- [x] **Step 5: 验证身份投影重建**
 
   Run: `uv run python -m pytest tests/autonomous/unit/test_employee_hire_service.py tests/autonomous/unit/test_employee_projection.py tests/test_slock_role_creation.py -q`
 
   Expected: PASS.
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
   Commit: `feat(hire): persist complete employee profiles`
 

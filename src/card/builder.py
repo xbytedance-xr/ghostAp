@@ -430,6 +430,7 @@ class CardBuilder:
         pending_group: Optional[str] = None,
         pending_profile: Optional[str] = None,
         pending_effort: Optional[str] = None,
+        profile_markdown: Optional[str] = None,
         value_extra: Optional[dict] = None,
     ) -> tuple[str, str]:
         return SystemBuilder.build_slock_role_unified_select_card(
@@ -442,6 +443,7 @@ class CardBuilder:
             pending_group=pending_group,
             pending_profile=pending_profile,
             pending_effort=pending_effort,
+            profile_markdown=profile_markdown,
             value_extra=value_extra,
         )
 

@@ -9,6 +9,29 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..provisioning.hire_port import EmployeeProfileTemplate
+
+
+def build_employee_profile_markdown(
+    *,
+    employee_name: str,
+    tool: str,
+    model: str,
+    profile: EmployeeProfileTemplate,
+) -> str:
+    """Render the bounded profile shown before a visible hire is admitted."""
+
+    model_label = model or "provider default"
+    return (
+        f"**员工资料预览 · {employee_name}**\n"
+        f"职责：`{profile.role}` · 工具/模型：`{tool}` / `{model_label}`\n"
+        f"工作风格：{profile.persona}\n"
+        f"性格：{', '.join(profile.personality_traits)}\n"
+        f"能力：{', '.join(profile.capabilities)}\n"
+        f"权限策略：`{profile.permission_profile}`（{', '.join(profile.permissions)}）\n\n"
+        "资料来自版本化模板，不接受任意 system prompt；名字和性格不会隐式扩权。"
+    )
+
 
 def _discover_tools() -> list[str]:
     """Get available tools using the same discovery as Workflow/Deep/Spec."""
@@ -76,6 +99,18 @@ def build_employee_creation_card(
                 "text": {
                     "tag": "lark_md",
                     "content": "Configure a new autonomous employee for your team:",
+                },
+            },
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        "**Work Style:** version-controlled role template\n"
+                        "**Capabilities:** bounded allowlist\n"
+                        "**Permission Profile:** administrator-selected least privilege\n"
+                        "Arbitrary system prompt input is not accepted."
+                    ),
                 },
             },
             {
